@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: djogi
+      POSTGRES_PASSWORD: djogi
+      POSTGRES_DB: djogi_test
+    volumes:
+      - djogi_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U djogi"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  djogi_pgdata:
