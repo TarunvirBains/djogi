@@ -1,0 +1,17 @@
+[package]
+name = "djogi-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "CLI for the Djogi framework — cargo djogi"
+
+[[bin]]
+name = "djogi"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+tokio.workspace = true
+djogi.workspace = true

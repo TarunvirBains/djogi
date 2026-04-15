@@ -1,0 +1,12 @@
+[package]
+name = "djogi-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Interactive Rhai shell for the Djogi framework"
+
+[dependencies]
+djogi.workspace = true
+tokio.workspace = true
