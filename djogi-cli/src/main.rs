@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "djogi", about = "Djogi framework CLI")]
@@ -14,7 +14,7 @@ enum Cli {
     },
 }
 
-#[derive(Parser)]
+#[derive(Subcommand)]
 enum DbCommand {
     /// Drop, recreate, and migrate the database (dev only)
     Reset,
