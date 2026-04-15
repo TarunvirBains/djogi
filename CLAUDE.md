@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Djogi** is a Model-first web framework for Rust, built on Axum. Define your data schema as Rust structs, and the framework derives everything else — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, full derivation chain.
 
-The `ReadMe.MD` is the full design specification — read it before implementing any feature.
+The `ReadMe.MD` is the project overview. The full specification lives in `docs/spec/` — read the relevant spec doc before implementing any feature. The [implementation plan](docs/spec/implementation-plan.md) sequences the build.
 
 **Current status:** Implementation in progress. The README is the authoritative specification. When there is a conflict between the README and the code, treat the README as the design target unless otherwise instructed.
 

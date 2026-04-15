@@ -37,7 +37,7 @@
 | CRUD log architecture | Separate `myapp_crud_logs` database; per-model mirror tables; async writes |
 | Event log architecture | Separate `myapp_event_logs` database; `tracing`-powered; severity-routed |
 | Log database lifecycle | `db reset` wipes app DB only; `--wipe-crud-logs` / `--wipe-all-logs` for log DBs |
-| Admin panel | Optional Dioxus 0.7 fullstack; `admin` feature flag; mounted at `/_admin/` |
+| Admin panel | Optional HTMX + Askama; `admin` feature flag; mounted at `/_admin/` |
 | Admin form generation | Auto-generated from `ModelDescriptor` — zero per-model UI code required |
 | Admin validation | Auto-generated from field annotations + optional `impl AdminClean` hook |
 | Admin M2M inlines | Auto-rendered from `impl ManyToMany<T>`; paginated, searchable, configurable |

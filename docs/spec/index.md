@@ -19,15 +19,16 @@
 ## Tools
 
 - [Shell](./shell.md) — Rhai REPL, transactions, import/export, seed scripts
-- [Admin Panel](./admin.md) — Dioxus ModelForms, list views, validation, M2M inlines
+- [Admin Panel](./admin.md) — HTMX + Askama ModelForms, list views, validation, M2M inlines
 
 ## Reference
 
 - [Research Areas](./research.md) — open implementation questions by subsystem
 - [Resolved Design Decisions](./decisions.md) — full decision log with rationale
 
-## Analysis
+## Planning
 
+- [Implementation Plan](./implementation-plan.md) — phased build sequence targeting production readiness
 - [ORM Gap Analysis](./orm-gap-analysis.md) — Django 6.0 deep dive, functional gaps, and where Djogi can do better
 
 ## Background

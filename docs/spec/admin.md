@@ -1,14 +1,14 @@
 > [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
 
-## 15. Admin Panel — Dioxus ModelForms
+## 15. Admin Panel — HTMX + Askama
 
-Djogi ships an optional admin panel that auto-generates list views and CRUD forms for every registered model. Built with Dioxus 0.7+ and served as a fullstack Dioxus application mounted at `/_admin/` by the Axum router.
+Djogi ships an optional admin panel that auto-generates list views and CRUD forms for every registered model. Built with HTMX + Askama (compile-time templates) and served as server-rendered HTML mounted at `/_admin/` by the Axum router.
 
 ### 15.1 Design Philosophy
 
 - **Zero hand-written UI:** `ModelDescriptor` (emitted by `#[derive(Model)]`) carries all the information needed — field names, types, nullability, FK targets, validation constraints. The admin reads this at runtime and renders forms automatically
-- **Dioxus 0.7+ fullstack:** The admin runs as server-side rendered + hydrated WASM. Server functions (`#[server]`) call directly into the Djogi model layer on the backend — no separate REST API needed for admin operations
-- **Opt-in, not bundled by default:** Enabled via the `admin` feature flag — adds Dioxus to the dependency tree only when explicitly requested
+- **HTMX + server-rendered HTML:** Axum handlers return HTML pages and fragments. HTMX attributes (`hx-get`, `hx-post`, `hx-swap`) handle interactivity — pagination, search-as-you-type, inline editing — without a JS framework or WASM bundle. Just `htmx.min.js` (14KB gzipped).
+- **Opt-in, not bundled by default:** Enabled via the `admin` feature flag — adds `askama` to the dependency tree only when explicitly requested
 ```toml
 # Cargo.toml
 djogi = { version = "0.1", features = ["admin"] }
@@ -164,8 +164,8 @@ pub password_hash: String,
 ```
 ### 15.8 Research Areas (Admin)
 
-- Dioxus 0.7 `#[server]` functions sharing the Axum `State<PgPool>` with the main app
-- `ForeignKey<T>` select dropdowns for large tables — search-as-you-type rather than loading all options upfront
-- Serving the Dioxus WASM bundle as static assets via `tower_http::services::ServeDir` within the Axum router
+- Askama template compilation and how `ModelDescriptor` drives template rendering at build time
+- `ForeignKey<T>` select dropdowns for large tables — HTMX `hx-trigger="keyup changed delay:300ms"` for search-as-you-type
+- Serving `htmx.min.js` as a static asset via `tower_http::services::ServeDir` within the Axum router
 - Admin session auth — signed cookie, independent of the application's own auth system
 - `Jsonb<T>` unknown fields in admin — read-only display with raw JSON view toggle

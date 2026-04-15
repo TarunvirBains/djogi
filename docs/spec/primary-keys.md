@@ -52,7 +52,7 @@ pub struct Event {
     pub payload: Jsonb<EventPayload>,
 }
 ```
-HeerId tables (installed once per database, managed by the `heer-id` crate):
+HeerId tables (installed once per database, managed by the `heeranjid` crate):
 ```sql
 CREATE TABLE heer_nodes (
     node_id       INTEGER PRIMARY KEY,

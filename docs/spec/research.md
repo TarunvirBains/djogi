@@ -83,10 +83,10 @@
 - `IN (...)` expansion for `in_list()` with variable-length parameter lists
 - JSONB path operator generation for `Jsonb<T>` subfield filters
 
-### Admin Panel (Dioxus)
-- Dioxus 0.7 `#[server]` functions sharing Axum `State<PgPool>` with the main app
-- `ForeignKey<T>` select dropdowns for large tables — search-as-you-type rather than loading all options upfront
-- Serving the Dioxus WASM bundle via `tower_http::services::ServeDir` within the Axum router
+### Admin Panel (HTMX + Askama)
+- Askama template compilation and how `ModelDescriptor` drives template rendering at build time
+- HTMX partial rendering for pagination, filtering, inline editing without full page reload
+- `ForeignKey<T>` select dropdowns for large tables — HTMX search-as-you-type
 - Admin session auth — signed cookie, independent of application auth
 - `Jsonb<T>` unknown fields in admin — read-only display with raw JSON view toggle
 - Inline pagination and search for large M2M through-tables
