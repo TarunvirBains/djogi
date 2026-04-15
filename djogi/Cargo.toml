@@ -23,3 +23,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+sqlx = { workspace = true, features = ["migrate"] }
+
+[[test]]
+name = "integration"
+path = "../tests/integration/smoke.rs"
+harness = true
