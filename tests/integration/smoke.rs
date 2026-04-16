@@ -1,6 +1,7 @@
 //! Smoke test: verify we can connect to Postgres and run a basic query.
 
 use djogi::config::DjogiConfig;
+use heeranjid_sqlx::{generate_heerid, install_schema, seed_default_node};
 use sqlx::PgPool;
 
 #[sqlx::test]
@@ -52,4 +53,14 @@ fn database_url_env_overrides_toml() {
         assert_eq!(config.database.url, "postgres://localhost/from_env");
         Ok(())
     });
+}
+
+#[sqlx::test]
+async fn heeranjid_generates_id(pool: PgPool) {
+    install_schema(&pool).await.expect("failed to install heeranjid schema");
+    seed_default_node(&pool).await.expect("failed to seed default node");
+
+    let id = generate_heerid(&pool, 1).await.expect("failed to generate heerid");
+
+    assert!(id.as_i64() > 0, "Expected positive HeerId, got: {}", id.as_i64());
 }

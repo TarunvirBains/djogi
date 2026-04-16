@@ -25,6 +25,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 sqlx = { workspace = true, features = ["migrate"] }
 figment = { workspace = true, features = ["test"] }
+heeranjid-sqlx = { workspace = true }
 
 [[test]]
 name = "integration"
