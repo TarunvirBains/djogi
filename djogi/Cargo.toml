@@ -24,6 +24,7 @@ thiserror.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 sqlx = { workspace = true, features = ["migrate"] }
+figment = { workspace = true, features = ["test"] }
 
 [[test]]
 name = "integration"

@@ -4,6 +4,8 @@
 //! everything else: ORM, migrations, admin UI, audit trail, shell bindings,
 //! JSONB schema handling.
 
+pub mod config;
+
 pub use djogi_macros::*;
 
 pub mod prelude {

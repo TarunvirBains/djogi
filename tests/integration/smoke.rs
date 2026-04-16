@@ -1,5 +1,6 @@
 //! Smoke test: verify we can connect to Postgres and run a basic query.
 
+use djogi::config::DjogiConfig;
 use sqlx::PgPool;
 
 #[sqlx::test]
@@ -22,4 +23,33 @@ async fn postgres_version_is_16(pool: PgPool) {
         "Expected PostgreSQL 16, got: {}",
         row.0
     );
+}
+
+#[test]
+fn default_config_has_sensible_defaults() {
+    figment::Jail::expect_with(|jail| {
+        jail.set_env("DATABASE_URL", "postgres://localhost/test");
+        let config = DjogiConfig::load()?;
+        assert_eq!(config.database.max_connections, 10);
+        assert!(!config.database.dev_mode);
+        assert_eq!(config.server.port, 8000);
+        Ok(())
+    });
+}
+
+#[test]
+fn database_url_env_overrides_toml() {
+    figment::Jail::expect_with(|jail| {
+        jail.create_file(
+            "Djogi.toml",
+            r#"
+            [database]
+            url = "postgres://localhost/from_toml"
+            "#,
+        )?;
+        jail.set_env("DATABASE_URL", "postgres://localhost/from_env");
+        let config = DjogiConfig::load()?;
+        assert_eq!(config.database.url, "postgres://localhost/from_env");
+        Ok(())
+    });
 }
