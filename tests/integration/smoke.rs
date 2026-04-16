@@ -1,5 +1,9 @@
 //! Smoke test: verify we can connect to Postgres and run a basic query.
 
+// figment::Error is a large external type we cannot shrink; these closures
+// return Result<(), figment::Error> as required by figment::Jail::expect_with.
+#![allow(clippy::result_large_err)]
+
 use djogi::config::DjogiConfig;
 use heeranjid_sqlx::{generate_heerid, install_schema, seed_default_node};
 use sqlx::PgPool;
