@@ -18,14 +18,14 @@ async fn connects_to_postgres(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn postgres_version_is_16(pool: PgPool) {
+async fn postgres_version_is_18(pool: PgPool) {
     let row: (String,) = sqlx::query_as("SELECT version()")
         .fetch_one(&pool)
         .await
         .expect("failed to get version");
     assert!(
-        row.0.contains("PostgreSQL 16"),
-        "Expected PostgreSQL 16, got: {}",
+        row.0.contains("PostgreSQL 18"),
+        "Expected PostgreSQL 18, got: {}",
         row.0
     );
 }
