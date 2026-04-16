@@ -22,3 +22,6 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+# Agent working files (local only)
+docs/superpowers/
