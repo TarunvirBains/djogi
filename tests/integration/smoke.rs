@@ -57,10 +57,20 @@ fn database_url_env_overrides_toml() {
 
 #[sqlx::test]
 async fn heeranjid_generates_id(pool: PgPool) {
-    install_schema(&pool).await.expect("failed to install heeranjid schema");
-    seed_default_node(&pool).await.expect("failed to seed default node");
+    install_schema(&pool)
+        .await
+        .expect("failed to install heeranjid schema");
+    seed_default_node(&pool)
+        .await
+        .expect("failed to seed default node");
 
-    let id = generate_heerid(&pool, 1).await.expect("failed to generate heerid");
+    let id = generate_heerid(&pool, 1)
+        .await
+        .expect("failed to generate heerid");
 
-    assert!(id.as_i64() > 0, "Expected positive HeerId, got: {}", id.as_i64());
+    assert!(
+        id.as_i64() > 0,
+        "Expected positive HeerId, got: {}",
+        id.as_i64()
+    );
 }

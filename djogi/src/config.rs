@@ -47,6 +47,7 @@ impl Default for DjogiConfig {
 impl DjogiConfig {
     /// Load configuration from `Djogi.toml` (if present) merged with
     /// environment variables. `DATABASE_URL` overrides `database.url`.
+    #[allow(clippy::result_large_err)]
     pub fn load() -> Result<Self, figment::Error> {
         let mut config: DjogiConfig = Figment::new()
             .merge(Serialized::defaults(DjogiConfig::default()))
