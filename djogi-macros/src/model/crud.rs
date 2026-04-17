@@ -126,61 +126,76 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // `create` SQL: INSERT with user fields only; DB handles the framework
     // columns via column defaults. RETURNING * brings back the full row.
+    //
+    // For zero-user-field models we must use `DEFAULT VALUES` — empty parens
+    // `()` are invalid SQL and `INSERT ... () VALUES ()` is rejected by
+    // Postgres. `DEFAULT VALUES` is standard SQL and Postgres-supported.
     // -------------------------------------------------------------------------
-    let insert_columns: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
-    let insert_col_list = insert_columns.join(", ");
-    let insert_placeholders: Vec<String> = (1..=n_user).map(|i| format!("${i}")).collect();
-    let insert_placeholder_list = insert_placeholders.join(", ");
-    let insert_sql = format!(
-        "INSERT INTO {table} ({insert_col_list}) VALUES ({insert_placeholder_list}) RETURNING *"
-    );
+    let insert_sql = if n_user == 0 {
+        format!("INSERT INTO {table} DEFAULT VALUES RETURNING *")
+    } else {
+        let insert_columns: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
+        let insert_col_list = insert_columns.join(", ");
+        let insert_placeholders: Vec<String> = (1..=n_user).map(|i| format!("${i}")).collect();
+        let insert_placeholder_list = insert_placeholders.join(", ");
+        format!(
+            "INSERT INTO {table} ({insert_col_list}) VALUES ({insert_placeholder_list}) RETURNING *"
+        )
+    };
     let create_binds: Vec<TokenStream> = user_fields
         .iter()
         .map(|f| quote! { .bind(&value.#f) })
         .collect();
 
     // -------------------------------------------------------------------------
-    // `save` SQL: UPDATE with user fields + updated_at = $N, WHERE id = $M.
-    // Parameters: $1..$n_user = user fields, $n_user+1 = now(), $n_user+2 = id.
+    // `save` SQL: UPDATE with user fields + SQL-side `updated_at = now()`,
+    // WHERE id = $M.
+    //
+    // Parameters: $1..$n_user = user fields, $n_user+1 = id.
+    //
+    // Using Postgres `now()` (not a client-side `OffsetDateTime::now_utc()`
+    // bound as a parameter) keeps the timestamp source consistent with the
+    // column's `DEFAULT now()` on INSERT: all writes use the same server
+    // clock, so `created_at <= updated_at` always holds even across clients
+    // with drifted clocks.
+    //
+    // Zero-user-field edge case: when n_user == 0 the UPDATE has no user
+    // SET clauses — emit only `SET updated_at = now()` to avoid the invalid
+    // `SET , updated_at = now()` (leading comma) SQL.
     // -------------------------------------------------------------------------
     let set_clauses: Vec<String> = user_fields
         .iter()
         .enumerate()
         .map(|(i, f)| format!("{} = ${}", f, i + 1))
         .collect();
-    let updated_at_param = n_user + 1;
-    let id_param = n_user + 2;
-    let save_sql = format!(
-        "UPDATE {table} SET {set_list}, updated_at = ${updated_at_param} WHERE id = ${id_param}",
-        set_list = set_clauses.join(", "),
-    );
+    let id_param = n_user + 1;
+    let save_sql = if n_user == 0 {
+        format!("UPDATE {table} SET updated_at = now() WHERE id = ${id_param}")
+    } else {
+        format!(
+            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param}",
+            set_list = set_clauses.join(", "),
+        )
+    };
 
-    // save_binds: clone each user field before the async move, then bind inside.
-    // We emit let-bindings outside the async block so the borrow of &self ends
-    // before the `async move` boundary.
-    let save_field_clones: Vec<TokenStream> = user_fields
-        .iter()
-        .map(|f| {
-            let clone_var = quote::format_ident!("__save_{}", f);
-            quote! { let #clone_var = self.#f.clone(); }
-        })
-        .collect();
+    // save field binds — bind by reference to user fields on `&self`. No
+    // clone is required: the returned `impl Future + Send` captures `&self`'s
+    // lifetime via RPITIT elision, so the async block can borrow `self.#f`
+    // across `.await`. This means user field types don't have to implement
+    // `Clone` — only `sqlx::Encode`, which the trait's contract already implies.
     let save_field_binds: Vec<TokenStream> = user_fields
         .iter()
-        .map(|f| {
-            let clone_var = quote::format_ident!("__save_{}", f);
-            quote! { .bind(#clone_var) }
-        })
+        .map(|f| quote! { .bind(&self.#f) })
         .collect();
 
-    // id bind for the save WHERE clause — captured as a concrete value before async move.
-    let save_id_capture = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { let __save_id = self.id.as_i64(); },
-        PkStrategy::RanjId => quote! { let __save_id = self.id; },
-        PkStrategy::Serial => quote! { let __save_id = self.id; },
-        PkStrategy::None => quote! { let __save_id = (); },
+    // id bind for the save WHERE clause. Captured inline; HeerId needs
+    // `.as_i64()` to bind as `BIGINT`, others bind directly.
+    let save_id_bind = match model_attrs.pk {
+        PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
+        PkStrategy::RanjId => quote! { .bind(self.id) },
+        PkStrategy::Serial => quote! { .bind(self.id) },
+        PkStrategy::None => quote! { .bind(()) },
     };
-    let save_id_bind = quote! { .bind(__save_id) };
 
     // -------------------------------------------------------------------------
     // `get` SQL: SELECT * WHERE id = $1. `id` comes in as an owned Self::Pk.
@@ -195,15 +210,15 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // `refresh_from_db` — same query as get, but captures self's pk before move.
+    // `refresh_from_db` — same query as get, but binds `&self.id` directly.
+    // Like save, RPITIT captures `&self` so no pre-capture clone is needed.
     // -------------------------------------------------------------------------
-    let refresh_pk_capture = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { let __refresh_id = self.id.as_i64(); },
-        PkStrategy::RanjId => quote! { let __refresh_id = self.id; },
-        PkStrategy::Serial => quote! { let __refresh_id = self.id; },
-        PkStrategy::None => quote! { let __refresh_id = (); },
+    let refresh_id_bind = match model_attrs.pk {
+        PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
+        PkStrategy::RanjId => quote! { .bind(self.id) },
+        PkStrategy::Serial => quote! { .bind(self.id) },
+        PkStrategy::None => quote! { .bind(()) },
     };
-    let refresh_id_bind = quote! { .bind(__refresh_id) };
 
     // -------------------------------------------------------------------------
     // `delete` SQL: DELETE WHERE id = $1. `self` is consumed (moved in).
@@ -300,15 +315,13 @@ pub fn expand(
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,
             > + Send {
-                // Clone all values needed inside the async block before the
-                // async move boundary — &self borrow cannot cross it.
-                #(#save_field_clones)*
-                #save_id_capture
-
+                // RPITIT captures `&self`'s lifetime into the returned future's
+                // hidden lifetime, so the async block can borrow `&self.#f` across
+                // `.await` without cloning. `Model: Send + Sync` makes `&Self:
+                // Send` so the returned future satisfies `+ Send`.
                 async move {
                     ::djogi::__private::sqlx::query(#save_sql)
                     #(#save_field_binds)*
-                    .bind(::djogi::__private::sqlx::types::time::OffsetDateTime::now_utc())
                     #save_id_bind
                     .execute(executor)
                     .await?;
@@ -345,10 +358,9 @@ pub fn expand(
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
             > + Send {
-                // Capture the pk before the async move — &self borrow cannot
-                // cross the async move boundary.
-                #refresh_pk_capture
-
+                // RPITIT captures `&self`'s lifetime into the returned future,
+                // so binding `self.id` directly in the async block works
+                // without a pre-capture clone.
                 async move {
                     let result = ::djogi::__private::sqlx::query_as::<
                         ::djogi::__private::sqlx::Postgres,
