@@ -89,7 +89,7 @@
 //! from `impl Model` rather than shipping a shim that lies about the key.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::ItemStruct;
 
 use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
@@ -112,6 +112,7 @@ pub fn expand(
     }
 
     let name = &struct_item.ident;
+    let fields_name = format_ident!("{}Fields", name);
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
     let table = &model_attrs.table;
 
@@ -422,6 +423,12 @@ pub fn expand(
 
         impl #impl_generics ::djogi::model::Model for #name #ty_generics #where_clause {
             type Pk = #pk_type_tokens;
+
+            // Typed field handles — the ZST generated alongside this impl by
+            // `stubs::expand` (Phase 1) / `fields::expand` (Phase 2 Task 4).
+            // Its `Default` impl lets `QuerySet::filter` construct the handle
+            // inside the closure without the caller naming the type.
+            type Fields = #fields_name;
 
             fn table_name() -> &'static str {
                 #table

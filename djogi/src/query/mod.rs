@@ -11,5 +11,7 @@
 //! methods. Splitting by responsibility keeps each file auditable.
 
 pub mod condition;
+pub mod field;
 
 pub use condition::{Condition, FilterValue, Leaf, LookupOp};
+pub use field::{FieldRef, IntoFilterValue};

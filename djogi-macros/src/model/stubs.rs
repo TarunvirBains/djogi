@@ -18,7 +18,12 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
     quote! {
         /// Typed field accessors for QuerySet filter closures.
         /// Fully implemented in Phase 2.
-        #[derive(Debug, Clone, Copy)]
+        ///
+        /// `Default` is required by the `Model::Fields` associated type
+        /// (`Copy + Default + Send + Sync + 'static`) so that
+        /// `QuerySet::filter(|f| …)` can construct the ZST handle from
+        /// inside the closure without the caller naming the type.
+        #[derive(Debug, Clone, Copy, Default)]
         pub struct #fields_name;
 
         /// Programmatic filter builder for dynamic/shell use.
