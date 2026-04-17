@@ -78,3 +78,35 @@ async fn from_row_deserializes_correctly(pool: PgPool) {
     assert_eq!(row.view_count, 0);
     assert!(row.id.as_i64() > 0, "DB-generated HeerId must be positive");
 }
+
+// ---------------------------------------------------------------------------
+// ModelDescriptor registration test (Task 6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn model_descriptor_registered() {
+    // inventory collects all ModelDescriptor submissions at link time.
+    // `inventory::iter::<T>` is a zero-sized type implementing IntoIterator —
+    // use it WITHOUT parentheses (not `inventory::iter::<T>()`).
+    let descriptors: Vec<&::djogi::ModelDescriptor> = ::inventory::iter::<::djogi::ModelDescriptor>
+        .into_iter()
+        .collect();
+
+    let post_desc = descriptors
+        .iter()
+        .find(|d| d.table_name == "posts")
+        .expect("Post ModelDescriptor should be registered via inventory");
+
+    assert_eq!(post_desc.type_name, "Post");
+    assert_eq!(post_desc.table_name, "posts");
+    assert!(matches!(post_desc.pk_type, ::djogi::PkType::HeerId));
+    assert!(post_desc.fields.iter().any(|f| f.name == "title"));
+    // Phase 1 defaults: all amended fields zero/None/empty.
+    assert!(post_desc.partition_by.is_none());
+    assert!(!post_desc.has_outbox);
+    assert!(post_desc.idempotency_key.is_none());
+    assert!(post_desc.tenant_key.is_none());
+    assert!(post_desc.cache_ttl.is_none());
+    assert!(post_desc.rationale.is_none());
+    assert!(post_desc.indexes.is_empty());
+}
