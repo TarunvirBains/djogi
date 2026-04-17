@@ -12,6 +12,7 @@
 //! | `descriptor` | `ModelDescriptor` and friends — the single source of truth about every registered model. Populated by `#[model]` via `inventory::submit!`. |
 //! | `error`      | `DjogiError` — the one error type returned by every `Model` method. |
 //! | `model`      | The `Model` trait the macro implements for every user struct. Defined in Phase 1 Task 2. |
+//! | `query`      | Filter AST (`Condition`, `Leaf`, `LookupOp`, `FilterValue`) plus the `QuerySet<T>` builder and SQL emitter (filled in across Phase 2). |
 //! | `raw`        | `djogi::raw::*` escape hatches for when `QuerySet` is too limiting. Fully implemented in Phase 1 Task 11. |
 //! | `types`      | `DateTime`, `Date`, and re-exports of `HeerId`/`RanjId` — the canonical types imported via `prelude`. |
 //!
@@ -35,6 +36,7 @@ pub mod config;
 pub mod descriptor;
 pub mod error;
 pub mod model;
+pub mod query;
 pub mod raw;
 pub mod types;
 
@@ -56,6 +58,7 @@ pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
 pub use error::DjogiError;
+pub use query::{Condition, FilterValue, LookupOp};
 pub use types::{Date, DateTime, HeerId, RanjId};
 
 pub mod prelude {
@@ -64,6 +67,7 @@ pub mod prelude {
     };
     pub use crate::error::DjogiError;
     pub use crate::model::Model;
+    pub use crate::query::{Condition, FilterValue, LookupOp};
     pub use crate::types::{Date, DateTime, HeerId, RanjId};
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.
