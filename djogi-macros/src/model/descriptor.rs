@@ -80,7 +80,7 @@ pub fn expand(
         .collect();
 
     quote! {
-        ::inventory::submit! {
+        ::djogi::__private::inventory::submit! {
             ::djogi::ModelDescriptor {
                 type_name: #type_name,
                 table_name: #table_name,

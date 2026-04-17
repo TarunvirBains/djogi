@@ -100,8 +100,56 @@ fn model_descriptor_registered() {
     assert_eq!(post_desc.type_name, "Post");
     assert_eq!(post_desc.table_name, "posts");
     assert!(matches!(post_desc.pk_type, ::djogi::PkType::HeerId));
-    assert!(post_desc.fields.iter().any(|f| f.name == "title"));
-    // Phase 1 defaults: all amended fields zero/None/empty.
+
+    // Exactly 4 user fields — no framework-field leakage into the descriptor.
+    assert_eq!(
+        post_desc.fields.len(),
+        4,
+        "descriptor must contain exactly 4 user fields, got {}",
+        post_desc.fields.len()
+    );
+
+    // Per-field sql_type + nullable spot-checks covering each mapping branch.
+    let field = |name: &str| {
+        post_desc
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("field `{name}` missing from descriptor"))
+    };
+    let title = field("title");
+    assert!(matches!(title.sql_type, ::djogi::FieldSqlType::Text));
+    assert!(!title.nullable);
+    let view_count = field("view_count");
+    assert!(matches!(
+        view_count.sql_type,
+        ::djogi::FieldSqlType::Integer
+    ));
+    assert!(!view_count.nullable);
+    let published = field("published");
+    assert!(matches!(published.sql_type, ::djogi::FieldSqlType::Boolean));
+    assert!(!published.nullable);
+
+    // Per-field Phase 1 defaults on every user field.
+    for f in post_desc.fields {
+        assert!(
+            f.rationale.is_none(),
+            "field `{}` should have no rationale in Phase 1",
+            f.name
+        );
+        assert!(
+            !f.outbox_exclude,
+            "field `{}` outbox_exclude should be false in Phase 1",
+            f.name
+        );
+        assert!(
+            f.index_type.is_none(),
+            "field `{}` index_type should be None in Phase 1",
+            f.name
+        );
+    }
+
+    // Model-level Phase 1 defaults: all amended fields zero/None/empty.
     assert!(post_desc.partition_by.is_none());
     assert!(!post_desc.has_outbox);
     assert!(post_desc.idempotency_key.is_none());

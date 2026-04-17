@@ -42,11 +42,13 @@ pub mod types;
 ///
 /// These are `#[doc(hidden)]` because they are an implementation detail of the
 /// `#[model]` macro, not part of the public API. Macro-emitted code uses fully
-/// qualified paths like `::djogi::__private::sqlx::FromRow` so that users only
-/// need `djogi` as a direct dependency — they never need to add `sqlx` or
+/// qualified paths like `::djogi::__private::sqlx::FromRow` and
+/// `::djogi::__private::inventory::submit!` so that users only need `djogi` as
+/// a direct dependency — they never need to add `sqlx`, `inventory`, or
 /// `time` themselves.
 #[doc(hidden)]
 pub mod __private {
+    pub use inventory;
     pub use sqlx;
 }
 
