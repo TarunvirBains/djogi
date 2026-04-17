@@ -19,9 +19,12 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 uuid = { version = "1", features = ["serde"] }
 rust_decimal = "1"
 
-# HeeRanjId — patched to local sibling workspace so the `sqlx` feature
-# (HeerId/RanjId Decode/Encode impls) is available. The `[patch.crates-io]`
-# block below redirects cargo to the local path instead of the registry.
+# HeeRanjId — the `sqlx` feature (HeerId/RanjId Decode/Encode impls) lands in
+# 0.1.2 via TarunvirBains/HeeRanjID#15. Until that PR merges and 0.1.2 is on
+# crates.io, the `[patch.crates-io]` block below redirects to the local
+# sibling workspace (currently on main @ 0.1.1 — the feature branch has the
+# 0.1.2 version bump). After publish: bump these to "0.1.2" and remove the
+# patch block in the same commit.
 heeranjid = { version = "0.1.1", features = ["sqlx"] }
 heeranjid-sqlx = "0.1.1"
 
