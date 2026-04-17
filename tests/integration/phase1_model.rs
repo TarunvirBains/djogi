@@ -518,15 +518,46 @@ fn model_descriptor_registered() {
     assert_eq!(post_desc.table_name, "posts");
     assert!(matches!(post_desc.pk_type, ::djogi::PkType::HeerId));
 
-    // Exactly 4 user fields — no framework-field leakage into the descriptor.
+    // Phase 1.5: fields includes framework columns (id, created_at, updated_at)
+    // plus the 4 user fields = 7 total for HeerId-PK models
+    // (3 framework + 4 user = 7).
     assert_eq!(
         post_desc.fields.len(),
-        4,
-        "descriptor must contain exactly 4 user fields, got {}",
+        7,
+        "descriptor must contain id + created_at + updated_at + 4 user fields, got {}",
         post_desc.fields.len()
     );
 
+    // Framework fields appear first, in injection order.
+    assert_eq!(post_desc.fields[0].name, "id");
+    assert!(
+        matches!(post_desc.fields[0].sql_type, ::djogi::FieldSqlType::BigInt),
+        "id sql_type must be BigInt for HeerId model"
+    );
+    assert!(!post_desc.fields[0].nullable);
+
+    assert_eq!(post_desc.fields[1].name, "created_at");
+    assert!(
+        matches!(
+            post_desc.fields[1].sql_type,
+            ::djogi::FieldSqlType::Timestamptz
+        ),
+        "created_at sql_type must be Timestamptz"
+    );
+    assert!(!post_desc.fields[1].nullable);
+
+    assert_eq!(post_desc.fields[2].name, "updated_at");
+    assert!(
+        matches!(
+            post_desc.fields[2].sql_type,
+            ::djogi::FieldSqlType::Timestamptz
+        ),
+        "updated_at sql_type must be Timestamptz"
+    );
+    assert!(!post_desc.fields[2].nullable);
+
     // Per-field sql_type + nullable spot-checks covering each mapping branch.
+    // Uses find() so these still work regardless of the framework-fields prefix.
     let field = |name: &str| {
         post_desc
             .fields
@@ -547,7 +578,8 @@ fn model_descriptor_registered() {
     assert!(matches!(published.sql_type, ::djogi::FieldSqlType::Boolean));
     assert!(!published.nullable);
 
-    // Per-field Phase 1 defaults on every user field.
+    // Per-field Phase 1 defaults on every field (including framework fields,
+    // which also have rationale=None, outbox_exclude=false, index_type=None).
     for f in post_desc.fields {
         assert!(
             f.rationale.is_none(),

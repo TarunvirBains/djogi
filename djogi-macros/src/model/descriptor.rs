@@ -1,7 +1,15 @@
 //! Generates `inventory::submit!(ModelDescriptor {...})` from the `#[model]`
-//! struct definition. Runs AFTER `inject::expand` has mutated `struct_item`,
-//! but iterates user-only fields by skipping the N framework fields at the
-//! front (3 for heerid/ranjid/serial, 2 for pk=none).
+//! struct definition. Runs AFTER `inject::expand` has mutated `struct_item`.
+//!
+//! Phase 1.5: `ModelDescriptor::fields` is the **complete** schema contract.
+//! Framework-injected columns (`id`, `created_at`, `updated_at`) are emitted
+//! first (in injection order), followed by user-declared fields in source
+//! order. Downstream consumers (migration differ, admin UI, `djogi docs`, RLS
+//! generator) iterate `descriptor.fields` as the single schema source and
+//! never synthesize framework columns out-of-band.
+//!
+//! For `pk = "none"`, `id` is omitted from the framework prefix (the user's
+//! own PK field appears as a regular user field in declared order).
 //!
 //! The emitted submission uses Phase 1 defaults for every amended field
 //! (partition_by, has_outbox, idempotency_key, tenant_key, cache_ttl,
@@ -43,7 +51,91 @@ pub fn expand(
         .zip(field_attrs.iter())
         .collect();
 
-    let field_descriptors: Vec<TokenStream> = user_fields
+    // ── Framework-field FieldDescriptors ─────────────────────────────────────
+    // Phase 1.5: framework columns are emitted FIRST so `descriptor.fields` is
+    // the complete schema contract. `id` varies by pk strategy; `created_at`
+    // and `updated_at` are always Timestamptz, non-null, not unique/indexed.
+    // For `pk = "none"`, skip `id` entirely — the user's own PK appears as a
+    // regular user field in declared order.
+
+    let id_framework_desc: Option<TokenStream> = match model_attrs.pk {
+        PkStrategy::HeerId => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::BigInt,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                index_type: None,
+            }
+        }),
+        PkStrategy::RanjId => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::Uuid,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                index_type: None,
+            }
+        }),
+        PkStrategy::Serial => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::Integer,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                index_type: None,
+            }
+        }),
+        PkStrategy::None => None,
+    };
+
+    let created_at_desc = quote! {
+        ::djogi::FieldDescriptor {
+            name: "created_at",
+            sql_type: ::djogi::FieldSqlType::Timestamptz,
+            nullable: false,
+            unique: false,
+            indexed: false,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            index_type: None,
+        }
+    };
+    let updated_at_desc = quote! {
+        ::djogi::FieldDescriptor {
+            name: "updated_at",
+            sql_type: ::djogi::FieldSqlType::Timestamptz,
+            nullable: false,
+            unique: false,
+            indexed: false,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            index_type: None,
+        }
+    };
+
+    // ── User-field FieldDescriptors ───────────────────────────────────────────
+
+    let user_field_descriptors: Vec<TokenStream> = user_fields
         .iter()
         .map(|(field, fa)| {
             let name = field.ident.as_ref().unwrap().to_string();
@@ -79,6 +171,16 @@ pub fn expand(
         })
         .collect();
 
+    // Combine in injection order: id (if any), created_at, updated_at, then
+    // user fields in source order. This is the complete schema contract.
+    let mut all_field_descriptors: Vec<TokenStream> = Vec::new();
+    if let Some(id) = id_framework_desc {
+        all_field_descriptors.push(id);
+    }
+    all_field_descriptors.push(created_at_desc);
+    all_field_descriptors.push(updated_at_desc);
+    all_field_descriptors.extend(user_field_descriptors);
+
     quote! {
         ::djogi::__private::inventory::submit! {
             ::djogi::ModelDescriptor {
@@ -86,7 +188,7 @@ pub fn expand(
                 table_name: #table_name,
                 pk_type: #pk_type_tokens,
                 fields: &[
-                    #(#field_descriptors,)*
+                    #(#all_field_descriptors,)*
                 ],
                 // Phase 1 defaults — populated by later phases' attr parsers.
                 partition_by: None,
