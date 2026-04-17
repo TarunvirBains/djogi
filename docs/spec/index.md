@@ -4,7 +4,7 @@
 
 ## Core
 
-- [Models & Field System](./models.md) — `#[derive(Model)]`, field types, annotations, dirty tracking
+- [Models & Field System](./models.md) — `#[model]` attribute, field types, annotations, dirty tracking
 - [Query API](./queries.md) — QuerySet, conditions, programmatic filters, ConditionBuilder
 - [JSONB Schema Fields](./jsonb.md) — `Jsonb<T>`, unknown field preservation, validation, subfield queries
 - [Relations](./relations.md) — ForeignKey, ManyToMany, explicit through models
