@@ -19,14 +19,11 @@ time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 uuid = { version = "1", features = ["serde"] }
 rust_decimal = "1"
 
-# HeeRanjId — the `sqlx` feature (HeerId/RanjId Decode/Encode impls) lands in
-# 0.1.2 via TarunvirBains/HeeRanjID#15. Until that PR merges and 0.1.2 is on
-# crates.io, the `[patch.crates-io]` block below redirects to the local
-# sibling workspace (currently on main @ 0.1.1 — the feature branch has the
-# 0.1.2 version bump). After publish: bump these to "0.1.2" and remove the
-# patch block in the same commit.
-heeranjid = { version = "0.1.1", features = ["sqlx"] }
-heeranjid-sqlx = "0.1.1"
+# HeeRanjId — resolved from crates.io 0.1.2. The `sqlx` feature enables
+# `sqlx::Decode`/`Encode`/`Type` impls for `HeerId` (BIGINT) and `RanjId`
+# (UUID), which the `#[model]` macro requires for typed PK columns.
+heeranjid = { version = "0.1.2", features = ["sqlx"] }
+heeranjid-sqlx = "0.1.2"
 
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }
@@ -50,13 +47,3 @@ trybuild = { version = "1", features = ["diff"] }
 # Internal
 djogi = { path = "djogi" }
 djogi-macros = { path = "djogi-macros" }
-
-# ---------------------------------------------------------------------------
-# Override crates.io heeranjid / heeranjid-sqlx with the local sibling
-# workspace, which includes the `sqlx` feature flag (HeerId/RanjId
-# Decode/Encode impls). Remove this patch block once those features are
-# published to crates.io.
-# ---------------------------------------------------------------------------
-[patch.crates-io]
-heeranjid = { path = "../../../HeeRanjID/heeranjid" }
-heeranjid-sqlx = { path = "../../../HeeRanjID/heeranjid-sqlx" }

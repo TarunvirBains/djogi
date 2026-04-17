@@ -757,6 +757,8 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "heeranjid"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5b39ca56d10f7608e122d9ecb6f14ba2675524558a66e03b488a445988bb3d7"
 dependencies = [
  "serde",
  "sqlx",
@@ -767,6 +769,8 @@ dependencies = [
 [[package]]
 name = "heeranjid-sqlx"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c173f305e88d2210e42472cde1d796bb145d63e65bcb9ed8dc5b2010fa97de2"
 dependencies = [
  "heeranjid",
  "sqlx",
