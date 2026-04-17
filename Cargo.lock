@@ -384,7 +384,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -602,9 +602,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "heeranjid"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a645ea1811c2ed6ca94d4230ed06c3df121a32bb1ec9f67dd5557c954aa4b8d2"
+checksum = "990c4f86570cd22560f701fbe9ba79c7196ac9f4555de93627e86374f02de021"
 dependencies = [
  "serde",
  "thiserror",
@@ -613,9 +613,9 @@ dependencies = [
 
 [[package]]
 name = "heeranjid-sqlx"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef8c81be824ca2ecca0b0a388798d752b5ab77b171f075c907f90e2fa89a5263"
+checksum = "2d244e982fac52b261a0a4cf5db503bd00dbe2a13f822660b129e2c77bbdd63b"
 dependencies = [
  "heeranjid",
  "sqlx",
@@ -1250,7 +1250,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1716,7 +1716,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

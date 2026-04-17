@@ -18,9 +18,9 @@ serde_json = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 uuid = { version = "1", features = ["serde"] }
 
-# HeeRanjId
-heeranjid = "0.1"
-heeranjid-sqlx = "0.1"
+# HeeRanjId — use crates.io 0.1.1 (the local HeeRanjID/ symlink is reference only)
+heeranjid = "0.1.1"
+heeranjid-sqlx = "0.1.1"
 
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }
