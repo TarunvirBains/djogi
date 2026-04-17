@@ -25,3 +25,14 @@ docker-compose.override.yml
 
 # Agent working files (local only)
 docs/superpowers/
+.codex
+early-edge-cases.md
+
+# Git worktrees (local-only isolated workspaces)
+.worktrees/
+worktrees/
+
+#symlinks
+kindnudge-reference
+HeeRanjID-reference
+django-reference
