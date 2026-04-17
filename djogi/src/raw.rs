@@ -65,9 +65,11 @@ where
 
 /// Execute a raw SQL query and return a single scalar value.
 ///
-/// Returns `DjogiError::NotFound` if the query produces zero rows. For
-/// queries that may legitimately return zero rows, use `query_as` with a
-/// wrapper tuple type and inspect the length.
+/// Returns `DjogiError::NotFound { table: "<raw query>" }` if the query
+/// produces zero rows. The raw API has no inherent table context, so the
+/// sentinel string `"<raw query>"` is used for the `table` field — callers
+/// who need better diagnostics should log the `sql` argument themselves or
+/// use `query_as` with a wrapper tuple type and inspect the length.
 pub async fn query_scalar<'e, T, E, F>(executor: E, sql: &str, bind_fn: F) -> Result<T, DjogiError>
 where
     T: for<'r> sqlx::Decode<'r, Postgres> + sqlx::Type<Postgres> + Send + Unpin,
@@ -80,7 +82,9 @@ where
     let q = bind_fn(q);
     q.fetch_optional(executor)
         .await?
-        .ok_or(DjogiError::NotFound)
+        .ok_or(DjogiError::NotFound {
+            table: "<raw query>",
+        })
 }
 
 /// Execute a raw SQL statement without returning rows (INSERT, UPDATE, DELETE, DDL).

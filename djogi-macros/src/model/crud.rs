@@ -278,7 +278,7 @@ pub fn expand(
             .fetch_optional(executor)
             .await?;
 
-            result.ok_or(::djogi::DjogiError::NotFound)
+            result.ok_or(::djogi::DjogiError::NotFound { table: #table })
         }
     };
 
@@ -329,7 +329,7 @@ pub fn expand(
             .fetch_optional(executor)
             .await?;
 
-            result.ok_or(::djogi::DjogiError::NotFound)
+            result.ok_or(::djogi::DjogiError::NotFound { table: #table })
         }
     };
 
