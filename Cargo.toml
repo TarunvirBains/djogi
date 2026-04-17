@@ -11,12 +11,13 @@ authors = ["Tarunvir Bains"]
 
 [workspace.dependencies]
 # Core
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "macros", "time", "uuid", "json"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "macros", "time", "uuid", "json", "rust_decimal"] }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 uuid = { version = "1", features = ["serde"] }
+rust_decimal = "1"
 
 # HeeRanjId — use crates.io 0.1.1 (the local HeeRanjID/ symlink is reference only)
 heeranjid = "0.1.1"
@@ -27,6 +28,7 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
 inventory = "0.3"
+darling = "0.20"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -36,6 +38,9 @@ figment = { version = "0.10", features = ["toml", "env"] }
 
 # Error handling
 thiserror = "2"
+
+# Testing
+trybuild = { version = "1", features = ["diff"] }
 
 # Internal
 djogi = { path = "djogi" }

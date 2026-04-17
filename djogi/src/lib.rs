@@ -3,11 +3,54 @@
 //! Define your data schema as Rust structs, and the framework derives
 //! everything else: ORM, migrations, admin UI, audit trail, shell bindings,
 //! JSONB schema handling.
+//!
+//! # Crate layout at a glance
+//!
+//! | Module       | Role |
+//! |--------------|------|
+//! | `config`     | `DjogiConfig` loaded from `Djogi.toml` + env (figment). |
+//! | `descriptor` | `ModelDescriptor` and friends — the single source of truth about every registered model. Populated by `#[model]` via `inventory::submit!`. |
+//! | `error`      | `DjogiError` — the one error type returned by every `Model` method. |
+//! | `model`      | The `Model` trait the macro implements for every user struct. Defined in Phase 1 Task 2. |
+//! | `raw`        | `djogi::raw::*` escape hatches for when `QuerySet` is too limiting. Fully implemented in Phase 1 Task 11. |
+//! | `types`      | `DateTime`, `Date`, and re-exports of `HeerId`/`RanjId` — the canonical types imported via `prelude`. |
+//!
+//! # Recommended usage
+//!
+//! ```ignore
+//! use djogi::prelude::*;
+//!
+//! #[model(table = "posts")]
+//! struct Post {
+//!     title: String,
+//!     body: String,
+//! }
+//! ```
+//!
+//! `prelude::*` brings in the `#[model]` attribute macro, `Model` trait,
+//! canonical types (`DateTime`, `Date`, `HeerId`, `RanjId`), and the
+//! `DjogiError` enum — everything a model definition needs.
 
 pub mod config;
+pub mod descriptor;
+pub mod error;
+pub mod model;
+pub mod raw;
+pub mod types;
 
-pub use djogi_macros::*;
+pub use descriptor::{
+    FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
+};
+pub use error::DjogiError;
+pub use types::{Date, DateTime, HeerId, RanjId};
 
 pub mod prelude {
-    pub use crate::*;
+    pub use crate::descriptor::{
+        FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    };
+    pub use crate::error::DjogiError;
+    pub use crate::model::Model;
+    pub use crate::types::{Date, DateTime, HeerId, RanjId};
+    // NOTE: `djogi_macros::model` (the attribute macro) is re-exported here
+    // starting in Task 3 — Task 1 does not yet register the macro.
 }
