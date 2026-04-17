@@ -65,8 +65,25 @@
 //! - `save` sets all user fields plus `updated_at = now()`. Only user fields
 //!   are written — `id` and `created_at` are immutable after creation.
 //! - `delete` consumes `self` to prevent accidental use of a stale handle.
-//! - `save` and `refresh_from_db` take `&self` but use `async move`, so they
-//!   clone all required field values before entering the async block.
+//! - `save` and `refresh_from_db` take `&self` and borrow `self` directly
+//!   across the async block — Rust 2024 RPITIT captures `&self`'s lifetime
+//!   into the returned future, so no clone-capture is needed. `Model: Send
+//!   + Sync` → `&Self: Send`, which keeps the returned future Send-bound.
+//!
+//! # `pk = "none"` special case
+//!
+//! Models with `#[model(pk = "none")]` have no framework-injected `id` field
+//! and declare their own primary key (possibly composite). Phase 1 does NOT
+//! emit `impl Model for T` for these — the `Model` trait's `type Pk` requires
+//! `sqlx::Encode<'q, Postgres>`, which `()` does not implement, and choosing
+//! any other dummy type would lie about the model's actual key shape. Task 8
+//! adds a composite-PK-aware `impl Model` that satisfies the trait correctly.
+//!
+//! Everything else (struct injection, `Default` impl, `FromRow`, descriptor
+//! registration, Fields/Filter stubs) is still emitted for pk=none models,
+//! so users can serialize, use struct-update syntax, and iterate descriptors.
+//! They just can't call `::create`, `::get`, `.save()`, `.delete()`, or
+//! `.refresh_from_db()` until Task 8.
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -84,24 +101,26 @@ pub fn expand(
     model_attrs: &ModelAttrs,
     _field_attrs: &[FieldAttrs],
 ) -> TokenStream {
+    // pk = "none" skips Model impl in Phase 1 — Task 8 adds a composite-PK-
+    // aware version. The other macro outputs (struct, Default, FromRow,
+    // descriptor, Fields/Filter stubs) are still emitted by other modules.
+    if matches!(model_attrs.pk, PkStrategy::None) {
+        return TokenStream::new();
+    }
+
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
     let table = &model_attrs.table;
 
     // -------------------------------------------------------------------------
     // Associated Pk type and pk_value() body — vary by PK strategy.
+    // (pk = "none" is handled by the early return above.)
     // -------------------------------------------------------------------------
     let (pk_type_tokens, pk_value_body) = match model_attrs.pk {
         PkStrategy::HeerId => (quote! { ::djogi::types::HeerId }, quote! { &self.id }),
         PkStrategy::RanjId => (quote! { ::uuid::Uuid }, quote! { &self.id }),
         PkStrategy::Serial => (quote! { i32 }, quote! { &self.id }),
-        PkStrategy::None => (
-            quote! { () },
-            quote! {
-                static UNIT: () = ();
-                &UNIT
-            },
-        ),
+        PkStrategy::None => unreachable!("handled by early return"),
     };
 
     // -------------------------------------------------------------------------
@@ -109,10 +128,8 @@ pub fn expand(
     // For HeerId/RanjId/Serial: id + created_at + updated_at = 3 to skip.
     // For None: created_at + updated_at = 2 to skip.
     // -------------------------------------------------------------------------
-    let n_framework = match model_attrs.pk {
-        PkStrategy::None => 2,
-        _ => 3,
-    };
+    // pk != "none" always injects 3 framework fields (id, created_at, updated_at).
+    let n_framework = 3;
     let user_fields: Vec<_> = struct_item
         .fields
         .iter()
@@ -194,7 +211,7 @@ pub fn expand(
         PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
         PkStrategy::RanjId => quote! { .bind(self.id) },
         PkStrategy::Serial => quote! { .bind(self.id) },
-        PkStrategy::None => quote! { .bind(()) },
+        PkStrategy::None => unreachable!("handled by early return"),
     };
 
     // -------------------------------------------------------------------------
@@ -206,7 +223,7 @@ pub fn expand(
         PkStrategy::HeerId => quote! { .bind(id.as_i64()) },
         PkStrategy::RanjId => quote! { .bind(id) },
         PkStrategy::Serial => quote! { .bind(id) },
-        PkStrategy::None => quote! { .bind(()) },
+        PkStrategy::None => unreachable!("handled by early return"),
     };
 
     // -------------------------------------------------------------------------
@@ -217,7 +234,7 @@ pub fn expand(
         PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
         PkStrategy::RanjId => quote! { .bind(self.id) },
         PkStrategy::Serial => quote! { .bind(self.id) },
-        PkStrategy::None => quote! { .bind(()) },
+        PkStrategy::None => unreachable!("handled by early return"),
     };
 
     // -------------------------------------------------------------------------
@@ -229,7 +246,7 @@ pub fn expand(
         PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
         PkStrategy::RanjId => quote! { .bind(self.id) },
         PkStrategy::Serial => quote! { .bind(self.id) },
-        PkStrategy::None => quote! { .bind(()) },
+        PkStrategy::None => unreachable!("handled by early return"),
     };
 
     // -------------------------------------------------------------------------
@@ -242,6 +259,74 @@ pub fn expand(
                 .into_iter()
                 .find(|d| d.table_name == #table)
                 .expect("ModelDescriptor not registered — did #[model] run?")
+        }
+    };
+
+    // -------------------------------------------------------------------------
+    // Per-method async bodies.
+    // -------------------------------------------------------------------------
+    let get_body = quote! {
+        async move {
+            let result = ::djogi::__private::sqlx::query_as::<
+                ::djogi::__private::sqlx::Postgres,
+                Self,
+            >(#get_sql)
+            #id_bind_for_get
+            .fetch_optional(executor)
+            .await?;
+
+            result.ok_or(::djogi::DjogiError::NotFound)
+        }
+    };
+
+    let create_body = quote! {
+        async move {
+            let row = ::djogi::__private::sqlx::query_as::<
+                ::djogi::__private::sqlx::Postgres,
+                Self,
+            >(#insert_sql)
+            #(#create_binds)*
+            .fetch_one(executor)
+            .await?;
+
+            ::std::result::Result::Ok(row)
+        }
+    };
+
+    let save_body = quote! {
+        async move {
+            ::djogi::__private::sqlx::query(#save_sql)
+            #(#save_field_binds)*
+            #save_id_bind
+            .execute(executor)
+            .await?;
+
+            ::std::result::Result::Ok(())
+        }
+    };
+
+    let delete_body = quote! {
+        async move {
+            ::djogi::__private::sqlx::query(#delete_sql)
+            #owned_pk_bind
+            .execute(executor)
+            .await?;
+
+            ::std::result::Result::Ok(())
+        }
+    };
+
+    let refresh_body = quote! {
+        async move {
+            let result = ::djogi::__private::sqlx::query_as::<
+                ::djogi::__private::sqlx::Postgres,
+                Self,
+            >(#get_sql)
+            #refresh_id_bind
+            .fetch_optional(executor)
+            .await?;
+
+            result.ok_or(::djogi::DjogiError::NotFound)
         }
     };
 
@@ -271,17 +356,7 @@ pub fn expand(
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
             > + Send {
-                async move {
-                    let result = ::djogi::__private::sqlx::query_as::<
-                        ::djogi::__private::sqlx::Postgres,
-                        Self,
-                    >(#get_sql)
-                    #id_bind_for_get
-                    .fetch_optional(executor)
-                    .await?;
-
-                    result.ok_or(::djogi::DjogiError::NotFound)
-                }
+                #get_body
             }
 
             fn create<'a>(
@@ -293,17 +368,7 @@ pub fn expand(
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
             > + Send {
-                async move {
-                    let row = ::djogi::__private::sqlx::query_as::<
-                        ::djogi::__private::sqlx::Postgres,
-                        Self,
-                    >(#insert_sql)
-                    #(#create_binds)*
-                    .fetch_one(executor)
-                    .await?;
-
-                    ::std::result::Result::Ok(row)
-                }
+                #create_body
             }
 
             fn save<'a>(
@@ -315,19 +380,12 @@ pub fn expand(
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,
             > + Send {
-                // RPITIT captures `&self`'s lifetime into the returned future's
-                // hidden lifetime, so the async block can borrow `&self.#f` across
-                // `.await` without cloning. `Model: Send + Sync` makes `&Self:
-                // Send` so the returned future satisfies `+ Send`.
-                async move {
-                    ::djogi::__private::sqlx::query(#save_sql)
-                    #(#save_field_binds)*
-                    #save_id_bind
-                    .execute(executor)
-                    .await?;
-
-                    ::std::result::Result::Ok(())
-                }
+                // For pk != "none", RPITIT captures `&self`'s lifetime into the
+                // returned future's hidden lifetime, so the async block can
+                // borrow `&self.#f` across `.await` without cloning.
+                // `Model: Send + Sync` makes `&Self: Send` so the returned
+                // future satisfies `+ Send`.
+                #save_body
             }
 
             fn delete<'a>(
@@ -339,14 +397,7 @@ pub fn expand(
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,
             > + Send {
-                async move {
-                    ::djogi::__private::sqlx::query(#delete_sql)
-                    #owned_pk_bind
-                    .execute(executor)
-                    .await?;
-
-                    ::std::result::Result::Ok(())
-                }
+                #delete_body
             }
 
             fn refresh_from_db<'a>(
@@ -358,20 +409,7 @@ pub fn expand(
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
             > + Send {
-                // RPITIT captures `&self`'s lifetime into the returned future,
-                // so binding `self.id` directly in the async block works
-                // without a pre-capture clone.
-                async move {
-                    let result = ::djogi::__private::sqlx::query_as::<
-                        ::djogi::__private::sqlx::Postgres,
-                        Self,
-                    >(#get_sql)
-                    #refresh_id_bind
-                    .fetch_optional(executor)
-                    .await?;
-
-                    result.ok_or(::djogi::DjogiError::NotFound)
-                }
+                #refresh_body
             }
         }
     }
