@@ -80,6 +80,168 @@ async fn from_row_deserializes_correctly(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// CRUD tests (Task 7)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn create_returns_full_row_with_generated_id(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    let post = Post::create(
+        &pool,
+        Post {
+            title: "My First Post".into(),
+            body: "Hello, Djogi!".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    assert!(
+        post.id.as_i64() > 0,
+        "id must be DB-generated positive HeerId"
+    );
+    assert_eq!(post.title, "My First Post");
+    assert_eq!(post.body, "Hello, Djogi!");
+    assert!(!post.published);
+}
+
+#[sqlx::test]
+async fn get_returns_correct_row(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    let created = Post::create(
+        &pool,
+        Post {
+            title: "Fetchable Post".into(),
+            body: "Body text".into(),
+            published: true,
+            view_count: 42,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    let fetched = Post::get(&pool, created.id)
+        .await
+        .expect("get should succeed");
+
+    assert_eq!(fetched.id, created.id);
+    assert_eq!(fetched.title, "Fetchable Post");
+    assert_eq!(fetched.view_count, 42);
+    assert!(fetched.published);
+}
+
+#[sqlx::test]
+async fn get_returns_not_found_for_missing_id(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    let missing_id =
+        ::heeranjid::HeerId::from_i64(999_999_999).expect("999_999_999 is a valid HeerId");
+    let result = Post::get(&pool, missing_id).await;
+
+    assert!(
+        matches!(result, Err(DjogiError::NotFound)),
+        "expected NotFound, got {:?}",
+        result
+    );
+}
+
+#[sqlx::test]
+async fn save_updates_fields(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    let mut post = Post::create(
+        &pool,
+        Post {
+            title: "Original Title".into(),
+            body: "Original body".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    post.title = "Updated Title".into();
+    post.published = true;
+    post.save(&pool).await.expect("save should succeed");
+
+    let reloaded = Post::get(&pool, post.id).await.expect("get should succeed");
+    assert_eq!(reloaded.title, "Updated Title");
+    assert!(reloaded.published);
+    assert_eq!(reloaded.body, "Original body");
+}
+
+#[sqlx::test]
+async fn delete_removes_row(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    let post = Post::create(
+        &pool,
+        Post {
+            title: "To Be Deleted".into(),
+            body: "Gone soon".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    let id = post.id;
+    post.delete(&pool).await.expect("delete should succeed");
+
+    let result = Post::get(&pool, id).await;
+    assert!(
+        matches!(result, Err(DjogiError::NotFound)),
+        "expected NotFound after delete, got {:?}",
+        result
+    );
+}
+
+#[sqlx::test]
+async fn refresh_from_db_returns_current_state(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    let post = Post::create(
+        &pool,
+        Post {
+            title: "Before Refresh".into(),
+            body: "Stale body".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    // Simulate an out-of-band update (e.g. from another process).
+    sqlx::query("UPDATE posts SET title = $1 WHERE id = $2")
+        .bind("After Refresh")
+        .bind(post.id.as_i64())
+        .execute(&pool)
+        .await
+        .expect("out-of-band update should succeed");
+
+    // Our in-memory `post` is stale — refresh_from_db should return the new state.
+    let refreshed = post
+        .refresh_from_db(&pool)
+        .await
+        .expect("refresh_from_db should succeed");
+
+    assert_eq!(refreshed.title, "After Refresh");
+    assert_eq!(refreshed.body, "Stale body");
+}
+
+// ---------------------------------------------------------------------------
 // ModelDescriptor registration test (Task 6)
 // ---------------------------------------------------------------------------
 
