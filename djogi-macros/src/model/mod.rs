@@ -35,12 +35,13 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .map(attrs::FieldAttrs::parse)
         .collect::<syn::Result<_>>()?;
 
-    // 1. Inject framework fields (`id`, `created_at`, `updated_at`) + Default impl.
-    //    Task 4 wires this up — currently returns (empty, empty).
-    let (expanded_struct, default_impl) = inject::expand(&mut struct_item, &model_attrs);
+    // 1. Inject framework fields (`id`, `created_at`, `updated_at`) and emit the
+    //    `Default` impl — both are concatenated into a single TokenStream by
+    //    `inject::expand` (implemented in Task 4).
+    let expanded = inject::expand(&mut struct_item, &model_attrs);
 
     // 2. FromRow impl — Task 5 wires this up.
-    let from_row = from_row::expand(&struct_item, &model_attrs);
+    let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
     // 3. Model trait impl (CRUD) — Tasks 7–9 wire this up.
     let model_impl = crud::expand(&struct_item, &model_attrs, &field_attrs);
@@ -52,8 +53,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let stubs = stubs::expand(&struct_item);
 
     Ok(quote::quote! {
-        #expanded_struct
-        #default_impl
+        #expanded
         #from_row
         #model_impl
         #descriptor

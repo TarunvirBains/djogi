@@ -4,9 +4,13 @@
 use proc_macro2::TokenStream;
 use syn::ItemStruct;
 
-use super::attrs::ModelAttrs;
+use super::attrs::{FieldAttrs, ModelAttrs};
 
 /// Stub — returns an empty token stream. Task 5 replaces this.
-pub fn expand(_struct_item: &ItemStruct, _model_attrs: &ModelAttrs) -> TokenStream {
+pub fn expand(
+    _struct_item: &ItemStruct,
+    _model_attrs: &ModelAttrs,
+    _field_attrs: &[FieldAttrs],
+) -> TokenStream {
     quote::quote! {}
 }

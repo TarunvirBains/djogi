@@ -18,3 +18,4 @@ darling.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true
+djogi.workspace = true
