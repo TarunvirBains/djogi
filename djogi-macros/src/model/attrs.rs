@@ -51,11 +51,19 @@ impl ModelAttrs {
         let mut table: Option<String> = Option::None;
         let mut pk: Option<PkStrategy> = Option::None;
         let mut no_default = false;
+        let mut seen_no_default = false;
 
         for meta in &metas {
             match meta {
                 // Flag-only attribute: `no_default`
                 Meta::Path(path) if path.is_ident("no_default") => {
+                    if seen_no_default {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `no_default` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_no_default = true;
                     no_default = true;
                 }
                 Meta::NameValue(MetaNameValue {

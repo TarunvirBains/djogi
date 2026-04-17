@@ -681,16 +681,126 @@ async fn raw_query_scalar_returns_count(pool: PgPool) {
 async fn raw_execute_runs_without_return(pool: PgPool) {
     setup_posts(&pool).await;
 
+    // sqlx::test provisions a multi-connection pool — `set_heer_node_id(1)`
+    // in setup_posts lands on one connection and doesn't propagate. Wrap the
+    // entire flow in a single transaction so SET + INSERT share one
+    // connection; committing persists the insert. (setup_posts itself will
+    // be fixed in task #18's post-publish cleanup.)
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // Pre-count, so the post-count assertion proves this INSERT specifically
+    // ran, not just that the table has some rows.
+    let before: i64 =
+        ::djogi::raw::query_scalar::<i64, _, _>(&mut *tx, "SELECT COUNT(*) FROM posts", |q| q)
+            .await
+            .unwrap();
+
     ::djogi::raw::execute(
-        &pool,
+        &mut *tx,
         "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
         |q| q.bind("Direct Insert").bind("body").bind(false).bind(0i32),
     )
     .await
     .expect("raw execute should succeed");
 
-    let count: i64 = ::djogi::raw::query_scalar(&pool, "SELECT COUNT(*) FROM posts", |q| q)
+    let after: i64 =
+        ::djogi::raw::query_scalar::<i64, _, _>(&mut *tx, "SELECT COUNT(*) FROM posts", |q| q)
+            .await
+            .unwrap();
+    assert_eq!(after, before + 1, "execute must insert exactly one row");
+    tx.commit().await.unwrap();
+}
+
+#[sqlx::test]
+async fn raw_query_scalar_returns_not_found_for_empty_result(pool: PgPool) {
+    // query_scalar documents that zero rows => DjogiError::NotFound.
+    // Prove that contract with a WHERE clause that can't match.
+    setup_posts(&pool).await;
+
+    let result: Result<i64, ::djogi::DjogiError> = ::djogi::raw::query_scalar(
+        &pool,
+        "SELECT view_count FROM posts WHERE id = $1",
+        |q| q.bind(-1i64), // HeerId column; -1 can't exist
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(::djogi::DjogiError::NotFound)),
+        "zero-row scalar must return DjogiError::NotFound, got: {:?}",
+        result
+    );
+}
+
+#[sqlx::test]
+async fn raw_works_inside_transaction(pool: PgPool) {
+    // The raw API's executor bound accepts &mut *Transaction (deref-reborrow
+    // to &mut PgConnection) in the same way the Model CRUD methods do.
+    // Prove both directions of the transaction boundary:
+    //   (a) commit — raw-execute'd row IS visible after commit
+    //   (b) rollback — raw-execute'd row is NOT visible after rollback
+    // This is stronger than Task 9's analogous test for the Model API
+    // (see Task 12 queued fix for that one's false-positive).
+    setup_posts(&pool).await;
+
+    // --- (a) commit path ---
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut *tx)
         .await
         .unwrap();
-    assert!(count >= 1);
+    let before_commit: i64 =
+        ::djogi::raw::query_scalar::<i64, _, _>(&mut *tx, "SELECT COUNT(*) FROM posts", |q| q)
+            .await
+            .unwrap();
+    ::djogi::raw::execute(
+        &mut *tx,
+        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+        |q| q.bind("Committed Raw").bind("body").bind(true).bind(5i32),
+    )
+    .await
+    .expect("raw execute inside committed txn should succeed");
+    tx.commit().await.unwrap();
+
+    let after_commit: i64 =
+        ::djogi::raw::query_scalar::<i64, _, _>(&pool, "SELECT COUNT(*) FROM posts", |q| q)
+            .await
+            .unwrap();
+    assert_eq!(
+        after_commit,
+        before_commit + 1,
+        "committed raw insert must be visible"
+    );
+
+    // --- (b) rollback path ---
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    ::djogi::raw::execute(
+        &mut *tx,
+        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+        |q| {
+            q.bind("Rolled Back Raw")
+                .bind("body")
+                .bind(false)
+                .bind(0i32)
+        },
+    )
+    .await
+    .expect("raw execute inside rollback txn should succeed");
+    tx.rollback().await.unwrap();
+
+    let after_rollback: i64 =
+        ::djogi::raw::query_scalar::<i64, _, _>(&pool, "SELECT COUNT(*) FROM posts", |q| q)
+            .await
+            .unwrap();
+    assert_eq!(
+        after_rollback, after_commit,
+        "rolled-back raw insert must NOT be visible"
+    );
 }
