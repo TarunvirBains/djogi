@@ -33,11 +33,15 @@ pub enum PkStrategy {
 
 impl ModelAttrs {
     /// Parse `#[model(table = "posts", pk = "heerid")]` from the attribute token stream.
+    ///
+    /// Duplicate keys are rejected with a span-carrying error pointing at the
+    /// second occurrence — last-write-wins silently is a footgun in proc-macro
+    /// UX (users can't see which key won without expanding the macro).
     pub fn parse(attr_tokens: proc_macro2::TokenStream) -> syn::Result<Self> {
         let metas = Punctuated::<Meta, Token![,]>::parse_terminated.parse2(attr_tokens)?;
 
         let mut table: Option<String> = Option::None;
-        let mut pk = PkStrategy::HeerId;
+        let mut pk: Option<PkStrategy> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -50,10 +54,24 @@ impl ModelAttrs {
                     ..
                 }) => {
                     if path.is_ident("table") {
+                        if table.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `table` key in #[model(...)]",
+                            ));
+                        }
                         table = Some(s.value());
                     } else if path.is_ident("pk") {
-                        pk = PkStrategy::from_str(&s.value())
-                            .map_err(|msg| syn::Error::new_spanned(s, msg))?;
+                        if pk.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `pk` key in #[model(...)]",
+                            ));
+                        }
+                        pk = Some(
+                            PkStrategy::from_str(&s.value())
+                                .map_err(|msg| syn::Error::new_spanned(s, msg))?,
+                        );
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
@@ -79,6 +97,7 @@ impl ModelAttrs {
                 "#[model] requires `table = \"...\"`",
             )
         })?;
+        let pk = pk.unwrap_or(PkStrategy::HeerId);
 
         Ok(ModelAttrs { table, pk })
     }
@@ -112,8 +131,14 @@ pub struct FieldAttrs {
 impl FieldAttrs {
     /// Parse `#[field(...)]` attributes from a struct field.
     /// Returns `Default::default()` if no `#[field]` annotation is present.
+    ///
+    /// Duplicate keys (including repeats across multiple `#[field(...)]`
+    /// attributes on the same field) are rejected with a span-carrying error
+    /// at the second occurrence — last-write-wins silently is a footgun.
     pub fn parse(field: &Field) -> syn::Result<Self> {
         let mut attrs = FieldAttrs::default();
+        let mut seen_unique = false;
+        let mut seen_index = false;
 
         for attr in &field.attrs {
             if !attr.path().is_ident("field") {
@@ -122,8 +147,26 @@ impl FieldAttrs {
             let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
             for meta in &metas {
                 match meta {
-                    Meta::Path(path) if path.is_ident("unique") => attrs.unique = true,
-                    Meta::Path(path) if path.is_ident("index") => attrs.index = true,
+                    Meta::Path(path) if path.is_ident("unique") => {
+                        if seen_unique {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `unique` flag in #[field(...)]",
+                            ));
+                        }
+                        seen_unique = true;
+                        attrs.unique = true;
+                    }
+                    Meta::Path(path) if path.is_ident("index") => {
+                        if seen_index {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `index` flag in #[field(...)]",
+                            ));
+                        }
+                        seen_index = true;
+                        attrs.index = true;
+                    }
                     Meta::NameValue(MetaNameValue {
                         path,
                         value:
@@ -132,6 +175,12 @@ impl FieldAttrs {
                             }),
                         ..
                     }) if path.is_ident("max_length") => {
+                        if attrs.max_length.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `max_length` key in #[field(...)]",
+                            ));
+                        }
                         attrs.max_length = Some(n.base10_parse()?);
                     }
                     Meta::NameValue(MetaNameValue {
@@ -142,6 +191,12 @@ impl FieldAttrs {
                             }),
                         ..
                     }) if path.is_ident("renamed_from") => {
+                        if attrs.renamed_from.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `renamed_from` key in #[field(...)]",
+                            ));
+                        }
                         attrs.renamed_from = Some(s.value());
                     }
                     Meta::NameValue(MetaNameValue {
@@ -152,6 +207,12 @@ impl FieldAttrs {
                             }),
                         ..
                     }) if path.is_ident("on_delete") => {
+                        if attrs.on_delete.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `on_delete` key in #[field(...)]",
+                            ));
+                        }
                         let val = s.value();
                         let valid = [
                             "cascade",
@@ -217,20 +278,39 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
 
 /// Strip `Option<T>` → returns the inner type and `nullable = true`.
 ///
-/// Uses AST inspection rather than string manipulation, so it correctly handles
-/// `std::option::Option<T>`, `core::option::Option<T>`, and nested generics.
+/// Only recognizes the prelude's `Option` — specifically the path forms
+/// `Option<T>`, `std::option::Option<T>`, and `core::option::Option<T>`. A user
+/// type that happens to be named `Option` in their own module (e.g.
+/// `my_crate::Option<T>`) is left unchanged, because treating it as nullable
+/// silently would produce wrong migrations. This matches how users actually
+/// read the type: `Option<T>` in the prelude means "SQL NULL allowed"; anything
+/// else is a user type that must map via `rust_type_to_sql`.
+///
 /// Non-`Option` types are returned unchanged with `nullable = false`.
 ///
 /// Called by `inject::expand` and `descriptor::expand` starting in Tasks 4–6.
 #[allow(dead_code)]
 pub fn unwrap_option(ty: &syn::Type) -> (syn::Type, bool) {
     if let syn::Type::Path(syn::TypePath { path, .. }) = ty
+        && is_prelude_option_path(path)
         && let Some(last) = path.segments.last()
-        && last.ident == "Option"
         && let syn::PathArguments::AngleBracketed(args) = &last.arguments
         && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
     {
         return (inner.clone(), true);
     }
     (ty.clone(), false)
+}
+
+/// True if `path` is one of the three canonical prelude `Option` forms:
+/// bare `Option`, `std::option::Option`, or `core::option::Option`.
+fn is_prelude_option_path(path: &syn::Path) -> bool {
+    let segs: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    match segs.as_slice() {
+        [sole] => sole == "Option",
+        [root, module, ty] => {
+            (root == "std" || root == "core") && module == "option" && ty == "Option"
+        }
+        _ => false,
+    }
 }
