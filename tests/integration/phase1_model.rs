@@ -596,6 +596,7 @@ async fn rich_field_types_roundtrip(pool: PgPool) {
 
     assert_eq!(product.name, "Djogi Framework");
     assert_eq!(product.price, dec!(49.99));
+    assert!(product.in_stock, "bool field must round-trip on create");
     assert_eq!(
         product.tags,
         vec!["rust".to_string(), "framework".to_string()]
@@ -611,6 +612,7 @@ async fn rich_field_types_roundtrip(pool: PgPool) {
         .await
         .expect("get should find product");
     assert_eq!(fetched.price, dec!(49.99));
+    assert!(fetched.in_stock, "bool field must round-trip on FromRow");
     assert_eq!(
         fetched.launch_date,
         ::time::Date::from_calendar_date(2026, ::time::Month::April, 15).unwrap()
