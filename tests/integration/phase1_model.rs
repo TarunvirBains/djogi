@@ -1,8 +1,5 @@
 //! Phase 1 integration tests. Uses throwaway test models — not framework types.
 
-// Suppress result_large_err: figment::Error is large but external.
-#![allow(clippy::result_large_err)]
-
 use djogi::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -25,15 +22,35 @@ pub struct Post {
 // ---------------------------------------------------------------------------
 
 /// Install HeeRanjId schema + seed node 1 + create the posts table.
+///
+/// Uses `ALTER DATABASE ... SET heer.node_id = '1'` to persist the node ID
+/// at the database level so every connection in the sqlx::test pool inherits
+/// it. A plain session-level `SELECT set_heer_node_id(1)` on `&pool` only
+/// lands on whichever connection the pool happens to hand out — subsequent
+/// pool-level queries may hit a different connection and fail with
+/// "heer.node_id is not set for this session". ALTER DATABASE is idempotent
+/// at the DB level and inherited by all subsequent connections.
 async fn setup_posts(pool: &PgPool) {
     heeranjid_sqlx::install_schema(pool).await.unwrap();
     heeranjid_sqlx::seed_default_node(pool).await.unwrap();
-    // Set the session-level node ID so `generate_id()` (no-arg form) can
-    // resolve `current_heer_node_id()` when executing DEFAULT column values.
+
+    let db_name: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!(
+        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    // Also SET the current session to cover any pool connection that was
+    // already open before the ALTER DATABASE took effect.
     sqlx::query("SELECT set_heer_node_id(1)")
         .execute(pool)
         .await
         .unwrap();
+
     sqlx::query(
         "CREATE TABLE posts (
             id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
@@ -305,9 +322,19 @@ pub struct Event {
 async fn setup_events(pool: &PgPool) {
     heeranjid_sqlx::install_schema(pool).await.unwrap_or(());
     heeranjid_sqlx::seed_default_node(pool).await.unwrap_or(());
-    // generate_ranjid() uses current_heer_ranj_node_id() — must set the ranj
-    // session node separately from the heer node. Same pool-vs-connection
-    // flakiness as setup_posts (queued for post-publish cleanup in task #18).
+    // generate_ranjid() uses current_heer_ranj_node_id() — a SEPARATE session
+    // variable from heer.node_id. Persist at DB level so every pool
+    // connection inherits it (same rationale as setup_posts).
+    let db_name: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!(
+        "ALTER DATABASE \"{db_name}\" SET heer.ranj_node_id = '1'"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
     sqlx::query("SELECT set_heer_ranj_node_id(1)")
         .execute(pool)
         .await
@@ -409,35 +436,63 @@ async fn create_with_id_is_idempotent(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn crud_works_inside_transaction(pool: PgPool) {
+async fn crud_respects_transaction_boundary(pool: PgPool) {
+    // Proves BOTH directions of the transaction boundary:
+    //   (a) commit path  — Post::create'd row IS visible after commit
+    //   (b) rollback path — Post::create'd row is NOT visible after rollback
+    //
+    // Earlier revision only tested (b) which is a false positive: an
+    // uncommitted transaction's row wouldn't be visible to the pool's other
+    // connections REGARDLESS of whether the txn rolled back or just dropped.
+    // We need both branches to actually prove the boundary works.
     setup_posts(&pool).await;
 
-    let mut txn = pool.begin().await.unwrap();
-
-    let post = Post::create(
-        &mut *txn,
+    // (a) commit — insert + save inside txn, commit, row must be visible
+    let mut tx_commit = pool.begin().await.unwrap();
+    let committed = Post::create(
+        &mut *tx_commit,
         Post {
-            title: "Inside Transaction".into(),
-            body: "transactional".into(),
+            title: "Committed".into(),
+            body: "persists".into(),
+            published: true,
+            view_count: 1,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create inside commit txn should succeed");
+    tx_commit.commit().await.unwrap();
+
+    let fetched = Post::get(&pool, committed.id)
+        .await
+        .expect("committed row must be visible");
+    assert_eq!(fetched.title, "Committed");
+
+    // (b) rollback — insert + save inside txn, rollback, row must NOT be visible
+    let mut tx_rollback = pool.begin().await.unwrap();
+    let rolled_back = Post::create(
+        &mut *tx_rollback,
+        Post {
+            title: "Rolled Back".into(),
+            body: "does not persist".into(),
             published: false,
             view_count: 0,
             ..Default::default()
         },
     )
     .await
-    .expect("create inside transaction should succeed");
-
-    post.save(&mut *txn)
+    .expect("create inside rollback txn should succeed");
+    rolled_back
+        .save(&mut *tx_rollback)
         .await
-        .expect("save inside transaction should succeed");
+        .expect("save inside rollback txn should succeed");
+    tx_rollback.rollback().await.unwrap();
 
-    // Rollback — nothing should be committed
-    txn.rollback().await.unwrap();
-
-    let result = Post::get(&pool, post.id).await;
+    let result = Post::get(&pool, rolled_back.id).await;
     assert!(
-        matches!(result, Err(::djogi::DjogiError::NotFound)),
-        "rolled-back row should not be visible"
+        matches!(result, Err(DjogiError::NotFound)),
+        "rolled-back row must NOT be visible, got: {:?}",
+        result
     );
 }
 
