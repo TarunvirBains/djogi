@@ -1,7 +1,19 @@
 //! The `Model` trait — the contract every `#[model]` struct satisfies.
 //!
-//! All CRUD methods are generic over `sqlx::Executor` — the same call
-//! works with `&pool` (auto-connection) or `&mut txn` (transaction).
+//! All CRUD methods are generic over `sqlx::Executor`, so the same call site
+//! works against a pool (auto-connection) or inside a transaction. In sqlx
+//! 0.8 a `Transaction` is *not* itself an `Executor`; you pass a
+//! deref-reborrowed `&mut *tx` (which resolves to `&mut PgConnection`):
+//!
+//! ```ignore
+//! // Auto-connect from the pool:
+//! let post = Post::create(&pool, post).await?;
+//!
+//! // Inside a transaction:
+//! let mut tx = pool.begin().await?;
+//! let post = Post::create(&mut *tx, post).await?;
+//! tx.commit().await?;
+//! ```
 //!
 //! ## Executor lifetime parameter
 //!
@@ -18,6 +30,15 @@
 //! the executor parameter is redundant and omitted. The `Future` return types
 //! carry `+ Send` explicitly so callers can `.await` them across task
 //! boundaries.
+//!
+//! ## Single-value `Pk`
+//!
+//! The associated `Pk` type is a single SQL-bindable value (`Encode + Type`).
+//! Composite primary keys (`#[model(pk = ["field_a", "field_b"])]`) are
+//! declared in `PkType::Composite` for the descriptor but are deferred to
+//! Phase 2, where they require a different `get()` signature backed by the
+//! QuerySet filter API. Phase 1 emits a "not yet supported" compile error
+//! if a user sets a composite PK.
 
 use crate::DjogiError;
 use crate::descriptor::ModelDescriptor;
