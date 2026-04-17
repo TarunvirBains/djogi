@@ -54,7 +54,24 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # cargo-deny only runs when dependencies actually change. The license
+      # / advisory check is deterministic given the lockfile, so re-running
+      # it on every PR that touches only Rust sources or docs is waste.
+      # Path filter scopes execution to PRs that modify a Cargo.toml /
+      # Cargo.lock / deny.toml — i.e. where the policy could change.
+      - name: Detect dependency changes
+        id: dep-changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            deps:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '**/Cargo.toml'
+              - 'deny.toml'
+
       - name: cargo-deny (license + advisory check)
+        if: steps.dep-changes.outputs.deps == 'true'
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
