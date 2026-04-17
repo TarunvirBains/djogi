@@ -351,6 +351,97 @@ async fn ranjid_pk_create_and_get(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// create_with_id + transaction tests (Task 9)
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn create_with_id_is_idempotent(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    // Simulate form pre-generation: allocate ID before user submits.
+    // generate_heerid(executor, node_id) — node_id 1 is the seeded default.
+    let pre_generated_id = heeranjid_sqlx::generate_heerid(&pool, 1)
+        .await
+        .expect("generate_heerid should succeed");
+
+    let post = Post::create_with_id(
+        &pool,
+        pre_generated_id,
+        Post {
+            title: "Pre-generated".into(),
+            body: "Idempotent insert".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create_with_id should succeed");
+
+    assert_eq!(
+        post.id, pre_generated_id,
+        "returned id must match pre-generated id"
+    );
+
+    // Second call with same id: ON CONFLICT DO NOTHING — should not error.
+    // Phase 1 limitation: when the conflict fires, RETURNING * returns no rows,
+    // and the method falls back to returning the caller-supplied value with the
+    // given id (not the original row's data). Full idempotent fetch is deferred
+    // to a later phase — see the DONE_WITH_CONCERNS note in crud.rs.
+    let second = Post::create_with_id(
+        &pool,
+        pre_generated_id,
+        Post {
+            title: "Different title".into(),
+            body: "Different body".into(),
+            published: true,
+            view_count: 99,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("idempotent re-insert should not error");
+
+    assert_eq!(
+        second.id, pre_generated_id,
+        "id must match pre-generated id on conflict"
+    );
+}
+
+#[sqlx::test]
+async fn crud_works_inside_transaction(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    let mut txn = pool.begin().await.unwrap();
+
+    let post = Post::create(
+        &mut *txn,
+        Post {
+            title: "Inside Transaction".into(),
+            body: "transactional".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create inside transaction should succeed");
+
+    post.save(&mut *txn)
+        .await
+        .expect("save inside transaction should succeed");
+
+    // Rollback — nothing should be committed
+    txn.rollback().await.unwrap();
+
+    let result = Post::get(&pool, post.id).await;
+    assert!(
+        matches!(result, Err(::djogi::DjogiError::NotFound)),
+        "rolled-back row should not be visible"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // ModelDescriptor registration test (Task 6)
 // ---------------------------------------------------------------------------
 

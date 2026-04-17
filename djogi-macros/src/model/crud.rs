@@ -331,9 +331,92 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // `create_with_id` — HeerId-only inherent method (form pre-generation).
+    //
+    // Emitted as a separate `impl` block only for HeerId models.  It is an
+    // *inherent* method (not a trait method), so `pub async fn` is correct —
+    // no `impl Future + Send` RPITIT wrapper is needed; the compiler infers
+    // `+ Send` from the executor's bound.
+    //
+    // SQL: INSERT INTO {table} (id, {user_cols}) VALUES ($1, $2..$n+1)
+    //      ON CONFLICT (id) DO NOTHING RETURNING *
+    //
+    // DONE_WITH_CONCERNS (Phase 1 limitation): when the conflict fires,
+    // `ON CONFLICT DO NOTHING` suppresses the INSERT and RETURNING * returns
+    // no rows.  Rather than issue a follow-up SELECT (which would consume the
+    // executor, making transaction callers awkward), the method returns the
+    // caller-supplied `value` with `id` overwritten to the pre-generated id.
+    // The id is guaranteed correct; other fields reflect the *second* caller's
+    // input rather than the first-inserted row.  A later phase will add a
+    // `get_or_create` helper that does a proper fetch-on-conflict under an
+    // explicit transaction boundary.
+    // -------------------------------------------------------------------------
+    let create_with_id_impl = if matches!(model_attrs.pk, PkStrategy::HeerId) {
+        let insert_with_id_sql = if n_user == 0 {
+            format!("INSERT INTO {table} (id) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING *")
+        } else {
+            let cols: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
+            let col_list = cols.join(", ");
+            // id binds to $1; user fields shift by 1 → $2..$n_user+1
+            let vals: Vec<String> = (2..=n_user + 1).map(|n| format!("${n}")).collect();
+            let val_list = vals.join(", ");
+            format!(
+                "INSERT INTO {table} (id, {col_list}) VALUES ($1, {val_list}) ON CONFLICT (id) DO NOTHING RETURNING *"
+            )
+        };
+
+        quote! {
+            impl #impl_generics #name #ty_generics #where_clause {
+                /// Insert a row using a pre-generated `HeerId`.
+                ///
+                /// Intended for the **form pre-generation pattern**: the application
+                /// allocates an ID before the user submits a form (e.g. to embed it in
+                /// a URL), then passes that same ID on submit.  The underlying SQL uses
+                /// `ON CONFLICT (id) DO NOTHING` so that duplicate submits do not
+                /// produce a constraint-violation error.
+                ///
+                /// **Phase 1 limitation** — on conflict (the row already exists) the
+                /// `RETURNING *` clause returns no rows and this method falls back to
+                /// returning the caller-supplied `value` with its `id` field set to the
+                /// pre-generated id.  The id is correct; other fields reflect the
+                /// second caller's input rather than the originally-inserted data.  A
+                /// later phase will add a proper `get_or_create` helper that fetches the
+                /// existing row when a conflict fires.
+                pub async fn create_with_id<'a>(
+                    executor: impl ::djogi::__private::sqlx::Executor<
+                        'a,
+                        Database = ::djogi::__private::sqlx::Postgres,
+                    >,
+                    id: ::djogi::types::HeerId,
+                    value: Self,
+                ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+                    let maybe_row = ::djogi::__private::sqlx::query_as::<
+                        ::djogi::__private::sqlx::Postgres,
+                        Self,
+                    >(#insert_with_id_sql)
+                        .bind(id.as_i64())
+                        #(#create_binds)*
+                        .fetch_optional(executor)
+                        .await?;
+
+                    ::std::result::Result::Ok(maybe_row.unwrap_or_else(|| {
+                        let mut v = value;
+                        v.id = id;
+                        v
+                    }))
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // -------------------------------------------------------------------------
     // Assemble the full impl block.
     // -------------------------------------------------------------------------
     quote! {
+        #create_with_id_impl
+
         impl #impl_generics ::djogi::model::Model for #name #ty_generics #where_clause {
             type Pk = #pk_type_tokens;
 
