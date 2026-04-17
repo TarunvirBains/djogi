@@ -17,9 +17,20 @@ pub enum Condition {
     /// emits nothing for `True`, so a QuerySet with no filters produces a
     /// `SELECT ...` without a `WHERE` clause.
     True,
+
     Leaf(Leaf),
+
+    /// SQL `(a AND b AND c)`. An empty `And(vec![])` is the vacuous-truth
+    /// identity — Task 6's emitter renders it as `TRUE`. `and()` never
+    /// constructs an empty vector from its own inputs, but public API
+    /// consumers technically can; the invariant is "empty = TRUE".
     And(Vec<Condition>),
+
+    /// SQL `(a OR b OR c)`. An empty `Or(vec![])` is the vacuous-falsehood
+    /// identity — Task 6's emitter renders it as `FALSE`. `or()` never
+    /// constructs an empty vector from its own inputs.
     Or(Vec<Condition>),
+
     Not(Box<Condition>),
 }
 
@@ -167,6 +178,16 @@ pub enum FilterValue {
     RanjId(RanjId),
     Null,
     /// For IN (...) / NOT IN (...) list lookups.
+    ///
+    /// # Invariants (enforced by construction, not the enum itself)
+    ///
+    /// - Elements must be SQL-bindable **scalars** — never nested `List` or
+    ///   `Pair`. The typed `FieldRef<M, V>::in_list(Vec<V>)` API prevents nesting
+    ///   by construction; manual `FilterValue::List` construction that violates
+    ///   this invariant is a framework bug that Task 6's SQL emitter panics on
+    ///   (not silently miscompiles).
+    /// - All elements should be the same `FilterValue` discriminant (mixed-type
+    ///   lists are meaningless for SQL `IN`). The typed API enforces this.
     List(Vec<FilterValue>),
     /// BETWEEN a AND b payload (two bound values).
     Pair(Box<FilterValue>, Box<FilterValue>),
@@ -217,5 +238,54 @@ mod tests {
         } else {
             panic!("expected Or");
         }
+    }
+
+    #[test]
+    fn and_flattens_three_levels_of_nesting() {
+        let a = Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true)));
+        let b = Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false)));
+        let c = Condition::Leaf(Leaf::eq_raw("c", FilterValue::Bool(true)));
+        let d = Condition::Leaf(Leaf::eq_raw("d", FilterValue::Bool(false)));
+        // ((a AND b) AND c) AND d → 4-leaf flat And
+        let combined = Condition::and(Condition::and(Condition::and(a, b), c), d);
+        if let Condition::And(parts) = combined {
+            assert_eq!(parts.len(), 4, "3-deep nesting should flatten to 4 leaves");
+        } else {
+            panic!("expected And, got {combined:?}");
+        }
+    }
+
+    #[test]
+    fn and_preserves_order_with_rhs_container() {
+        // (leaf_x AND (And[a, b])) should yield [leaf_x, a, b] in order
+        let x = Condition::Leaf(Leaf::eq_raw("x", FilterValue::Bool(true)));
+        let a = Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true)));
+        let b = Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false)));
+        let combined = Condition::and(x, Condition::And(vec![a, b]));
+        if let Condition::And(parts) = combined {
+            assert_eq!(parts.len(), 3);
+            // Check ordering via column names stored in leaves
+            let names: Vec<&'static str> = parts
+                .iter()
+                .filter_map(|p| {
+                    if let Condition::Leaf(l) = p {
+                        Some(l.column)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(names, vec!["x", "a", "b"]);
+        } else {
+            panic!("expected And, got {combined:?}");
+        }
+    }
+
+    #[test]
+    fn or_empty_vec_is_not_auto_replaced() {
+        // Invariant check: Or(vec![]) stays Or(vec![]) — it is emitter's job
+        // to render FALSE. Construct directly (not via `or()` — that flattens).
+        let empty = Condition::Or(Vec::new());
+        assert!(matches!(empty, Condition::Or(ref v) if v.is_empty()));
     }
 }
