@@ -5,9 +5,3 @@ error: #[model] requires `table = "..."`
   | ^^^^^^^^
   |
   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
-
-error[E0601]: `main` function not found in crate `$CRATE`
- --> tests/compile_fail/missing_table.rs:4:14
-  |
-4 | struct Bad {}
-  |              ^ consider adding a `main` function to `$DIR/tests/compile_fail/missing_table.rs`
