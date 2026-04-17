@@ -82,9 +82,7 @@ where
     let q = bind_fn(q);
     q.fetch_optional(executor)
         .await?
-        .ok_or(DjogiError::NotFound {
-            table: "<raw query>",
-        })
+        .ok_or_else(|| DjogiError::not_found("<raw query>"))
 }
 
 /// Execute a raw SQL statement without returning rows (INSERT, UPDATE, DELETE, DDL).

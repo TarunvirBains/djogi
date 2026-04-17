@@ -14,10 +14,34 @@
 //! - `MultipleObjects` — `.fetch_one()` saw more than one row; carries the
 //!   table name plus the actual count observed.
 //! - `IdGeneration` — `generate_heerid` / `generate_ranjid` DB calls failed.
+//!
+//! # `#[non_exhaustive]` on the enum *and* its struct variants
+//!
+//! Both `DjogiError` and its struct-form variants (`NotFound`,
+//! `MultipleObjects`) are marked `#[non_exhaustive]`. This is a deliberate
+//! forward-compatibility choice:
+//!
+//! - **Enum-level.** Downstream matches MUST include a wildcard arm, so
+//!   introducing a new variant in a future release is not a breaking change.
+//!   Djogi is pre-publish today, but Phase 2+ adds filter-layer errors (type
+//!   coercion, invalid operator) that will live here.
+//! - **Variant-level.** Downstream destructuring patterns MUST use `..`, and
+//!   struct-expression *construction* from outside this crate is blocked —
+//!   that is exactly the desired shape for an error type. The only legitimate
+//!   construction sites are inside djogi and inside `#[model]`-expanded code
+//!   (which runs in user crates). The expanded code goes through the public
+//!   constructors below (`DjogiError::not_found`, `DjogiError::multiple_objects`),
+//!   matching the pattern established by `std::io::Error`, `hyper::Error`,
+//!   and similar well-designed error types.
+//!
+//! The cost is one extra line of implementation (the constructor) and one
+//! extra pair of dots at downstream destructuring sites. The benefit is
+//! that adding a field to either struct variant is also non-breaking.
 
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DjogiError {
     #[error("database error: {0}")]
     Sqlx(#[from] sqlx::Error),
@@ -26,6 +50,7 @@ pub enum DjogiError {
     /// records the SQL table that was queried so log lines and error reports
     /// remain meaningful once errors propagate far from the call site.
     #[error("row not found in `{table}`")]
+    #[non_exhaustive]
     NotFound { table: &'static str },
 
     /// `QuerySet::fetch_one` (or similar) saw more than one row when exactly
@@ -34,6 +59,7 @@ pub enum DjogiError {
     /// count keeps the error meaningful for future code paths that may
     /// pre-count rows differently.
     #[error("multiple objects returned from `{table}` (saw {count_seen}, expected exactly 1)")]
+    #[non_exhaustive]
     MultipleObjects {
         table: &'static str,
         count_seen: usize,
@@ -43,13 +69,37 @@ pub enum DjogiError {
     IdGeneration(#[from] heeranjid_sqlx::GenerateError),
 }
 
+impl DjogiError {
+    /// Construct a `NotFound` error with a table-name context.
+    ///
+    /// This is the public escape hatch for `#[non_exhaustive]` on the
+    /// `NotFound` variant: struct-expression construction is blocked outside
+    /// this crate, so `#[model]`-expanded CRUD methods (which run in user
+    /// crates) call this constructor instead. Keep the signature stable —
+    /// any future additional context fields must gain their own constructor
+    /// or builder rather than changing this one.
+    pub fn not_found(table: &'static str) -> Self {
+        DjogiError::NotFound { table }
+    }
+
+    /// Construct a `MultipleObjects` error with a table name and the number
+    /// of rows actually observed.
+    ///
+    /// Mirror of `not_found` — exists so that cross-crate callers (macro
+    /// output, future filter-layer builders) can produce this variant
+    /// without running into `#[non_exhaustive]`.
+    pub fn multiple_objects(table: &'static str, count_seen: usize) -> Self {
+        DjogiError::MultipleObjects { table, count_seen }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn not_found_displays_table_name() {
-        let err = DjogiError::NotFound { table: "posts" };
+        let err = DjogiError::not_found("posts");
         let msg = format!("{err}");
         assert!(
             msg.contains("posts"),
@@ -60,10 +110,7 @@ mod tests {
 
     #[test]
     fn multiple_objects_displays_table_and_count() {
-        let err = DjogiError::MultipleObjects {
-            table: "posts",
-            count_seen: 2,
-        };
+        let err = DjogiError::multiple_objects("posts", 2);
         let msg = format!("{err}");
         assert!(msg.contains("posts"));
         assert!(msg.contains("2"));
