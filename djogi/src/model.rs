@@ -49,8 +49,12 @@ pub trait Model: Sized + Send + Sync + 'static {
     /// - `pk = "heerid"` (default) → `HeerId`
     /// - `pk = "serial"` → `i32`
     /// - `pk = "ranjid"` → `RanjId` (heeranjid's UUIDv8 newtype)
-    /// - `pk = "none"` → `()` — a `get()` impl is still generated to satisfy
-    ///   the trait, but its body panics; it is not intended to be called.
+    /// - `pk = "none"` → NO `impl Model`. `()` cannot satisfy the
+    ///   `sqlx::Encode<'q, Postgres>` bound below, and a dummy newtype
+    ///   would misrepresent the model's actual key shape. pk=none models
+    ///   still get struct injection, `FromRow`, and descriptor registration
+    ///   — they just don't get CRUD methods. A future phase will introduce
+    ///   a separate trait for composite/user-managed PKs.
     type Pk: Clone
         + Send
         + Sync
