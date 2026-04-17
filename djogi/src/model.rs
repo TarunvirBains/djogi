@@ -48,7 +48,7 @@ pub trait Model: Sized + Send + Sync + 'static {
     /// Primary key Rust type.
     /// - `pk = "heerid"` (default) → `HeerId`
     /// - `pk = "serial"` → `i32`
-    /// - `pk = "ranjid"` → `uuid::Uuid`
+    /// - `pk = "ranjid"` → `RanjId` (heeranjid's UUIDv8 newtype)
     /// - `pk = "none"` → `()` — a `get()` impl is still generated to satisfy
     ///   the trait, but its body panics; it is not intended to be called.
     type Pk: Clone

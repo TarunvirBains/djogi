@@ -118,7 +118,7 @@ pub fn expand(
     // -------------------------------------------------------------------------
     let (pk_type_tokens, pk_value_body) = match model_attrs.pk {
         PkStrategy::HeerId => (quote! { ::djogi::types::HeerId }, quote! { &self.id }),
-        PkStrategy::RanjId => (quote! { ::uuid::Uuid }, quote! { &self.id }),
+        PkStrategy::RanjId => (quote! { ::djogi::types::RanjId }, quote! { &self.id }),
         PkStrategy::Serial => (quote! { i32 }, quote! { &self.id }),
         PkStrategy::None => unreachable!("handled by early return"),
     };

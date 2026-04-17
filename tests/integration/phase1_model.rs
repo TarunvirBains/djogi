@@ -242,6 +242,115 @@ async fn refresh_from_db_returns_current_state(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// Serial PK model (Task 8)
+// ---------------------------------------------------------------------------
+
+#[model(table = "tags", pk = "serial")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tag {
+    pub name: String,
+    pub color: String,
+}
+
+async fn setup_tags(pool: &PgPool) {
+    sqlx::query(
+        "CREATE TABLE tags (
+            id         SERIAL      PRIMARY KEY,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            name       TEXT        NOT NULL,
+            color      TEXT        NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+async fn serial_pk_create_and_get(pool: PgPool) {
+    setup_tags(&pool).await;
+
+    let tag = Tag::create(
+        &pool,
+        Tag {
+            name: "rust".into(),
+            color: "#f74c00".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    assert!(tag.id > 0, "serial id must be positive");
+    assert_eq!(tag.name, "rust");
+
+    let fetched = Tag::get(&pool, tag.id)
+        .await
+        .expect("get should find by i32 id");
+    assert_eq!(fetched.name, "rust");
+}
+
+// ---------------------------------------------------------------------------
+// RanjId PK model (Task 8)
+// ---------------------------------------------------------------------------
+
+#[model(table = "events", pk = "ranjid")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Event {
+    pub kind: String,
+    pub payload: String,
+}
+
+async fn setup_events(pool: &PgPool) {
+    heeranjid_sqlx::install_schema(pool).await.unwrap_or(());
+    heeranjid_sqlx::seed_default_node(pool).await.unwrap_or(());
+    // generate_ranjid() uses current_heer_ranj_node_id() — must set the ranj
+    // session node separately from the heer node. Same pool-vs-connection
+    // flakiness as setup_posts (queued for post-publish cleanup in task #18).
+    sqlx::query("SELECT set_heer_ranj_node_id(1)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE events (
+            id         UUID        PRIMARY KEY DEFAULT generate_ranjid(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            kind       TEXT        NOT NULL,
+            payload    TEXT        NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+async fn ranjid_pk_create_and_get(pool: PgPool) {
+    setup_events(&pool).await;
+
+    let event = Event::create(
+        &pool,
+        Event {
+            kind: "user.signup".into(),
+            payload: "{}".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create should succeed");
+
+    // RanjId wraps Uuid — check the underlying UUID isn't nil.
+    assert!(!event.id.as_uuid().is_nil(), "RanjId must not be nil UUID");
+
+    let fetched = Event::get(&pool, event.id)
+        .await
+        .expect("get should find by RanjId");
+    assert_eq!(fetched.kind, "user.signup");
+}
+
+// ---------------------------------------------------------------------------
 // ModelDescriptor registration test (Task 6)
 // ---------------------------------------------------------------------------
 
