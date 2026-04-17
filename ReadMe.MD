@@ -1,6 +1,6 @@
 # Djogi
 
-*A Model-first web framework for Rust, built on Axum*
+*A Model-first, Postgres-native distributed data engine for Rust. Define your schema as structs — derive ORM, migrations, audit trails, admin UI, and shell bindings. Axum handles HTTP; Djogi handles data.*
 
 ---
 

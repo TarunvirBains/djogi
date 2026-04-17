@@ -9,10 +9,33 @@
 ## Guiding Principles
 
 1. **Each phase produces a usable, testable crate** — not a waterfall of unshippable code
-2. **The proc macro (`djogi-macros`) is the foundation** — everything derives from `#[derive(Model)]`
+2. **The model macro system (`djogi-macros`) is the foundation** — descriptor generation and model metadata land before higher-level APIs
 3. **Raw SQL escape hatch ships in Phase 1** — the framework must never trap the developer
 4. **Tests against real Postgres** — no mocking the database; use `sqlx::test` fixtures
 5. **Postgres-only from day one** — every SQL string targets Postgres directly
+
+### Execution Strategy
+
+The roadmap below is still phase-ordered, but implementation should run in parallel workstreams with explicit merge points:
+
+- **Workstream A: runtime core (`djogi`)** — `Model` trait, descriptors, field metadata, error types, connection abstractions
+- **Workstream B: macro expansion (`djogi-macros`)** — parse model attributes, emit descriptor metadata, generate model impls
+- **Workstream C: SQL/runtime behavior** — CRUD SQL builders, raw SQL escape hatch, transaction-compatible execution
+- **Workstream D: verification** — compile tests first, then `sqlx::test` integration coverage against real Postgres
+- **Workstream E: docs/decisions** — capture architectural constraints early so later phases are not built on invalid assumptions
+
+### Phase 0a: Architecture Checkpoint
+
+**Goal:** Lock the macro shape before Phase 1 code lands.
+
+- [ ] Resolve the Rust macro constraint: `#[derive(Model)]` cannot inject real struct fields into the user-declared type
+- [ ] Choose one Phase 1 shape and document it before implementation:
+  - [ ] `#[model(...)]` attribute macro owns struct rewriting and field injection, with `#[derive(Model)]` reserved for trait generation only
+  - [ ] Or Phase 1 requires explicit framework fields in user structs, with injection deferred
+- [ ] Freeze the minimal `ModelDescriptor` format used by both runtime and future migration diffing
+- [ ] Define the first shippable slice as "single-table model, default primary key, basic CRUD, raw SQL, real Postgres tests"
+
+**Deliverable:** Macro architecture decision recorded, with Phase 1 narrowed to an implementable slice.
 
 ---
 
@@ -38,29 +61,25 @@
 ### 1a: The Proc Macro — `#[derive(Model)]`
 
 - [ ] Parse `#[model(table = "...")]` attribute
-- [ ] Inject framework fields: `id: HeerId`, `created_at: OffsetDateTime`, `updated_at: OffsetDateTime`
+- [ ] Implement the Phase 0a macro decision:
+  - [ ] If using an attribute macro, inject framework fields: `id: HeerId`, `created_at: OffsetDateTime`, `updated_at: OffsetDateTime`
+  - [ ] If staying derive-only for the first slice, validate/preserve explicit framework fields and generate metadata without struct rewriting
 - [ ] Generate `impl Model for T` with: `table_name()`, `descriptor()`
 - [ ] Generate `impl sqlx::FromRow for T`
 - [ ] Generate `ModelDescriptor` and register via `inventory::submit!`
-- [ ] Support `#[model(pk = "serial")]` for auto-increment i32 PKs
-- [ ] Support `#[model(pk = "ranjid")]` for UUID PKs via RanjId
-- [ ] Support `#[model(pk = "none")]` for custom PK fields (user-declared)
-- [ ] Support composite primary keys: `#[model(pk = ["field_a", "field_b"])]`
+- [ ] Minimal Phase 1 slice: support the default HeerId primary key path first
+- [ ] Defer `#[model(pk = "serial")]`, `#[model(pk = "ranjid")]`, `#[model(pk = "none")]`, and composite keys until the default path is stable
 
 ### 1b: Field Types
 
-- [ ] `String` → `TEXT`
-- [ ] `i16` / `i32` / `i64` → `SMALLINT` / `INTEGER` / `BIGINT`
-- [ ] `f32` / `f64` → `REAL` / `DOUBLE PRECISION`
-- [ ] `bool` → `BOOLEAN`
-- [ ] `OffsetDateTime` → `TIMESTAMPTZ` (via `time` crate)
-- [ ] `NaiveDate` → `DATE`
-- [ ] `rust_decimal::Decimal` → `NUMERIC`
-- [ ] `uuid::Uuid` → `UUID`
-- [ ] `Option<T>` → nullable
-- [ ] `serde_json::Value` → `JSONB` (untyped JSON — distinct from `Jsonb<T>`)
-- [ ] `Vec<T>` → Postgres arrays (`TEXT[]`, `INTEGER[]`, etc.)
-- [ ] `HeerId` / `RanjId` → `BIGINT` / `UUID` with serde as string
+- [ ] Minimal Phase 1 slice:
+  - [ ] `String` → `TEXT`
+  - [ ] `i32` / `i64` → `INTEGER` / `BIGINT`
+  - [ ] `bool` → `BOOLEAN`
+  - [ ] `OffsetDateTime` → `TIMESTAMPTZ`
+  - [ ] `Option<T>` → nullable
+  - [ ] `HeerId` → `BIGINT`
+- [ ] Defer `i16`, floats, dates, decimals, UUID/RanjId, JSONB, arrays, and advanced wrappers until CRUD is stable
 
 ### 1c: CRUD Operations
 
@@ -81,6 +100,13 @@
 
 - [ ] Define `trait DjogiConnection` implemented for `&PgPool` and `&mut Transaction<'_, Postgres>`
 - [ ] All CRUD methods generic over `impl DjogiConnection` — same code works with pool or transaction
+
+### Phase 1 Parallel Tracks
+
+- [ ] **Track A: metadata path** — `ModelDescriptor`, field definitions, `inventory` registration, compile-time tests
+- [ ] **Track B: runtime path** — `Model` trait, `DjogiConnection`, CRUD SQL generation, raw SQL helpers
+- [ ] **Track C: macro path** — attribute parsing, generated impls, `FromRow`, descriptor emission
+- [ ] Merge point: one end-to-end model compiles and passes CRUD tests against Postgres
 
 **Deliverable:** Define a struct, derive Model, create/read/update/delete against Postgres. Raw SQL works.
 
