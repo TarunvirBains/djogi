@@ -101,6 +101,8 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 - [ ] Define `trait DjogiConnection` implemented for `&PgPool` and `&mut Transaction<'_, Postgres>`
 - [ ] All CRUD methods generic over `impl DjogiConnection` — same code works with pool or transaction
 
+**Phase 1.5 amendment (2026-04-16):** Phase 1 canonicalizes `sqlx::Executor<Database = Postgres>` as the connection abstraction for all CRUD operations. Later phases may introduce a thin Djogi-owned adapter (e.g. `DjogiContext`, planned in Phase 4) if transaction-context policies or pool safety guards require more structure — but such an adapter must extend, not replace, the Phase 1 `Executor` contract. No `DjogiConnection` type exists in Phase 1.
+
 ### Phase 1 Parallel Tracks
 
 - [ ] **Track A: metadata path** — `ModelDescriptor`, field definitions, `inventory` registration, compile-time tests
