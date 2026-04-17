@@ -7,8 +7,10 @@
 //!
 //! Each method introduces an explicit lifetime `'a` for the `sqlx::Executor`
 //! bound. Rust 1.81+ RPITIT requires named lifetimes here; `'_` is unstable
-//! in this position. The semantics are identical: `'a` scopes the executor
-//! borrow to the call, and the returned `Future` does not capture it.
+//! in this position. At the trait level `'a` only scopes the parameter's
+//! borrow — the trait has no bodies to capture it. Generated impls (Task 7)
+//! `async move` the executor into their future, which is sound because
+//! `sqlx::Executor: Send` propagates to the captured type.
 //!
 //! ## Send bounds
 //!
@@ -26,7 +28,8 @@ pub trait Model: Sized + Send + Sync + 'static {
     /// - `pk = "heerid"` (default) → `HeerId`
     /// - `pk = "serial"` → `i32`
     /// - `pk = "ranjid"` → `uuid::Uuid`
-    /// - `pk = "none"` → `()` (no generated get())
+    /// - `pk = "none"` → `()` — a `get()` impl is still generated to satisfy
+    ///   the trait, but its body panics; it is not intended to be called.
     type Pk: Clone
         + Send
         + Sync
