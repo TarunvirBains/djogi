@@ -28,13 +28,13 @@ crud_log = false   # global default — opt in per model or globally
 ```
 ```rust
 // Per model
-#[derive(Model)]
 #[model(table = "vehicles", crud_log = true)]
+#[derive(Debug, Clone)]
 pub struct Vehicle { ... }
 
 // Opt out a specific model when globally enabled
-#[derive(Model)]
 #[model(table = "internal_tokens", crud_log = false)]
+#[derive(Debug, Clone)]
 pub struct InternalToken { ... }
 ```
 The mirror log table schema (auto-provisioned per model):

@@ -15,6 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 time.workspace = true
 uuid.workspace = true
+rust_decimal.workspace = true
 heeranjid.workspace = true
 heeranjid-sqlx.workspace = true
 inventory.workspace = true
@@ -26,8 +27,15 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 sqlx = { workspace = true, features = ["migrate"] }
 figment = { workspace = true, features = ["test"] }
 heeranjid-sqlx = { workspace = true }
+trybuild.workspace = true
+rust_decimal_macros.workspace = true
 
 [[test]]
 name = "integration"
 path = "../tests/integration/smoke.rs"
+harness = true
+
+[[test]]
+name = "phase1_model"
+path = "../tests/integration/phase1_model.rs"
 harness = true

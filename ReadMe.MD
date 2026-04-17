@@ -74,6 +74,24 @@ djogi-cli/                  # cargo djogi binary
 djogi-shell/                # Rhai engine + model bindings
 ```
 
+## Local Development
+
+The `.scripts/` directory is a git submodule pointing to
+[`TarunvirBains/scripts`](https://github.com/TarunvirBains/scripts). Clone
+with submodules to pick it up:
+
+```bash
+git clone --recurse-submodules git@github.com:TarunvirBains/djogi.git
+# or, if you already cloned:
+git submodule update --init --recursive
+```
+
+Reproduce CI locally with:
+
+```bash
+./.scripts/ci-local.sh
+```
+
 ## Specification
 
 The full framework specification lives in [`docs/spec/`](./docs/spec/index.md):

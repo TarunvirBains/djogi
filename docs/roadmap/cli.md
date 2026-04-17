@@ -1,6 +1,13 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to roadmap index](./index.md) | [Shipped guides](../guide/index.md)
 
 # CLI Reference — `cargo djogi`
+
+> **Warning: Roadmap document — not a shipped feature.**
+>
+> The API described in this document does not exist in the current release.
+> It is committed as a design target for a future phase and will move into
+> `docs/guide/` when that phase ships. Code snippets in this document will
+> NOT compile against the current crate.
 
 `cargo djogi` is the Djogi command-line interface. Install it once:
 

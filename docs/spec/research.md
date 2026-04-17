@@ -27,7 +27,7 @@
 - Installing HeeRanjId SQL functions and tables via `cargo djogi init` and `db reset`
 - Startup validation: `NODE_ID` env var → `heer_nodes` check → fail fast if missing
 - Rust wrappers: `HeerId::generate(&pool)` and `HeerId::generate_many(&pool, n)` calling `generate_id()` / `generate_ids(n)`
-- RanjId wrappers: `RanjId::generate(&pool)` calling `generate_ranj_id()`
+- RanjId wrappers: `RanjId::generate(&pool)` calling `generate_ranjid()`
 - `create_with_id()`: explicit ID INSERT with `ON CONFLICT (id) DO NOTHING`
 - Shell bindings: synchronous `HeerId::generate()`, `HeerId::generate_many(n)`, and `RanjId::generate()` in Rhai
 - HeerId serde impl: `i64` internally, `String` in JSON — no per-field annotation needed
@@ -35,7 +35,7 @@
 - Migration path: `#[model(pk = "ranjid")]` for models that need higher capacity
 
 ### Proc Macro Design
-- Struct field injection (`id`, `created_at`, `updated_at`) via `#[derive(Model)]`
+- Struct field injection (`id`, `created_at`, `updated_at`) via `#[model(table = "...")]` attribute macro (`#[derive(Model)]` exists only as a no-op stub; attribute macros are required for field injection)
 - Emitting `ModelDescriptor` via `inventory::submit!` from inside the derive macro
 - Side-channel file (`target/djogi_models.json`) for `build.rs` consumption
 - Error message quality: `proc-macro-error`, `syn::Error::new_spanned`

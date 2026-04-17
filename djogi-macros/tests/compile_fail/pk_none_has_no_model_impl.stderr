@@ -1,0 +1,12 @@
+error[E0599]: no function or associated item named `create` found for struct `Custom` in the current scope
+  --> tests/compile_fail/pk_none_has_no_model_impl.rs:29:21
+   |
+14 | pub struct Custom {
+   | ----------------- function or associated item `create` not found for this struct
+...
+29 |     let _ = Custom::create;
+   |                     ^^^^^^ function or associated item not found in `Custom`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `create`, perhaps you need to implement it:
+           candidate #1: `djogi::model::Model`

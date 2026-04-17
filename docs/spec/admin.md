@@ -6,7 +6,7 @@ Djogi ships an optional admin panel that auto-generates list views and CRUD form
 
 ### 15.1 Design Philosophy
 
-- **Zero hand-written UI:** `ModelDescriptor` (emitted by `#[derive(Model)]`) carries all the information needed — field names, types, nullability, FK targets, validation constraints. The admin reads this at runtime and renders forms automatically
+- **Zero hand-written UI:** `ModelDescriptor` (emitted by `#[model]`) carries all the information needed — field names, types, nullability, FK targets, validation constraints. The admin reads this at runtime and renders forms automatically
 - **HTMX + server-rendered HTML:** Axum handlers return HTML pages and fragments. HTMX attributes (`hx-get`, `hx-post`, `hx-swap`) handle interactivity — pagination, search-as-you-type, inline editing — without a JS framework or WASM bundle. Just `htmx.min.js` (14KB gzipped).
 - **Opt-in, not bundled by default:** Enabled via the `admin` feature flag — adds `askama` to the dependency tree only when explicitly requested
 ```toml
@@ -43,7 +43,6 @@ Defaults (zero configuration):
 
 Declarative configuration:
 ```rust
-#[derive(Model)]
 #[model(
     table = "vehicles",
     admin_list_display  = ["make", "model_name", "gas_fill", "active"],
@@ -53,6 +52,7 @@ Declarative configuration:
     admin_sort_default_dir = "desc",
     admin_page_size     = 50,
 )]
+#[derive(Debug, Clone)]
 pub struct Vehicle { ... }
 ```
 Filter widgets auto-typed by field:
@@ -154,8 +154,8 @@ impl ManyToMany<Group> for Person {
 ### 15.7 Opt-Out
 ```rust
 // Exclude a model from the admin entirely
-#[derive(Model)]
 #[model(table = "internal_tokens", admin = false)]
+#[derive(Debug, Clone)]
 pub struct InternalToken { ... }
 
 // Hide a specific field (still persisted, not shown)
