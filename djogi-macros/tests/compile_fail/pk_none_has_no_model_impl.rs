@@ -17,10 +17,16 @@ pub struct Custom {
 }
 
 fn _must_not_compile() {
-    // `Custom::create` and `Custom::get` must NOT exist for pk=none
-    // models. If they do, Model impl snuck back in — regression.
+    // `Custom::create` must NOT exist for pk=none models. If it does,
+    // Model impl snuck back in — regression.
+    //
+    // We probe `create` specifically (not `get`) because rustc's
+    // "candidate trait" diff for `get` enumerates every trait in the
+    // transitive dep graph with that method (Row, SliceIndex, various
+    // icu_* crates, etc.), and that list shifts whenever deps update —
+    // making the stored .stderr brittle. `create` has exactly one
+    // candidate (`djogi::model::Model`), producing a stable diagnostic.
     let _ = Custom::create;
-    let _ = Custom::get;
 }
 
 fn main() {}

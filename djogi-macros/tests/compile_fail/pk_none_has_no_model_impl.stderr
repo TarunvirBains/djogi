@@ -1,32 +1,12 @@
 error[E0599]: no function or associated item named `create` found for struct `Custom` in the current scope
-  --> tests/compile_fail/pk_none_has_no_model_impl.rs:22:21
+  --> tests/compile_fail/pk_none_has_no_model_impl.rs:29:21
    |
 14 | pub struct Custom {
    | ----------------- function or associated item `create` not found for this struct
 ...
-22 |     let _ = Custom::create;
+29 |     let _ = Custom::create;
    |                     ^^^^^^ function or associated item not found in `Custom`
    |
    = help: items from traits can only be used if the trait is implemented and in scope
    = note: the following trait defines an item `create`, perhaps you need to implement it:
            candidate #1: `djogi::model::Model`
-
-error[E0599]: no function or associated item named `get` found for struct `Custom` in the current scope
-  --> tests/compile_fail/pk_none_has_no_model_impl.rs:23:21
-   |
-14 | pub struct Custom {
-   | ----------------- function or associated item `get` not found for this struct
-...
-23 |     let _ = Custom::get;
-   |                     ^^^ function or associated item not found in `Custom`
-   |
-   = help: items from traits can only be used if the trait is implemented and in scope
-   = note: the following traits define an item `get`, perhaps you need to implement one of them:
-           candidate #1: `Row`
-           candidate #2: `SliceIndex`
-           candidate #3: `djogi::model::Model`
-           candidate #4: `icu_collections::codepointtrie::cptrie::TypedCodePointTrie`
-           candidate #5: `icu_properties::names::PropertyEnumToValueNameLookup`
-           candidate #6: `icu_provider::baked::DataStore`
-           candidate #7: `rustls::server::server_conn::StoresServerSessions`
-           candidate #8: `toml_edit::table::TableLike`
