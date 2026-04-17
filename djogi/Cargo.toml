@@ -28,6 +28,7 @@ sqlx = { workspace = true, features = ["migrate"] }
 figment = { workspace = true, features = ["test"] }
 heeranjid-sqlx = { workspace = true }
 trybuild.workspace = true
+rust_decimal_macros.workspace = true
 
 [[test]]
 name = "integration"

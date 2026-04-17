@@ -20,6 +20,14 @@ pub struct ModelAttrs {
     pub table: String,
     /// Primary key strategy.
     pub pk: PkStrategy,
+    /// When `true`, the macro skips generating the `Default` impl.
+    ///
+    /// Use `#[model(table = "...", no_default)]` for models that contain
+    /// field types that do not implement `Default` (e.g. `time::Date`).
+    /// Without this flag the generated `Default` impl would fail to compile.
+    /// Users must then initialise all fields explicitly instead of relying
+    /// on struct-update syntax (`..Model::default()`).
+    pub no_default: bool,
 }
 
 /// Parsed `pk = "..."` value.
@@ -42,9 +50,14 @@ impl ModelAttrs {
 
         let mut table: Option<String> = Option::None;
         let mut pk: Option<PkStrategy> = Option::None;
+        let mut no_default = false;
 
         for meta in &metas {
             match meta {
+                // Flag-only attribute: `no_default`
+                Meta::Path(path) if path.is_ident("no_default") => {
+                    no_default = true;
+                }
                 Meta::NameValue(MetaNameValue {
                     path,
                     value:
@@ -76,7 +89,7 @@ impl ModelAttrs {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
-                                "unknown #[model] attribute `{}`; expected `table` or `pk`",
+                                "unknown #[model] attribute `{}`; expected `table`, `pk`, or `no_default`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -85,7 +98,7 @@ impl ModelAttrs {
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "expected `key = \"value\"` attribute",
+                        "expected `key = \"value\"` attribute or bare flag (`no_default`)",
                     ));
                 }
             }
@@ -99,7 +112,11 @@ impl ModelAttrs {
         })?;
         let pk = pk.unwrap_or(PkStrategy::HeerId);
 
-        Ok(ModelAttrs { table, pk })
+        Ok(ModelAttrs {
+            table,
+            pk,
+            no_default,
+        })
     }
 }
 

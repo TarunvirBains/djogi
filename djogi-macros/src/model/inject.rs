@@ -68,6 +68,11 @@ const ALWAYS_RESERVED: &[&str] = &["created_at", "updated_at"];
 /// - the user declared a reserved field name (`created_at` / `updated_at`
 ///   always; `id` except under `pk = "none"`).
 ///
+/// When `model_attrs.no_default` is `true`, the `Default` impl is omitted.
+/// This is required for models that contain field types that do not implement
+/// `Default` (e.g. `time::Date`). Those models cannot use struct-update
+/// syntax (`..Model::default()`) — all fields must be initialised explicitly.
+///
 /// Callers must pass a `mut` borrow because the struct's field list is
 /// reordered in-place.
 pub fn expand(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<TokenStream> {
@@ -75,12 +80,16 @@ pub fn expand(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) -> syn::Re
     validate_field_names(struct_item, model_attrs)?;
 
     inject_fields(struct_item, model_attrs);
-    let default_impl = generate_default_impl(struct_item, model_attrs);
 
-    Ok(quote! {
-        #struct_item
-        #default_impl
-    })
+    if model_attrs.no_default {
+        Ok(quote! { #struct_item })
+    } else {
+        let default_impl = generate_default_impl(struct_item, model_attrs);
+        Ok(quote! {
+            #struct_item
+            #default_impl
+        })
+    }
 }
 
 /// Reject tuple / unit structs up front so downstream modules see only named

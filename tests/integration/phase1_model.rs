@@ -520,3 +520,101 @@ fn model_descriptor_registered() {
     assert!(post_desc.rationale.is_none());
     assert!(post_desc.indexes.is_empty());
 }
+
+// ==========================================================================
+// TASK 10 — rich field types (Decimal, Vec<T>, time::Date, Option<String>)
+// ==========================================================================
+
+use rust_decimal::Decimal;
+
+// `no_default` suppresses the generated `Default` impl because `time::Date`
+// does not implement `Default`. The test uses explicit field initialisation.
+#[model(table = "products", no_default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Product {
+    pub name: String,
+    pub price: Decimal,
+    pub in_stock: bool,
+    pub tags: Vec<String>,
+    pub ratings: Vec<i32>,
+    pub launch_date: ::time::Date,
+    pub description: Option<String>,
+}
+
+async fn setup_products(pool: &PgPool) {
+    heeranjid_sqlx::install_schema(pool).await.unwrap_or(());
+    heeranjid_sqlx::seed_default_node(pool).await.unwrap_or(());
+    // Same session-level node setup as setup_posts.
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE products (
+            id           BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            name         TEXT        NOT NULL,
+            price        NUMERIC     NOT NULL,
+            in_stock     BOOLEAN     NOT NULL,
+            tags         TEXT[]      NOT NULL,
+            ratings      INTEGER[]   NOT NULL,
+            launch_date  DATE        NOT NULL,
+            description  TEXT
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+async fn rich_field_types_roundtrip(pool: PgPool) {
+    setup_products(&pool).await;
+
+    use rust_decimal_macros::dec;
+
+    // Construct without ..Default::default() because time::Date does not
+    // implement Default; all injected framework fields use sentinel values.
+    let product = Product::create(
+        &pool,
+        Product {
+            id: ::djogi::types::__heerid_default(),
+            created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+            name: "Djogi Framework".into(),
+            price: dec!(49.99),
+            in_stock: true,
+            tags: vec!["rust".into(), "framework".into()],
+            ratings: vec![5, 4, 5],
+            launch_date: ::time::Date::from_calendar_date(2026, ::time::Month::April, 15).unwrap(),
+            description: Some("A Model-first web framework".into()),
+        },
+    )
+    .await
+    .expect("create with rich fields should succeed");
+
+    assert_eq!(product.name, "Djogi Framework");
+    assert_eq!(product.price, dec!(49.99));
+    assert_eq!(
+        product.tags,
+        vec!["rust".to_string(), "framework".to_string()]
+    );
+    assert_eq!(product.ratings, vec![5, 4, 5]);
+    assert_eq!(
+        product.description,
+        Some("A Model-first web framework".into())
+    );
+
+    // Round-trip through FromRow — fetch the row and assert the decoded values match.
+    let fetched = Product::get(&pool, product.id)
+        .await
+        .expect("get should find product");
+    assert_eq!(fetched.price, dec!(49.99));
+    assert_eq!(
+        fetched.launch_date,
+        ::time::Date::from_calendar_date(2026, ::time::Month::April, 15).unwrap()
+    );
+    assert_eq!(fetched.tags.len(), 2);
+    assert_eq!(fetched.ratings, vec![5, 4, 5]);
+}
