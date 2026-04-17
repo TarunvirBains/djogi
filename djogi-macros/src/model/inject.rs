@@ -4,21 +4,34 @@
 //! # Field injection
 //!
 //! The `#[model]` attribute macro calls `inject::expand`, which prepends the
-//! three framework-managed fields to the user's named field list. The fields
-//! are typed according to the `pk` strategy:
+//! framework-managed fields to the user's named field list. The `id` field is
+//! typed according to the `pk` strategy:
 //!
 //! | pk        | `id` type                  |
 //! |-----------|----------------------------|
 //! | `heerid`  | `djogi::types::HeerId`     |
 //! | `ranjid`  | `djogi::types::RanjId`     |
 //! | `serial`  | `i32`                      |
-//! | `none`    | (not injected)             |
+//! | `none`    | (not injected — user supplies their own PK field) |
 //!
 //! `created_at` and `updated_at` are always `djogi::types::DateTime` and always
-//! injected — even for `pk = "none"`.
+//! injected — regardless of `pk` strategy.
 //!
 //! Types are routed through `::djogi::types::*` rather than `::heeranjid::*` /
 //! `::time::*` directly so that users only need `djogi` as a direct dependency.
+//!
+//! # Validation
+//!
+//! `expand` returns `syn::Result` so it can emit targeted compile errors instead
+//! of letting Rust's duplicate-field / unsupported-shape messages surface:
+//!
+//! - **Tuple / unit structs** are rejected with `#[model] requires a struct with
+//!   named fields` at the struct's ident.
+//! - **Reserved names.** A user field named `created_at` or `updated_at` is
+//!   rejected unconditionally (the macro always injects those). A user field
+//!   named `id` is rejected for every `pk` strategy except `"none"` — under
+//!   `pk = "none"` the user is *expected* to declare their own `id` (or other
+//!   PK-carrying field) and the filter below preserves it.
 //!
 //! # Default impl
 //!
@@ -39,33 +52,85 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{ItemStruct, parse_quote};
+use syn::{ItemStruct, parse_quote, spanned::Spanned};
 
 use super::attrs::{ModelAttrs, PkStrategy};
+
+/// Reserved field names that the macro injects and users cannot redefine.
+/// `id` is conditionally reserved — see `reserved_for_pk`.
+const ALWAYS_RESERVED: &[&str] = &["created_at", "updated_at"];
 
 /// Prepend framework fields to the struct and return the modified struct
 /// definition plus a `Default` impl, concatenated into a single `TokenStream`.
 ///
-/// This is the only entry point. Callers must pass a `mut` borrow because the
-/// struct's field list is reordered in-place.
-pub fn expand(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {
+/// Returns `syn::Error` if:
+/// - the struct is not `Fields::Named` (tuple / unit shape), or
+/// - the user declared a reserved field name (`created_at` / `updated_at`
+///   always; `id` except under `pk = "none"`).
+///
+/// Callers must pass a `mut` borrow because the struct's field list is
+/// reordered in-place.
+pub fn expand(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<TokenStream> {
+    validate_shape(struct_item)?;
+    validate_field_names(struct_item, model_attrs)?;
+
     inject_fields(struct_item, model_attrs);
     let default_impl = generate_default_impl(struct_item, model_attrs);
 
-    quote! {
+    Ok(quote! {
         #struct_item
         #default_impl
+    })
+}
+
+/// Reject tuple / unit structs up front so downstream modules see only named
+/// structs. The error points at the struct's identifier for a clean span.
+fn validate_shape(struct_item: &ItemStruct) -> syn::Result<()> {
+    if matches!(struct_item.fields, syn::Fields::Named(_)) {
+        Ok(())
+    } else {
+        Err(syn::Error::new(
+            struct_item.ident.span(),
+            "#[model] requires a struct with named fields — tuple and unit structs are not supported",
+        ))
     }
 }
 
-/// Prepend `id`, `created_at`, `updated_at` to the struct's named field list.
+/// Reject user fields whose names collide with framework-injected fields.
 ///
-/// For `pk = "none"` only the timestamps are injected — callers that need a
-/// primary key must add it themselves as a regular user field.
-///
-/// Tuple structs and unit structs are left unchanged. A later error from
-/// `crud::expand` / `from_row::expand` will surface the unsupported shape with
-/// a clearer message than we can produce here.
+/// `created_at` / `updated_at` are always reserved. `id` is reserved except
+/// for `pk = "none"`, where the user is expected to declare their own PK
+/// field (which may or may not be called `id`).
+fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<()> {
+    let id_is_reserved = reserved_for_pk(model_attrs);
+    if let syn::Fields::Named(named) = &struct_item.fields {
+        for field in &named.named {
+            let Some(ident) = &field.ident else { continue };
+            let name = ident.to_string();
+            let is_reserved =
+                ALWAYS_RESERVED.contains(&name.as_str()) || (id_is_reserved && name == "id");
+            if is_reserved {
+                return Err(syn::Error::new(
+                    field.span(),
+                    format!(
+                        "#[model] reserves the field name `{name}` — the macro injects it automatically. \
+                         Rename your field or, if you need to control the primary key yourself, set `#[model(pk = \"none\")]`."
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `true` when the current `pk` strategy injects an `id` field, making `id`
+/// reserved. Only `pk = "none"` lets users declare their own `id`.
+fn reserved_for_pk(model_attrs: &ModelAttrs) -> bool {
+    !matches!(model_attrs.pk, PkStrategy::None)
+}
+
+/// Prepend framework fields in front of the user's named fields.
+/// Assumes `validate_shape` + `validate_field_names` already succeeded.
 ///
 /// # Why `::djogi::types::*` rather than `::heeranjid::*` / `::time::*`?
 ///
@@ -107,17 +172,29 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
 /// - `i32` (serial) → `0i32`
 /// - `created_at` / `updated_at` → `::djogi::types::DateTime::UNIX_EPOCH`
 /// - User fields → `Default::default()` (user types must implement `Default`)
+///
+/// The `user_field_defaults` filter operates on the struct's field list
+/// *after* `inject_fields` has prepended framework fields. For `pk = "none"`,
+/// no `id` is injected, so a user's own `id` field (if present) survives the
+/// filter and gets a `Default::default()` entry like any other user field.
 fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {
     let name = &struct_item.ident;
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
 
-    // Defaults for user fields — their types must implement Default.
+    // Names that were actually injected (and therefore must be excluded from
+    // the user-field default loop because they're initialised explicitly below).
+    let skip_id = !matches!(model_attrs.pk, PkStrategy::None);
+
     let user_field_defaults: Vec<TokenStream> = struct_item
         .fields
         .iter()
         .filter(|f| {
             let n = f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
-            !matches!(n.as_str(), "id" | "created_at" | "updated_at")
+            match n.as_str() {
+                "created_at" | "updated_at" => false,
+                "id" if skip_id => false,
+                _ => true,
+            }
         })
         .map(|f| {
             let fname = &f.ident;

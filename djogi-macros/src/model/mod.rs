@@ -37,8 +37,9 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 
     // 1. Inject framework fields (`id`, `created_at`, `updated_at`) and emit the
     //    `Default` impl — both are concatenated into a single TokenStream by
-    //    `inject::expand` (implemented in Task 4).
-    let expanded = inject::expand(&mut struct_item, &model_attrs);
+    //    `inject::expand`. Returns `syn::Error` for tuple/unit structs and for
+    //    user fields that collide with reserved framework names.
+    let expanded = inject::expand(&mut struct_item, &model_attrs)?;
 
     // 2. FromRow impl — Task 5 wires this up.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);

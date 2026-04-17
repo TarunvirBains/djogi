@@ -20,4 +20,15 @@ fn _check_default() {
     let _p = Post::default();
 }
 
+// Exercises the plan's primary stated Default-impl goal: struct-update syntax.
+// A user can write `..Post::default()` to fill framework fields without manually
+// initializing id / created_at / updated_at at every call site.
+fn _check_struct_update() {
+    let _p = Post {
+        title: "hello".to_string(),
+        published: true,
+        ..Post::default()
+    };
+}
+
 fn main() {}

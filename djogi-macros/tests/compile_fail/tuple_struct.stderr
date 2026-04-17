@@ -1,0 +1,5 @@
+error: #[model] requires a struct with named fields — tuple and unit structs are not supported
+ --> tests/compile_fail/tuple_struct.rs:4:8
+  |
+4 | struct Bad(String, bool);
+  |        ^^^

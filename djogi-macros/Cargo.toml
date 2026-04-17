@@ -18,4 +18,9 @@ darling.workspace = true
 
 [dev-dependencies]
 trybuild.workspace = true
+# djogi as a dev-dep forms a cycle (djogi depends on djogi-macros as a
+# regular dep; djogi-macros dev-deps djogi here). Cargo permits this because
+# dev-deps are excluded from the published / runtime dependency graph — they
+# only participate when compiling this crate's own tests. Required so trybuild
+# compile_pass/*.rs fixtures can `use djogi::prelude::*` to reach `#[model]`.
 djogi.workspace = true
