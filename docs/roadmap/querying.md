@@ -1,6 +1,13 @@
-> [Back to README](../../ReadMe.MD) | [All Guides](./index.md)
+> [Back to roadmap index](./index.md) | [Shipped guides](../guide/index.md)
 
 # Querying
+
+> **Warning: Roadmap document — not a shipped feature.**
+>
+> The API described in this document does not exist in the current release.
+> It is committed as a design target for a future phase and will move into
+> `docs/guide/` when that phase ships. Code snippets in this document will
+> NOT compile against the current crate.
 
 Djogi's query layer is built around `QuerySet<T>` — a lazy, composable builder that accumulates filters, orderings, and options without touching the database. Nothing executes until you call a terminal method.
 
