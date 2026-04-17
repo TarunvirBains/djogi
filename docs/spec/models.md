@@ -116,6 +116,12 @@ let article = Article::create(&pool, Article {
 
 For models with non-`Default` user fields (e.g. `time::Date`), set `#[model(no_default)]` to suppress Default generation and construct fields explicitly.
 
+#### Construction contract
+
+`create(value: Self)` accepts any valid `Self`. It IGNORES the framework-field values you set (`id`, `created_at`, `updated_at`) — the database populates them via column defaults and returns the final row via `RETURNING *`.
+
+The public API does NOT require user-defined field types to implement `Default`. The `Default` impl the `#[model]` macro generates is a **convenience** for the `..Default::default()` shorthand, not a contract. Models whose user fields include non-`Default` types (e.g. `time::Date`) declare `#[model(no_default)]` to suppress the generated impl, then construct with explicit field values.
+
 ### 4.3 What the Macro Generates
 
 - Struct field injection (`id`, `created_at`, `updated_at`)
