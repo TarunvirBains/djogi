@@ -76,14 +76,17 @@
 //! and declare their own primary key (possibly composite). Phase 1 does NOT
 //! emit `impl Model for T` for these — the `Model` trait's `type Pk` requires
 //! `sqlx::Encode<'q, Postgres>`, which `()` does not implement, and choosing
-//! any other dummy type would lie about the model's actual key shape. Task 8
-//! adds a composite-PK-aware `impl Model` that satisfies the trait correctly.
+//! any other dummy type would misrepresent the model's actual key shape.
 //!
 //! Everything else (struct injection, `Default` impl, `FromRow`, descriptor
 //! registration, Fields/Filter stubs) is still emitted for pk=none models,
 //! so users can serialize, use struct-update syntax, and iterate descriptors.
 //! They just can't call `::create`, `::get`, `.save()`, `.delete()`, or
-//! `.refresh_from_db()` until Task 8.
+//! `.refresh_from_db()`.
+//!
+//! A future phase will introduce a separate trait or code path for
+//! composite/user-managed PK models. Phase 1 deliberately excludes them
+//! from `impl Model` rather than shipping a shim that lies about the key.
 
 use proc_macro2::TokenStream;
 use quote::quote;
