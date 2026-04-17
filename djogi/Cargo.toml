@@ -33,3 +33,8 @@ trybuild.workspace = true
 name = "integration"
 path = "../tests/integration/smoke.rs"
 harness = true
+
+[[test]]
+name = "phase1_model"
+path = "../tests/integration/phase1_model.rs"
+harness = true

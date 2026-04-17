@@ -38,6 +38,18 @@ pub mod model;
 pub mod raw;
 pub mod types;
 
+/// Private re-exports used only by macro-generated code.
+///
+/// These are `#[doc(hidden)]` because they are an implementation detail of the
+/// `#[model]` macro, not part of the public API. Macro-emitted code uses fully
+/// qualified paths like `::djogi::__private::sqlx::FromRow` so that users only
+/// need `djogi` as a direct dependency — they never need to add `sqlx` or
+/// `time` themselves.
+#[doc(hidden)]
+pub mod __private {
+    pub use sqlx;
+}
+
 pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
