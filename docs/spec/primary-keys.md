@@ -33,7 +33,7 @@ Bit layout:
 RanjId is a UUIDv8-compatible 128-bit identifier for applications that outgrow HeerId's capacity:
 
 ```sql
-id UUID PRIMARY KEY DEFAULT generate_ranj_id()
+id UUID PRIMARY KEY DEFAULT generate_ranjid()
 ```
 
 Bit layout:
@@ -45,11 +45,11 @@ Sub-millisecond precision, up to 32,767 nodes, 65,535 IDs per node per timestamp
 
 Opt in per model:
 ```rust
-#[derive(Model)]
 #[model(table = "high_volume_events", pk = "ranjid")]
+#[derive(Debug, Clone)]
 pub struct Event {
     pub kind: String,
-    pub payload: Jsonb<EventPayload>,
+    pub payload: Jsonb<EventPayload>,  // Jsonb<T> arrives in Phase 5
 }
 ```
 HeerId tables (installed once per database, managed by the `heeranjid` crate):
@@ -95,8 +95,8 @@ JavaScript loses precision on 64-bit integers. `HeerId` always serializes as a s
 
 Small lookup/reference tables can opt into `SERIAL` where human-readable sequential IDs are genuinely useful:
 ```rust
-#[derive(Model)]
 #[model(table = "fuel_types", pk = "serial")]
+#[derive(Debug, Clone)]
 pub struct FuelType {
     pub name: String,
 }
