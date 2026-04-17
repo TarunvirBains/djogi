@@ -1,0 +1,57 @@
+# cargo-deny policy for the djogi workspace.
+#
+# See https://embarkstudios.github.io/cargo-deny/ for full reference.
+# Enforces a permissive-OSS license policy: MIT / Apache-2.0 family and
+# compatible licenses only. Runs as a CI gate so license-violating
+# dependencies cannot slip in.
+
+[graph]
+all-features = true
+
+[licenses]
+# Policy: every dep must carry a license from this list. Unlicensed or
+# copyleft (AGPL/GPL/LGPL) deps fail the check.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    # CDLA-Permissive-2.0: Mozilla/ISRG root CA data (webpki-roots, pulled in
+    # transitively by sqlx-core via rustls). Permissive — no copyleft.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+# Specific crates with non-obvious license expressions.
+exceptions = [
+    # Add per-crate exceptions here when cargo-deny can't detect the license
+    # automatically. Example:
+    # { allow = ["CC-BY-3.0"], name = "ring" },
+]
+
+[bans]
+# Fail on multiple versions of the same crate — surfaces accidental dep-graph
+# duplication. Phase 1.5 starts lenient; tighten in later phases.
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[advisories]
+# RUSTSEC advisory DB enforcement. Yanked crates fail; known vulnerabilities
+# fail unless explicitly ignored. Unmaintained crates warn.
+db-path = "$CARGO_HOME/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# Add trusted non-crates.io sources as needed:
+# allow-git = ["https://github.com/TarunvirBains/heeranjid"]
