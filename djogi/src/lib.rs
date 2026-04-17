@@ -51,6 +51,7 @@ pub mod prelude {
     pub use crate::error::DjogiError;
     pub use crate::model::Model;
     pub use crate::types::{Date, DateTime, HeerId, RanjId};
-    // NOTE: `djogi_macros::model` (the attribute macro) is re-exported here
-    // starting in Task 3 — Task 1 does not yet register the macro.
+    // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
+    // is the only import a model definition needs.
+    pub use djogi_macros::model;
 }
