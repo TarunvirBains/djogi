@@ -618,3 +618,77 @@ async fn rich_field_types_roundtrip(pool: PgPool) {
     assert_eq!(fetched.tags.len(), 2);
     assert_eq!(fetched.ratings, vec![5, 4, 5]);
 }
+
+// ==========================================================================
+// TASK 11 — djogi::raw escape-hatch API
+// ==========================================================================
+
+#[sqlx::test]
+async fn raw_query_as_returns_typed_models(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    Post::create(
+        &pool,
+        Post {
+            title: "Raw SQL Test".into(),
+            body: "body".into(),
+            published: true,
+            view_count: 7,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let results: Vec<Post> =
+        ::djogi::raw::query_as(&pool, "SELECT * FROM posts WHERE published = $1", |q| {
+            q.bind(true)
+        })
+        .await
+        .expect("raw query_as should succeed");
+
+    assert!(!results.is_empty(), "at least one published post expected");
+    assert!(results.iter().all(|p| p.published));
+}
+
+#[sqlx::test]
+async fn raw_query_scalar_returns_count(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    Post::create(
+        &pool,
+        Post {
+            title: "Count Me".into(),
+            body: "body".into(),
+            published: true,
+            view_count: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+
+    let count: i64 = ::djogi::raw::query_scalar(&pool, "SELECT COUNT(*) FROM posts", |q| q)
+        .await
+        .expect("count scalar should succeed");
+
+    assert!(count >= 1);
+}
+
+#[sqlx::test]
+async fn raw_execute_runs_without_return(pool: PgPool) {
+    setup_posts(&pool).await;
+
+    ::djogi::raw::execute(
+        &pool,
+        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+        |q| q.bind("Direct Insert").bind("body").bind(false).bind(0i32),
+    )
+    .await
+    .expect("raw execute should succeed");
+
+    let count: i64 = ::djogi::raw::query_scalar(&pool, "SELECT COUNT(*) FROM posts", |q| q)
+        .await
+        .unwrap();
+    assert!(count >= 1);
+}
