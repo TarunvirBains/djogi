@@ -309,6 +309,14 @@ impl Article {
 
 Used for form pre-generation: allocate the ID up-front via `heeranjid_sqlx::generate_heerid(&pool, node_id)`, render a form with the ID baked in, and submit. The emitted SQL is `INSERT INTO table (id, ...) VALUES ($1, ...) ON CONFLICT (id) DO NOTHING RETURNING *` — idempotent on retry.
 
+### See also
+
+`Model` trait methods (`get`, `create`, `save`, `delete`) operate on one
+row at a time. For multi-row reads, filters, ordering, pagination, and
+bulk `UPDATE` / `DELETE`, see the [queries guide](./queries.md) —
+`Model::objects()` returns a lazy `QuerySet<T>` that composes filters
+without touching the database.
+
 ---
 
 ## Construction

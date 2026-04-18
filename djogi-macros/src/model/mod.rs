@@ -8,6 +8,7 @@
 pub mod attrs;
 pub mod crud;
 pub mod descriptor;
+pub mod filter;
 pub mod from_row;
 pub mod inject;
 pub mod stubs;
@@ -50,8 +51,17 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 4. ModelDescriptor + inventory::submit! — Task 6 wires this up.
     let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 5. {Model}Fields + {Model}Filter stubs — Task 6 wires this up.
-    let stubs = stubs::expand(&struct_item);
+    // 5. {Model}Fields — typed closure-API accessors. `stubs::expand` emits
+    //    per-column `FieldRef` accessors (Phase 2 Task 4); it needs
+    //    `model_attrs` for pk-aware framework-field gating and reads the
+    //    field types directly off the post-injection `struct_item`.
+    let stubs = stubs::expand(&struct_item, &model_attrs);
+
+    // 6. {Model}Filter — programmatic (closure-free) filter builder.
+    //    Separate codegen path: emits a runtime struct carrying a
+    //    Vec<FilterClause> with one setter per user field. See
+    //    `filter::expand`'s module docs for the typed-vs-erased rationale.
+    let filter = filter::expand(&struct_item, &model_attrs, &field_attrs);
 
     Ok(quote::quote! {
         #expanded
@@ -59,5 +69,6 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #model_impl
         #descriptor
         #stubs
+        #filter
     })
 }

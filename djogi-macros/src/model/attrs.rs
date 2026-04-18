@@ -1,14 +1,22 @@
 //! Attribute parsing for `#[model(table = "...", pk = "...")]`
 //! and `#[field(unique, index, max_length = N, renamed_from = "...", on_delete = "...")]`.
 //!
-//! Why raw `syn` instead of `darling`? The attribute surface is small and
-//! the error messages from `syn::Error::new_spanned` give us precise source
-//! spans at zero extra dependency cost. `darling` is kept as a workspace dep
-//! for later tasks that need richer derive-input traversal.
+//! `ModelAttrs` keeps a hand-rolled parser: the surface is three keys, the
+//! error messages from `syn::Error::new_spanned` already carry precise
+//! source spans, and there is no incentive to grow it.
+//!
+//! `FieldAttrs` parses via `darling::FromField`. Per-field attrs grow over
+//! time (later phases add `db_column`, `choices`, `validators`, etc.), and
+//! darling's declarative derive gives us span-aware errors for unknown
+//! keys, type mismatches, and duplicate keys for free — matching the prior
+//! hand-rolled behaviour without each new key duplicating the same
+//! `Meta::NameValue` match arm.
 
+use darling::FromField;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
-use syn::{Expr, ExprLit, Field, Lit, Meta, MetaNameValue, Token};
+use syn::spanned::Spanned;
+use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue, Token};
 
 /// Options extracted from `#[model(table = "...", pk = "...")]`.
 // Fields are read by Tasks 4–9 (inject, crud, descriptor, stubs). The
@@ -143,130 +151,146 @@ impl PkStrategy {
 }
 
 /// Options extracted from a single `#[field(...)]` annotation on a struct field.
-#[derive(Debug, Default)]
+///
+/// Parsed via `darling::FromField`. Unknown keys, type mismatches, and
+/// duplicate keys are reported by darling with source spans. `ident` and
+/// `ty` are darling "magic" fields — the derive auto-populates them from
+/// `syn::Field::{ident, ty}` at call time, independent of the attribute
+/// list — so [`FieldAttrs::parse`] callers can read them alongside the
+/// parsed attrs without threading the `syn::Field` separately.
+// Not every field is read on every call site (e.g. `ident`/`ty` are pending
+// use by later Phase 2 / Phase 3 codegen). Suppress dead_code at struct
+// granularity so new fields don't spuriously re-trip the lint.
+#[allow(dead_code)]
+#[derive(Debug, FromField)]
+#[darling(attributes(field))]
 pub struct FieldAttrs {
+    /// The struct field's identifier.
+    ///
+    /// Darling's `FromField` derive auto-populates this from
+    /// `syn::Field::ident` by magic field name. Always `Some(_)` for
+    /// named-field structs; tuple/unit structs are rejected earlier in
+    /// `inject::expand`.
+    pub ident: Option<syn::Ident>,
+    /// The struct field's Rust type.
+    ///
+    /// Darling's `FromField` derive auto-populates this from
+    /// `syn::Field::ty` by magic field name. The type must be `syn::Type`
+    /// (not `Option<syn::Type>`) because the derive emits
+    /// `ty: field.ty.clone()` verbatim.
+    pub ty: syn::Type,
+
+    /// `#[field(unique)]` — emits a `UNIQUE` constraint in migrations.
+    #[darling(default)]
     pub unique: bool,
+    /// `#[field(index)]` — emits a `CREATE INDEX` in migrations.
+    #[darling(default)]
     pub index: bool,
+    /// `#[field(max_length = N)]` — caps `TEXT` columns at `VARCHAR(N)`.
+    #[darling(default)]
     pub max_length: Option<u32>,
+    /// `#[field(renamed_from = "old_name")]` — column rename hint for migrations.
+    #[darling(default)]
     pub renamed_from: Option<String>,
-    /// Only valid on `ForeignKey<T>` fields. Values: cascade, restrict, set_null, set_default, protect, do_nothing.
+    /// `#[field(on_delete = "...")]` — only valid on `ForeignKey<T>` fields.
+    /// Accepted values: cascade, restrict, set_null, set_default, protect,
+    /// do_nothing. Darling validates the literal is a string;
+    /// [`FieldAttrs::parse`] post-validates the value is in the accepted
+    /// set (darling's derive alone cannot constrain a `String` domain).
+    #[darling(default)]
     pub on_delete: Option<String>,
 }
 
 impl FieldAttrs {
-    /// Parse `#[field(...)]` attributes from a struct field.
-    /// Returns `Default::default()` if no `#[field]` annotation is present.
+    /// Parse `#[field(...)]` from a struct field.
     ///
-    /// Duplicate keys (including repeats across multiple `#[field(...)]`
-    /// attributes on the same field) are rejected with a span-carrying error
-    /// at the second occurrence — last-write-wins silently is a footgun.
-    pub fn parse(field: &Field) -> syn::Result<Self> {
-        let mut attrs = FieldAttrs::default();
-        let mut seen_unique = false;
-        let mut seen_index = false;
+    /// Returns an all-default instance if no `#[field]` attr is present
+    /// (darling's `#[darling(default)]` container attr handles the no-attr
+    /// case). Darling emits span-aware errors for:
+    /// - Unknown attribute keys (e.g. `#[field(nonexistent)]`).
+    /// - Type mismatches (e.g. `max_length = "x"` where an integer is required).
+    /// - Duplicate keys across multiple `#[field(...)]` attrs.
+    ///
+    /// `on_delete` is a string with a constrained value set that darling's
+    /// type-level parsing cannot enforce. We post-validate the value below
+    /// and — when rejecting — walk the field's raw `#[field(...)]` attrs
+    /// to recover the literal's `Span`, so the error underlines the bad
+    /// value rather than the entire field declaration. Matches the pre-
+    /// darling hand-rolled behaviour; keeps the surface consistent with
+    /// how `pk = "..."` span-points at its own literal in `ModelAttrs`.
+    pub fn parse(field: &syn::Field) -> syn::Result<Self> {
+        // `darling::Error` carries source spans from the originating
+        // attribute tokens; `From<darling::Error> for syn::Error` preserves
+        // them, so rely on the built-in conversion rather than collapsing
+        // everything onto the whole field with `new_spanned`.
+        let attrs = <Self as darling::FromField>::from_field(field).map_err(syn::Error::from)?;
 
-        for attr in &field.attrs {
-            if !attr.path().is_ident("field") {
-                continue;
-            }
-            let metas = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
-            for meta in &metas {
-                match meta {
-                    Meta::Path(path) if path.is_ident("unique") => {
-                        if seen_unique {
-                            return Err(syn::Error::new_spanned(
-                                path,
-                                "duplicate `unique` flag in #[field(...)]",
-                            ));
-                        }
-                        seen_unique = true;
-                        attrs.unique = true;
-                    }
-                    Meta::Path(path) if path.is_ident("index") => {
-                        if seen_index {
-                            return Err(syn::Error::new_spanned(
-                                path,
-                                "duplicate `index` flag in #[field(...)]",
-                            ));
-                        }
-                        seen_index = true;
-                        attrs.index = true;
-                    }
-                    Meta::NameValue(MetaNameValue {
-                        path,
-                        value:
-                            Expr::Lit(ExprLit {
-                                lit: Lit::Int(n), ..
-                            }),
-                        ..
-                    }) if path.is_ident("max_length") => {
-                        if attrs.max_length.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                path,
-                                "duplicate `max_length` key in #[field(...)]",
-                            ));
-                        }
-                        attrs.max_length = Some(n.base10_parse()?);
-                    }
-                    Meta::NameValue(MetaNameValue {
-                        path,
-                        value:
-                            Expr::Lit(ExprLit {
-                                lit: Lit::Str(s), ..
-                            }),
-                        ..
-                    }) if path.is_ident("renamed_from") => {
-                        if attrs.renamed_from.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                path,
-                                "duplicate `renamed_from` key in #[field(...)]",
-                            ));
-                        }
-                        attrs.renamed_from = Some(s.value());
-                    }
-                    Meta::NameValue(MetaNameValue {
-                        path,
-                        value:
-                            Expr::Lit(ExprLit {
-                                lit: Lit::Str(s), ..
-                            }),
-                        ..
-                    }) if path.is_ident("on_delete") => {
-                        if attrs.on_delete.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                path,
-                                "duplicate `on_delete` key in #[field(...)]",
-                            ));
-                        }
-                        let val = s.value();
-                        let valid = [
-                            "cascade",
-                            "restrict",
-                            "set_null",
-                            "set_default",
-                            "protect",
-                            "do_nothing",
-                        ];
-                        if !valid.contains(&val.as_str()) {
-                            return Err(syn::Error::new_spanned(
-                                s,
-                                format!(
-                                    "unknown on_delete value `{val}`; expected one of: {}",
-                                    valid.join(", ")
-                                ),
-                            ));
-                        }
-                        attrs.on_delete = Some(val);
-                    }
-                    other => {
-                        return Err(syn::Error::new_spanned(other, "unknown #[field] attribute"));
-                    }
-                }
+        if let Some(on_delete) = &attrs.on_delete {
+            let valid = [
+                "cascade",
+                "restrict",
+                "set_null",
+                "set_default",
+                "protect",
+                "do_nothing",
+            ];
+            if !valid.contains(&on_delete.as_str()) {
+                // Locate the original `on_delete = "..."` literal in the
+                // field's raw attribute tokens so the error carries the
+                // literal's span, not the whole field's. Falls back to the
+                // field span if the structure is unexpected — darling only
+                // hands us a `String`, so the only way to recover the span
+                // is a second walk. This is cheap: one field has at most a
+                // handful of attrs, each with a handful of keys.
+                let span = find_on_delete_lit_span(field).unwrap_or_else(|| field.span());
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "unknown on_delete value `{on_delete}`; expected one of: {}",
+                        valid.join(", ")
+                    ),
+                ));
             }
         }
 
         Ok(attrs)
     }
+}
+
+/// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
+/// the literal bound to `on_delete`, if present.
+///
+/// Used by [`FieldAttrs::parse`] to recover the offending literal's span
+/// after darling has already reduced the attribute to a `String`. Returns
+/// `None` only if the attribute structure does not match the expected
+/// `on_delete = "literal"` shape — darling's own parse will have rejected
+/// that upstream, so the caller falls back to the field's span as a last
+/// resort without losing the error.
+fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("field") {
+            continue;
+        }
+        let metas = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .ok()?;
+        for meta in &metas {
+            if let Meta::NameValue(MetaNameValue {
+                path,
+                value:
+                    Expr::Lit(ExprLit {
+                        lit: lit @ Lit::Str(_),
+                        ..
+                    }),
+                ..
+            }) = meta
+                && path.is_ident("on_delete")
+            {
+                return Some(lit.span());
+            }
+        }
+    }
+    None
 }
 
 /// The SQL column type for a Rust type string.

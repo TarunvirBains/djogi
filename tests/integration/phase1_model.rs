@@ -162,7 +162,7 @@ async fn get_returns_not_found_for_missing_id(pool: PgPool) {
     let result = Post::get(&pool, missing_id).await;
 
     assert!(
-        matches!(result, Err(DjogiError::NotFound)),
+        matches!(result, Err(DjogiError::NotFound { .. })),
         "expected NotFound, got {:?}",
         result
     );
@@ -217,7 +217,7 @@ async fn delete_removes_row(pool: PgPool) {
 
     let result = Post::get(&pool, id).await;
     assert!(
-        matches!(result, Err(DjogiError::NotFound)),
+        matches!(result, Err(DjogiError::NotFound { .. })),
         "expected NotFound after delete, got {:?}",
         result
     );
@@ -490,7 +490,7 @@ async fn crud_respects_transaction_boundary(pool: PgPool) {
 
     let result = Post::get(&pool, rolled_back.id).await;
     assert!(
-        matches!(result, Err(DjogiError::NotFound)),
+        matches!(result, Err(DjogiError::NotFound { .. })),
         "rolled-back row must NOT be visible, got: {:?}",
         result
     );
@@ -816,7 +816,7 @@ async fn raw_query_scalar_returns_not_found_for_empty_result(pool: PgPool) {
     .await;
 
     assert!(
-        matches!(result, Err(::djogi::DjogiError::NotFound)),
+        matches!(result, Err(::djogi::DjogiError::NotFound { .. })),
         "zero-row scalar must return DjogiError::NotFound, got: {:?}",
         result
     );

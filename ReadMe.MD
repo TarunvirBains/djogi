@@ -14,6 +14,20 @@ Djogi does not own routing, middleware, or rendering. The View layer belongs to 
 
 **Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via `generate_id()` (HeeRanjId), advisory locks for migration safety, `RETURNING` clauses, rich constraint system, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
 
+## Status
+
+**Shipped** — usable today:
+
+- **Phase 1** — `#[model]` proc macro, `Model` trait (`get` / `create` / `save` / `delete` / `refresh_from_db`), `ModelDescriptor` + `inventory` registration, typed field + PK injection, `djogi::raw::*` escape hatches. See [the models guide](./docs/guide/models.md).
+- **Phase 2** — lazy `QuerySet<T>`, typed `FieldRef<M, V>` lookups (`eq` / `gte` / `in_list` / `contains` / …), `Condition` tree + SQL emitter, terminal reads (`fetch_all` / `fetch_one` / `first` / `count` / `exists`), ordering + pagination + `DISTINCT` / `DISTINCT ON`, programmatic `{Model}Filter` + `filter_struct`, bulk `update` / `delete`. See [the queries guide](./docs/guide/queries.md).
+
+**Coming** — design-locked but not yet implemented:
+
+- Phase 3 — `ForeignKey<T>`, `ManyToMany`, explicit through models.
+- Phase 4 — transactions-as-types, expression layer (`col = col + 1`).
+- Phase 5 — Postgres-native: partitioning, RLS / `TenantScoped<T>`, Jsonb path ops.
+- Phase 6+ — `cargo djogi migrate`, Rhai shell, admin panel.
+
 ## What Djogi Owns
 
 | Concern | Owner | Djogi's role |

@@ -1,0 +1,536 @@
+//! `QuerySet<T>` — the lazy query builder.
+//!
+//! # What
+//!
+//! [`QuerySet<T>`] accumulates filter conditions, ordering, distinct mode,
+//! and pagination (`limit` / `offset`) without hitting the database. Every
+//! builder method (`filter`, `exclude`, `order_by`, `limit`, `offset`,
+//! `distinct`, `distinct_on`) consumes `self` and returns `Self`, so a
+//! `QuerySet` is immutable-by-convention: composition never mutates an
+//! existing queryset in place.
+//!
+//! `T::objects()` (default method on the `Model` trait, added in Task 5)
+//! constructs an empty `QuerySet<T>` — no filters, no ordering, no limit.
+//! This is the entry point for every query.
+//!
+//! # Why
+//!
+//! Terminal methods (Task 6 — `fetch_all`, `fetch_one`, `count`, `exists`,
+//! `first`, `update`, `delete`) are the **only** place SQL is generated or
+//! executed. Everything else is a cheap structural transformation: `Condition`
+//! trees shared across clones, small `Vec`s for ordering and distinct_on
+//! column lists, POD enums for distinct mode.
+//!
+//! Builder methods that append to accumulators (currently only `order_by`)
+//! follow Django-style semantics: calling `.order_by(...)` twice **appends**
+//! rather than replaces, so library code can add a stable tiebreaker without
+//! clobbering the caller's primary ordering. Replace semantics would force
+//! every caller to know every prior `order_by` call, which composes poorly.
+//!
+//! [`QuerySet::none`] is a structural short-circuit — `is_empty = true`
+//! causes every terminal method (Task 6) to return the empty result without
+//! a database round-trip. Useful for authorization branches
+//! (`if !can_read { return qs.none(); }`) that would otherwise hit the DB
+//! just to prove the obvious.
+//!
+//! # Variance
+//!
+//! `PhantomData<fn() -> T>` makes `QuerySet<T>` **covariant** in `T` and
+//! ensures `Send + Sync` regardless of `T`'s own markers (the queryset
+//! never owns or borrows a `T`, it merely tags which model the filters are
+//! aimed at). This matches `FieldRef<M, V>`'s variance so closures that
+//! take `T::Fields` and return `Condition` compose without lifetime gymnastics.
+//!
+//! # How (user surface)
+//!
+//! ```ignore
+//! use djogi::prelude::*;
+//!
+//! let qs = Post::objects()
+//!     .filter(|f| f.published.eq(true))
+//!     .exclude(|f| f.title.eq("draft".to_string()))
+//!     .order_by(|f| f.view_count.desc())
+//!     .limit(20);
+//! // Nothing has hit the DB yet — terminal methods (Task 6) do that.
+//! ```
+
+use crate::model::Model;
+use crate::query::condition::Condition;
+use crate::query::field::FieldRef;
+use crate::query::order::OrderExpr;
+use std::marker::PhantomData;
+
+/// `DISTINCT` mode for a QuerySet.
+///
+/// `None` emits a plain `SELECT ...`. `Plain` emits `SELECT DISTINCT ...`.
+/// `On(cols)` emits `SELECT DISTINCT ON (col_a, col_b) ...` — the Postgres
+/// extension that keeps the first row per `(col_a, col_b)` tuple, where
+/// "first" is determined by the query's `ORDER BY`.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub enum DistinctMode {
+    /// `SELECT ...` — no DISTINCT clause.
+    #[default]
+    None,
+    /// `SELECT DISTINCT ...`.
+    Plain,
+    /// `SELECT DISTINCT ON (col_a, col_b) ...` — Postgres extension.
+    /// Column names are macro-baked `&'static str` literals, never user input.
+    On(Vec<&'static str>),
+}
+
+/// Lazy query builder. Nothing hits the database until a terminal method
+/// (added in Task 6) is called.
+///
+/// See the module-level documentation for design rationale, variance, and
+/// short-circuit semantics.
+pub struct QuerySet<T: Model> {
+    /// Accumulated filter tree. Starts as [`Condition::True`] — the vacuous
+    /// identity — and grows via AND as `filter`/`exclude` are chained.
+    pub(crate) condition: Condition,
+    /// Ordering expressions in emission order. `order_by` appends; it does
+    /// not replace.
+    pub(crate) ordering: Vec<OrderExpr>,
+    /// DISTINCT mode — see [`DistinctMode`].
+    pub(crate) distinct: DistinctMode,
+    /// SQL `LIMIT` — `None` means no limit. `i64` to match Postgres.
+    pub(crate) limit: Option<i64>,
+    /// SQL `OFFSET` — `None` means no offset. `i64` to match Postgres.
+    pub(crate) offset: Option<i64>,
+    // TASK 6 CONTRACT: every terminal method added in Task 6 — `fetch_all`,
+    // `fetch_one`, `count`, `exists`, `first`, `update`, `delete` — MUST check
+    // `self.is_empty` first and return the empty result (empty `Vec`, `None`,
+    // `0`, `false`, `0 rows affected`, etc.) WITHOUT issuing any SQL. This is
+    // the whole point of `QuerySet::none()` — it lets authorization / feature-
+    // flag branches short-circuit the DB round-trip without a special-cased
+    // `if` on the caller's side.
+    //
+    // Grep marker: TASK6:empty_contract
+    //
+    /// Short-circuit flag — `true` means terminal methods (Task 6) return
+    /// the empty result without a DB round-trip. Set only by
+    /// [`QuerySet::none`].
+    pub(crate) is_empty: bool,
+    /// Covariant `T` tag; never owns or borrows a `T`.
+    _model: PhantomData<fn() -> T>,
+}
+
+impl<T: Model> Clone for QuerySet<T> {
+    fn clone(&self) -> Self {
+        QuerySet {
+            condition: self.condition.clone(),
+            ordering: self.ordering.clone(),
+            distinct: self.distinct.clone(),
+            limit: self.limit,
+            offset: self.offset,
+            is_empty: self.is_empty,
+            _model: PhantomData,
+        }
+    }
+}
+
+impl<T: Model> std::fmt::Debug for QuerySet<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuerySet")
+            .field("table", &T::table_name())
+            .field("condition", &self.condition)
+            .field("ordering", &self.ordering)
+            .field("distinct", &self.distinct)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .field("is_empty", &self.is_empty)
+            .finish()
+    }
+}
+
+impl<T: Model> Default for QuerySet<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Model> QuerySet<T> {
+    /// Construct an empty QuerySet. Prefer `T::objects()` at call sites —
+    /// it is the idiomatic spelling and reads as "all objects of this
+    /// model (before filtering)".
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn new() -> Self {
+        QuerySet {
+            condition: Condition::True,
+            ordering: Vec::new(),
+            distinct: DistinctMode::None,
+            limit: None,
+            offset: None,
+            is_empty: false,
+            _model: PhantomData,
+        }
+    }
+
+    /// Structural empty QuerySet — every terminal method (Task 6) short-
+    /// circuits to the empty result without touching the database.
+    ///
+    /// Takes `self` as an instance transform (matching Django's
+    /// `queryset.none()` ergonomics) so `Post::objects().none()` compiles
+    /// and reads naturally. Any filters / ordering / limits already
+    /// accumulated on `self` are discarded — the returned queryset is a
+    /// fresh [`QuerySet::new()`] with `is_empty = true`. From-scratch
+    /// construction is spelled `QuerySet::<T>::new().none()`.
+    ///
+    /// Useful for authorization / feature-flag branches:
+    ///
+    /// ```ignore
+    /// let qs = if user.is_authenticated {
+    ///     Post::objects().filter(|f| f.published.eq(true))
+    /// } else {
+    ///     Post::objects().none()
+    /// };
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn none(self) -> Self {
+        // `self` is intentionally ignored — `.none()` is a structural reset,
+        // not a conjunction with existing filters. Returning a fresh empty-
+        // flagged QuerySet keeps the semantics obvious: "no matter what was
+        // chained before, this matches zero rows."
+        let _ = self;
+        let mut qs = Self::new();
+        qs.is_empty = true;
+        qs
+    }
+
+    /// Add a typed filter closure to the condition tree, AND-ed with whatever
+    /// already accumulated. The closure receives a default-constructed
+    /// `T::Fields` (a ZST) and returns a [`Condition`].
+    ///
+    /// ```ignore
+    /// Post::objects().filter(|f| f.published.eq(true))
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn filter<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> Condition,
+    {
+        let cond = f(T::Fields::default());
+        self.condition = Condition::and(self.condition, cond);
+        self
+    }
+
+    /// Add a typed filter closure **negated** (wrapped in SQL `NOT`), AND-ed
+    /// onto the existing tree. Equivalent to Django's `QuerySet.exclude()`.
+    ///
+    /// ```ignore
+    /// Post::objects().exclude(|f| f.title.eq("draft".to_string()))
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn exclude<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> Condition,
+    {
+        let cond = f(T::Fields::default());
+        self.condition = Condition::and(self.condition, Condition::not(cond));
+        self
+    }
+
+    /// AND a programmatic filter struct onto the condition tree.
+    ///
+    /// The filter's accumulated clauses are folded into a single
+    /// `Condition::And(...)` and AND-ed onto `self.condition`. Empty
+    /// filters short-circuit — no AND-ing, no vacuous `TRUE` sub-tree.
+    /// Single-clause filters unwrap to a plain `Condition::Leaf` so the
+    /// SQL emitter renders `col = $1` rather than `(col = $1)`.
+    ///
+    /// This is the closure-free sibling of [`QuerySet::filter`] — the
+    /// two paths produce structurally equivalent condition trees for the
+    /// same set of lookups, and the SQL emitter treats them identically.
+    /// Use this method from shell bindings, admin UIs, and any dynamic
+    /// assembler that can't write a `|f|` closure at compile time.
+    ///
+    /// ```ignore
+    /// let filter = PostFilter::new()
+    ///     .published(Lookup::Eq(true))
+    ///     .view_count(Lookup::Gte(50i32));
+    /// let rows = Post::objects().filter_struct(filter).fetch_all(&pool).await?;
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn filter_struct<F: crate::query::filter::ModelFilter>(mut self, filter: F) -> Self {
+        let clauses = filter.into_clauses();
+        if clauses.is_empty() {
+            // Empty filter — don't AND `Condition::True` onto `self.condition`;
+            // `Condition::and` would fold it away anyway, but early-returning
+            // makes the no-op case explicit and avoids the intermediate
+            // allocation.
+            return self;
+        }
+        let folded = crate::query::filter::clauses_into_condition(clauses);
+        self.condition = Condition::and(self.condition, folded);
+        self
+    }
+
+    /// Append one or more ordering expressions. Later `order_by` calls
+    /// **append** to the existing ordering rather than replacing it, matching
+    /// Django semantics: library code can add a stable tiebreaker without
+    /// clobbering the caller's primary ordering.
+    ///
+    /// The closure can return either a single `OrderExpr` or a
+    /// `Vec<OrderExpr>` — the `Into<Vec<OrderExpr>>` bound bridges both.
+    ///
+    /// ```ignore
+    /// Post::objects().order_by(|f| f.view_count.desc())
+    /// Post::objects().order_by(|f| vec![f.published.desc(), f.title.asc()])
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn order_by<F, O>(mut self, f: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> O,
+        O: Into<Vec<OrderExpr>>,
+    {
+        let exprs: Vec<OrderExpr> = f(T::Fields::default()).into();
+        // Django-style append: library code can add tiebreakers without
+        // clobbering the caller's primary ordering. NOT SeaORM-style
+        // replace — swapping this to `self.ordering = exprs;` silently
+        // breaks any composition layer that relies on stable secondary
+        // sort keys. If a replace semantic is ever needed, add a distinct
+        // `reorder_by` method rather than mutating this one.
+        self.ordering.extend(exprs);
+        self
+    }
+
+    /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
+    ///
+    /// Takes `u64` at the API boundary so negative values are not
+    /// representable — the builder can never be put into an invalid state.
+    /// Internally stored as `Option<i64>` to match sqlx's Postgres bind
+    /// type; the cast is guarded by a `debug_assert!` so any pathological
+    /// `n > i64::MAX` case (impossible at query scale in practice) trips
+    /// in debug builds.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn limit(mut self, n: u64) -> Self {
+        debug_assert!(
+            n <= i64::MAX as u64,
+            "QuerySet::limit(n = {n}) overflows i64 — Postgres bind type is BIGINT"
+        );
+        self.limit = Some(n as i64);
+        self
+    }
+
+    /// Apply SQL `OFFSET n`. Replaces any prior `offset` value.
+    ///
+    /// Takes `u64` for the same reason as [`QuerySet::limit`] — negative
+    /// offsets are meaningless and now impossible to construct.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn offset(mut self, n: u64) -> Self {
+        debug_assert!(
+            n <= i64::MAX as u64,
+            "QuerySet::offset(n = {n}) overflows i64 — Postgres bind type is BIGINT"
+        );
+        self.offset = Some(n as i64);
+        self
+    }
+
+    /// Switch to `SELECT DISTINCT ...`. Overrides any prior `distinct_on`.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn distinct(mut self) -> Self {
+        self.distinct = DistinctMode::Plain;
+        self
+    }
+
+    /// Switch to Postgres' `SELECT DISTINCT ON (cols...) ...`. The closure
+    /// returns either a single [`FieldRef`] or a tuple of up to six
+    /// `FieldRef`s; column order matters because Postgres uses the first row
+    /// per `(cols...)` tuple according to the query's `ORDER BY`.
+    ///
+    /// Overrides any prior `distinct`/`distinct_on`.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn distinct_on<F, R>(mut self, f: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> R,
+        R: IntoDistinctColumns,
+    {
+        let cols = f(T::Fields::default()).into_distinct_columns();
+        self.distinct = DistinctMode::On(cols);
+        self
+    }
+
+    /// Structural emptiness check — `true` only for querysets built via
+    /// [`QuerySet::none`]. Used by Task 6's terminal methods to short-
+    /// circuit the DB round-trip.
+    ///
+    /// `pub(crate)` because it is an implementation detail of the terminal
+    /// methods, not user-facing API; users who need "does this queryset
+    /// actually match rows?" should call `.exists()` (Task 6), which also
+    /// runs the real SQL.
+    #[allow(dead_code)] // consumed by Task 6's `query::terminal` module
+    pub(crate) fn is_empty(&self) -> bool {
+        self.is_empty
+    }
+}
+
+/// Bridge from closure return types to the `Vec<&'static str>` of column
+/// names that [`QuerySet::distinct_on`] stores. Implemented for
+/// [`FieldRef`] and tuples of `FieldRef`s up to arity 6.
+///
+/// Expanding beyond six requires adding another `impl_into_distinct_columns_tuple!`
+/// invocation below — the ceiling is deliberately low because `DISTINCT ON`
+/// with more than a handful of columns is a design smell, not a capacity
+/// limit Djogi cares to lift.
+pub trait IntoDistinctColumns {
+    /// Flatten the receiver into the ordered list of column names Postgres
+    /// will dedupe on.
+    fn into_distinct_columns(self) -> Vec<&'static str>;
+}
+
+impl<M: Model, V> IntoDistinctColumns for FieldRef<M, V> {
+    fn into_distinct_columns(self) -> Vec<&'static str> {
+        vec![self.column()]
+    }
+}
+
+/// Generate `IntoDistinctColumns` for a tuple of `FieldRef`s. Each type
+/// parameter stands for the tuple slot's value type `V` — the model type
+/// `M` is shared across every `FieldRef` in the tuple because `distinct_on`
+/// only ever sees one model's columns at a time.
+macro_rules! impl_into_distinct_columns_tuple {
+    ($($name:ident),+) => {
+        impl<M: Model, $($name),+> IntoDistinctColumns for ($(FieldRef<M, $name>,)+) {
+            fn into_distinct_columns(self) -> Vec<&'static str> {
+                #[allow(non_snake_case)]
+                let ($($name,)+) = self;
+                vec![$($name.column()),+]
+            }
+        }
+    };
+}
+impl_into_distinct_columns_tuple!(A);
+impl_into_distinct_columns_tuple!(A, B);
+impl_into_distinct_columns_tuple!(A, B, C);
+impl_into_distinct_columns_tuple!(A, B, C, D);
+impl_into_distinct_columns_tuple!(A, B, C, D, E);
+impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::descriptor::ModelDescriptor;
+
+    // Minimal `Model` impl for builder-shape tests. Mirrors the `Fake` model
+    // used in `query::field`'s unit tests — keeps QuerySet builder tests in
+    // this file independent of the `#[model]` macro expansion path.
+    struct Fake;
+    impl Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fake"
+        }
+        fn pk_value(&self) -> &Self::Pk {
+            unreachable!("not called in QuerySet unit tests")
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            unreachable!("not called in QuerySet unit tests")
+        }
+        async fn get<'a>(
+            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            _id: Self::Pk,
+        ) -> Result<Self, crate::DjogiError> {
+            unreachable!()
+        }
+        async fn create<'a>(
+            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            _v: Self,
+        ) -> Result<Self, crate::DjogiError> {
+            unreachable!()
+        }
+        async fn save<'a>(
+            &self,
+            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        ) -> Result<(), crate::DjogiError> {
+            unreachable!()
+        }
+        async fn delete<'a>(
+            self,
+            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        ) -> Result<(), crate::DjogiError> {
+            unreachable!()
+        }
+        async fn refresh_from_db<'a>(
+            &self,
+            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        ) -> Result<Self, crate::DjogiError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn new_queryset_has_no_filters() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        assert!(matches!(qs.condition, Condition::True));
+        assert!(qs.ordering.is_empty());
+        assert!(matches!(qs.distinct, DistinctMode::None));
+        assert_eq!(qs.limit, None);
+        assert_eq!(qs.offset, None);
+        assert!(!qs.is_empty());
+    }
+
+    #[test]
+    fn none_marks_queryset_empty() {
+        // `none()` is an instance method: from-scratch construction goes
+        // through `new().none()`, but `qs.none()` also works and is the
+        // spelling documented at the module level.
+        let qs: QuerySet<Fake> = QuerySet::<Fake>::new().none();
+        assert!(qs.is_empty());
+    }
+
+    #[test]
+    fn none_discards_prior_filters() {
+        use crate::query::condition::{FilterValue, Leaf};
+        // Any filters chained before `.none()` are structurally discarded —
+        // the resulting queryset is always a clean empty-flagged state.
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))))
+            .none();
+        assert!(qs.is_empty());
+        assert!(matches!(qs.condition, Condition::True));
+    }
+
+    #[test]
+    fn filter_ands_onto_condition_tree() {
+        use crate::query::condition::{FilterValue, Leaf};
+        let qs: QuerySet<Fake> =
+            QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
+        assert!(matches!(qs.condition, Condition::Leaf(_)));
+        // Second filter should AND with the first.
+        let qs2 = qs.filter(|_| Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false))));
+        match qs2.condition {
+            Condition::And(parts) => assert_eq!(parts.len(), 2),
+            other => panic!("expected And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exclude_wraps_in_not() {
+        use crate::query::condition::{FilterValue, Leaf};
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .exclude(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
+        // True AND NOT(leaf) → NOT(leaf) thanks to Condition::and's identity folding.
+        assert!(matches!(qs.condition, Condition::Not(_)));
+    }
+
+    #[test]
+    fn limit_and_offset_round_trip() {
+        let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(20);
+        assert_eq!(qs.limit, Some(10));
+        assert_eq!(qs.offset, Some(20));
+    }
+
+    #[test]
+    fn distinct_plain_sets_mode() {
+        let qs: QuerySet<Fake> = QuerySet::new().distinct();
+        assert!(matches!(qs.distinct, DistinctMode::Plain));
+    }
+
+    #[test]
+    fn clone_is_structural() {
+        let qs: QuerySet<Fake> = QuerySet::new().limit(5);
+        let qs2 = qs.clone();
+        assert_eq!(qs.limit, qs2.limit);
+    }
+}
