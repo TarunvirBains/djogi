@@ -209,13 +209,25 @@ where
 /// `QuerySet::select_related()` (Phase 3 Task 5). Never constructed by
 /// user code directly — the `new` constructor is `pub(crate)` on purpose.
 ///
-/// The cached child lives in `Option<Box<T>>` so that a LEFT JOIN miss
-/// (the parent row has a FK column value but the join produced no
-/// matching row — either because the row was deleted with
-/// `ON DELETE SET NULL` and the column is nullable, or because of a
-/// filter applied on the join side) surfaces as `None` rather than an
-/// error. Callers who want the strict "this must have resolved" path
-/// use [`expect_resolved`](ForeignKeyResolved::expect_resolved).
+/// # Why `Option<Box<T>>`
+///
+/// Two independent reasons — nullability and sizing — drive the layout.
+///
+/// The `Option` models a LEFT JOIN miss: a nullable FK column
+/// (e.g. `fuel_type_id: Option<ForeignKey<FuelType>>`) is `NULL` on the
+/// parent row, or a filter on the join side excluded the child. Surfacing
+/// that as `None` instead of an error lets permissive reads stay
+/// ergonomic; callers who asserted a prefetch ran use
+/// [`expect_resolved`](ForeignKeyResolved::expect_resolved) to fail
+/// loudly instead.
+///
+/// The `Box` keeps the FK wrapper small and *constant-sized* regardless
+/// of `T`. Without it, embedding `ForeignKeyResolved<Vehicle>` directly
+/// in a parent struct would balloon the parent by `size_of::<Vehicle>()`
+/// — every additional resolved FK on a parent row would compound that
+/// cost. Boxing keeps each resolved wrapper at one pointer plus the PK,
+/// so a row with several prefetched FKs stays compact in memory and in
+/// the `Vec<Row>` the query layer hands back.
 ///
 /// `Clone` and `Debug` are manual impls gated on `T::Pk: Clone`/`Debug`
 /// and `T: Clone`/`Debug` respectively so the test stub `Dummy` (which

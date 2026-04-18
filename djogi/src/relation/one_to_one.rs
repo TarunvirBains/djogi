@@ -307,4 +307,37 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn one_to_one_field_resolved_expect_resolved_ok_on_present() {
+        // Parity with `foreign_key_resolved_expect_resolved_ok_on_present` —
+        // confirms the newtype forwards the `Ok(&T)` branch through the
+        // inner `ForeignKeyResolved<T>` without altering semantics.
+        let r: OneToOneFieldResolved<Dummy> =
+            OneToOneFieldResolved::new(HeerId::from_i64(1).unwrap(), Some(Dummy));
+        assert!(r.expect_resolved("Profile", "user_id").is_ok());
+        assert!(r.resolved().is_some());
+    }
+
+    #[test]
+    fn one_to_one_field_resolved_clone() {
+        // Exercise the manual `Clone` impl on `OneToOneFieldResolved<T>`.
+        // Both original and clone must keep the cached child reachable —
+        // a bug that dropped the `Box<T>` on clone would show up here.
+        let r: OneToOneFieldResolved<Dummy> =
+            OneToOneFieldResolved::new(HeerId::from_i64(5).unwrap(), Some(Dummy));
+        let r2 = r.clone();
+        assert!(r.resolved().is_some());
+        assert!(r2.resolved().is_some());
+        assert_eq!(r.key(), r2.key());
+    }
+
+    #[test]
+    fn one_to_one_field_resolved_key_borrow() {
+        // `key()` returns `&T::Pk` — a borrow, not an owned clone.
+        // Confirm the borrow matches the stored value.
+        let pk = HeerId::from_i64(123).unwrap();
+        let r: OneToOneFieldResolved<Dummy> = OneToOneFieldResolved::new(pk, None);
+        assert_eq!(r.key(), &pk);
+    }
 }
