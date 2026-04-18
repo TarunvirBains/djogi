@@ -47,5 +47,5 @@ harness = true
 
 [[test]]
 name = "phase3_relations"
-path = "tests/integration/phase3_relations.rs"
+path = "../tests/integration/phase3_relations.rs"
 harness = true

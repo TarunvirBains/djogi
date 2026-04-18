@@ -18,7 +18,7 @@
 //! 5. Nullable FKs round-trip `None`/`Some` cleanly through the
 //!    `Option<ForeignKey<T>>` branch.
 //! 6. Inserts with a non-existent FK value surface cleanly as a
-//!    `DjogiError::Database` — proving the PG constraint violation
+//!    `DjogiError::Sqlx` — proving the PG constraint violation
 //!    doesn't panic through the Djogi error machinery.
 //!
 //! # Fixture strategy (Q10 resolution in the Phase 3 plan)
@@ -107,47 +107,27 @@ async fn setup_phase3(pool: &PgPool) {
         .await
         .unwrap();
 
-    // DDL mirrors `migrations/phase3/001_owners.sql`,
-    // `002_fuel_types.sql`, `003_vehicles.sql`. Keep the two in sync if
-    // the schema evolves — the SQL files are the authoritative
-    // reference and this helper issues them at test-setup time.
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS owners_p3 (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            name        TEXT        NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
+    // Reads DDL from the companion .sql files to keep test and
+    // migration truth aligned — the files under
+    // `tests/integration/migrations/phase3/` are the single source of
+    // truth, consumed here via `include_str!` and reused unchanged by
+    // the Phase 6 migration runner.
+    const OWNERS_DDL: &str = include_str!("migrations/phase3/001_owners.sql");
+    const FUEL_TYPES_DDL: &str = include_str!("migrations/phase3/002_fuel_types.sql");
+    const VEHICLES_DDL: &str = include_str!("migrations/phase3/003_vehicles.sql");
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS fuel_types_p3 (
-            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            name        TEXT        NOT NULL
-        )",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
-
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS vehicles_p3 (
-            id            BIGINT      PRIMARY KEY DEFAULT generate_id(),
-            created_at    TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            updated_at    TIMESTAMPTZ NOT NULL    DEFAULT now(),
-            make          TEXT        NOT NULL,
-            owner_id      BIGINT      NOT NULL    REFERENCES owners_p3(id) ON DELETE CASCADE,
-            fuel_type_id  BIGINT                  REFERENCES fuel_types_p3(id) ON DELETE RESTRICT
-        )",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
+    sqlx::query(OWNERS_DDL)
+        .execute(pool)
+        .await
+        .expect("apply 001_owners.sql");
+    sqlx::query(FUEL_TYPES_DDL)
+        .execute(pool)
+        .await
+        .expect("apply 002_fuel_types.sql");
+    sqlx::query(VEHICLES_DDL)
+        .execute(pool)
+        .await
+        .expect("apply 003_vehicles.sql");
 }
 
 /// Seed one `Owner` row with the given `name`. Framework fields
