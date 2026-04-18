@@ -2,8 +2,9 @@
 
 # Djogi Guides
 
-Documents describing the Phase 1 shipping contract. For planned features
-that don't ship yet, see [the roadmap](../roadmap/index.md).
+Documents describing the shipped framework surface (Phases 1 and 2). For
+planned features that don't ship yet, see
+[the roadmap](../roadmap/index.md).
 
 | Guide | Covers |
 |---|---|

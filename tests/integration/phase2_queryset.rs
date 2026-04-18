@@ -25,6 +25,12 @@ pub struct Post {
     pub body: String,
     pub published: bool,
     pub view_count: i32,
+    /// Nullable companion column — lets integration tests exercise
+    /// `IS NULL` / `NULLS FIRST` / `NULLS LAST` ordering semantics
+    /// without fighting `view_count`'s `NOT NULL` constraint. Left
+    /// `NULL` for the four `seed_posts` rows; individual tests backfill
+    /// it (or seed an additional NULL-bearing row) as needed.
+    pub score: Option<i32>,
 }
 
 /// Install HeeRanjId schema + seed node 1 + create `posts_p2`. Mirrors
@@ -59,7 +65,8 @@ async fn setup(pool: &PgPool) {
             title       TEXT        NOT NULL,
             body        TEXT        NOT NULL,
             published   BOOLEAN     NOT NULL,
-            view_count  INTEGER     NOT NULL
+            view_count  INTEGER     NOT NULL,
+            score       INTEGER
         )",
     )
     .execute(pool)
@@ -121,20 +128,25 @@ async fn seed_posts(pool: &PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    for (title, published, views) in [
-        ("alpha", true, 100i32),
-        ("beta", true, 50),
-        ("gamma", false, 200),
-        ("delta", true, 25),
+    // `score` is a nullable companion column used by the NULLS-ordering
+    // test; seeding it with a distinct value per row lets that test assert
+    // a deterministic sort order once a fifth NULL-bearing row is added.
+    // Other tests do not read `score` so its presence is invisible to them.
+    for (title, published, views, score) in [
+        ("alpha", true, 100i32, 10i32),
+        ("beta", true, 50, 20),
+        ("gamma", false, 200, 30),
+        ("delta", true, 25, 40),
     ] {
         sqlx::query(
-            "INSERT INTO posts_p2 (title, body, published, view_count) \
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO posts_p2 (title, body, published, view_count, score) \
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(title)
         .bind("body")
         .bind(published)
         .bind(views)
+        .bind(score)
         .execute(&mut *tx)
         .await
         .unwrap();
@@ -709,30 +721,50 @@ async fn not_in_list_empty_returns_all_rows(pool: PgPool) {
 /// not "50 followed by anything". If `escape_like` is wrong or missing,
 /// this test fails because `contains("50%")` would match any title
 /// starting with "50".
+///
+/// The test relies on **negative-control rows** to catch a subtle broken
+/// implementation. Without them, a broken `contains("50%")` emitting
+/// `LIKE '%50%%'` still matches zero rows in a table seeded only with
+/// `alpha/beta/gamma/delta/50% off_deal` — `%%` collapses to a wildcard
+/// but none of those titles start with "50". Adding `"50 off regular"`
+/// (no literal `%`) forces the escape logic to fire: a correctly-escaped
+/// `%50\%%` must exclude it, a buggy `%50%%` would include it. The
+/// `"xdeal"` row plays the same role for the `_` escape check.
 #[sqlx::test]
 async fn string_contains_escapes_percent_and_underscore(pool: PgPool) {
     setup(&pool).await;
     seed_posts(&pool).await;
 
-    // Add a row whose title contains both wildcard characters verbatim.
+    // Add the target row (contains both wildcard characters verbatim) plus
+    // two negative-control rows that a broken escape would falsely match.
     // Same transaction-wrap rationale as `seed_posts` — set_heer_node_id
-    // and the INSERT must share a connection.
+    // and the INSERTs must share a connection.
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("SELECT set_heer_node_id(1)")
         .execute(&mut *tx)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO posts_p2 (title, body, published, view_count) \
-         VALUES ('50% off_deal', 'b', true, 1)",
+        "INSERT INTO posts_p2 (title, body, published, view_count) VALUES \
+         ('50% off_deal', 'b', true, 1), \
+         ('50 off regular', 'b', true, 1), \
+         ('xdeal', 'b', true, 1)",
     )
     .execute(&mut *tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();
 
-    // `%` escape — must match exactly the new row, not e.g. "alpha" (which
-    // `50%` would otherwise match since `%` is ILIKE "anything").
+    // Sanity: all three extra rows ARE in the table. This anchors the
+    // assertions below as exclusion-by-escape rather than
+    // absent-from-seed.
+    let total = Post::objects().count(&pool).await.unwrap();
+    assert_eq!(total, 7, "4 seeded + 3 extras must all be present");
+
+    // `%` escape — must match exactly `"50% off_deal"`. The negative
+    // control `"50 off regular"` would match a broken `%50%%` pattern
+    // (because `%%` collapses to a wildcard) but MUST NOT match the
+    // literal-escape `%50\%%`.
     let pct = Post::objects()
         .filter(|f| f.title().contains("50%"))
         .fetch_all(&pool)
@@ -743,7 +775,9 @@ async fn string_contains_escapes_percent_and_underscore(pool: PgPool) {
 
     // `_` escape — `_deal` in unescaped LIKE would match "ydeal", "xdeal",
     // any single-char-prefix-plus-"deal"; escaped, it matches only the
-    // literal `_deal` substring.
+    // literal `_deal` substring. The `"xdeal"` control would slip through
+    // a broken implementation (single-char wildcard `_` matches `x`) but
+    // must be excluded by the literal-escape `%\_deal%`.
     let und = Post::objects()
         .filter(|f| f.title().contains("_deal"))
         .fetch_all(&pool)
@@ -805,76 +839,82 @@ async fn order_by_stacks_across_multiple_calls(pool: PgPool) {
 }
 
 /// `nulls_first()` / `nulls_last()` must render the corresponding SQL
-/// modifier. Insert one NULL-view_count row, then assert on row position.
+/// modifier through the **Djogi builder path** (not raw SQL). Exercises
+/// the modifier with a NULL-bearing row actually in the result set so
+/// that a broken emitter — dropping the `NULLS FIRST` / `NULLS LAST`
+/// token, swapping the two, or misordering against `ASC/DESC` — produces
+/// an observable row-position failure.
+///
+/// Uses the nullable `score` column (added to `Post` for exactly this
+/// test) rather than `view_count` so the NULL row survives sqlx FromRow
+/// decoding into `Post { score: Option<i32> }`. The four `seed_posts`
+/// rows carry non-null scores `10/20/30/40`; a fifth inserted here with
+/// `score = NULL` drives the positioning assertion.
 #[sqlx::test]
 async fn order_by_nulls_first_renders(pool: PgPool) {
     setup(&pool).await;
     seed_posts(&pool).await;
 
-    // Seed a row with NULL view_count. `posts_p2` was created with
-    // `view_count INTEGER NOT NULL`, so relax that for this test.
-    sqlx::query("ALTER TABLE posts_p2 ALTER COLUMN view_count DROP NOT NULL")
-        .execute(&pool)
-        .await
-        .unwrap();
-
+    // Insert a fifth row with `score = NULL`. `seed_posts` gave each of
+    // the four existing rows a distinct non-null score (10/20/30/40), so
+    // `ASC` puts them in that order and the NULL row's position depends
+    // entirely on the `NULLS FIRST` / `NULLS LAST` modifier.
     let mut tx = pool.begin().await.unwrap();
     sqlx::query("SELECT set_heer_node_id(1)")
         .execute(&mut *tx)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO posts_p2 (title, body, published, view_count) \
-         VALUES ('nullrow', 'b', true, NULL)",
+        "INSERT INTO posts_p2 (title, body, published, view_count, score) \
+         VALUES ('nullrow', 'b', true, 0, NULL)",
     )
     .execute(&mut *tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();
 
-    // `.nulls_first()` on an ASC ordering overrides the Postgres default
-    // (NULLS LAST for ASC) — the NULL-view_count row appears first.
-    //
-    // We can't decode NULL `view_count` into `Post { view_count: i32 }` —
-    // the non-nullable Rust field would fail at FromRow time. Instead,
-    // assert on title ordering via a raw query that mirrors what the
-    // builder emits.
-    let first_titles: Vec<String> =
-        sqlx::query_scalar("SELECT title FROM posts_p2 ORDER BY view_count ASC NULLS FIRST")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        first_titles.first().map(|s| s.as_str()),
-        Some("nullrow"),
-        "NULLS FIRST puts NULL row at the top"
-    );
-
-    let last_titles: Vec<String> =
-        sqlx::query_scalar("SELECT title FROM posts_p2 ORDER BY view_count ASC NULLS LAST")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    assert_eq!(
-        last_titles.last().map(|s| s.as_str()),
-        Some("nullrow"),
-        "NULLS LAST puts NULL row at the bottom"
-    );
-
-    // And the Djogi-emitted SQL path honours both modifiers. We can't
-    // decode the NULL-view_count row into a `Post` struct (the non-
-    // nullable field rejects NULL at FromRow time), so exclude it with a
-    // typed filter and instead assert the builder-rendered ORDER BY
-    // actually *runs* — the rows we can decode come back in the expected
-    // non-NULL order, which proves the WHERE + ORDER BY emission is
-    // wired end-to-end.
-    let non_null = Post::objects()
-        .filter(|f| f.view_count().is_not_null())
-        .order_by(|f| f.view_count().asc().nulls_first())
+    // `NULLS FIRST` — the NULL-score row floats to the top of an ASC
+    // ordering (which, by Postgres default, would otherwise put NULLs
+    // last). The NULL row must be IN the result set — no `is_not_null()`
+    // filter — so the modifier has observable work to do.
+    let first_rows = Post::objects()
+        .order_by(|f| f.score().asc().nulls_first())
         .fetch_all(&pool)
         .await
         .unwrap();
-    assert_eq!(non_null.len(), 4, "the four seeded rows (all non-null)");
+    assert_eq!(
+        first_rows.len(),
+        5,
+        "NULL row must be included — NULLS FIRST is pointless otherwise"
+    );
+    assert_eq!(
+        first_rows[0].title, "nullrow",
+        "NULLS FIRST must put the NULL-score row at position 0"
+    );
+    assert!(
+        first_rows[0].score.is_none(),
+        "first row's score must be NULL — confirms we're sorting by the right column"
+    );
+
+    // `NULLS LAST` — the NULL-score row sinks to the bottom of an ASC
+    // ordering. Separately verifiable from `NULLS FIRST` in case a buggy
+    // emitter always renders the same token regardless of which method
+    // was called.
+    let last_rows = Post::objects()
+        .order_by(|f| f.score().asc().nulls_last())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(last_rows.len(), 5);
+    assert_eq!(
+        last_rows.last().unwrap().title,
+        "nullrow",
+        "NULLS LAST must put the NULL-score row at the tail"
+    );
+    assert!(
+        last_rows.last().unwrap().score.is_none(),
+        "last row's score must be NULL"
+    );
 }
 
 /// `filter(...).update(|_| vec![])` must short-circuit to `Ok(0)` without
@@ -883,6 +923,13 @@ async fn order_by_nulls_first_renders(pool: PgPool) {
 /// queryset — an `UPDATE ... SET , ... WHERE ...` with no SET list is a
 /// Postgres syntax error, so the short-circuit in `UpdateStmt::execute`
 /// is load-bearing.
+///
+/// Row-value assertions guard against a subtle regression where the
+/// short-circuit returns `Ok(0)` but the UPDATE still runs (e.g. an
+/// always-appended `updated_at = now()` emits a syntactically valid
+/// `SET updated_at = now()` clause and desyncs `rows_affected` from the
+/// actual effect). Verifying the per-row `view_count` values and
+/// `updated_at == created_at` catches both halves of that regression.
 #[sqlx::test]
 async fn bulk_update_empty_assignments_short_circuits(pool: PgPool) {
     setup(&pool).await;
@@ -899,4 +946,38 @@ async fn bulk_update_empty_assignments_short_circuits(pool: PgPool) {
     // Seed count unchanged — no SQL ran.
     let total = Post::objects().count(&pool).await.unwrap();
     assert_eq!(total, 4, "empty-assignments update must not touch any row");
+
+    // Per-row value check — every seeded `view_count` must survive
+    // unchanged. `seed_posts` inserts alpha=100, beta=50, gamma=200,
+    // delta=25; sorted ascending that's (25, 50, 100, 200). A buggy
+    // short-circuit that still runs the UPDATE (e.g. always-append
+    // `updated_at = now()`) would leave values intact too, so this
+    // assertion is *necessary but not sufficient* — see the
+    // `updated_at == created_at` check below for the cross-check.
+    let rows = Post::objects()
+        .order_by(|f| f.view_count().asc())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let views: Vec<i32> = rows.iter().map(|p| p.view_count).collect();
+    assert_eq!(
+        views,
+        vec![25, 50, 100, 200],
+        "seeded view_count values must survive a short-circuited update"
+    );
+
+    // `updated_at = created_at` for every row — confirms NO SQL ran.
+    // Fresh INSERTs have both timestamps bound to the statement's
+    // `now()`, so equality here means the row has not been touched
+    // since seed time. If the short-circuit let the UPDATE through,
+    // `updated_at = now()` would bump strictly past `created_at`.
+    let unstamped: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        unstamped, 4,
+        "updated_at must still equal created_at — no UPDATE fired"
+    );
 }

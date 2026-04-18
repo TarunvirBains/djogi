@@ -402,8 +402,9 @@ query code.
   emitter's `unreachable!()` branches on `List`/`Pair`/`Null` values are
   genuinely unreachable from safe code.
 
-- **`{Model}Filter` is emitted alongside `{Model}Fields` by
-  `#[derive(Model)]`.** Same module, same visibility. Use it
+- **`{Model}Filter` is emitted alongside `{Model}Fields` by the
+  `#[model(table = "...")]` attribute macro.** Same module, same
+  visibility. Use it
   (`filter_struct(PostFilter::new().published(Lookup::Eq(true)))`) when
   you cannot write a `|f|` closure at compile time — shell bindings,
   admin UIs, dynamic assemblers. Row-set output is identical to the

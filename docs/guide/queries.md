@@ -266,9 +266,9 @@ write a Rust closure at compile time:
 - The admin UI — filter criteria arrive over HTTP as `(column, op, value)` triples.
 - Dynamic assemblers — search/export jobs built from a config file.
 
-`#[derive(Model)]` emits a `{Model}Filter` struct alongside
-`{Model}Fields`. Each setter takes a `Lookup<V>` whose `V` is pinned to
-the column's declared Rust type:
+The `#[model(table = "...")]` attribute macro emits a `{Model}Filter`
+struct alongside `{Model}Fields`. Each setter takes a `Lookup<V>` whose
+`V` is pinned to the column's declared Rust type:
 
 ```rust
 use djogi::prelude::*;
@@ -366,7 +366,7 @@ window functions, JOINs (Phase 3), arbitrary SQL expressions (Phase 4) —
 drop to `sqlx::QueryBuilder<Postgres>` or the `djogi::raw::*` helpers.
 See [Models §Rule 3][models-raw] for the raw-query surface.
 
-[models-raw]: ./agent-guide.md#rule-3-use-djogiraw-for-queries-the-model-trait-doesnt-cover
+[models-raw]: ./agent-guide.md#rule-3-use-djogiraw-for-queries-the-model-trait-and-queryset-dont-cover
 
 The raw path sits next to the typed one — a query that starts as
 `QuerySet` can pick up a raw tail when a feature isn't shipped yet,
