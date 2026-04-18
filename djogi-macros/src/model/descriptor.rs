@@ -198,10 +198,18 @@ pub fn expand(
             };
 
             // Relation metadata — `None`/`&[]` for scalar columns.
+            //
+            // Descriptor lookup keys off the short target name (last path
+            // segment) — Phase 6's migration differ matches this against
+            // `ModelDescriptor::type_name`, which is also just the short
+            // ident — so we deliberately use `info.target_name` here rather
+            // than the full `info.target_type`. The full type path is only
+            // needed by codegen sites that emit the target in type position
+            // (see `relations::expand`).
             let (relation_kind_tokens, on_delete_tokens, target_type_name_tokens) = match &relation
             {
-                Some((kind, target, _rel_nullable)) => {
-                    let kind_tokens = match kind {
+                Some(info) => {
+                    let kind_tokens = match info.kind {
                         MacroRelationKind::ForeignKey => {
                             quote! { Some(::djogi::descriptor::RelationKind::ForeignKey) }
                         }
@@ -216,7 +224,7 @@ pub fn expand(
                         }
                         None => quote! { None },
                     };
-                    let target_lit = target.as_str();
+                    let target_lit = info.target_name.as_str();
                     (kind_tokens, on_delete, quote! { Some(#target_lit) })
                 }
                 None => (quote! { None }, quote! { None }, quote! { None }),

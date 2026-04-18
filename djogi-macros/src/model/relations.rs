@@ -82,7 +82,7 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
         .iter()
         .filter_map(|field| {
             let ident = field.ident.as_ref()?;
-            let (kind, target, _nullable) = detect_relation(&field.ty)?;
+            let info = detect_relation(&field.ty)?;
 
             // Column literal: raw identifiers (`r#type`) must strip the
             // `r#` prefix, matching the treatment in `stubs.rs` and
@@ -109,9 +109,17 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
             let method_ident = syn::parse_str::<syn::Ident>(method_stem)
                 .unwrap_or_else(|_| format_ident!("r#{}", method_stem));
 
-            let target_ident = format_ident!("{}", target);
+            // Use the *full* target type (not just the last-segment ident) so
+            // fully-qualified user spellings like `ForeignKey<crate::models::Owner>`
+            // or `ForeignKey<inner::Widget>` still emit a resolvable
+            // `RelationPath<Self, crate::models::Owner>` at the macro-call
+            // site without requiring a separate `use crate::models::Owner;`.
+            // Collapsing down to the last-segment ident here was the Codex-
+            // reported blocker: it silently broke codegen for any FK / O2O
+            // whose target wasn't imported locally.
+            let target_type = &info.target_type;
 
-            let kind_path = match kind {
+            let kind_path = match info.kind {
                 MacroRelationKind::ForeignKey => {
                     quote! { ::djogi::relation::RelationKind::ForeignKey }
                 }
@@ -131,11 +139,11 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
                 #[inline]
                 pub fn #method_ident() -> ::djogi::relation::RelationPath<
                     #source_name,
-                    #target_ident,
+                    #target_type,
                 > {
                     ::djogi::relation::RelationPath::__new(
                         #column_name,
-                        <#target_ident as ::djogi::model::Model>::table_name(),
+                        <#target_type as ::djogi::model::Model>::table_name(),
                         #kind_path,
                     )
                 }

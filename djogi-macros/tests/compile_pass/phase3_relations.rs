@@ -64,6 +64,37 @@ pub struct User {
 pub struct Profile {
     pub bio: String,
     pub user_id: OneToOneField<User>,
+    // Nullable O2O — exercises the `Option<OneToOneField<T>>` branch in
+    // `detect_relation`, rounding out the four advertised relation shapes
+    // (FK, Option<FK>, O2O, Option<O2O>). Without this the O2O-with-Option
+    // permutation was unpinned.
+    pub optional_profile: Option<OneToOneField<User>>,
+}
+
+// Fully-qualified target path — the target type is defined in an inner
+// module and referenced via `inner::Widget` inside the relation wrapper.
+// This pins the path-preservation fix: `detect_relation` / `relations::expand`
+// must emit the full `inner::Widget` in the generated `RelationPath<…, _>`
+// return type, not just the last-segment ident `Widget` (which would fail
+// to resolve here because `Widget` is not imported into the outer scope).
+mod inner {
+    use djogi::prelude::*;
+
+    #[model(table = "widgets")]
+    #[derive(Debug, Clone)]
+    pub struct Widget {
+        pub kind: String,
+    }
+}
+
+#[model(table = "orders", no_default)]
+#[derive(Debug, Clone)]
+pub struct Order {
+    pub note: String,
+    // FK target spelled with a module prefix — verifies the emitter
+    // preserves `inner::Widget` end-to-end. If the emitter collapsed to
+    // just `Widget` the compile would fail with `cannot find type Widget`.
+    pub widget_id: ForeignKey<inner::Widget>,
 }
 
 fn _related_methods_return_typed_paths() {
@@ -73,6 +104,10 @@ fn _related_methods_return_typed_paths() {
     let _p1: RelationPath<Vehicle, Owner> = VehicleRelated::owner();
     let _p2: RelationPath<Vehicle, FuelType> = VehicleRelated::fuel_type();
     let _p3: RelationPath<Profile, User> = ProfileRelated::user();
+    let _p4: RelationPath<Profile, User> = ProfileRelated::optional_profile();
+    // Fully-qualified target path preserved verbatim in the emitted
+    // `RelationPath<_, inner::Widget>` return type.
+    let _p5: RelationPath<Order, inner::Widget> = OrderRelated::widget();
 }
 
 fn _relation_metadata_accessors_compile() {
@@ -105,4 +140,23 @@ fn main() {
     assert_eq!(p_user.source_column(), "user_id");
     assert_eq!(p_user.target_table(), "users");
     assert_eq!(p_user.kind(), RelationKind::OneToOne);
+
+    // `Option<OneToOneField<User>>` — nullable O2O still classifies as
+    // OneToOne; the column name keeps its full identifier (no `_id`
+    // suffix to strip), so the method stem matches the field name.
+    let p_opt_profile = ProfileRelated::optional_profile();
+    assert_eq!(p_opt_profile.source_column(), "optional_profile");
+    assert_eq!(p_opt_profile.target_table(), "users");
+    assert_eq!(p_opt_profile.kind(), RelationKind::OneToOne);
+
+    // Fully-qualified target path — `ForeignKey<inner::Widget>`. The
+    // emitted method returns `RelationPath<Order, inner::Widget>`, which
+    // only resolves because `relations::expand` preserves the full target
+    // type (`inner::Widget`) in the return-type position rather than
+    // collapsing to the last-segment ident (`Widget`, which is not in
+    // scope here).
+    let p_widget = OrderRelated::widget();
+    assert_eq!(p_widget.source_column(), "widget_id");
+    assert_eq!(p_widget.target_table(), "widgets");
+    assert_eq!(p_widget.kind(), RelationKind::ForeignKey);
 }

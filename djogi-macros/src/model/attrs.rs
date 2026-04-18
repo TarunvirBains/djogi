@@ -380,16 +380,57 @@ pub enum RelationKind {
     OneToOne,
 }
 
+/// Everything a macro caller needs to know about a detected relation field.
+///
+/// Returned by [`detect_relation`]. Two facets of the relation target are
+/// carried separately because they have different consumers:
+///
+/// - [`target_name`](Self::target_name) is a short, path-free string used
+///   only for the descriptor field `target_type_name` (Phase 6's migration
+///   emitter looks models up by this name against the `inventory`-registered
+///   descriptors, so keeping it segmented matches that lookup key).
+/// - [`target_type`](Self::target_type) is the **full `syn::Type`** the user
+///   wrote inside the wrapper (`Owner`, `models::Owner`, `crate::models::Owner`,
+///   or even `inner::Widget`). Emitted verbatim into positions such as
+///   `RelationPath<#source, #target_type>` and `<#target_type as Model>::…`
+///   so fully-qualified paths resolve at the user's macro-call site without
+///   requiring an extra `use …;` import.
+///
+/// Splitting the two lets the emitter use the right form in the right place —
+/// collapsing down to just the last-segment ident (as the previous
+/// `(RelationKind, String, bool)` tuple did) silently broke codegen for any
+/// target type the user spelled with a path prefix.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct RelationInfo {
+    /// FK vs O2O — drives both the emitted `RelationKind` variant and the
+    /// descriptor-side `relation_kind` field.
+    pub kind: RelationKind,
+    /// Short name for descriptor use (e.g. `"Owner"` from any of:
+    /// `Owner`, `models::Owner`, `crate::models::Owner`). Always the last
+    /// segment ident of the inner type path — this is the name Phase 6's
+    /// migration differ matches against `ModelDescriptor::type_name`.
+    pub target_name: String,
+    /// Full target type preserved for codegen. Use in `quote! { #target_type }`
+    /// positions so fully-qualified paths like
+    /// `ForeignKey<crate::models::Owner>` still emit a resolvable
+    /// `RelationPath<Self, crate::models::Owner>` without requiring a
+    /// separate `use crate::models::Owner;` at the call site.
+    pub target_type: syn::Type,
+    /// `true` when the outermost wrapper was `Option<…>` (nullable column).
+    pub nullable: bool,
+}
+
 /// Inspect a field's declared Rust type and decide whether it names a Djogi
 /// relation wrapper.
 ///
-/// Returns `Some((kind, target_type_name, nullable))` when the outermost
+/// Returns [`Some(RelationInfo)`](RelationInfo) when the outermost
 /// (post-`Option<…>`-strip) type is one of the recognized relation wrappers:
 ///
-/// - `ForeignKey<T>` → `Some((ForeignKey, "T", false))`
-/// - `Option<ForeignKey<T>>` → `Some((ForeignKey, "T", true))`
-/// - `OneToOneField<T>` → `Some((OneToOne, "T", false))`
-/// - `Option<OneToOneField<T>>` → `Some((OneToOne, "T", true))`
+/// - `ForeignKey<T>` → `Some(RelationInfo { kind: ForeignKey, …, nullable: false })`
+/// - `Option<ForeignKey<T>>` → `Some(RelationInfo { kind: ForeignKey, …, nullable: true })`
+/// - `OneToOneField<T>` → `Some(RelationInfo { kind: OneToOne, …, nullable: false })`
+/// - `Option<OneToOneField<T>>` → `Some(RelationInfo { kind: OneToOne, …, nullable: true })`
 /// - anything else → `None`
 ///
 /// # Robustness
@@ -404,13 +445,16 @@ pub enum RelationKind {
 /// from the spelling the user wrote, and the behaviour is consistent and
 /// easy to reason about.
 ///
-/// The extracted `target_type_name` is the last path segment's ident of the
-/// single generic argument, stringified. `ForeignKey<crate::Owner>` still
-/// recovers `"Owner"` for the descriptor field, which is what downstream
-/// consumers (`inventory` iteration for migration emission) want — they
-/// match against `ModelDescriptor::type_name`, not an import path.
+/// # Target preservation
+///
+/// Both the short `target_name` and the full `target_type` are preserved.
+/// Consumers that emit `type`-position tokens (e.g. `relations::expand`)
+/// must use `target_type` so that `ForeignKey<crate::models::Owner>` still
+/// emits a resolvable `RelationPath<_, crate::models::Owner>`; consumers
+/// that only need the short name for descriptor lookup (`descriptor::expand`)
+/// use `target_name`.
 #[allow(dead_code)]
-pub fn detect_relation(ty: &syn::Type) -> Option<(RelationKind, String, bool)> {
+pub fn detect_relation(ty: &syn::Type) -> Option<RelationInfo> {
     // First, strip one layer of `Option<…>` using the shared helper. The
     // returned `nullable` flag propagates straight through to the caller —
     // it's the same nullability semantic.
@@ -431,11 +475,11 @@ pub fn detect_relation(ty: &syn::Type) -> Option<(RelationKind, String, bool)> {
         _ => return None,
     };
 
-    // Extract the single generic argument's type name. The segment must
-    // carry `<T>`; a bare `ForeignKey` with no type parameter is a user
-    // error that earlier parsing (or the later descriptor emission) will
-    // surface with a better error — return `None` here rather than
-    // panicking the macro.
+    // Extract the single generic argument's type. The segment must carry
+    // `<T>`; a bare `ForeignKey` with no type parameter is a user error
+    // that earlier parsing (or the later descriptor emission) will surface
+    // with a better error — return `None` here rather than panicking the
+    // macro.
     let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
         return None;
     };
@@ -443,7 +487,7 @@ pub fn detect_relation(ty: &syn::Type) -> Option<(RelationKind, String, bool)> {
         return None;
     };
 
-    // The target's type name is the last segment of the inner type's path
+    // The target's short name is the last segment of the inner type's path
     // (`Owner` out of `crate::models::Owner`, or just `Owner` out of
     // `Owner`). Non-path inner types (e.g. references) aren't legal relation
     // targets — the `Model` bound on `ForeignKey<T>` would reject them at
@@ -455,9 +499,20 @@ pub fn detect_relation(ty: &syn::Type) -> Option<(RelationKind, String, bool)> {
     else {
         return None;
     };
-    let target_ident = inner_path.segments.last()?.ident.to_string();
+    let target_name = inner_path.segments.last()?.ident.to_string();
 
-    Some((kind, target_ident, nullable))
+    // Preserve the full inner `syn::Type` for codegen — emitters that place
+    // the target in type position must use this, not the stringified short
+    // name, so fully-qualified paths (e.g. `crate::models::Owner`) resolve
+    // at the macro-call site without requiring a separate `use` import.
+    let target_type = inner.clone();
+
+    Some(RelationInfo {
+        kind,
+        target_name,
+        target_type,
+        nullable,
+    })
 }
 
 /// Strip `Option<T>` → returns the inner type and `nullable = true`.
