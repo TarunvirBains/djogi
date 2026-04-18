@@ -52,6 +52,17 @@ pub mod types;
 pub mod __private {
     pub use inventory;
     pub use sqlx;
+
+    /// Reflexive type-equality witness. Implemented for every `T` as
+    /// `T: SameAs<T>`, so the **only** way for `A: SameAs<B>` to hold is
+    /// `A == B`. Used by `{Model}Filter` setters to pin a method's value
+    /// generic to the column's declared Rust type while keeping the
+    /// `IntoFilterValue` bound deferrable (see the setter emission in
+    /// `djogi-macros/src/model/filter.rs`). Not intended for downstream
+    /// use — this lives in `__private` and carries no stability
+    /// guarantee.
+    pub trait SameAs<T: ?Sized> {}
+    impl<T: ?Sized> SameAs<T> for T {}
 }
 
 pub use descriptor::{

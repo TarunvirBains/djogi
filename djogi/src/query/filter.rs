@@ -116,6 +116,74 @@ pub enum Lookup<V> {
     Regex(String),
 }
 
+impl<V: IntoFilterValue> Lookup<V> {
+    /// Project this lookup into the `(operator, value)` pair its SQL
+    /// leaf will carry.
+    ///
+    /// This is the **single point** where operator-value structural
+    /// invariants are established:
+    ///
+    /// - `Between` always pairs with [`FilterValue::Pair`];
+    /// - `In` / `NotIn` always pair with [`FilterValue::List`];
+    /// - `IsNull` / `IsNotNull` always pair with [`FilterValue::Null`];
+    /// - every other variant pairs with a scalar [`FilterValue`].
+    ///
+    /// Downstream code ([`FilterClause::from_lookup`] in the clause path,
+    /// the closure API through [`crate::query::field`]) funnels every
+    /// lookup through this method, so the `unreachable!()` branches in
+    /// [`crate::query::sql::emit_leaf`] that guard mismatched op/value
+    /// shapes are genuinely unreachable from safe code. If a new
+    /// [`Lookup`] variant is added, this method is the only place the
+    /// pairing needs to be declared.
+    ///
+    /// # Operator mapping
+    ///
+    /// The `Contains` / `StartsWith` / `EndsWith` variants map to the
+    /// **case-insensitive** `ILIKE`-family operators (`IContains`
+    /// / `IStartsWith` / `IEndsWith`), mirroring the closure API's
+    /// `.contains` / `.starts_with` / `.ends_with` default. Case-sensitive
+    /// substring matching is not currently exposed on [`Lookup`] —
+    /// callers who need it reach for the closure API or the raw
+    /// `sqlx::QueryBuilder` escape hatch.
+    ///
+    /// `Regex` maps to [`LookupOp::Regex`] — the case-sensitive POSIX
+    /// operator (`~`). The closure API exposes `.iregex` for the
+    /// case-insensitive counterpart; a future phase can add
+    /// `Lookup::IRegex` without a breaking change thanks to the
+    /// `#[non_exhaustive]` marker.
+    pub(crate) fn into_op_value(self) -> (LookupOp, FilterValue) {
+        match self {
+            Lookup::Eq(v) => (LookupOp::Eq, v.into_filter_value()),
+            Lookup::Neq(v) => (LookupOp::Neq, v.into_filter_value()),
+            Lookup::Gt(v) => (LookupOp::Gt, v.into_filter_value()),
+            Lookup::Gte(v) => (LookupOp::Gte, v.into_filter_value()),
+            Lookup::Lt(v) => (LookupOp::Lt, v.into_filter_value()),
+            Lookup::Lte(v) => (LookupOp::Lte, v.into_filter_value()),
+            Lookup::In(vs) => (
+                LookupOp::In,
+                FilterValue::List(vs.into_iter().map(|v| v.into_filter_value()).collect()),
+            ),
+            Lookup::NotIn(vs) => (
+                LookupOp::NotIn,
+                FilterValue::List(vs.into_iter().map(|v| v.into_filter_value()).collect()),
+            ),
+            Lookup::IsNull => (LookupOp::IsNull, FilterValue::Null),
+            Lookup::IsNotNull => (LookupOp::IsNotNull, FilterValue::Null),
+            Lookup::Contains(s) => (LookupOp::IContains, FilterValue::String(s)),
+            Lookup::StartsWith(s) => (LookupOp::IStartsWith, FilterValue::String(s)),
+            Lookup::EndsWith(s) => (LookupOp::IEndsWith, FilterValue::String(s)),
+            Lookup::Between(a, b) => (
+                LookupOp::Between,
+                FilterValue::Pair(
+                    Box::new(a.into_filter_value()),
+                    Box::new(b.into_filter_value()),
+                ),
+            ),
+            Lookup::Regex(s) => (LookupOp::Regex, FilterValue::String(s)),
+        }
+    }
+}
+
 /// Erased clause — what a macro-emitted `{Model}Filter` setter pushes
 /// into its internal `Vec`.
 ///
@@ -129,123 +197,51 @@ pub enum Lookup<V> {
 /// clause next to an `i32` clause next to a `String` clause) without
 /// per-clause boxing gymnastics.
 ///
+/// # Invariants
+///
+/// Fields are `pub(crate)` so the only path to a `FilterClause` from
+/// outside the crate is [`FilterClause::from_lookup`]. That funnel routes
+/// every value through [`Lookup::into_op_value`], which pairs each
+/// [`LookupOp`] with the structurally correct [`FilterValue`] shape
+/// (`Between`↔`Pair`, `In`/`NotIn`↔`List`, `IsNull`/`IsNotNull`↔`Null`,
+/// …). Consequently, the `unreachable!()` branches in the SQL emitter
+/// (`sql::emit_leaf`) that guard against mismatched op/value pairings
+/// are genuinely unreachable from safe code — downstream crates cannot
+/// hand-craft an invalid clause by poking at fields directly.
+///
 /// [`from_lookup`]: FilterClause::from_lookup
 #[derive(Debug, Clone)]
 pub struct FilterClause {
     /// SQL column name — macro-baked literal, never user input.
-    pub column: &'static str,
+    pub(crate) column: &'static str,
     /// Operator discriminant — chosen per [`Lookup`] variant in
     /// [`FilterClause::from_lookup`].
-    pub op: LookupOp,
+    pub(crate) op: LookupOp,
     /// Already-projected bind value. `FilterValue::Null` is used for the
     /// `IsNull` / `IsNotNull` variants where no bind is emitted.
-    pub value: FilterValue,
+    pub(crate) value: FilterValue,
 }
 
 impl FilterClause {
     /// Project a `Lookup<V>` into a type-erased `FilterClause`.
     ///
-    /// Called by every macro-emitted setter. The `V: IntoFilterValue`
-    /// bound is the same one the typed [`FieldRef`] lookup methods use,
-    /// so newtype columns and string-like types compose identically in
-    /// both surfaces.
+    /// This is the **only** public constructor for `FilterClause` — every
+    /// macro-emitted setter funnels through it, and the `FilterClause`
+    /// fields are `pub(crate)` so downstream crates cannot sidestep it.
+    /// Pairing operator and value happens in a single place
+    /// ([`Lookup::into_op_value`]), so the `unreachable!()` branches in
+    /// [`crate::query::sql::emit_leaf`] that guard shape mismatches are
+    /// genuinely unreachable from safe code.
     ///
-    /// # Operator mapping
-    ///
-    /// The `Contains` / `StartsWith` / `EndsWith` variants map to the
-    /// **case-insensitive** `ILIKE` variants (`IContains` / `IStartsWith`
-    /// / `IEndsWith`), mirroring the closure API's `.contains` / `.starts_with`
-    /// / `.ends_with` default. Case-sensitive substring matching is not
-    /// currently exposed on [`Lookup`] — callers who need it reach for
-    /// the closure API or the raw `sqlx::QueryBuilder` escape hatch.
-    ///
-    /// `Regex` maps to `LookupOp::Regex` — the case-sensitive POSIX
-    /// operator (`~`). The closure API exposes `.iregex` for the
-    /// case-insensitive counterpart; a future phase can add `Lookup::IRegex`
-    /// without a breaking change thanks to the `#[non_exhaustive]` marker.
+    /// The `V: IntoFilterValue` bound is the same one the typed
+    /// [`FieldRef`] lookup methods use, so newtype columns and
+    /// string-like types compose identically in both surfaces.
     ///
     /// [`FieldRef`]: crate::query::FieldRef
+    #[must_use]
     pub fn from_lookup<V: IntoFilterValue>(column: &'static str, lookup: Lookup<V>) -> Self {
-        match lookup {
-            Lookup::Eq(v) => Self {
-                column,
-                op: LookupOp::Eq,
-                value: v.into_filter_value(),
-            },
-            Lookup::Neq(v) => Self {
-                column,
-                op: LookupOp::Neq,
-                value: v.into_filter_value(),
-            },
-            Lookup::Gt(v) => Self {
-                column,
-                op: LookupOp::Gt,
-                value: v.into_filter_value(),
-            },
-            Lookup::Gte(v) => Self {
-                column,
-                op: LookupOp::Gte,
-                value: v.into_filter_value(),
-            },
-            Lookup::Lt(v) => Self {
-                column,
-                op: LookupOp::Lt,
-                value: v.into_filter_value(),
-            },
-            Lookup::Lte(v) => Self {
-                column,
-                op: LookupOp::Lte,
-                value: v.into_filter_value(),
-            },
-            Lookup::In(vs) => Self {
-                column,
-                op: LookupOp::In,
-                value: FilterValue::List(vs.into_iter().map(|v| v.into_filter_value()).collect()),
-            },
-            Lookup::NotIn(vs) => Self {
-                column,
-                op: LookupOp::NotIn,
-                value: FilterValue::List(vs.into_iter().map(|v| v.into_filter_value()).collect()),
-            },
-            Lookup::IsNull => Self {
-                column,
-                op: LookupOp::IsNull,
-                value: FilterValue::Null,
-            },
-            Lookup::IsNotNull => Self {
-                column,
-                op: LookupOp::IsNotNull,
-                value: FilterValue::Null,
-            },
-            Lookup::Contains(s) => Self {
-                column,
-                op: LookupOp::IContains,
-                value: FilterValue::String(s),
-            },
-            Lookup::StartsWith(s) => Self {
-                column,
-                op: LookupOp::IStartsWith,
-                value: FilterValue::String(s),
-            },
-            Lookup::EndsWith(s) => Self {
-                column,
-                op: LookupOp::IEndsWith,
-                value: FilterValue::String(s),
-            },
-            Lookup::Between(a, b) => Self {
-                column,
-                op: LookupOp::Between,
-                value: FilterValue::Pair(
-                    Box::new(a.into_filter_value()),
-                    Box::new(b.into_filter_value()),
-                ),
-            },
-            Lookup::Regex(s) => Self {
-                column,
-                op: LookupOp::Regex,
-                value: FilterValue::String(s),
-            },
-        }
+        let (op, value) = lookup.into_op_value();
+        Self { column, op, value }
     }
 
     /// Turn this clause into a `Condition::Leaf`. Called by
@@ -270,6 +266,29 @@ impl FilterClause {
 /// Users never implement this trait by hand — the `#[model]` macro
 /// stamps it alongside the filter struct.
 ///
+/// # Object safety
+///
+/// `ModelFilter` is **not** object-safe today: [`into_clauses`] takes
+/// `self` by value, which is incompatible with `dyn ModelFilter` trait
+/// objects (`self: Box<Self>` would be the by-value equivalent, but
+/// that forces every caller through a heap allocation and a
+/// `Box::new(...)` at the call site). The two current consumers —
+/// [`QuerySet::filter_struct`] (generic `F: ModelFilter`) and the Phase
+/// 2 unit/integration tests — never need storage-erased filters, so
+/// keeping the by-value shape preserves the zero-alloc path and matches
+/// the rest of the builder surface (`QuerySet`'s chain methods are also
+/// by-value self).
+///
+/// Phase 3's admin UI may need to store a heterogeneous list of filters
+/// (each column's operator and value come over HTTP at request time,
+/// not known at compile time). When that lands, revisit: options
+/// include adding a sibling `DynModelFilter` trait with
+/// `fn into_clauses(self: Box<Self>) -> Vec<FilterClause>`, or exposing
+/// the clauses via an owned field on the filter struct directly. We
+/// keep this trait's shape unconstrained (no `: Sized` bound) so either
+/// path stays open.
+///
+/// [`into_clauses`]: ModelFilter::into_clauses
 /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
 pub trait ModelFilter {
     /// Hand off the accumulated clauses. Consumes `self` — filters are
@@ -322,6 +341,61 @@ mod tests {
         assert_eq!(clause.column, "published");
         assert_eq!(clause.op, LookupOp::Eq);
         assert!(matches!(clause.value, FilterValue::Bool(true)));
+    }
+
+    #[test]
+    fn filter_clause_from_lookup_composes() {
+        // `FilterClause::from_lookup` is the single public constructor
+        // for `FilterClause`. It funnels through `Lookup::into_op_value`,
+        // which is the one place operator-value structural pairings
+        // (Between↔Pair, In/NotIn↔List, IsNull/IsNotNull↔Null, …) are
+        // established. This test pins a representative sample from each
+        // shape family so a regression to hand-built clauses (or a
+        // reshuffled `into_op_value` match arm) is caught by the unit
+        // tier rather than by the SQL emitter's downstream
+        // `unreachable!()` branches.
+        //
+        // The column string is preserved verbatim in every case — the
+        // macro bakes a `&'static str` literal per setter and this
+        // funnel never rewrites it.
+
+        // Scalar: Eq → FilterValue::I32
+        let c = FilterClause::from_lookup("view_count", Lookup::Eq(42i32));
+        assert_eq!(c.column, "view_count");
+        assert_eq!(c.op, LookupOp::Eq);
+        assert!(matches!(c.value, FilterValue::I32(42)));
+
+        // List: In → FilterValue::List
+        let c = FilterClause::from_lookup("id", Lookup::In(vec![1i64, 2, 3]));
+        assert_eq!(c.op, LookupOp::In);
+        assert!(matches!(c.value, FilterValue::List(ref v) if v.len() == 3));
+
+        // List: NotIn → FilterValue::List (empty is still List, not Null)
+        let c = FilterClause::from_lookup("id", Lookup::<i64>::NotIn(Vec::new()));
+        assert_eq!(c.op, LookupOp::NotIn);
+        assert!(matches!(c.value, FilterValue::List(ref v) if v.is_empty()));
+
+        // Pair: Between → FilterValue::Pair(Box, Box)
+        let c = FilterClause::from_lookup("age", Lookup::Between(10i32, 20i32));
+        assert_eq!(c.op, LookupOp::Between);
+        assert!(matches!(c.value, FilterValue::Pair(_, _)));
+
+        // Null: IsNull → FilterValue::Null (no projection of V)
+        let c = FilterClause::from_lookup("deleted_at", Lookup::<String>::IsNull);
+        assert_eq!(c.op, LookupOp::IsNull);
+        assert!(matches!(c.value, FilterValue::Null));
+
+        // Null: IsNotNull → FilterValue::Null (symmetry with IsNull)
+        let c = FilterClause::from_lookup("deleted_at", Lookup::<String>::IsNotNull);
+        assert_eq!(c.op, LookupOp::IsNotNull);
+        assert!(matches!(c.value, FilterValue::Null));
+
+        // String family: Contains → case-insensitive IContains operator
+        // (pattern wrapping `%…%` happens inside the SQL emitter, not
+        // here — the clause carries the raw user string).
+        let c = FilterClause::from_lookup("title", Lookup::<String>::Contains("x".to_string()));
+        assert_eq!(c.op, LookupOp::IContains);
+        assert!(matches!(c.value, FilterValue::String(ref s) if s == "x"));
     }
 
     #[test]

@@ -40,39 +40,80 @@
 //!
 //! impl PostFilter {
 //!     pub fn new() -> Self { ... }
-//!     pub fn title(mut self, lookup: ::djogi::Lookup<String>) -> Self { ... }
-//!     pub fn published(mut self, lookup: ::djogi::Lookup<bool>) -> Self { ... }
-//!     pub fn view_count(mut self, lookup: ::djogi::Lookup<i32>) -> Self { ... }
+//!     pub fn title<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
+//!     where
+//!         __V: ::djogi::IntoFilterValue,
+//!         String: ::djogi::__private::SameAs<__V>,
+//!     { ... }
+//!     pub fn published<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
+//!     where
+//!         __V: ::djogi::IntoFilterValue,
+//!         bool: ::djogi::__private::SameAs<__V>,
+//!     { ... }
+//!     pub fn view_count<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
+//!     where
+//!         __V: ::djogi::IntoFilterValue,
+//!         i32: ::djogi::__private::SameAs<__V>,
+//!     { ... }
 //! }
 //!
 //! impl ::djogi::ModelFilter for PostFilter { ... }
 //! ```
 //!
-//! # Nullable columns and generic setters
+//! The `SameAs<__V>` bound is a reflexive type-equality witness — the
+//! blanket `impl<T: ?Sized> SameAs<T> for T` means `A: SameAs<B>` holds
+//! if and only if `A == B`. That pins `__V = #field_ty` at every call
+//! site, so passing the wrong value type fails at the call site with a
+//! clean "expected `#field_ty`, got `…`" error. The `IntoFilterValue`
+//! bound is kept on the method generic `__V` rather than on the
+//! concrete `#field_ty` so Rust defers checking it to monomorphization
+//! (issue #48214 rejects concrete where-clauses that don't reference a
+//! method generic). Practical consequence: columns whose declared Rust
+//! type does not yet implement `IntoFilterValue` — `Decimal` without
+//! the feature flag, `Vec<T>`, JSONB payload wrappers — still have
+//! their setter emitted, and only its call site fails with a localized
+//! trait-bound error. The whole `{Model}Filter` remains compilable and
+//! composable.
 //!
-//! Each setter is generic in `V: IntoFilterValue` rather than bound to the
-//! field's declared Rust type. Two reasons:
+//! # Typed setters and unsupported column types
 //!
-//!   1. Fields whose type does not implement `IntoFilterValue` (for example
-//!      `Decimal` when the `rust_decimal` feature is off, `Vec<String>`,
-//!      JSONB payload wrappers) still get a setter — the trait bound is
-//!      only checked at call time, so defining the setter does not require
-//!      an `IntoFilterValue` impl for every column type.
-//!   2. Nullable columns (`Option<T>`) take `Lookup<T>` directly — users
-//!      write `Lookup::Eq("hello".to_string())` rather than
-//!      `Lookup::Eq(Some("hello".to_string()))`, matching the closure
-//!      API's ergonomics. Explicit NULL checks go through `Lookup::IsNull`
-//!      / `Lookup::IsNotNull`, which carry no value and work regardless of
-//!      the column's declared nullability (Postgres can produce NULL for
-//!      any column through outer joins / CASE / window frames, so these
-//!      variants are always meaningful).
+//! Each setter is typed against the column's declared Rust type. At
+//! the call site, `Lookup<__V>` must infer `__V = #field_ty` — the
+//! emitted `#field_ty: SameAs<__V>` bound is the reflexive
+//! type-equality witness that pins it. That puts `{Model}Filter` on
+//! the same compile-time footing as the closure API — passing the
+//! wrong value type to a setter (for example
+//! `PostFilter::new().view_count(Lookup::Eq("42"))` for an `i32`
+//! column) fails at the call site, not later at `sqlx::bind`.
 //!
-//! The trade-off: the compiler accepts `filter.view_count(Lookup::Eq("s"))`
-//! even though `view_count` is an `i32` (since `&str: IntoFilterValue`).
-//! This is a known consequence of the erased-clause shape. Callers who
-//! want strict typed value checks use `QuerySet::filter(|f| ...)` — the
-//! closure API is the typed surface and enforces `V` matches the column.
-//! `{Model}Filter` is the dynamic surface and accepts anything bindable.
+//! The `IntoFilterValue` bound is emitted on the **method generic
+//! `__V`**, not on the concrete `#field_ty`. Two consequences:
+//!
+//!   1. A column whose declared Rust type does not yet implement
+//!      `IntoFilterValue` (for example `Decimal` when the
+//!      `rust_decimal` feature is off, `Vec<String>`, a user-defined
+//!      JSONB payload wrapper) still gets a setter emitted. Rust
+//!      checks a concrete-type `where` clause at impl-definition time
+//!      (issue #48214), which would whole-model-reject a model
+//!      containing such a column. Keeping the bound on `__V` defers
+//!      the check to monomorphization, so only the unsupported
+//!      setter's call site fails — with a localized
+//!      "trait bound `…: IntoFilterValue` is not satisfied" rather
+//!      than a whole-model reject.
+//!   2. Explicit NULL checks via `Lookup::IsNull` / `Lookup::IsNotNull`
+//!      still go through `IntoFilterValue` (because
+//!      `Lookup<V>::into_op_value` is bounded on `V`). For columns
+//!      without such an impl, those setters are unusable — the
+//!      closure API's `.is_null()` remains the escape hatch.
+//!
+//! Nullable columns (`Option<T>`) take `Lookup<Option<T>>` directly —
+//! the field type is read verbatim, so users write
+//! `Lookup::Eq(Some("hello".to_string()))` /
+//! `Lookup::<Option<T>>::IsNull`. The closure API has the same shape
+//! for nullable columns, so the two surfaces stay symmetric. (A later
+//! phase may add a sugar layer that re-emits `Option<T>` setters as
+//! `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
+//! purely additive and does not need a change to this module.)
 //!
 //! # `pk = "none"` gate
 //!
@@ -136,29 +177,55 @@ pub fn expand(
         _ => 3,
     };
 
-    // Each setter is generic in `V: IntoFilterValue`. Making it generic
-    // rather than binding `V` to the field's concrete type at emission
-    // time buys two things at the cost of slightly looser compile-time
-    // type-checking on the value:
+    // Typed setters: the value's generic `__V` is pinned to the
+    // column's declared Rust type through a reflexive `SameAs<#ty>`
+    // bound. A user passing the wrong value type —
+    // `PostFilter::new().view_count(Lookup::Eq("42"))` for an `i32`
+    // column — infers `__V = &str`, which then fails the
+    // `i32: SameAs<__V>` bound with a clear "expected `i32`" error at
+    // the call site. Matches the closure API's compile-time discipline.
     //
-    //   1. Fields whose Rust type does not implement `IntoFilterValue`
-    //      (for example `Decimal`, `Vec<String>`, user-defined wrappers
-    //      without a ready SQL mapping) still get a setter. The typed
-    //      closure path in `{Model}Fields` remains the surface for
-    //      strict-typed filtering; `{Model}Filter` is the dynamic path,
-    //      and a generic `V` matches its "erased clause Vec" model.
-    //   2. Newtype columns — wrappers around a type that DOES implement
-    //      `IntoFilterValue` — compose without the macro needing a
-    //      per-wrapper pattern. Users pass the inner type's value; the
-    //      trait impl handles projection.
+    // # Why not `where #ty: IntoFilterValue` directly?
     //
-    // The downside: `post_filter.view_count(Lookup::Eq("str"))` compiles
-    // (since `&str: IntoFilterValue`) even though `view_count` is an
-    // `i32`. That's a genuine loss relative to the typed closure API
-    // (which would reject this at compile time), but it's the direct
-    // consequence of `FilterClause` being an erased Vec<Clause> shape.
-    // Callers who want strict-typed value checks use the closure API;
-    // callers who want dynamic composition use this one.
+    // Rust rejects concrete bounds in method `where` clauses whose
+    // subject isn't a method generic (issue #48214: "where clauses on
+    // method must reference a type parameter"). An emission like
+    // `where Option<String>: IntoFilterValue` fails at impl-definition
+    // time — the whole `{Model}Filter` refuses to compile for any
+    // model whose columns include a type without an `IntoFilterValue`
+    // impl. That would be a whole-model regression, not the localized
+    // call-site failure the review called for.
+    //
+    // # Deferred-bound pattern
+    //
+    // Introduce a method generic `__V` and tie it to `#ty` via a
+    // reflexive trait: `trait SameAs<T: ?Sized> {}` with a blanket
+    // `impl<T: ?Sized> SameAs<T> for T`. Since the only way for
+    // `A: SameAs<B>` to hold is `A == B`, writing
+    // `#ty: SameAs<__V>` pins `__V = #ty` whenever the setter is
+    // called. The `__V: IntoFilterValue` bound is now genuinely
+    // generic, so Rust defers checking it to monomorphization at the
+    // call site — exactly the lazy check we want. The whole
+    // `{Model}Filter` compiles regardless of which columns have
+    // `IntoFilterValue` impls, and the error message on a call to a
+    // setter whose column type lacks the impl points at the call
+    // site with "the trait bound `#ty: IntoFilterValue` is not
+    // satisfied".
+    //
+    // The helper trait lives in `djogi::__private::SameAs` to keep it
+    // out of the public namespace — users compose filters through
+    // `Lookup<V>` and never need to name `SameAs` themselves.
+    //
+    // # Raw `Lookup::<#ty>::IsNull` still works
+    //
+    // `Lookup::IsNull` carries no value, but the variant is still
+    // generic in `V` — the user writes `Lookup::<#ty>::IsNull` or
+    // lets inference fill `__V = #ty` from the setter's signature.
+    // Once `__V = #ty` is pinned, the `__V: IntoFilterValue` bound
+    // applies; columns whose type doesn't implement that trait cannot
+    // use `IsNull` through the clause path and fall back to the
+    // closure API's `.is_null()` (which has its own set of impls to
+    // consult).
     let setters: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -171,8 +238,12 @@ pub fn expand(
             // method name so users can still call `.r#type(...)`.
             let raw = ident.to_string();
             let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
+            // Read the field type verbatim — `Option<T>` / `Jsonb<T>` /
+            // user newtypes propagate without a translation table,
+            // same as `stubs.rs` emits into `FieldRef<M, V>`.
+            let ty = &field.ty;
             let doc = format!(
-                "Append a `{column}` lookup to the filter. Accepts any `Lookup<V>` where `V: IntoFilterValue` — generic to keep the erased-clause shape consistent across field types (including `Decimal` / `Vec<T>` / user newtypes that don't round-trip the closure API's typed path)."
+                "Append a `{column}` lookup to the filter. Typed on the column's declared Rust type — passing the wrong value type fails at the call site with a type-mismatch error. For columns whose type does not implement `IntoFilterValue` (e.g. `Decimal` without the feature flag, `Vec<T>`, user newtypes), this setter is defined but unusable; calling it fails at the call site with a trait-bound error. Reach for the closure API (`QuerySet::filter(|f| …)`) or `sqlx::QueryBuilder` directly in those cases."
             );
             Some(quote! {
                 #[doc = #doc]
@@ -180,6 +251,7 @@ pub fn expand(
                 pub fn #ident<__V>(mut self, lookup: ::djogi::Lookup<__V>) -> Self
                 where
                     __V: ::djogi::IntoFilterValue,
+                    #ty: ::djogi::__private::SameAs<__V>,
                 {
                     self.clauses.push(::djogi::FilterClause::from_lookup(#column, lookup));
                     self

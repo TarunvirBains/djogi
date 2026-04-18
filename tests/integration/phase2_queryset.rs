@@ -339,11 +339,14 @@ async fn in_list_and_between(pool: PgPool) {
 #[sqlx::test]
 async fn filter_struct_matches_closure_results(pool: PgPool) {
     // Task 8 parity check: `filter_struct` (programmatic) and `filter`
-    // (closure) must produce structurally equivalent filters for the same
-    // set of lookups. Asserting on row-count is the cheapest observable
-    // proxy — the two paths share the downstream SQL emitter, so matching
-    // row counts implies matching WHERE clauses (modulo bind ordering,
-    // which the emitter handles identically for both).
+    // (closure) must produce structurally equivalent filters for the
+    // same set of lookups. Row-count equality is necessary but not
+    // sufficient — two different predicates can accidentally match the
+    // same number of rows and pass a count-only assertion. Asserting
+    // ID-set equality is the stronger check: the two paths must return
+    // the *same rows*, not merely the same count.
+    use std::collections::BTreeSet;
+
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -362,14 +365,30 @@ async fn filter_struct_matches_closure_results(pool: PgPool) {
         .await
         .unwrap();
 
+    // Row-count equality — kept alongside ID-set equality as a cheap
+    // guard that fires with a friendlier failure message if the two
+    // paths desync in cardinality (e.g. one dropping a WHERE clause).
     assert_eq!(
         closure_rows.len(),
         struct_rows.len(),
         "closure filter and struct filter must return the same row count"
     );
-    // Sanity-check the absolute count — `seed_posts` inserts 4 rows; alpha
-    // (published, 100 views) and beta (published, 50 views) match both
-    // predicates, gamma (unpublished) and delta (25 views) don't.
+
+    // ID-set equality — catches predicate-level divergence row-count
+    // alone would miss. BTreeSet<HeerId> gives stable ordering for the
+    // debug print on assertion failure, and HeerId's Ord impl is a
+    // simple i64 comparison so the set construction is O(n log n).
+    let closure_ids: BTreeSet<_> = closure_rows.iter().map(|p| p.id).collect();
+    let struct_ids: BTreeSet<_> = struct_rows.iter().map(|p| p.id).collect();
+    assert_eq!(
+        closure_ids, struct_ids,
+        "closure filter and struct filter must return the same row set"
+    );
+
+    // Sanity-check the absolute count — `seed_posts` inserts 4 rows;
+    // alpha (published, 100 views) and beta (published, 50 views)
+    // match both predicates, gamma (unpublished) and delta (25 views)
+    // don't.
     assert_eq!(struct_rows.len(), 2);
 }
 
