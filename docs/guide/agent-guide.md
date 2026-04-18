@@ -11,10 +11,12 @@ the `#[model]` proc macro derives ORM methods, `FromRow` deserialization,
 and inventory registration. Your job is to work within that derivation chain
 — not around it.
 
-> **Phase 1 scope:** The `cargo djogi` CLI, QuerySet filter closures, RLS /
-> tenant isolation, the Rhai shell, and `cargo djogi migrate` are not
-> implemented yet. This guide covers what actually ships in Phase 1.
-> Planned features are documented in [the roadmap](../roadmap/index.md).
+> **Current scope:** Phase 1 (models + CRUD + descriptor) and Phase 2
+> (`QuerySet<T>` + filters + bulk update/delete) ship. The `cargo djogi`
+> CLI, `cargo djogi migrate`, the Rhai shell, relations (FK / M2M),
+> RLS / tenant isolation, and the expression layer (Phase 4+) do not.
+> This guide covers what actually ships today. Planned features are
+> documented in [the roadmap](../roadmap/index.md).
 
 ---
 
@@ -141,10 +143,14 @@ rationale captures behavioral constraints, write patterns, and ownership
 rules that the type system cannot encode. Ignoring it produces bugs that are
 invisible until production.
 
-### Rule 3: Use `djogi::raw::*` for queries the Model trait doesn't cover
+### Rule 3: Use `djogi::raw::*` for queries the Model trait and QuerySet don't cover
 
-Phase 1 does not have a QuerySet filter API. For anything beyond `get()` and
-`create()`, use `djogi::raw::*`:
+The `Model` trait methods cover single-row CRUD (`get`, `create`, `save`,
+`delete`). `Model::objects()` returns a `QuerySet<T>` that covers filters,
+ordering, pagination, distinct, bulk update, and bulk delete — see the
+[queries guide](./queries.md). For anything beyond that surface (JOINs,
+CTEs, window functions, `col = col + 1`-style expression UPDATEs), use
+`djogi::raw::*`:
 
 ```rust
 // query_as — Vec<T> where T: FromRow
@@ -337,7 +343,89 @@ authoritative mapping from Rust types to SQL types used by the proc macro.
 
 ---
 
-## 7. Common Mistakes
+## 7. QuerySet invariants
+
+`Model::objects()` returns a lazy `QuerySet<T>`. The invariants below are
+load-bearing — violating them either fails to compile or produces quiet
+mis-behaviour the type system cannot catch. Read them before writing any
+query code.
+
+- **`Model::objects()` never runs a query.** Construction is free. Only
+  the terminal methods (`fetch_all`, `fetch_one`, `first`, `count`,
+  `exists`, `update(...).execute(...)`, `delete(...)`) emit SQL and
+  execute it against a `sqlx::Executor`. A queryset dropped without a
+  terminal silently does nothing; the `#[must_use]` bound on every
+  builder method surfaces the dropped-chain case as a lint warning.
+
+- **`fetch_one` enforces exactly-one.** Zero rows → `DjogiError::NotFound`;
+  two or more rows → `DjogiError::MultipleObjects` (via an internal
+  `LIMIT 2` probe, so the `count_seen` field on the error is the
+  sentinel value `2`, not the true matching-row count). When zero-or-one
+  is an acceptable outcome, use `first(...)` — it returns
+  `Result<Option<T>, DjogiError>` and stops scanning at the first row.
+
+- **`.none()` short-circuits every terminal without touching the DB.**
+  Identity results per terminal: `fetch_all` → `Ok(vec![])`, `fetch_one`
+  → `Err(DjogiError::NotFound { .. })`, `first` → `Ok(None)`, `count` →
+  `Ok(0)`, `exists` → `Ok(false)`, `update(...).execute(...)` → `Ok(0)`,
+  `delete(...)` → `Ok(0)`. Any filters / ordering / limits chained
+  before `.none()` are discarded; the returned queryset is a fresh
+  empty-flagged `QuerySet::new()`.
+
+- **Bulk `update` / `delete` accept "no filter" as "match every row".**
+  `Post::objects().update(|f| f.published().set(false)).execute(&pool)`
+  updates every row in the table. This is intentional, not a safety
+  net; wrap in a filter before execution or reach for a transaction if
+  you need a rollback path.
+
+- **Empty-assignment short-circuit for `update`.**
+  `queryset.update(|_| vec![]).execute(&pool)` returns `Ok(0)` without
+  issuing SQL — an `UPDATE ... SET` with no assignments would otherwise
+  be a Postgres syntax error. Same for the `.none().update(...)` path.
+
+- **`updated_at = now()` is stamped on every bulk update.** The SQL
+  emitter always appends `updated_at = now()` to the SET list, even
+  when the caller's closure omits it. Parity with single-row `save()`.
+  Callers who need to preserve `updated_at` across a bulk write drop to
+  `djogi::raw::execute`.
+
+- **`FieldRef<M, V>` is `Copy + 'static`.** Free to pass around, bind to
+  a local, use twice in one closure. The two phantom markers
+  (`PhantomData<fn() -> M>`, `PhantomData<fn() -> V>`) carry no runtime
+  state; the whole struct is a `&'static str` column name plus two
+  zero-sized tags.
+
+- **`UpdateAssignment` is constructor-locked.** `FieldRef::set(value)`
+  is the only public path to an `UpdateAssignment`. The struct's fields
+  are `pub(crate)` so downstream crates cannot hand-craft assignments
+  with arbitrary column strings or mismatched value shapes — the SQL
+  emitter's `unreachable!()` branches on `List`/`Pair`/`Null` values are
+  genuinely unreachable from safe code.
+
+- **`{Model}Filter` is emitted alongside `{Model}Fields` by
+  `#[derive(Model)]`.** Same module, same visibility. Use it
+  (`filter_struct(PostFilter::new().published(Lookup::Eq(true)))`) when
+  you cannot write a `|f|` closure at compile time — shell bindings,
+  admin UIs, dynamic assemblers. Row-set output is identical to the
+  closure form; an integration test asserts parity.
+
+- **`order_by` stacks across calls.** Successive `.order_by(...)` calls
+  **append** to the ordering list (Django semantics), they do not
+  replace. Library code can safely add a stable tiebreaker without
+  clobbering the caller's primary sort key.
+
+- **`FieldRef::in_list(vec![])` renders as SQL `FALSE`**; `not_in_list(vec![])`
+  renders as SQL `TRUE`. Avoids the `col IN ()` syntax error and matches
+  the documented contract.
+
+- **`contains` / `starts_with` / `ends_with` escape LIKE wildcards.**
+  User input containing `%`, `_`, or `\` is escaped before the `%`
+  wrapping — `f.title().contains("50%")` matches the literal two-character
+  sequence.
+
+---
+
+## 8. Common Mistakes
 
 ### Forgetting `..Default::default()` on `create()`
 
@@ -393,9 +481,12 @@ for desc in inventory::iter::<ModelDescriptor> {
 | Delete | `instance.delete(&pool).await?` (consumes instance) |
 | Refresh stale instance | `instance.refresh_from_db(&pool).await?` |
 | Pre-generated ID insert | `Model::create_with_id(&pool, id, Model { ... }).await?` |
-| Filter/aggregate query | `djogi::raw::query_as(&pool, "SELECT ...", \|q\| q.bind(val)).await?` |
-| Count | `djogi::raw::query_scalar::<i64, _, _>(&pool, "SELECT COUNT(*) ...", \|q\| q).await?` |
-| Execute DML | `djogi::raw::execute(&pool, "UPDATE ...", \|q\| q.bind(val)).await?` |
+| Filter query | `Model::objects().filter(\|f\| f.col().eq(v)).fetch_all(&pool).await?` |
+| Count | `Model::objects().filter(\|f\| ...).count(&pool).await?` |
+| Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&pool).await?` |
+| Bulk delete | `Model::objects().filter(\|f\| ...).delete(&pool).await?` |
+| Raw query (beyond QuerySet) | `djogi::raw::query_as(&pool, "SELECT ...", \|q\| q.bind(val)).await?` |
+| Raw execute | `djogi::raw::execute(&pool, "UPDATE ...", \|q\| q.bind(val)).await?` |
 | Transactional ops | `pool.begin().await?` → pass `&mut *tx` to methods → `tx.commit().await?` |
 | Iterate all models | `for desc in inventory::iter::<djogi::ModelDescriptor> { ... }` |
 | Check trait contract | Read `djogi/src/model.rs` |
