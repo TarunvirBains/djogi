@@ -74,6 +74,7 @@ use crate::DjogiError;
 use crate::model::Model;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_count, build_exists, build_select};
+use crate::relation::prefetch::{PrefetchedRow, apply_prefetches};
 use std::future::Future;
 
 // ── Row-returning terminals (require `T: FromRow`) ────────────────────────
@@ -165,6 +166,79 @@ where
                 // error message renders "at least 2".
                 n => Err(DjogiError::multiple_objects(T::table_name(), n)),
             }
+        }
+    }
+
+    /// Execute the query and collect every matching row into a
+    /// `Vec<PrefetchedRow<T>>`, materialising every relation registered
+    /// via [`QuerySet::prefetch`](crate::query::QuerySet::prefetch) in
+    /// follow-up SQL queries and stitching the results back into per-row
+    /// wrappers.
+    ///
+    /// # Why a separate terminal (not a change to `fetch_all`)
+    ///
+    /// Preserving [`fetch_all`](Self::fetch_all)'s `Vec<T>` return type
+    /// keeps the Phase 2 terminal stable across Phase 3: a queryset
+    /// built without prefetches and fetched via `fetch_all` returns
+    /// exactly what it did before Task 4 landed. Prefetches are an
+    /// opt-in extension reachable through the dedicated
+    /// `fetch_all_prefetched` entry — no pre-existing call site is
+    /// forced into `Vec<PrefetchedRow<T>>`. This also makes prefetch
+    /// registrations free on querysets whose terminal happens to be
+    /// `fetch_all`: the `prefetch_paths` field is ignored on that path,
+    /// which is documented on the field itself.
+    ///
+    /// # Short-circuit contract
+    ///
+    /// Honours the same `is_empty` short-circuit as the other terminals:
+    /// a structural-none queryset returns `Ok(Vec::new())` without
+    /// touching the database. An empty main result also short-circuits
+    /// the prefetch pass — no prefetch loader runs when there are no
+    /// parent rows to stitch against.
+    ///
+    /// # Executor shape
+    ///
+    /// Takes `&PgPool` concretely rather than the `impl Executor`
+    /// generic that [`fetch_all`](Self::fetch_all) accepts. The
+    /// prefetch loader fan-out runs *after* the main query completes;
+    /// keeping the pool reference lets every loader grab its own
+    /// connection from the pool without passing ownership or threading
+    /// lifetimes through the type-erased [`ErasedPrefetch`](
+    /// crate::relation::prefetch::ErasedPrefetch) fn-pointer signature.
+    /// A `&mut Transaction` executor overload lands later if the
+    /// shell / admin paths need prefetch inside a single transactional
+    /// scope; Phase 3 ships pool-only.
+    pub fn fetch_all_prefetched(
+        self,
+        pool: &sqlx::PgPool,
+    ) -> impl Future<Output = Result<Vec<PrefetchedRow<T>>, DjogiError>> + Send + '_
+    where
+        T::Pk: Clone + Send + Sync + 'static,
+    {
+        async move {
+            // TASK6:empty_contract — structural-none queryset returns
+            // `Vec::new()` without touching the DB. Mirrors the
+            // `fetch_all` short-circuit.
+            if self.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Snapshot prefetch paths before we consume `self` in the
+            // main-query build. The shared SQL emitter borrows the
+            // queryset, so we pull out what we need first.
+            let prefetches = self.prefetch_paths.clone();
+
+            // Main query — identical shape to `fetch_all`.
+            let mut qb = build_select(&self);
+            let rows: Vec<T> = qb
+                .build_query_as::<T>()
+                .fetch_all(pool)
+                .await
+                .map_err(DjogiError::from)?;
+
+            // Apply each prefetch loader. Empty main result -> no
+            // loaders run (short-circuit inside `apply_prefetches`).
+            apply_prefetches(pool, &prefetches, rows).await
         }
     }
 

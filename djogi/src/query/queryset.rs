@@ -58,6 +58,9 @@ use crate::model::Model;
 use crate::query::condition::Condition;
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
+use crate::relation::path::RelationPath;
+use crate::relation::prefetch::{ErasedPrefetch, prefetch_loader};
+use std::hash::Hash;
 use std::marker::PhantomData;
 
 /// `DISTINCT` mode for a QuerySet.
@@ -111,6 +114,17 @@ pub struct QuerySet<T: Model> {
     /// the empty result without a DB round-trip. Set only by
     /// [`QuerySet::none`].
     pub(crate) is_empty: bool,
+    /// Registered prefetch paths — one entry per call to
+    /// [`QuerySet::prefetch`]. Consumed by
+    /// [`QuerySet::fetch_all_prefetched`](crate::query::QuerySet::fetch_all_prefetched)
+    /// to run a stitching query per path after the main result set
+    /// comes back. Deduplicated on registration: calling `.prefetch(path)`
+    /// twice with the same [`RelationPath::source_column`] is a no-op on
+    /// the second call. Kept separate from `condition`/`ordering`/etc. so
+    /// a plain `.fetch_all(...)` on a queryset with prefetches compiles
+    /// and behaves exactly as if no prefetch was registered — prefetches
+    /// only take effect on the dedicated terminal.
+    pub(crate) prefetch_paths: Vec<ErasedPrefetch>,
     /// Covariant `T` tag; never owns or borrows a `T`.
     _model: PhantomData<fn() -> T>,
 }
@@ -124,6 +138,11 @@ impl<T: Model> Clone for QuerySet<T> {
             limit: self.limit,
             offset: self.offset,
             is_empty: self.is_empty,
+            // `ErasedPrefetch: Clone` (shallow clone — fn pointers and
+            // `&'static str` are trivially copyable). Cloning preserves
+            // prefetch registrations across any `if`/`else` branch that
+            // keeps a partially-built queryset around.
+            prefetch_paths: self.prefetch_paths.clone(),
             _model: PhantomData,
         }
     }
@@ -139,6 +158,7 @@ impl<T: Model> std::fmt::Debug for QuerySet<T> {
             .field("limit", &self.limit)
             .field("offset", &self.offset)
             .field("is_empty", &self.is_empty)
+            .field("prefetch_paths", &self.prefetch_paths)
             .finish()
     }
 }
@@ -162,6 +182,7 @@ impl<T: Model> QuerySet<T> {
             limit: None,
             offset: None,
             is_empty: false,
+            prefetch_paths: Vec::new(),
             _model: PhantomData,
         }
     }
@@ -347,6 +368,91 @@ impl<T: Model> QuerySet<T> {
     {
         let cols = f(T::Fields::default()).into_distinct_columns();
         self.distinct = DistinctMode::On(cols);
+        self
+    }
+
+    /// Register a single-hop prefetch against `path`. The target rows
+    /// are materialised in a follow-up SQL query after the main
+    /// [`fetch_all_prefetched`](crate::query::QuerySet::fetch_all_prefetched)
+    /// executes; each main row is wrapped in a
+    /// [`PrefetchedRow<T>`](crate::relation::PrefetchedRow) that exposes
+    /// its resolved targets via
+    /// [`PrefetchedRow::get`](crate::relation::PrefetchedRow::get).
+    ///
+    /// Calling `.prefetch(path)` twice with the same path is idempotent
+    /// — the second registration is a no-op by `source_column` equality.
+    /// This matches the natural expectation ("I asked for the same
+    /// relation twice; please don't run two queries") and makes
+    /// composition-site chaining (library code + caller both registering
+    /// the same prefetch) free of surprises.
+    ///
+    /// # Why the bounds split across `Source::Pk` and `Target::Pk`
+    ///
+    /// Prefetch stitches via a `LEFT JOIN` keyed on `Source::Pk`; the
+    /// `IN (...)` bind needs `Source::Pk: Encode + Type`, and the
+    /// HashMap that routes targets back to parents needs it `Eq + Hash
+    /// + Clone`. `Target::Pk` is not used for filtering — only for the
+    /// NULL-probe in the stitching query, which goes through the raw-
+    /// value path and does not require any `Target::Pk` bounds beyond
+    /// what [`Model`] already guarantees.
+    ///
+    /// `Target` itself picks up `FromRow + Clone + Unpin` so the loader
+    /// can decode the `t.*` columns and mint a per-parent owned copy;
+    /// see the header comment on
+    /// [`crate::relation::prefetch`] for the rationale behind the Clone
+    /// bound (not on `Model` itself, just on the prefetch path).
+    ///
+    /// ```ignore
+    /// let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+    ///     .filter(|f| f.make.eq("Toyota"))
+    ///     .prefetch(VehicleRelated::owner())
+    ///     .fetch_all_prefetched(&pool).await?;
+    ///
+    /// for row in &rows {
+    ///     let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
+    ///     println!("{} owned by {}", row.row.make, owner.name);
+    /// }
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn prefetch<Target>(mut self, path: RelationPath<T, Target>) -> Self
+    where
+        T::Pk: sqlx::Type<sqlx::Postgres>
+            + for<'q> sqlx::Encode<'q, sqlx::Postgres>
+            + for<'r> sqlx::Decode<'r, sqlx::Postgres>
+            + Eq
+            + Hash
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        Target: Model
+            + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>
+            + Clone
+            + Send
+            + Unpin
+            + 'static,
+    {
+        // Idempotent registration: if a prefetch for this source column
+        // is already registered, don't append a duplicate. Duplicate
+        // entries would each fire their own loader, costing an extra
+        // round trip for no correctness gain — and would potentially
+        // overwrite each other's stitched entries in a nondeterministic
+        // order. The dedup key is `source_column` because the
+        // `RelationPath` type parameters pin `Source`/`Target` at the
+        // type level; two paths with the same source column pointing at
+        // the same target are the same relation by construction.
+        if self
+            .prefetch_paths
+            .iter()
+            .any(|p| p.source_column == path.source_column())
+        {
+            return self;
+        }
+        self.prefetch_paths.push(ErasedPrefetch {
+            source_column: path.source_column(),
+            parent_table: T::table_name(),
+            loader: prefetch_loader::<T, Target>,
+        });
         self
     }
 

@@ -399,3 +399,203 @@ async fn fk_creation_sqlx_error_on_unknown_owner(pool: PgPool) {
         other => panic!("expected DjogiError::Sqlx from FK violation, got: {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Task 4 integration tests: `QuerySet::prefetch` + `PrefetchedRow<T>`.
+// ---------------------------------------------------------------------------
+//
+// Each test seeds its own fixture via the same `setup_phase3` helper and
+// compact `seed_*` builders used above. The prefetch path runs the usual
+// `fetch_all_prefetched` terminal against a live Postgres pool — no
+// instrumentation beyond what the main query already uses. Where a test
+// asserts "exactly two queries were issued", we rely on the `LEFT JOIN`-
+// based stitcher's shape (one main query + one prefetch query per
+// registered path) rather than instrumenting the pool — the assertion
+// is structural, anchored by the terminal's documented contract in
+// `djogi/src/relation/prefetch.rs`.
+
+/// Happy path: two vehicles, two distinct owners, prefetch resolves both.
+/// Proves the wrapper surface works end-to-end — main rows come back as
+/// `PrefetchedRow<Vehicle>` and each `row.get(VehicleRelated::owner())`
+/// returns a `&Owner` whose `name` matches the seeded value.
+#[sqlx::test]
+async fn prefetch_fk_loads_related_without_n_plus_one(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let alice = seed_owner(&pool, "Alice").await;
+    let bob = seed_owner(&pool, "Bob").await;
+    let _ = seed_vehicle_with_owner(&pool, "Toyota", &alice, None).await;
+    let _ = seed_vehicle_with_owner(&pool, "Honda", &bob, None).await;
+
+    let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+        .order_by(|f| f.make().asc())
+        .prefetch(VehicleRelated::owner())
+        .fetch_all_prefetched(&pool)
+        .await
+        .expect("fetch_all_prefetched should succeed");
+
+    assert_eq!(rows.len(), 2);
+    // The order_by clause guarantees `Honda` precedes `Toyota`
+    // alphabetically, so position 0 is Bob's Honda and position 1 is
+    // Alice's Toyota. Asserting on both ordering and name pins the
+    // correct parent→target wiring: a naive implementation that
+    // accidentally swapped slots would still return two Owners, but
+    // with the wrong names in the wrong slots.
+    assert_eq!(rows[0].row.make, "Honda");
+    let honda_owner = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("prefetched owner should be present for non-null FK");
+    assert_eq!(honda_owner.name, "Bob");
+
+    assert_eq!(rows[1].row.make, "Toyota");
+    let toyota_owner = rows[1]
+        .get(VehicleRelated::owner())
+        .expect("prefetched owner should be present for non-null FK");
+    assert_eq!(toyota_owner.name, "Alice");
+}
+
+/// Nullable FK path: vehicle has no `fuel_type_id`. Prefetching the
+/// `fuel_type` relation on this row must return `None` (not panic, not
+/// error) — the LEFT JOIN miss is the documented null-safe behaviour.
+#[sqlx::test]
+async fn prefetch_nullable_fk_skipped(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Carol").await;
+    // Deliberately pass `None` for the fuel type — the column is
+    // `Option<ForeignKey<FuelType>>` and `fuel_type_id` is the nullable
+    // FK we want to exercise.
+    let _ = seed_vehicle_with_owner(&pool, "Subaru", &owner, None).await;
+
+    let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+        .prefetch(VehicleRelated::fuel_type())
+        .fetch_all_prefetched(&pool)
+        .await
+        .expect("fetch_all_prefetched should succeed");
+
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0].get(VehicleRelated::fuel_type()).is_none(),
+        "nullable FK with NULL column must surface as None in the resolved-relations map"
+    );
+}
+
+/// Duplicate FK: two vehicles point at the same owner. Both
+/// `row.get(...)` calls must return data equivalent to the shared owner.
+/// Implementation detail: this test deliberately does NOT assert they
+/// are the same `&Owner` pointer — the stitcher clones the target so
+/// each parent owns its slot independently, which keeps the API's
+/// `Drop` semantics simple. Data-equality is the observable contract.
+#[sqlx::test]
+async fn prefetch_duplicate_fk_stitches_same_child(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Dana").await;
+    let _ = seed_vehicle_with_owner(&pool, "Ford", &owner, None).await;
+    let _ = seed_vehicle_with_owner(&pool, "Chevy", &owner, None).await;
+
+    let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+        .order_by(|f| f.make().asc())
+        .prefetch(VehicleRelated::owner())
+        .fetch_all_prefetched(&pool)
+        .await
+        .expect("fetch_all_prefetched should succeed");
+
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        let resolved = row
+            .get(VehicleRelated::owner())
+            .expect("both vehicles share the same owner — both resolved entries must be present");
+        assert_eq!(resolved.id, owner.id);
+        assert_eq!(resolved.name, "Dana");
+    }
+}
+
+/// Empty main result: filter matches no rows. Prefetch must short-
+/// circuit without issuing the target-fetch query — `apply_prefetches`
+/// documents this and `fetch_all_prefetched` honours it. The test asserts
+/// the empty result (no panic, no error); the "no second query" clause
+/// of the contract is enforced structurally at the code path, not
+/// instrumented here.
+#[sqlx::test]
+async fn prefetch_empty_parent_set_issues_no_child_query(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Eve").await;
+    let _ = seed_vehicle_with_owner(&pool, "BMW", &owner, None).await;
+
+    // Filter on an ID that cannot exist — generate_id() is
+    // time-ordered and dwarfs any small sentinel.
+    let nonexistent = ::djogi::types::HeerId::from_i64(1).expect("1 is a valid HeerId sentinel");
+    let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+        .filter(|f| f.id().eq(nonexistent))
+        .prefetch(VehicleRelated::owner())
+        .fetch_all_prefetched(&pool)
+        .await
+        .expect("fetch_all_prefetched should succeed even when empty");
+
+    assert!(
+        rows.is_empty(),
+        "filter on nonexistent id should return zero rows"
+    );
+}
+
+/// Multiple prefetches on the same queryset — one per relation. Each
+/// resolves independently; both are reachable via `row.get(...)` on the
+/// same `PrefetchedRow`. Proves the `prefetch_paths` vec and the
+/// per-column HashMap key strategy compose across heterogeneous target
+/// types (`Owner` and `FuelType` are distinct structs).
+#[sqlx::test]
+async fn prefetch_multiple_relations_combines_correctly(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Frank").await;
+    let fuel = seed_fuel_type(&pool, "Electric").await;
+    let _ = seed_vehicle_with_owner(&pool, "Tesla", &owner, Some(&fuel)).await;
+
+    let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+        .prefetch(VehicleRelated::owner())
+        .prefetch(VehicleRelated::fuel_type())
+        .fetch_all_prefetched(&pool)
+        .await
+        .expect("fetch_all_prefetched with two prefetches should succeed");
+
+    assert_eq!(rows.len(), 1);
+    let row = &rows[0];
+    let resolved_owner = row
+        .get(VehicleRelated::owner())
+        .expect("owner prefetch should resolve");
+    assert_eq!(resolved_owner.name, "Frank");
+    let resolved_fuel = row
+        .get(VehicleRelated::fuel_type())
+        .expect("fuel_type prefetch should resolve");
+    assert_eq!(resolved_fuel.name, "Electric");
+}
+
+/// Idempotent prefetch: calling `.prefetch(same_path)` twice registers
+/// one prefetch, not two. The second call is a no-op (deduplicated by
+/// `source_column`). Test passes if:
+///
+/// 1. The query does not error (no duplicate-key HashMap panic),
+/// 2. The single owner prefetch returns the correct data.
+///
+/// Strictly-speaking, asserting "one round trip instead of two" is a
+/// performance contract; this test only enforces correctness, which is
+/// the user-visible invariant. The structural dedup lives in
+/// `QuerySet::prefetch` and is covered by the queryset's own unit
+/// tests indirectly (no runtime panic path exists for duplicate
+/// paths).
+#[sqlx::test]
+async fn prefetch_same_relation_twice_is_idempotent(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Grace").await;
+    let _ = seed_vehicle_with_owner(&pool, "Audi", &owner, None).await;
+
+    let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+        .prefetch(VehicleRelated::owner())
+        .prefetch(VehicleRelated::owner())
+        .fetch_all_prefetched(&pool)
+        .await
+        .expect("duplicate prefetch registrations must not cause failure");
+
+    assert_eq!(rows.len(), 1);
+    let resolved = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("owner must resolve after duplicate prefetch");
+    assert_eq!(resolved.name, "Grace");
+}

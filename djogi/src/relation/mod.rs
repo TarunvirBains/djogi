@@ -24,8 +24,10 @@ pub mod foreign_key;
 pub mod on_delete;
 pub mod one_to_one;
 pub mod path;
+pub mod prefetch;
 
 pub use foreign_key::{ForeignKey, ForeignKeyResolved};
 pub use on_delete::OnDelete;
 pub use one_to_one::{OneToOneField, OneToOneFieldResolved};
 pub use path::{RelationKind, RelationPath};
+pub use prefetch::PrefetchedRow;
