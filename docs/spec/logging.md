@@ -61,6 +61,8 @@ JSON-aware diffing — changes to both regular model fields and nested `Jsonb<T>
 //   { path: "engine.turbo.boost_psi",  before: 15.0,     after: 18.5    },
 // ]
 ```
+Redaction in diffs (Phase 6.5 — see [Protected Data Metadata & Field Codecs](./protected-data.md)): fields annotated with `#[field(sensitive)]` or `#[field(redact_in(logs))]` have their before/after values replaced with a masked marker in `changes` and `snapshot`. Fields declared with `#[field(codec = "...")]` are captured in their codec-encoded form — the CRUD log never sees plaintext. This keeps the audit trail complete (which field changed, when, by whom) without the log database becoming a secondary plaintext store of sensitive data.
+
 Actor attribution:
 ```rust
 car.save_with_actor(&pool, "user:8312847293").await?;
@@ -90,7 +92,10 @@ All behavioral, observability, and system events are routed to the Event Log Dat
 - **Severity routing:** `DEBUG`/`INFO` spans go to the events table; `WARN`/`ERROR`/`CRITICAL` additionally fan out to Sentry, OpenTelemetry, or Datadog via standard subscriber layering — no custom adapters needed
 - **Access pattern:** Semi-structured `JSONB` payloads, queried constantly during active debugging, naturally suited to shorter retention than CRUD logs
 
-### 9.3 Log Lifecycle
+### 9.3 Log Database Retention
+
+> Note: this section covers retention of the log databases themselves. For application-data lifecycle (purge / anonymize / archive of rows in the app DB), see [Data Lifecycle & Governance](./data-lifecycle.md).
+
 ```bash
 # Wipe app DB only — both log databases untouched
 cargo djogi db reset

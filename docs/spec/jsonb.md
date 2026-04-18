@@ -24,7 +24,7 @@ pub struct EngineSpec {
     pub turbo: Option<Jsonb<TurboSpec>>,   // nested schema — fully typed
 }
 
-#[derive(Model)]
+#[model(table = "vehicles")]
 pub struct Vehicle {
     pub make: String,
     pub engine: Jsonb<EngineSpec>,         // JSONB column in Postgres

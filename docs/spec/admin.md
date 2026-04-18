@@ -151,15 +151,28 @@ impl ManyToMany<Group> for Person {
     const ADMIN_INLINE: bool = true;           // set false to suppress inline
 }
 ```
-### 15.7 Opt-Out
+### 15.7 Opt-Out and Field Visibility
+
+Model-level opt-out remains bespoke to the admin:
+
 ```rust
 // Exclude a model from the admin entirely
 #[model(table = "internal_tokens", admin = false)]
 #[derive(Debug, Clone)]
 pub struct InternalToken { ... }
+```
 
-// Hide a specific field (still persisted, not shown)
-#[field(admin_hidden)]
+Field-level visibility is **not** an admin-specific concern — it is driven by the same descriptor metadata that feeds projections and protected-data governance:
+
+- **Not shown in admin forms:** omit `admin` from the field's `expose(...)` list, or declare `#[field(expose(none))]` to hide the field everywhere. See [Projections](./projections.md).
+- **Shown in admin but value masked:** combine `#[field(expose(admin))]` with `#[field(sensitive)] #[field(redact_in(admin))]`. See [Protected Data](./protected-data.md).
+- **Shown but non-editable** (e.g., `created_at`, `updated_at`, computed columns): use `#[field(admin_readonly)]` — this is a widget-render axis, orthogonal to visibility.
+
+The legacy `#[field(admin_hidden)]` annotation is superseded by `expose(...)` scope membership and will not ship in Phase 8.
+
+```rust
+// Field is persisted but never surfaces in any projection, admin included.
+#[field(expose(none))]
 pub password_hash: String,
 ```
 ### 15.8 Research Areas (Admin)

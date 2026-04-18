@@ -59,6 +59,8 @@
 | Dev database reset | `cargo djogi db reset` — gated on `dev_mode = true` + localhost URL + `DJOGI_ENV != production` |
 | CLI interface | `cargo djogi` subcommand — installed via `cargo install djogi-cli`, idiomatic Rust toolchain |
 | Djogi's scope | Model derivation chain only — does not duplicate Axum, SQLx, HeeRanjId, or Tokio responsibilities |
+| Public requirement translation | Private app requirements may inform Djogi, but specs/docs describe them only as product-agnostic framework capabilities |
+| Core vs companion crate boundary | Djogi keeps reusable data-layer primitives; domain policy, workflow logic, and specialized integrations belong in app crates or companion crates |
 | `Jsonb<T>` field type | `JSONB` column with typed schema, serde deserialization, validator validation, nested schema support |
 | Unknown field preservation | Fields not in schema loaded into `extra: IndexMap<String, UnknownField>` — never dropped on save |
 | `UnknownField` variants | `String`, `Bool`, `Float`, `Int`, `Null`, `RawJson` — no implicit coercion between types |

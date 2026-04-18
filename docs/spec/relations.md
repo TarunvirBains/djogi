@@ -4,7 +4,6 @@
 
 ### 8.1 ForeignKey
 ```rust
-#[derive(Model)]
 #[model(table = "vehicles")]
 pub struct Vehicle {
     pub make: String,
@@ -27,21 +26,23 @@ let cars = Vehicle::objects()
 let owner = cars[0].owner_id.resolved();   // -> Option<&Owner>, free after prefetch
 ```
 No lazy loading. No surprise queries. The developer always knows when the DB is hit.
+
+Transport nesting: when a relation is surfaced through an [audience projection](./projections.md), it must point to a named projection of the related model (e.g. `#[field(expose(public = "UserSummary"))]` on `owner_id`), not at the raw persistence struct. Projection nesting and relation prefetch are independent — prefetch decides when the relation is loaded; the projection decides what shape it takes at a transport boundary.
+
 ### 8.2 Many-to-Many — Explicit Through Models
 
 Implicit M2M fields are not provided. All M2M relationships require an explicit through model — this avoids the forced migration that implicit M2M fields eventually require when you need to store data on the relationship.
 ```rust
-#[derive(Model)]
+#[model(table = "people")]
 pub struct Person {
     pub name: String,
 }
 
-#[derive(Model)]
+#[model(table = "groups")]
 pub struct Group {
     pub name: String,
 }
 
-#[derive(Model)]
 #[model(table = "person_groups", through)]
 pub struct PersonGroup {
     pub person_id: ForeignKey<Person>,

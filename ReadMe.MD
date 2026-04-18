@@ -10,6 +10,8 @@ Djogi does not own routing, middleware, or rendering. The View layer belongs to 
 
 **Design north star:** Define the model once, derive everything else — but make every derivation explicit and typed. No hidden middleware chains, no implicit magic, no convention-as-code. Typed and explicit, but never unnecessarily verbose.
 
+**Public framework rule:** Djogi may be informed by demanding real-world applications, but this repository documents requirements only in product-agnostic systems language. Domain workflows, business policy, and app-specific integrations belong in application crates or separate companion crates, not in Djogi core.
+
 **Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via `generate_id()` (HeeRanjId), advisory locks for migration safety, `RETURNING` clauses, rich constraint system, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
 
 ## What Djogi Owns
@@ -99,6 +101,7 @@ The full framework specification lives in [`docs/spec/`](./docs/spec/index.md):
 | Doc | Covers |
 |---|---|
 | [Models & Field System](./docs/spec/models.md) | `#[derive(Model)]`, field types, annotations, dirty tracking |
+| [Architecture Principles](./docs/spec/architecture-principles.md) | Public requirement translation, single-responsibility, framework boundaries |
 | [Query API](./docs/spec/queries.md) | QuerySet, conditions, programmatic filters, ConditionBuilder |
 | [JSONB Schema Fields](./docs/spec/jsonb.md) | `Jsonb<T>`, unknown field preservation, validation, subfield queries |
 | [Relations](./docs/spec/relations.md) | ForeignKey, ManyToMany, explicit through models |
@@ -108,6 +111,7 @@ The full framework specification lives in [`docs/spec/`](./docs/spec/index.md):
 | [Configuration & CLI](./docs/spec/configuration.md) | `Djogi.toml`, `cargo djogi`, app registration, Axum integration |
 | [Shell](./docs/spec/shell.md) | Rhai REPL, transactions, import/export, seed scripts |
 | [Admin Panel](./docs/spec/admin.md) | Dioxus ModelForms, list views, validation, M2M inlines |
+| [Scope & Boundaries](./docs/spec/scope.md) | What belongs in Djogi vs an app crate or companion crate |
 | [Research Areas](./docs/spec/research.md) | Open implementation questions by subsystem |
 | [Design Decisions](./docs/spec/decisions.md) | Full decision log |
 

@@ -254,6 +254,21 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 ---
 
+## Phase 4.5: Projections & Shared Contracts
+
+**Goal:** Generate audience-specific transport-safe types from one model definition.
+
+- [ ] Add field exposure metadata for named projection scopes
+- [ ] Generate projection structs such as public/self/admin/export views
+- [ ] Generate `From<&Model>` conversions into projections
+- [ ] Support nested relation projections without exposing raw persistence models
+- [ ] Validate projections at compile time when disallowed fields are referenced
+- [ ] Keep generated projection types free of SQLx/runtime dependencies so they can live in shared API/frontend crates
+
+**Deliverable:** Models can derive transport-safe projections without handwritten DTO mapping layers.
+
+---
+
 ## Phase 5: Postgres-Native Features
 
 **Goal:** First-class support for Postgres features that other ORMs treat as optional.
@@ -350,6 +365,20 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 ---
 
+## Phase 6.5: Protected Data Metadata & Field Codecs
+
+**Goal:** Add descriptor-level protected-field semantics and storage transforms.
+
+- [ ] Add field metadata for sensitivity, redaction scope, rationale, and lifecycle class
+- [ ] Add descriptor support for field codecs such as encrypted/tokenized/custom-serialized columns
+- [ ] Ensure CRUD generation and row decoding apply codecs consistently
+- [ ] Integrate protected-field metadata with generated projections and admin defaults
+- [ ] Emit compile-time diagnostics when sensitive annotations are underspecified
+
+**Deliverable:** Djogi can express protected-field intent once and apply it consistently across generated surfaces.
+
+---
+
 ## Phase 7: Model Hooks, Composition & Proxy
 
 **Goal:** Lifecycle hooks, abstract model composition, proxy models.
@@ -410,6 +439,20 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 ---
 
+## Phase 8.5: Data Lifecycle & Governance
+
+**Goal:** Turn lifecycle metadata into reviewable operator workflows.
+
+- [ ] Add model/field lifecycle classes for purge, anonymize, archive, and permanent retention
+- [ ] Generate dependency-aware lifecycle plans from model descriptors
+- [ ] Add legal-hold primitives that override generated lifecycle plans
+- [ ] Expose CLI planning/review/apply workflows for lifecycle operations
+- [ ] Ensure lifecycle operations emit audit and event records
+
+**Deliverable:** Djogi can plan and execute safe data-lifecycle operations without embedding product workflow logic in app code.
+
+---
+
 ## Phase 9: CRUD Logging & Observability
 
 **Goal:** Automated audit trail and event logging.
@@ -424,6 +467,20 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 ---
 
+## Phase 10: Distributed Topology & Residency
+
+**Goal:** Add descriptor-aware support for replicas, residency constraints, and topology-sensitive migration safety.
+
+- [ ] Add explicit read-consistency modes such as primary-only, replica-allowed, read-your-writes, and stale-ok
+- [ ] Add placement metadata for shard keys, residency classes, and relation placement constraints
+- [ ] Validate topology-sensitive schema changes in migration tooling
+- [ ] Extend repartition/partition tooling with topology-aware safety checks
+- [ ] Keep deployment-specific routing implementations outside Djogi core
+
+**Deliverable:** Djogi remains deployment-agnostic while providing the metadata, runtime contracts, and migration guardrails needed for distributed Postgres topologies.
+
+---
+
 ## Milestone Map
 
 | Phase | Est. Effort | Cumulative Result |
@@ -433,11 +490,15 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 | 2: Query Builder | Large | Full typed query API |
 | 3: Relations | Medium | FK, prefetch, select_related, M2M |
 | 4: Txn & Expressions | Large | Transactions, F-expressions, aggregation, bulk upsert |
+| 4.5: Projections | Medium | Shared transport-safe contracts derived from models |
 | **→ SeaORM replacement viable** | | **Phases 0-4 cover all blocking requirements** |
 | 5: Postgres Native | Medium | Enums, arrays, JSONB, native aggregates |
 | 6: Migrations | Large | Full migration system |
+| 6.5: Protected Data | Medium | Sensitive-field metadata and codecs |
 | 7: Hooks & Composition | Medium | Lifecycle hooks, abstract models, proxy, computed properties |
 | 8: Shell & Admin | Medium | Interactive tools |
+| 8.5: Lifecycle | Medium | Governance and lifecycle planning (depends on 6.5) |
 | 9: Logging | Medium | Audit trail |
+| 10: Topology | Large | Residency, replica semantics, distributed guardrails |
 
-**The critical path to SeaORM replacement is Phases 0–4.** After Phase 4, the framework can express all 36 entities and their query patterns from the target project. Phases 5–9 add depth and DX improvements that can land incrementally after migration begins.
+**The critical path to SeaORM replacement is Phases 0–4.** Phase 4.5 improves contract hygiene and frontend/API reuse without changing that replacement boundary. Phases 5–10 add depth, governance, and scale-oriented capabilities that can land incrementally after migration begins.
