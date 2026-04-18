@@ -11,6 +11,7 @@ pub mod descriptor;
 pub mod filter;
 pub mod from_row;
 pub mod inject;
+pub mod relations;
 pub mod stubs;
 
 use attrs::ModelAttrs;
@@ -35,6 +36,21 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .iter()
         .map(attrs::FieldAttrs::parse)
         .collect::<syn::Result<_>>()?;
+
+    // Strip `#[field(...)]` attributes from user fields. We already captured
+    // their semantics into `field_attrs` above; leaving the raw attribute on
+    // the struct surface would confuse rustc, which does not recognise
+    // `field` as a helper attribute for the `#[model]` attribute macro
+    // (helper attributes only exist on `#[derive(...)]` macros — see the
+    // `proc_macro_derive(Model, attributes(field))` declaration in lib.rs,
+    // which governs a separate no-op `Model` derive). Stripping here keeps
+    // the emitted struct valid Rust without forcing users to also write
+    // `#[derive(Model)]` solely to legalise the `#[field(...)]` parsing.
+    if let syn::Fields::Named(named) = &mut struct_item.fields {
+        for field in &mut named.named {
+            field.attrs.retain(|a| !a.path().is_ident("field"));
+        }
+    }
 
     // 1. Inject framework fields (`id`, `created_at`, `updated_at`) and emit the
     //    `Default` impl — both are concatenated into a single TokenStream by
@@ -63,6 +79,13 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    `filter::expand`'s module docs for the typed-vs-erased rationale.
     let filter = filter::expand(&struct_item, &model_attrs, &field_attrs);
 
+    // 7. {Model}Related — typed relation-path constructors (Phase 3 Task 2).
+    //    Independent of ModelAttrs/FieldAttrs: the emitter inspects field
+    //    types directly via `detect_relation`. Emits a ZST `{Model}Related`
+    //    with one method per FK / O2O field — consumed by QuerySet's
+    //    prefetch / select_related in Phase 3 Tasks 4 + 5.
+    let related = relations::expand(&struct_item);
+
     Ok(quote::quote! {
         #expanded
         #from_row
@@ -70,5 +93,6 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #descriptor
         #stubs
         #filter
+        #related
     })
 }

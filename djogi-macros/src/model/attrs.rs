@@ -325,6 +325,141 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
     }
 }
 
+/// Convert a pre-validated `on_delete` string into the matching
+/// `::djogi::OnDelete` token path.
+///
+/// Caller contract: `s` must be one of the six validated values — any other
+/// input is a bug in the caller, since [`FieldAttrs::parse`] has already
+/// rejected out-of-domain strings with a span-carrying error. The function
+/// falls back to `OnDelete::Restrict` on an unrecognized value so a caller
+/// skipping the validator does not produce a bogus token stream; that
+/// matches the framework's cascade-off-by-default posture and keeps the
+/// descriptor emitter total.
+///
+/// Lives here rather than in `descriptor.rs` because `descriptor.rs` can
+/// stay schema-focused: the attr crate owns the mapping between
+/// `#[field(on_delete = "...")]` string values and runtime enum variants,
+/// and descriptor emission calls through this helper.
+#[allow(dead_code)]
+pub fn on_delete_str_to_tokens(s: &str) -> proc_macro2::TokenStream {
+    match s {
+        "cascade" => quote::quote! { ::djogi::descriptor::OnDelete::Cascade },
+        "restrict" => quote::quote! { ::djogi::descriptor::OnDelete::Restrict },
+        "set_null" => quote::quote! { ::djogi::descriptor::OnDelete::SetNull },
+        "set_default" => quote::quote! { ::djogi::descriptor::OnDelete::SetDefault },
+        "protect" => quote::quote! { ::djogi::descriptor::OnDelete::Protect },
+        "do_nothing" => quote::quote! { ::djogi::descriptor::OnDelete::DoNothing },
+        // Fallback: anything else is out of the validator's domain and the
+        // caller is expected to have rejected it. Emit `Restrict` (the
+        // framework default) so the macro output is still well-formed
+        // tokens rather than a half-written ident.
+        _ => quote::quote! { ::djogi::descriptor::OnDelete::Restrict },
+    }
+}
+
+/// Relation cardinality as seen from a Rust field type inside the macro crate.
+///
+/// This enum is the macro-crate mirror of `djogi::relation::RelationKind`:
+/// `djogi-macros` cannot depend on `djogi` (the macro is compiled first),
+/// so when the macro wants to *reason* about a relation shape before
+/// emitting tokens, it works with this local copy. The emitter converts to
+/// `::djogi::relation::RelationKind::…` token paths at code-generation
+/// time — the two enums only need to stay in sync on the set of variants.
+///
+/// Phase 3 Task 2 covers `ForeignKey<T>` and `OneToOneField<T>` (plus their
+/// `Option<…>` nullable forms). Task 7's `ManyToMany` variant is
+/// intentionally absent here: the M2M macro pipeline recognizes M2M
+/// through-models by a separate mechanism (a marker trait on the through
+/// struct, not a field type on the source struct), so no macro-side
+/// detection is needed in this helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationKind {
+    /// `ForeignKey<T>` — many-to-one.
+    ForeignKey,
+    /// `OneToOneField<T>` — one-to-one, unique-constrained.
+    OneToOne,
+}
+
+/// Inspect a field's declared Rust type and decide whether it names a Djogi
+/// relation wrapper.
+///
+/// Returns `Some((kind, target_type_name, nullable))` when the outermost
+/// (post-`Option<…>`-strip) type is one of the recognized relation wrappers:
+///
+/// - `ForeignKey<T>` → `Some((ForeignKey, "T", false))`
+/// - `Option<ForeignKey<T>>` → `Some((ForeignKey, "T", true))`
+/// - `OneToOneField<T>` → `Some((OneToOne, "T", false))`
+/// - `Option<OneToOneField<T>>` → `Some((OneToOne, "T", true))`
+/// - anything else → `None`
+///
+/// # Robustness
+///
+/// The check inspects the *last* path segment's ident, which makes it
+/// resilient to fully-qualified user spellings like
+/// `::djogi::relation::ForeignKey<Owner>` or `djogi::ForeignKey<Owner>` —
+/// users who reach for an explicit path instead of `use djogi::prelude::*`
+/// still get the correct relation detection. The trade-off: a user-defined
+/// type with the literal name `ForeignKey` shadows the detection. That
+/// matches how `unwrap_option` already handles `Option`: the macro works
+/// from the spelling the user wrote, and the behaviour is consistent and
+/// easy to reason about.
+///
+/// The extracted `target_type_name` is the last path segment's ident of the
+/// single generic argument, stringified. `ForeignKey<crate::Owner>` still
+/// recovers `"Owner"` for the descriptor field, which is what downstream
+/// consumers (`inventory` iteration for migration emission) want — they
+/// match against `ModelDescriptor::type_name`, not an import path.
+#[allow(dead_code)]
+pub fn detect_relation(ty: &syn::Type) -> Option<(RelationKind, String, bool)> {
+    // First, strip one layer of `Option<…>` using the shared helper. The
+    // returned `nullable` flag propagates straight through to the caller —
+    // it's the same nullability semantic.
+    let (stripped, nullable) = unwrap_option(ty);
+
+    // The stripped type must be a path type like `ForeignKey<T>` or
+    // `some::path::ForeignKey<T>`. Anything else (references, tuples,
+    // arrays, fn pointers) is a scalar column from the macro's POV.
+    let syn::Type::Path(syn::TypePath { path, .. }) = &stripped else {
+        return None;
+    };
+
+    // Inspect the last segment only — robust to fully-qualified spellings.
+    let last = path.segments.last()?;
+    let kind = match last.ident.to_string().as_str() {
+        "ForeignKey" => RelationKind::ForeignKey,
+        "OneToOneField" => RelationKind::OneToOne,
+        _ => return None,
+    };
+
+    // Extract the single generic argument's type name. The segment must
+    // carry `<T>`; a bare `ForeignKey` with no type parameter is a user
+    // error that earlier parsing (or the later descriptor emission) will
+    // surface with a better error — return `None` here rather than
+    // panicking the macro.
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+
+    // The target's type name is the last segment of the inner type's path
+    // (`Owner` out of `crate::models::Owner`, or just `Owner` out of
+    // `Owner`). Non-path inner types (e.g. references) aren't legal relation
+    // targets — the `Model` bound on `ForeignKey<T>` would reject them at
+    // the type-check stage — so return `None` and let the normal compile
+    // error surface in the user's code.
+    let syn::Type::Path(syn::TypePath {
+        path: inner_path, ..
+    }) = inner
+    else {
+        return None;
+    };
+    let target_ident = inner_path.segments.last()?.ident.to_string();
+
+    Some((kind, target_ident, nullable))
+}
+
 /// Strip `Option<T>` → returns the inner type and `nullable = true`.
 ///
 /// Only recognizes the prelude's `Option` — specifically the path forms
