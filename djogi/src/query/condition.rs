@@ -48,6 +48,7 @@ impl Default for Condition {
 impl Condition {
     /// Combine two conditions with SQL AND. Flattens nested `And` trees to
     /// keep the structure shallow for the emitter.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn and(a: Condition, b: Condition) -> Condition {
         match (a, b) {
             (Condition::True, c) | (c, Condition::True) => c,
@@ -69,6 +70,7 @@ impl Condition {
     }
 
     /// Combine two conditions with SQL OR. Flattens nested `Or` trees.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn or(a: Condition, b: Condition) -> Condition {
         match (a, b) {
             (Condition::Or(mut va), Condition::Or(vb)) => {
@@ -97,6 +99,7 @@ impl Condition {
     /// / `Condition::or(a, b)`. A unary `!cond` operator would be terser but
     /// would split the combinator API across two idioms.
     #[allow(clippy::should_implement_trait)]
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn not(inner: Condition) -> Condition {
         Condition::Not(Box::new(inner))
     }
@@ -126,7 +129,13 @@ impl Leaf {
 /// The operator half of a `Leaf`. Every Phase 2 lookup method maps to one
 /// of these variants. SQL emission (`query::sql`) pattern-matches on this
 /// enum to produce the correct operator token.
+///
+/// Marked `#[non_exhaustive]` — later phases (array ops, JSONB lookups,
+/// trigram search) extend this set, and downstream exhaustive matches
+/// would break on every such addition. External pattern matches must
+/// include a `_ => …` arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LookupOp {
     Eq,
     Neq,
@@ -162,7 +171,13 @@ pub enum LookupOp {
 /// `List` carries a boxed `Vec<FilterValue>` for `IN (...)` / `NOT IN (...)`.
 /// Mixed-type lists are representable but the emitter rejects them — the
 /// typed `FieldRef<M, V>` API prevents construction from user code.
+///
+/// Marked `#[non_exhaustive]` — new SQL-bindable types (e.g. `Decimal`,
+/// `Interval`, JSONB payload variants) are added in later phases. Adding a
+/// variant must not break downstream code that pattern-matches on this
+/// enum, so external matches must include a `_ => …` arm.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum FilterValue {
     String(String),
     I16(i16),

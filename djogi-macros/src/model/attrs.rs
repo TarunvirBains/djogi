@@ -15,6 +15,7 @@
 use darling::FromField;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue, Token};
 
 /// Options extracted from `#[model(table = "...", pk = "...")]`.
@@ -211,9 +212,12 @@ impl FieldAttrs {
     /// - Duplicate keys across multiple `#[field(...)]` attrs.
     ///
     /// `on_delete` is a string with a constrained value set that darling's
-    /// type-level parsing cannot enforce; we post-validate it below and
-    /// point the error span at the whole field (the literal's span is lost
-    /// by the time darling hands us a `String`).
+    /// type-level parsing cannot enforce. We post-validate the value below
+    /// and — when rejecting — walk the field's raw `#[field(...)]` attrs
+    /// to recover the literal's `Span`, so the error underlines the bad
+    /// value rather than the entire field declaration. Matches the pre-
+    /// darling hand-rolled behaviour; keeps the surface consistent with
+    /// how `pk = "..."` span-points at its own literal in `ModelAttrs`.
     pub fn parse(field: &syn::Field) -> syn::Result<Self> {
         // `darling::Error` carries source spans from the originating
         // attribute tokens; `From<darling::Error> for syn::Error` preserves
@@ -231,8 +235,16 @@ impl FieldAttrs {
                 "do_nothing",
             ];
             if !valid.contains(&on_delete.as_str()) {
-                return Err(syn::Error::new_spanned(
-                    field,
+                // Locate the original `on_delete = "..."` literal in the
+                // field's raw attribute tokens so the error carries the
+                // literal's span, not the whole field's. Falls back to the
+                // field span if the structure is unexpected — darling only
+                // hands us a `String`, so the only way to recover the span
+                // is a second walk. This is cheap: one field has at most a
+                // handful of attrs, each with a handful of keys.
+                let span = find_on_delete_lit_span(field).unwrap_or_else(|| field.span());
+                return Err(syn::Error::new(
+                    span,
                     format!(
                         "unknown on_delete value `{on_delete}`; expected one of: {}",
                         valid.join(", ")
@@ -243,6 +255,42 @@ impl FieldAttrs {
 
         Ok(attrs)
     }
+}
+
+/// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
+/// the literal bound to `on_delete`, if present.
+///
+/// Used by [`FieldAttrs::parse`] to recover the offending literal's span
+/// after darling has already reduced the attribute to a `String`. Returns
+/// `None` only if the attribute structure does not match the expected
+/// `on_delete = "literal"` shape — darling's own parse will have rejected
+/// that upstream, so the caller falls back to the field's span as a last
+/// resort without losing the error.
+fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("field") {
+            continue;
+        }
+        let metas = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .ok()?;
+        for meta in &metas {
+            if let Meta::NameValue(MetaNameValue {
+                path,
+                value:
+                    Expr::Lit(ExprLit {
+                        lit: lit @ Lit::Str(_),
+                        ..
+                    }),
+                ..
+            }) = meta
+                && path.is_ident("on_delete")
+            {
+                return Some(lit.span());
+            }
+        }
+    }
+    None
 }
 
 /// The SQL column type for a Rust type string.
