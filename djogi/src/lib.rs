@@ -71,6 +71,7 @@ pub use descriptor::{
 pub use error::DjogiError;
 pub use query::{
     Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
+    UpdateAssignment, UpdateStmt,
 };
 pub use types::{Date, DateTime, HeerId, RanjId};
 

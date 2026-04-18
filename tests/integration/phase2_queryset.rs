@@ -435,6 +435,156 @@ async fn filter_struct_single_clause_unwraps_to_leaf(pool: PgPool) {
     assert_eq!(struct_rows.len(), 3);
 }
 
+// ── Task 9: bulk update / delete ──────────────────────────────────────────
+//
+// Each test exercises one terminal — `update(...).execute(...)` or
+// `delete(...)` — on a seeded table, and asserts both the returned
+// row-count (sqlx `rows_affected()`) and the post-condition row-count via
+// a follow-up `.count()`. The `none()` short-circuit (TASK6:empty_contract)
+// is also verified: it must return `Ok(0)` without issuing any SQL.
+
+#[sqlx::test]
+async fn bulk_update_sets_values_and_returns_count(pool: PgPool) {
+    setup(&pool).await;
+    seed_posts(&pool).await;
+
+    // Filter on `published = true` (3 seeded rows: alpha, beta, delta) and
+    // set `view_count = 999` on all of them.
+    let n = Post::objects()
+        .filter(|f| f.published().eq(true))
+        .update(|f| f.view_count().set(999i32))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 3, "expected 3 published rows bumped");
+
+    // Re-query to confirm the SET landed. Every row with view_count = 999
+    // must also be one of the originally-published rows.
+    let bumped = Post::objects()
+        .filter(|f| f.view_count().eq(999i32))
+        .count(&pool)
+        .await
+        .unwrap();
+    assert_eq!(bumped, 3);
+}
+
+#[sqlx::test]
+async fn bulk_update_none_short_circuits(pool: PgPool) {
+    setup(&pool).await;
+    seed_posts(&pool).await;
+
+    // `none()` short-circuit contract — `execute` returns `Ok(0)` without
+    // running any SQL. If the short-circuit is missing, this would clobber
+    // every row's `view_count` to 0 (no WHERE clause on the update). We
+    // assert the row-count is unchanged afterwards to verify no SQL ran.
+    let n = Post::objects()
+        .none()
+        .update(|f| f.view_count().set(0i32))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+
+    // Every seeded row remains — the short-circuit held.
+    let unchanged = Post::objects().count(&pool).await.unwrap();
+    assert_eq!(unchanged, 4);
+
+    // And no row was bumped to 0 view_count.
+    let zeroed = Post::objects()
+        .filter(|f| f.view_count().eq(0i32))
+        .count(&pool)
+        .await
+        .unwrap();
+    assert_eq!(zeroed, 0, "none().update() must not touch any row");
+}
+
+#[sqlx::test]
+async fn bulk_delete_removes_rows_and_returns_count(pool: PgPool) {
+    setup(&pool).await;
+    seed_posts(&pool).await;
+
+    // Delete every unpublished row (only `gamma` in the seed).
+    let n = Post::objects()
+        .filter(|f| f.published().eq(false))
+        .delete(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+
+    // Three published rows remain.
+    let remaining = Post::objects().count(&pool).await.unwrap();
+    assert_eq!(remaining, 3);
+
+    // And the deleted row is genuinely gone.
+    let gamma_left = Post::objects()
+        .filter(|f| f.title().eq("gamma".to_string()))
+        .count(&pool)
+        .await
+        .unwrap();
+    assert_eq!(gamma_left, 0);
+}
+
+#[sqlx::test]
+async fn bulk_update_stamps_updated_at(pool: PgPool) {
+    // Contract: bulk update must always stamp `updated_at = now()`, even
+    // when the user did not set it themselves. Parity with single-row
+    // `save()`, which also bumps `updated_at` on every write.
+    //
+    // We can't compare `updated_at` to `created_at` from inside Djogi
+    // without reading back the row; instead we use Postgres to verify the
+    // relation directly. Some seed helpers insert in the same transaction
+    // as `now()` — `updated_at` and `created_at` can share the exact same
+    // timestamp when created via DEFAULT now(). So we first record a
+    // baseline count of rows where `updated_at = created_at` (should be
+    // all 4), run the update, then verify the updated rows have moved to
+    // `updated_at > created_at`.
+    setup(&pool).await;
+    seed_posts(&pool).await;
+
+    // Every freshly-inserted row has updated_at = created_at (both default
+    // to `now()` in the same INSERT).
+    let all_equal: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(all_equal, 4);
+
+    // Sleep a tick so `now()` advances past the insert time at the
+    // microsecond level. Postgres's `now()` is statement-start time; a
+    // single millisecond is enough to push the new value past `created_at`.
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+    let n = Post::objects()
+        .filter(|f| f.title().eq("alpha".to_string()))
+        .update(|f| f.view_count().set(42i32))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+
+    // The bumped row's `updated_at` now exceeds its `created_at`.
+    let bumped: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM posts_p2 WHERE title = 'alpha' AND updated_at > created_at",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        bumped, 1,
+        "bulk update must stamp updated_at = now() on touched rows"
+    );
+
+    // Unaffected rows still have updated_at = created_at.
+    let untouched: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM posts_p2 WHERE title <> 'alpha' AND updated_at = created_at",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(untouched, 3);
+}
+
 #[sqlx::test]
 async fn distinct_on_and_plain(pool: PgPool) {
     setup(&pool).await;

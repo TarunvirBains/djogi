@@ -582,6 +582,85 @@ pub(crate) fn build_exists<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, P
     qb
 }
 
+/// Build `UPDATE <table> SET col = $1, col = $2, updated_at = now()
+/// [WHERE ...]`.
+///
+/// Every assignment's value flows through [`push_filter_value`] — i.e.
+/// `push_bind` — so the emitted SQL has one positional parameter per
+/// user-supplied value. The `updated_at = now()` tail is always appended,
+/// even when the caller's closure omitted it: parity with the single-row
+/// `save()` path, which also bumps `updated_at` on every write. Users who
+/// need to preserve `updated_at` across a bulk update reach for the raw
+/// `sqlx::QueryBuilder` escape hatch — same as any other ORM layer that
+/// treats the audit column as non-optional.
+///
+/// `WHERE` is emitted via the shared [`push_where`] helper, so
+/// `QuerySet::none()`-derived querysets (caught earlier in
+/// [`crate::query::update::UpdateStmt::execute`]) and vacuously-true
+/// condition trees are handled identically to the read terminals.
+///
+/// # Assignment list invariants
+///
+/// Callers must ensure `assignments` is non-empty — `UPDATE ... SET ` with
+/// an empty list is a Postgres syntax error. The public entry point
+/// ([`crate::query::update::UpdateStmt::execute`]) short-circuits on
+/// `assignments.is_empty()` before reaching this emitter, so the emitter
+/// itself does not need a runtime guard. Panicking here would be
+/// defensive-programming noise; the short-circuit is the real safety rail.
+pub(crate) fn build_update<'a, T: Model>(
+    qs: &QuerySet<T>,
+    assignments: &[crate::query::update::UpdateAssignment],
+) -> QueryBuilder<'a, Postgres> {
+    let mut qb = QueryBuilder::new("UPDATE ");
+    qb.push(T::table_name());
+    qb.push(" SET ");
+    for (i, a) in assignments.iter().enumerate() {
+        if i > 0 {
+            qb.push(", ");
+        }
+        // Column names are macro-baked `&'static str` literals — `push`
+        // (not `push_bind`). Values always go through `push_filter_value`
+        // which calls `push_bind` for every variant except `Null`
+        // (unreachable here because `FieldRef::set` requires
+        // `V: IntoFilterValue`, which never produces `FilterValue::Null`).
+        qb.push(a.column());
+        qb.push(" = ");
+        // `push_filter_value` consumes the value; clone because the emitter
+        // takes `assignments` by reference so the `UpdateStmt` retains its
+        // payload for retry/clone.
+        push_filter_value(&mut qb, a.value().clone());
+    }
+    // Always stamp `updated_at = now()` on bulk updates — matches
+    // single-row save(). `now()` is a SQL literal, not a user value, so
+    // `push` is correct (no bind slot needed). Position-wise this is a
+    // trailing clause after the user's SET list; the leading ", " handles
+    // the separator even when the user supplied only one assignment.
+    qb.push(", updated_at = now()");
+    push_where(&mut qb, qs);
+    qb
+}
+
+/// Build `DELETE FROM <table> [WHERE ...]`.
+///
+/// Plain DELETE — no RETURNING, no USING join. The `WHERE` clause uses
+/// the shared [`push_where`] helper so vacuously-true condition trees
+/// (e.g. `Condition::And(vec![])`) are omitted entirely rather than
+/// emitted as `WHERE TRUE`. A queryset with no filters at all (just
+/// `T::objects()`) deletes every row in the table — same semantics as
+/// raw SQL; callers who want extra safety wrap the call in a
+/// transaction and `ROLLBACK` if the row count looks wrong.
+///
+/// `updated_at = now()` stamping does **not** apply here — the row is
+/// being removed, so auditing the timestamp has no meaning. Audit of
+/// deletions lives in the Phase 1 `_logs` mirror tables (populated by
+/// the `crud_log_url` pool).
+pub(crate) fn build_delete<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
+    let mut qb = QueryBuilder::new("DELETE FROM ");
+    qb.push(T::table_name());
+    push_where(&mut qb, qs);
+    qb
+}
+
 #[cfg(test)]
 mod tests {
     //! Emitter unit tests — assert on the generated SQL text without
@@ -957,5 +1036,101 @@ mod tests {
         let qb = build_select(&qs);
         let sql = qb.sql().trim().to_string();
         assert_eq!(sql, "SELECT * FROM fakes");
+    }
+
+    // ── Task 9: UPDATE / DELETE emitter ───────────────────────────────
+
+    #[test]
+    fn update_single_assignment_emits_set_and_updated_at() {
+        // Single assignment + no filter: one bind for the user value,
+        // `updated_at = now()` stamped by the emitter, no `WHERE`.
+        use crate::query::update::UpdateAssignment;
+        let a = UpdateAssignment {
+            column: "view_count",
+            value: FilterValue::I32(999),
+        };
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let qb = build_update(&qs, &[a]);
+        let sql = qb.sql();
+        assert!(
+            sql.contains("UPDATE fakes SET view_count = $1, updated_at = now()"),
+            "got: {sql}"
+        );
+        assert!(!sql.contains("WHERE"), "no filter -> no WHERE, got: {sql}");
+    }
+
+    #[test]
+    fn update_multiple_assignments_comma_separate_binds() {
+        // Two assignments: `SET col = $1, col = $2, updated_at = now()`.
+        // Only the user's values consume bind slots; `now()` is raw SQL.
+        use crate::query::update::UpdateAssignment;
+        let a = UpdateAssignment {
+            column: "view_count",
+            value: FilterValue::I32(1),
+        };
+        let b = UpdateAssignment {
+            column: "published",
+            value: FilterValue::Bool(true),
+        };
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let qb = build_update(&qs, &[a, b]);
+        let sql = qb.sql();
+        assert!(
+            sql.contains("SET view_count = $1, published = $2, updated_at = now()"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn update_with_filter_emits_where_with_bind_offset() {
+        // Assignments take $1; the filter leaf takes $2. Positional
+        // numbering is contiguous — sqlx's `QueryBuilder` assigns them
+        // in push order regardless of clause.
+        use crate::query::update::UpdateAssignment;
+        let a = UpdateAssignment {
+            column: "view_count",
+            value: FilterValue::I32(42),
+        };
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));
+        let qb = build_update(&qs, &[a]);
+        let sql = qb.sql();
+        assert!(
+            sql.contains("SET view_count = $1, updated_at = now()"),
+            "got: {sql}"
+        );
+        assert!(sql.contains("WHERE published = $2"), "got: {sql}");
+    }
+
+    #[test]
+    fn delete_no_filter_emits_table_only() {
+        // DELETE on an unfiltered queryset has no WHERE clause — same
+        // semantics as raw `DELETE FROM table`. Callers who want safety
+        // chain a filter.
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let qb = build_delete(&qs);
+        let sql = qb.sql().trim().to_string();
+        assert_eq!(sql, "DELETE FROM fakes");
+    }
+
+    #[test]
+    fn delete_with_filter_emits_where() {
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(false))));
+        let qb = build_delete(&qs);
+        let sql = qb.sql();
+        assert!(sql.starts_with("DELETE FROM fakes"), "got: {sql}");
+        assert!(sql.contains("WHERE published = $1"), "got: {sql}");
+    }
+
+    #[test]
+    fn delete_vacuous_and_skips_where() {
+        // Vacuously-true condition trees collapse the same way they do
+        // for SELECT — `DELETE FROM table` without `WHERE TRUE` noise.
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Condition::And(Vec::new());
+        let qb = build_delete(&qs);
+        let sql = qb.sql().trim().to_string();
+        assert_eq!(sql, "DELETE FROM fakes");
     }
 }
