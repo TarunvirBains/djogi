@@ -79,6 +79,19 @@ pub trait Model: Sized + Send + Sync + 'static {
     /// SQL table name.
     fn table_name() -> &'static str;
 
+    /// Construct a lazy [`QuerySet<Self>`](crate::query::QuerySet) for this
+    /// model. The default impl returns an empty queryset — no filters, no
+    /// ordering, no limit — and is correct for every model; individual
+    /// models should not override it.
+    ///
+    /// This method is the canonical entry point for every query, so the
+    /// trait's associated `type Fields` bounds (`Copy + Default + Send +
+    /// Sync + 'static`) already satisfy `QuerySet::filter`'s default-
+    /// constructed field bag.
+    fn objects() -> crate::query::QuerySet<Self> {
+        crate::query::QuerySet::new()
+    }
+
     /// Returns the primary key value for this instance.
     fn pk_value(&self) -> &Self::Pk;
 

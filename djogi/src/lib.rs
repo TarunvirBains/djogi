@@ -58,7 +58,7 @@ pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
 pub use error::DjogiError;
-pub use query::{Condition, FieldRef, IntoFilterValue};
+pub use query::{Condition, FieldRef, IntoFilterValue, OrderExpr, QuerySet};
 pub use types::{Date, DateTime, HeerId, RanjId};
 
 pub mod prelude {
@@ -67,7 +67,7 @@ pub mod prelude {
     };
     pub use crate::error::DjogiError;
     pub use crate::model::Model;
-    pub use crate::query::{Condition, FieldRef, IntoFilterValue};
+    pub use crate::query::{Condition, FieldRef, IntoFilterValue, OrderExpr, QuerySet};
     pub use crate::types::{Date, DateTime, HeerId, RanjId};
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.

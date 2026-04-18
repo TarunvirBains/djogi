@@ -24,9 +24,13 @@
 
 pub mod condition;
 pub mod field;
+pub mod order;
+pub mod queryset;
 
 pub use condition::Condition;
 pub use field::{FieldRef, IntoFilterValue};
+pub use order::{Direction, NullsOrder, OrderExpr};
+pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
 
 /// Raw Condition-AST surface — not peer public API with `Condition`.
 ///
