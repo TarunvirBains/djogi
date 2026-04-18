@@ -230,6 +230,41 @@ impl<T: Model> QuerySet<T> {
         self
     }
 
+    /// AND a programmatic filter struct onto the condition tree.
+    ///
+    /// The filter's accumulated clauses are folded into a single
+    /// `Condition::And(...)` and AND-ed onto `self.condition`. Empty
+    /// filters short-circuit — no AND-ing, no vacuous `TRUE` sub-tree.
+    /// Single-clause filters unwrap to a plain `Condition::Leaf` so the
+    /// SQL emitter renders `col = $1` rather than `(col = $1)`.
+    ///
+    /// This is the closure-free sibling of [`QuerySet::filter`] — the
+    /// two paths produce structurally equivalent condition trees for the
+    /// same set of lookups, and the SQL emitter treats them identically.
+    /// Use this method from shell bindings, admin UIs, and any dynamic
+    /// assembler that can't write a `|f|` closure at compile time.
+    ///
+    /// ```ignore
+    /// let filter = PostFilter::new()
+    ///     .published(Lookup::Eq(true))
+    ///     .view_count(Lookup::Gte(50i32));
+    /// let rows = Post::objects().filter_struct(filter).fetch_all(&pool).await?;
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn filter_struct<F: crate::query::filter::ModelFilter>(mut self, filter: F) -> Self {
+        let clauses = filter.into_clauses();
+        if clauses.is_empty() {
+            // Empty filter — don't AND `Condition::True` onto `self.condition`;
+            // `Condition::and` would fold it away anyway, but early-returning
+            // makes the no-op case explicit and avoids the intermediate
+            // allocation.
+            return self;
+        }
+        let folded = crate::query::filter::clauses_into_condition(clauses);
+        self.condition = Condition::and(self.condition, folded);
+        self
+    }
+
     /// Append one or more ordering expressions. Later `order_by` calls
     /// **append** to the existing ordering rather than replacing it, matching
     /// Django semantics: library code can add a stable tiebreaker without

@@ -337,6 +337,86 @@ async fn in_list_and_between(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn filter_struct_matches_closure_results(pool: PgPool) {
+    // Task 8 parity check: `filter_struct` (programmatic) and `filter`
+    // (closure) must produce structurally equivalent filters for the same
+    // set of lookups. Asserting on row-count is the cheapest observable
+    // proxy — the two paths share the downstream SQL emitter, so matching
+    // row counts implies matching WHERE clauses (modulo bind ordering,
+    // which the emitter handles identically for both).
+    setup(&pool).await;
+    seed_posts(&pool).await;
+
+    let closure_rows = Post::objects()
+        .filter(|f| f.published().eq(true).and_with(f.view_count().gte(50i32)))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+    let filter = PostFilter::new()
+        .published(Lookup::Eq(true))
+        .view_count(Lookup::Gte(50i32));
+    let struct_rows = Post::objects()
+        .filter_struct(filter)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        closure_rows.len(),
+        struct_rows.len(),
+        "closure filter and struct filter must return the same row count"
+    );
+    // Sanity-check the absolute count — `seed_posts` inserts 4 rows; alpha
+    // (published, 100 views) and beta (published, 50 views) match both
+    // predicates, gamma (unpublished) and delta (25 views) don't.
+    assert_eq!(struct_rows.len(), 2);
+}
+
+#[sqlx::test]
+async fn filter_struct_empty_is_identity(pool: PgPool) {
+    // A filter with zero setters should not AND anything onto the
+    // queryset — terminal fetch should see every row `seed_posts`
+    // inserted. This exercises the early-return branch in
+    // `QuerySet::filter_struct`.
+    setup(&pool).await;
+    seed_posts(&pool).await;
+
+    let empty = PostFilter::new();
+    let rows = Post::objects()
+        .filter_struct(empty)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 4);
+}
+
+#[sqlx::test]
+async fn filter_struct_single_clause_unwraps_to_leaf(pool: PgPool) {
+    // A single-clause filter should emit SQL equivalent to a bare leaf
+    // (no wrapping And). We can't inspect the emitted SQL from an
+    // integration test, but we can verify the single-clause case
+    // produces the same row count as a closure filter — the
+    // `clauses_into_condition` helper unwraps single-element lists for
+    // exactly this reason.
+    setup(&pool).await;
+    seed_posts(&pool).await;
+
+    let closure_rows = Post::objects()
+        .filter(|f| f.published().eq(true))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let struct_rows = Post::objects()
+        .filter_struct(PostFilter::new().published(Lookup::Eq(true)))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(closure_rows.len(), struct_rows.len());
+    assert_eq!(struct_rows.len(), 3);
+}
+
+#[sqlx::test]
 async fn distinct_on_and_plain(pool: PgPool) {
     setup(&pool).await;
     seed_posts(&pool).await;

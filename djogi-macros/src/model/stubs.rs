@@ -1,5 +1,4 @@
-//! Generates `{Model}Fields` — the typed column-handle bag — and the
-//! `{Model}Filter` Phase-2 stub.
+//! Generates `{Model}Fields` — the typed column-handle bag.
 //!
 //! # `{Model}Fields`
 //!
@@ -34,9 +33,11 @@
 //!
 //! # `{Model}Filter`
 //!
-//! Still an empty stub — the programmatic-builder surface lands in a later
-//! Phase 2 task. Its name exists now so downstream modules can reference it
-//! without a crate-wide refactor when it grows real methods.
+//! Lives in its own module: [`crate::model::filter`]. `{Model}Filter` is an
+//! **erased** counterpart to `{Model}Fields` — a runtime `Vec<FilterClause>`
+//! with one setter per user field, used with `QuerySet::filter_struct` for
+//! closure-free filtering (shell, admin, dynamic UI). Keeping the two in
+//! separate modules keeps this file focused on the typed-accessor surface.
 //!
 //! # Path routing
 //!
@@ -50,18 +51,19 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::ItemStruct;
 
-/// Emit `{Model}Fields` with one inherent method per column, plus the
-/// (still empty) `{Model}Filter` stub.
+/// Emit `{Model}Fields` with one inherent method per column.
 ///
 /// `struct_item` is the post-injection struct: its `fields` list already has
 /// the framework-injected columns (`id` / `created_at` / `updated_at`) at the
 /// front in the same order `descriptor::expand` relies on. The `model_attrs`
 /// are consulted solely to type the `id` accessor — the per-field methods
 /// otherwise read the Rust type verbatim from the struct.
+///
+/// `{Model}Filter` is emitted separately by [`crate::model::filter::expand`]
+/// — keeping the two in different modules isolates their codegen surfaces.
 pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {
     let name = &struct_item.ident;
     let fields_name = format_ident!("{}Fields", name);
-    let filter_name = format_ident!("{}Filter", name);
 
     // ── Per-column accessor emission ─────────────────────────────────────────
     //
@@ -142,10 +144,5 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         pub struct #fields_name;
 
         #accessor_impl
-
-        /// Programmatic filter builder for dynamic/shell use.
-        /// Fully implemented in a later Phase 2 task.
-        #[derive(Debug, Clone, Default)]
-        pub struct #filter_name;
     }
 }

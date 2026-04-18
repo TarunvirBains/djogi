@@ -24,6 +24,7 @@
 
 pub mod condition;
 pub mod field;
+pub mod filter;
 pub mod order;
 pub mod queryset;
 pub mod sql;
@@ -31,6 +32,7 @@ pub mod terminal;
 
 pub use condition::Condition;
 pub use field::{FieldRef, IntoFilterValue};
+pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
 
