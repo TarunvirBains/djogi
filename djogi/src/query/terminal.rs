@@ -156,6 +156,13 @@ where
                         .expect("rows.len() == 1 was just matched");
                     Ok(row)
                 }
+                // `n` here is a sentinel: because we force `LIMIT 2`
+                // above, `n` is always exactly 2 on this branch — not the
+                // true matching-row count. The cap is intentional (one
+                // round trip instead of a `COUNT(*)` probe); callers who
+                // need the precise count follow up with `.count()`. Ship
+                // the sentinel through to `MultipleObjects.count_seen`; the
+                // error message renders "at least 2".
                 n => Err(DjogiError::multiple_objects(T::table_name(), n)),
             }
         }

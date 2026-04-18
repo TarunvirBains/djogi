@@ -450,4 +450,38 @@ async fn distinct_on_and_plain(pool: PgPool) {
         1,
         "distinct_on(title) should collapse duplicate titles"
     );
+
+    // DistinctMode::Plain — `SELECT DISTINCT *` over the whole row. Every
+    // seeded + duplicate row is distinct on at least one column (the
+    // HeerId PK guarantees this), so `.distinct().count()` returns the
+    // full row count. The assertion matters because before the Task 6
+    // fixup, `.distinct().count()` silently returned the non-distinct
+    // count — which happens to be the same value here, but for the wrong
+    // reason (the SQL was `SELECT COUNT(*) FROM posts_p2`, not a
+    // `COUNT(*) FROM (SELECT DISTINCT * FROM posts_p2)`). Pair this with
+    // the unit test `count_with_distinct_plain_wraps_subquery` which
+    // asserts on the emitted SQL shape directly.
+    let plain_distinct_count = Post::objects().distinct().count(&pool).await.unwrap();
+    let base_count = Post::objects().count(&pool).await.unwrap();
+    assert_eq!(
+        plain_distinct_count, base_count,
+        "PK makes every row unique — distinct count == base count"
+    );
+    // And `.distinct().fetch_all()` still returns every row since each
+    // row is unique.
+    let plain_rows = Post::objects().distinct().fetch_all(&pool).await.unwrap();
+    assert_eq!(plain_rows.len() as i64, base_count);
+
+    // distinct_on + count: the subquery-wrap path. 'dup' collapses to 1,
+    // so the distinct-on count is strictly less than the base count.
+    let distinct_on_count = Post::objects()
+        .distinct_on(|f| f.title())
+        .count(&pool)
+        .await
+        .unwrap();
+    assert!(
+        distinct_on_count < base_count,
+        "distinct_on(title) count ({distinct_on_count}) should be \
+         less than base count ({base_count}) since 'dup' collapses"
+    );
 }

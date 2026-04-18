@@ -368,11 +368,32 @@ fn emit_condition(qb: &mut QueryBuilder<'_, Postgres>, c: Condition) {
     }
 }
 
-/// Emit the `WHERE ...` clause for a QuerySet, if any. `Condition::True`
-/// means "no WHERE" and is omitted entirely (rather than `WHERE TRUE`,
-/// which is equivalent but visually noisy in logs).
+/// Is this condition vacuously `TRUE` at emission time? Walks `And`
+/// subtrees recursively so top-level `And(vec![])`, nested
+/// `And(vec![True, And(vec![])])`, and similar shapes all collapse to the
+/// same identity the emitter treats as "no filter". `Not(Or(vec![]))` is
+/// also vacuously TRUE because the emitter renders empty `Or` as `FALSE`
+/// and `NOT FALSE` is `TRUE`.
+///
+/// Used by [`push_where`] to skip the `WHERE` clause entirely rather than
+/// emitting `WHERE TRUE`. Keeps logs readable and avoids any chance of an
+/// optimizer surprise on trivially-true predicates.
+fn is_vacuously_true(c: &Condition) -> bool {
+    match c {
+        Condition::True => true,
+        Condition::And(xs) => xs.iter().all(is_vacuously_true),
+        Condition::Not(inner) => matches!(inner.as_ref(), Condition::Or(xs) if xs.is_empty()),
+        _ => false,
+    }
+}
+
+/// Emit the `WHERE ...` clause for a QuerySet, if any. Any top-level
+/// condition that collapses to vacuous TRUE (see [`is_vacuously_true`]) is
+/// omitted entirely rather than emitted as `WHERE TRUE` — same semantics,
+/// cleaner logs, and avoids touching the planner with a trivially-true
+/// predicate.
 fn push_where<T: Model>(qb: &mut QueryBuilder<'_, Postgres>, qs: &QuerySet<T>) {
-    if !matches!(qs.condition, Condition::True) {
+    if !is_vacuously_true(&qs.condition) {
         qb.push(" WHERE ");
         // `emit_condition` consumes the tree — clone the borrowed reference
         // so the original QuerySet remains usable (matters for `fetch_one`'s
@@ -456,19 +477,95 @@ pub(crate) fn build_select<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, P
     qb
 }
 
-/// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`.
+/// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
+/// [`DistinctMode`].
 ///
-/// `ORDER BY` / `LIMIT` / `OFFSET` are intentionally not emitted — they
-/// don't affect the total row count and including them only slows the
-/// query. `DISTINCT` semantics for COUNT (`SELECT COUNT(DISTINCT ...)`) are
-/// a Phase 4+ concern: Phase 2 documents that `.distinct().count()`
-/// currently counts non-distinct rows. Upgrade path tracked in the Phase 4
-/// annotations backlog.
+/// Shapes emitted per mode:
+/// - `DistinctMode::None` → `SELECT COUNT(*) FROM "table" [WHERE ...]`
+/// - `DistinctMode::Plain` → `SELECT COUNT(*) FROM (SELECT DISTINCT * FROM
+///   "table" [WHERE ...]) AS sub`
+/// - `DistinctMode::On(cols)` → `SELECT COUNT(*) FROM (SELECT DISTINCT ON
+///   (cols) * FROM "table" [WHERE ...] ORDER BY cols [, user-ordering]) AS sub`
+///
+/// `ORDER BY` / `LIMIT` / `OFFSET` from the queryset are intentionally not
+/// emitted on the **outer** count — they don't affect total cardinality and
+/// including them only slows the query. For `DISTINCT ON` the inner ORDER
+/// BY is required by Postgres (the `ON` column list must be a prefix of
+/// `ORDER BY`); we prepend the distinct columns and then append any
+/// user-supplied ordering so the emitted SQL is syntactically valid and
+/// semantically stable.
 pub(crate) fn build_count<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
-    let mut qb = QueryBuilder::new("SELECT COUNT(*) FROM ");
-    qb.push(T::table_name());
-    push_where(&mut qb, qs);
-    qb
+    match &qs.distinct {
+        DistinctMode::None => {
+            // Fast path — plain row count, no subquery wrap.
+            let mut qb = QueryBuilder::new("SELECT COUNT(*) FROM ");
+            qb.push(T::table_name());
+            push_where(&mut qb, qs);
+            qb
+        }
+        DistinctMode::Plain => {
+            // `COUNT(*)` over `SELECT DISTINCT *` counts distinct whole-row
+            // tuples. No ordering needed inside the subquery — DISTINCT has
+            // no prefix requirement.
+            let mut qb = QueryBuilder::new("SELECT COUNT(*) FROM (SELECT DISTINCT * FROM ");
+            qb.push(T::table_name());
+            push_where(&mut qb, qs);
+            qb.push(") AS sub");
+            qb
+        }
+        DistinctMode::On(cols) => {
+            // `DISTINCT ON (a, b)` requires `ORDER BY a, b [, ...]`. We
+            // prepend the distinct columns to the user's ordering so the
+            // subquery is always well-formed. Duplicates (user already
+            // ordered by a distinct column) are harmless — Postgres ignores
+            // repeated expressions in ORDER BY for ordering purposes.
+            let mut qb = QueryBuilder::new("SELECT COUNT(*) FROM (SELECT DISTINCT ON (");
+            for (i, c) in cols.iter().enumerate() {
+                if i > 0 {
+                    qb.push(", ");
+                }
+                qb.push(*c);
+            }
+            qb.push(") * FROM ");
+            qb.push(T::table_name());
+            push_where(&mut qb, qs);
+            qb.push(" ORDER BY ");
+            for (i, c) in cols.iter().enumerate() {
+                if i > 0 {
+                    qb.push(", ");
+                }
+                qb.push(*c);
+            }
+            // Append user ordering after the required prefix. Direction /
+            // nulls qualifiers only apply to user-supplied columns; the
+            // prepended distinct columns use Postgres default ordering
+            // (ASC NULLS LAST for most types), which is fine because the
+            // outer COUNT does not care about row order.
+            for o in qs.ordering.iter() {
+                qb.push(", ");
+                qb.push(o.column);
+                match o.direction {
+                    Direction::Asc => {
+                        qb.push(" ASC");
+                    }
+                    Direction::Desc => {
+                        qb.push(" DESC");
+                    }
+                }
+                match o.nulls {
+                    NullsOrder::First => {
+                        qb.push(" NULLS FIRST");
+                    }
+                    NullsOrder::Last => {
+                        qb.push(" NULLS LAST");
+                    }
+                    NullsOrder::Default => {}
+                }
+            }
+            qb.push(") AS sub");
+            qb
+        }
+    }
 }
 
 /// Build `SELECT EXISTS(SELECT 1 FROM <table> [WHERE ...] LIMIT 1)`.
@@ -759,5 +856,106 @@ mod tests {
         assert_eq!(escape_like("a_b"), "a\\_b");
         assert_eq!(escape_like("c\\d"), "c\\\\d");
         assert_eq!(escape_like("plain"), "plain");
+    }
+
+    #[test]
+    fn count_with_distinct_plain_wraps_subquery() {
+        // `.distinct().count()` must wrap the query in a subquery so
+        // `COUNT(*)` counts distinct tuples, not raw rows. Previously this
+        // silently returned the base row count — a correctness bug on a
+        // public terminal.
+        let qs: QuerySet<Fake> = QuerySet::new().distinct();
+        let qb = build_count(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.contains("SELECT COUNT(*) FROM (SELECT DISTINCT * FROM fakes)"),
+            "got: {sql}"
+        );
+        assert!(sql.contains(") AS sub"), "got: {sql}");
+    }
+
+    #[test]
+    fn count_with_distinct_on_wraps_subquery_with_order() {
+        // DISTINCT ON (a, b) requires ORDER BY a, b prefix. The subquery
+        // prepends the distinct columns so the emitted SQL is always
+        // well-formed even when the user supplied no ordering.
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.distinct = DistinctMode::On(vec!["title", "view_count"]);
+        let qb = build_count(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.contains(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT ON (title, view_count) * FROM fakes"
+            ),
+            "got: {sql}"
+        );
+        assert!(sql.contains("ORDER BY title, view_count"), "got: {sql}");
+        assert!(sql.contains(") AS sub"), "got: {sql}");
+    }
+
+    #[test]
+    fn count_with_distinct_on_appends_user_ordering() {
+        // When the user provides ORDER BY on top of DISTINCT ON, the user
+        // ordering is appended after the required prefix. Duplicate columns
+        // are harmless in Postgres.
+        let mut qs: QuerySet<Fake> = QuerySet::new().order_by(|_| crate::query::order::OrderExpr {
+            column: "view_count",
+            direction: Direction::Desc,
+            nulls: NullsOrder::Last,
+        });
+        qs.distinct = DistinctMode::On(vec!["title"]);
+        let qb = build_count(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.contains("ORDER BY title, view_count DESC NULLS LAST"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn count_without_distinct_omits_subquery() {
+        // Regression guard for the `DistinctMode::None` fast path — the
+        // plain count must not pick up an unnecessary subquery wrap.
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let qb = build_count(&qs);
+        let sql = qb.sql().trim().to_string();
+        assert_eq!(sql, "SELECT COUNT(*) FROM fakes");
+    }
+
+    #[test]
+    fn where_skipped_on_empty_and() {
+        // Top-level `And(vec![])` collapses to vacuous TRUE; the emitter
+        // omits the `WHERE` clause entirely rather than emitting
+        // `WHERE TRUE`. Previously only `Condition::True` was skipped, so
+        // an externally-constructed empty `And` leaked `WHERE TRUE` into
+        // the SQL.
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Condition::And(Vec::new());
+        let qb = build_select(&qs);
+        let sql = qb.sql().trim().to_string();
+        assert_eq!(sql, "SELECT * FROM fakes");
+    }
+
+    #[test]
+    fn where_skipped_on_nested_vacuous_and() {
+        // Nested `And(vec![True, And(vec![])])` is also vacuously TRUE —
+        // `is_vacuously_true` walks the `And` subtree recursively. Same
+        // cleanup as the flat empty-And case.
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Condition::And(vec![Condition::True, Condition::And(Vec::new())]);
+        let qb = build_select(&qs);
+        let sql = qb.sql().trim().to_string();
+        assert_eq!(sql, "SELECT * FROM fakes");
+    }
+
+    #[test]
+    fn where_skipped_on_not_empty_or() {
+        // `Not(Or(vec![]))` emits as `NOT FALSE` → `TRUE`, which is
+        // vacuously true. Handled by the same skip path.
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Condition::Not(Box::new(Condition::Or(Vec::new())));
+        let qb = build_select(&qs);
+        let sql = qb.sql().trim().to_string();
+        assert_eq!(sql, "SELECT * FROM fakes");
     }
 }
