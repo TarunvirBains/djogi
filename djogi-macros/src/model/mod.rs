@@ -50,8 +50,11 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 4. ModelDescriptor + inventory::submit! — Task 6 wires this up.
     let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 5. {Model}Fields + {Model}Filter stubs — Task 6 wires this up.
-    let stubs = stubs::expand(&struct_item);
+    // 5. {Model}Fields accessors + {Model}Filter stub. `stubs::expand` now
+    //    emits real per-column `FieldRef` accessors (Phase 2 Task 4); it needs
+    //    `model_attrs` for future pk-aware filter work and reads the field
+    //    types directly off the post-injection `struct_item`.
+    let stubs = stubs::expand(&struct_item, &model_attrs);
 
     Ok(quote::quote! {
         #expanded
