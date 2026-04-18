@@ -1,0 +1,5 @@
+error: unknown on_delete value `bogus`; expected one of: cascade, restrict, set_null, set_default, protect, do_nothing
+  --> tests/compile_fail/bad_on_delete_value.rs:17:25
+   |
+17 |     #[field(on_delete = "bogus")]
+   |                         ^^^^^^^

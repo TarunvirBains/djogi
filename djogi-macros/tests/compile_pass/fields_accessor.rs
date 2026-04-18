@@ -4,9 +4,14 @@
 //
 //   - framework columns (`id`, `created_at`, `updated_at`) return the expected
 //     `FieldRef<User, ...>` shapes and support `.eq` / `.is_null` lookups;
-//   - user-declared columns round-trip their types verbatim (`String`, `i32`);
+//   - user-declared columns round-trip their types verbatim (`String`, `i32`,
+//     `Option<String>`);
 //   - string-only lookups (`.contains`) resolve on `FieldRef<User, String>`;
+//   - raw identifiers (`r#type`) round-trip as a method name and produce a
+//     SQL-safe column string (`"type"`, never `"r#type"`);
 //   - the emission compiles for `pk = "serial"` (different `id` type).
+//
+// TODO: add Jsonb + ForeignKey fixtures once those types land (Phase 3+).
 //
 // `pk = "none"` is deliberately NOT exercised here: `crud::expand` does not
 // emit `impl Model` for those models (see the module docs), and `FieldRef<M,
@@ -28,6 +33,11 @@ struct User {
     pub name: String,
     pub email: String,
     pub age: i32,
+    pub bio: Option<String>,
+    // Raw identifier: `type` is a Rust keyword but a common SQL column name.
+    // The emitted method must be `r#type()`, but the underlying column
+    // literal passed to `FieldRef::new(...)` must be `"type"` (no `r#`).
+    pub r#type: String,
 }
 
 #[model(table = "lookups", pk = "serial")]
@@ -49,6 +59,24 @@ fn _user_accessors_typecheck() {
     let _name: FieldRef<User, String> = f.name();
     let _email: FieldRef<User, String> = f.email();
     let _age: FieldRef<User, i32> = f.age();
+    // Nullable column: the `V` generic carries the `Option<T>` wrapper
+    // verbatim so `.eq(Some(...))` / `.is_null()` type-check as expected.
+    let _bio: FieldRef<User, Option<String>> = f.bio();
+    // Raw-identifier method: `r#type()` is how the user writes it in Rust.
+    // The returned `FieldRef`'s `V` generic is the plain `String` from the
+    // field's declared type.
+    let _ty: FieldRef<User, String> = f.r#type();
+}
+
+fn _raw_ident_column_literal_strips_prefix() {
+    // This is the acceptance check for the `r#` stripping fix in
+    // `stubs.rs`: `FieldRef::column()` returns the SQL column string
+    // passed to `FieldRef::new(...)`. If the macro emits `"r#type"` the
+    // assertion fires at runtime; the point of the fixture is to pin the
+    // fix so regressing to `ident.to_string()` (unstripped) breaks the
+    // test suite loudly rather than silently producing bogus SQL.
+    let col = UserFields::default().r#type().column();
+    assert_eq!(col, "type");
 }
 
 fn _lookup_values_compile() {
@@ -74,4 +102,9 @@ fn _serial_pk_id_is_i32() {
     let _: Condition = f.id().eq(7i32);
 }
 
-fn main() {}
+fn main() {
+    // Runtime-assert the raw-ident column stripping. Compile-pass fixtures
+    // are executed by trybuild as plain binaries, so `fn main()` is a fine
+    // place to land the assertion.
+    _raw_ident_column_literal_strips_prefix();
+}

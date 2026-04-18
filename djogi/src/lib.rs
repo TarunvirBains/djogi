@@ -12,7 +12,7 @@
 //! | `descriptor` | `ModelDescriptor` and friends — the single source of truth about every registered model. Populated by `#[model]` via `inventory::submit!`. |
 //! | `error`      | `DjogiError` — the one error type returned by every `Model` method. |
 //! | `model`      | The `Model` trait the macro implements for every user struct. Defined in Phase 1 Task 2. |
-//! | `query`      | Filter AST (`Condition`, `Leaf`, `LookupOp`, `FilterValue`) plus the `QuerySet<T>` builder and SQL emitter (filled in across Phase 2). |
+//! | `query`      | Filter AST: public API is `Condition` + `FieldRef` (plus `QuerySet<T>` and `OrderExpr`). Low-level enums (`Leaf`, `LookupOp`, `FilterValue`) live under `djogi::query::internal` for advanced/custom emitters. Filled in across Phase 2. |
 //! | `raw`        | `djogi::raw::*` escape hatches for when `QuerySet` is too limiting. Fully implemented in Phase 1 Task 11. |
 //! | `types`      | `DateTime`, `Date`, and re-exports of `HeerId`/`RanjId` — the canonical types imported via `prelude`. |
 //!

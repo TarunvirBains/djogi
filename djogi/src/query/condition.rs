@@ -197,10 +197,10 @@ pub enum FilterValue {
     /// # Invariants (enforced by construction, not the enum itself)
     ///
     /// - Elements must be SQL-bindable **scalars** — never nested `List` or
-    ///   `Pair`. The typed `FieldRef<M, V>::in_list(Vec<V>)` API prevents nesting
-    ///   by construction; manual `FilterValue::List` construction that violates
-    ///   this invariant is a framework bug that Task 6's SQL emitter panics on
-    ///   (not silently miscompiles).
+    ///   `Pair`. The typed `FieldRef<M, V>::in_list(impl IntoIterator<Item = V>)`
+    ///   API prevents nesting by construction; manual `FilterValue::List`
+    ///   construction that violates this invariant is a framework bug that
+    ///   Task 6's SQL emitter panics on (not silently miscompiles).
     /// - All elements should be the same `FilterValue` discriminant (mixed-type
     ///   lists are meaningless for SQL `IN`). The typed API enforces this.
     List(Vec<FilterValue>),
