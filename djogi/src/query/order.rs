@@ -31,6 +31,7 @@ use crate::query::field::FieldRef;
 
 /// Sort direction for a single `ORDER BY` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Direction {
     /// `ASC` — smallest first.
     Asc,
@@ -44,6 +45,7 @@ pub enum Direction {
 /// for DESC); pick `First` / `Last` explicitly for deterministic ordering
 /// across dialects or documented row ordering contracts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NullsOrder {
     /// Postgres default — no `NULLS FIRST|LAST` clause emitted.
     Default,

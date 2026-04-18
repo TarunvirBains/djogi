@@ -91,9 +91,11 @@ async fn objects_returns_empty_queryset(pool: PgPool) {
 
     // `none()` short-circuit branch + `distinct`/`distinct_on` — closes out
     // every public QuerySet method the task introduces. `none()` is an
-    // associated function on `QuerySet` (it constructs rather than
-    // transforms), so it is called via `QuerySet::<Post>::none()`.
-    let _empty: QuerySet<Post> = QuerySet::none();
+    // instance method (matching Django's `queryset.none()` ergonomics) so
+    // both `Post::objects().none()` and from-scratch construction via
+    // `QuerySet::<Post>::new().none()` compile.
+    let _empty_from_objects: QuerySet<Post> = Post::objects().none();
+    let _empty_from_scratch: QuerySet<Post> = QuerySet::<Post>::new().none();
     let _distinct = Post::objects().distinct();
     let _distinct_on = Post::objects().distinct_on(|f| f.title());
 }

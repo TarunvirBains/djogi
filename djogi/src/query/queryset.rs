@@ -67,6 +67,7 @@ use std::marker::PhantomData;
 /// extension that keeps the first row per `(col_a, col_b)` tuple, where
 /// "first" is determined by the query's `ORDER BY`.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub enum DistinctMode {
     /// `SELECT ...` — no DISTINCT clause.
     #[default]
@@ -96,6 +97,16 @@ pub struct QuerySet<T: Model> {
     pub(crate) limit: Option<i64>,
     /// SQL `OFFSET` — `None` means no offset. `i64` to match Postgres.
     pub(crate) offset: Option<i64>,
+    // TASK 6 CONTRACT: every terminal method added in Task 6 — `fetch_all`,
+    // `fetch_one`, `count`, `exists`, `first`, `update`, `delete` — MUST check
+    // `self.is_empty` first and return the empty result (empty `Vec`, `None`,
+    // `0`, `false`, `0 rows affected`, etc.) WITHOUT issuing any SQL. This is
+    // the whole point of `QuerySet::none()` — it lets authorization / feature-
+    // flag branches short-circuit the DB round-trip without a special-cased
+    // `if` on the caller's side.
+    //
+    // Grep marker: TASK6:empty_contract
+    //
     /// Short-circuit flag — `true` means terminal methods (Task 6) return
     /// the empty result without a DB round-trip. Set only by
     /// [`QuerySet::none`].
@@ -158,6 +169,13 @@ impl<T: Model> QuerySet<T> {
     /// Structural empty QuerySet — every terminal method (Task 6) short-
     /// circuits to the empty result without touching the database.
     ///
+    /// Takes `self` as an instance transform (matching Django's
+    /// `queryset.none()` ergonomics) so `Post::objects().none()` compiles
+    /// and reads naturally. Any filters / ordering / limits already
+    /// accumulated on `self` are discarded — the returned queryset is a
+    /// fresh [`QuerySet::new()`] with `is_empty = true`. From-scratch
+    /// construction is spelled `QuerySet::<T>::new().none()`.
+    ///
     /// Useful for authorization / feature-flag branches:
     ///
     /// ```ignore
@@ -168,7 +186,12 @@ impl<T: Model> QuerySet<T> {
     /// };
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn none() -> Self {
+    pub fn none(self) -> Self {
+        // `self` is intentionally ignored — `.none()` is a structural reset,
+        // not a conjunction with existing filters. Returning a fresh empty-
+        // flagged QuerySet keeps the semantics obvious: "no matter what was
+        // chained before, this matches zero rows."
+        let _ = self;
         let mut qs = Self::new();
         qs.is_empty = true;
         qs
@@ -226,21 +249,45 @@ impl<T: Model> QuerySet<T> {
         O: Into<Vec<OrderExpr>>,
     {
         let exprs: Vec<OrderExpr> = f(T::Fields::default()).into();
+        // Django-style append: library code can add tiebreakers without
+        // clobbering the caller's primary ordering. NOT SeaORM-style
+        // replace — swapping this to `self.ordering = exprs;` silently
+        // breaks any composition layer that relies on stable secondary
+        // sort keys. If a replace semantic is ever needed, add a distinct
+        // `reorder_by` method rather than mutating this one.
         self.ordering.extend(exprs);
         self
     }
 
     /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
+    ///
+    /// Takes `u64` at the API boundary so negative values are not
+    /// representable — the builder can never be put into an invalid state.
+    /// Internally stored as `Option<i64>` to match sqlx's Postgres bind
+    /// type; the cast is guarded by a `debug_assert!` so any pathological
+    /// `n > i64::MAX` case (impossible at query scale in practice) trips
+    /// in debug builds.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn limit(mut self, n: i64) -> Self {
-        self.limit = Some(n);
+    pub fn limit(mut self, n: u64) -> Self {
+        debug_assert!(
+            n <= i64::MAX as u64,
+            "QuerySet::limit(n = {n}) overflows i64 — Postgres bind type is BIGINT"
+        );
+        self.limit = Some(n as i64);
         self
     }
 
     /// Apply SQL `OFFSET n`. Replaces any prior `offset` value.
+    ///
+    /// Takes `u64` for the same reason as [`QuerySet::limit`] — negative
+    /// offsets are meaningless and now impossible to construct.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn offset(mut self, n: i64) -> Self {
-        self.offset = Some(n);
+    pub fn offset(mut self, n: u64) -> Self {
+        debug_assert!(
+            n <= i64::MAX as u64,
+            "QuerySet::offset(n = {n}) overflows i64 — Postgres bind type is BIGINT"
+        );
+        self.offset = Some(n as i64);
         self
     }
 
@@ -390,8 +437,23 @@ mod tests {
 
     #[test]
     fn none_marks_queryset_empty() {
-        let qs: QuerySet<Fake> = QuerySet::none();
+        // `none()` is an instance method: from-scratch construction goes
+        // through `new().none()`, but `qs.none()` also works and is the
+        // spelling documented at the module level.
+        let qs: QuerySet<Fake> = QuerySet::<Fake>::new().none();
         assert!(qs.is_empty());
+    }
+
+    #[test]
+    fn none_discards_prior_filters() {
+        use crate::query::condition::{FilterValue, Leaf};
+        // Any filters chained before `.none()` are structurally discarded —
+        // the resulting queryset is always a clean empty-flagged state.
+        let qs: QuerySet<Fake> = QuerySet::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))))
+            .none();
+        assert!(qs.is_empty());
+        assert!(matches!(qs.condition, Condition::True));
     }
 
     #[test]
