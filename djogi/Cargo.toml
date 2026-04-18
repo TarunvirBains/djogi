@@ -44,3 +44,8 @@ harness = true
 name = "phase2_queryset"
 path = "../tests/integration/phase2_queryset.rs"
 harness = true
+
+[[test]]
+name = "phase3_relations"
+path = "tests/integration/phase3_relations.rs"
+harness = true

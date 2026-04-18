@@ -1,0 +1,421 @@
+//! Phase 3 Task 3 integration tests: `ForeignKey<T>` round-trip and
+//! explicit single-relation access (`.fetch()` / `.resolved()`) validated
+//! against live Postgres.
+//!
+//! What this file pins:
+//!
+//! 1. The macro-generated `FromRow` decodes `ForeignKey<T>` and
+//!    `Option<ForeignKey<T>>` columns transparently via the sqlx
+//!    `Decode`/`Type` impls Task 1 shipped — no special-case handling
+//!    required in the macro's emission.
+//! 2. `Vehicle::create` encodes a `ForeignKey<T>` field as the target
+//!    model's PK type (BIGINT here), matching Task 1's `Encode` impl.
+//! 3. `.key()` returns the stored PK on both freshly-constructed and
+//!    re-fetched rows; `.resolved()` returns `None` unconditionally on
+//!    the unresolved wrapper (spec's no-lazy-loading invariant).
+//! 4. `.fetch(executor)` issues exactly one `SELECT` via `T::get` and
+//!    returns the fully-materialised target row.
+//! 5. Nullable FKs round-trip `None`/`Some` cleanly through the
+//!    `Option<ForeignKey<T>>` branch.
+//! 6. Inserts with a non-existent FK value surface cleanly as a
+//!    `DjogiError::Database` — proving the PG constraint violation
+//!    doesn't panic through the Djogi error machinery.
+//!
+//! # Fixture strategy (Q10 resolution in the Phase 3 plan)
+//!
+//! Tests share a single `setup_phase3(&pool)` helper that provisions
+//! the HeeRanjId schema + three Phase 3 tables. Each DDL statement is
+//! `CREATE TABLE IF NOT EXISTS`, matching the authoritative SQL in
+//! `tests/integration/migrations/phase3/` so the DDL stays discoverable
+//! as the schema reference while tests drive the setup explicitly
+//! (no `#[sqlx::test(migrations = ...)]` magic). Compact seed helpers
+//! (`seed_owner`, `seed_fuel_type`, `seed_vehicle_with_owner`) compose
+//! into per-test fixtures.
+//!
+//! The `_p3` table-name suffix keeps these integration tests isolated
+//! from the Phase 1/2 fixtures that share the same database.
+
+use djogi::prelude::*;
+use sqlx::PgPool;
+
+// ---------------------------------------------------------------------------
+// Test models
+// ---------------------------------------------------------------------------
+
+// `Owner` is the FK target for the non-null relation on `Vehicle`. Default-
+// derived so `Owner::create(pool, Owner { name, ..Default::default() })`
+// stays ergonomic — matches the Phase 1/2 test-model shape.
+#[model(table = "owners_p3")]
+#[derive(Debug, Clone)]
+pub struct Owner {
+    pub name: String,
+}
+
+// `FuelType` is the FK target for the nullable relation on `Vehicle`.
+// Same Default-derived shape as `Owner` so the seed helpers stay parallel.
+#[model(table = "fuel_types_p3")]
+#[derive(Debug, Clone)]
+pub struct FuelType {
+    pub name: String,
+}
+
+// `Vehicle` carries one non-null and one nullable FK. `no_default` is
+// required because `ForeignKey<T>` intentionally does not implement
+// `Default` — a relation with no PK value is meaningless (see the
+// compile-pass fixture in `djogi-macros/tests/compile_pass/phase3_relations.rs`
+// for the same rationale). Tests construct `Vehicle` with explicit
+// framework-field sentinels via `vehicle_for_insert` below.
+#[model(table = "vehicles_p3", no_default)]
+#[derive(Debug, Clone)]
+pub struct Vehicle {
+    pub make: String,
+    pub owner_id: ForeignKey<Owner>,
+    pub fuel_type_id: Option<ForeignKey<FuelType>>,
+}
+
+// ---------------------------------------------------------------------------
+// Fixture helpers (per plan Q10 — shared setup + compact seeders)
+// ---------------------------------------------------------------------------
+
+/// Install HeeRanjId schema + seed node 1 + create the three Phase 3
+/// tables. Idempotent `CREATE TABLE IF NOT EXISTS` so back-to-back
+/// calls within a single `#[sqlx::test]` fixture cost one extra round
+/// trip (cheap) but never conflict.
+///
+/// The ALTER DATABASE + session-level `set_heer_node_id(1)` pattern is
+/// lifted verbatim from `phase1_model::setup_posts` — same rationale:
+/// `sqlx::test` provisions a multi-connection pool, ALTER DATABASE is
+/// inherited by every future connection, and the SELECT covers
+/// already-open connections. See that function's doc comment for the
+/// full explanation.
+async fn setup_phase3(pool: &PgPool) {
+    heeranjid_sqlx::install_schema(pool).await.unwrap();
+    heeranjid_sqlx::seed_default_node(pool).await.unwrap();
+
+    let db_name: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!(
+        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    // DDL mirrors `migrations/phase3/001_owners.sql`,
+    // `002_fuel_types.sql`, `003_vehicles.sql`. Keep the two in sync if
+    // the schema evolves — the SQL files are the authoritative
+    // reference and this helper issues them at test-setup time.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS owners_p3 (
+            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            name        TEXT        NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS fuel_types_p3 (
+            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            name        TEXT        NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS vehicles_p3 (
+            id            BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            created_at    TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            updated_at    TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            make          TEXT        NOT NULL,
+            owner_id      BIGINT      NOT NULL    REFERENCES owners_p3(id) ON DELETE CASCADE,
+            fuel_type_id  BIGINT                  REFERENCES fuel_types_p3(id) ON DELETE RESTRICT
+        )",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Seed one `Owner` row with the given `name`. Framework fields
+/// (`id`, `created_at`, `updated_at`) are populated by the DB defaults
+/// via `RETURNING *`.
+///
+/// Runs inside a one-shot transaction so `SELECT set_heer_node_id(1)`
+/// lands on the SAME connection that executes the INSERT — `sqlx::test`
+/// provisions a multi-connection pool, so a bare session-level SET on
+/// `&pool` can land on a different connection than the subsequent
+/// INSERT (and `generate_id()` would then raise `heer.node_id is not
+/// set`). Same rationale as `phase2_queryset::seed_posts` — see that
+/// helper's doc comment for the canonical write-up.
+async fn seed_owner(pool: &PgPool, name: &str) -> Owner {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let owner = Owner::create(
+        &mut *tx,
+        Owner {
+            name: name.into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("seed_owner: Owner::create should succeed");
+    tx.commit().await.unwrap();
+    owner
+}
+
+/// Seed one `FuelType` row. Mirror of `seed_owner` — same transaction
+/// wrap for the same set_heer_node_id-stickiness reason.
+async fn seed_fuel_type(pool: &PgPool, name: &str) -> FuelType {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let fuel = FuelType::create(
+        &mut *tx,
+        FuelType {
+            name: name.into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("seed_fuel_type: FuelType::create should succeed");
+    tx.commit().await.unwrap();
+    fuel
+}
+
+/// Build a `Vehicle` value suitable for `Vehicle::create`. Framework
+/// fields use the same sentinel pattern as
+/// `phase1_model::rich_field_types_roundtrip` — the DB defaults
+/// overwrite them via `RETURNING *` on the insert. Extracted into a
+/// helper because `no_default` on `Vehicle` forbids
+/// `..Default::default()` and the sentinel construction would
+/// otherwise repeat across every test.
+fn vehicle_for_insert(make: &str, owner: &Owner, fuel: Option<&FuelType>) -> Vehicle {
+    Vehicle {
+        id: ::djogi::types::__heerid_default(),
+        created_at: ::djogi::types::DateTime::UNIX_EPOCH,
+        updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
+        make: make.into(),
+        owner_id: ForeignKey::new(owner.id),
+        fuel_type_id: fuel.map(|f| ForeignKey::new(f.id)),
+    }
+}
+
+/// Seed one `Vehicle` row pointing at `owner` (required) and
+/// optionally `fuel` (nullable FK). Returns the DB-materialised row
+/// (with DB-assigned id + timestamps). Same transaction-wrap rationale
+/// as `seed_owner` — keeps `set_heer_node_id` and the INSERT on one
+/// pool connection.
+async fn seed_vehicle_with_owner(
+    pool: &PgPool,
+    make: &str,
+    owner: &Owner,
+    fuel: Option<&FuelType>,
+) -> Vehicle {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let vehicle = Vehicle::create(&mut *tx, vehicle_for_insert(make, owner, fuel))
+        .await
+        .expect("seed_vehicle_with_owner: Vehicle::create should succeed");
+    tx.commit().await.unwrap();
+    vehicle
+}
+
+// ---------------------------------------------------------------------------
+// Task 3 integration tests
+// ---------------------------------------------------------------------------
+
+/// FK round-trip: create a vehicle pointing at an owner, re-fetch via
+/// `Vehicle::get`, and confirm the FK column decoded into a
+/// `ForeignKey<Owner>` whose `.key()` matches the owner's PK.
+///
+/// Also pins the no-lazy-loading invariant: a freshly-decoded FK has
+/// `.resolved() == None`. Any future regression that accidentally
+/// caches the target alongside the FK column would flip this assertion
+/// and surface as a loud test failure instead of a silent behavior
+/// change.
+#[sqlx::test]
+async fn fk_round_trip_stores_and_retrieves_pk(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Alice").await;
+    let vehicle = seed_vehicle_with_owner(&pool, "Toyota", &owner, None).await;
+
+    let loaded = Vehicle::get(&pool, vehicle.id)
+        .await
+        .expect("Vehicle::get should succeed");
+
+    assert_eq!(
+        loaded.owner_id.key(),
+        owner.id,
+        "re-fetched ForeignKey must carry the original owner's PK"
+    );
+    assert!(
+        loaded.owner_id.resolved().is_none(),
+        "unresolved ForeignKey must not carry a cached child — prefetch / select_related is the only path that materialises one"
+    );
+}
+
+/// `.fetch(executor)` issues one `SELECT` against the target table and
+/// returns the fully-materialised row. Asserts both the id (PK match)
+/// and a non-PK column (`name`) so a misrouted fetch — e.g. one that
+/// returned the same ID from the wrong table — would fail on the name
+/// comparison.
+#[sqlx::test]
+async fn fk_fetch_loads_related_row(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Alice").await;
+    let vehicle = seed_vehicle_with_owner(&pool, "Toyota", &owner, None).await;
+
+    let fetched_owner = vehicle
+        .owner_id
+        .fetch(&pool)
+        .await
+        .expect("ForeignKey::fetch should resolve to the owner row");
+
+    assert_eq!(fetched_owner.id, owner.id);
+    assert_eq!(
+        fetched_owner.name, "Alice",
+        "fetch must return the row that matched the FK, not a different owner"
+    );
+}
+
+/// Nullable FK — `None` side. Create a vehicle with no fuel type,
+/// re-fetch, and confirm the `Option<ForeignKey<FuelType>>` column
+/// decodes back to `None`.
+#[sqlx::test]
+async fn nullable_fk_round_trips_none(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Bob").await;
+    let vehicle = seed_vehicle_with_owner(&pool, "Honda", &owner, None).await;
+
+    let loaded = Vehicle::get(&pool, vehicle.id)
+        .await
+        .expect("Vehicle::get should succeed");
+
+    assert!(
+        loaded.fuel_type_id.is_none(),
+        "nullable FK with NULL column must decode to Option::None"
+    );
+}
+
+/// Nullable FK — `Some` side. Mirror of `nullable_fk_round_trips_none`:
+/// insert with a non-null fuel-type FK, re-fetch, confirm the
+/// `Option<ForeignKey<FuelType>>` column carries the target's PK.
+#[sqlx::test]
+async fn nullable_fk_round_trips_some(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Carol").await;
+    let fuel = seed_fuel_type(&pool, "Gas").await;
+    let vehicle = seed_vehicle_with_owner(&pool, "Subaru", &owner, Some(&fuel)).await;
+
+    let loaded = Vehicle::get(&pool, vehicle.id)
+        .await
+        .expect("Vehicle::get should succeed");
+
+    let fk = loaded
+        .fuel_type_id
+        .as_ref()
+        .expect("nullable FK with non-null column must decode to Option::Some");
+    assert_eq!(
+        fk.key(),
+        fuel.id,
+        "round-tripped nullable FK must carry the original fuel-type PK"
+    );
+}
+
+/// `.fetch(executor)` on the inner `ForeignKey<FuelType>` of a
+/// `Some(_)`-valued nullable column. Proves the happy path composes
+/// cleanly through `Option::as_ref().unwrap().fetch(&pool)` — the
+/// same shape user code will write for opportunistic resolution of
+/// nullable FKs inside a handler.
+#[sqlx::test]
+async fn nullable_fk_fetch_loads_related_row(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Dana").await;
+    let fuel = seed_fuel_type(&pool, "Diesel").await;
+    let vehicle = seed_vehicle_with_owner(&pool, "Ford", &owner, Some(&fuel)).await;
+
+    let fetched_fuel = vehicle
+        .fuel_type_id
+        .as_ref()
+        .expect("seed helper attached a fuel type — Option should be Some")
+        .fetch(&pool)
+        .await
+        .expect("ForeignKey::fetch on the nullable FK should resolve");
+
+    assert_eq!(fetched_fuel.id, fuel.id);
+    assert_eq!(fetched_fuel.name, "Diesel");
+}
+
+/// Inserting a `Vehicle` with an `owner_id` that doesn't exist in
+/// `owners_p3` must surface the Postgres `foreign_key_violation` as a
+/// `DjogiError::Sqlx` — not panic, not swallow, not mangle. This
+/// anchors the contract that the relation wrapper is transparent to
+/// the usual error flow: the FK column is just a BIGINT with a REFERENCES
+/// constraint as far as the `INSERT` is concerned, so any existing
+/// error plumbing continues to work.
+#[sqlx::test]
+async fn fk_creation_sqlx_error_on_unknown_owner(pool: PgPool) {
+    setup_phase3(&pool).await;
+
+    // Craft a HeerId that can't exist in `owners_p3` — we never seed
+    // any owners in this test, and `generate_id()` produces
+    // time-ordered IDs that dwarf this small sentinel value.
+    let bogus_owner_id = ::heeranjid::HeerId::from_i64(42).expect("42 is a valid HeerId");
+    let bogus_owner = Owner {
+        id: bogus_owner_id,
+        ..Default::default()
+    };
+
+    // Run the doomed INSERT inside a transaction with `set_heer_node_id(1)`
+    // so `generate_id()` can succeed far enough to reach the FK-constraint
+    // check. Without this the INSERT would fail on `heer.node_id is not set`
+    // before Postgres ever evaluates the REFERENCES clause — we'd observe a
+    // different PgDatabaseError and the test would be a false positive.
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let result = Vehicle::create(&mut *tx, vehicle_for_insert("Phantom", &bogus_owner, None)).await;
+    // Rollback either way — the transaction is poisoned on error, and we
+    // don't need to commit anything on success (there won't be any).
+    let _ = tx.rollback().await;
+
+    let err = result.expect_err("insert with unknown owner_id must fail");
+    match err {
+        DjogiError::Sqlx(db_err) => {
+            // Postgres surfaces FK violations with SQLSTATE `23503`. Asserting
+            // on the code rather than the message keeps the check stable
+            // across Postgres locale changes.
+            let code = db_err.as_database_error().and_then(|e| e.code());
+            assert_eq!(
+                code.as_deref(),
+                Some("23503"),
+                "expected foreign_key_violation (SQLSTATE 23503), got: {db_err:?}"
+            );
+        }
+        other => panic!("expected DjogiError::Sqlx from FK violation, got: {other:?}"),
+    }
+}
