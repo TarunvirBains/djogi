@@ -71,6 +71,7 @@ pub mod __private {
 pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
+pub use djogi_macros::{reverse_one_to_many, reverse_one_to_one};
 pub use error::DjogiError;
 pub use query::{
     Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
