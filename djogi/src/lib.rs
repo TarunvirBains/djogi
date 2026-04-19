@@ -15,6 +15,7 @@
 //! | Module       | Role |
 //! |--------------|------|
 //! | `config`     | `DjogiConfig` loaded from `Djogi.toml` + env (figment). |
+//! | `context`    | `DjogiContext` — carries either a pooled handle or active transaction. Replaces `E: Executor` generics on `Model` + `QuerySet` signatures (Phase 4 Task 1). |
 //! | `descriptor` | `ModelDescriptor` and friends — the single source of truth about every registered model. Populated by `#[model]` via `inventory::submit!`. |
 //! | `error`      | `DjogiError` — the one error type returned by every `Model` method. |
 //! | `model`      | The `Model` trait the macro implements for every user struct. Defined in Phase 1 Task 2. |
@@ -40,6 +41,7 @@
 //! `DjogiError` enum — everything a model definition needs.
 
 pub mod config;
+pub mod context;
 pub mod descriptor;
 pub mod error;
 pub(crate) mod ident;
@@ -74,6 +76,7 @@ pub mod __private {
     impl<T: ?Sized> SameAs<T> for T {}
 }
 
+pub use context::DjogiContext;
 pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
@@ -90,6 +93,7 @@ pub use relation::{
 pub use types::{Date, DateTime, HeerId, RanjId};
 
 pub mod prelude {
+    pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
         FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
     };
