@@ -2,20 +2,25 @@
 
 ## 15. Admin Panel — HTMX + Askama
 
-Djogi ships an optional admin panel that auto-generates list views and CRUD forms for every registered model. Built with HTMX + Askama (compile-time templates) and served as server-rendered HTML mounted at `/_admin/` by the Axum router.
+Djogi ships an optional admin panel that auto-generates list views and CRUD forms for every registered model. Built with HTMX + Askama (compile-time templates) and served as server-rendered HTML.
+
+The admin panel needs an HTTP layer, so it opts into one via a web-framework feature flag. In v1, Axum is the supported host — enable both flags together:
+
+```toml
+# Cargo.toml — admin panel on Axum
+djogi = { version = "0.1", features = ["admin", "axum"] }
+```
+
+Support for mounting the admin on other Rust web frameworks follows the one-flag-per-framework rule (e.g. `features = ["admin", "actix"]` when that integration lands). The admin's HTMX + Askama rendering layer is framework-agnostic; only the mounting glue differs per framework.
 
 ### 15.1 Design Philosophy
 
 - **Zero hand-written UI:** `ModelDescriptor` (emitted by `#[model]`) carries all the information needed — field names, types, nullability, FK targets, validation constraints. The admin reads this at runtime and renders forms automatically
-- **HTMX + server-rendered HTML:** Axum handlers return HTML pages and fragments. HTMX attributes (`hx-get`, `hx-post`, `hx-swap`) handle interactivity — pagination, search-as-you-type, inline editing — without a JS framework or WASM bundle. Just `htmx.min.js` (14KB gzipped).
-- **Opt-in, not bundled by default:** Enabled via the `admin` feature flag — adds `askama` to the dependency tree only when explicitly requested
-```toml
-# Cargo.toml
-djogi = { version = "0.1", features = ["admin"] }
-```
+- **HTMX + server-rendered HTML:** The host web framework's handlers (Axum, under the `axum` feature) return HTML pages and fragments. HTMX attributes (`hx-get`, `hx-post`, `hx-swap`) handle interactivity — pagination, search-as-you-type, inline editing — without a JS framework or WASM bundle. Just `htmx.min.js` (14KB gzipped).
+- **Opt-in, not bundled by default:** Enabled via the `admin` feature flag — adds `askama` to the dependency tree only when explicitly requested. Admin also requires a web-framework flag (e.g. `axum`) for the HTTP layer.
 ### 15.2 Mounting the Admin
 
-The admin router is merged automatically at startup when the `admin` feature is active:
+The admin router is merged automatically at startup when the `admin` feature is active alongside a web-framework feature flag. The example below shows the Axum integration (`axum` feature); other frameworks land under their own flags per the one-flag-per-framework rule.
 ```
 GET  /_admin/                     → model index (all registered models)
 GET  /_admin/{model}/             → list view + pagination + search
@@ -179,6 +184,6 @@ pub password_hash: String,
 
 - Askama template compilation and how `ModelDescriptor` drives template rendering at build time
 - `ForeignKey<T>` select dropdowns for large tables — HTMX `hx-trigger="keyup changed delay:300ms"` for search-as-you-type
-- Serving `htmx.min.js` as a static asset via `tower_http::services::ServeDir` within the Axum router
+- Serving `htmx.min.js` as a static asset — under the `axum` feature, this uses `tower_http::services::ServeDir` within the Axum router; other framework integrations supply their own equivalent static-file service
 - Admin session auth — signed cookie, independent of the application's own auth system
 - `Jsonb<T>` unknown fields in admin — read-only display with raw JSON view toggle

@@ -27,6 +27,7 @@ docker-compose.override.yml
 docs/superpowers/
 .codex
 early-edge-cases.md
+docs/codex-blank-response-debugging.md
 
 # Git worktrees (local-only isolated workspaces)
 .worktrees/

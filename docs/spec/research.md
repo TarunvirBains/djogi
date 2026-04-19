@@ -20,7 +20,7 @@
 - Diffing `Jsonb<T>` fields recursively — walk both `data` and `extra` at each level
 - Generating `FieldPath` in dot-notation through arbitrary nesting depth
 - `FieldValue::Unknown(UnknownField)` serialization in the JSONB changes column
-- Actor attribution: request-context hook design (Axum `Extension` or `State` pattern)
+- Actor attribution: request-context hook design — framework-agnostic trait surface (adopters wire it to their web framework's extension mechanism; under the `axum` feature, Axum's `Extension` or `State` pattern is the supported example)
 - `CrudLog::objects().json_path_changed("engine.horsepower")` — filtering changes by path in JSONB
 
 ### HeeRanjId Integration

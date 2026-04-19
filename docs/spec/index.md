@@ -19,7 +19,7 @@
 - [Data Lifecycle & Governance](./data-lifecycle.md) — lifecycle classes, anonymize/archive/purge planning, legal holds
 - [Logging](./logging.md) — three-database architecture, CRUD audit trail, event tracing
 - [Distributed Topology & Residency](./topology.md) — read modes, placement metadata, and topology-aware migration guardrails
-- [Configuration, CLI & Integration](./configuration.md) — `Djogi.toml`, `cargo djogi`, app registration, Axum integration
+- [Configuration, CLI & Integration](./configuration.md) — `Djogi.toml`, `cargo djogi`, app registration, web framework integration (Axum opt-in via the `axum` feature flag)
 
 ## Tools
 

@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Model-first web framework for Rust, built on Axum"
+description = "Model-first web framework for Rust — web-framework-agnostic core; Axum integration opt-in via the `axum` feature flag"
 
 [dependencies]
 djogi-macros.workspace = true

@@ -43,7 +43,7 @@ A feature belongs in Djogi only if all of the following are true:
 1. It strengthens the model-to-database derivation chain, query/runtime layer, migration system, or framework-owned tooling.
 2. It is reusable across multiple applications in substantially the same form.
 3. It can be expressed without leaking domain-specific concepts.
-4. It composes cleanly with SQLx, Axum, and Postgres rather than re-owning their jobs.
+4. It composes cleanly with SQLx, Postgres, and any Rust web framework (Axum is the most-supported integration, opt-in via the `axum` feature flag) rather than re-owning their jobs.
 5. It would be awkward, repetitive, or error-prone for every app to reimplement separately.
 
 If a proposal fails any of those tests, it should default to an application crate or a separate companion crate.

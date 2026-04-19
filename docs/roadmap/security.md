@@ -122,10 +122,10 @@ SET LOCAL djogi.tenant_id = '8312847293';
 
 ### Using `djogi::set_tenant()` in middleware
 
-The standard pattern is an Axum middleware layer that extracts the tenant from the authenticated session and injects it into the request:
+The standard pattern is a web-framework middleware layer that extracts the tenant from the authenticated session and injects it into the request. The example below uses Axum (enabled via the opt-in `axum` feature flag); the same pattern works for any other Rust web framework adopters wire in through its own per-framework feature flag (one flag per framework) or manual middleware.
 
 ```rust
-// auth/middleware.rs
+// auth/middleware.rs — Axum example (requires the `axum` feature)
 use axum::{extract::State, middleware::Next, response::Response};
 use axum::http::Request;
 
@@ -278,7 +278,10 @@ In production mode, the framework performs additional startup checks:
 
 `DjogiAuth` is the extension point for swapping credential sources — database users, API keys, JWT claims, session tokens. Implement it on your application's credential type and register it with Djogi at startup.
 
+The example below wires `DjogiAuth` against Axum's request type — enabled via the opt-in `axum` feature flag. Other Rust web frameworks integrate through their own per-framework feature flags (one flag per framework) and surface an equivalent `from_request` entry point against that framework's request type.
+
 ```rust
+// DjogiAuth implementation — Axum example (requires the `axum` feature)
 use djogi::auth::{DjogiAuth, Credentials, AuthError};
 use axum::http::Request;
 

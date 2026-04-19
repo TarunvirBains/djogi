@@ -280,7 +280,7 @@ The current spec calls for Dioxus 0.7+ fullstack for the admin panel. This means
 HTMX + server-rendered HTML (via Askama or Maud) is dramatically lighter and fits the Model-first philosophy better:
 
 - **No JS framework, no WASM bundle** — just `<script src="htmx.min.js">` (14KB gzipped)
-- **Server renders HTML fragments** — Axum handlers return partial HTML, HTMX swaps them in
+- **Server renders HTML fragments** — the host web framework's handlers (Axum under the `axum` feature, or whichever framework flag is enabled) return partial HTML, HTMX swaps them in
 - **ModelDescriptor → Askama templates** — auto-generate form/list HTML from model metadata
 - **Search-as-you-type** — `hx-trigger="keyup changed delay:300ms"` on FK selects
 - **Inline pagination** — `hx-get="/_admin/vehicles/?page=2" hx-target="#vehicle-list"`
@@ -290,7 +290,8 @@ HTMX + server-rendered HTML (via Askama or Maud) is dramatically lighter and fit
 ### What This Looks Like
 
 ```rust
-// Djogi auto-generates these Axum handlers from ModelDescriptor:
+// Under the `axum` feature, Djogi auto-generates these Axum handlers from
+// ModelDescriptor (other web-framework flags supply equivalent handlers):
 GET  /_admin/                         → full page: model index
 GET  /_admin/vehicles/                → full page: list view
 GET  /_admin/vehicles/?page=2         → HTML fragment: table rows (HTMX partial)

@@ -25,7 +25,9 @@
 //! the same call site works against a `&PgPool` (auto-connection) or a
 //! `&mut *tx` (transaction). Returning `impl Future<Output = ...> + Send`
 //! (RPITIT) means callers can `.await` results across task boundaries —
-//! required for Axum handlers that run on the multi-thread runtime.
+//! required for any async runtime context that spawns terminals onto a
+//! multi-thread runtime (e.g. an Axum handler running on Tokio's
+//! multi-thread runtime under the opt-in `axum` feature).
 //!
 //! # `is_empty` short-circuit contract
 //!
@@ -59,8 +61,10 @@
 //! Every terminal returns `impl Future<Output = ...> + Send` rather than
 //! using bare `async fn`. The explicit `+ Send` bound matches the Phase 1
 //! `Model` trait shape (`model.rs`) and guarantees the returned future can
-//! be `.await`ed across task boundaries — critical for Axum handlers on the
-//! multi-thread runtime. `async fn` in trait / impl position does not
+//! be `.await`ed across task boundaries — critical for any async runtime
+//! context that spawns terminals onto a multi-thread runtime (e.g. an Axum
+//! handler on Tokio's multi-thread runtime). `async fn` in trait / impl
+//! position does not
 //! automatically carry `+ Send` on the returned future; spelling the bound
 //! explicitly keeps the call site free of "future is not Send" errors that
 //! would otherwise show up far from where the bound is missing.

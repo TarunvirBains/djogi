@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-**Djogi** is a Model-first web framework for Rust, built on Axum. Define your data schema as Rust structs, and the framework derives everything else — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, full derivation chain.
+**Djogi** is a Model-first web framework for Rust. Define your data schema as Rust structs, and the framework derives everything else — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, full derivation chain. Djogi's core is **web-framework-agnostic**; per-framework integrations (Axum extractors, etc.) ship behind sub-feature flags so adopters pick their HTTP layer.
 
 The `ReadMe.MD` is the project overview. The full specification lives in `docs/spec/` — read the relevant spec doc before implementing any feature. The [implementation plan](docs/spec/implementation-plan.md) sequences the build.
 
@@ -61,6 +61,8 @@ cargo djogi shell
 cargo djogi db reset --seed
 ```
 
+After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
+
 ## Architecture
 
 ### Crate Boundaries
@@ -75,7 +77,7 @@ cargo djogi db reset --seed
 ### What Djogi Owns vs Delegates
 
 Djogi is a Model-first framework — narrow in scope, deep within that scope. It targets **Postgres exclusively** (permanent design decision — JSONB, HeeRanjId, advisory locks, transactional DDL, and `RETURNING` all depend on it). It does **not** wrap or compete with:
-- **Axum** — HTTP routing/middleware. Djogi only merges app routers at startup.
+- **Any web framework (Axum, Warp, Actix, Rocket, Poem, …)** — HTTP routing/middleware/extraction. Djogi's core is web-framework-agnostic; per-framework integrations (extractors that surface `DjogiContext`/`AuthContext` from request state, optional router-merging helpers) ship as opt-in sub-feature flags (`axum`, `warp`, `actix`, etc.). Adopters pick whichever HTTP layer fits their app and enable the matching flag — or none, if they wire integration manually.
 - **SQLx** — Djogi wraps SQLx into a typed ORM layer (`Model`, `QuerySet`, `FromRow`, `ConditionBuilder`) but never hides it — raw `sqlx::QueryBuilder` is always an escape hatch.
 - **HeeRanjId** — ID generation. Djogi calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()`.
 - **Tokio** — async runtime. Used as-is.
@@ -156,6 +158,7 @@ The shell holds a dedicated single-threaded Tokio runtime. Every terminal method
 - FK cascade default is `RESTRICT` — must opt in to `cascade` per field
 - Field renames: annotate with `#[field(renamed_from = "old_name")]` or the differ treats it as drop+add
 - Admin panel is opt-in via `djogi = { features = ["admin"] }` — not bundled by default
+- **Specialized features (admin, spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The 4-crate workspace (djogi, djogi-macros, djogi-cli, djogi-shell) exists for hard Rust requirements (proc macro must be its own crate, CLI is a binary, shell is its own runtime) — it is not a template for fragmenting features. One `cargo add djogi`; pick capabilities via feature flags. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
 - `Djogi.toml` holds app config; secrets (DATABASE_URL, NODE_ID) live in env vars only
 
 ## Dependencies

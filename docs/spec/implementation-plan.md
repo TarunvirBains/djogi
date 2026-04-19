@@ -2,7 +2,7 @@
 
 # Djogi Implementation Plan
 
-*Sequenced to reach production-readiness for a real-world Axum + Postgres application with ~36 entities, complex queries, PostGIS, and SeaORM migration path.*
+*Sequenced to reach production-readiness for a real-world Postgres-backed application (built on any Rust web framework — Axum is the most-supported integration via the opt-in `axum` feature flag) with ~36 entities, complex queries, PostGIS, and SeaORM migration path.*
 
 ---
 

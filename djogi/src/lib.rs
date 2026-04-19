@@ -1,8 +1,14 @@
-//! Djogi — A Model-first web framework for Rust, built on Axum.
+//! Djogi — A Model-first web framework for Rust.
 //!
 //! Define your data schema as Rust structs, and the framework derives
 //! everything else: ORM, migrations, admin UI, audit trail, shell bindings,
 //! JSONB schema handling.
+//!
+//! Djogi's core is web-framework-agnostic — it owns the data layer and
+//! delegates HTTP routing/middleware/rendering to whichever Rust web
+//! framework the adopter chooses. Axum is the most-supported integration
+//! target today and ships behind the opt-in `axum` feature flag; it is not
+//! a core dependency.
 //!
 //! # Crate layout at a glance
 //!

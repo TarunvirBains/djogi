@@ -57,7 +57,7 @@ Djogi should support explicit read modes such as:
 - `read_your_writes`
 - `stale_ok`
 
-These are runtime/query semantics, not HTTP semantics, so they belong below Axum.
+These are runtime/query semantics, not HTTP semantics, so they belong below the web-framework layer (Axum under the `axum` feature, or any other Rust web framework the adopter wires in).
 
 Djogi owns the execution contract: `QuerySet::with_read_mode(ReadMode::ReplicaAllowed)` threads the hint into the pool-selection strategy, and the pool strategy configured by the application decides which connection honors it. Djogi does not ship a router for a specific topology — it defines the hint that any router must respect.
 
