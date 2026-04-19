@@ -57,11 +57,12 @@ pub use prefetch::PrefetchedRow;
 /// [`__make_relation_path`](__macro_support::__make_relation_path), which
 /// delegates to [`crate::ident::assert_plain_ident`] — the shared validator
 /// that enforces the full Postgres unquoted-identifier rule (non-empty,
-/// length ≤ 63, `[A-Za-z_][A-Za-z0-9_]*`, not a reserved keyword). Any
-/// identifier that is not a valid *unquoted* Postgres identifier — even
-/// one that is safe against classic SQL-injection metacharacters — is
-/// rejected, so the emitter can never produce malformed SQL like `p.123`
-/// or `LEFT JOIN select ...` from hostile downstream input.
+/// length ≤ 63 bytes, leading ASCII letter or underscore followed by ASCII
+/// alphanumerics or underscores, not a reserved keyword). Any identifier
+/// that is not a valid *unquoted* Postgres identifier — even one that is
+/// safe against classic SQL-injection metacharacters — is rejected, so
+/// the emitter can never produce malformed SQL like `p.123` or
+/// `LEFT JOIN select ...` from hostile downstream input.
 #[doc(hidden)]
 pub mod __macro_support {
     use super::path::{RelationKind, RelationPath};
@@ -75,9 +76,9 @@ pub mod __macro_support {
     ///
     /// Panics if `source_column` or `target_table` violates any rule in
     /// [`crate::ident::assert_plain_ident`]: empty, over 63 bytes,
-    /// leading digit, a byte outside `[A-Za-z0-9_]`, or a reserved
-    /// Postgres keyword. The check is the runtime half of the seal;
-    /// the compile-time half is [`RelationPath::new`] being `pub(crate)`.
+    /// leading digit, a non-identifier byte, or a reserved Postgres
+    /// keyword. The check is the runtime half of the seal; the
+    /// compile-time half is [`RelationPath::new`] being `pub(crate)`.
     #[doc(hidden)]
     pub fn __make_relation_path<Source: Model, Target: Model>(
         source_column: &'static str,

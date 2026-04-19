@@ -34,9 +34,11 @@
 //! `RelationPath` whose `source_column` / `target_table` strings contained
 //! quotes, spaces, or SQL metacharacters, and those strings flowed straight
 //! into `sqlx::QueryBuilder::push` in the prefetch / select_related emitters.
-//! With the constructor `pub(crate)` and the macro helper performing a
-//! `[A-Za-z0-9_]` character-class check on both identifier args, no value of
-//! `RelationPath` can carry an injection payload.
+//! With the constructor `pub(crate)` and the macro helper routing both
+//! identifier args through [`crate::ident::assert_plain_ident`] (Postgres
+//! unquoted-identifier grammar plus reserved-keyword rejection), no value
+//! of `RelationPath` can carry an injection payload or a malformed
+//! identifier that would reach SQL emission.
 //!
 //! # Phase 3 scope
 //!

@@ -14,9 +14,12 @@
 //! 2. Length ≤ 63 bytes (`NAMEDATALEN - 1`), so Rust-level and
 //!    Postgres-level identifier identity cannot diverge through
 //!    server-side truncation.
-//! 3. First byte `[A-Za-z_]`; remaining bytes `[A-Za-z0-9_]`. Djogi
-//!    additionally rejects the `$` byte that Postgres tolerates in
-//!    unquoted identifiers, to keep the class trivial to reason about.
+//! 3. First byte is an ASCII letter or underscore; every remaining
+//!    byte is ASCII alphanumeric or underscore. Djogi additionally
+//!    rejects the `$` byte that Postgres tolerates in unquoted
+//!    identifiers, to keep the class trivial to reason about.
+//!    (Implementation is pure `u8::is_ascii_alphabetic` /
+//!    `u8::is_ascii_alphanumeric` — no regex engine, no dependency.)
 //! 4. Not a reserved Postgres keyword (case-insensitive; catcode `R`
 //!    in `pg_get_keywords()` as of Postgres 18).
 //!
@@ -230,7 +233,7 @@ mod tests {
 
     #[test]
     fn rejects_leading_digit() {
-        // Closes the pre-fix hole: `[A-Za-z0-9_]+` accepted "123",
+        // Closes the pre-fix hole: the old byte check accepted "123",
         // which would emit `SELECT p.123 ...` or `LEFT JOIN 9table ...`.
         assert!(try_assert("123").is_err());
         assert!(try_assert("9col").is_err());
