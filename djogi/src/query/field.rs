@@ -80,11 +80,15 @@ impl<M: Model, V> std::fmt::Debug for FieldRef<M, V> {
 }
 
 impl<M: Model, V> FieldRef<M, V> {
-    /// Construct a new `FieldRef`. Emitted by the macro as
-    /// `FieldRef::<Post, String>::new("title")`. Not part of the stable
-    /// public API — users never call this.
-    #[doc(hidden)]
-    pub const fn new(column: &'static str) -> Self {
+    /// Construct a new `FieldRef`. Crate-private so downstream code
+    /// cannot fabricate a ref whose `column` string smuggles SQL into
+    /// the `sqlx::QueryBuilder::push` sites in `query::sql`. The macro
+    /// reaches this constructor through
+    /// [`__macro_support::__make_field_ref`], which validates the
+    /// column name against [`crate::ident::assert_plain_ident`]
+    /// before instantiation. `const` so the macro-emitted
+    /// `{Model}Fields` accessors stay trivially inlinable.
+    pub(crate) const fn new(column: &'static str) -> Self {
         Self {
             column,
             _m: PhantomData,
@@ -97,6 +101,141 @@ impl<M: Model, V> FieldRef<M, V> {
     #[doc(hidden)]
     pub fn column(self) -> &'static str {
         self.column
+    }
+}
+
+/// Macro-only entry points. **Not** part of the stable public API.
+///
+/// `djogi-macros` emits calls into this module from user-crate code
+/// that `#[derive(Model)]` expands — the items here are `pub` only so
+/// cross-crate codegen can reach them. The double-underscore prefix
+/// and `#[doc(hidden)]` marker signal to tooling and reviewers that
+/// downstream code must not call these directly; the macro is the
+/// sole supported caller.
+///
+/// The seal closes the same identifier-smuggling vector that
+/// [`crate::relation::__macro_support`] closes for `RelationPath`:
+/// `FieldRef::new` was `pub` before this seal, which let a hostile
+/// downstream crate fabricate a `FieldRef` whose column string
+/// carried SQL metacharacters, and those strings flowed straight
+/// into `sqlx::QueryBuilder::push` inside `query::sql`'s
+/// `emit_leaf`, `DISTINCT ON`, `ORDER BY`, and `UPDATE … SET`
+/// emitters. Constructing a `FieldRef` now requires going through
+/// [`__make_field_ref`], which routes the column name through the
+/// shared [`crate::ident::assert_plain_ident`] validator.
+#[doc(hidden)]
+pub mod __macro_support {
+    use super::FieldRef;
+    use crate::ident::assert_plain_ident;
+    use crate::model::Model;
+
+    /// Construct a [`FieldRef<M, V>`] from a macro-emitted column
+    /// name. The only supported caller is the `{Model}Fields::field()`
+    /// accessor that `#[derive(Model)]` emits in the user's crate.
+    ///
+    /// Panics if `column` violates any rule in
+    /// [`crate::ident::assert_plain_ident`]: empty, over 63 bytes,
+    /// leading digit, a non-identifier byte, or a reserved Postgres
+    /// keyword. The check is the runtime half of the seal; the
+    /// compile-time half is [`FieldRef::new`] being `pub(crate)`.
+    #[doc(hidden)]
+    pub fn __make_field_ref<M: Model, V>(column: &'static str) -> FieldRef<M, V> {
+        assert_plain_ident(column, "field_column");
+        FieldRef::new(column)
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::manual_async_fn)]
+    // The `Model` trait's CRUD methods return `impl Future + Send` rather
+    // than using `async fn` syntax (pinned to Send explicitly). The inert
+    // test stub below mirrors that trait shape, which trips
+    // `clippy::manual_async_fn` under Rust 1.93+. Allow the lint on this
+    // module only — rewriting the trait itself is out of scope for the
+    // FieldRef seal.
+    mod tests {
+        use super::*;
+        use crate::DjogiError;
+        use crate::descriptor::ModelDescriptor;
+        use std::future::Future;
+
+        // Minimal inert `Model` stub. Exhaustive validator coverage
+        // lives in `crate::ident::tests`; this file only verifies that
+        // the `__make_field_ref` wrapper threads its column arg
+        // through the shared validator before constructing the ref.
+        struct M;
+
+        impl Model for M {
+            type Pk = crate::types::HeerId;
+            type Fields = ();
+            fn table_name() -> &'static str {
+                "ms"
+            }
+            fn pk_value(&self) -> &Self::Pk {
+                unreachable!()
+            }
+            fn descriptor() -> &'static ModelDescriptor {
+                unreachable!()
+            }
+            fn get<'a>(
+                _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+                _id: Self::Pk,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn create<'a>(
+                _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+                _v: Self,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn save<'a>(
+                &self,
+                _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn delete<'a>(
+                self,
+                _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+                async { unreachable!() }
+            }
+            fn refresh_from_db<'a>(
+                &self,
+                _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                async { unreachable!() }
+            }
+        }
+
+        fn try_make(column: &'static str) -> std::thread::Result<FieldRef<M, String>> {
+            std::panic::catch_unwind(|| __make_field_ref::<M, String>(column))
+        }
+
+        #[test]
+        fn accepts_plain_column_name() {
+            assert!(try_make("title").is_ok());
+            assert!(try_make("view_count").is_ok());
+        }
+
+        #[test]
+        fn rejects_leading_digit() {
+            // Would emit `SELECT 123 FROM ...` or `ORDER BY 123`
+            // if it slipped through.
+            assert!(try_make("1col").is_err());
+        }
+
+        #[test]
+        fn rejects_reserved_keyword() {
+            // Would emit `WHERE select = $1` which is a parse error.
+            assert!(try_make("select").is_err());
+        }
+
+        #[test]
+        fn rejects_sql_metacharacter_payload() {
+            // The same shape that motivated the seal on RelationPath.
+            assert!(try_make("col) OR 1=1 --").is_err());
+        }
     }
 }
 
