@@ -55,17 +55,26 @@ pub enum NullsOrder {
     Last,
 }
 
-/// A single `ORDER BY` element. Emitted verbatim by the SQL builder — the
-/// column name is always a `&'static str` literal produced by the `#[model]`
-/// macro, so it is never user-controlled input.
+/// A single `ORDER BY` element. Emitted verbatim by the SQL builder.
+///
+/// The fields are `pub(crate)` rather than `pub` so downstream code cannot
+/// fabricate an `OrderExpr` whose `column` string smuggles SQL into the
+/// emitter. The only supported construction path is
+/// [`FieldRef::asc`] / [`FieldRef::desc`] — and `FieldRef` is itself
+/// sealed (see [`crate::query::field::__macro_support`]), so every
+/// `OrderExpr` a caller can hold has already been threaded through
+/// [`crate::ident::assert_plain_ident`]. The fluent methods
+/// [`OrderExpr::nulls_first`] / [`OrderExpr::nulls_last`] keep the
+/// user-facing ergonomics intact; they take and return `Self` by
+/// value and never expose `column`.
 #[derive(Debug, Clone, Copy)]
 pub struct OrderExpr {
-    /// Column name (macro-baked literal — never user input).
-    pub column: &'static str,
+    /// Column name — always a validated macro-baked literal.
+    pub(crate) column: &'static str,
     /// Sort direction.
-    pub direction: Direction,
+    pub(crate) direction: Direction,
     /// NULL positioning.
-    pub nulls: NullsOrder,
+    pub(crate) nulls: NullsOrder,
 }
 
 impl OrderExpr {

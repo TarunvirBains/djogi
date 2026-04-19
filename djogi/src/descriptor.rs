@@ -23,6 +23,13 @@
 //! every `inventory::submit!` call site, which is exactly what the amendment
 //! is designed to avoid.
 
+// Re-exports of relation enums used in `FieldDescriptor`. Downstream consumers
+// (migration differ, docs generator, admin UI) read `FieldDescriptor` and
+// expect the referenced enums in scope via the descriptor module; exporting
+// them here keeps the single-source-of-truth story consistent and avoids
+// forcing every consumer to import from two paths.
+pub use crate::relation::{OnDelete, RelationKind};
+
 /// SQL type a model field maps to.
 ///
 /// This enum is the bridge between Rust field types and the column types
@@ -173,6 +180,41 @@ pub struct FieldDescriptor {
     /// `None` falls back to `IndexType::BTree`. Declared in Phase 1;
     /// migration generation for non-BTree methods lands in Phase 6.
     pub index_type: Option<IndexType>,
+
+    // ── Relation metadata (Phase 3 Task 2) ────────────────────────────────
+    /// Relation cardinality, when this field stores the `Source`-side column
+    /// of an FK / O2O relation. `None` for every scalar column — the macro
+    /// recognises only `ForeignKey<T>`, `Option<ForeignKey<T>>`,
+    /// `OneToOneField<T>`, and `Option<OneToOneField<T>>` as relation shapes;
+    /// anything else keeps this at `None` and the downstream consumers
+    /// (Phase 6 DDL, Phase 4 prefetch planning) treat the column as a
+    /// scalar.
+    pub relation_kind: Option<RelationKind>,
+
+    /// `#[field(on_delete = "...")]` value, meaningful only when
+    /// `relation_kind.is_some()`. A `None` here with `relation_kind = Some`
+    /// falls back to `OnDelete::Restrict` at DDL-emission time (Phase 6)
+    /// — matching the framework's cascade-off-by-default stance. The
+    /// descriptor stores the parsed value (not the raw string) so every
+    /// downstream consumer works from the same enum.
+    pub on_delete: Option<OnDelete>,
+
+    /// Fully-qualified target type name (e.g. `"Owner"` for
+    /// `ForeignKey<Owner>`). `None` for scalar columns. Used by the Phase 6
+    /// migration emitter to produce `REFERENCES {target_table}(id)` clauses,
+    /// and by the Phase 4 prefetch planner when it needs to reflect on the
+    /// target's `ModelDescriptor`. Stored as the Rust type name — not a
+    /// table name — so it can be matched against the registered
+    /// `ModelDescriptor::type_name` without re-deriving the identifier.
+    pub target_type_name: Option<&'static str>,
+
+    /// Forward-declared projection-per-scope mapping. Phase 3 emits an
+    /// empty slice; Phase 4.5 extends `#[field(expose(scope = "column"))]`
+    /// parsing to populate this without reshaping the descriptor. The
+    /// slice shape is `&[(scope_name, emitted_column_alias)]` — the
+    /// projection emitter projects the column under the aliased name
+    /// when the given scope is active.
+    pub projection_map: &'static [(&'static str, &'static str)],
 }
 
 /// Primary key strategy.
@@ -251,6 +293,21 @@ pub struct ModelDescriptor {
     /// Named index declarations. Phase 1 emits an empty slice by default.
     /// Migration generation for these lands in Phase 6.
     pub indexes: &'static [IndexSpec],
+
+    // ── Many-to-many (Task 6, phase3-relations plan) ────────────────────────
+    /// `true` when the model is a `#[model(table = "...", through)]`
+    /// junction table for a specific `impl ManyToMany<Target> for Source`.
+    ///
+    /// Through models remain ordinary queryable `Model`s — this flag is
+    /// purely a marker carried in the descriptor for downstream consumers:
+    ///
+    /// - Phase 6's migration differ can suppress standalone admin /
+    ///   routing affordances for through tables (deferred).
+    /// - Human-facing tools (`djogi docs`, the shell's `.list_models`)
+    ///   can hide through tables from the primary model list.
+    ///
+    /// `#[derive(Model)]` without `through` sets this to `false`.
+    pub is_through: bool,
 }
 
 inventory::collect!(ModelDescriptor);

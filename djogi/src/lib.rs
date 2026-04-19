@@ -14,6 +14,7 @@
 //! | `model`      | The `Model` trait the macro implements for every user struct. Defined in Phase 1 Task 2. |
 //! | `query`      | Filter AST: public API is `Condition` + `FieldRef` (plus `QuerySet<T>` and `OrderExpr`). Low-level enums (`Leaf`, `LookupOp`, `FilterValue`) live under `djogi::query::internal` for advanced/custom emitters. Filled in across Phase 2. |
 //! | `raw`        | `djogi::raw::*` escape hatches for when `QuerySet` is too limiting. Fully implemented in Phase 1 Task 11. |
+//! | `relation`   | Relation field types — `ForeignKey<T>`, `OneToOneField<T>`, resolved-cache wrappers, and `OnDelete`. Landed in Phase 3 Task 1; extended by Tasks 2–6 with `RelationPath`, `ManyToMany`, and the macro glue. |
 //! | `types`      | `DateTime`, `Date`, and re-exports of `HeerId`/`RanjId` — the canonical types imported via `prelude`. |
 //!
 //! # Recommended usage
@@ -35,9 +36,11 @@
 pub mod config;
 pub mod descriptor;
 pub mod error;
+pub(crate) mod ident;
 pub mod model;
 pub mod query;
 pub mod raw;
+pub mod relation;
 pub mod types;
 
 /// Private re-exports used only by macro-generated code.
@@ -68,10 +71,15 @@ pub mod __private {
 pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
+pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
 pub use error::DjogiError;
 pub use query::{
     Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
     UpdateAssignment, UpdateStmt,
+};
+pub use relation::{
+    ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete, OneToOneField,
+    OneToOneFieldResolved, PrefetchedRow,
 };
 pub use types::{Date, DateTime, HeerId, RanjId};
 
@@ -84,6 +92,17 @@ pub mod prelude {
     pub use crate::query::{
         Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr,
         QuerySet,
+    };
+    // Relation wrappers — unresolved (`ForeignKey`, `OneToOneField`) are
+    // what user model structs declare; resolved (`ForeignKeyResolved`,
+    // `OneToOneFieldResolved`) are what prefetched view structs receive,
+    // and `OnDelete` is used at the `#[field(on_delete = ...)]` site. All
+    // five belong in the prelude because a model defining any relation
+    // needs the unresolved wrapper, and any handler consuming a
+    // prefetched row needs the resolved wrapper.
+    pub use crate::relation::{
+        ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete,
+        OneToOneField, OneToOneFieldResolved, PrefetchedRow,
     };
     pub use crate::types::{Date, DateTime, HeerId, RanjId};
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`

@@ -165,3 +165,4 @@ Explicitly excluded (do not add):
 - Diesel
 - `chrono` (use `time` crate instead)
 - Random UUID (v4) as default PK (use HeerId as default; RanjId for UUIDv8 when higher capacity needed)
+- **`regex`, `regex-lite`, `fancy-regex`, `regex-automata`, or any other regex engine.** There shall never be a single line of regex in djogi — no regex-engine dependency, **and no regex notation in doc comments, commit messages, or any other in-repo text either.** Use byte-level checks (`u8::is_ascii_alphabetic`, `u8::is_ascii_alphanumeric`, explicit byte equality), sorted const slices with `binary_search`, and other stdlib primitives. Spell out rules in plain English ("ASCII letter or underscore followed by ASCII alphanumerics or underscores, up to 63 bytes"), not as bracket-class shorthand. See `docs/spec/decisions.md` for the formal rule.

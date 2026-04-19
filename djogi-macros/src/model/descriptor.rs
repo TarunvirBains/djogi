@@ -17,7 +17,10 @@
 //! extensions. Per-field defaults (rationale, outbox_exclude, index_type)
 //! follow the same convention.
 
-use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, rust_type_to_sql, unwrap_option};
+use crate::model::attrs::{
+    FieldAttrs, ModelAttrs, PkStrategy, RelationKind as MacroRelationKind, detect_relation,
+    on_delete_str_to_tokens, rust_type_to_sql, unwrap_option,
+};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemStruct;
@@ -71,6 +74,13 @@ pub fn expand(
                 rationale: None,
                 outbox_exclude: false,
                 index_type: None,
+                // Framework columns carry no relation metadata — `id` is a
+                // PK, not an FK, and Phase 4.5's projection hookup lands
+                // per-user-field only.
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                projection_map: &[],
             }
         }),
         PkStrategy::RanjId => Some(quote! {
@@ -85,6 +95,10 @@ pub fn expand(
                 rationale: None,
                 outbox_exclude: false,
                 index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                projection_map: &[],
             }
         }),
         PkStrategy::Serial => Some(quote! {
@@ -99,6 +113,10 @@ pub fn expand(
                 rationale: None,
                 outbox_exclude: false,
                 index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                projection_map: &[],
             }
         }),
         PkStrategy::None => None,
@@ -116,6 +134,10 @@ pub fn expand(
             rationale: None,
             outbox_exclude: false,
             index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            projection_map: &[],
         }
     };
     let updated_at_desc = quote! {
@@ -130,6 +152,10 @@ pub fn expand(
             rationale: None,
             outbox_exclude: false,
             index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            projection_map: &[],
         }
     };
 
@@ -138,8 +164,26 @@ pub fn expand(
     let user_field_descriptors: Vec<TokenStream> = user_fields
         .iter()
         .map(|(field, fa)| {
-            let name = field.ident.as_ref().unwrap().to_string();
+            let raw_name = field.ident.as_ref().unwrap().to_string();
+            // Raw identifiers (`r#type`) must serialize to the bare SQL
+            // column name — matches the stripping pattern in `stubs.rs`.
+            let name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+
+            // Detect FK / O2O relation shape before the generic scalar
+            // `unwrap_option` strip — `detect_relation` itself handles the
+            // `Option<…>` layer so nullable FK fields are recognized.
+            let relation = detect_relation(&field.ty);
+
             let (inner_ty, nullable) = unwrap_option(&field.ty);
+
+            // For relation fields the SQL column type is the target's PK
+            // type, not the Rust wrapper type. Phase 6's migration emitter
+            // consumes `sql_type` alongside `target_type_name` to produce
+            // `REFERENCES` clauses; Phase 3 uses the `target_type_name`
+            // as the primary signal and leaves `sql_type` as the Phase 1
+            // best-effort scalar mapping. A future amendment (Phase 6)
+            // can extend this to look the target PK type up via a second
+            // `ModelDescriptor` pass.
             let sql_type_str = rust_type_to_sql(&inner_ty).unwrap_or("TEXT");
             let sql_type = sql_str_to_tokens(sql_type_str);
             let unique = fa.unique;
@@ -151,6 +195,39 @@ pub fn expand(
             let renamed_from = match &fa.renamed_from {
                 Some(s) => quote! { Some(#s) },
                 None => quote! { None },
+            };
+
+            // Relation metadata — `None`/`&[]` for scalar columns.
+            //
+            // Descriptor lookup keys off the short target name (last path
+            // segment) — Phase 6's migration differ matches this against
+            // `ModelDescriptor::type_name`, which is also just the short
+            // ident — so we deliberately use `info.target_name` here rather
+            // than the full `info.target_type`. The full type path is only
+            // needed by codegen sites that emit the target in type position
+            // (see `relations::expand`).
+            let (relation_kind_tokens, on_delete_tokens, target_type_name_tokens) = match &relation
+            {
+                Some(info) => {
+                    let kind_tokens = match info.kind {
+                        MacroRelationKind::ForeignKey => {
+                            quote! { Some(::djogi::descriptor::RelationKind::ForeignKey) }
+                        }
+                        MacroRelationKind::OneToOne => {
+                            quote! { Some(::djogi::descriptor::RelationKind::OneToOne) }
+                        }
+                    };
+                    let on_delete = match &fa.on_delete {
+                        Some(s) => {
+                            let variant = on_delete_str_to_tokens(s);
+                            quote! { Some(#variant) }
+                        }
+                        None => quote! { None },
+                    };
+                    let target_lit = info.target_name.as_str();
+                    (kind_tokens, on_delete, quote! { Some(#target_lit) })
+                }
+                None => (quote! { None }, quote! { None }, quote! { None }),
             };
 
             quote! {
@@ -166,6 +243,12 @@ pub fn expand(
                     rationale: None,
                     outbox_exclude: false,
                     index_type: None,
+                    // Phase 3 Task 2 — relation metadata emitted only for FK/O2O
+                    // columns. Non-relation columns keep `None`/`&[]`.
+                    relation_kind: #relation_kind_tokens,
+                    on_delete: #on_delete_tokens,
+                    target_type_name: #target_type_name_tokens,
+                    projection_map: &[],
                 }
             }
         })
@@ -180,6 +263,8 @@ pub fn expand(
     all_field_descriptors.push(created_at_desc);
     all_field_descriptors.push(updated_at_desc);
     all_field_descriptors.extend(user_field_descriptors);
+
+    let is_through = model_attrs.through;
 
     quote! {
         ::djogi::__private::inventory::submit! {
@@ -198,6 +283,8 @@ pub fn expand(
                 cache_ttl: None,
                 rationale: None,
                 indexes: &[],
+                // Task 6 (phase3-relations): `#[model(table = "...", through)]`
+                is_through: #is_through,
             }
         }
     }

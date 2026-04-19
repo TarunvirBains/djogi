@@ -20,10 +20,10 @@ Djogi does not own routing, middleware, or rendering. The View layer belongs to 
 
 - **Phase 1** — `#[model]` proc macro, `Model` trait (`get` / `create` / `save` / `delete` / `refresh_from_db`), `ModelDescriptor` + `inventory` registration, typed field + PK injection, `djogi::raw::*` escape hatches. See [the models guide](./docs/guide/models.md).
 - **Phase 2** — lazy `QuerySet<T>`, typed `FieldRef<M, V>` lookups (`eq` / `gte` / `in_list` / `contains` / …), `Condition` tree + SQL emitter, terminal reads (`fetch_all` / `fetch_one` / `first` / `count` / `exists`), ordering + pagination + `DISTINCT` / `DISTINCT ON`, programmatic `{Model}Filter` + `filter_struct`, bulk `update` / `delete`. See [the queries guide](./docs/guide/queries.md).
+- **Phase 3** — `ForeignKey<T>`, `OneToOneField<T>`, typed relation paths, explicit eager loading (`prefetch` / `select_related`), reverse accessor macros, and explicit-through `ManyToMany` support. See the [relations guide](./docs/guide/relations.md).
 
 **Coming** — design-locked but not yet implemented:
 
-- Phase 3 — `ForeignKey<T>`, `ManyToMany`, explicit through models.
 - Phase 4 — transactions-as-types, expression layer (`col = col + 1`).
 - Phase 5 — Postgres-native: partitioning, RLS / `TenantScoped<T>`, Jsonb path ops.
 - Phase 6+ — `cargo djogi migrate`, Rhai shell, admin panel.

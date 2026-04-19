@@ -1,0 +1,35 @@
+error[E0119]: conflicting implementations of trait `ManyToMany<Group>` for type `Person`
+  --> tests/compile_fail/many_to_many_collision.rs:53:1
+   |
+40 | / djogi::many_to_many!(
+41 | |     Person, Group,
+   | |__________- first implementation here
+...
+53 | / djogi::many_to_many!(
+54 | |     Person, Group,
+   | |__________^ conflicting implementation for `Person`
+   |
+   = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0592]: duplicate definitions with name `groups`
+  --> tests/compile_fail/many_to_many_collision.rs:40:1
+   |
+40 | / djogi::many_to_many!(
+41 | |     Person, Group,
+42 | |     through = PersonGroup,
+43 | |     this_fk = person_id,
+44 | |     that_fk = group_id,
+45 | |     relation = "groups"
+46 | | );
+   | |_^ duplicate definitions for `groups`
+...
+53 | / djogi::many_to_many!(
+54 | |     Person, Group,
+55 | |     through = PersonGroup,
+56 | |     this_fk = person_id,
+57 | |     that_fk = group_id,
+58 | |     relation = "groups"
+59 | | );
+   | |_- other definition for `groups`
+   |
+   = note: this error originates in the macro `djogi::many_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)

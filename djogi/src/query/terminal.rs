@@ -73,7 +73,10 @@
 use crate::DjogiError;
 use crate::model::Model;
 use crate::query::queryset::QuerySet;
-use crate::query::sql::{build_count, build_exists, build_select};
+use crate::query::sql::{build_count, build_exists, build_select, build_select_joined};
+use crate::relation::joined_row::{FromJoinedRow, JoinedRow};
+use crate::relation::prefetch::{PrefetchedRow, apply_prefetches};
+use crate::relation::select_related::{apply_select_related, stitch_prefetches_into_joined};
 use std::future::Future;
 
 // ── Row-returning terminals (require `T: FromRow`) ────────────────────────
@@ -165,6 +168,179 @@ where
                 // error message renders "at least 2".
                 n => Err(DjogiError::multiple_objects(T::table_name(), n)),
             }
+        }
+    }
+
+    /// Execute the query and collect every matching row into a
+    /// `Vec<PrefetchedRow<T>>`, materialising every relation registered
+    /// via [`QuerySet::prefetch`](crate::query::QuerySet::prefetch) in
+    /// follow-up SQL queries and stitching the results back into per-row
+    /// wrappers.
+    ///
+    /// # Why a separate terminal (not a change to `fetch_all`)
+    ///
+    /// Preserving [`fetch_all`](Self::fetch_all)'s `Vec<T>` return type
+    /// keeps the Phase 2 terminal stable across Phase 3: a queryset
+    /// built without prefetches and fetched via `fetch_all` returns
+    /// exactly what it did before Task 4 landed. Prefetches are an
+    /// opt-in extension reachable through the dedicated
+    /// `fetch_all_prefetched` entry — no pre-existing call site is
+    /// forced into `Vec<PrefetchedRow<T>>`. This also makes prefetch
+    /// registrations free on querysets whose terminal happens to be
+    /// `fetch_all`: the `prefetch_paths` field is ignored on that path,
+    /// which is documented on the field itself.
+    ///
+    /// # Short-circuit contract
+    ///
+    /// Honours the same `is_empty` short-circuit as the other terminals:
+    /// a structural-none queryset returns `Ok(Vec::new())` without
+    /// touching the database. An empty main result also short-circuits
+    /// the prefetch pass — no prefetch loader runs when there are no
+    /// parent rows to stitch against.
+    ///
+    /// # Executor shape
+    ///
+    /// Takes `&PgPool` concretely rather than the `impl Executor`
+    /// generic that [`fetch_all`](Self::fetch_all) accepts. The
+    /// prefetch loader fan-out runs *after* the main query completes;
+    /// keeping the pool reference lets every loader grab its own
+    /// connection from the pool without passing ownership or threading
+    /// lifetimes through the type-erased [`ErasedPrefetch`](
+    /// crate::relation::prefetch::ErasedPrefetch) fn-pointer signature.
+    /// A `&mut Transaction` executor overload lands later if the
+    /// shell / admin paths need prefetch inside a single transactional
+    /// scope; Phase 3 ships pool-only.
+    pub fn fetch_all_prefetched(
+        self,
+        pool: &sqlx::PgPool,
+    ) -> impl Future<Output = Result<Vec<PrefetchedRow<T>>, DjogiError>> + Send + '_
+    where
+        T::Pk: Clone + Send + Sync + 'static,
+    {
+        async move {
+            // TASK6:empty_contract — structural-none queryset returns
+            // `Vec::new()` without touching the DB. Mirrors the
+            // `fetch_all` short-circuit.
+            if self.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Snapshot prefetch paths before we consume `self` in the
+            // main-query build. The shared SQL emitter borrows the
+            // queryset, so we pull out what we need first.
+            let prefetches = self.prefetch_paths.clone();
+
+            // Main query — identical shape to `fetch_all`.
+            let mut qb = build_select(&self);
+            let rows: Vec<T> = qb
+                .build_query_as::<T>()
+                .fetch_all(pool)
+                .await
+                .map_err(DjogiError::from)?;
+
+            // Apply each prefetch loader. Empty main result -> no
+            // loaders run (short-circuit inside `apply_prefetches`).
+            apply_prefetches(pool, &prefetches, rows).await
+        }
+    }
+
+    /// Execute the query as a single `LEFT JOIN` per registered
+    /// select_related path and collect every matching row into a
+    /// `Vec<JoinedRow<T>>`, with joined child rows exposed via
+    /// [`JoinedRow::get`](crate::relation::JoinedRow::get).
+    ///
+    /// # Why a separate terminal (not a change to `fetch_all`)
+    ///
+    /// Preserving [`fetch_all`](Self::fetch_all)'s `Vec<T>` return
+    /// type keeps the Phase 2 terminal stable across Phase 3: a
+    /// queryset built without select_related and fetched via
+    /// `fetch_all` returns exactly what it did before Task 5 landed.
+    /// select_related is an opt-in extension reachable through the
+    /// dedicated `fetch_all_joined` entry — no pre-existing call site
+    /// is forced into `Vec<JoinedRow<T>>`. Registrations on the
+    /// `select_related_paths` queryset field are ignored on the plain
+    /// `fetch_all` path, matching the free-register-on-any-terminal
+    /// behaviour `prefetch` already documents.
+    ///
+    /// # Composes with `.prefetch(...)`
+    ///
+    /// When the queryset carries both select_related and prefetch
+    /// registrations, the terminal runs:
+    ///
+    /// 1. The main query with the LEFT JOINs + aliased child columns.
+    ///    Each row decodes into a `JoinedRow<T>` carrying the joined
+    ///    children under their `source_column` keys.
+    /// 2. The prefetch fan-out — one follow-up query per registered
+    ///    `prefetch_paths` entry — whose resolved targets are
+    ///    stitched into the same `JoinedRow<T>` values. The two
+    ///    paths never collide on the same `source_column` in practice
+    ///    because `.select_related(path)` and `.prefetch(path)`
+    ///    target different relations on any realistic queryset, but
+    ///    if they did, the prefetch stitcher would overwrite the
+    ///    select_related entry — documented on
+    ///    [`crate::relation::select_related::stitch_prefetches_into_joined`].
+    ///
+    /// # Short-circuit contract
+    ///
+    /// Honours the same `is_empty` short-circuit as every other
+    /// terminal — a structural-none queryset returns `Ok(Vec::new())`
+    /// without touching the database. An empty main result also
+    /// short-circuits the prefetch pass — no prefetch loader runs
+    /// when there are no parent rows to stitch against.
+    ///
+    /// # Executor shape
+    ///
+    /// Takes `&PgPool` concretely rather than the `impl Executor`
+    /// generic `fetch_all` accepts, matching
+    /// [`fetch_all_prefetched`](Self::fetch_all_prefetched): the
+    /// prefetch loaders (when registered) run *after* the main query
+    /// and need their own connection-from-pool without threading
+    /// lifetimes through the type-erased loader signature.
+    pub fn fetch_all_joined(
+        self,
+        pool: &sqlx::PgPool,
+    ) -> impl Future<Output = Result<Vec<JoinedRow<T>>, DjogiError>> + Send + '_
+    where
+        T: FromJoinedRow,
+        T::Pk: Clone + Send + Sync + 'static,
+    {
+        async move {
+            // TASK6:empty_contract — structural-none queryset returns
+            // `Vec::new()` without touching the DB. Mirrors every other
+            // terminal.
+            if self.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            // Snapshot prefetch + select_related paths before we build
+            // the SQL — `build_select_joined` borrows the queryset
+            // shape, not the path vectors.
+            let select_related_paths = self.select_related_paths.clone();
+            let prefetches = self.prefetch_paths.clone();
+
+            // Build and execute the joined main query. `build_select_joined`
+            // emits the aliased projection + LEFT JOINs when
+            // `select_related_paths` is non-empty; with an empty path
+            // list it degenerates to `SELECT {parent}.* FROM ...` — same
+            // shape as `build_select` minus the `*` shortcut. The
+            // decoded rows come back as raw `PgRow`s so both parent and
+            // (per registered path) child can be extracted via
+            // `FromJoinedRow::from_prefixed_row`.
+            let mut qb = build_select_joined(&self);
+            let rows: Vec<sqlx::postgres::PgRow> =
+                qb.build().fetch_all(pool).await.map_err(DjogiError::from)?;
+
+            // Decode each row into a JoinedRow<T> carrying any joined
+            // children. `apply_select_related` is pure CPU work — no
+            // additional SQL round trips.
+            let joined = apply_select_related::<T>(rows, &select_related_paths)?;
+
+            // If prefetches were also registered, fan them out and
+            // stitch the resolved targets into the same JoinedRow<T>
+            // values. `stitch_prefetches_into_joined` short-circuits
+            // when `prefetches` is empty, so there's no cost for the
+            // common `select_related`-only path.
+            stitch_prefetches_into_joined(joined, &prefetches, pool).await
         }
     }
 

@@ -421,6 +421,16 @@ pub fn expand(
     quote! {
         #create_with_id_impl
 
+        // Satisfy the `Model: __sealed::Sealed` supertrait. The sealed
+        // module is `#[doc(hidden)] pub`, so downstream hand-rolled
+        // `impl Model for T` without an accompanying `impl Sealed`
+        // fails to compile — closing the hostile-Model vector Codex
+        // flagged on de42874 (malicious `table_name()` /
+        // `descriptor().fields[].name` strings flowing into the SQL
+        // emitter). The macro is the only supported emitter of both
+        // impls.
+        impl #impl_generics ::djogi::model::__sealed::Sealed for #name #ty_generics #where_clause {}
+
         impl #impl_generics ::djogi::model::Model for #name #ty_generics #where_clause {
             type Pk = #pk_type_tokens;
 

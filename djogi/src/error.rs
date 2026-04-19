@@ -14,6 +14,10 @@
 //! - `MultipleObjects` — `.fetch_one()` saw more than one row; carries the
 //!   table name plus the actual count observed.
 //! - `IdGeneration` — `generate_heerid` / `generate_ranjid` DB calls failed.
+//! - `RelationUnloaded` — a relation accessor (`ForeignKeyResolved::expect_resolved`
+//!   / `OneToOneFieldResolved::expect_resolved`) was invoked against a cache
+//!   that was never populated. Raised from the strict path where the caller
+//!   has asserted a `prefetch()` / `select_related()` happened upstream.
 //!
 //! # `#[non_exhaustive]` on the enum *and* its struct variants
 //!
@@ -67,6 +71,26 @@ pub enum DjogiError {
 
     #[error("id generation failed: {0}")]
     IdGeneration(#[from] heeranjid_sqlx::GenerateError),
+
+    /// A relation accessor that requires an eagerly-loaded cache
+    /// (`ForeignKeyResolved::expect_resolved` / `OneToOneFieldResolved::expect_resolved`)
+    /// was invoked against a wrapper whose cache is empty. The caller
+    /// asserted a `prefetch()` / `select_related()` ran earlier but none
+    /// did — this is a strict-mode user error, not a query failure.
+    ///
+    /// `model` is the source model name (e.g. `"Vehicle"`), `field` is the
+    /// relation field on that model (e.g. `"owner_id"`). Both are compile-time
+    /// `&'static str`s — the macro fills them in from the struct definition
+    /// in Phase 3 Task 2. Until then, callers supply them at the call site.
+    #[error(
+        "relation field `{field}` on `{model}` was not loaded — \
+         use .prefetch() or .select_related() before .expect_resolved()"
+    )]
+    #[non_exhaustive]
+    RelationUnloaded {
+        model: &'static str,
+        field: &'static str,
+    },
 }
 
 impl DjogiError {
@@ -90,6 +114,17 @@ impl DjogiError {
     /// without running into `#[non_exhaustive]`.
     pub fn multiple_objects(table: &'static str, count_seen: usize) -> Self {
         DjogiError::MultipleObjects { table, count_seen }
+    }
+
+    /// Construct a `RelationUnloaded` error naming the model and relation
+    /// field that the caller asked to resolve without loading.
+    ///
+    /// Exists for the same reason as `not_found` / `multiple_objects`: the
+    /// `#[non_exhaustive]` attribute on the variant blocks struct-expression
+    /// construction outside this crate, so macro-expanded code and Phase 3+
+    /// relation wrappers go through this constructor instead.
+    pub fn relation_unloaded(model: &'static str, field: &'static str) -> Self {
+        DjogiError::RelationUnloaded { model, field }
     }
 }
 
@@ -115,5 +150,17 @@ mod tests {
         assert!(msg.contains("posts"));
         assert!(msg.contains("2"));
         assert!(msg.to_lowercase().contains("multiple"));
+    }
+
+    #[test]
+    fn relation_unloaded_displays_model_and_field() {
+        let err = DjogiError::relation_unloaded("Vehicle", "owner_id");
+        let msg = format!("{err}");
+        assert!(msg.contains("Vehicle"), "expected model name, got: {msg}");
+        assert!(msg.contains("owner_id"), "expected field name, got: {msg}");
+        assert!(
+            msg.contains("prefetch") || msg.contains("select_related"),
+            "expected remediation hint, got: {msg}"
+        );
     }
 }

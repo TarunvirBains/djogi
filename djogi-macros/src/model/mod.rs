@@ -9,13 +9,15 @@ pub mod attrs;
 pub mod crud;
 pub mod descriptor;
 pub mod filter;
+pub mod from_joined_row;
 pub mod from_row;
 pub mod inject;
+pub mod relations;
 pub mod stubs;
 
 use attrs::ModelAttrs;
 use proc_macro2::TokenStream;
-use syn::{ItemStruct, parse2};
+use syn::{Fields, ItemStruct, parse2};
 
 /// Called from `lib.rs`. Returns the full expanded token stream, or a
 /// compile-error token stream on parse/validation failure.
@@ -36,6 +38,23 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .map(attrs::FieldAttrs::parse)
         .collect::<syn::Result<_>>()?;
 
+    validate_through_model_shape(&struct_item, &model_attrs)?;
+
+    // Strip `#[field(...)]` attributes from user fields. We already captured
+    // their semantics into `field_attrs` above; leaving the raw attribute on
+    // the struct surface would confuse rustc, which does not recognise
+    // `field` as a helper attribute for the `#[model]` attribute macro
+    // (helper attributes only exist on `#[derive(...)]` macros — see the
+    // `proc_macro_derive(Model, attributes(field))` declaration in lib.rs,
+    // which governs a separate no-op `Model` derive). Stripping here keeps
+    // the emitted struct valid Rust without forcing users to also write
+    // `#[derive(Model)]` solely to legalise the `#[field(...)]` parsing.
+    if let syn::Fields::Named(named) = &mut struct_item.fields {
+        for field in &mut named.named {
+            field.attrs.retain(|a| !a.path().is_ident("field"));
+        }
+    }
+
     // 1. Inject framework fields (`id`, `created_at`, `updated_at`) and emit the
     //    `Default` impl — both are concatenated into a single TokenStream by
     //    `inject::expand`. Returns `syn::Error` for tuple/unit structs and for
@@ -44,6 +63,14 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 
     // 2. FromRow impl — Task 5 wires this up.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
+
+    // 2b. FromJoinedRow impl — Phase 3 Task 5. Sibling to `from_row` that
+    //     accepts a `prefix` parameter; used by `QuerySet::select_related`
+    //     to decode both parent (empty prefix) and child
+    //     (`"rel_{source_column}."`) from a single joined row. Emitted
+    //     for every model so `.select_related(path)` never fails at
+    //     compile time for lack of a decoder.
+    let from_joined_row = from_joined_row::expand(&struct_item, &model_attrs, &field_attrs);
 
     // 3. Model trait impl (CRUD) — Tasks 7–9 wire this up.
     let model_impl = crud::expand(&struct_item, &model_attrs, &field_attrs);
@@ -63,12 +90,63 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    `filter::expand`'s module docs for the typed-vs-erased rationale.
     let filter = filter::expand(&struct_item, &model_attrs, &field_attrs);
 
+    // 7. {Model}Related — typed relation-path constructors (Phase 3 Task 2).
+    //    Independent of ModelAttrs/FieldAttrs: the emitter inspects field
+    //    types directly via `detect_relation`. Emits a ZST `{Model}Related`
+    //    with one method per FK / O2O field — consumed by QuerySet's
+    //    prefetch / select_related in Phase 3 Tasks 4 + 5.
+    let related = relations::expand(&struct_item);
+
     Ok(quote::quote! {
         #expanded
         #from_row
+        #from_joined_row
         #model_impl
         #descriptor
         #stubs
         #filter
+        #related
     })
+}
+
+/// `#[model(..., through)]` marks a many-to-many junction model and must
+/// therefore carry at least two `ForeignKey<T>` columns.
+///
+/// The relation macros depend on one FK back to each side of the relation.
+/// Treating `through` as a pure marker would let obviously-invalid junction
+/// structs compile and only fail much later when Task 7 macros tried to use
+/// them. Task 8 pins this earlier with a compile-fail fixture.
+fn validate_through_model_shape(
+    struct_item: &ItemStruct,
+    model_attrs: &ModelAttrs,
+) -> syn::Result<()> {
+    if !model_attrs.through {
+        return Ok(());
+    }
+
+    let fk_count = match &struct_item.fields {
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .filter(|field| {
+                matches!(
+                    attrs::detect_relation(&field.ty),
+                    Some(attrs::RelationInfo {
+                        kind: attrs::RelationKind::ForeignKey,
+                        ..
+                    })
+                )
+            })
+            .count(),
+        Fields::Unnamed(_) | Fields::Unit => 0,
+    };
+
+    if fk_count >= 2 {
+        Ok(())
+    } else {
+        Err(syn::Error::new_spanned(
+            &struct_item.ident,
+            "a `#[model(through)]` struct must declare at least two `ForeignKey<T>` fields",
+        ))
+    }
 }

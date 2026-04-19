@@ -58,6 +58,11 @@ use crate::model::Model;
 use crate::query::condition::Condition;
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
+use crate::relation::joined_row::FromJoinedRow;
+use crate::relation::path::RelationPath;
+use crate::relation::prefetch::{ErasedPrefetch, prefetch_loader};
+use crate::relation::select_related::{ErasedSelectRelated, child_descriptor, join_decoder};
+use std::hash::Hash;
 use std::marker::PhantomData;
 
 /// `DISTINCT` mode for a QuerySet.
@@ -111,6 +116,31 @@ pub struct QuerySet<T: Model> {
     /// the empty result without a DB round-trip. Set only by
     /// [`QuerySet::none`].
     pub(crate) is_empty: bool,
+    /// Registered prefetch paths — one entry per call to
+    /// [`QuerySet::prefetch`]. Consumed by
+    /// [`QuerySet::fetch_all_prefetched`](crate::query::QuerySet::fetch_all_prefetched)
+    /// to run a stitching query per path after the main result set
+    /// comes back. Deduplicated on registration: calling `.prefetch(path)`
+    /// twice with the same [`RelationPath::source_column`] is a no-op on
+    /// the second call. Kept separate from `condition`/`ordering`/etc. so
+    /// a plain `.fetch_all(...)` on a queryset with prefetches compiles
+    /// and behaves exactly as if no prefetch was registered — prefetches
+    /// only take effect on the dedicated terminal.
+    pub(crate) prefetch_paths: Vec<ErasedPrefetch>,
+    /// Registered `select_related` paths — one entry per call to
+    /// [`QuerySet::select_related`]. Consumed by
+    /// [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined)
+    /// to emit `LEFT JOIN` clauses and aliased child columns on the main
+    /// query (no follow-up round trips — that's the whole point of
+    /// `select_related` over `prefetch`). Deduplicated on registration
+    /// by `source_column` in the same way `prefetch_paths` is: a second
+    /// `.select_related(path)` for the same source column is a no-op.
+    /// Kept separate from `prefetch_paths` because the two emission
+    /// strategies are structurally different — one expands the
+    /// `SELECT` list + adds a JOIN, the other fans out into a per-
+    /// path follow-up query — and combining them would leak that
+    /// distinction into the type.
+    pub(crate) select_related_paths: Vec<ErasedSelectRelated>,
     /// Covariant `T` tag; never owns or borrows a `T`.
     _model: PhantomData<fn() -> T>,
 }
@@ -124,6 +154,15 @@ impl<T: Model> Clone for QuerySet<T> {
             limit: self.limit,
             offset: self.offset,
             is_empty: self.is_empty,
+            // `ErasedPrefetch: Clone` (shallow clone — fn pointers and
+            // `&'static str` are trivially copyable). Cloning preserves
+            // prefetch registrations across any `if`/`else` branch that
+            // keeps a partially-built queryset around.
+            prefetch_paths: self.prefetch_paths.clone(),
+            // `ErasedSelectRelated: Clone` for the same reason — the
+            // struct carries only `&'static str`, a static slice, and
+            // a fn pointer, so cloning is bit-copy-cheap.
+            select_related_paths: self.select_related_paths.clone(),
             _model: PhantomData,
         }
     }
@@ -139,6 +178,8 @@ impl<T: Model> std::fmt::Debug for QuerySet<T> {
             .field("limit", &self.limit)
             .field("offset", &self.offset)
             .field("is_empty", &self.is_empty)
+            .field("prefetch_paths", &self.prefetch_paths)
+            .field("select_related_paths", &self.select_related_paths)
             .finish()
     }
 }
@@ -162,6 +203,8 @@ impl<T: Model> QuerySet<T> {
             limit: None,
             offset: None,
             is_empty: false,
+            prefetch_paths: Vec::new(),
+            select_related_paths: Vec::new(),
             _model: PhantomData,
         }
     }
@@ -350,6 +393,182 @@ impl<T: Model> QuerySet<T> {
         self
     }
 
+    /// Register a single-hop prefetch against `path`. The target rows
+    /// are materialised in a follow-up SQL query after the main
+    /// [`fetch_all_prefetched`](crate::query::QuerySet::fetch_all_prefetched)
+    /// executes; each main row is wrapped in a
+    /// [`PrefetchedRow<T>`](crate::relation::PrefetchedRow) that exposes
+    /// its resolved targets via
+    /// [`PrefetchedRow::get`](crate::relation::PrefetchedRow::get).
+    ///
+    /// Calling `.prefetch(path)` twice with the same path is idempotent
+    /// — the second registration is a no-op by `source_column` equality.
+    /// This matches the natural expectation ("I asked for the same
+    /// relation twice; please don't run two queries") and makes
+    /// composition-site chaining (library code + caller both registering
+    /// the same prefetch) free of surprises.
+    ///
+    /// # Why the bounds split across `Source::Pk` and `Target::Pk`
+    ///
+    /// Prefetch stitches via a `LEFT JOIN` keyed on `Source::Pk`; the
+    /// `IN (...)` bind needs `Source::Pk: Encode + Type`, and the
+    /// HashMap that routes targets back to parents needs it `Eq + Hash
+    /// + Clone`. `Target::Pk` is not used for filtering — only for the
+    /// NULL-probe in the stitching query, which goes through the raw-
+    /// value path and does not require any `Target::Pk` bounds beyond
+    /// what [`Model`] already guarantees.
+    ///
+    /// `Target` itself picks up `FromRow + Clone + Unpin` so the loader
+    /// can decode the `t.*` columns and mint a per-parent owned copy;
+    /// see the header comment on
+    /// [`crate::relation::prefetch`] for the rationale behind the Clone
+    /// bound (not on `Model` itself, just on the prefetch path).
+    ///
+    /// ```ignore
+    /// let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+    ///     .filter(|f| f.make.eq("Toyota"))
+    ///     .prefetch(VehicleRelated::owner())
+    ///     .fetch_all_prefetched(&pool).await?;
+    ///
+    /// for row in &rows {
+    ///     let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
+    ///     println!("{} owned by {}", row.row.make, owner.name);
+    /// }
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn prefetch<Target>(mut self, path: RelationPath<T, Target>) -> Self
+    where
+        T::Pk: sqlx::Type<sqlx::Postgres>
+            + for<'q> sqlx::Encode<'q, sqlx::Postgres>
+            + for<'r> sqlx::Decode<'r, sqlx::Postgres>
+            + Eq
+            + Hash
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        Target: Model
+            + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>
+            + Clone
+            + Send
+            + Unpin
+            + 'static,
+    {
+        // Idempotent registration: if a prefetch for this source column
+        // is already registered, don't append a duplicate. Duplicate
+        // entries would each fire their own loader, costing an extra
+        // round trip for no correctness gain — and would potentially
+        // overwrite each other's stitched entries in a nondeterministic
+        // order. The dedup key is `source_column` because the
+        // `RelationPath` type parameters pin `Source`/`Target` at the
+        // type level; two paths with the same source column pointing at
+        // the same target are the same relation by construction.
+        if self
+            .prefetch_paths
+            .iter()
+            .any(|p| p.source_column == path.source_column())
+        {
+            return self;
+        }
+        self.prefetch_paths.push(ErasedPrefetch {
+            source_column: path.source_column(),
+            parent_table: T::table_name(),
+            loader: prefetch_loader::<T, Target>,
+        });
+        self
+    }
+
+    /// Register a single-hop `select_related` against `path`. The target
+    /// rows are materialised via a `LEFT JOIN` on the main query — no
+    /// follow-up round trip, unlike
+    /// [`prefetch`](QuerySet::prefetch). Each registered path is
+    /// consumed by
+    /// [`fetch_all_joined`](crate::query::QuerySet::fetch_all_joined),
+    /// which returns `Vec<JoinedRow<T>>` exposing the joined target(s)
+    /// via the same typed [`RelationPath`] the caller passed in.
+    ///
+    /// Calling `.select_related(path)` twice with the same path is
+    /// idempotent — the second registration is a no-op by
+    /// [`RelationPath::source_column`] equality, matching the
+    /// dedup rule on `prefetch`. No `Vec` spam, no duplicate join in
+    /// the emitted SQL.
+    ///
+    /// # Why the bounds on `Child`
+    ///
+    /// The `select_related` emitter aliases every child column in the
+    /// `SELECT` list under a `rel_{source_column}.{col}` prefix. The
+    /// [`FromJoinedRow`](crate::relation::FromJoinedRow) bound on
+    /// `Child` captures the decoder that reads those aliased columns
+    /// back into a concrete `Child` instance — the macro-emitted
+    /// sibling of `FromRow` that takes a prefix parameter. Without
+    /// this bound the emitter would have no way to decode the
+    /// child side of the join.
+    ///
+    /// `Child: Send + Sync + 'static` is the erasure contract — the
+    /// decoded child is boxed as `Box<dyn Any + Send + Sync>` so it can
+    /// share storage with heterogeneous child types on a single
+    /// queryset (`.select_related(owner).select_related(fuel_type)`).
+    ///
+    /// # Multi-relation per queryset
+    ///
+    /// Phase 3 supports multiple `.select_related(...)` calls on the
+    /// same queryset — each produces its own `LEFT JOIN` with a
+    /// `rel_{source_column}` alias. Aliases never collide because
+    /// source columns are unique per parent model by construction.
+    /// Multi-**hop** `select_related` (chained targets) is out of
+    /// scope for Phase 3 — [`RelationPath`] only carries a single hop
+    /// at the type level.
+    ///
+    /// ```ignore
+    /// let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+    ///     .filter(|f| f.make.eq("Tesla"))
+    ///     .select_related(VehicleRelated::owner())
+    ///     .fetch_all_joined(&pool).await?;
+    ///
+    /// for row in &rows {
+    ///     let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
+    ///     println!("{} owned by {}", row.row.make, owner.name);
+    /// }
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn select_related<Child>(mut self, path: RelationPath<T, Child>) -> Self
+    where
+        Child: Model + FromJoinedRow + Send + Sync + 'static,
+    {
+        // Idempotent registration: if a select_related for this
+        // source column is already registered, don't append a
+        // duplicate. Duplicate entries would emit two identical
+        // `LEFT JOIN` clauses with the same alias — Postgres would
+        // raise a "table name specified more than once" error on
+        // execution, turning a silent repeat into a runtime failure
+        // far from the call site. The dedup key is `source_column`
+        // because the `RelationPath` type parameters pin `Source` /
+        // `Child` at the type level; two paths with the same source
+        // column pointing at the same child are the same relation by
+        // construction.
+        if self
+            .select_related_paths
+            .iter()
+            .any(|p| p.source_column == path.source_column())
+        {
+            return self;
+        }
+
+        self.select_related_paths.push(ErasedSelectRelated {
+            source_column: path.source_column(),
+            child_table: path.target_table(),
+            decoder: join_decoder::<Child>,
+            // `child_descriptor::<Child>` coerces to a plain `fn` pointer
+            // that the SELECT-list emitter uses to read every child
+            // column name. Going through the descriptor (rather than a
+            // pre-projected `Vec<&'static str>`) avoids an allocation
+            // per `.select_related(...)` call and lets later phases
+            // pull richer metadata off the same hook.
+            child_descriptor: child_descriptor::<Child>,
+        });
+        self
+    }
+
     /// Structural emptiness check — `true` only for querysets built via
     /// [`QuerySet::none`]. Used by Task 6's terminal methods to short-
     /// circuit the DB round-trip.
@@ -364,32 +583,55 @@ impl<T: Model> QuerySet<T> {
     }
 }
 
+/// Private marker trait used to seal [`IntoDistinctColumns`].
+///
+/// Only types djogi itself blesses — `FieldRef` and tuples of
+/// `FieldRef` up to arity 6 — implement `Sealed`, and because the
+/// module is crate-private, downstream crates cannot add their own
+/// impls. That closes the identifier-smuggling route a hostile
+/// downstream would otherwise have via
+/// `impl IntoDistinctColumns for MyStruct { fn into_distinct_columns(self) -> Vec<&'static str> { vec!["1; DROP TABLE ..."] } }`.
+mod distinct_seal {
+    pub trait Sealed {}
+}
+
 /// Bridge from closure return types to the `Vec<&'static str>` of column
 /// names that [`QuerySet::distinct_on`] stores. Implemented for
 /// [`FieldRef`] and tuples of `FieldRef`s up to arity 6.
 ///
-/// Expanding beyond six requires adding another `impl_into_distinct_columns_tuple!`
-/// invocation below — the ceiling is deliberately low because `DISTINCT ON`
-/// with more than a handful of columns is a design smell, not a capacity
-/// limit Djogi cares to lift.
-pub trait IntoDistinctColumns {
+/// Expanding beyond six requires adding another
+/// `impl_into_distinct_columns_tuple!` invocation below — the ceiling is
+/// deliberately low because `DISTINCT ON` with more than a handful of
+/// columns is a design smell, not a capacity limit Djogi cares to lift.
+///
+/// The trait is sealed via [`distinct_seal::Sealed`] — downstream code
+/// can name `IntoDistinctColumns` as a bound (so `distinct_on` callers
+/// can pass the ZST tuples returned by macro-generated field
+/// accessors) but cannot implement it for their own types. Every
+/// column name that reaches `into_distinct_columns` therefore traces
+/// back to a sealed `FieldRef` whose constructor ran through
+/// [`crate::ident::assert_plain_ident`].
+pub trait IntoDistinctColumns: distinct_seal::Sealed {
     /// Flatten the receiver into the ordered list of column names Postgres
     /// will dedupe on.
     fn into_distinct_columns(self) -> Vec<&'static str>;
 }
 
+impl<M: Model, V> distinct_seal::Sealed for FieldRef<M, V> {}
 impl<M: Model, V> IntoDistinctColumns for FieldRef<M, V> {
     fn into_distinct_columns(self) -> Vec<&'static str> {
         vec![self.column()]
     }
 }
 
-/// Generate `IntoDistinctColumns` for a tuple of `FieldRef`s. Each type
-/// parameter stands for the tuple slot's value type `V` — the model type
-/// `M` is shared across every `FieldRef` in the tuple because `distinct_on`
-/// only ever sees one model's columns at a time.
+/// Generate `IntoDistinctColumns` (plus the sealed marker) for a tuple
+/// of `FieldRef`s. Each type parameter stands for the tuple slot's
+/// value type `V` — the model type `M` is shared across every
+/// `FieldRef` in the tuple because `distinct_on` only ever sees one
+/// model's columns at a time.
 macro_rules! impl_into_distinct_columns_tuple {
     ($($name:ident),+) => {
+        impl<M: Model, $($name),+> distinct_seal::Sealed for ($(FieldRef<M, $name>,)+) {}
         impl<M: Model, $($name),+> IntoDistinctColumns for ($(FieldRef<M, $name>,)+) {
             fn into_distinct_columns(self) -> Vec<&'static str> {
                 #[allow(non_snake_case)]
@@ -415,6 +657,7 @@ mod tests {
     // used in `query::field`'s unit tests — keeps QuerySet builder tests in
     // this file independent of the `#[model]` macro expansion path.
     struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
     impl Model for Fake {
         type Pk = i64;
         type Fields = ();

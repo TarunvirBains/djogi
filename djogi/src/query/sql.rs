@@ -185,49 +185,72 @@ fn push_list_element(
 /// `&'static str` from the macro-baked `FieldRef::column()`, so it is safe
 /// to `qb.push(col)` without quoting. The value always goes through
 /// `push_bind`.
-fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf) {
+///
+/// When `parent_table` is `Some(table)`, the emitted column reference is
+/// prefixed as `{table}.{column}` so Postgres does not raise
+/// `42702 column reference "X" is ambiguous` on a query with
+/// `LEFT JOIN`-ed child tables that also expose a column of the same
+/// bare name (`id`, `created_at`, `updated_at`). Passed through by the
+/// join-aware helpers that wrap `build_select_joined`. The non-joined
+/// [`build_select`] path passes `None` and emits bare column names
+/// unchanged — byte-for-byte identical to the Phase 2 output.
+fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf, parent_table: Option<&'static str>) {
     let col = leaf.column;
+    // Helper: push the column reference, qualified with `{parent_table}.`
+    // when requested. Keeps the op-switch tidy — every arm that previously
+    // called `qb.push(col)` now calls `push_col(qb, col, parent_table)`.
+    fn push_col(
+        qb: &mut QueryBuilder<'_, Postgres>,
+        col: &'static str,
+        parent_table: Option<&'static str>,
+    ) {
+        if let Some(table) = parent_table {
+            qb.push(table);
+            qb.push(".");
+        }
+        qb.push(col);
+    }
     match leaf.op {
         LookupOp::Eq => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" = ");
             push_filter_value(qb, leaf.value);
         }
         LookupOp::Neq => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" <> ");
             push_filter_value(qb, leaf.value);
         }
         LookupOp::Gt => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" > ");
             push_filter_value(qb, leaf.value);
         }
         LookupOp::Gte => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" >= ");
             push_filter_value(qb, leaf.value);
         }
         LookupOp::Lt => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" < ");
             push_filter_value(qb, leaf.value);
         }
         LookupOp::Lte => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" <= ");
             push_filter_value(qb, leaf.value);
         }
         LookupOp::IsNull => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" IS NULL");
         }
         LookupOp::IsNotNull => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" IS NOT NULL");
         }
         LookupOp::IContains => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
@@ -236,7 +259,7 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf) {
             qb.push_bind(format!("%{}%", escape_like(&s)));
         }
         LookupOp::IStartsWith => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
@@ -245,7 +268,7 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf) {
             qb.push_bind(format!("{}%", escape_like(&s)));
         }
         LookupOp::IEndsWith => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
@@ -255,18 +278,18 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf) {
         }
         LookupOp::IExact => {
             qb.push("LOWER(");
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(") = LOWER(");
             push_filter_value(qb, leaf.value);
             qb.push(")");
         }
         LookupOp::Regex => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" ~ ");
             push_filter_value(qb, leaf.value);
         }
         LookupOp::IRegex => {
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" ~* ");
             push_filter_value(qb, leaf.value);
         }
@@ -275,7 +298,7 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf) {
                 FilterValue::Pair(a, b) => (*a, *b),
                 _ => unreachable!("Between requires FilterValue::Pair"),
             };
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(" BETWEEN ");
             push_filter_value(qb, a);
             qb.push(" AND ");
@@ -298,7 +321,7 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf) {
                 }
                 return;
             }
-            qb.push(col);
+            push_col(qb, col, parent_table);
             qb.push(if matches!(leaf.op, LookupOp::In) {
                 " IN ("
             } else {
@@ -319,17 +342,26 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf) {
 /// Called recursively for `Not`/`And`/`Or`. The input is consumed by value
 /// because payloads (`String`, `Vec<FilterValue>`, `Box<FilterValue>`) move
 /// into the builder one bind at a time.
-fn emit_condition(qb: &mut QueryBuilder<'_, Postgres>, c: Condition) {
+///
+/// `parent_table` threads through unchanged so every bare column reference
+/// in a joined-variant emission lands as `{table}.{column}`; the non-joined
+/// path passes `None` and gets bare names, preserving byte-for-byte parity
+/// with Phase 2 output.
+fn emit_condition(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    c: Condition,
+    parent_table: Option<&'static str>,
+) {
     match c {
         Condition::True => {
             qb.push("TRUE");
         }
         Condition::Leaf(l) => {
-            emit_leaf(qb, l);
+            emit_leaf(qb, l, parent_table);
         }
         Condition::Not(inner) => {
             qb.push("NOT (");
-            emit_condition(qb, *inner);
+            emit_condition(qb, *inner, parent_table);
             qb.push(")");
         }
         Condition::And(parts) => {
@@ -345,7 +377,7 @@ fn emit_condition(qb: &mut QueryBuilder<'_, Postgres>, c: Condition) {
                 if i > 0 {
                     qb.push(" AND ");
                 }
-                emit_condition(qb, p);
+                emit_condition(qb, p, parent_table);
             }
             qb.push(")");
         }
@@ -361,7 +393,7 @@ fn emit_condition(qb: &mut QueryBuilder<'_, Postgres>, c: Condition) {
                 if i > 0 {
                     qb.push(" OR ");
                 }
-                emit_condition(qb, p);
+                emit_condition(qb, p, parent_table);
             }
             qb.push(")");
         }
@@ -392,27 +424,69 @@ fn is_vacuously_true(c: &Condition) -> bool {
 /// omitted entirely rather than emitted as `WHERE TRUE` — same semantics,
 /// cleaner logs, and avoids touching the planner with a trivially-true
 /// predicate.
+///
+/// The non-joined path (every caller in this file except
+/// [`build_select_joined`]) uses this shim, which forwards to
+/// [`push_where_qualified`] with `parent_table = None` — bare column
+/// references are emitted exactly as Phase 2 shipped.
 fn push_where<T: Model>(qb: &mut QueryBuilder<'_, Postgres>, qs: &QuerySet<T>) {
+    push_where_qualified(qb, qs, None);
+}
+
+/// Qualification-aware variant of [`push_where`]. When `parent_table`
+/// is `Some(table)`, every bare column reference in the emitted `WHERE`
+/// clause is prefixed as `{table}.{column}` so Postgres does not raise
+/// `42702 column reference "X" is ambiguous` under `LEFT JOIN`-ed
+/// children that share the same column name (`id`, `created_at`,
+/// `updated_at`). `None` preserves Phase 2's bare-name emission.
+fn push_where_qualified<T: Model>(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    qs: &QuerySet<T>,
+    parent_table: Option<&'static str>,
+) {
     if !is_vacuously_true(&qs.condition) {
         qb.push(" WHERE ");
         // `emit_condition` consumes the tree — clone the borrowed reference
         // so the original QuerySet remains usable (matters for `fetch_one`'s
         // LIMIT-override path, which reuses the same queryset).
-        emit_condition(qb, qs.condition.clone());
+        emit_condition(qb, qs.condition.clone(), parent_table);
     }
 }
 
 /// Shared tail emitted by SELECT variants: `ORDER BY ...`, `LIMIT $n`,
 /// `OFFSET $n`. `WHERE` is emitted separately so count/exists builders can
 /// reuse `push_where` without taking the ordering/limit tail.
+///
+/// Shim for the non-joined path — forwards to [`push_tail_qualified`]
+/// with `parent_table = None`.
 fn push_tail<T: Model>(qb: &mut QueryBuilder<'_, Postgres>, qs: &QuerySet<T>) {
-    push_where(qb, qs);
+    push_tail_qualified(qb, qs, None);
+}
+
+/// Qualification-aware variant of [`push_tail`]. `parent_table` threads
+/// through to both the `WHERE` helper and the ordering emission so
+/// `ORDER BY id` on a joined query renders as `ORDER BY {table}.id`.
+/// `LIMIT` / `OFFSET` need no qualification — they carry no column
+/// references.
+fn push_tail_qualified<T: Model>(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    qs: &QuerySet<T>,
+    parent_table: Option<&'static str>,
+) {
+    push_where_qualified(qb, qs, parent_table);
 
     if !qs.ordering.is_empty() {
         qb.push(" ORDER BY ");
         for (i, o) in qs.ordering.iter().enumerate() {
             if i > 0 {
                 qb.push(", ");
+            }
+            // Qualify the column under the parent table when
+            // select_related is active — same rationale as `push_col`
+            // inside `emit_leaf`.
+            if let Some(table) = parent_table {
+                qb.push(table);
+                qb.push(".");
             }
             qb.push(o.column);
             match o.direction {
@@ -474,6 +548,88 @@ pub(crate) fn build_select<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, P
     }
     qb.push(T::table_name());
     push_tail(&mut qb, qs);
+    qb
+}
+
+/// Build `SELECT {parent_cols} FROM <table> {left joins} [WHERE ...]
+/// [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the select_related variant.
+///
+/// # What
+///
+/// Mirror of [`build_select`], but:
+/// 1. Replaces `*` in the projection with the aliased column list built
+///    by [`crate::relation::select_related::select_columns`] — parent
+///    columns stay unqualified, each joined child's columns land under
+///    a `"rel_{source_column}.{col}"` alias.
+/// 2. Appends one `LEFT JOIN` clause per registered path, via
+///    [`crate::relation::select_related::push_joins`].
+///
+/// # Why a separate emitter
+///
+/// Keeping `build_select` unchanged means a queryset with no
+/// registered select_related paths still emits the exact SQL Phase 2
+/// shipped — no regression risk, no surprise `LEFT JOIN` on plain
+/// `fetch_all` call sites. The joined variant is reached only via
+/// [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined),
+/// which explicitly opts into the joined decode path.
+///
+/// # `DistinctMode` interaction
+///
+/// Phase 3 Task 5 does not ship `DISTINCT` interaction with
+/// select_related — the parent's `DISTINCT` semantics depend on
+/// whether the joined columns should participate in the distinct
+/// tuple, which is a Phase 4+ design decision. If the queryset has a
+/// non-`None` `DistinctMode`, the emitter preserves it exactly: `SELECT
+/// DISTINCT {parent_cols}...`. Callers who combine `.distinct()` with
+/// `.select_related(...)` get consistent shape — distinct is applied
+/// to the full projection (parent + aliased children) — but they
+/// should verify the emitted SQL matches their intent.
+pub(crate) fn build_select_joined<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
+    let mut qb = QueryBuilder::new("");
+    let col_list = crate::relation::select_related::select_columns::<T>(&qs.select_related_paths);
+    // Every bare column reference that follows — `WHERE ...`,
+    // `ORDER BY ...`, `DISTINCT ON (...)` — is qualified with the
+    // parent table name. Without this, Postgres raises `42702 column
+    // reference "X" is ambiguous` on the first framework column that
+    // also appears on a joined child (most commonly `id`,
+    // `created_at`, `updated_at`). The parent table itself is always
+    // a `&'static str` from the `#[model]` macro, so qualification is
+    // safe without quoting.
+    let parent_table: Option<&'static str> = Some(T::table_name());
+    match &qs.distinct {
+        DistinctMode::None => {
+            qb.push("SELECT ");
+            qb.push(col_list);
+            qb.push(" FROM ");
+        }
+        DistinctMode::Plain => {
+            qb.push("SELECT DISTINCT ");
+            qb.push(col_list);
+            qb.push(" FROM ");
+        }
+        DistinctMode::On(cols) => {
+            qb.push("SELECT DISTINCT ON (");
+            for (i, c) in cols.iter().enumerate() {
+                if i > 0 {
+                    qb.push(", ");
+                }
+                // Qualify DISTINCT ON columns under the parent table
+                // so `SELECT DISTINCT ON (id) ...` on a joined query
+                // becomes `SELECT DISTINCT ON (vehicles.id) ...` and
+                // sidesteps the same ambiguity Postgres raises on bare
+                // `WHERE id = ...`.
+                qb.push(T::table_name());
+                qb.push(".");
+                qb.push(*c);
+            }
+            qb.push(") ");
+            qb.push(col_list);
+            qb.push(" FROM ");
+        }
+    }
+    qb.push(T::table_name());
+    crate::relation::select_related::push_joins::<T>(&mut qb, &qs.select_related_paths);
+    push_tail_qualified(&mut qb, qs, parent_table);
     qb
 }
 
@@ -679,6 +835,7 @@ mod tests {
     use crate::query::queryset::QuerySet;
 
     struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
     #[allow(clippy::manual_async_fn)]
     impl Model for Fake {
         type Pk = i64;
@@ -1132,5 +1289,140 @@ mod tests {
         let qb = build_delete(&qs);
         let sql = qb.sql().trim().to_string();
         assert_eq!(sql, "DELETE FROM fakes");
+    }
+
+    // ── Phase 3 Task 5 fix: parent-table qualification under select_related ──
+    //
+    // When `.select_related(...)` is active, every bare column reference
+    // emitted by the `WHERE` / `ORDER BY` / `DISTINCT ON` clauses must be
+    // qualified with the parent table name so Postgres does not raise
+    // `42702 column reference "X" is ambiguous` on framework columns
+    // (`id`, `created_at`, `updated_at`) that also appear on the joined
+    // child. These tests pin the SQL shape at emission time so the live-
+    // Postgres integration tests stay readable — a shape regression
+    // surfaces here, not in a one-line 42702 failure down the stack.
+
+    use crate::descriptor::{FieldDescriptor, FieldSqlType, PkType};
+    use crate::relation::select_related::ErasedSelectRelated;
+
+    // Minimal static descriptor for a joined child. Column layout is a
+    // stand-in for `Owner` in the integration suite — `id` is the
+    // framework column that triggers the ambiguity bug when both sides
+    // of the join contribute it bare.
+    static OWNERS_JOIN_DESC: ModelDescriptor = ModelDescriptor {
+        type_name: "Owner",
+        table_name: "owners_p3",
+        pk_type: PkType::HeerId,
+        fields: &[FieldDescriptor {
+            name: "id",
+            sql_type: FieldSqlType::BigInt,
+            nullable: false,
+            unique: true,
+            indexed: true,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            projection_map: &[],
+        }],
+        partition_by: None,
+        has_outbox: false,
+        idempotency_key: None,
+        tenant_key: None,
+        cache_ttl: None,
+        rationale: None,
+        indexes: &[],
+        is_through: false,
+    };
+
+    fn owners_join_descriptor() -> &'static ModelDescriptor {
+        &OWNERS_JOIN_DESC
+    }
+
+    fn dummy_join_decoder(
+        _row: &sqlx::postgres::PgRow,
+        _prefix: &str,
+    ) -> Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::DjogiError> {
+        // Never invoked — these tests only exercise SQL emission.
+        unreachable!("dummy decoder should not run in SQL-emission tests")
+    }
+
+    fn owner_path() -> ErasedSelectRelated {
+        ErasedSelectRelated {
+            source_column: "owner_id",
+            child_table: "owners_p3",
+            decoder: dummy_join_decoder,
+            child_descriptor: owners_join_descriptor,
+        }
+    }
+
+    #[test]
+    fn joined_select_qualifies_where_column_refs_with_parent_table() {
+        // `.select_related(owner).filter(|f| f.id.eq(x))` must emit
+        // `WHERE fakes.id = $1`, not `WHERE id = $1`. Live Postgres
+        // raises 42702 on the bare form because `owners_p3.id` is
+        // simultaneously in scope via the LEFT JOIN.
+        let mut qs: QuerySet<Fake> =
+            QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
+        qs.select_related_paths.push(owner_path());
+        let qb = build_select_joined(&qs);
+        let sql = qb.sql();
+        assert!(sql.contains("WHERE fakes.id = $1"), "got: {sql}");
+        // And the LEFT JOIN stays in place — the fix must not drop the
+        // join clause while qualifying the where.
+        assert!(
+            sql.contains("LEFT JOIN owners_p3 rel_owner_id"),
+            "LEFT JOIN missing, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn joined_select_qualifies_order_by_column_refs() {
+        // `.order_by(|f| f.created_at.asc())` on a joined queryset must
+        // emit `ORDER BY fakes.created_at ASC` so Postgres does not
+        // raise 42702 when the child also contributes `created_at`.
+        let mut qs: QuerySet<Fake> = QuerySet::new().order_by(|_| crate::query::order::OrderExpr {
+            column: "created_at",
+            direction: Direction::Asc,
+            nulls: NullsOrder::Default,
+        });
+        qs.select_related_paths.push(owner_path());
+        let qb = build_select_joined(&qs);
+        let sql = qb.sql();
+        assert!(sql.contains("ORDER BY fakes.created_at ASC"), "got: {sql}");
+    }
+
+    #[test]
+    fn joined_select_qualifies_distinct_on_column_refs() {
+        // `DISTINCT ON (id)` on a joined queryset must render as
+        // `DISTINCT ON (fakes.id)` — same ambiguity rule as WHERE /
+        // ORDER BY. Build the queryset directly to skip the typed
+        // surface (unit-test lives below the FieldRef layer).
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.distinct = DistinctMode::On(vec!["id"]);
+        qs.select_related_paths.push(owner_path());
+        let qb = build_select_joined(&qs);
+        let sql = qb.sql();
+        assert!(sql.contains("SELECT DISTINCT ON (fakes.id)"), "got: {sql}");
+    }
+
+    #[test]
+    fn non_joined_select_leaves_column_refs_bare() {
+        // Regression guard: the non-joined `build_select` path must not
+        // pick up the qualifier. Bare `WHERE id = $1` matches Phase 2's
+        // shipped SQL byte-for-byte.
+        let qs: QuerySet<Fake> =
+            QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(sql.contains("WHERE id = $1"), "got: {sql}");
+        assert!(
+            !sql.contains("fakes.id"),
+            "bare query must not qualify: {sql}"
+        );
     }
 }

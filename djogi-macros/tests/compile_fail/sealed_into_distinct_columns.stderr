@@ -1,0 +1,33 @@
+error[E0277]: the trait bound `Hostile: queryset::distinct_seal::Sealed` is not satisfied
+  --> tests/compile_fail/sealed_into_distinct_columns.rs:20:34
+   |
+20 |     impl IntoDistinctColumns for Hostile {
+   |                                  ^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `queryset::distinct_seal::Sealed` is not implemented for `Hostile`
+  --> tests/compile_fail/sealed_into_distinct_columns.rs:15:1
+   |
+15 | pub struct Hostile;
+   | ^^^^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `queryset::distinct_seal::Sealed`:
+             (FieldRef<M, A>, FieldRef<M, B>)
+             (FieldRef<M, A>, FieldRef<M, B>, FieldRef<M, C>)
+             (FieldRef<M, A>, FieldRef<M, B>, FieldRef<M, C>, FieldRef<M, D>)
+             (FieldRef<M, A>, FieldRef<M, B>, FieldRef<M, C>, FieldRef<M, D>, FieldRef<M, E>)
+             (FieldRef<M, A>, FieldRef<M, B>, FieldRef<M, C>, FieldRef<M, D>, FieldRef<M, E>, FieldRef<M, F>)
+             (FieldRef<M, A>,)
+             FieldRef<M, V>
+note: required by a bound in `IntoDistinctColumns`
+  --> $WORKSPACE/djogi/src/query/queryset.rs
+   |
+   | pub trait IntoDistinctColumns: distinct_seal::Sealed {
+   |                                ^^^^^^^^^^^^^^^^^^^^^ required by this bound in `IntoDistinctColumns`
+   = note: `IntoDistinctColumns` is a "sealed trait", because to implement it you also need to implement `djogi::query::queryset::distinct_seal::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+   = help: the following types implement the trait:
+             djogi::FieldRef<M, V>
+             (djogi::FieldRef<M, A>,)
+             (djogi::FieldRef<M, A>, djogi::FieldRef<M, B>)
+             (djogi::FieldRef<M, A>, djogi::FieldRef<M, B>, djogi::FieldRef<M, C>)
+             (djogi::FieldRef<M, A>, djogi::FieldRef<M, B>, djogi::FieldRef<M, C>, djogi::FieldRef<M, D>)
+             (djogi::FieldRef<M, A>, djogi::FieldRef<M, B>, djogi::FieldRef<M, C>, djogi::FieldRef<M, D>, djogi::FieldRef<M, E>)
+             (djogi::FieldRef<M, A>, djogi::FieldRef<M, B>, djogi::FieldRef<M, C>, djogi::FieldRef<M, D>, djogi::FieldRef<M, E>, djogi::FieldRef<M, F>)

@@ -367,6 +367,7 @@ mod tests {
     // `query::sql` unit tests so this file's checks stay independent of
     // `#[model]` macro expansion.
     struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
     #[allow(clippy::manual_async_fn)]
     impl Model for Fake {
         type Pk = i64;
