@@ -5,7 +5,7 @@
 `QuerySet<T>` is Djogi's lazy typed query builder. A queryset accumulates
 filters, ordering, distinct mode, and pagination without touching the
 database; only terminal methods (`fetch_all`, `count`, `update`, …) emit
-SQL and execute it against an `sqlx::Executor`.
+SQL and execute it against a `&mut DjogiContext`.
 
 This document is a Phase 2 reference. For features still on the roadmap —
 expression-backed SET, JOIN-spanning filters, window/aggregate terminals —
@@ -176,7 +176,7 @@ twice does not stack, only `.order_by` does.
 `.distinct()` emits plain `SELECT DISTINCT *`:
 
 ```rust
-Post::objects().distinct().fetch_all(&pool).await?;
+Post::objects().distinct().fetch_all(&mut ctx).await?;
 // SELECT DISTINCT * FROM posts
 ```
 
@@ -240,7 +240,7 @@ let qs = if user.is_authenticated {
 } else {
     Post::objects().none()
 };
-qs.fetch_all(&pool).await?;  // returns `Ok(vec![])` on the `none()` branch
+qs.fetch_all(&mut ctx).await?;  // returns `Ok(vec![])` on the `none()` branch
 ```
 
 Short-circuit identities per terminal:
@@ -280,7 +280,7 @@ let filter = PostFilter::new()
 
 let rows = Post::objects()
     .filter_struct(filter)
-    .fetch_all(&pool)
+    .fetch_all(&mut ctx)
     .await?;
 ```
 
@@ -308,7 +308,7 @@ plain leaf rather than a one-element `And` — the SQL emitter renders
 
 ## Bulk update and delete
 
-### `update(|f| f.col.set(v)).execute(&pool)`
+### `update(|f| f.col.set(v)).execute(&mut ctx)`
 
 `.update(...)` builds a pending `UpdateStmt<T>`; the actual `UPDATE`
 runs when the caller invokes `.execute(executor)`. The closure returns a
@@ -319,7 +319,7 @@ single `UpdateAssignment` or a `Vec<UpdateAssignment>` built via
 let n = Post::objects()
     .filter(|f| f.published().eq(true))
     .update(|f| f.view_count().set(999i32))
-    .execute(&pool)
+    .execute(&mut ctx)
     .await?;
 // UPDATE posts SET view_count = $1, updated_at = now() WHERE published = $2
 ```
@@ -347,7 +347,7 @@ for the Phase 4 expression layer, or drop to raw SQL for the one-off case.
 ```rust
 let n = Post::objects()
     .filter(|f| f.published().eq(false))
-    .delete(&pool)
+    .delete(&mut ctx)
     .await?;
 // DELETE FROM posts WHERE published = $1
 ```

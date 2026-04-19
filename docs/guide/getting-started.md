@@ -194,8 +194,8 @@ With the table created, use the generated Model trait methods:
 use djogi::prelude::*;
 use sqlx::PgPool;
 
-async fn create_article(pool: &PgPool) -> djogi::Result<Article> {
-    let article = Article::create(pool, Article {
+async fn create_article(ctx: &mut DjogiContext) -> djogi::Result<Article> {
+    let article = Article::create(ctx, Article {
         title: "Getting Started with Djogi".into(),
         slug: "getting-started".into(),
         body: "Djogi is a Model-first ORM for Rust...".into(),
@@ -222,8 +222,8 @@ RETURNING id, created_at, updated_at, title, slug, body, published, view_count
 ### Fetch by primary key
 
 ```rust
-async fn fetch_article(pool: &PgPool, id: HeerId) -> djogi::Result<Article> {
-    let article = Article::get(pool, id).await?;
+async fn fetch_article(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<Article> {
+    let article = Article::get(ctx, id).await?;
     println!("{}: {}", article.id, article.title);
     Ok(article)
 }
@@ -234,12 +234,12 @@ Returns `Err(DjogiError::NotFound)` when no row matches.
 ### Update
 
 ```rust
-async fn publish_article(pool: &PgPool, id: HeerId) -> djogi::Result<()> {
-    let mut article = Article::get(pool, id).await?;
+async fn publish_article(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<()> {
+    let mut article = Article::get(ctx, id).await?;
     article.published = true;
     article.view_count += 1;
     // Issues a full-row UPDATE; updated_at is refreshed automatically
-    article.save(pool).await?;
+    article.save(ctx).await?;
     Ok(())
 }
 ```
@@ -247,9 +247,9 @@ async fn publish_article(pool: &PgPool, id: HeerId) -> djogi::Result<()> {
 ### Delete
 
 ```rust
-async fn remove_article(pool: &PgPool, id: HeerId) -> djogi::Result<()> {
-    let article = Article::get(pool, id).await?;
-    article.delete(pool).await?;
+async fn remove_article(ctx: &mut DjogiContext, id: HeerId) -> djogi::Result<()> {
+    let article = Article::get(ctx, id).await?;
+    article.delete(ctx).await?;
     // article is moved — cannot be used after this point
     Ok(())
 }
@@ -258,9 +258,9 @@ async fn remove_article(pool: &PgPool, id: HeerId) -> djogi::Result<()> {
 ### Refresh from DB
 
 ```rust
-async fn reload(pool: &PgPool, article: Article) -> djogi::Result<Article> {
+async fn reload(ctx: &mut DjogiContext, article: Article) -> djogi::Result<Article> {
     // Returns a fresh copy of the row — useful after out-of-band DB changes
-    let fresh = article.refresh_from_db(pool).await?;
+    let fresh = article.refresh_from_db(ctx).await?;
     Ok(fresh)
 }
 ```
@@ -277,66 +277,68 @@ use djogi::prelude::*;
 
 // query_as — returns a Vec of typed rows
 let articles: Vec<Article> = djogi::raw::query_as(
-    pool,
+    &mut ctx,
     "SELECT * FROM articles WHERE published = $1",
     |q| q.bind(true),
 ).await?;
 
 // query_scalar — returns a single scalar value
 let count: i64 = djogi::raw::query_scalar(
-    pool,
+    &mut ctx,
     "SELECT COUNT(*) FROM articles",
     |q| q,
 ).await?;
 
 // execute — runs a statement without returning rows
 djogi::raw::execute(
-    pool,
+    &mut ctx,
     "UPDATE articles SET view_count = view_count + 1 WHERE id = $1",
     |q| q.bind(article_id.as_i64()),
 ).await?;
 ```
 
-All three functions accept any `sqlx::Executor` — pass `pool` directly or
-pass `&mut *tx` to run inside a transaction:
+All three functions take `&mut DjogiContext` — the same call site works
+against a pool-backed context or a transaction-backed one:
 
 ```rust
-let mut tx = pool.begin().await?;
+let mut ctx = DjogiContext::from_pool(pool.clone());
 let count: i64 = djogi::raw::query_scalar(
-    &mut *tx,
+    &mut ctx,
     "SELECT COUNT(*) FROM articles",
     |q| q,
 ).await?;
-tx.commit().await?;
 ```
 
 ---
 
 ## 7. Transactions
 
-Model CRUD methods accept any `sqlx::Executor`, so the same API works
-inside a transaction:
+Model CRUD methods take `&mut DjogiContext`. For a transaction, construct
+a tx-backed context and call `.commit()` / `.rollback()` when done:
 
 ```rust
 async fn transfer_views(pool: &PgPool, from_id: HeerId, to_id: HeerId) -> djogi::Result<()> {
-    let mut tx = pool.begin().await?;
+    let tx = pool.begin().await?;
+    let mut tx_ctx = DjogiContext::from_transaction(tx);
 
-    let mut source = Article::get(&mut *tx, from_id).await?;
-    let mut dest = Article::get(&mut *tx, to_id).await?;
+    let mut source = Article::get(&mut tx_ctx, from_id).await?;
+    let mut dest = Article::get(&mut tx_ctx, to_id).await?;
 
     dest.view_count += source.view_count;
     source.view_count = 0;
 
-    source.save(&mut *tx).await?;
-    dest.save(&mut *tx).await?;
+    source.save(&mut tx_ctx).await?;
+    dest.save(&mut tx_ctx).await?;
 
-    tx.commit().await?;
+    tx_ctx.commit().await?;
     Ok(())
 }
 ```
 
-If either `save()` fails, drop `tx` (or call `tx.rollback().await?`) and
-neither row is modified in the DB.
+If either `save()` fails, drop `tx_ctx` (or call `tx_ctx.rollback().await?`)
+and neither row is modified in the DB. Phase 4 Task 1's `atomic()` wrapper
+will layer on top of this to also manage on-commit callbacks and savepoint
+nesting automatically.
 
 ---
 

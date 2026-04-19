@@ -145,17 +145,19 @@ impl<T: Model> ForeignKey<T> {
         None
     }
 
-    /// Explicit single-relation fetch. Issues one `SELECT` against
-    /// `executor` by deferring to `T::get`. Use for opportunistic
-    /// resolution inside a handler where a prefetch was not arranged
-    /// upstream; otherwise `prefetch`/`select_related` are the
+    /// Explicit single-relation fetch. Issues one `SELECT` against the
+    /// caller's `DjogiContext` by deferring to `T::get`. Use for
+    /// opportunistic resolution inside a handler where a prefetch was not
+    /// arranged upstream; otherwise `prefetch`/`select_related` are the
     /// scalable options.
-    pub async fn fetch<'a, E>(&self, executor: E) -> Result<T, crate::DjogiError>
+    pub async fn fetch(
+        &self,
+        ctx: &mut crate::context::DjogiContext,
+    ) -> Result<T, crate::DjogiError>
     where
-        E: sqlx::Executor<'a, Database = Postgres>,
         T::Pk: Clone,
     {
-        T::get(executor, self.key.clone()).await
+        T::get(ctx, self.key.clone()).await
     }
 }
 
@@ -379,34 +381,34 @@ mod tests {
         fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
             unreachable!()
         }
-        fn get<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
             _id: HeerId,
         ) -> impl std::future::Future<Output = Result<Self, DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn create<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
             _v: Self,
         ) -> impl std::future::Future<Output = Result<Self, DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn save<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> impl std::future::Future<Output = Result<(), DjogiError>> + Send {
+        fn save<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), DjogiError>> + Send + 'ctx {
             async { unreachable!() }
         }
-        fn delete<'a>(
+        fn delete(
             self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            _ctx: &mut crate::context::DjogiContext,
         ) -> impl std::future::Future<Output = Result<(), DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn refresh_from_db<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> impl std::future::Future<Output = Result<Self, DjogiError>> + Send {
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
             async { unreachable!() }
         }
     }

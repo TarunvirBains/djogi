@@ -78,8 +78,11 @@ For the full attribute list, see [the models guide](./models.md).
 | `Post::create_with_id(exec, id, value)` | `async -> Result<Post>` | INSERT ... ON CONFLICT DO NOTHING; for pre-generated IDs |
 | `Post::descriptor()` | `-> &'static ModelDescriptor` | For inventory registration — do not call manually |
 
-All methods accept any `sqlx::Executor<Database = Postgres>` — pass `pool`
-directly or `&mut *tx` for transaction-scoped operations.
+All methods take `&mut DjogiContext` — construct one with
+`DjogiContext::from_pool(pool.clone())` for pool-backed work, or
+`DjogiContext::from_transaction(tx)` to run inside an existing transaction.
+The context pattern-matches on pool-vs-transaction at each sqlx boundary, so
+the same call site works for either mode.
 
 ---
 
@@ -157,48 +160,49 @@ CTEs, window functions, `col = col + 1`-style expression UPDATEs), use
 ```rust
 // query_as — Vec<T> where T: FromRow
 let posts: Vec<Post> = djogi::raw::query_as(
-    &pool,
+    &mut ctx,
     "SELECT * FROM posts WHERE published = $1",
     |q| q.bind(true),
 ).await?;
 
 // query_scalar — single scalar
 let count: i64 = djogi::raw::query_scalar(
-    &pool,
+    &mut ctx,
     "SELECT COUNT(*) FROM posts",
     |q| q,
 ).await?;
 
 // execute — no return value
 djogi::raw::execute(
-    &pool,
+    &mut ctx,
     "UPDATE posts SET view_count = view_count + $1 WHERE id = $2",
     |q| q.bind(1i32).bind(post_id.as_i64()),
 ).await?;
 ```
 
-All three accept any `sqlx::Executor` — pass `&mut *tx` to run inside a
-transaction.
+All three take `&mut DjogiContext`; the same call site works against a
+pool-backed context or a transaction-backed one.
 
 ### Rule 4: Use transactions explicitly
 
-Model methods and `djogi::raw::*` both accept `&mut *tx`. Wrap multi-step
-operations in a transaction:
+Wrap multi-step operations in a transaction by constructing a tx-backed
+`DjogiContext`:
 
 ```rust
-let mut tx = pool.begin().await?;
+let tx = pool.begin().await?;
+let mut tx_ctx = DjogiContext::from_transaction(tx);
 
-let post = Post::create(&mut *tx, Post { ... ..Default::default() }).await?;
+let post = Post::create(&mut tx_ctx, Post { ..Default::default() }).await?;
 djogi::raw::execute(
-    &mut *tx,
+    &mut tx_ctx,
     "INSERT INTO tags (post_id, name) VALUES ($1, $2)",
     |q| q.bind(post.id.as_i64()).bind("rust"),
 ).await?;
 
-tx.commit().await?;
+tx_ctx.commit().await?;
 ```
 
-If either step fails, drop the transaction and neither change is persisted.
+If either step fails, drop the context and neither change is persisted.
 
 ### Rule 5: Match field types exactly
 
@@ -355,7 +359,7 @@ query code.
 - **`Model::objects()` never runs a query.** Construction is free. Only
   the terminal methods (`fetch_all`, `fetch_one`, `first`, `count`,
   `exists`, `update(...).execute(...)`, `delete(...)`) emit SQL and
-  execute it against a `sqlx::Executor`. A queryset dropped without a
+  execute it against a `&mut DjogiContext`. A queryset dropped without a
   terminal silently does nothing; the `#[must_use]` bound on every
   builder method surfaces the dropped-chain case as a lint warning.
 

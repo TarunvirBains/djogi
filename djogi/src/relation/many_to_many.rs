@@ -137,26 +137,30 @@ use std::future::Future;
 ///     fn this_fk() -> &'static str { "person_id" }
 ///     fn that_fk() -> &'static str { "group_id" }
 ///
-///     async fn related<'a, E>(&'a self, executor: E) -> Result<Vec<Group>, DjogiError>
-///     where
-///         E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + Copy + 'a,
+///     async fn related<'ctx>(
+///         &'ctx self,
+///         ctx: &'ctx mut DjogiContext,
+///     ) -> Result<Vec<Group>, DjogiError>
 ///     {
 ///         // ... typed-filter body; see module docs.
 ///         # unimplemented!()
 ///     }
 ///
-///     async fn add_related<'a, E>(
-///         &'a self, executor: E, target: &'a Group, extras: PersonGroup,
+///     async fn add_related<'ctx>(
+///         &'ctx self,
+///         ctx: &'ctx mut DjogiContext,
+///         target: &'ctx Group,
+///         extras: PersonGroup,
 ///     ) -> Result<PersonGroup, DjogiError>
-///     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + 'a,
 ///     {
 ///         # unimplemented!()
 ///     }
 ///
-///     async fn remove_related<'a, E>(
-///         &'a self, executor: E, target: &'a Group,
+///     async fn remove_related<'ctx>(
+///         &'ctx self,
+///         ctx: &'ctx mut DjogiContext,
+///         target: &'ctx Group,
 ///     ) -> Result<u64, DjogiError>
-///     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + 'a,
 ///     {
 ///         # unimplemented!()
 ///     }
@@ -200,22 +204,18 @@ where
     /// The canonical hand-written body issues two queries — one against the
     /// through table collecting target PKs for rows whose `this_fk` matches
     /// `self.pk_value()`, then one against `Target` with a `WHERE id IN
-    /// (...)` filter. The Phase 3 Task 7 `many_to_many!` macro will emit
+    /// (...)` filter. The Phase 3 Task 7 `many_to_many!` macro emits
     /// exactly this shape on behalf of the user.
     ///
-    /// # Bounds
+    /// # Context
     ///
-    /// `E: sqlx::Executor + Copy` so the body can reuse `executor` across
-    /// two sequential queries without re-borrowing. Pools, transactions'
-    /// deref-reborrows, and `&mut PgConnection` all satisfy this in
-    /// practice (a pool is `Copy`; a deref-reborrow is taken fresh at each
-    /// call site).
-    fn related<'a, E>(
-        &'a self,
-        executor: E,
-    ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'a
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Copy + 'a;
+    /// Takes `&'ctx mut DjogiContext`. The body re-borrows the context across
+    /// the two sequential queries; `DjogiContext`'s inner variant is
+    /// pattern-matched at each sqlx boundary in the emitted code.
+    fn related<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut crate::context::DjogiContext,
+    ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx;
 
     /// Attach `self` to `target` by inserting a row into [`Through`].
     ///
@@ -224,38 +224,34 @@ where
     /// body overwrites `extras.{this_fk}` and `extras.{that_fk}` with
     /// freshly-constructed [`ForeignKey`](crate::relation::ForeignKey)
     /// values built from `self.pk_value()` and `target.pk_value()`, then
-    /// calls `Through::create(executor, extras)`. That the caller supplies
+    /// calls `Through::create(ctx, extras)`. That the caller supplies
     /// the whole junction row by value keeps the junction-specific fields
     /// under the user's control — the framework does not invent values for
     /// non-FK columns.
     ///
     /// Returns the freshly-created junction row with its
     /// framework-populated `id` / `created_at` / `updated_at`.
-    fn add_related<'a, E>(
-        &'a self,
-        executor: E,
-        target: &'a Target,
+    fn add_related<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut crate::context::DjogiContext,
+        target: &'ctx Target,
         extras: Self::Through,
-    ) -> impl Future<Output = Result<Self::Through, DjogiError>> + Send + 'a
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a;
+    ) -> impl Future<Output = Result<Self::Through, DjogiError>> + Send + 'ctx;
 
     /// Detach `self` from `target` by deleting the matching junction row.
     ///
     /// The canonical hand-written body filters
     /// `Through::objects()` on both `this_fk == self.pk` and
-    /// `that_fk == target.pk`, then calls `.delete(executor)` — yielding
+    /// `that_fk == target.pk`, then calls `.delete(ctx)` — yielding
     /// the number of rows deleted (typically `0` or `1`, depending on
     /// whether the junction had a `UNIQUE (this_fk, that_fk)` constraint).
     ///
     /// A higher count indicates either a missing uniqueness constraint on
     /// the junction table or a data-integrity breach; callers that need to
     /// enforce "exactly one removed" should inspect the returned count.
-    fn remove_related<'a, E>(
-        &'a self,
-        executor: E,
-        target: &'a Target,
-    ) -> impl Future<Output = Result<u64, DjogiError>> + Send + 'a
-    where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a;
+    fn remove_related<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut crate::context::DjogiContext,
+        target: &'ctx Target,
+    ) -> impl Future<Output = Result<u64, DjogiError>> + Send + 'ctx;
 }

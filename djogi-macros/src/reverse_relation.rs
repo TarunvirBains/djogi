@@ -38,16 +38,16 @@
 //!
 //! ```ignore
 //! impl Target {
-//!     pub fn method<'a, E>(&'a self, executor: E)
-//!         -> impl Future<Output = Result<Vec<Source>, DjogiError>> + Send + 'a
-//!     where
-//!         E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + 'a,
+//!     pub fn method<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!     ) -> impl Future<Output = Result<Vec<Source>, DjogiError>> + Send + 'ctx
 //!     {
 //!         let pk = <Self as Model>::pk_value(self).clone();
 //!         async move {
 //!             Source::objects()
 //!                 .filter(move |f| f.via_column().eq(ForeignKey::new(pk)))
-//!                 .fetch_all(executor).await
+//!                 .fetch_all(ctx).await
 //!         }
 //!     }
 //! }
@@ -65,7 +65,7 @@
 //!
 //! `reverse_one_to_one!` emits an almost-identical shape with two
 //! differences: return type is `Result<Option<Source>, DjogiError>` and
-//! the terminal is `.first(executor)` instead of `.fetch_all(executor)`.
+//! the terminal is `.first(ctx)` instead of `.fetch_all(ctx)`.
 //!
 //! # Terminology note (source vs target)
 //!
@@ -236,13 +236,13 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     ) = match kind {
         AccessorKind::OneToMany => (
             quote! { ::std::vec::Vec<#returned_type> },
-            quote! { fetch_all(executor) },
+            quote! { fetch_all(ctx) },
             quote! { ::djogi::relation::registry::RelationKind::FK },
             quote! { ::djogi::relation::ForeignKey::<#receiver_type>::new(pk) },
         ),
         AccessorKind::OneToOne => (
             quote! { ::std::option::Option<#returned_type> },
-            quote! { first(executor) },
+            quote! { first(ctx) },
             quote! { ::djogi::relation::registry::RelationKind::O2O },
             quote! { ::djogi::relation::OneToOneField::<#receiver_type>::new(pk) },
         ),
@@ -276,22 +276,19 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
 
     // The generated impl:
     //
-    // * `'a` scopes the executor's borrow. `&'a self` gives the returned
-    //   future a borrow of the receiver so the pk extraction can happen
-    //   once outside the `async move`; cloning the pk there (rather than
-    //   re-borrowing inside the future) keeps the `Send` bound on the
-    //   returned future cheap to satisfy.
-    // * The emitted executor bound omits a redundant `+ Send` —
-    //   `sqlx::Executor` already declares `Send` as a supertrait on its
-    //   own definition, so repeating it here would be dead syntax.
+    // * `'ctx` scopes both the `&self` receiver borrow and the
+    //   `&mut DjogiContext` parameter's borrow, and ties both into the
+    //   returned future's lifetime. The context threads through to
+    //   `QuerySet::fetch_all(ctx)` (or `.first(ctx)` for O2O) which
+    //   pattern-matches on the inner pool / transaction variant at the
+    //   sqlx boundary — see the `djogi::context` module for the
+    //   inline-match rationale.
     // * The `<Self as Model>::Pk` where-clause is dropped entirely.
     //   `Model::Pk` already carries `Clone + Send + Sync + 'static` on
-    //   the trait itself (see `djogi/src/model.rs`); `'static: 'a` so
+    //   the trait itself (see `djogi/src/model.rs`); `'static: 'ctx` so
     //   the outlive requirement is implied, `Clone` is the only extra
     //   capability the closure uses and it is already satisfied for
-    //   every `Model` implementer. Repeating the bounds here would be
-    //   dead syntax and invited the over-eager review flag that
-    //   prompted this fixup.
+    //   every `Model` implementer.
     // * The `+ Send` on the returned `impl Future` IS necessary — the
     //   auto-trait bound on an opaque return type is not inherited
     //   from the inner `async move` block, so callers that need to
@@ -302,22 +299,16 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         impl #receiver_type {
             #[doc = #method_doc]
             #[inline]
-            pub fn #method<'a, E>(
-                &'a self,
-                executor: E,
+            pub fn #method<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<#return_inner_ty, ::djogi::DjogiError>,
-            > + ::std::marker::Send + 'a
-            where
-                E: ::djogi::__private::sqlx::Executor<
-                        'a,
-                        Database = ::djogi::__private::sqlx::Postgres,
-                    >
-                    + 'a,
+            > + ::std::marker::Send + 'ctx
             {
                 // Capture the pk by value outside the async block so
                 // the future does not borrow `self` beyond the outer
-                // `'a`. The closure passed to `.filter` needs `move`
+                // `'ctx`. The closure passed to `.filter` needs `move`
                 // so the owned pk survives past the closure's return.
                 let pk = <Self as ::djogi::model::Model>::pk_value(self).clone();
                 async move {

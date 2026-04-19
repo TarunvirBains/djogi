@@ -658,6 +658,7 @@ mod tests {
     // this file independent of the `#[model]` macro expansion path.
     struct Fake;
     impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
     impl Model for Fake {
         type Pk = i64;
         type Fields = ();
@@ -670,35 +671,37 @@ mod tests {
         fn descriptor() -> &'static ModelDescriptor {
             unreachable!("not called in QuerySet unit tests")
         }
-        async fn get<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
             _id: Self::Pk,
-        ) -> Result<Self, crate::DjogiError> {
-            unreachable!()
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
         }
-        async fn create<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
             _v: Self,
-        ) -> Result<Self, crate::DjogiError> {
-            unreachable!()
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
         }
-        async fn save<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> Result<(), crate::DjogiError> {
-            unreachable!()
+        fn save<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
         }
-        async fn delete<'a>(
+        fn delete(
             self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> Result<(), crate::DjogiError> {
-            unreachable!()
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
         }
-        async fn refresh_from_db<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> Result<Self, crate::DjogiError> {
-            unreachable!()
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
         }
     }
 

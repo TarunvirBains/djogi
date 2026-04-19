@@ -1,35 +1,33 @@
 //! The `Model` trait — the contract every `#[model]` struct satisfies.
 //!
-//! All CRUD methods are generic over `sqlx::Executor`, so the same call site
-//! works against a pool (auto-connection) or inside a transaction. In sqlx
-//! 0.8 a `Transaction` is *not* itself an `Executor`; you pass a
-//! deref-reborrowed `&mut *tx` (which resolves to `&mut PgConnection`):
+//! All CRUD methods take `&mut DjogiContext`, so the same call site works against a
+//! pool or inside a transaction without re-borrows or type juggling:
 //!
 //! ```ignore
-//! // Auto-connect from the pool:
-//! let post = Post::create(&pool, post).await?;
+//! // Pool-backed:
+//! let mut ctx = DjogiContext::from_pool(pool.clone());
+//! let post = Post::create(&mut ctx, post).await?;
 //!
-//! // Inside a transaction:
-//! let mut tx = pool.begin().await?;
-//! let post = Post::create(&mut *tx, post).await?;
-//! tx.commit().await?;
+//! // Transaction-backed (once `atomic()` lands in Phase 4 Task 1):
+//! ctx.atomic(|ctx| async move {
+//!     Post::create(ctx, post).await?;
+//!     Ok(())
+//! }).await?;
 //! ```
 //!
-//! ## Executor lifetime parameter
+//! ## Context dispatch
 //!
-//! Each method introduces an explicit lifetime `'a` for the `sqlx::Executor`
-//! bound. Rust 1.81+ RPITIT requires named lifetimes here; `'_` is unstable
-//! in this position. At the trait level `'a` only scopes the parameter's
-//! borrow — the trait has no bodies to capture it. Generated impls (Task 7)
-//! `async move` the executor into their future, which is sound because
-//! `sqlx::Executor: Send` propagates to the captured type.
+//! Each CRUD method takes `&mut DjogiContext` by mutable reference. The body
+//! pattern-matches on [`DjogiContext::inner_mut`](crate::DjogiContext) to dispatch
+//! at the sqlx boundary — pool-backed contexts hit `&PgPool`, transaction-backed
+//! ones hit `&mut *tx`. See `djogi::context` module docs for the full rationale.
 //!
 //! ## Send bounds
 //!
-//! `sqlx::Executor` already declares `Send` as a supertrait, so `+ Send` on
-//! the executor parameter is redundant and omitted. The `Future` return types
-//! carry `+ Send` explicitly so callers can `.await` them across task
-//! boundaries.
+//! The returned `Future` types carry `+ Send` explicitly so callers can `.await`
+//! them across task boundaries. `&mut DjogiContext` is itself `Send` because
+//! `DjogiContext` only holds `Send` data (a `PgPool`, which is `Arc`-backed and
+//! `Send`, or a `Transaction<'static, Postgres>`, which sqlx declares `Send`).
 //!
 //! ## Single-value `Pk`
 //!
@@ -41,6 +39,7 @@
 //! if a user sets a composite PK.
 
 use crate::DjogiError;
+use crate::context::DjogiContext;
 use crate::descriptor::ModelDescriptor;
 use std::future::Future;
 
@@ -120,34 +119,31 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     fn descriptor() -> &'static ModelDescriptor;
 
     /// Fetch by primary key. Returns `DjogiError::NotFound` if absent.
-    fn get<'a>(
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+    fn get(
+        ctx: &mut DjogiContext,
         id: Self::Pk,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
     /// Insert a new row. Framework fields (`id`, `created_at`, `updated_at`)
     /// from `value` are ignored — the database populates them via defaults
     /// and `RETURNING *`.
-    fn create<'a>(
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+    fn create(
+        ctx: &mut DjogiContext,
         value: Self,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
     /// Update all user-defined fields for this row. Sets `updated_at = now()`.
-    fn save<'a>(
-        &self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    ) -> impl Future<Output = Result<(), DjogiError>> + Send;
+    fn save<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx;
 
     /// Delete this row.
-    fn delete<'a>(
-        self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    ) -> impl Future<Output = Result<(), DjogiError>> + Send;
+    fn delete(self, ctx: &mut DjogiContext) -> impl Future<Output = Result<(), DjogiError>> + Send;
 
     /// Reload this row from the database, returning a fresh instance.
-    fn refresh_from_db<'a>(
-        &self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
+    fn refresh_from_db<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
 }

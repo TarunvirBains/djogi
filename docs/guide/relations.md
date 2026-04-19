@@ -66,7 +66,7 @@ from `on_delete`.
 ### Fetching a single related row
 
 ```rust
-let owner: Owner = vehicle.owner_id.fetch(&pool).await?;
+let owner: Owner = vehicle.owner_id.fetch(&mut ctx).await?;
 // SELECT * FROM owners WHERE id = $1 LIMIT 1
 ```
 
@@ -128,7 +128,7 @@ impl VehicleRelated {
 ```rust
 let vehicles = Vehicle::objects()
     .prefetch(VehicleRelated::owner_id())
-    .fetch_all(&pool)
+    .fetch_all(&mut ctx)
     .await?;
 // Query 1: SELECT * FROM vehicles
 // Query 2: SELECT * FROM owners WHERE id IN ($1, $2, ...)
@@ -140,7 +140,7 @@ let vehicles = Vehicle::objects()
 ```rust
 let vehicles = Vehicle::objects()
     .select_related(VehicleRelated::owner_id())
-    .fetch_all(&pool)
+    .fetch_all(&mut ctx)
     .await?;
 // SELECT vehicles.*, owners.* FROM vehicles
 // LEFT JOIN owners ON vehicles.owner_id = owners.id
@@ -202,12 +202,14 @@ Effective emission:
 ```rust
 // Effective emission — do not write this by hand
 impl Owner {
-    pub async fn vehicles<'a, E>(&'a self, executor: E) -> Result<Vec<Vehicle>, DjogiError>
-    where E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a
+    pub async fn vehicles<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> Result<Vec<Vehicle>, DjogiError>
     {
         Vehicle::objects()
             .filter(|f| f.owner_id().eq(ForeignKey::new(self.id.clone())))
-            .fetch_all(executor)
+            .fetch_all(ctx)
             .await
     }
 }
@@ -216,7 +218,7 @@ impl Owner {
 Call site:
 
 ```rust
-let vehicles: Vec<Vehicle> = owner.vehicles(&pool).await?;
+let vehicles: Vec<Vehicle> = owner.vehicles(&mut ctx).await?;
 // SELECT * FROM vehicles WHERE owner_id = $1
 ```
 
@@ -367,7 +369,7 @@ you need to filter or join on junction-specific data:
 ```rust
 let admins: Vec<PersonGroup> = PersonGroup::objects()
     .filter(|f| f.role().eq("admin".to_string()))
-    .fetch_all(&pool)
+    .fetch_all(&mut ctx)
     .await?;
 // SELECT * FROM person_groups WHERE role = $1
 ```

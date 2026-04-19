@@ -21,7 +21,6 @@
 // DjogiError>> + Send` shape and walk the inventory markers inside
 // `fn main()` for the registration assertions.
 
-use djogi::__private::sqlx::PgPool;
 use djogi::prelude::*;
 
 #[model(table = "users_ro1")]
@@ -44,9 +43,9 @@ djogi::reverse_one_to_one!(User, profile -> Profile by user_id);
 
 fn _profile_accessor_returns_option<'a>(
     user: &'a User,
-    pool: &'a PgPool,
+    ctx: &'a mut DjogiContext,
 ) -> impl std::future::Future<Output = Result<Option<Profile>, DjogiError>> + Send + 'a {
-    user.profile(pool)
+    user.profile(ctx)
 }
 
 fn main() {

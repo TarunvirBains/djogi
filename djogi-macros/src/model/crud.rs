@@ -12,30 +12,40 @@
 //!     fn pk_value(&self) -> &Self::Pk { &self.id }
 //!     fn descriptor() -> &'static ::djogi::ModelDescriptor { ... }
 //!
-//!     fn get<'a>(executor, id) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
-//!     fn create<'a>(executor, value) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
-//!     fn save<'a>(&self, executor) -> impl Future<Output = Result<(), DjogiError>> + Send { ... }
-//!     fn delete<'a>(self, executor) -> impl Future<Output = Result<(), DjogiError>> + Send { ... }
-//!     fn refresh_from_db<'a>(&self, executor) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
+//!     fn get(ctx, id) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
+//!     fn create(ctx, value) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
+//!     fn save<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
+//!         -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx { ... }
+//!     fn delete(self, ctx) -> impl Future<Output = Result<(), DjogiError>> + Send { ... }
+//!     fn refresh_from_db<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
+//!         -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx { ... }
 //! }
 //! ```
 //!
-//! # Why the `'a` lifetime on every method
+//! # Why `&mut DjogiContext` (not `impl sqlx::Executor`)
 //!
-//! `impl Trait` in return position (RPITIT) on stable Rust requires named
-//! lifetimes — using `'_` in this position is only allowed on nightly. Every
-//! CRUD method therefore introduces an explicit `'a` that scopes the
-//! `sqlx::Executor` borrow. The `async move` body captures the executor by
-//! value, which is sound because `sqlx::Executor: Send` (a supertrait) so the
-//! captured type propagates `Send` to the returned `Future`.
+//! Phase 4 v3's Q1 resolution flipped the API from "each method is generic over
+//! `sqlx::Executor`" to "each method takes `&mut DjogiContext`". The context
+//! carries either a pool or an active transaction and pattern-matches on the
+//! variant at each sqlx boundary in the generated body (via
+//! `::djogi::context::DjogiContext::inner_mut`). This unifies the call site —
+//! the same `Post::create(&mut ctx, post)` works whether `ctx` is pool-backed
+//! or inside an `atomic()` transaction scope.
 //!
-//! # Why `+ Send` on the Future but NOT on the executor
+//! # Why the `'ctx` lifetime on `save` / `refresh_from_db`
 //!
-//! `sqlx::Executor` already declares `Send` as a supertrait. Adding `+ Send`
-//! explicitly on the executor parameter would trip
-//! `clippy::implied_bounds_in_impls`. The returned `Future` carries `+ Send`
-//! because tokio's multi-threaded runtime requires futures to be `Send` across
-//! `.await` points.
+//! `save` and `refresh_from_db` take `&self` and `&mut DjogiContext`. Both
+//! borrows must outlive the returned future (RPITIT elision), so the method
+//! introduces an explicit `'ctx` and ties both receivers plus the returned
+//! future to it. `get`, `create`, and `delete` consume their `Self` / receive
+//! by value, so they don't need the lifetime annotation — the returned future
+//! only borrows from `ctx`, whose lifetime is inferred.
+//!
+//! # Why `+ Send` on the Future
+//!
+//! The returned `Future` carries `+ Send` explicitly because tokio's
+//! multi-threaded runtime requires futures to be `Send` across `.await` points.
+//! `&mut DjogiContext` is `Send` because the context only holds `Send` data.
 //!
 //! # Path routing through `::djogi::__private`
 //!
@@ -269,67 +279,97 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // Per-method async bodies.
     // -------------------------------------------------------------------------
+    // Every body pattern-matches on the context's inner variant at the sqlx
+    // boundary. The match arms feed the same `sqlx::query_as` / `sqlx::query`
+    // chain into either `fetch_*`(&*pool) or `fetch_*`(&mut **tx) — inline
+    // match is explicit, free of GAT gymnastics, and costs one pattern match
+    // per call. See djogi/src/context.rs for the full rationale.
     let get_body = quote! {
         async move {
-            let result = ::djogi::__private::sqlx::query_as::<
+            let q = ::djogi::__private::sqlx::query_as::<
                 ::djogi::__private::sqlx::Postgres,
                 Self,
             >(#get_sql)
-            #id_bind_for_get
-            .fetch_optional(executor)
-            .await?;
-
+            #id_bind_for_get;
+            let result = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                    q.fetch_optional(&*__pool).await?
+                }
+                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                    q.fetch_optional(&mut **__tx).await?
+                }
+            };
             result.ok_or_else(|| ::djogi::DjogiError::not_found(#table))
         }
     };
 
     let create_body = quote! {
         async move {
-            let row = ::djogi::__private::sqlx::query_as::<
+            let q = ::djogi::__private::sqlx::query_as::<
                 ::djogi::__private::sqlx::Postgres,
                 Self,
             >(#insert_sql)
-            #(#create_binds)*
-            .fetch_one(executor)
-            .await?;
-
+            #(#create_binds)*;
+            let row = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                    q.fetch_one(&*__pool).await?
+                }
+                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                    q.fetch_one(&mut **__tx).await?
+                }
+            };
             ::std::result::Result::Ok(row)
         }
     };
 
     let save_body = quote! {
         async move {
-            ::djogi::__private::sqlx::query(#save_sql)
+            let q = ::djogi::__private::sqlx::query(#save_sql)
             #(#save_field_binds)*
-            #save_id_bind
-            .execute(executor)
-            .await?;
-
+            #save_id_bind;
+            match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                    q.execute(&*__pool).await?;
+                }
+                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                    q.execute(&mut **__tx).await?;
+                }
+            }
             ::std::result::Result::Ok(())
         }
     };
 
     let delete_body = quote! {
         async move {
-            ::djogi::__private::sqlx::query(#delete_sql)
-            #owned_pk_bind
-            .execute(executor)
-            .await?;
-
+            let q = ::djogi::__private::sqlx::query(#delete_sql)
+            #owned_pk_bind;
+            match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                    q.execute(&*__pool).await?;
+                }
+                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                    q.execute(&mut **__tx).await?;
+                }
+            }
             ::std::result::Result::Ok(())
         }
     };
 
     let refresh_body = quote! {
         async move {
-            let result = ::djogi::__private::sqlx::query_as::<
+            let q = ::djogi::__private::sqlx::query_as::<
                 ::djogi::__private::sqlx::Postgres,
                 Self,
             >(#get_sql)
-            #refresh_id_bind
-            .fetch_optional(executor)
-            .await?;
-
+            #refresh_id_bind;
+            let result = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                    q.fetch_optional(&*__pool).await?
+                }
+                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                    q.fetch_optional(&mut **__tx).await?
+                }
+            };
             result.ok_or_else(|| ::djogi::DjogiError::not_found(#table))
         }
     };
@@ -386,22 +426,25 @@ pub fn expand(
                 /// second caller's input rather than the originally-inserted data.  A
                 /// later phase will add a proper `get_or_create` helper that fetches the
                 /// existing row when a conflict fires.
-                pub async fn create_with_id<'a>(
-                    executor: impl ::djogi::__private::sqlx::Executor<
-                        'a,
-                        Database = ::djogi::__private::sqlx::Postgres,
-                    >,
+                pub async fn create_with_id(
+                    ctx: &mut ::djogi::context::DjogiContext,
                     id: ::djogi::types::HeerId,
                     value: Self,
                 ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
-                    let maybe_row = ::djogi::__private::sqlx::query_as::<
+                    let q = ::djogi::__private::sqlx::query_as::<
                         ::djogi::__private::sqlx::Postgres,
                         Self,
                     >(#insert_with_id_sql)
                         .bind(id.as_i64())
-                        #(#create_binds)*
-                        .fetch_optional(executor)
-                        .await?;
+                        #(#create_binds)*;
+                    let maybe_row = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                            q.fetch_optional(&*__pool).await?
+                        }
+                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                            q.fetch_optional(&mut **__tx).await?
+                        }
+                    };
 
                     ::std::result::Result::Ok(maybe_row.unwrap_or_else(|| {
                         let mut v = value;
@@ -450,68 +493,52 @@ pub fn expand(
 
             #descriptor_impl
 
-            fn get<'a>(
-                executor: impl ::djogi::__private::sqlx::Executor<
-                    'a,
-                    Database = ::djogi::__private::sqlx::Postgres,
-                >,
+            fn get(
+                ctx: &mut ::djogi::context::DjogiContext,
                 id: Self::Pk,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-            > + Send {
+            > + ::std::marker::Send {
                 #get_body
             }
 
-            fn create<'a>(
-                executor: impl ::djogi::__private::sqlx::Executor<
-                    'a,
-                    Database = ::djogi::__private::sqlx::Postgres,
-                >,
+            fn create(
+                ctx: &mut ::djogi::context::DjogiContext,
                 value: Self,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-            > + Send {
+            > + ::std::marker::Send {
                 #create_body
             }
 
-            fn save<'a>(
-                &self,
-                executor: impl ::djogi::__private::sqlx::Executor<
-                    'a,
-                    Database = ::djogi::__private::sqlx::Postgres,
-                >,
+            fn save<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,
-            > + Send {
-                // For pk != "none", RPITIT captures `&self`'s lifetime into the
-                // returned future's hidden lifetime, so the async block can
-                // borrow `&self.#f` across `.await` without cloning.
-                // `Model: Send + Sync` makes `&Self: Send` so the returned
-                // future satisfies `+ Send`.
+            > + ::std::marker::Send + 'ctx {
+                // RPITIT captures `&self`'s lifetime into the returned future's
+                // hidden lifetime, so the async block can borrow `&self.#f`
+                // across `.await` without cloning. `Model: Send + Sync` makes
+                // `&Self: Send` so the returned future satisfies `+ Send`.
                 #save_body
             }
 
-            fn delete<'a>(
+            fn delete(
                 self,
-                executor: impl ::djogi::__private::sqlx::Executor<
-                    'a,
-                    Database = ::djogi::__private::sqlx::Postgres,
-                >,
+                ctx: &mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,
-            > + Send {
+            > + ::std::marker::Send {
                 #delete_body
             }
 
-            fn refresh_from_db<'a>(
-                &self,
-                executor: impl ::djogi::__private::sqlx::Executor<
-                    'a,
-                    Database = ::djogi::__private::sqlx::Postgres,
-                >,
+            fn refresh_from_db<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<Self, ::djogi::DjogiError>,
-            > + Send {
+            > + ::std::marker::Send + 'ctx {
                 #refresh_body
             }
         }

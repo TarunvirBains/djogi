@@ -54,49 +54,56 @@
 //!     fn this_fk() -> &'static str { "a_id" }
 //!     fn that_fk() -> &'static str { "b_id" }
 //!
-//!     async fn related<'a, E>(&'a self, executor: E)
-//!         -> Result<Vec<Target>, ::djogi::DjogiError>
-//!     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Copy + 'a,
+//!     async fn related<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!     ) -> Result<Vec<Target>, ::djogi::DjogiError>
 //!     {
 //!         let through_rows: Vec<Through> = Through::objects()
 //!             .filter(move |f| f.a_id().eq(ForeignKey::new(self.pk_value().clone())))
-//!             .fetch_all(executor).await?;
+//!             .fetch_all(ctx).await?;
 //!         let mut out = Vec::with_capacity(through_rows.len());
 //!         for row in &through_rows {
-//!             out.push(Target::get(executor, row.b_id.key()).await?);
+//!             out.push(Target::get(ctx, row.b_id.key()).await?);
 //!         }
 //!         Ok(out)
 //!     }
 //!
-//!     async fn add_related<'a, E>(&'a self, executor: E, target: &'a Target, extras: Through)
-//!         -> Result<Through, ::djogi::DjogiError>
-//!     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a,
+//!     async fn add_related<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!         target: &'ctx Target,
+//!         extras: Through,
+//!     ) -> Result<Through, ::djogi::DjogiError>
 //!     {
 //!         let junction = Through {
 //!             a_id: ForeignKey::new(self.pk_value().clone()),
 //!             b_id: ForeignKey::new(target.pk_value().clone()),
 //!             ..extras
 //!         };
-//!         Through::create(executor, junction).await
+//!         Through::create(ctx, junction).await
 //!     }
 //!
-//!     async fn remove_related<'a, E>(&'a self, executor: E, target: &'a Target)
-//!         -> Result<u64, ::djogi::DjogiError>
-//!     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a,
+//!     async fn remove_related<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!         target: &'ctx Target,
+//!     ) -> Result<u64, ::djogi::DjogiError>
 //!     {
 //!         Through::objects()
 //!             .filter(move |f| f.a_id().eq(ForeignKey::new(self.pk_value().clone())))
 //!             .filter(move |f| f.b_id().eq(ForeignKey::new(target.pk_value().clone())))
-//!             .delete(executor).await
+//!             .delete(ctx).await
 //!     }
 //! }
 //!
 //! impl Source {
-//!     pub fn name<'a, E>(&'a self, executor: E)
-//!         -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'a
-//!     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Copy + 'a,
+//!     pub fn name<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!     ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx
 //!     {
-//!         <Self as ManyToMany<Target>>::related(self, executor)
+//!         <Self as ManyToMany<Target>>::related(self, ctx)
 //!     }
 //! }
 //!
@@ -421,22 +428,12 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // a model with `pk = "ranjid"` or `pk = "serial"` feeds through
     // the same expansion without a per-PK branch here.
     //
-    // The executor bounds match the trait signatures exactly:
-    //
-    // - `related` requires `+ Copy` because the body reuses the executor
-    //   across two sequential queries (one on the through table, one
-    //   or more `Target::get` calls). Pools are `Copy`; a `&mut
-    //   PgConnection` is not, so `related` is the one method on the
-    //   trait that demands the stronger bound.
-    // - `add_related` and `remove_related` each issue a single query,
-    //   so they accept any `sqlx::Executor` without the extra bound.
-    //
-    // `+ Send` is omitted from the `where E:` clauses — `sqlx::Executor`
-    // already carries `Send` as a supertrait on its own definition
-    // (see the Task 6 fixup commit that dropped the redundant bound
-    // from the trait signatures). Repeating it here would diverge from
-    // the trait and produce a "where-clause mismatch" compile error
-    // when the impl fills in for the trait.
+    // Each method takes `&'ctx mut DjogiContext`. The `related` body threads
+    // the same `&mut ctx` through two sequential calls (one to
+    // `Through::objects().fetch_all(ctx)`, then a loop of `Target::get(ctx,
+    // ...)`); `ctx` re-borrow is automatic because each inner call takes
+    // `&mut DjogiContext`. Under the hood every call pattern-matches on the
+    // context's inner variant at the sqlx boundary (see `djogi::context`).
     let trait_impl = quote! {
         #[automatically_derived]
         impl ::djogi::relation::ManyToMany<#target_type> for #source_type {
@@ -449,21 +446,13 @@ pub fn expand(input: TokenStream) -> TokenStream {
             #[inline]
             fn that_fk() -> &'static str { #that_fk_str }
 
-            async fn related<'a, E>(
-                &'a self,
-                executor: E,
+            async fn related<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> ::std::result::Result<
                 ::std::vec::Vec<#target_type>,
                 ::djogi::DjogiError,
-            >
-            where
-                E: ::djogi::__private::sqlx::Executor<
-                        'a,
-                        Database = ::djogi::__private::sqlx::Postgres,
-                    >
-                    + ::std::marker::Copy
-                    + 'a,
-            {
+            > {
                 // Capture the PK by value so the closure passed to
                 // `.filter(...)` owns the FK it compares against — the
                 // same pattern as `reverse_one_to_many!`'s expansion,
@@ -478,7 +467,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
                                 ),
                             )
                         })
-                        .fetch_all(executor)
+                        .fetch_all(&mut *ctx)
                         .await?;
 
                 // Project through-rows down to `Target` rows via PK
@@ -492,7 +481,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 for row in &through_rows {
                     out.push(
                         <#target_type as ::djogi::model::Model>::get(
-                            executor,
+                            &mut *ctx,
                             row.#that_fk.key().clone(),
                         )
                         .await?,
@@ -501,19 +490,12 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 ::std::result::Result::Ok(out)
             }
 
-            async fn add_related<'a, E>(
-                &'a self,
-                executor: E,
-                target: &'a #target_type,
+            async fn add_related<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
+                target: &'ctx #target_type,
                 extras: Self::Through,
-            ) -> ::std::result::Result<Self::Through, ::djogi::DjogiError>
-            where
-                E: ::djogi::__private::sqlx::Executor<
-                        'a,
-                        Database = ::djogi::__private::sqlx::Postgres,
-                    >
-                    + 'a,
-            {
+            ) -> ::std::result::Result<Self::Through, ::djogi::DjogiError> {
                 // Overwrite the two FK columns on `extras` so the
                 // junction row definitely points at this `self`/`target`
                 // pair; the rest of `extras` (role, joined_at, price,
@@ -529,21 +511,14 @@ pub fn expand(input: TokenStream) -> TokenStream {
                     ),
                     ..extras
                 };
-                <#through_type as ::djogi::model::Model>::create(executor, junction).await
+                <#through_type as ::djogi::model::Model>::create(ctx, junction).await
             }
 
-            async fn remove_related<'a, E>(
-                &'a self,
-                executor: E,
-                target: &'a #target_type,
-            ) -> ::std::result::Result<u64, ::djogi::DjogiError>
-            where
-                E: ::djogi::__private::sqlx::Executor<
-                        'a,
-                        Database = ::djogi::__private::sqlx::Postgres,
-                    >
-                    + 'a,
-            {
+            async fn remove_related<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
+                target: &'ctx #target_type,
+            ) -> ::std::result::Result<u64, ::djogi::DjogiError> {
                 let this_pk = <Self as ::djogi::model::Model>::pk_value(self).clone();
                 let that_pk = <#target_type as ::djogi::model::Model>::pk_value(target).clone();
                 <#through_type as ::djogi::model::Model>::objects()
@@ -561,19 +536,19 @@ pub fn expand(input: TokenStream) -> TokenStream {
                             ),
                         )
                     })
-                    .delete(executor)
+                    .delete(ctx)
                     .await
             }
         }
     };
 
     // Named-accessor inherent method. Delegates straight to the trait
-    // method — the ergonomic `person.groups(&pool).await` shape the
+    // method — the ergonomic `person.groups(&mut ctx).await` shape the
     // user sees at the call site, but the query logic stays in the
     // trait body where the hand-impl fixture and the macro can share
     // the single source of truth.
     //
-    // The return-type annotation is `impl Future + Send + 'a` — mirrors
+    // The return-type annotation is `impl Future + Send + 'ctx` — mirrors
     // `reverse_one_to_many!`'s shape. The `+ Send` is load-bearing
     // here: opaque async return types do not inherit Send-ness from
     // their inner async block, so callers that need to await the
@@ -585,24 +560,17 @@ pub fn expand(input: TokenStream) -> TokenStream {
         impl #source_type {
             #[doc = #accessor_doc]
             #[inline]
-            pub fn #relation_ident<'a, E>(
-                &'a self,
-                executor: E,
+            pub fn #relation_ident<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<
                     ::std::vec::Vec<#target_type>,
                     ::djogi::DjogiError,
                 >,
-            > + ::std::marker::Send + 'a
-            where
-                E: ::djogi::__private::sqlx::Executor<
-                        'a,
-                        Database = ::djogi::__private::sqlx::Postgres,
-                    >
-                    + ::std::marker::Copy
-                    + 'a,
+            > + ::std::marker::Send + 'ctx
             {
-                <Self as ::djogi::relation::ManyToMany<#target_type>>::related(self, executor)
+                <Self as ::djogi::relation::ManyToMany<#target_type>>::related(self, ctx)
             }
         }
     };

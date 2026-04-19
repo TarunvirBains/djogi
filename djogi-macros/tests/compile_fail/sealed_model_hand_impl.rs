@@ -7,6 +7,7 @@
 // de42874: a hand-rolled `impl Model` with a malicious `table_name()`
 // or `descriptor().fields[].name` would flow straight into the SQL
 // emitters otherwise.
+use djogi::DjogiContext;
 use djogi::DjogiError;
 use djogi::ModelDescriptor;
 use djogi::model::Model;
@@ -32,34 +33,34 @@ fn main() {
         fn descriptor() -> &'static ModelDescriptor {
             unreachable!()
         }
-        fn get<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn get(
+            _ctx: &mut DjogiContext,
             _id: Self::Pk,
         ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn create<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn create(
+            _ctx: &mut DjogiContext,
             _v: Self,
         ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn save<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+        fn save<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut DjogiContext,
+        ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
             async { unreachable!() }
         }
-        fn delete<'a>(
+        fn delete(
             self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            _ctx: &mut DjogiContext,
         ) -> impl Future<Output = Result<(), DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn refresh_from_db<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut DjogiContext,
+        ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
             async { unreachable!() }
         }
     }

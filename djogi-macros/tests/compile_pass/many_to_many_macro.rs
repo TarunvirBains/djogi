@@ -30,7 +30,6 @@
 // No live Postgres — the bodies below never call `.await`, only
 // typecheck.
 
-use djogi::__private::sqlx::PgPool;
 use djogi::prelude::*;
 use djogi::relation::{ForeignKey, ManyToMany};
 
@@ -83,20 +82,20 @@ djogi::many_to_many!(
 
 fn _named_accessor_returns_vec_target<'a>(
     person: &'a Person,
-    pool: &'a PgPool,
+    ctx: &'a mut DjogiContext,
 ) -> impl std::future::Future<Output = Result<Vec<Group>, DjogiError>> + Send + 'a {
-    // The macro emits `pub fn groups<'a, E>(...) -> impl Future<...>`;
+    // The macro emits `pub fn groups<'ctx>(...) -> impl Future<...>`;
     // coercing it to this named future type pins the return shape.
-    person.groups(pool)
+    person.groups(ctx)
 }
 
 fn _reverse_direction_named_accessor<'a>(
     group: &'a Group,
-    pool: &'a PgPool,
+    ctx: &'a mut DjogiContext,
 ) -> impl std::future::Future<Output = Result<Vec<Person>, DjogiError>> + Send + 'a {
     // Symmetric probe for the reverse direction — both invocations
     // emitted independent accessors.
-    group.members(pool)
+    group.members(ctx)
 }
 
 fn _trait_const_and_fks_are_pinned() {

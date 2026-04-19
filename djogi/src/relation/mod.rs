@@ -130,34 +130,34 @@ pub mod __macro_support {
                     fn descriptor() -> &'static ModelDescriptor {
                         unreachable!()
                     }
-                    fn get<'a>(
-                        _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+                    fn get(
+                        _ctx: &mut crate::context::DjogiContext,
                         _id: Self::Pk,
                     ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
                         async { unreachable!() }
                     }
-                    fn create<'a>(
-                        _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+                    fn create(
+                        _ctx: &mut crate::context::DjogiContext,
                         _v: Self,
                     ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
                         async { unreachable!() }
                     }
-                    fn save<'a>(
-                        &self,
-                        _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-                    ) -> impl Future<Output = Result<(), DjogiError>> + Send {
+                    fn save<'ctx>(
+                        &'ctx self,
+                        _ctx: &'ctx mut crate::context::DjogiContext,
+                    ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
                         async { unreachable!() }
                     }
-                    fn delete<'a>(
+                    fn delete(
                         self,
-                        _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+                        _ctx: &mut crate::context::DjogiContext,
                     ) -> impl Future<Output = Result<(), DjogiError>> + Send {
                         async { unreachable!() }
                     }
-                    fn refresh_from_db<'a>(
-                        &self,
-                        _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-                    ) -> impl Future<Output = Result<Self, DjogiError>> + Send {
+                    fn refresh_from_db<'ctx>(
+                        &'ctx self,
+                        _ctx: &'ctx mut crate::context::DjogiContext,
+                    ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx {
                         async { unreachable!() }
                     }
                 }

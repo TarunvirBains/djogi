@@ -58,9 +58,8 @@ pub fn derive_model(_input: TokenStream) -> TokenStream {
 /// // expands to (roughly):
 /// //
 /// // impl Owner {
-/// //     pub fn cars<'a, E>(&'a self, executor: E)
-/// //         -> impl Future<Output = Result<Vec<Vehicle>, DjogiError>> + Send + 'a
-/// //     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + 'a,
+/// //     pub fn cars<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
+/// //         -> impl Future<Output = Result<Vec<Vehicle>, DjogiError>> + Send + 'ctx
 /// //     { ... filters Vehicle by owner_id ... }
 /// // }
 /// ```
@@ -90,9 +89,8 @@ pub fn reverse_one_to_many(input: TokenStream) -> TokenStream {
 /// // expands to (roughly):
 /// //
 /// // impl User {
-/// //     pub fn profile<'a, E>(&'a self, executor: E)
-/// //         -> impl Future<Output = Result<Option<Profile>, DjogiError>> + Send + 'a
-/// //     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + 'a,
+/// //     pub fn profile<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
+/// //         -> impl Future<Output = Result<Option<Profile>, DjogiError>> + Send + 'ctx
 /// //     { ... returns .first() match on Profile.user_id ... }
 /// // }
 /// ```
@@ -142,10 +140,9 @@ pub fn reverse_one_to_one(input: TokenStream) -> TokenStream {
 /// // }
 /// //
 /// // impl Person {
-/// //     pub fn groups<'a, E>(&'a self, executor: E)
-/// //         -> impl Future<Output = Result<Vec<Group>, DjogiError>> + Send + 'a
-/// //     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Copy + 'a,
-/// //     { <Self as ManyToMany<Group>>::related(self, executor) }
+/// //     pub fn groups<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
+/// //         -> impl Future<Output = Result<Vec<Group>, DjogiError>> + Send + 'ctx
+/// //     { <Self as ManyToMany<Group>>::related(self, ctx) }
 /// // }
 /// //
 /// // inventory::submit! { ReverseRelationMarker { kind: M2M, ... } }

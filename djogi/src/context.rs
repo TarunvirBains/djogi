@@ -13,6 +13,25 @@
 //!   operations join the same logical transaction until `commit()` or `rollback()`
 //!   is called.
 //!
+//! # Execution dispatch pattern
+//!
+//! CRUD methods and QuerySet terminals that today take `&mut DjogiContext` dispatch
+//! to sqlx via an inline match on [`ContextInner`]. At the sqlx boundary inside every
+//! method, the chain looks like:
+//!
+//! ```ignore
+//! let q = sqlx::query_as::<_, Self>(sql).bind(col_a).bind(col_b);
+//! let row = match ctx.inner_mut() {
+//!     ContextInner::Pool(pool) => q.fetch_one(&*pool).await?,
+//!     ContextInner::Transaction(tx) => q.fetch_one(&mut **tx).await?,
+//! };
+//! ```
+//!
+//! Two variants = two match arms = negligible overhead. The alternative — implementing
+//! `sqlx::Executor` for `&mut DjogiContext` — would require navigating sqlx's GAT-shaped
+//! `Executor<'a>` lifetime and isn't how sqlx expects downstream code to plug in. The
+//! inline match is explicit, compiles easily, and keeps the abstraction boundary thin.
+//!
 //! # Savepoint depth and nesting
 //!
 //! When `atomic()` (Phase 4 Task 1) opens a transaction inside another transaction,
@@ -59,8 +78,16 @@ pub struct DjogiContext {
 }
 
 /// Internal enum selecting the active context variant.
-#[allow(dead_code)]
-enum ContextInner {
+///
+/// `#[doc(hidden)] pub` because `#[derive(Model)]`-generated CRUD bodies
+/// pattern-match on this enum to dispatch to sqlx, and the generated code
+/// compiles in user crates that only depend on `djogi`. Framework modules
+/// reach it via the crate-private [`DjogiContext::inner_mut`] accessor; user
+/// code should go through [`DjogiContext::pool`] / [`DjogiContext::tx`]
+/// instead — the `__` prefix and `#[doc(hidden)]` attribute are the social
+/// signal that this type carries no stability guarantee.
+#[doc(hidden)]
+pub enum ContextInner {
     /// Pool-backed: auto-connects per operation.
     Pool(sqlx::PgPool),
 
@@ -72,16 +99,26 @@ enum ContextInner {
     /// (e.g., borrowed from outer scope), a redesign to `&mut Transaction<'_>`
     /// or a PIN-based approach may be needed. Document any such requirements
     /// as they arrive.
-    #[allow(dead_code)]
     Transaction(sqlx::Transaction<'static, sqlx::Postgres>),
 }
+
+/// Public-but-hidden alias of [`ContextInner`] for macro-generated code.
+///
+/// `#[derive(Model)]` emits CRUD bodies that pattern-match on the context's
+/// inner variant to dispatch to sqlx. Those bodies compile in the user's
+/// crate, which only has `djogi` as a dependency — so the enum has to be
+/// nameable via an absolute path `::djogi::context::__ContextInnerForMacros`.
+/// Hidden from docs and prefixed with `__` so the social signal is clear:
+/// this is framework-internal API, not part of the stable surface.
+#[doc(hidden)]
+pub type __ContextInnerForMacros = ContextInner;
 
 impl DjogiContext {
     /// Create a context backed by a `PgPool`.
     ///
     /// # Example
     /// ```ignore
-    /// let ctx = DjogiContext::from_pool(pool);
+    /// let mut ctx = DjogiContext::from_pool(pool);
     /// let user = User::create(&mut ctx, user).await?;
     /// ```
     pub fn from_pool(pool: sqlx::PgPool) -> Self {
@@ -94,12 +131,14 @@ impl DjogiContext {
 
     /// Create a context backed by an active transaction.
     ///
-    /// **Internal use only.** This is called by `atomic()` when entering a transaction.
-    /// Downstream code should not manually construct contexts from transactions.
-    #[allow(dead_code)]
-    pub(crate) fn from_transaction(_tx: sqlx::Transaction<'static, sqlx::Postgres>) -> Self {
+    /// Typically called by `atomic()` (Phase 4 Task 1) or by test / integration
+    /// code that manages its own transaction boundaries. Production code
+    /// should prefer [`atomic()`](Self::atomic) (once it lands) so on-commit
+    /// callbacks dispatch correctly; this constructor is the low-level escape
+    /// hatch for callers who really do need to hand-manage a transaction.
+    pub fn from_transaction(tx: sqlx::Transaction<'static, sqlx::Postgres>) -> Self {
         DjogiContext {
-            inner: ContextInner::Transaction(_tx),
+            inner: ContextInner::Transaction(tx),
             savepoint_depth: 0,
             on_commit: Vec::new(),
         }
@@ -131,7 +170,9 @@ impl DjogiContext {
     /// Returns `Some(&pool)` iff the context was created via `from_pool()`.
     /// Returns `None` if this is a transaction context.
     ///
-    /// Use this for raw sqlx escape hatches that do not require mutation.
+    /// Use this for raw sqlx escape hatches that do not require mutation, or
+    /// for multi-query fan-out terminals that must hold a pool reference across
+    /// multiple sequential queries (e.g. `fetch_all_prefetched`).
     pub fn pool(&self) -> Option<&sqlx::PgPool> {
         match &self.inner {
             ContextInner::Pool(pool) => Some(pool),
@@ -153,28 +194,89 @@ impl DjogiContext {
         }
     }
 
-    /// Get a shared executor handle for use with raw sqlx operations.
+    /// Crate-private mutable accessor for the context's inner variant.
     ///
-    /// **TODO(phase4-retrofit):** This method signature is a placeholder.
-    /// Downstream agents will determine the correct return type based on
-    /// which sqlx trait methods need to be available. Options:
-    /// - Return an enum wrapping `PgPool` and `&mut Transaction`
-    /// - Implement a custom trait object matching the executor interface
-    /// - Use a lifetime-less wrapper type that erases the variant
+    /// Used by every CRUD / QuerySet terminal in the framework to pattern-match
+    /// on pool-vs-transaction at the sqlx boundary. Kept `pub(crate)` because
+    /// [`ContextInner`] itself is crate-private — downstream code routes through
+    /// the public [`pool`](Self::pool) / [`tx`](Self::tx) accessors instead.
+    pub(crate) fn inner_mut(&mut self) -> &mut ContextInner {
+        &mut self.inner
+    }
+
+    /// Public-but-hidden mutable accessor used by `#[derive(Model)]`-generated
+    /// CRUD bodies to pattern-match on the context's inner variant.
     ///
-    /// For now, this panics with a helpful message.
-    pub fn executor(&mut self) -> impl std::fmt::Debug {
-        match &mut self.inner {
+    /// Not part of the stable API — prefixed with `__` and `#[doc(hidden)]`
+    /// so the social signal is clear: downstream code should not call this
+    /// directly. Use [`pool`](Self::pool) / [`tx`](Self::tx) instead, or stay
+    /// inside `Model::*` / `QuerySet::*` calls which dispatch automatically.
+    #[doc(hidden)]
+    pub fn __inner_mut_for_macros(&mut self) -> &mut __ContextInnerForMacros {
+        &mut self.inner
+    }
+
+    /// Commit the underlying transaction, consuming the context.
+    ///
+    /// Returns `Ok(())` if the context was transaction-backed and the commit
+    /// succeeded. Returns `Err(DjogiError::Sqlx(..))` if the commit failed or
+    /// the context was pool-backed (pool contexts have no transaction to
+    /// commit — calling `.commit()` on one is a caller error). On-commit
+    /// callbacks are consumed but not yet executed — Phase 4 Task 1's
+    /// `atomic()` wrapper owns the callback dispatch.
+    ///
+    /// Prefer [`atomic()`](Self::atomic) (Phase 4 Task 1) for transaction
+    /// management; `commit()` is the low-level escape hatch for tests and
+    /// integration code that manage transaction boundaries by hand.
+    pub async fn commit(self) -> Result<(), DjogiError> {
+        match self.inner {
+            ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
+                "DjogiContext::commit called on a pool-backed context".into(),
+            ))),
+            ContextInner::Transaction(tx) => {
+                tx.commit().await.map_err(DjogiError::from)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Roll back the underlying transaction, consuming the context.
+    ///
+    /// Returns `Ok(())` if the context was transaction-backed and the
+    /// rollback succeeded. Returns `Err(DjogiError::Sqlx(..))` if the rollback
+    /// failed or the context was pool-backed.
+    pub async fn rollback(self) -> Result<(), DjogiError> {
+        match self.inner {
+            ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
+                "DjogiContext::rollback called on a pool-backed context".into(),
+            ))),
+            ContextInner::Transaction(tx) => {
+                tx.rollback().await.map_err(DjogiError::from)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Begin a transaction and wrap it in a new `DjogiContext`.
+    ///
+    /// Only valid on pool-backed contexts — returns an error if called on an
+    /// already-transaction-backed context (nested transactions will be
+    /// modelled via savepoints in Phase 4 Task 1's `atomic()` wrapper).
+    ///
+    /// This is a low-level helper used by tests and by the forthcoming
+    /// `atomic()` implementation; production code should reach for
+    /// `atomic()` once it lands so on-commit callbacks dispatch correctly.
+    pub async fn begin(&self) -> Result<DjogiContext, DjogiError> {
+        match &self.inner {
             ContextInner::Pool(pool) => {
-                // Return a marker/wrapper; downstream retrofit will wire this correctly.
-                ContextExecutor::Pool(pool.clone())
+                let tx = pool.begin().await.map_err(DjogiError::from)?;
+                Ok(DjogiContext::from_transaction(tx))
             }
-            ContextInner::Transaction(_tx) => {
-                // For transactions, we need a mutable borrow. This is tricky because
-                // we can't return `&mut Transaction` without lifetime issues.
-                // Placeholder: return a marker; retrofit agent will redesign.
-                ContextExecutor::Tx
-            }
+            ContextInner::Transaction(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
+                "DjogiContext::begin called on a transaction-backed context; \
+                 nested transactions require atomic() (Phase 4 Task 1)"
+                    .into(),
+            ))),
         }
     }
 
@@ -211,18 +313,6 @@ impl DjogiContext {
     pub(crate) fn take_on_commit_callbacks(self) -> Vec<OnCommitCallback> {
         self.on_commit
     }
-}
-
-/// Temporary marker type for the `executor()` method.
-///
-/// **TODO(phase4-retrofit):** This will be replaced once the downstream retrofit
-/// agent decides the correct executor return type. For now, it's a placeholder
-/// that gives compilation a chance to succeed and documents the intention.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-enum ContextExecutor {
-    Pool(sqlx::PgPool),
-    Tx,
 }
 
 #[cfg(test)]
