@@ -91,7 +91,8 @@ This generates:
 // Returns the existing record if external_ref already exists, or creates a new one.
 // Equivalent to: INSERT ... ON CONFLICT (external_ref) DO NOTHING RETURNING *
 // followed by SELECT ... WHERE external_ref = $1 if nothing was inserted.
-Payment::create_or_find(&pool, Payment {
+let mut ctx = DjogiContext::from_pool(pool.clone());
+Payment::create_or_find(&mut ctx, Payment {
     external_ref: "pay_ABC123".into(),
     amount_cents: 9900,
     currency: "USD".into(),
@@ -123,15 +124,16 @@ With `events` enabled, the model gains:
 
 ```rust
 // Create the record and publish an event in the same transaction
-let mut tx = pool.begin().await?;
-let order = Order::create_in_tx(&mut tx, Order {
+let mut ctx = DjogiContext::from_pool(pool.clone());
+let mut tx_ctx = ctx.begin().await?;
+let order = Order::create(&mut tx_ctx, Order {
     customer_id: customer_id,
     total_cents: 4999,
     status: "pending".into(),
     ..Default::default()
 }).await?;
-order.publish_event(&mut tx, "order.created", &order).await?;
-tx.commit().await?;
+order.publish_event(&mut tx_ctx, "order.created", &order).await?;
+tx_ctx.commit().await?;
 // Both the INSERT and the outbox row commit together — or neither does.
 ```
 
@@ -214,11 +216,12 @@ pub struct UserProfile {
 ```
 
 ```rust
-let mut profile = UserProfile::get(&pool, id).await?;
+let mut ctx = DjogiContext::from_pool(pool.clone());
+let mut profile = UserProfile::get(&mut ctx, id).await?;
 profile.bio = Some("Updated bio".into());
 // Emits: UPDATE user_profiles SET bio = $1, updated_at = $2 WHERE id = $3
 // display_name and avatar_url are NOT included in the UPDATE.
-profile.save(&pool).await?;
+profile.save(&mut ctx).await?;
 ```
 
 Without dirty tracking, `save()` always issues a full-row UPDATE for all fields.
@@ -244,10 +247,11 @@ pub struct Post {
 
 ```rust
 // body is not populated here
-let posts = Post::objects().fetch_all(&pool).await?;
+let mut ctx = DjogiContext::from_pool(pool.clone());
+let posts = Post::objects().fetch_all(&mut ctx).await?;
 
 // Load body for a specific post — one extra query
-let body = posts[0].body.load(&pool).await?;
+let body = posts[0].body.load(&mut ctx).await?;
 ```
 
 Use `#[field(lazy)]` for large text or binary columns that are expensive to transfer and not needed in list views.
@@ -317,14 +321,16 @@ pub struct Comment {
     pub body: String,
 }
 
+let mut ctx = DjogiContext::from_pool(pool.clone());
+
 // Single fetch — one additional query
-let post = comment.post_id.fetch(&pool).await?;
+let post = comment.post_id.fetch(&mut ctx).await?;
 
 // Prefetch on QuerySet — one IN(...) query per relation, not N+1
 let comments = Comment::objects()
     .prefetch(CommentRelated::post())
     .prefetch(CommentRelated::author())
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 // After prefetch, resolved() is free — no additional query
 let post = comments[0].post_id.resolved();  // -> Option<&Post>
@@ -419,19 +425,21 @@ impl ManyToMany<Person> for Group {
 Generated convenience methods (Phase 3):
 
 ```rust
+let mut ctx = DjogiContext::from_pool(pool.clone());
+
 // Person side
-let groups = person.groups(&pool).await?;
-person.add_to_group(&pool, &group, PersonGroup {
+let groups = person.groups(&mut ctx).await?;
+person.add_to_group(&mut ctx, &group, PersonGroup {
     role: "admin".into(),
     ..Default::default()
 }).await?;
-person.remove_from_group(&pool, &group).await?;
+person.remove_from_group(&mut ctx, &group).await?;
 
 // Group side
-let members = group.members(&pool).await?;
+let members = group.members(&mut ctx).await?;
 
 // Through model is a full Model — directly queryable
 let admins = PersonGroup::objects()
     .filter(|f| f.role.eq("admin"))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```

@@ -252,45 +252,48 @@ pub trait Model: Sized + Send + Sync + 'static {
     fn pk_value(&self) -> &Self::Pk;
     fn descriptor() -> &'static ModelDescriptor;
 
-    fn get<'a>(
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+    fn get(
+        ctx: &mut DjogiContext,
         id: Self::Pk,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
-    fn create<'a>(
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+    fn create(
+        ctx: &mut DjogiContext,
         value: Self,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
-    fn save<'a>(
-        &self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    ) -> impl Future<Output = Result<(), DjogiError>> + Send;
+    fn save<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx;
 
-    fn delete<'a>(
+    fn delete(
         self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        ctx: &mut DjogiContext,
     ) -> impl Future<Output = Result<(), DjogiError>> + Send;
 
-    fn refresh_from_db<'a>(
-        &self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
+    fn refresh_from_db<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
 }
 ```
 
 `Pk` is the type of the primary key: `HeerId` for `pk = "heerid"`, `RanjId` for `pk = "ranjid"`, `i32` for `pk = "serial"`. No `Model` impl for `pk = "none"`.
 
-All CRUD methods are executor-generic. The same call site works against a pool or a transaction:
+All CRUD methods take `&mut DjogiContext`. The same call site works against a pool or a transaction — the context pattern-matches on pool-vs-transaction at the sqlx boundary internally:
 
 ```rust
 // Against a pool:
-let article = Article::create(&pool, Article { ... }).await?;
+let mut ctx = DjogiContext::from_pool(pool.clone());
+let article = Article::create(&mut ctx, Article { ... }).await?;
 
-// Inside a transaction (deref-reborrow yields &mut PgConnection):
-let mut tx = pool.begin().await?;
-let article = Article::create(&mut *tx, Article { ... }).await?;
-tx.commit().await?;
+// Inside a transaction (Phase 4 Task 1's atomic() wrapper takes over;
+// the low-level form lives on DjogiContext directly):
+let tx = pool.begin().await?;
+let mut tx_ctx = DjogiContext::from_transaction(tx);
+let article = Article::create(&mut tx_ctx, Article { ... }).await?;
+tx_ctx.commit().await?;
 ```
 
 ### Inherent: `create_with_id`
@@ -299,8 +302,8 @@ HeerId models also get:
 
 ```rust
 impl Article {
-    pub async fn create_with_id<'a>(
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+    pub async fn create_with_id(
+        ctx: &mut DjogiContext,
         id: HeerId,
         value: Self,
     ) -> Result<Self, DjogiError>;
@@ -324,7 +327,7 @@ without touching the database.
 Users set framework fields (`id`, `created_at`, `updated_at`) to any value; `create()` ignores them and the database populates the real values via column defaults + `RETURNING *`:
 
 ```rust
-let article = Article::create(&pool, Article {
+let article = Article::create(&mut ctx, Article {
     id: HeerId::from_i64(0).unwrap(), // ignored — DB generates
     created_at: DateTime::UNIX_EPOCH, // ignored — DB generates
     updated_at: DateTime::UNIX_EPOCH, // ignored — DB generates
@@ -338,7 +341,7 @@ let article = Article::create(&pool, Article {
 For models whose user fields all implement `Default`, struct-update shorthand works:
 
 ```rust
-let article = Article::create(&pool, Article {
+let article = Article::create(&mut ctx, Article {
     title: "Hello".into(),
     slug: "hello".into(),
     body: "World".into(),

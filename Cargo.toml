@@ -42,6 +42,11 @@ figment = { version = "0.10", features = ["toml", "env"] }
 # Error handling
 thiserror = "2"
 
+# Logging — used for the `DjogiContext::on_commit` callback error path per
+# Phase 4 v3 Q9 (log, do not unwind). Only the macros are consumed here;
+# subscriber wiring is the adopter's choice.
+tracing = "0.1"
+
 # Testing
 trybuild = { version = "1", features = ["diff"] }
 

@@ -1,6 +1,7 @@
 // Verifies that a hand-written `impl ManyToMany<Target> for Source` with a
 // typed `related()` / `add_related()` / `remove_related()` body compiles
-// end-to-end against the Task-6 trait shape.
+// end-to-end against the Phase 4-retrofitted trait shape (`&mut DjogiContext`
+// in place of `E: sqlx::Executor`).
 //
 // Pinned invariants (all compile-time):
 //
@@ -21,15 +22,13 @@
 //     body `f.person_id().eq(ForeignKey::new(self.id.clone()))`
 //     compiles because the FK wrapper projects through its inner
 //     `T::Pk`'s `IntoFilterValue` impl.
-//   - The Phase 3 Task 7 `many_to_many!` macro is going to stamp out
-//     this exact shape on behalf of the user; this fixture locks in
-//     the hand-written form that macro output must match.
+//   - The Phase 3 Task 7 `many_to_many!` macro stamps out this exact
+//     shape on behalf of the user; this fixture locks in the hand-
+//     written form that macro output must match.
 //
-// No live Postgres access here — `sqlx::Executor` bounds are
-// satisfied at the call sites purely through the trait signatures,
-// and the `related()` body uses `Self::Through::objects()` to build
-// a queryset whose terminal `.fetch_all(executor)` returns the
-// expected `Result<Vec<_>, DjogiError>` future.
+// No live Postgres access here — the `&mut DjogiContext` receiver is
+// never actually invoked at runtime; the `main` body only exercises
+// compile-time trait probes.
 
 use djogi::prelude::*;
 use djogi::relation::{ForeignKey, ManyToMany};
@@ -71,47 +70,44 @@ impl ManyToMany<Group> for Person {
         "group_id"
     }
 
-    async fn related<'a, E>(&'a self, executor: E) -> Result<Vec<Group>, DjogiError>
-    where
-        E: djogi::__private::sqlx::Executor<'a, Database = djogi::__private::sqlx::Postgres>
-            + Copy
-            + 'a,
-    {
+    async fn related<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> Result<Vec<Group>, DjogiError> {
         // Step 1: fetch junction rows pointing at `self`. The typed
         // closure filter compares the `person_id` column (a
         // `FieldRef<PersonGroup, ForeignKey<Person>>`) to a freshly-built
         // `ForeignKey<Person>` constructed from `self.pk_value()`; the
         // `IntoFilterValue` blanket on `ForeignKey<T>` projects that
         // through `T::Pk` to the matching `FilterValue` variant.
+        //
+        // Reborrow `ctx` (`&mut *ctx`) into the terminal so the outer
+        // `ctx` binding remains usable for Step 2.
         let through_rows: Vec<PersonGroup> = PersonGroup::objects()
             .filter(|f| f.person_id().eq(ForeignKey::new(self.id.clone())))
-            .fetch_all(executor)
+            .fetch_all(&mut *ctx)
             .await?;
 
         // Step 2: project the junction rows down to target PKs. Phase 3
-        // Task 7's macro will emit an `IN (…)` query against `Target`;
+        // Task 7's macro emits an `IN (…)` query against `Target`;
         // pending a typed `.r#in(...)` lookup we fetch each target by
         // PK through `Group::get`. Two queries → N+1 is acceptable for
         // the hand-written reference impl; the macro form is free to
         // fold this into a single `WHERE id IN (...)` SELECT.
         let mut out: Vec<Group> = Vec::with_capacity(through_rows.len());
         for row in &through_rows {
-            let group = Group::get(executor, row.group_id.key()).await?;
+            let group = Group::get(&mut *ctx, row.group_id.key()).await?;
             out.push(group);
         }
         Ok(out)
     }
 
-    async fn add_related<'a, E>(
-        &'a self,
-        executor: E,
-        target: &'a Group,
+    async fn add_related<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+        target: &'ctx Group,
         extras: PersonGroup,
-    ) -> Result<PersonGroup, DjogiError>
-    where
-        E: djogi::__private::sqlx::Executor<'a, Database = djogi::__private::sqlx::Postgres>
-            + 'a,
-    {
+    ) -> Result<PersonGroup, DjogiError> {
         // Overwrite the junction's FK columns with freshly-built
         // references to self / target; the caller-supplied `extras`
         // keeps its `role` (and any other non-FK junction columns).
@@ -120,25 +116,21 @@ impl ManyToMany<Group> for Person {
             group_id: ForeignKey::new(target.id.clone()),
             ..extras
         };
-        PersonGroup::create(executor, junction).await
+        PersonGroup::create(ctx, junction).await
     }
 
-    async fn remove_related<'a, E>(
-        &'a self,
-        executor: E,
-        target: &'a Group,
-    ) -> Result<u64, DjogiError>
-    where
-        E: djogi::__private::sqlx::Executor<'a, Database = djogi::__private::sqlx::Postgres>
-            + 'a,
-    {
+    async fn remove_related<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+        target: &'ctx Group,
+    ) -> Result<u64, DjogiError> {
         // The canonical delete body — composing two typed filters (by
         // `person_id` and `group_id`) on the through queryset's AND
-        // tree and deferring to its bulk `.delete(executor)` terminal.
+        // tree and deferring to its bulk `.delete(ctx)` terminal.
         PersonGroup::objects()
             .filter(|f| f.person_id().eq(ForeignKey::new(self.id.clone())))
             .filter(|f| f.group_id().eq(ForeignKey::new(target.id.clone())))
-            .delete(executor)
+            .delete(ctx)
             .await
     }
 }

@@ -1,8 +1,9 @@
 // Verifies that `djogi::reverse_one_to_many!` expands cleanly and emits
 // an accessor method with the expected signature. Acceptance checks:
 //
-//   - `Owner::cars(&pool)` compiles as a future whose Ok output is
-//     `Vec<Vehicle>` (no type-erased escape hatch in the public surface);
+//   - `Owner::cars(&mut ctx)` compiles as a future whose Ok output is
+//     `Vec<Vehicle>` (no type-erased escape hatch in the public surface),
+//     where `ctx: &mut DjogiContext` matches the Phase 4 retrofit;
 //   - the macro accepts a parsed `Receiver, method -> Returned by via_column`
 //     form;
 //   - the emitted method coexists with `{Model}Fields` / `{Model}Filter` /
@@ -19,9 +20,6 @@
 // exercises the signature at compile time without running it.
 
 use djogi::prelude::*;
-// `sqlx::PgPool` is reached through djogi's `__private::sqlx` re-export
-// so compile-pass fixtures don't need `sqlx` as a direct dev-dep.
-use djogi::__private::sqlx::PgPool;
 
 #[model(table = "owners_rrr")]
 #[derive(Debug, Clone)]
@@ -49,16 +47,16 @@ djogi::reverse_one_to_many!(Owner, all_vehicles -> Vehicle by owner_id);
 
 fn _accessor_returns_vec_vehicle<'a>(
     owner: &'a Owner,
-    pool: &'a PgPool,
+    ctx: &'a mut DjogiContext,
 ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>> + Send + 'a {
-    owner.cars(pool)
+    owner.cars(ctx)
 }
 
 fn _second_accessor_compiles<'a>(
     owner: &'a Owner,
-    pool: &'a PgPool,
+    ctx: &'a mut DjogiContext,
 ) -> impl std::future::Future<Output = Result<Vec<Vehicle>, DjogiError>> + Send + 'a {
-    owner.all_vehicles(pool)
+    owner.all_vehicles(ctx)
 }
 
 fn main() {

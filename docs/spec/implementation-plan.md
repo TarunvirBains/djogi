@@ -103,6 +103,8 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 **Phase 1.5 amendment (2026-04-16):** Phase 1 canonicalizes `sqlx::Executor<Database = Postgres>` as the connection abstraction for all CRUD operations. Later phases may introduce a thin Djogi-owned adapter (e.g. `DjogiContext`, planned in Phase 4) if transaction-context policies or pool safety guards require more structure — but such an adapter must extend, not replace, the Phase 1 `Executor` contract. No `DjogiConnection` type exists in Phase 1.
 
+**Phase 4 amendment (2026-04-19):** Per Phase 4 v3's Q1 resolution, the Phase 1 `sqlx::Executor` contract was **replaced** (not extended) by `&mut DjogiContext`. `DjogiContext` carries either a pool or an active transaction and pattern-matches on the inner variant at each sqlx boundary. Every Phase 1/2/3 CRUD / QuerySet / relation signature retrofitted accordingly; the retrofit is a single concentrated commit on `phase4-retrofit`. See `docs/superpowers/plans/2026-04-18-phase4-transactions-expressions-v3.md` for the full rationale.
+
 ### Phase 1 Parallel Tracks
 
 - [ ] **Track A: metadata path** — `ModelDescriptor`, field definitions, `inventory` registration, compile-time tests

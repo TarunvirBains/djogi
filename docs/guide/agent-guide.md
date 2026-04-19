@@ -70,16 +70,19 @@ For the full attribute list, see [the models guide](./models.md).
 
 | Method | Signature | Notes |
 |---|---|---|
-| `Post::create(exec, value)` | `async -> Result<Post>` | INSERT + RETURNING; framework fields populated |
-| `Post::get(exec, id)` | `async -> Result<Post>` | Fetch by PK; returns `Err(DjogiError::NotFound)` if missing |
-| `post.save(exec)` | `async -> Result<()>` | Full-row UPDATE; `updated_at` refreshed |
-| `post.delete(exec)` | `async -> Result<()>` | DELETE; consumes the instance |
-| `post.refresh_from_db(exec)` | `async -> Result<Post>` | Returns fresh copy from DB |
-| `Post::create_with_id(exec, id, value)` | `async -> Result<Post>` | INSERT ... ON CONFLICT DO NOTHING; for pre-generated IDs |
+| `Post::create(&mut ctx, value)` | `async -> Result<Post>` | INSERT + RETURNING; framework fields populated |
+| `Post::get(&mut ctx, id)` | `async -> Result<Post>` | Fetch by PK; returns `Err(DjogiError::NotFound)` if missing |
+| `post.save(&mut ctx)` | `async -> Result<()>` | Full-row UPDATE; `updated_at` refreshed |
+| `post.delete(&mut ctx)` | `async -> Result<()>` | DELETE; consumes the instance |
+| `post.refresh_from_db(&mut ctx)` | `async -> Result<Post>` | Returns fresh copy from DB |
+| `Post::create_with_id(&mut ctx, id, value)` | `async -> Result<Post>` | INSERT ... ON CONFLICT DO NOTHING; for pre-generated IDs |
 | `Post::descriptor()` | `-> &'static ModelDescriptor` | For inventory registration — do not call manually |
 
-All methods accept any `sqlx::Executor<Database = Postgres>` — pass `pool`
-directly or `&mut *tx` for transaction-scoped operations.
+All methods take `&mut DjogiContext` — construct one with
+`DjogiContext::from_pool(pool.clone())` for pool-backed work, or
+`DjogiContext::from_transaction(tx)` to run inside an existing transaction.
+The context pattern-matches on pool-vs-transaction at each sqlx boundary, so
+the same call site works for either mode.
 
 ---
 
@@ -118,7 +121,8 @@ pass to `create()`, use `..Default::default()` to fill them:
 
 ```rust
 // CORRECT
-Post::create(&pool, Post {
+let mut ctx = DjogiContext::from_pool(pool.clone());
+Post::create(&mut ctx, Post {
     title: "My Post".into(),
     body: "Content".into(),
     published: false,
@@ -129,7 +133,7 @@ Post::create(&pool, Post {
 
 ```rust
 // WRONG — will not compile; id, created_at, updated_at are missing
-Post::create(&pool, Post {
+Post::create(&mut ctx, Post {
     title: "My Post".into(),
     body: "Content".into(),
     published: false,
@@ -157,48 +161,49 @@ CTEs, window functions, `col = col + 1`-style expression UPDATEs), use
 ```rust
 // query_as — Vec<T> where T: FromRow
 let posts: Vec<Post> = djogi::raw::query_as(
-    &pool,
+    &mut ctx,
     "SELECT * FROM posts WHERE published = $1",
     |q| q.bind(true),
 ).await?;
 
 // query_scalar — single scalar
 let count: i64 = djogi::raw::query_scalar(
-    &pool,
+    &mut ctx,
     "SELECT COUNT(*) FROM posts",
     |q| q,
 ).await?;
 
 // execute — no return value
 djogi::raw::execute(
-    &pool,
+    &mut ctx,
     "UPDATE posts SET view_count = view_count + $1 WHERE id = $2",
     |q| q.bind(1i32).bind(post_id.as_i64()),
 ).await?;
 ```
 
-All three accept any `sqlx::Executor` — pass `&mut *tx` to run inside a
-transaction.
+All three take `&mut DjogiContext`; the same call site works against a
+pool-backed context or a transaction-backed one.
 
 ### Rule 4: Use transactions explicitly
 
-Model methods and `djogi::raw::*` both accept `&mut *tx`. Wrap multi-step
-operations in a transaction:
+Wrap multi-step operations in a transaction by constructing a tx-backed
+`DjogiContext`:
 
 ```rust
-let mut tx = pool.begin().await?;
+let tx = pool.begin().await?;
+let mut tx_ctx = DjogiContext::from_transaction(tx);
 
-let post = Post::create(&mut *tx, Post { ... ..Default::default() }).await?;
+let post = Post::create(&mut tx_ctx, Post { ..Default::default() }).await?;
 djogi::raw::execute(
-    &mut *tx,
+    &mut tx_ctx,
     "INSERT INTO tags (post_id, name) VALUES ($1, $2)",
     |q| q.bind(post.id.as_i64()).bind("rust"),
 ).await?;
 
-tx.commit().await?;
+tx_ctx.commit().await?;
 ```
 
-If either step fails, drop the transaction and neither change is persisted.
+If either step fails, drop the context and neither change is persisted.
 
 ### Rule 5: Match field types exactly
 
@@ -279,7 +284,8 @@ async fn create_subscription(pool: PgPool) {
     // setup: install schema + create table (see Getting Started guide)
     setup_subscriptions(&pool).await;
 
-    let sub = Subscription::create(&pool, Subscription {
+    let mut ctx = DjogiContext::from_pool(pool.clone());
+    let sub = Subscription::create(&mut ctx, Subscription {
         plan_name: "pro".into(),
         status: "active".into(),
         monthly_price_cents: 2900,
@@ -355,7 +361,7 @@ query code.
 - **`Model::objects()` never runs a query.** Construction is free. Only
   the terminal methods (`fetch_all`, `fetch_one`, `first`, `count`,
   `exists`, `update(...).execute(...)`, `delete(...)`) emit SQL and
-  execute it against a `sqlx::Executor`. A queryset dropped without a
+  execute it against a `&mut DjogiContext`. A queryset dropped without a
   terminal silently does nothing; the `#[must_use]` bound on every
   builder method surfaces the dropped-chain case as a lint warning.
 
@@ -375,13 +381,13 @@ query code.
   empty-flagged `QuerySet::new()`.
 
 - **Bulk `update` / `delete` accept "no filter" as "match every row".**
-  `Post::objects().update(|f| f.published().set(false)).execute(&pool)`
+  `Post::objects().update(|f| f.published().set(false)).execute(&mut ctx)`
   updates every row in the table. This is intentional, not a safety
   net; wrap in a filter before execution or reach for a transaction if
   you need a rollback path.
 
 - **Empty-assignment short-circuit for `update`.**
-  `queryset.update(|_| vec![]).execute(&pool)` returns `Ok(0)` without
+  `queryset.update(|_| vec![]).execute(&mut ctx)` returns `Ok(0)` without
   issuing SQL — an `UPDATE ... SET` with no assignments would otherwise
   be a Postgres syntax error. Same for the `.none().update(...)` path.
 
@@ -444,7 +450,7 @@ before calling `delete()`:
 
 ```rust
 let id = post.id;
-post.delete(&pool).await?;
+post.delete(&mut ctx).await?;
 // use id here — post is moved
 ```
 
@@ -478,19 +484,20 @@ for desc in inventory::iter::<ModelDescriptor> {
 
 | Task | Correct approach |
 |---|---|
-| Create a record | `Model::create(&pool, Model { ..., ..Default::default() }).await?` |
-| Fetch by PK | `Model::get(&pool, id).await?` |
-| Update a field | `instance.field = value; instance.save(&pool).await?` |
-| Delete | `instance.delete(&pool).await?` (consumes instance) |
-| Refresh stale instance | `instance.refresh_from_db(&pool).await?` |
-| Pre-generated ID insert | `Model::create_with_id(&pool, id, Model { ... }).await?` |
-| Filter query | `Model::objects().filter(\|f\| f.col().eq(v)).fetch_all(&pool).await?` |
-| Count | `Model::objects().filter(\|f\| ...).count(&pool).await?` |
-| Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&pool).await?` |
-| Bulk delete | `Model::objects().filter(\|f\| ...).delete(&pool).await?` |
-| Raw query (beyond QuerySet) | `djogi::raw::query_as(&pool, "SELECT ...", \|q\| q.bind(val)).await?` |
-| Raw execute | `djogi::raw::execute(&pool, "UPDATE ...", \|q\| q.bind(val)).await?` |
-| Transactional ops | `pool.begin().await?` → pass `&mut *tx` to methods → `tx.commit().await?` |
+| Build a context | `let mut ctx = DjogiContext::from_pool(pool.clone());` |
+| Create a record | `Model::create(&mut ctx, Model { ..., ..Default::default() }).await?` |
+| Fetch by PK | `Model::get(&mut ctx, id).await?` |
+| Update a field | `instance.field = value; instance.save(&mut ctx).await?` |
+| Delete | `instance.delete(&mut ctx).await?` (consumes instance) |
+| Refresh stale instance | `instance.refresh_from_db(&mut ctx).await?` |
+| Pre-generated ID insert | `Model::create_with_id(&mut ctx, id, Model { ... }).await?` |
+| Filter query | `Model::objects().filter(\|f\| f.col().eq(v)).fetch_all(&mut ctx).await?` |
+| Count | `Model::objects().filter(\|f\| ...).count(&mut ctx).await?` |
+| Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&mut ctx).await?` |
+| Bulk delete | `Model::objects().filter(\|f\| ...).delete(&mut ctx).await?` |
+| Raw query (beyond QuerySet) | `djogi::raw::query_as(&mut ctx, "SELECT ...", \|q\| q.bind(val)).await?` |
+| Raw execute | `djogi::raw::execute(&mut ctx, "UPDATE ...", \|q\| q.bind(val)).await?` |
+| Transactional ops | `let mut tx_ctx = ctx.begin().await?;` → pass `&mut tx_ctx` to methods → `tx_ctx.commit().await?`. `atomic()` (Phase 4 Task 1) is the forthcoming canonical wrapper. |
 | Iterate all models | `for desc in inventory::iter::<djogi::ModelDescriptor> { ... }` |
 | Check trait contract | Read `djogi/src/model.rs` |
 | Check field-type mapping | Read `djogi-macros/src/model/attrs.rs::rust_type_to_sql` |

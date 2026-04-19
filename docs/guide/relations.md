@@ -20,11 +20,11 @@ see [the relations roadmap](../roadmap/relations.md).
 
 | Declaration | Purpose | Accessor shape |
 |---|---|---|
-| `pub owner_id: ForeignKey<Owner>` | Many-to-one | `.fetch(exec)` / `.resolved()` / prefetch via `{Model}Related` |
+| `pub owner_id: ForeignKey<Owner>` | Many-to-one | `.fetch(&mut ctx)` / `.resolved()` / prefetch via `{Model}Related` |
 | `pub user_id: OneToOneField<User>` | One-to-one (unique on the FK column) | same surface as `ForeignKey<T>` |
-| `reverse_one_to_many!(Parent, name -> Child by fk)` | Reverse of a `ForeignKey` | inherent method `parent.name(exec) -> Vec<Child>` |
-| `reverse_one_to_one!(Parent, name -> Child by fk)` | Reverse of a `OneToOneField` | inherent method `parent.name(exec) -> Option<Child>` |
-| `many_to_many!(Source, Target, through = …, …)` | M2M via an explicit junction model | trait impl + `source.relation(exec) -> Vec<Target>` |
+| `reverse_one_to_many!(Parent, name -> Child by fk)` | Reverse of a `ForeignKey` | inherent method `parent.name(&mut ctx) -> Vec<Child>` |
+| `reverse_one_to_one!(Parent, name -> Child by fk)` | Reverse of a `OneToOneField` | inherent method `parent.name(&mut ctx) -> Option<Child>` |
+| `many_to_many!(Source, Target, through = …, …)` | M2M via an explicit junction model | trait impl + `source.relation(&mut ctx) -> Vec<Target>` |
 
 Every relation type has a matching entry in `ModelDescriptor::relations` so
 admin/shell/migration tooling can enumerate them without parsing the struct.
@@ -66,14 +66,16 @@ from `on_delete`.
 ### Fetching a single related row
 
 ```rust
-let owner: Owner = vehicle.owner_id.fetch(&pool).await?;
+let owner: Owner = vehicle.owner_id.fetch(&mut ctx).await?;
 // SELECT * FROM owners WHERE id = $1 LIMIT 1
 ```
 
-`fetch(exec)` runs one `SELECT` against the target table. It errors with
-`DjogiError::NotFound` if the FK points at a row that no longer exists
-(stale reference). Use `.resolved()` to access an already-prefetched row
-without issuing SQL:
+`fetch(&mut ctx)` runs one `SELECT` against the target table. It errors
+with `DjogiError::NotFound` if the FK points at a row that no longer
+exists (stale reference). The `ctx` argument is a `&mut DjogiContext`
+— construct one via `DjogiContext::from_pool(pool)` for pool-backed use,
+or receive it from an enclosing transaction scope. Use `.resolved()` to
+access an already-prefetched row without issuing SQL:
 
 ```rust
 match vehicle.owner_id.resolved() {
@@ -112,42 +114,47 @@ Field access on `ForeignKey<T>` never issues SQL. The explicit verbs:
 
 Both consume a `{Model}Related` entry emitted by the `#[model]` macro.
 For a `Vehicle` model with a `ForeignKey<Owner>` on `owner_id`, the macro
-emits `VehicleRelated::owner_id()`:
+strips one trailing `_id` and emits `VehicleRelated::owner()` (so the
+accessor name matches the target struct, not the column):
 
 ```rust
 // Effective emission — do not write this by hand
 pub struct VehicleRelated;
 
 impl VehicleRelated {
-    pub fn owner_id() -> RelationPath { /* ... */ }
+    pub fn owner() -> RelationPath { /* ... */ }
 }
 ```
 
-`prefetch`:
+`prefetch` — stitched rows come back via `fetch_all_prefetched`, not
+`fetch_all`. The plain `.fetch_all(&mut ctx)` terminal ignores any
+registered prefetch paths (so Phase 2 call sites stay source-stable);
+reach for the `_prefetched` terminal when you want the stitched output:
 
 ```rust
-let vehicles = Vehicle::objects()
-    .prefetch(VehicleRelated::owner_id())
-    .fetch_all(&pool)
+let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+    .prefetch(VehicleRelated::owner())
+    .fetch_all_prefetched(&mut ctx)
     .await?;
 // Query 1: SELECT * FROM vehicles
 // Query 2: SELECT * FROM owners WHERE id IN ($1, $2, ...)
-// Then each vehicle.owner_id.resolved() returns Some(&owner).
+// Then row.get(VehicleRelated::owner()) returns Some(&owner) on each row.
 ```
 
-`select_related`:
+`select_related` — stitched rows come back via `fetch_all_joined`, same
+rationale:
 
 ```rust
-let vehicles = Vehicle::objects()
-    .select_related(VehicleRelated::owner_id())
-    .fetch_all(&pool)
+let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+    .select_related(VehicleRelated::owner())
+    .fetch_all_joined(&mut ctx)
     .await?;
 // SELECT vehicles.*, owners.* FROM vehicles
 // LEFT JOIN owners ON vehicles.owner_id = owners.id
 ```
 
 Phase 3 supports **single-hop** prefetch / select_related. Chained multi-hop
-(`.prefetch(VehicleRelated::owner_id().then(OwnerRelated::address_id()))`)
+(`.prefetch(VehicleRelated::owner().then(OwnerRelated::address()))`)
 is on the roadmap — see [relations roadmap][relations-roadmap].
 
 [relations-roadmap]: ../roadmap/relations.md
@@ -177,7 +184,7 @@ pub struct Profile {
 ```
 
 `OneToOneField<T>` is a thin newtype over `ForeignKey<T>`: same runtime
-shape, same `.fetch(exec)` / `.resolved()` / prefetch surface. The
+shape, same `.fetch(&mut ctx)` / `.resolved()` / prefetch surface. The
 distinction exists so the macro can:
 
 - emit a singular reverse accessor (see below — one `Option<Profile>`, not a `Vec<Profile>`)
@@ -202,12 +209,14 @@ Effective emission:
 ```rust
 // Effective emission — do not write this by hand
 impl Owner {
-    pub async fn vehicles<'a, E>(&'a self, executor: E) -> Result<Vec<Vehicle>, DjogiError>
-    where E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a
+    pub async fn vehicles<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> Result<Vec<Vehicle>, DjogiError>
     {
         Vehicle::objects()
             .filter(|f| f.owner_id().eq(ForeignKey::new(self.id.clone())))
-            .fetch_all(executor)
+            .fetch_all(ctx)
             .await
     }
 }
@@ -216,7 +225,7 @@ impl Owner {
 Call site:
 
 ```rust
-let vehicles: Vec<Vehicle> = owner.vehicles(&pool).await?;
+let vehicles: Vec<Vehicle> = owner.vehicles(&mut ctx).await?;
 // SELECT * FROM vehicles WHERE owner_id = $1
 ```
 
@@ -227,10 +236,10 @@ djogi::reverse_one_to_one!(User, profile -> Profile by user_id);
 ```
 
 Effective emission differs in the return type — `Option<T>`, not `Vec<T>` —
-and the terminal is `.first(exec)` instead of `.fetch_all(exec)`:
+and the terminal is `.first(&mut ctx)` instead of `.fetch_all(&mut ctx)`:
 
 ```rust
-let profile: Option<Profile> = user.profile(&pool).await?;
+let profile: Option<Profile> = user.profile(&mut ctx).await?;
 // SELECT * FROM profiles WHERE user_id = $1 LIMIT 1
 ```
 
@@ -318,7 +327,7 @@ Each invocation emits one direction. The macro generates:
 | Item | Shape |
 |---|---|
 | `impl ManyToMany<Target> for Source` | Supplies `Through`, `RELATION`, `this_fk()`, `that_fk()`, and typed bodies for `related` / `add_related` / `remove_related` |
-| `impl Source` inherent method named after `relation` | `person.groups(exec)` delegates to `<Self as ManyToMany<Group>>::related(self, exec)` |
+| `impl Source` inherent method named after `relation` | `person.groups(&mut ctx)` delegates to `<Self as ManyToMany<Group>>::related(self, &mut ctx)` |
 | `inventory::submit!(ReverseRelationMarker::new_via_macro_support(...))` | Registers the relation for collision detection and admin enumeration |
 | `const _: () = { … }` const-assert block | Validates `relation`, `this_fk`, `that_fk` against the Postgres plain-identifier grammar at codegen time |
 
@@ -331,14 +340,14 @@ time. Fixtures: `many_to_many_bad_that_fk_keyword.rs` and peers.
 
 ```rust
 // The `relation = "groups"` argument becomes the accessor method name:
-let groups: Vec<Group> = person.groups(&pool).await?;
+let groups: Vec<Group> = person.groups(&mut ctx).await?;
 // SELECT * FROM person_groups WHERE person_id = $1;
 // SELECT * FROM groups WHERE id IN ($1, $2, ...);
 
 // Attach:
-let group = Group::get(&pool, group_id).await?;
+let group = Group::get(&mut ctx, group_id).await?;
 let junction = person.add_related(
-    &pool,
+    &mut ctx,
     &group,
     PersonGroup {
         role: "admin".into(),
@@ -349,7 +358,7 @@ let junction = person.add_related(
 // VALUES ($1, $2, $3, ...) RETURNING *;
 
 // Detach:
-let removed: u64 = person.remove_related(&pool, &group).await?;
+let removed: u64 = person.remove_related(&mut ctx, &group).await?;
 // DELETE FROM person_groups WHERE person_id = $1 AND group_id = $2;
 ```
 
@@ -367,7 +376,7 @@ you need to filter or join on junction-specific data:
 ```rust
 let admins: Vec<PersonGroup> = PersonGroup::objects()
     .filter(|f| f.role().eq("admin".to_string()))
-    .fetch_all(&pool)
+    .fetch_all(&mut ctx)
     .await?;
 // SELECT * FROM person_groups WHERE role = $1
 ```

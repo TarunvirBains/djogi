@@ -147,8 +147,9 @@ async fn seed_owner(pool: &PgPool, name: &str) -> Owner {
         .execute(&mut *tx)
         .await
         .unwrap();
+    let mut tx_ctx = ::djogi::DjogiContext::from_transaction(tx);
     let owner = Owner::create(
-        &mut *tx,
+        &mut tx_ctx,
         Owner {
             name: name.into(),
             ..Default::default()
@@ -156,7 +157,7 @@ async fn seed_owner(pool: &PgPool, name: &str) -> Owner {
     )
     .await
     .expect("seed_owner: Owner::create should succeed");
-    tx.commit().await.unwrap();
+    tx_ctx.commit().await.unwrap();
     owner
 }
 
@@ -168,8 +169,9 @@ async fn seed_fuel_type(pool: &PgPool, name: &str) -> FuelType {
         .execute(&mut *tx)
         .await
         .unwrap();
+    let mut tx_ctx = ::djogi::DjogiContext::from_transaction(tx);
     let fuel = FuelType::create(
-        &mut *tx,
+        &mut tx_ctx,
         FuelType {
             name: name.into(),
             ..Default::default()
@@ -177,7 +179,7 @@ async fn seed_fuel_type(pool: &PgPool, name: &str) -> FuelType {
     )
     .await
     .expect("seed_fuel_type: FuelType::create should succeed");
-    tx.commit().await.unwrap();
+    tx_ctx.commit().await.unwrap();
     fuel
 }
 
@@ -215,10 +217,11 @@ async fn seed_vehicle_with_owner(
         .execute(&mut *tx)
         .await
         .unwrap();
-    let vehicle = Vehicle::create(&mut *tx, vehicle_for_insert(make, owner, fuel))
+    let mut tx_ctx = ::djogi::DjogiContext::from_transaction(tx);
+    let vehicle = Vehicle::create(&mut tx_ctx, vehicle_for_insert(make, owner, fuel))
         .await
         .expect("seed_vehicle_with_owner: Vehicle::create should succeed");
-    tx.commit().await.unwrap();
+    tx_ctx.commit().await.unwrap();
     vehicle
 }
 
@@ -237,11 +240,12 @@ async fn seed_vehicle_with_owner(
 /// change.
 #[sqlx::test]
 async fn fk_round_trip_stores_and_retrieves_pk(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Alice").await;
     let vehicle = seed_vehicle_with_owner(&pool, "Toyota", &owner, None).await;
 
-    let loaded = Vehicle::get(&pool, vehicle.id)
+    let loaded = Vehicle::get(&mut ctx, vehicle.id)
         .await
         .expect("Vehicle::get should succeed");
 
@@ -263,13 +267,14 @@ async fn fk_round_trip_stores_and_retrieves_pk(pool: PgPool) {
 /// comparison.
 #[sqlx::test]
 async fn fk_fetch_loads_related_row(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Alice").await;
     let vehicle = seed_vehicle_with_owner(&pool, "Toyota", &owner, None).await;
 
     let fetched_owner = vehicle
         .owner_id
-        .fetch(&pool)
+        .fetch(&mut ctx)
         .await
         .expect("ForeignKey::fetch should resolve to the owner row");
 
@@ -285,11 +290,12 @@ async fn fk_fetch_loads_related_row(pool: PgPool) {
 /// decodes back to `None`.
 #[sqlx::test]
 async fn nullable_fk_round_trips_none(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Bob").await;
     let vehicle = seed_vehicle_with_owner(&pool, "Honda", &owner, None).await;
 
-    let loaded = Vehicle::get(&pool, vehicle.id)
+    let loaded = Vehicle::get(&mut ctx, vehicle.id)
         .await
         .expect("Vehicle::get should succeed");
 
@@ -304,12 +310,13 @@ async fn nullable_fk_round_trips_none(pool: PgPool) {
 /// `Option<ForeignKey<FuelType>>` column carries the target's PK.
 #[sqlx::test]
 async fn nullable_fk_round_trips_some(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Carol").await;
     let fuel = seed_fuel_type(&pool, "Gas").await;
     let vehicle = seed_vehicle_with_owner(&pool, "Subaru", &owner, Some(&fuel)).await;
 
-    let loaded = Vehicle::get(&pool, vehicle.id)
+    let loaded = Vehicle::get(&mut ctx, vehicle.id)
         .await
         .expect("Vehicle::get should succeed");
 
@@ -326,11 +333,12 @@ async fn nullable_fk_round_trips_some(pool: PgPool) {
 
 /// `.fetch(executor)` on the inner `ForeignKey<FuelType>` of a
 /// `Some(_)`-valued nullable column. Proves the happy path composes
-/// cleanly through `Option::as_ref().unwrap().fetch(&pool)` — the
+/// cleanly through `Option::as_ref().unwrap().fetch(&mut ctx)` — the
 /// same shape user code will write for opportunistic resolution of
 /// nullable FKs inside a handler.
 #[sqlx::test]
 async fn nullable_fk_fetch_loads_related_row(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Dana").await;
     let fuel = seed_fuel_type(&pool, "Diesel").await;
@@ -340,7 +348,7 @@ async fn nullable_fk_fetch_loads_related_row(pool: PgPool) {
         .fuel_type_id
         .as_ref()
         .expect("seed helper attached a fuel type — Option should be Some")
-        .fetch(&pool)
+        .fetch(&mut ctx)
         .await
         .expect("ForeignKey::fetch on the nullable FK should resolve");
 
@@ -378,10 +386,15 @@ async fn fk_creation_sqlx_error_on_unknown_owner(pool: PgPool) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    let result = Vehicle::create(&mut *tx, vehicle_for_insert("Phantom", &bogus_owner, None)).await;
+    let mut tx_ctx = ::djogi::DjogiContext::from_transaction(tx);
+    let result = Vehicle::create(
+        &mut tx_ctx,
+        vehicle_for_insert("Phantom", &bogus_owner, None),
+    )
+    .await;
     // Rollback either way — the transaction is poisoned on error, and we
     // don't need to commit anything on success (there won't be any).
-    let _ = tx.rollback().await;
+    let _ = tx_ctx.rollback().await;
 
     let err = result.expect_err("insert with unknown owner_id must fail");
     match err {
@@ -420,6 +433,7 @@ async fn fk_creation_sqlx_error_on_unknown_owner(pool: PgPool) {
 /// returns a `&Owner` whose `name` matches the seeded value.
 #[sqlx::test]
 async fn prefetch_fk_loads_related_without_n_plus_one(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let alice = seed_owner(&pool, "Alice").await;
     let bob = seed_owner(&pool, "Bob").await;
@@ -429,7 +443,7 @@ async fn prefetch_fk_loads_related_without_n_plus_one(pool: PgPool) {
     let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
         .order_by(|f| f.make().asc())
         .prefetch(VehicleRelated::owner())
-        .fetch_all_prefetched(&pool)
+        .fetch_all_prefetched(&mut ctx)
         .await
         .expect("fetch_all_prefetched should succeed");
 
@@ -458,6 +472,7 @@ async fn prefetch_fk_loads_related_without_n_plus_one(pool: PgPool) {
 /// error) — the LEFT JOIN miss is the documented null-safe behaviour.
 #[sqlx::test]
 async fn prefetch_nullable_fk_skipped(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Carol").await;
     // Deliberately pass `None` for the fuel type — the column is
@@ -467,7 +482,7 @@ async fn prefetch_nullable_fk_skipped(pool: PgPool) {
 
     let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
         .prefetch(VehicleRelated::fuel_type())
-        .fetch_all_prefetched(&pool)
+        .fetch_all_prefetched(&mut ctx)
         .await
         .expect("fetch_all_prefetched should succeed");
 
@@ -486,6 +501,7 @@ async fn prefetch_nullable_fk_skipped(pool: PgPool) {
 /// `Drop` semantics simple. Data-equality is the observable contract.
 #[sqlx::test]
 async fn prefetch_duplicate_fk_stitches_same_child(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Dana").await;
     let _ = seed_vehicle_with_owner(&pool, "Ford", &owner, None).await;
@@ -494,7 +510,7 @@ async fn prefetch_duplicate_fk_stitches_same_child(pool: PgPool) {
     let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
         .order_by(|f| f.make().asc())
         .prefetch(VehicleRelated::owner())
-        .fetch_all_prefetched(&pool)
+        .fetch_all_prefetched(&mut ctx)
         .await
         .expect("fetch_all_prefetched should succeed");
 
@@ -516,6 +532,7 @@ async fn prefetch_duplicate_fk_stitches_same_child(pool: PgPool) {
 /// instrumented here.
 #[sqlx::test]
 async fn prefetch_empty_parent_set_issues_no_child_query(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Eve").await;
     let _ = seed_vehicle_with_owner(&pool, "BMW", &owner, None).await;
@@ -526,7 +543,7 @@ async fn prefetch_empty_parent_set_issues_no_child_query(pool: PgPool) {
     let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
         .filter(|f| f.id().eq(nonexistent))
         .prefetch(VehicleRelated::owner())
-        .fetch_all_prefetched(&pool)
+        .fetch_all_prefetched(&mut ctx)
         .await
         .expect("fetch_all_prefetched should succeed even when empty");
 
@@ -543,6 +560,7 @@ async fn prefetch_empty_parent_set_issues_no_child_query(pool: PgPool) {
 /// types (`Owner` and `FuelType` are distinct structs).
 #[sqlx::test]
 async fn prefetch_multiple_relations_combines_correctly(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Frank").await;
     let fuel = seed_fuel_type(&pool, "Electric").await;
@@ -551,7 +569,7 @@ async fn prefetch_multiple_relations_combines_correctly(pool: PgPool) {
     let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
         .prefetch(VehicleRelated::owner())
         .prefetch(VehicleRelated::fuel_type())
-        .fetch_all_prefetched(&pool)
+        .fetch_all_prefetched(&mut ctx)
         .await
         .expect("fetch_all_prefetched with two prefetches should succeed");
 
@@ -582,6 +600,7 @@ async fn prefetch_multiple_relations_combines_correctly(pool: PgPool) {
 /// paths).
 #[sqlx::test]
 async fn prefetch_same_relation_twice_is_idempotent(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Grace").await;
     let _ = seed_vehicle_with_owner(&pool, "Audi", &owner, None).await;
@@ -589,7 +608,7 @@ async fn prefetch_same_relation_twice_is_idempotent(pool: PgPool) {
     let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
         .prefetch(VehicleRelated::owner())
         .prefetch(VehicleRelated::owner())
-        .fetch_all_prefetched(&pool)
+        .fetch_all_prefetched(&mut ctx)
         .await
         .expect("duplicate prefetch registrations must not cause failure");
 
@@ -621,13 +640,14 @@ async fn prefetch_same_relation_twice_is_idempotent(pool: PgPool) {
 ///      with the seeded name.
 #[sqlx::test]
 async fn select_related_fk_emits_join_and_populates(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Alice").await;
     let _ = seed_vehicle_with_owner(&pool, "Toyota", &owner, None).await;
 
     let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
         .select_related(VehicleRelated::owner())
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("fetch_all_joined should succeed");
 
@@ -646,6 +666,7 @@ async fn select_related_fk_emits_join_and_populates(pool: PgPool) {
 /// set. This is the documented null-safe contract of `select_related`.
 #[sqlx::test]
 async fn select_related_nullable_fk_yields_no_child(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Bob").await;
     // `None` for fuel — the column is `NULL`, not an orphan FK.
@@ -653,7 +674,7 @@ async fn select_related_nullable_fk_yields_no_child(pool: PgPool) {
 
     let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
         .select_related(VehicleRelated::fuel_type())
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("fetch_all_joined should succeed");
 
@@ -679,6 +700,7 @@ async fn select_related_nullable_fk_yields_no_child(pool: PgPool) {
 /// `UPDATE` after seeding.
 #[sqlx::test]
 async fn select_related_orphan_fk_yields_no_child(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Carol").await;
     let fuel = seed_fuel_type(&pool, "Diesel").await;
@@ -706,7 +728,7 @@ async fn select_related_orphan_fk_yields_no_child(pool: PgPool) {
 
     let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
         .select_related(VehicleRelated::fuel_type())
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("fetch_all_joined should succeed on orphan FK");
 
@@ -724,6 +746,7 @@ async fn select_related_orphan_fk_yields_no_child(pool: PgPool) {
 /// child accessors resolve correctly on the same joined row.
 #[sqlx::test]
 async fn select_related_multiple_relations_combine(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Dana").await;
     let fuel = seed_fuel_type(&pool, "Electric").await;
@@ -732,7 +755,7 @@ async fn select_related_multiple_relations_combine(pool: PgPool) {
     let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
         .select_related(VehicleRelated::owner())
         .select_related(VehicleRelated::fuel_type())
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("two-relation select_related should succeed");
 
@@ -764,6 +787,7 @@ async fn select_related_multiple_relations_combine(pool: PgPool) {
 /// so Postgres does not raise 42702 on the shared column name.
 #[sqlx::test]
 async fn select_related_composes_with_filter_and_order(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let alice = seed_owner(&pool, "Alice").await;
     let bob = seed_owner(&pool, "Bob").await;
@@ -779,7 +803,7 @@ async fn select_related_composes_with_filter_and_order(pool: PgPool) {
         .filter(|f| f.make().eq("Toyota".to_string()))
         .order_by(|f| f.make().asc())
         .select_related(VehicleRelated::owner())
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("filter+order_by+select_related should compose");
 
@@ -810,6 +834,7 @@ async fn select_related_composes_with_filter_and_order(pool: PgPool) {
 /// stitches the prefetched targets into the same `JoinedRow<T>`.
 #[sqlx::test]
 async fn select_related_and_prefetch_compose_disjoint(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Eve").await;
     let fuel = seed_fuel_type(&pool, "Gas").await;
@@ -818,7 +843,7 @@ async fn select_related_and_prefetch_compose_disjoint(pool: PgPool) {
     let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
         .select_related(VehicleRelated::owner())
         .prefetch(VehicleRelated::fuel_type())
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("select_related + prefetch should compose on disjoint relations");
 
@@ -860,6 +885,7 @@ async fn select_related_and_prefetch_compose_disjoint(pool: PgPool) {
 /// raise 42702 on the bare form.
 #[sqlx::test]
 async fn select_related_compose_with_filter_on_id(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Iris").await;
     let vehicle = seed_vehicle_with_owner(&pool, "Kia", &owner, None).await;
@@ -871,7 +897,7 @@ async fn select_related_compose_with_filter_on_id(pool: PgPool) {
     let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
         .select_related(VehicleRelated::owner())
         .filter(|f| f.id().eq(vehicle.id))
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("select_related + filter on `id` must succeed (no 42702 ambiguity)");
 
@@ -890,6 +916,7 @@ async fn select_related_compose_with_filter_on_id(pool: PgPool) {
 /// 42702.
 #[sqlx::test]
 async fn select_related_compose_with_order_by_created_at(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Jack").await;
     // Two vehicles on the same owner — ordering is the only thing
@@ -903,7 +930,7 @@ async fn select_related_compose_with_order_by_created_at(pool: PgPool) {
     let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
         .select_related(VehicleRelated::owner())
         .order_by(|f| f.created_at().asc())
-        .fetch_all_joined(&pool)
+        .fetch_all_joined(&mut ctx)
         .await
         .expect("select_related + order_by `created_at` must succeed (no 42702 ambiguity)");
 
@@ -914,4 +941,111 @@ async fn select_related_compose_with_order_by_created_at(pool: PgPool) {
             .expect("every joined row should carry the owner");
         assert_eq!(joined_owner.name, "Jack");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 retrofit follow-up: tx-backed prefetch / select_related surface
+// a configuration error until the loader signature is generalised.
+// ---------------------------------------------------------------------------
+//
+// Phase 3 ships pool-only support for the multi-query fan-out terminals
+// (`fetch_all_prefetched`, `fetch_all_joined`). Both entry points pattern
+// on `DjogiContext::pool()` and return a `sqlx::Error::Configuration`
+// when the context is transaction-backed — the follow-up query needs a
+// connection that participates in the outer transaction, which the
+// current loader signature can't promise. A future Phase 4 task will
+// generalise the loader so tx-backed contexts work end-to-end.
+//
+// These two tests pin today's deliberate limitation so an accidental
+// change (e.g. dropping the `.pool()` check) surfaces as a red test
+// rather than a silently-wrong execution path against the wrong
+// connection.
+
+/// `fetch_all_prefetched` on a tx-backed context: the terminal must
+/// surface a `DjogiError::Sqlx(sqlx::Error::Configuration(..))` today
+/// without dispatching the prefetch loader.
+// TODO(phase4-task1): tighten to a dedicated `DjogiError` variant when
+// prefetch generalises to tx-backed contexts.
+#[sqlx::test]
+async fn fetch_all_prefetched_tx_backed_surfaces_configuration_error(pool: PgPool) {
+    setup_phase3(&pool).await;
+    // A populated parent row means the terminal can't short-circuit on
+    // structural-emptiness — the pool vs tx check runs before any SQL.
+    let owner = seed_owner(&pool, "Kate").await;
+    let _ = seed_vehicle_with_owner(&pool, "Honda", &owner, None).await;
+
+    // Build a tx-backed context via the retrofit helper. `from_pool(..).begin()`
+    // exists as the low-level escape hatch until `atomic()` (Phase 4 Task 1)
+    // lands.
+    let pool_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut tx_ctx = pool_ctx
+        .begin()
+        .await
+        .expect("begin() on a pool-backed context must succeed");
+
+    let err = Vehicle::objects()
+        .prefetch(VehicleRelated::owner())
+        .fetch_all_prefetched(&mut tx_ctx)
+        .await
+        .expect_err("fetch_all_prefetched must reject a tx-backed context in Phase 4 retrofit");
+
+    // Assert the exact error shape the retrofit returns today. A dedicated
+    // variant would be cleaner but is out of scope per the fixup contract.
+    match err {
+        ::djogi::DjogiError::Sqlx(sqlx::Error::Configuration(msg)) => {
+            let s = msg.to_string();
+            assert!(
+                s.contains("fetch_all_prefetched"),
+                "configuration error must name the terminal that refused: {s}"
+            );
+        }
+        other => panic!(
+            "fetch_all_prefetched on tx-backed context returned unexpected error shape: {other:?}"
+        ),
+    }
+
+    // Explicit rollback so the test tears down cleanly and does not leak
+    // an open transaction into the pool. (The harness would eventually
+    // drop it anyway, but the explicit call keeps the assertion flow
+    // obvious on read.)
+    tx_ctx.rollback().await.expect("rollback must succeed");
+}
+
+/// `fetch_all_joined` on a tx-backed context: same shape as the
+/// prefetch version — Phase 3 loader signature is pool-only until
+/// Phase 4 Task 1+ generalises it.
+// TODO(phase4-task1): tighten to a dedicated `DjogiError` variant when
+// prefetch generalises to tx-backed contexts.
+#[sqlx::test]
+async fn fetch_all_joined_tx_backed_surfaces_configuration_error(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Liam").await;
+    let _ = seed_vehicle_with_owner(&pool, "Kia", &owner, None).await;
+
+    let pool_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut tx_ctx = pool_ctx
+        .begin()
+        .await
+        .expect("begin() on a pool-backed context must succeed");
+
+    let err = Vehicle::objects()
+        .select_related(VehicleRelated::owner())
+        .fetch_all_joined(&mut tx_ctx)
+        .await
+        .expect_err("fetch_all_joined must reject a tx-backed context in Phase 4 retrofit");
+
+    match err {
+        ::djogi::DjogiError::Sqlx(sqlx::Error::Configuration(msg)) => {
+            let s = msg.to_string();
+            assert!(
+                s.contains("fetch_all_joined"),
+                "configuration error must name the terminal that refused: {s}"
+            );
+        }
+        other => panic!(
+            "fetch_all_joined on tx-backed context returned unexpected error shape: {other:?}"
+        ),
+    }
+
+    tx_ctx.rollback().await.expect("rollback must succeed");
 }

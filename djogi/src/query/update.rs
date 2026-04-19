@@ -68,6 +68,7 @@
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
+use crate::context::{ContextInner, DjogiContext};
 use crate::model::Model;
 use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
@@ -139,7 +140,7 @@ impl UpdateAssignment {
 /// Post::objects()
 ///     .filter(|f| f.published().eq(true))
 ///     .update(|f| f.view_count().set(999i32))
-///     .execute(&pool).await?;
+///     .execute(&mut ctx).await?;
 /// ```
 impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     /// Build a typed `SET column = value` assignment for
@@ -188,7 +189,7 @@ impl IntoAssignments for Vec<UpdateAssignment> {
 /// require `T: Clone` / `T: Debug` — `UpdateStmt` never owns or borrows
 /// a `T`, it only carries a `PhantomData<fn() -> T>` tag, mirroring the
 /// pattern on [`QuerySet<T>`].
-#[must_use = "UpdateStmt is inert — call .execute(executor) to run the UPDATE"]
+#[must_use = "UpdateStmt is inert — call .execute(ctx) to run the UPDATE"]
 pub struct UpdateStmt<T: Model> {
     /// The accumulated queryset — contributes the `WHERE` clause and the
     /// `is_empty` short-circuit flag.
@@ -232,18 +233,20 @@ impl<T: Model> UpdateStmt<T> {
     ///   short-circuit here is both a contract shortcut and a safety
     ///   rail.
     ///
-    /// The executor generic mirrors [`QuerySet::fetch_all`] /
-    /// [`QuerySet::count`] — `&PgPool` and `&mut *tx` both satisfy the
-    /// bound, so callers can run the UPDATE against the pool directly or
-    /// inside a Phase 4 transaction without changing the call site.
+    /// Takes `&mut DjogiContext`, matching [`QuerySet::fetch_all`] /
+    /// [`QuerySet::count`] — the same call site works against a pool-
+    /// backed context or a transaction-backed one post-Phase-4 retrofit.
     ///
     /// Returns `u64` — the raw row-count sqlx surfaces from
     /// [`sqlx::postgres::PgQueryResult::rows_affected`]. Postgres' UPDATE
     /// rowcount is non-negative by definition, so there is no sign
     /// conversion at the call site.
-    pub fn execute<'a, E>(self, executor: E) -> impl Future<Output = Result<u64, DjogiError>> + Send
+    pub fn execute<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<u64, DjogiError>> + Send + 'ctx
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none queryset OR empty
@@ -259,11 +262,13 @@ impl<T: Model> UpdateStmt<T> {
                 return Ok(0);
             }
             let mut qb = build_update(&self.qs, &self.assignments);
-            let result = qb
-                .build()
-                .execute(executor)
-                .await
-                .map_err(DjogiError::from)?;
+            let q = qb.build();
+            let result = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => q.execute(&*pool).await.map_err(DjogiError::from)?,
+                ContextInner::Transaction(tx) => {
+                    q.execute(&mut **tx).await.map_err(DjogiError::from)?
+                }
+            };
             Ok(result.rows_affected())
         }
     }
@@ -292,10 +297,10 @@ impl<T: Model> QuerySet<T> {
     /// Post::objects()
     ///     .filter(|f| f.published().eq(true))
     ///     .update(|f| f.view_count().set(999i32))
-    ///     .execute(&pool)
+    ///     .execute(&mut ctx)
     ///     .await?;
     /// ```
-    #[must_use = "UpdateStmt is inert — call .execute(executor) to run the UPDATE"]
+    #[must_use = "UpdateStmt is inert — call .execute(ctx) to run the UPDATE"]
     pub fn update<F, A>(self, f: F) -> UpdateStmt<T>
     where
         F: FnOnce(T::Fields) -> A,
@@ -326,12 +331,15 @@ impl<T: Model> QuerySet<T> {
     /// ```ignore
     /// Post::objects()
     ///     .filter(|f| f.published().eq(false))
-    ///     .delete(&pool)
+    ///     .delete(&mut ctx)
     ///     .await?;
     /// ```
-    pub fn delete<'a, E>(self, executor: E) -> impl Future<Output = Result<u64, DjogiError>> + Send
+    pub fn delete<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<u64, DjogiError>> + Send + 'ctx
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none queryset: no SQL.
@@ -339,11 +347,13 @@ impl<T: Model> QuerySet<T> {
                 return Ok(0);
             }
             let mut qb = build_delete(&self);
-            let result = qb
-                .build()
-                .execute(executor)
-                .await
-                .map_err(DjogiError::from)?;
+            let q = qb.build();
+            let result = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => q.execute(&*pool).await.map_err(DjogiError::from)?,
+                ContextInner::Transaction(tx) => {
+                    q.execute(&mut **tx).await.map_err(DjogiError::from)?
+                }
+            };
             Ok(result.rows_affected())
         }
     }
@@ -381,34 +391,36 @@ mod tests {
         fn descriptor() -> &'static ModelDescriptor {
             unreachable!()
         }
-        fn get<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
             _id: i64,
         ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn create<'a>(
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
             _v: Self,
         ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn save<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+        fn save<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
             async { unreachable!() }
         }
-        fn delete<'a>(
+        fn delete(
             self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+            _ctx: &mut crate::context::DjogiContext,
         ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
             async { unreachable!() }
         }
-        fn refresh_from_db<'a>(
-            &self,
-            _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
             async { unreachable!() }
         }
     }

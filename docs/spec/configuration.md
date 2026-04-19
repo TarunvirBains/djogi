@@ -98,7 +98,8 @@ async fn vehicle_detail(
     State(pool): State<PgPool>,
     Path(id): Path<HeerId>,
 ) -> impl IntoResponse {
-    match Vehicle::get(&pool, id).await {
+    let mut ctx = DjogiContext::from_pool(pool.clone());
+    match Vehicle::get(&mut ctx, id).await {
         Ok(v)  => Json(v).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }

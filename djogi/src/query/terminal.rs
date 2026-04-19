@@ -3,7 +3,7 @@
 //! # What
 //!
 //! Every method here is a terminal — it consumes the queryset, executes SQL
-//! against a caller-provided `sqlx::Executor`, and returns a decoded result
+//! against a caller-provided `&mut DjogiContext`, and returns a decoded result
 //! (`Vec<T>`, `T`, `Option<T>`, `i64`, `bool`). This is the **only** place
 //! in the query layer that talks to the database.
 //!
@@ -18,16 +18,20 @@
 //! state in terminal.rs beyond the documented `limit` override in
 //! `fetch_one` / `first`).
 //!
-//! # Executor generics and `Send` futures
+//! # Context dispatch and `Send` futures
 //!
-//! Each terminal takes `impl sqlx::Executor<'a, Database = sqlx::Postgres>`,
-//! matching the pattern established by the Phase 1 `Model` trait methods:
-//! the same call site works against a `&PgPool` (auto-connection) or a
-//! `&mut *tx` (transaction). Returning `impl Future<Output = ...> + Send`
-//! (RPITIT) means callers can `.await` results across task boundaries —
-//! required for any async runtime context that spawns terminals onto a
-//! multi-thread runtime (e.g. an Axum handler running on Tokio's
-//! multi-thread runtime under the opt-in `axum` feature).
+//! Each terminal takes `&mut DjogiContext`, matching the pattern established by
+//! the Phase 4-retrofitted `Model` trait methods: the same call site works
+//! against a pool-backed context or a transaction-backed one. Internally the
+//! terminal pattern-matches on [`ContextInner`] to dispatch the sqlx query
+//! against the appropriate handle — see `djogi::context` module docs for the
+//! inline-match rationale.
+//!
+//! Returning `impl Future<Output = ...> + Send` (RPITIT) means callers can
+//! `.await` results across task boundaries — required for any async runtime
+//! context that spawns terminals onto a multi-thread runtime (e.g. an Axum
+//! handler running on Tokio's multi-thread runtime under the opt-in `axum`
+//! feature).
 //!
 //! # `is_empty` short-circuit contract
 //!
@@ -72,9 +76,12 @@
 //! `clippy::manual_async_fn` fires on this pattern; the lint is allowed at
 //! the module level because the explicit-bound form is the deliberate
 //! choice, not an oversight.
+//!
+//! [`ContextInner`]: crate::context::DjogiContext
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
+use crate::context::{ContextInner, DjogiContext};
 use crate::model::Model;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_count, build_exists, build_select, build_select_joined};
@@ -98,12 +105,12 @@ where
     /// A `QuerySet::none()`-derived queryset returns `Ok(Vec::new())` without
     /// touching the database — see the module docs for the full short-
     /// circuit contract.
-    pub fn fetch_all<'a, E>(
+    pub fn fetch_all<'ctx>(
         self,
-        executor: E,
-    ) -> impl Future<Output = Result<Vec<T>, DjogiError>> + Send
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<T>, DjogiError>> + Send + 'ctx
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none queryset, no SQL.
@@ -111,11 +118,13 @@ where
                 return Ok(Vec::new());
             }
             let mut qb = build_select(&self);
-            let rows: Vec<T> = qb
-                .build_query_as::<T>()
-                .fetch_all(executor)
-                .await
-                .map_err(DjogiError::from)?;
+            let q = qb.build_query_as::<T>();
+            let rows: Vec<T> = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => q.fetch_all(&*pool).await.map_err(DjogiError::from)?,
+                ContextInner::Transaction(tx) => {
+                    q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
+                }
+            };
             Ok(rows)
         }
     }
@@ -128,9 +137,12 @@ where
     ///
     /// User-supplied `limit` on the queryset is ignored — this terminal
     /// owns the row-count probe.
-    pub fn fetch_one<'a, E>(self, executor: E) -> impl Future<Output = Result<T, DjogiError>> + Send
+    pub fn fetch_one<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<T, DjogiError>> + Send + 'ctx
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none treats as "no row
@@ -145,11 +157,13 @@ where
             let mut qs = self;
             qs.limit = Some(2);
             let mut qb = build_select(&qs);
-            let rows: Vec<T> = qb
-                .build_query_as::<T>()
-                .fetch_all(executor)
-                .await
-                .map_err(DjogiError::from)?;
+            let q = qb.build_query_as::<T>();
+            let rows: Vec<T> = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => q.fetch_all(&*pool).await.map_err(DjogiError::from)?,
+                ContextInner::Transaction(tx) => {
+                    q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
+                }
+            };
             match rows.len() {
                 0 => Err(DjogiError::not_found(T::table_name())),
                 1 => {
@@ -202,24 +216,23 @@ where
     /// the prefetch pass — no prefetch loader runs when there are no
     /// parent rows to stitch against.
     ///
-    /// # Executor shape
+    /// # Context shape
     ///
-    /// Takes `&PgPool` concretely rather than the `impl Executor`
-    /// generic that [`fetch_all`](Self::fetch_all) accepts. The
-    /// prefetch loader fan-out runs *after* the main query completes;
-    /// keeping the pool reference lets every loader grab its own
-    /// connection from the pool without passing ownership or threading
-    /// lifetimes through the type-erased [`ErasedPrefetch`](
-    /// crate::relation::prefetch::ErasedPrefetch) fn-pointer signature.
-    /// A `&mut Transaction` executor overload lands later if the
-    /// shell / admin paths need prefetch inside a single transactional
-    /// scope; Phase 3 ships pool-only.
-    pub fn fetch_all_prefetched(
+    /// Takes `&mut DjogiContext` matching every other terminal. Phase 3
+    /// ships pool-only support for prefetch fan-out — the loader
+    /// signature carries `&PgPool` so a pool-backed context is required.
+    /// A transaction-backed context (`atomic()` scope from Phase 4
+    /// Task 1 onwards) is surfaced as a `DjogiError::Sqlx` at this
+    /// entry point; the transaction-backed variant lands once the
+    /// prefetch loader is refactored to share a connection with the
+    /// outer transaction.
+    pub fn fetch_all_prefetched<'ctx>(
         self,
-        pool: &sqlx::PgPool,
-    ) -> impl Future<Output = Result<Vec<PrefetchedRow<T>>, DjogiError>> + Send + '_
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<PrefetchedRow<T>>, DjogiError>> + Send + 'ctx
     where
         T::Pk: Clone + Send + Sync + 'static,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none queryset returns
@@ -228,6 +241,22 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+
+            // Phase 3 prefetch loaders take a `&PgPool`. Pool-backed
+            // contexts are supported today; transaction-backed contexts
+            // will gain support once the loader signature is generalised
+            // (deferred to a later Phase 4 task — documented on the
+            // method).
+            let pool = ctx
+                .pool()
+                .ok_or_else(|| {
+                    sqlx::Error::Configuration(
+                        "fetch_all_prefetched requires a pool-backed DjogiContext; \
+                         transaction-backed prefetch is not supported yet"
+                            .into(),
+                    )
+                })?
+                .clone();
 
             // Snapshot prefetch paths before we consume `self` in the
             // main-query build. The shared SQL emitter borrows the
@@ -238,13 +267,13 @@ where
             let mut qb = build_select(&self);
             let rows: Vec<T> = qb
                 .build_query_as::<T>()
-                .fetch_all(pool)
+                .fetch_all(&pool)
                 .await
                 .map_err(DjogiError::from)?;
 
             // Apply each prefetch loader. Empty main result -> no
             // loaders run (short-circuit inside `apply_prefetches`).
-            apply_prefetches(pool, &prefetches, rows).await
+            apply_prefetches(&pool, &prefetches, rows).await
         }
     }
 
@@ -292,20 +321,20 @@ where
     /// short-circuits the prefetch pass — no prefetch loader runs
     /// when there are no parent rows to stitch against.
     ///
-    /// # Executor shape
+    /// # Context shape
     ///
-    /// Takes `&PgPool` concretely rather than the `impl Executor`
-    /// generic `fetch_all` accepts, matching
-    /// [`fetch_all_prefetched`](Self::fetch_all_prefetched): the
-    /// prefetch loaders (when registered) run *after* the main query
-    /// and need their own connection-from-pool without threading
-    /// lifetimes through the type-erased loader signature.
-    pub fn fetch_all_joined(
+    /// Takes `&mut DjogiContext`, matching
+    /// [`fetch_all_prefetched`](Self::fetch_all_prefetched). Phase 3
+    /// ships pool-only: a transaction-backed context is surfaced as a
+    /// `DjogiError::Sqlx` at the entry point until the prefetch loader
+    /// signature is generalised to share a connection with the outer
+    /// transaction.
+    pub fn fetch_all_joined<'ctx>(
         self,
-        pool: &sqlx::PgPool,
-    ) -> impl Future<Output = Result<Vec<JoinedRow<T>>, DjogiError>> + Send + '_
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<JoinedRow<T>>, DjogiError>> + Send + 'ctx
     where
-        T: FromJoinedRow,
+        T: FromJoinedRow + 'ctx,
         T::Pk: Clone + Send + Sync + 'static,
     {
         async move {
@@ -315,6 +344,17 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+
+            let pool = ctx
+                .pool()
+                .ok_or_else(|| {
+                    sqlx::Error::Configuration(
+                        "fetch_all_joined requires a pool-backed DjogiContext; \
+                         transaction-backed select_related is not supported yet"
+                            .into(),
+                    )
+                })?
+                .clone();
 
             // Snapshot prefetch + select_related paths before we build
             // the SQL — `build_select_joined` borrows the queryset
@@ -331,8 +371,11 @@ where
             // (per registered path) child can be extracted via
             // `FromJoinedRow::from_prefixed_row`.
             let mut qb = build_select_joined(&self);
-            let rows: Vec<sqlx::postgres::PgRow> =
-                qb.build().fetch_all(pool).await.map_err(DjogiError::from)?;
+            let rows: Vec<sqlx::postgres::PgRow> = qb
+                .build()
+                .fetch_all(&pool)
+                .await
+                .map_err(DjogiError::from)?;
 
             // Decode each row into a JoinedRow<T> carrying any joined
             // children. `apply_select_related` is pure CPU work — no
@@ -344,7 +387,7 @@ where
             // values. `stitch_prefetches_into_joined` short-circuits
             // when `prefetches` is empty, so there's no cost for the
             // common `select_related`-only path.
-            stitch_prefetches_into_joined(joined, &prefetches, pool).await
+            stitch_prefetches_into_joined(joined, &prefetches, &pool).await
         }
     }
 
@@ -354,12 +397,12 @@ where
     /// is the terminal you reach for when you want "any row that matches"
     /// rather than "the unique row that matches". Pair it with
     /// [`QuerySet::order_by`] for a deterministic choice.
-    pub fn first<'a, E>(
+    pub fn first<'ctx>(
         self,
-        executor: E,
-    ) -> impl Future<Output = Result<Option<T>, DjogiError>> + Send
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Option<T>, DjogiError>> + Send + 'ctx
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none returns `None` without
@@ -370,11 +413,16 @@ where
             let mut qs = self;
             qs.limit = Some(1);
             let mut qb = build_select(&qs);
-            let opt: Option<T> = qb
-                .build_query_as::<T>()
-                .fetch_optional(executor)
-                .await
-                .map_err(DjogiError::from)?;
+            let q = qb.build_query_as::<T>();
+            let opt: Option<T> = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => {
+                    q.fetch_optional(&*pool).await.map_err(DjogiError::from)?
+                }
+                ContextInner::Transaction(tx) => q
+                    .fetch_optional(&mut **tx)
+                    .await
+                    .map_err(DjogiError::from)?,
+            };
             Ok(opt)
         }
     }
@@ -388,9 +436,12 @@ impl<T: Model> QuerySet<T> {
     /// Returns `i64` to match Postgres' `BIGINT` result of `COUNT(*)` and to
     /// leave headroom for tables that grow past `i32::MAX` rows. User code
     /// that needs a `usize` converts at the call site.
-    pub fn count<'a, E>(self, executor: E) -> impl Future<Output = Result<i64, DjogiError>> + Send
+    pub fn count<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<i64, DjogiError>> + Send + 'ctx
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none returns 0 without SQL.
@@ -398,11 +449,13 @@ impl<T: Model> QuerySet<T> {
                 return Ok(0);
             }
             let mut qb = build_count(&self);
-            let n: i64 = qb
-                .build_query_scalar::<i64>()
-                .fetch_one(executor)
-                .await
-                .map_err(DjogiError::from)?;
+            let q = qb.build_query_scalar::<i64>();
+            let n: i64 = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => q.fetch_one(&*pool).await.map_err(DjogiError::from)?,
+                ContextInner::Transaction(tx) => {
+                    q.fetch_one(&mut **tx).await.map_err(DjogiError::from)?
+                }
+            };
             Ok(n)
         }
     }
@@ -413,9 +466,12 @@ impl<T: Model> QuerySet<T> {
     /// [`crate::query::sql::build_exists`]) so Postgres stops scanning at
     /// the first match — meaningful for large tables where even a count
     /// probe would touch many pages.
-    pub fn exists<'a, E>(self, executor: E) -> impl Future<Output = Result<bool, DjogiError>> + Send
+    pub fn exists<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<bool, DjogiError>> + Send + 'ctx
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send,
+        T: 'ctx,
     {
         async move {
             // TASK6:empty_contract — structural-none returns false without SQL.
@@ -423,11 +479,13 @@ impl<T: Model> QuerySet<T> {
                 return Ok(false);
             }
             let mut qb = build_exists(&self);
-            let b: bool = qb
-                .build_query_scalar::<bool>()
-                .fetch_one(executor)
-                .await
-                .map_err(DjogiError::from)?;
+            let q = qb.build_query_scalar::<bool>();
+            let b: bool = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => q.fetch_one(&*pool).await.map_err(DjogiError::from)?,
+                ContextInner::Transaction(tx) => {
+                    q.fetch_one(&mut **tx).await.map_err(DjogiError::from)?
+                }
+            };
             Ok(b)
         }
     }

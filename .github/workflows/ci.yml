@@ -43,7 +43,14 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          # rust-src is required for trybuild compile-fail fixtures that
+          # capture const-eval panics originating in stdlib — rustc inlines
+          # stdlib source excerpts in error output only when rust-src is
+          # installed, so stored `.stderr` snapshots drift between sandboxes
+          # with and without it. Adding rust-src here keeps CI's rustc
+          # output shape aligned with local dev environments that install
+          # it by default (e.g., rust-analyzer users).
+          components: clippy, rustfmt, rust-src
 
       - name: Cache cargo registry and build
         uses: actions/cache@v5

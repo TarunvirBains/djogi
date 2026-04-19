@@ -57,43 +57,44 @@ pub trait Model: Sized + Send + Sync + 'static {
     fn pk_value(&self) -> &Self::Pk;
     fn descriptor() -> &'static ModelDescriptor;
 
-    fn get<'a>(
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+    fn get(
+        ctx: &mut DjogiContext,
         id: Self::Pk,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
-    fn create<'a>(
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+    fn create(
+        ctx: &mut DjogiContext,
         value: Self,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
-    fn save<'a>(
-        &self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    ) -> impl Future<Output = Result<(), DjogiError>> + Send;
+    fn save<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx;
 
-    fn delete<'a>(
+    fn delete(
         self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+        ctx: &mut DjogiContext,
     ) -> impl Future<Output = Result<(), DjogiError>> + Send;
 
-    fn refresh_from_db<'a>(
-        &self,
-        executor: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
-    ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
+    fn refresh_from_db<'ctx>(
+        &'ctx self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
 }
 ```
 
 `create()` takes the struct directly — no separate `CreateVehicle` wrapper. Framework-injected fields (`id`, `created_at`, `updated_at`) are **public** — they are visible in struct literals, auto-complete, and pattern matches, just like developer-defined fields. The database overwrites whatever values are passed; callers must supply something syntactically valid.
 
-The executor parameter is generic over `sqlx::Executor`, so the same call site works against a pool (auto-connection) or inside a transaction. Pass `&mut *tx` to deref-reborrow a `&mut Transaction` into `&mut PgConnection`.
+The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each sqlx boundary. Phase 4's `atomic()` wrapper (Task 1 — this retrofit ships the API-shape change; `atomic()` itself is follow-up work) is the ergonomic way into a transaction; `DjogiContext::from_transaction(tx)` is the low-level escape hatch.
 
 #### 4.2.1 Construction
 
 Users set framework fields to any value; `create()` ignores them and the database populates them via column defaults + `RETURNING *`.
 
 ```rust
-let article = Article::create(&pool, Article {
+let mut ctx = DjogiContext::from_pool(pool.clone());
+let article = Article::create(&mut ctx, Article {
     id: HeerId::from_i64(0).unwrap(), // ignored — DB generates via generate_id()
     created_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
     updated_at: DateTime::UNIX_EPOCH, // ignored — DB generates via now()
@@ -106,7 +107,7 @@ let article = Article::create(&pool, Article {
 For models whose user fields all implement `Default`, the macro emits an `impl Default` so the struct-update shorthand works:
 
 ```rust
-let article = Article::create(&pool, Article {
+let article = Article::create(&mut ctx, Article {
     title: "Hello".into(),
     body: "World".into(),
     published: true,
@@ -188,10 +189,10 @@ pub new_name: String,
 When enabled, fetched models track which fields changed. `save()` issues `UPDATE` only for dirty fields.
 
 ```rust
-let mut car = Vehicle::get(&pool, id).await?;
+let mut car = Vehicle::get(&mut ctx, id).await?;
 car.gas_fill = 80;
 // Emits: UPDATE vehicles SET gas_fill = $1, updated_at = $2 WHERE id = $3
-car.save(&pool).await?;
+car.save(&mut ctx).await?;
 ```
 
 The macro injects a hidden `__dirty: DirtyTracker` field. Off by default — opt in globally via `Djogi.toml` or per-model with `#[model(dirty_tracking)]`.

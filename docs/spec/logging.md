@@ -65,7 +65,7 @@ Redaction in diffs (Phase 6.5 — see [Protected Data Metadata & Field Codecs](.
 
 Actor attribution:
 ```rust
-car.save_with_actor(&pool, "user:8312847293").await?;
+car.save_with_actor(&mut ctx, "user:8312847293").await?;
 // or via request-context hook — all saves in a handler attributed automatically
 ```
 Querying from the shell:

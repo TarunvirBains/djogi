@@ -451,6 +451,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tracing",
  "trybuild",
  "uuid",
 ]

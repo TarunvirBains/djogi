@@ -21,6 +21,7 @@ heeranjid-sqlx.workspace = true
 inventory.workspace = true
 figment.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

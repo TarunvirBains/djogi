@@ -43,7 +43,7 @@ This document maps every functional capability in Django's ORM, identifies what 
 | **`bulk_update()`** | Batch UPDATE via CASE/WHEN | Add |
 | **`get_or_create()`** | Atomic lookup-or-insert | Add — returns `(instance, created: bool)` |
 | **`update_or_create()`** | Atomic lookup-update-or-insert | Add — upsert pattern |
-| **`in_bulk()`** | Fetch multiple PKs → HashMap | Add — `Vehicle::in_bulk(&pool, &[id1, id2, id3])` |
+| **`in_bulk()`** | Fetch multiple PKs → HashMap | Add — `Vehicle::in_bulk(&mut ctx, &[id1, id2, id3])` |
 | **`only()` / `defer()`** | Partial field loading | Add — select only needed columns. Rust can enforce at type level (phantom types or builder return types) |
 | **`none()`** | Empty QuerySet that never queries | Add — useful for conditional composition |
 | **`reverse()`** | Reverse current ordering | Add |
@@ -123,7 +123,7 @@ Django's expression system is massive (~134 classes). The core abstraction: expr
 Owner::objects()
     .annotate("vehicle_count", Count(|f| f.vehicles))  // reverse relation
     .filter(|f| f.vehicle_count.gte(5))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 This is the single biggest functional gap in the current Djogi spec. Real applications need aggregation constantly.
@@ -186,7 +186,7 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 |---|---|
 | `save()` does SELECT then UPDATE (or just INSERT). Detects insert vs update via PK presence. | Djogi: explicit. `create()` is INSERT, `save()` is UPDATE. No ambiguity. Already better. |
 | Django's `save()` saves ALL fields by default (full row UPDATE) | Djogi: dirty tracking makes partial UPDATE the default when enabled. Already better. |
-| `refresh_from_db()` reloads all fields or a subset | Djogi: can type-narrow — `car.refresh(&pool, \|f\| (f.gas_fill, f.active))` returns only those |
+| `refresh_from_db()` reloads all fields or a subset | Djogi: can type-narrow — `car.refresh(&mut ctx, \|f\| (f.gas_fill, f.active))` returns only those |
 | Django signals (pre_save, post_save, etc.) are runtime-registered, untyped | Djogi: consider compile-time hooks via trait impls instead of dynamic signals |
 
 ---
@@ -619,7 +619,7 @@ let price = car.total_price;
 Vehicle::objects()
     .filter(|f| f.total_price.gte(50_000))
     .order_by(|f| f.total_price.desc())
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 The proc macro generates:
@@ -667,7 +667,7 @@ Django 4.1+ supports upsert via `bulk_create(update_conflicts=True, update_field
 Djogi must support this as a first-class pattern:
 
 ```rust
-Vehicle::bulk_upsert(&pool, vehicles, BulkUpsert {
+Vehicle::bulk_upsert(&mut ctx, vehicles, BulkUpsert {
     conflict_fields: |f| (f.vin,),
     update_fields: |f| (f.gas_fill, f.active),
 }).await?;
