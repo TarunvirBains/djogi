@@ -74,7 +74,6 @@ impl ManyToMany<Group> for Person {
     async fn related<'a, E>(&'a self, executor: E) -> Result<Vec<Group>, DjogiError>
     where
         E: djogi::__private::sqlx::Executor<'a, Database = djogi::__private::sqlx::Postgres>
-            + Send
             + Copy
             + 'a,
     {
@@ -111,7 +110,6 @@ impl ManyToMany<Group> for Person {
     ) -> Result<PersonGroup, DjogiError>
     where
         E: djogi::__private::sqlx::Executor<'a, Database = djogi::__private::sqlx::Postgres>
-            + Send
             + 'a,
     {
         // Overwrite the junction's FK columns with freshly-built
@@ -132,7 +130,6 @@ impl ManyToMany<Group> for Person {
     ) -> Result<u64, DjogiError>
     where
         E: djogi::__private::sqlx::Executor<'a, Database = djogi::__private::sqlx::Postgres>
-            + Send
             + 'a,
     {
         // The canonical delete body — composing two typed filters (by

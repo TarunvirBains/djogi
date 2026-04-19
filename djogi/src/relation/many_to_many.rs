@@ -54,16 +54,33 @@
 //! That invocation stamps out both directions. Until the macro lands, the
 //! hand-written form documented on each trait method is the supported path.
 //!
-//! # Why sealed
+//! # What the inherited seal does and does not cover
 //!
 //! `ManyToMany<Target>` sits atop [`Model`], which is itself sealed via
-//! [`crate::model::__sealed::Sealed`] — hand-impls of `Model` that skip
-//! `#[derive(Model)]` fail to compile because the `Sealed` supertrait bound
-//! cannot be satisfied outside `djogi` / `djogi-macros`. `ManyToMany<Target>`
-//! **inherits** that seal through the `Self: Model` bound: a downstream
-//! crate cannot fabricate a type that satisfies the `Model` bound without
-//! going through `#[derive(Model)]` first, which is the sole path that emits
-//! the `Sealed` impl. No additional seal marker is needed on this trait.
+//! [`crate::model::__sealed::Sealed`]. The `Self: Model` supertrait bound
+//! restricts **which types can be the implementor**: a downstream crate
+//! cannot fabricate a type that satisfies the `Model` bound without going
+//! through `#[derive(Model)]` first (the sole path that emits the `Sealed`
+//! impl). A hand-rolled `impl Model for Hostile { ... }` fails to compile
+//! and so does a hand-rolled `impl ManyToMany<…> for Hostile`.
+//!
+//! What the inherited seal does **not** cover: the **return values** of
+//! [`this_fk`](ManyToMany::this_fk) / [`that_fk`](ManyToMany::that_fk) on a
+//! legitimate `#[derive(Model)]`-derived implementor. Nothing stops a
+//! downstream crate from writing
+//! `impl ManyToMany<Group> for Person { fn this_fk() -> &'static str { "id; DROP TABLE users --" } … }`
+//! with a real `Person` model. The seal only refuses fake `Model`s, not
+//! hostile string returns from trait methods on legitimate models.
+//!
+//! **Mitigation:** any consumer that pushes `Self::this_fk()` /
+//! `Self::that_fk()` into [`sqlx::QueryBuilder`] MUST first run the value
+//! through [`crate::ident::assert_plain_ident`] (or the
+//! `crate::ident::debug_assert_ident!` macro for debug-only checks). This
+//! commit ships no SQL-emitting consumer of either method, so the contract
+//! is documentary today; the upcoming `many_to_many!` macro (Phase 3 Task 7)
+//! will validate at codegen time, and any future hand-written SQL emitter
+//! must follow the same rule. Without that gate the trait would be a
+//! string-based filter-bypass surface in disguise.
 //!
 //! # Where
 //!
@@ -198,7 +215,7 @@ where
         executor: E,
     ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'a
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + Copy + 'a;
+        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Copy + 'a;
 
     /// Attach `self` to `target` by inserting a row into [`Through`].
     ///
@@ -221,7 +238,7 @@ where
         extras: Self::Through,
     ) -> impl Future<Output = Result<Self::Through, DjogiError>> + Send + 'a
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + 'a;
+        E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a;
 
     /// Detach `self` from `target` by deleting the matching junction row.
     ///
@@ -240,5 +257,5 @@ where
         target: &'a Target,
     ) -> impl Future<Output = Result<u64, DjogiError>> + Send + 'a
     where
-        E: sqlx::Executor<'a, Database = sqlx::Postgres> + Send + 'a;
+        E: sqlx::Executor<'a, Database = sqlx::Postgres> + 'a;
 }
