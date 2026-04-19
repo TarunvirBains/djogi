@@ -261,6 +261,13 @@ pub(crate) fn select_columns<T: Model>(paths: &[ErasedSelectRelated]) -> String 
         let alias = format!("rel_{}", path.source_column);
         let desc = (path.child_descriptor)();
         for field in desc.fields {
+            // The Model trait is sealed, so `desc.fields` comes from a
+            // `#[derive(Model)]`-emitted descriptor — `field.name` should
+            // already satisfy the identifier contract. Re-validate in
+            // debug builds so a malformed emission (or a downstream macro
+            // pretending to be `#[derive(Model)]`) surfaces as a loud
+            // framework-bug panic instead of malformed SQL.
+            crate::ident::debug_assert_ident!(field.name, "field_name");
             out.push_str(", ");
             // Source column: `rel_owner_id.id`.
             out.push_str(&alias);

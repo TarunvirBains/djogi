@@ -183,22 +183,29 @@ pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
     );
 }
 
-// Debug-build-only identifier assertion macro. Commented out because B3
-// (debug_assert_ident on FieldDescriptor.name at emission time — prefetch.rs
-// and select_related.rs) has not landed yet and the macro would trigger
-// `unused_macros`/`unused_imports` warnings under `-D warnings`. Uncomment
-// together with the first caller.
-//
-// macro_rules! debug_assert_ident {
-//     ($value:expr, $role:literal) => {{
-//         #[cfg(debug_assertions)]
-//         {
-//             $crate::ident::assert_plain_ident($value, $role);
-//         }
-//     }};
-// }
-//
-// pub(crate) use debug_assert_ident;
+/// Debug-build-only identifier assertion. Expands to
+/// [`assert_plain_ident`] under `cfg(debug_assertions)` and to nothing
+/// in release builds, so the check runs in tests and `cargo run` but
+/// contributes zero overhead to a production `--release` binary.
+///
+/// Intended for hot paths that accept a `&'static str` from a source
+/// the compiler cannot structurally seal — notably the per-row loops
+/// in `relation::prefetch` and `relation::select_related` that read
+/// `descriptor().fields[].name`. Sealing the `Model` trait stops a
+/// hand-rolled `impl Model` from reaching that code, but a hostile
+/// `#[derive(Model)]`-equivalent macro in a downstream crate could
+/// still feed the framework a malformed field name; the debug assert
+/// turns that into a loud framework-bug panic in CI.
+macro_rules! debug_assert_ident {
+    ($value:expr, $role:literal) => {{
+        #[cfg(debug_assertions)]
+        {
+            $crate::ident::assert_plain_ident($value, $role);
+        }
+    }};
+}
+
+pub(crate) use debug_assert_ident;
 
 #[cfg(test)]
 mod tests {
@@ -317,16 +324,24 @@ mod tests {
         }
     }
 
-    // Companion test for the commented-out `debug_assert_ident` macro. Uncomment
-    // together with the macro when B3 lands.
-    //
-    // #[test]
-    // fn debug_assert_ident_matches_runtime_validator() {
-    //     // Under `cfg(test)`, `debug_assertions` is on, so the macro must
-    //     // panic identically to `assert_plain_ident`. This pins the macro's
-    //     // behavior against the validator so drift would fail.
-    //     let caught =
-    //         std::panic::catch_unwind(|| debug_assert_ident!("select", "test"));
-    //     assert!(caught.is_err(), "debug_assert_ident should panic on reserved keyword");
-    // }
+    #[test]
+    fn debug_assert_ident_matches_runtime_validator() {
+        // Under `cfg(test)`, `debug_assertions` is on, so the macro must
+        // panic identically to `assert_plain_ident`. This pins the macro's
+        // behavior against the validator so drift would fail.
+        let caught = std::panic::catch_unwind(|| debug_assert_ident!("select", "field_name"));
+        assert!(
+            caught.is_err(),
+            "debug_assert_ident should panic on reserved keyword"
+        );
+    }
+
+    #[test]
+    fn debug_assert_ident_accepts_valid_name() {
+        // Paired positive case — confirms the macro is not simply
+        // panicking unconditionally and keeps the hot path quiet for
+        // well-formed identifiers.
+        let ok = std::panic::catch_unwind(|| debug_assert_ident!("owner_id", "field_name"));
+        assert!(ok.is_ok());
+    }
 }

@@ -412,6 +412,13 @@ where
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new("");
         qb.push("SELECT p.id AS __djogi_parent_id");
         for field in target_fields {
+            // The Model trait is sealed, so `target_fields` comes from a
+            // `#[derive(Model)]`-emitted descriptor — `field.name` should
+            // already satisfy the identifier contract. Re-validate in
+            // debug builds so a malformed emission (or a downstream macro
+            // pretending to be `#[derive(Model)]`) surfaces as a loud
+            // framework-bug panic instead of malformed SQL.
+            crate::ident::debug_assert_ident!(field.name, "field_name");
             qb.push(", t.");
             qb.push(field.name);
         }
