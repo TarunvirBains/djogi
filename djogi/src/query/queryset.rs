@@ -583,32 +583,55 @@ impl<T: Model> QuerySet<T> {
     }
 }
 
+/// Private marker trait used to seal [`IntoDistinctColumns`].
+///
+/// Only types djogi itself blesses — `FieldRef` and tuples of
+/// `FieldRef` up to arity 6 — implement `Sealed`, and because the
+/// module is crate-private, downstream crates cannot add their own
+/// impls. That closes the identifier-smuggling route a hostile
+/// downstream would otherwise have via
+/// `impl IntoDistinctColumns for MyStruct { fn into_distinct_columns(self) -> Vec<&'static str> { vec!["1; DROP TABLE ..."] } }`.
+mod distinct_seal {
+    pub trait Sealed {}
+}
+
 /// Bridge from closure return types to the `Vec<&'static str>` of column
 /// names that [`QuerySet::distinct_on`] stores. Implemented for
 /// [`FieldRef`] and tuples of `FieldRef`s up to arity 6.
 ///
-/// Expanding beyond six requires adding another `impl_into_distinct_columns_tuple!`
-/// invocation below — the ceiling is deliberately low because `DISTINCT ON`
-/// with more than a handful of columns is a design smell, not a capacity
-/// limit Djogi cares to lift.
-pub trait IntoDistinctColumns {
+/// Expanding beyond six requires adding another
+/// `impl_into_distinct_columns_tuple!` invocation below — the ceiling is
+/// deliberately low because `DISTINCT ON` with more than a handful of
+/// columns is a design smell, not a capacity limit Djogi cares to lift.
+///
+/// The trait is sealed via [`distinct_seal::Sealed`] — downstream code
+/// can name `IntoDistinctColumns` as a bound (so `distinct_on` callers
+/// can pass the ZST tuples returned by macro-generated field
+/// accessors) but cannot implement it for their own types. Every
+/// column name that reaches `into_distinct_columns` therefore traces
+/// back to a sealed `FieldRef` whose constructor ran through
+/// [`crate::ident::assert_plain_ident`].
+pub trait IntoDistinctColumns: distinct_seal::Sealed {
     /// Flatten the receiver into the ordered list of column names Postgres
     /// will dedupe on.
     fn into_distinct_columns(self) -> Vec<&'static str>;
 }
 
+impl<M: Model, V> distinct_seal::Sealed for FieldRef<M, V> {}
 impl<M: Model, V> IntoDistinctColumns for FieldRef<M, V> {
     fn into_distinct_columns(self) -> Vec<&'static str> {
         vec![self.column()]
     }
 }
 
-/// Generate `IntoDistinctColumns` for a tuple of `FieldRef`s. Each type
-/// parameter stands for the tuple slot's value type `V` — the model type
-/// `M` is shared across every `FieldRef` in the tuple because `distinct_on`
-/// only ever sees one model's columns at a time.
+/// Generate `IntoDistinctColumns` (plus the sealed marker) for a tuple
+/// of `FieldRef`s. Each type parameter stands for the tuple slot's
+/// value type `V` — the model type `M` is shared across every
+/// `FieldRef` in the tuple because `distinct_on` only ever sees one
+/// model's columns at a time.
 macro_rules! impl_into_distinct_columns_tuple {
     ($($name:ident),+) => {
+        impl<M: Model, $($name),+> distinct_seal::Sealed for ($(FieldRef<M, $name>,)+) {}
         impl<M: Model, $($name),+> IntoDistinctColumns for ($(FieldRef<M, $name>,)+) {
             fn into_distinct_columns(self) -> Vec<&'static str> {
                 #[allow(non_snake_case)]
