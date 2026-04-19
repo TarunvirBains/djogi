@@ -78,7 +78,7 @@ pub use query::{
     UpdateAssignment, UpdateStmt,
 };
 pub use relation::{
-    ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, OnDelete, OneToOneField,
+    ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete, OneToOneField,
     OneToOneFieldResolved, PrefetchedRow,
 };
 pub use types::{Date, DateTime, HeerId, RanjId};
@@ -101,8 +101,8 @@ pub mod prelude {
     // needs the unresolved wrapper, and any handler consuming a
     // prefetched row needs the resolved wrapper.
     pub use crate::relation::{
-        ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, OnDelete, OneToOneField,
-        OneToOneFieldResolved, PrefetchedRow,
+        ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete,
+        OneToOneField, OneToOneFieldResolved, PrefetchedRow,
     };
     pub use crate::types::{Date, DateTime, HeerId, RanjId};
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`

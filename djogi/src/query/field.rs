@@ -321,6 +321,36 @@ impl IntoFilterValue for crate::RanjId {
     }
 }
 
+// Relation-wrapper impls: a `ForeignKey<T>` or `OneToOneField<T>` column's
+// typed `FieldRef<M, ForeignKey<T>>` accepts `.eq(fk)` by projecting the
+// FK through its inner `T::Pk`'s `IntoFilterValue` — no new `FilterValue`
+// variant required, and the wire shape matches the column exactly (FK
+// wrappers encode as their inner PK under sqlx via the `Encode` impls in
+// `crate::relation::foreign_key`). This is what makes hand-written
+// `ManyToMany<Target>` impls in `crate::relation::many_to_many` viable:
+// the canonical body filters `Through::objects()` on
+// `this_fk.eq(ForeignKey::new(self.id.clone()))`, which only compiles
+// because of this blanket.
+impl<T> IntoFilterValue for crate::relation::ForeignKey<T>
+where
+    T: crate::model::Model,
+    T::Pk: IntoFilterValue,
+{
+    fn into_filter_value(self) -> FilterValue {
+        self.key().into_filter_value()
+    }
+}
+
+impl<T> IntoFilterValue for crate::relation::OneToOneField<T>
+where
+    T: crate::model::Model,
+    T::Pk: IntoFilterValue,
+{
+    fn into_filter_value(self) -> FilterValue {
+        self.key().into_filter_value()
+    }
+}
+
 // ── Generic lookup methods (any V: IntoFilterValue) ───────────────────────
 
 impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
