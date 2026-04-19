@@ -399,7 +399,7 @@ where
         // Zip aligned results into per-row relation maps. Same
         // `take()`-per-slot pattern the prefetch stitcher uses —
         // each boxed target moves into exactly one row.
-        for (jr, slot) in joined.iter_mut().zip(aligned.into_iter()) {
+        for (jr, slot) in joined.iter_mut().zip(aligned) {
             if let Some(child_box) = slot {
                 jr.relations_mut().insert(prefetch.source_column, child_box);
             }
