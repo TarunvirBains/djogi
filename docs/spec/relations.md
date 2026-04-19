@@ -15,13 +15,13 @@ pub struct Vehicle {
 Eager loading — explicit, no lazy loading:
 ```rust
 // Single fetch — one query, explicit
-let owner = car.owner_id.fetch(&pool).await?;
+let owner = car.owner_id.fetch(&mut ctx).await?;
 
 // Prefetch on QuerySet — one IN (...) query per relation, not N+1
 let cars = Vehicle::objects()
     .prefetch(VehicleRelated::owner())
     .prefetch(VehicleRelated::fuel_type())
-    .fetch_all(&pool).await?;
+    .fetch_all_prefetched(&mut ctx).await?;
 
 let owner = cars[0].owner_id.resolved();   // -> Option<&Owner>, free after prefetch
 ```
@@ -67,20 +67,20 @@ Explicit naming via `RELATION` is intentional — auto-pluralization is error-pr
 Generated convenience methods:
 ```rust
 // Person side
-let groups = person.groups(&pool).await?;
-person.add_to_group(&pool, &group, PersonGroup {
+let groups = person.groups(&mut ctx).await?;
+person.add_to_group(&mut ctx, &group, PersonGroup {
     role: "admin".into(), ..Default::default()
 }).await?;
-person.remove_from_group(&pool, &group).await?;
+person.remove_from_group(&mut ctx, &group).await?;
 
 // Group side
-let members = group.members(&pool).await?;
-group.add_to_member(&pool, &person, PersonGroup { ... }).await?;
-group.remove_from_member(&pool, &person).await?;
+let members = group.members(&mut ctx).await?;
+group.add_to_member(&mut ctx, &person, PersonGroup { ... }).await?;
+group.remove_from_member(&mut ctx, &person).await?;
 
 // Through model is a full Model — directly queryable
 let admins = PersonGroup::objects()
     .filter(|f| f.role.eq("admin"))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 ---

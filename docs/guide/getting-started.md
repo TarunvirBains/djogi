@@ -385,8 +385,9 @@ async fn setup(pool: &PgPool) {
 #[sqlx::test]
 async fn create_and_get(pool: PgPool) {
     setup(&pool).await;
+    let mut ctx = DjogiContext::from_pool(pool.clone());
 
-    let article = Article::create(&pool, Article {
+    let article = Article::create(&mut ctx, Article {
         title: "Test Article".into(),
         slug: "test".into(),
         body: "Body text".into(),
@@ -403,15 +404,16 @@ async fn create_and_get(pool: PgPool) {
     assert!(!article.published);
 
     // Fetch back by PK
-    let fetched = Article::get(&pool, article.id).await.unwrap();
+    let fetched = Article::get(&mut ctx, article.id).await.unwrap();
     assert_eq!(fetched.slug, "test");
 }
 
 #[sqlx::test]
 async fn save_updates_fields(pool: PgPool) {
     setup(&pool).await;
+    let mut ctx = DjogiContext::from_pool(pool.clone());
 
-    let mut article = Article::create(&pool, Article {
+    let mut article = Article::create(&mut ctx, Article {
         title: "Draft".into(),
         slug: "draft".into(),
         body: "".into(),
@@ -424,9 +426,9 @@ async fn save_updates_fields(pool: PgPool) {
 
     article.published = true;
     article.title = "Published".into();
-    article.save(&pool).await.unwrap();
+    article.save(&mut ctx).await.unwrap();
 
-    let reloaded = Article::get(&pool, article.id).await.unwrap();
+    let reloaded = Article::get(&mut ctx, article.id).await.unwrap();
     assert!(reloaded.published);
     assert_eq!(reloaded.title, "Published");
 }
@@ -434,8 +436,9 @@ async fn save_updates_fields(pool: PgPool) {
 #[sqlx::test]
 async fn delete_removes_row(pool: PgPool) {
     setup(&pool).await;
+    let mut ctx = DjogiContext::from_pool(pool.clone());
 
-    let article = Article::create(&pool, Article {
+    let article = Article::create(&mut ctx, Article {
         title: "To Delete".into(),
         slug: "to-delete".into(),
         body: "".into(),
@@ -447,10 +450,10 @@ async fn delete_removes_row(pool: PgPool) {
     .unwrap();
 
     let id = article.id;
-    article.delete(&pool).await.unwrap();
+    article.delete(&mut ctx).await.unwrap();
 
     assert!(matches!(
-        Article::get(&pool, id).await,
+        Article::get(&mut ctx, id).await,
         Err(DjogiError::NotFound)
     ));
 }

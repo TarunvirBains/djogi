@@ -114,14 +114,15 @@ Field access on `ForeignKey<T>` never issues SQL. The explicit verbs:
 
 Both consume a `{Model}Related` entry emitted by the `#[model]` macro.
 For a `Vehicle` model with a `ForeignKey<Owner>` on `owner_id`, the macro
-emits `VehicleRelated::owner_id()`:
+strips one trailing `_id` and emits `VehicleRelated::owner()` (so the
+accessor name matches the target struct, not the column):
 
 ```rust
 // Effective emission — do not write this by hand
 pub struct VehicleRelated;
 
 impl VehicleRelated {
-    pub fn owner_id() -> RelationPath { /* ... */ }
+    pub fn owner() -> RelationPath { /* ... */ }
 }
 ```
 
@@ -132,12 +133,12 @@ reach for the `_prefetched` terminal when you want the stitched output:
 
 ```rust
 let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
-    .prefetch(VehicleRelated::owner_id())
+    .prefetch(VehicleRelated::owner())
     .fetch_all_prefetched(&mut ctx)
     .await?;
 // Query 1: SELECT * FROM vehicles
 // Query 2: SELECT * FROM owners WHERE id IN ($1, $2, ...)
-// Then row.get(VehicleRelated::owner_id()) returns Some(&owner) on each row.
+// Then row.get(VehicleRelated::owner()) returns Some(&owner) on each row.
 ```
 
 `select_related` — stitched rows come back via `fetch_all_joined`, same
@@ -145,7 +146,7 @@ rationale:
 
 ```rust
 let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
-    .select_related(VehicleRelated::owner_id())
+    .select_related(VehicleRelated::owner())
     .fetch_all_joined(&mut ctx)
     .await?;
 // SELECT vehicles.*, owners.* FROM vehicles
@@ -153,7 +154,7 @@ let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
 ```
 
 Phase 3 supports **single-hop** prefetch / select_related. Chained multi-hop
-(`.prefetch(VehicleRelated::owner_id().then(OwnerRelated::address_id()))`)
+(`.prefetch(VehicleRelated::owner().then(OwnerRelated::address()))`)
 is on the roadmap — see [relations roadmap][relations-roadmap].
 
 [relations-roadmap]: ../roadmap/relations.md

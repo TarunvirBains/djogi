@@ -70,12 +70,12 @@ For the full attribute list, see [the models guide](./models.md).
 
 | Method | Signature | Notes |
 |---|---|---|
-| `Post::create(exec, value)` | `async -> Result<Post>` | INSERT + RETURNING; framework fields populated |
-| `Post::get(exec, id)` | `async -> Result<Post>` | Fetch by PK; returns `Err(DjogiError::NotFound)` if missing |
-| `post.save(exec)` | `async -> Result<()>` | Full-row UPDATE; `updated_at` refreshed |
-| `post.delete(exec)` | `async -> Result<()>` | DELETE; consumes the instance |
-| `post.refresh_from_db(exec)` | `async -> Result<Post>` | Returns fresh copy from DB |
-| `Post::create_with_id(exec, id, value)` | `async -> Result<Post>` | INSERT ... ON CONFLICT DO NOTHING; for pre-generated IDs |
+| `Post::create(&mut ctx, value)` | `async -> Result<Post>` | INSERT + RETURNING; framework fields populated |
+| `Post::get(&mut ctx, id)` | `async -> Result<Post>` | Fetch by PK; returns `Err(DjogiError::NotFound)` if missing |
+| `post.save(&mut ctx)` | `async -> Result<()>` | Full-row UPDATE; `updated_at` refreshed |
+| `post.delete(&mut ctx)` | `async -> Result<()>` | DELETE; consumes the instance |
+| `post.refresh_from_db(&mut ctx)` | `async -> Result<Post>` | Returns fresh copy from DB |
+| `Post::create_with_id(&mut ctx, id, value)` | `async -> Result<Post>` | INSERT ... ON CONFLICT DO NOTHING; for pre-generated IDs |
 | `Post::descriptor()` | `-> &'static ModelDescriptor` | For inventory registration — do not call manually |
 
 All methods take `&mut DjogiContext` — construct one with
@@ -284,7 +284,8 @@ async fn create_subscription(pool: PgPool) {
     // setup: install schema + create table (see Getting Started guide)
     setup_subscriptions(&pool).await;
 
-    let sub = Subscription::create(&pool, Subscription {
+    let mut ctx = DjogiContext::from_pool(pool.clone());
+    let sub = Subscription::create(&mut ctx, Subscription {
         plan_name: "pro".into(),
         status: "active".into(),
         monthly_price_cents: 2900,
@@ -380,13 +381,13 @@ query code.
   empty-flagged `QuerySet::new()`.
 
 - **Bulk `update` / `delete` accept "no filter" as "match every row".**
-  `Post::objects().update(|f| f.published().set(false)).execute(&pool)`
+  `Post::objects().update(|f| f.published().set(false)).execute(&mut ctx)`
   updates every row in the table. This is intentional, not a safety
   net; wrap in a filter before execution or reach for a transaction if
   you need a rollback path.
 
 - **Empty-assignment short-circuit for `update`.**
-  `queryset.update(|_| vec![]).execute(&pool)` returns `Ok(0)` without
+  `queryset.update(|_| vec![]).execute(&mut ctx)` returns `Ok(0)` without
   issuing SQL — an `UPDATE ... SET` with no assignments would otherwise
   be a Postgres syntax error. Same for the `.none().update(...)` path.
 
@@ -449,7 +450,7 @@ before calling `delete()`:
 
 ```rust
 let id = post.id;
-post.delete(&pool).await?;
+post.delete(&mut ctx).await?;
 // use id here — post is moved
 ```
 

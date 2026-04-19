@@ -259,6 +259,16 @@ impl DjogiContext {
     /// Prefer `atomic()` (Phase 4 Task 1) for transaction management;
     /// `commit()` is the low-level escape hatch for tests and integration
     /// code that manage transaction boundaries by hand.
+    ///
+    /// # Panics
+    ///
+    /// If an on-commit callback panics, the panic propagates out of
+    /// `commit()` and aborts the drain loop — prior callbacks have already
+    /// fired; subsequent queued callbacks are dropped. This is the pragmatic
+    /// behavior for Phase 4 retrofit scope; panic-safe drain (via
+    /// `catch_unwind`-wrapped futures) is tracked for Phase 4 Task 1's
+    /// `atomic()` implementation. Callbacks that may panic should wrap their
+    /// own body in `std::panic::catch_unwind` or equivalent.
     pub async fn commit(self) -> Result<(), DjogiError> {
         // Split the context so we can run the callbacks after consuming
         // the underlying transaction.
@@ -371,6 +381,11 @@ impl DjogiContext {
     /// Callbacks registered during a transaction that is rolled back via
     /// [`rollback()`](Self::rollback) are discarded without firing — see
     /// that method for the full rationale.
+    ///
+    /// # Panics
+    ///
+    /// Panics inside a registered callback are not caught by the framework;
+    /// see [`commit()`](Self::commit)'s `# Panics` section for behavior.
     ///
     /// # Example
     /// ```ignore

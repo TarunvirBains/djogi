@@ -123,14 +123,14 @@ for (key, val) in car.engine.unknown_fields() {
 Validation runs through the full schema tree before any write touches the database. If any level fails, the save is aborted with a structured error — nothing is written.
 ```rust
 car.engine.data.horsepower = 5000;  // exceeds range(max = 2000)
-car.save(&pool).await?;
+car.save(&mut ctx).await?;
 // Err: validation failed: engine.horsepower must be <= 2000
 
 car.engine.data.turbo = Some(Jsonb::new(TurboSpec {
     boost_psi: 18.5,
     manufacturer: "".into(),   // violates length(min = 1)
 }));
-car.save(&pool).await?;
+car.save(&mut ctx).await?;
 // Err: validation failed: engine.turbo.manufacturer must not be empty
 ```
 Error paths use dot-notation through the full nesting depth so the developer knows exactly where the failure is.

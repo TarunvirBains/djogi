@@ -13,17 +13,17 @@ In the shell, all terminal methods block transparently via an internal `block_on
 ### 5.2 Instance Operations
 ```rust
 // Fetch by PK
-let mut car = Vehicle::get(&pool, id).await?;
+let mut car = Vehicle::get(&mut ctx, id).await?;
 
 // Mutate and persist
 car.gas_fill = 70;
-car.save(&pool).await?;
+car.save(&mut ctx).await?;
 
 // Delete
-car.delete(&pool).await?;
+car.delete(&mut ctx).await?;
 
 // Create — struct is the input, framework populates id/created_at/updated_at
-let car = Vehicle::create(&pool, Vehicle {
+let car = Vehicle::create(&mut ctx, Vehicle {
     make: "Toyota".into(),
     model_name: "Camry".into(),
     gas_fill: 50,
@@ -39,14 +39,14 @@ let results = Vehicle::objects()
     .filter(|f| f.gas_fill.gte(69))
     .order_by(|f| f.gas_fill.desc())
     .limit(10)
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 QuerySets are cheap to clone and compose:
 ```rust
 let active = Vehicle::objects().filter(|f| f.active.eq(true));
 
-let cheap = active.clone().filter(|f| f.price.lte(20_000)).fetch_all(&pool).await?;
-let fast  = active.clone().filter(|f| f.horsepower.gte(300)).fetch_all(&pool).await?;
+let cheap = active.clone().filter(|f| f.price.lte(20_000)).fetch_all(&mut ctx).await?;
+let fast  = active.clone().filter(|f| f.horsepower.gte(300)).fetch_all(&mut ctx).await?;
 ```
 ### 5.4 Field Condition Methods
 
@@ -79,7 +79,7 @@ let filter = VehicleFilter::new()
 
 Vehicle::objects()
     .filter_struct(filter)
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 ### 5.6 Underlying Engine — Native `ConditionBuilder` over `sqlx::QueryBuilder`
 

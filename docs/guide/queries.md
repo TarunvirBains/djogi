@@ -314,7 +314,7 @@ plain leaf rather than a one-element `And` — the SQL emitter renders
 ### `update(|f| f.col.set(v)).execute(&mut ctx)`
 
 `.update(...)` builds a pending `UpdateStmt<T>`; the actual `UPDATE`
-runs when the caller invokes `.execute(executor)`. The closure returns a
+runs when the caller invokes `.execute(&mut ctx)`. The closure returns a
 single `UpdateAssignment` or a `Vec<UpdateAssignment>` built via
 `FieldRef::set`:
 
@@ -345,7 +345,7 @@ for the Phase 4 expression layer, or drop to raw SQL for the one-off case.
 
 [phase-4]: ../roadmap/querying.md
 
-### `delete(&pool)`
+### `delete(&mut ctx)`
 
 ```rust
 let n = Post::objects()
@@ -355,7 +355,7 @@ let n = Post::objects()
 // DELETE FROM posts WHERE published = $1
 ```
 
-`.delete(exec)` is a terminal directly on `QuerySet` (no intermediate
+`.delete(&mut ctx)` is a terminal directly on `QuerySet` (no intermediate
 pending struct — there's no payload to carry across a split). An
 unfiltered queryset deletes every row in the table; "wipe this table"
 DDL-style reaches for `TRUNCATE` via `djogi::raw::execute`.

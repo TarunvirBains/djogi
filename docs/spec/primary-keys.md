@@ -109,7 +109,7 @@ HeerId supports three patterns. All are valid — the right choice depends on th
 
 The `id` column default calls `generate_id()`. Djogi fires the INSERT and reads the ID back via `RETURNING id`. The developer never thinks about ID generation.
 ```rust
-let car = Vehicle::create(&pool, Vehicle {
+let car = Vehicle::create(&mut ctx, Vehicle {
     make: "Toyota".into(),
     model_name: "Camry".into(),
     gas_fill: 50,
@@ -131,7 +131,7 @@ let memberships = vec![
     PersonGroup { id: ids[2], person_id: carol.id, group_id: group.id, role: "member".into() },
 ];
 
-PersonGroup::bulk_create(&pool, memberships).await?;
+PersonGroup::bulk_create(&mut ctx, memberships).await?;
 ```
 In the shell:
 ```rhai
@@ -164,7 +164,7 @@ async fn create_vehicle(
     Form(input): Form<CreateVehicleInput>,
 ) -> impl IntoResponse {
     // ID arrives from the form — INSERT is idempotent
-    Vehicle::create_with_id(&pool, input.form_id, Vehicle {
+    Vehicle::create_with_id(&mut ctx, input.form_id, Vehicle {
         make: input.make,
         model_name: input.model_name,
         gas_fill: input.gas_fill,

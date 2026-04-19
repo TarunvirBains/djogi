@@ -327,7 +327,7 @@ without touching the database.
 Users set framework fields (`id`, `created_at`, `updated_at`) to any value; `create()` ignores them and the database populates the real values via column defaults + `RETURNING *`:
 
 ```rust
-let article = Article::create(&pool, Article {
+let article = Article::create(&mut ctx, Article {
     id: HeerId::from_i64(0).unwrap(), // ignored — DB generates
     created_at: DateTime::UNIX_EPOCH, // ignored — DB generates
     updated_at: DateTime::UNIX_EPOCH, // ignored — DB generates
@@ -341,7 +341,7 @@ let article = Article::create(&pool, Article {
 For models whose user fields all implement `Default`, struct-update shorthand works:
 
 ```rust
-let article = Article::create(&pool, Article {
+let article = Article::create(&mut ctx, Article {
     title: "Hello".into(),
     slug: "hello".into(),
     body: "World".into(),
