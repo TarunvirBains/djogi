@@ -685,11 +685,13 @@ async fn select_related_orphan_fk_yields_no_child(pool: PgPool) {
     let vehicle = seed_vehicle_with_owner(&pool, "Ford", &owner, Some(&fuel)).await;
 
     // Force the `fuel_type_id` column to a sentinel HeerId that cannot
-    // exist in `fuel_types_p3`. We disable the constraint briefly so
-    // the UPDATE lands, then re-enable: there's no simpler way in
-    // Postgres to create an orphan FK when a REFERENCES clause is
-    // enforced. The ALTER-TABLE toggles stay within the test's own
-    // transaction scope via the shared pool.
+    // exist in `fuel_types_p3`. We drop the FK constraint outright so
+    // the UPDATE lands — there's no simpler way in Postgres to create
+    // an orphan FK when a REFERENCES clause is enforced. The ALTER
+    // TABLE runs on `&pool` (the shared test pool), so the constraint
+    // stays dropped for the remainder of this test, but `sqlx::test`
+    // gives every test its own fresh database — the dropped constraint
+    // never leaks into a sibling test.
     sqlx::query("ALTER TABLE vehicles_p3 DROP CONSTRAINT vehicles_p3_fuel_type_id_fkey")
         .execute(&pool)
         .await
@@ -752,13 +754,14 @@ async fn select_related_multiple_relations_combine(pool: PgPool) {
 /// emission — same `WHERE` / `ORDER BY` tail, just with a LEFT JOIN
 /// prepended.
 ///
-/// The filter targets `make` (a parent-only column); using a
-/// parent-only column avoids the `ORDER BY id` / `WHERE id = ...`
-/// ambiguity a naive emitter would trigger once both parent and
-/// joined child table contribute an `id` column. Phase 3 does not
-/// auto-qualify filter columns with the parent table name — callers
-/// who want that explicit qualification reach for the raw
-/// `sqlx::QueryBuilder` escape hatch.
+/// The filter targets `make` (a parent-only column). Framework columns
+/// that also appear on the child (`id`, `created_at`, `updated_at`)
+/// get exercised by the dedicated regression tests
+/// [`select_related_compose_with_filter_on_id`] and
+/// [`select_related_compose_with_order_by_created_at`] below — the
+/// emitter qualifies every bare `WHERE` / `ORDER BY` / `DISTINCT ON`
+/// column reference with the parent table under `.select_related(...)`
+/// so Postgres does not raise 42702 on the shared column name.
 #[sqlx::test]
 async fn select_related_composes_with_filter_and_order(pool: PgPool) {
     setup_phase3(&pool).await;
@@ -830,4 +833,85 @@ async fn select_related_and_prefetch_compose_disjoint(pool: PgPool) {
         .get(VehicleRelated::fuel_type())
         .expect("fuel_type prefetch should resolve through the same typed accessor");
     assert_eq!(prefetched_fuel.name, "Gas");
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 fixup: parent-table qualification under `.select_related(...)`.
+// ---------------------------------------------------------------------------
+//
+// Before the fix, filtering or ordering on a framework column (`id`,
+// `created_at`, `updated_at`) while `.select_related(...)` was active
+// produced SQL with a bare `WHERE id = $1` / `ORDER BY id` against a
+// JOIN where both parent and child tables contribute the same column
+// name. Postgres then raised `42702 column reference "id" is
+// ambiguous` at query time.
+//
+// The emitter now qualifies every bare column reference in the
+// `WHERE` / `ORDER BY` / `DISTINCT ON` tail with the parent table
+// when `select_related_paths` is non-empty, sidestepping the
+// ambiguity. These two integration tests exercise the two common
+// shapes against live Postgres — emitter-level shape tests live in
+// `djogi/src/query/sql.rs`'s `joined_select_*` suite.
+
+/// `.select_related(...)` composed with `.filter(|f| f.id.eq(x))` —
+/// the filter targets the framework `id` column, which also appears
+/// on the joined `Owner` table. The emitted SQL qualifies the
+/// reference as `WHERE vehicles_p3.id = $1`, so Postgres does not
+/// raise 42702 on the bare form.
+#[sqlx::test]
+async fn select_related_compose_with_filter_on_id(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Iris").await;
+    let vehicle = seed_vehicle_with_owner(&pool, "Kia", &owner, None).await;
+
+    // `f.id()` is the macro-generated FieldRef<Vehicle, HeerId> — the
+    // same typed handle the `.filter(...)` closure takes for every
+    // Phase 2 filter. The call site reads naturally; qualification
+    // happens inside the emitter.
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .select_related(VehicleRelated::owner())
+        .filter(|f| f.id().eq(vehicle.id))
+        .fetch_all_joined(&pool)
+        .await
+        .expect("select_related + filter on `id` must succeed (no 42702 ambiguity)");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].row.id, vehicle.id);
+    let joined_owner = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("owner join should materialise on the filtered row");
+    assert_eq!(joined_owner.name, "Iris");
+}
+
+/// `.select_related(...)` composed with `.order_by(|f| f.created_at.asc())` —
+/// the ordering targets the framework `created_at` column, which also
+/// appears on the joined `Owner` table. The emitter qualifies the
+/// reference as `ORDER BY vehicles_p3.created_at ASC`, sidestepping
+/// 42702.
+#[sqlx::test]
+async fn select_related_compose_with_order_by_created_at(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Jack").await;
+    // Two vehicles on the same owner — ordering is the only thing
+    // that matters here; the test asserts on "no ambiguity error"
+    // rather than on a specific row order (per-row `created_at`
+    // granularity depends on HeeRanjId generation timing, not on
+    // the test's control flow).
+    let _ = seed_vehicle_with_owner(&pool, "Audi", &owner, None).await;
+    let _ = seed_vehicle_with_owner(&pool, "BMW", &owner, None).await;
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .select_related(VehicleRelated::owner())
+        .order_by(|f| f.created_at().asc())
+        .fetch_all_joined(&pool)
+        .await
+        .expect("select_related + order_by `created_at` must succeed (no 42702 ambiguity)");
+
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        let joined_owner = row
+            .get(VehicleRelated::owner())
+            .expect("every joined row should carry the owner");
+        assert_eq!(joined_owner.name, "Jack");
+    }
 }

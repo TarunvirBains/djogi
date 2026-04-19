@@ -180,13 +180,18 @@ where
 
     // `try_get_raw` returns a `PgValueRef` we can probe for NULL
     // without committing to a specific Rust type — matches the
-    // prefetch loader's approach. A missing column would be a
-    // schema/aliasing bug; treat it as "no child" so the caller
+    // prefetch loader's approach. A missing column is a
+    // schema/aliasing bug at the framework layer (emitter/descriptor
+    // drift), not a user-facing fault: in debug builds we surface it
+    // loudly via `debug_assert!`; in release builds we stay
+    // conservative and treat the miss as "no child" so the caller
     // sees `None` rather than a cryptic decode error.
-    let child_is_null = row
-        .try_get_raw(id_alias.as_str())
-        .map(|v| v.is_null())
-        .unwrap_or(true);
+    let raw = row.try_get_raw(id_alias.as_str());
+    debug_assert!(
+        raw.is_ok(),
+        "select_related: missing join alias '{id_alias}' on joined row — framework bug (check select_columns emission vs push_joins alias)"
+    );
+    let child_is_null = raw.map(|v| v.is_null()).unwrap_or(true);
 
     if child_is_null {
         return Ok(None);
