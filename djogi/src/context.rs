@@ -42,10 +42,31 @@
 //!
 //! # On-commit callbacks
 //!
-//! Callbacks registered via `.on_commit()` fire after a successful `commit()` in
-//! `atomic()`. They are useful for post-transaction side effects (cache invalidation,
-//! outbox polling, audit logging). Callback errors are logged but do not fail the
-//! commit itself (per Phase 4 v3 Q9 resolution). Callbacks are FIFO.
+//! Callbacks registered via `.on_commit()` fire after a successful `commit()`.
+//! They are useful for post-transaction side effects (cache invalidation,
+//! outbox polling, audit logging). Callback errors are logged but do not fail
+//! the commit itself (per Phase 4 v3 Q9 resolution). Callbacks are FIFO.
+//!
+//! # Drain points
+//!
+//! Registered callbacks are consumed by exactly two paths:
+//!
+//! - [`DjogiContext::commit`] — the low-level tx-backed commit drains the
+//!   queue after `sqlx::Transaction::commit` succeeds, runs each callback in
+//!   FIFO order, and logs any callback error via `tracing::error!` without
+//!   unwinding the caller. Used by tests and integration code that hand-manage
+//!   the transaction boundary.
+//! - `atomic()` (Phase 4 Task 1) — once landed, the canonical entry point
+//!   for application code; wraps the same drain-after-commit semantics but
+//!   also handles nested savepoints. See the Phase 4 plan section on
+//!   `atomic()` for the full flow.
+//!
+//! Callbacks registered on a pool-backed context with no `atomic()` scope
+//! are silently dropped when the context is dropped — the retrofit does not
+//! ship immediate-firing for the pool-backed path. Application code that
+//! needs post-operation side effects on a bare pool should enter `atomic()`
+//! (Phase 4 Task 1 onwards) or call `commit()` explicitly on a tx-backed
+//! context.
 
 use crate::DjogiError;
 use std::pin::Pin;
@@ -221,20 +242,49 @@ impl DjogiContext {
     /// Returns `Ok(())` if the context was transaction-backed and the commit
     /// succeeded. Returns `Err(DjogiError::Sqlx(..))` if the commit failed or
     /// the context was pool-backed (pool contexts have no transaction to
-    /// commit — calling `.commit()` on one is a caller error). On-commit
-    /// callbacks are consumed but not yet executed — Phase 4 Task 1's
-    /// `atomic()` wrapper owns the callback dispatch.
+    /// commit — calling `.commit()` on one is a caller error).
     ///
-    /// Prefer [`atomic()`](Self::atomic) (Phase 4 Task 1) for transaction
-    /// management; `commit()` is the low-level escape hatch for tests and
-    /// integration code that manage transaction boundaries by hand.
+    /// # On-commit callbacks
+    ///
+    /// After `sqlx::Transaction::commit` returns `Ok(())`, every callback
+    /// registered via [`on_commit`](Self::on_commit) fires in FIFO order.
+    /// Per Phase 4 v3 Q9, callback errors are logged via `tracing::error!`
+    /// but do NOT unwind the caller — a failing callback must not fail the
+    /// commit, and subsequent callbacks still fire.
+    ///
+    /// If the underlying commit fails, the callbacks are dropped without
+    /// running (the transaction did not commit, so post-commit side effects
+    /// are inappropriate).
+    ///
+    /// Prefer `atomic()` (Phase 4 Task 1) for transaction management;
+    /// `commit()` is the low-level escape hatch for tests and integration
+    /// code that manage transaction boundaries by hand.
     pub async fn commit(self) -> Result<(), DjogiError> {
-        match self.inner {
+        // Split the context so we can run the callbacks after consuming
+        // the underlying transaction.
+        let DjogiContext {
+            inner, on_commit, ..
+        } = self;
+
+        match inner {
             ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
                 "DjogiContext::commit called on a pool-backed context".into(),
             ))),
             ContextInner::Transaction(tx) => {
                 tx.commit().await.map_err(DjogiError::from)?;
+
+                // Drain the on-commit queue in FIFO order. Per Q9, callback
+                // errors are logged but do not fail the commit, and every
+                // subsequent callback still fires.
+                for cb in on_commit {
+                    match cb().await {
+                        Ok(()) => {}
+                        Err(e) => tracing::error!(
+                            error = ?e,
+                            "on_commit callback failed; continuing",
+                        ),
+                    }
+                }
                 Ok(())
             }
         }
@@ -245,7 +295,18 @@ impl DjogiContext {
     /// Returns `Ok(())` if the context was transaction-backed and the
     /// rollback succeeded. Returns `Err(DjogiError::Sqlx(..))` if the rollback
     /// failed or the context was pool-backed.
-    pub async fn rollback(self) -> Result<(), DjogiError> {
+    ///
+    /// # On-commit callbacks
+    ///
+    /// Any callbacks registered via [`on_commit`](Self::on_commit) during
+    /// this transaction are discarded (not fired). Post-commit side effects
+    /// only make sense against a successful commit; rollback explicitly
+    /// throws them away.
+    pub async fn rollback(mut self) -> Result<(), DjogiError> {
+        // Discard queued callbacks first — on a rollback path they must
+        // not fire regardless of whether the rollback itself succeeds.
+        self.on_commit.clear();
+
         match self.inner {
             ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
                 "DjogiContext::rollback called on a pool-backed context".into(),
@@ -280,15 +341,36 @@ impl DjogiContext {
         }
     }
 
-    /// Register an async callback to fire after a successful commit in `atomic()`.
+    /// Register an async callback to fire after a successful commit.
     ///
-    /// Callbacks execute in FIFO order after the transaction commits. Callback
-    /// errors are logged via tracing but do not fail the commit (Q9 resolution).
-    /// Subsequent callbacks still fire even if an earlier callback fails.
+    /// Callbacks execute in FIFO order after the transaction commits.
+    /// Callback errors are logged via `tracing::error!` but do not fail the
+    /// commit (per Phase 4 v3 Q9 resolution). Subsequent callbacks still
+    /// fire even if an earlier callback fails.
     ///
-    /// **Callable outside `atomic()` (when pool-backed):** the callback fires
-    /// immediately after the operation that registered it completes. When
-    /// transaction-backed, the callback fires after the outermost `atomic()` commits.
+    /// # Drain points
+    ///
+    /// Registered callbacks are consumed by:
+    ///
+    /// - [`commit()`](Self::commit) — drains the queue after the underlying
+    ///   `sqlx::Transaction::commit` succeeds (this IS implemented).
+    /// - `atomic()` (Phase 4 Task 1) — the canonical path once it lands.
+    ///
+    /// # Behaviour on pool-backed contexts
+    ///
+    /// When called on a pool-backed context outside any `atomic()` scope,
+    /// the callback is queued but will not fire until a subsequent
+    /// `atomic()` enters and commits. Calling `on_commit` on a pool-backed
+    /// context without entering `atomic()` means the callback is silently
+    /// dropped when the context is dropped — the retrofit does not ship
+    /// immediate-firing for the pool-backed path, and Phase 4 Task 1 owns
+    /// the eventual pool-backed dispatch semantics.
+    ///
+    /// # Behaviour on rollback
+    ///
+    /// Callbacks registered during a transaction that is rolled back via
+    /// [`rollback()`](Self::rollback) are discarded without firing — see
+    /// that method for the full rationale.
     ///
     /// # Example
     /// ```ignore

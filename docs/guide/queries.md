@@ -205,15 +205,18 @@ the deduplicated row set, not the raw one.
 
 Terminal methods consume the queryset, emit SQL via
 `sqlx::QueryBuilder<Postgres>`, and execute against a caller-provided
-executor (`&PgPool` or `&mut *tx`).
+`&mut DjogiContext`. Per Phase 4 v3 Q1 the context unifies pool and
+transaction handling: construct one with `DjogiContext::from_pool(pool)`
+for pool-backed use, or pass the context an enclosing transaction scope
+hands you.
 
 | Method | Returns | Notes |
 |---|---|---|
-| `.fetch_all(exec)` | `Result<Vec<T>, DjogiError>` | Every matching row. Requires `T: FromRow`. |
-| `.fetch_one(exec)` | `Result<T, DjogiError>` | Exactly one — zero rows → `NotFound`; two or more → `MultipleObjects`. Uses `LIMIT 2` to avoid a `COUNT(*)` round trip. |
-| `.first(exec)` | `Result<Option<T>, DjogiError>` | `LIMIT 1`; returns `None` when no row matches. Pair with `.order_by(...)` for a deterministic choice. |
-| `.count(exec)` | `Result<i64, DjogiError>` | `SELECT COUNT(*) …` (or subquery-wrapped when `distinct_on` is set). |
-| `.exists(exec)` | `Result<bool, DjogiError>` | `SELECT EXISTS(SELECT 1 … LIMIT 1)` — stops scanning at the first match. |
+| `.fetch_all(&mut ctx)` | `Result<Vec<T>, DjogiError>` | Every matching row. Requires `T: FromRow`. |
+| `.fetch_one(&mut ctx)` | `Result<T, DjogiError>` | Exactly one — zero rows → `NotFound`; two or more → `MultipleObjects`. Uses `LIMIT 2` to avoid a `COUNT(*)` round trip. |
+| `.first(&mut ctx)` | `Result<Option<T>, DjogiError>` | `LIMIT 1`; returns `None` when no row matches. Pair with `.order_by(...)` for a deterministic choice. |
+| `.count(&mut ctx)` | `Result<i64, DjogiError>` | `SELECT COUNT(*) …` (or subquery-wrapped when `distinct_on` is set). |
+| `.exists(&mut ctx)` | `Result<bool, DjogiError>` | `SELECT EXISTS(SELECT 1 … LIMIT 1)` — stops scanning at the first match. |
 
 ### `fetch_one` exact-one contract
 

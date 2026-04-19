@@ -1,8 +1,9 @@
 // Verifies that `djogi::reverse_one_to_many!` expands cleanly and emits
 // an accessor method with the expected signature. Acceptance checks:
 //
-//   - `Owner::cars(&pool)` compiles as a future whose Ok output is
-//     `Vec<Vehicle>` (no type-erased escape hatch in the public surface);
+//   - `Owner::cars(&mut ctx)` compiles as a future whose Ok output is
+//     `Vec<Vehicle>` (no type-erased escape hatch in the public surface),
+//     where `ctx: &mut DjogiContext` matches the Phase 4 retrofit;
 //   - the macro accepts a parsed `Receiver, method -> Returned by via_column`
 //     form;
 //   - the emitted method coexists with `{Model}Fields` / `{Model}Filter` /

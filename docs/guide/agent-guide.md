@@ -121,7 +121,8 @@ pass to `create()`, use `..Default::default()` to fill them:
 
 ```rust
 // CORRECT
-Post::create(&pool, Post {
+let mut ctx = DjogiContext::from_pool(pool.clone());
+Post::create(&mut ctx, Post {
     title: "My Post".into(),
     body: "Content".into(),
     published: false,
@@ -132,7 +133,7 @@ Post::create(&pool, Post {
 
 ```rust
 // WRONG — will not compile; id, created_at, updated_at are missing
-Post::create(&pool, Post {
+Post::create(&mut ctx, Post {
     title: "My Post".into(),
     body: "Content".into(),
     published: false,
@@ -482,19 +483,20 @@ for desc in inventory::iter::<ModelDescriptor> {
 
 | Task | Correct approach |
 |---|---|
-| Create a record | `Model::create(&pool, Model { ..., ..Default::default() }).await?` |
-| Fetch by PK | `Model::get(&pool, id).await?` |
-| Update a field | `instance.field = value; instance.save(&pool).await?` |
-| Delete | `instance.delete(&pool).await?` (consumes instance) |
-| Refresh stale instance | `instance.refresh_from_db(&pool).await?` |
-| Pre-generated ID insert | `Model::create_with_id(&pool, id, Model { ... }).await?` |
-| Filter query | `Model::objects().filter(\|f\| f.col().eq(v)).fetch_all(&pool).await?` |
-| Count | `Model::objects().filter(\|f\| ...).count(&pool).await?` |
-| Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&pool).await?` |
-| Bulk delete | `Model::objects().filter(\|f\| ...).delete(&pool).await?` |
-| Raw query (beyond QuerySet) | `djogi::raw::query_as(&pool, "SELECT ...", \|q\| q.bind(val)).await?` |
-| Raw execute | `djogi::raw::execute(&pool, "UPDATE ...", \|q\| q.bind(val)).await?` |
-| Transactional ops | `pool.begin().await?` → pass `&mut *tx` to methods → `tx.commit().await?` |
+| Build a context | `let mut ctx = DjogiContext::from_pool(pool.clone());` |
+| Create a record | `Model::create(&mut ctx, Model { ..., ..Default::default() }).await?` |
+| Fetch by PK | `Model::get(&mut ctx, id).await?` |
+| Update a field | `instance.field = value; instance.save(&mut ctx).await?` |
+| Delete | `instance.delete(&mut ctx).await?` (consumes instance) |
+| Refresh stale instance | `instance.refresh_from_db(&mut ctx).await?` |
+| Pre-generated ID insert | `Model::create_with_id(&mut ctx, id, Model { ... }).await?` |
+| Filter query | `Model::objects().filter(\|f\| f.col().eq(v)).fetch_all(&mut ctx).await?` |
+| Count | `Model::objects().filter(\|f\| ...).count(&mut ctx).await?` |
+| Bulk update | `Model::objects().filter(\|f\| ...).update(\|f\| f.col().set(v)).execute(&mut ctx).await?` |
+| Bulk delete | `Model::objects().filter(\|f\| ...).delete(&mut ctx).await?` |
+| Raw query (beyond QuerySet) | `djogi::raw::query_as(&mut ctx, "SELECT ...", \|q\| q.bind(val)).await?` |
+| Raw execute | `djogi::raw::execute(&mut ctx, "UPDATE ...", \|q\| q.bind(val)).await?` |
+| Transactional ops | `let mut tx_ctx = ctx.begin().await?;` → pass `&mut tx_ctx` to methods → `tx_ctx.commit().await?`. `atomic()` (Phase 4 Task 1) is the forthcoming canonical wrapper. |
 | Iterate all models | `for desc in inventory::iter::<djogi::ModelDescriptor> { ... }` |
 | Check trait contract | Read `djogi/src/model.rs` |
 | Check field-type mapping | Read `djogi-macros/src/model/attrs.rs::rust_type_to_sql` |
