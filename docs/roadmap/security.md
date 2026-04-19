@@ -94,17 +94,18 @@ async fn list_invoices(
     State(pool): State<PgPool>,
     Extension(current_org): Extension<HeerId>,  // set by your auth middleware
 ) -> impl IntoResponse {
-    let mut tx = pool.begin().await?;
+    let tx = pool.begin().await?;
+    let mut tx_ctx = DjogiContext::from_transaction(tx);
 
     // Set the tenant context — all queries in this transaction see only org's rows
-    djogi::set_tenant(&mut tx, current_org).await?;
+    djogi::set_tenant(&mut tx_ctx, current_org).await?;
 
     let invoices = Invoice::objects()
         .filter(|f| f.status.eq("open"))
         .order_by(|f| f.due_date.asc())
-        .fetch_all(&mut tx).await?;
+        .fetch_all(&mut tx_ctx).await?;
 
-    tx.commit().await?;
+    tx_ctx.commit().await?;
 
     Json(invoices).into_response()
 }
@@ -152,10 +153,11 @@ async fn create_invoice(
     Extension(org_id): Extension<HeerId>,
     Json(input): Json<CreateInvoiceInput>,
 ) -> impl IntoResponse {
-    let mut tx = pool.begin().await?;
-    djogi::set_tenant(&mut tx, org_id).await?;
+    let tx = pool.begin().await?;
+    let mut tx_ctx = DjogiContext::from_transaction(tx);
+    djogi::set_tenant(&mut tx_ctx, org_id).await?;
 
-    let invoice = Invoice::create(&mut tx, Invoice {
+    let invoice = Invoice::create(&mut tx_ctx, Invoice {
         org_id,
         number: input.number,
         total_cents: input.total_cents,
@@ -164,7 +166,7 @@ async fn create_invoice(
         ..Default::default()
     }).await?;
 
-    tx.commit().await?;
+    tx_ctx.commit().await?;
     Json(invoice).into_response()
 }
 ```
@@ -186,14 +188,15 @@ impl InvoiceService {
     // The TenantScoped wrapper makes the tenant requirement part of the API signature.
     // You cannot accidentally forget to scope the query.
     pub async fn list_open(&self, scope: TenantScoped<Invoice>) -> djogi::Result<Vec<Invoice>> {
-        let mut tx = self.pool.begin().await?;
-        djogi::set_tenant(&mut tx, scope.tenant_id()).await?;
+        let tx = self.pool.begin().await?;
+        let mut tx_ctx = DjogiContext::from_transaction(tx);
+        djogi::set_tenant(&mut tx_ctx, scope.tenant_id()).await?;
 
         let invoices = Invoice::objects()
             .filter(|f| f.org_id.eq(scope.tenant_id()).and(f.status.eq("open")))
-            .fetch_all(&mut tx).await?;
+            .fetch_all(&mut tx_ctx).await?;
 
-        tx.commit().await?;
+        tx_ctx.commit().await?;
         Ok(invoices)
     }
 }
@@ -210,20 +213,22 @@ let invoices = service.list_open(scope).await?;
 Every terminal method on a tenant-scoped model has a corresponding `_insecurely()` variant that bypasses RLS enforcement. These are provided for legitimate administrative use — global statistics, support tools, data migrations, and cross-tenant reporting.
 
 ```rust
+let mut ctx = DjogiContext::from_pool(pool.clone());
+
 // Standard — enforces tenant isolation
 Invoice::objects()
     .filter(|f| f.org_id.eq(org_id))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 // Bypasses RLS — sees all tenants' data
 Invoice::objects()
-    .fetch_all_insecurely(&pool).await?;
+    .fetch_all_insecurely(&mut ctx).await?;
 
 // Specific per-terminal variants
-Invoice::objects().fetch_one_insecurely(&pool).await?;
-Invoice::objects().fetch_optional_insecurely(&pool).await?;
-Invoice::objects().count_insecurely(&pool).await?;
-Invoice::objects().exists_insecurely(&pool).await?;
+Invoice::objects().fetch_one_insecurely(&mut ctx).await?;
+Invoice::objects().fetch_optional_insecurely(&mut ctx).await?;
+Invoice::objects().count_insecurely(&mut ctx).await?;
+Invoice::objects().exists_insecurely(&mut ctx).await?;
 ```
 
 **Every `_insecurely()` call is logged to the event log database with:**
@@ -339,15 +344,16 @@ Djogi supports Postgres role switching for fine-grained permission control. This
 use djogi::context::DjogiContext;
 
 async fn admin_report(State(pool): State<PgPool>) -> impl IntoResponse {
-    let mut tx = pool.begin().await?;
+    let tx = pool.begin().await?;
+    let mut tx_ctx = DjogiContext::from_transaction(tx);
 
     // Switch to the admin role — bypasses RLS policies that apply only to djogi_app role
-    DjogiContext::set_role(&mut tx, "djogi_admin").await?;
+    tx_ctx.set_role("djogi_admin").await?;
 
     let all_invoices = Invoice::objects()
-        .fetch_all_insecurely(&mut tx).await?;
+        .fetch_all_insecurely(&mut tx_ctx).await?;
 
-    tx.commit().await?;
+    tx_ctx.commit().await?;
     Json(all_invoices).into_response()
 }
 ```
@@ -410,21 +416,23 @@ The following patterns are common mistakes that compromise isolation, auditabili
 
 ```rust
 // WRONG — application-layer filtering is not defense in depth
+let mut ctx = DjogiContext::from_pool(pool.clone());
 Invoice::objects()
     .filter(|f| f.org_id.eq(org_id))
-    .fetch_all(&pool).await?;  // uses pool directly — no transaction, no RLS context
+    .fetch_all(&mut ctx).await?;  // pool-backed ctx — no transaction, no RLS context
 ```
 
 If the filter is accidentally removed, or if there is a bug in the org_id extraction, all tenants' data is exposed. The fix is to use `djogi::set_tenant()` so the database enforces isolation:
 
 ```rust
 // CORRECT — RLS enforces isolation at the database level
-let mut tx = pool.begin().await?;
-djogi::set_tenant(&mut tx, org_id).await?;
+let tx = pool.begin().await?;
+let mut tx_ctx = DjogiContext::from_transaction(tx);
+djogi::set_tenant(&mut tx_ctx, org_id).await?;
 Invoice::objects()
     .filter(|f| f.org_id.eq(org_id))  // belt-and-suspenders; RLS is the real guard
-    .fetch_all(&mut tx).await?;
-tx.commit().await?;
+    .fetch_all(&mut tx_ctx).await?;
+tx_ctx.commit().await?;
 ```
 
 ### Anti-pattern: `_insecurely()` in request handlers
@@ -432,9 +440,10 @@ tx.commit().await?;
 ```rust
 // WRONG — bypasses tenant isolation in a user-facing endpoint
 async fn get_invoice(Path(id): Path<HeerId>, State(pool): State<PgPool>) -> impl IntoResponse {
+    let mut ctx = DjogiContext::from_pool(pool.clone());
     let invoice = Invoice::objects()
         .filter(|f| f.id.eq(id))
-        .fetch_one_insecurely(&pool).await?;  // any user can access any org's invoice
+        .fetch_one_insecurely(&mut ctx).await?;  // any user can access any org's invoice
     Json(invoice)
 }
 ```
@@ -448,10 +457,11 @@ async fn get_invoice(
     State(pool): State<PgPool>,
     Extension(org_id): Extension<HeerId>,
 ) -> impl IntoResponse {
-    let mut tx = pool.begin().await?;
-    djogi::set_tenant(&mut tx, org_id).await?;
-    let invoice = Invoice::get(&mut tx, id).await?;  // RLS guarantees org isolation
-    tx.commit().await?;
+    let tx = pool.begin().await?;
+    let mut tx_ctx = DjogiContext::from_transaction(tx);
+    djogi::set_tenant(&mut tx_ctx, org_id).await?;
+    let invoice = Invoice::get(&mut tx_ctx, id).await?;  // RLS guarantees org isolation
+    tx_ctx.commit().await?;
     Json(invoice)
 }
 ```
@@ -484,26 +494,32 @@ export DJOGI_SIGNING_KEY="$(vault read secret/djogi-signing-key)"
 ```rust
 // WRONG — SET LOCAL is transaction-scoped, but this misses that the pool reuses connections
 async fn batch_job(pool: &PgPool, tenant_ids: Vec<HeerId>) {
+    let mut ctx = DjogiContext::from_pool(pool.clone());
     for tenant_id in tenant_ids {
-        // Each iteration gets a pool connection — but SET is not wrapped in a transaction
-        let conn = pool.acquire().await?;
-        sqlx::query("SET djogi.tenant_id = $1").bind(tenant_id).execute(&mut *conn).await?;
-        // If this crashes here, the next pool slot may have the wrong tenant_id set
-        let invoices = Invoice::objects().fetch_all(&mut *conn).await?;
+        // Issuing a session-level SET against a pool-backed context — no transaction boundary.
+        // The SET persists on whichever connection the pool hands out, then leaks to the next
+        // caller once this ctx releases it.
+        djogi::raw::execute(
+            &mut ctx,
+            "SET djogi.tenant_id = $1",
+            |q| q.bind(tenant_id),
+        ).await?;
+        let invoices = Invoice::objects().fetch_all(&mut ctx).await?;
     }
 }
 ```
 
-Always use `djogi::set_tenant()` with a transaction, not with a bare connection:
+Always use `djogi::set_tenant()` with a transaction-backed context, never a pool-backed one:
 
 ```rust
 // CORRECT
 async fn batch_job(pool: &PgPool, tenant_ids: Vec<HeerId>) {
     for tenant_id in tenant_ids {
-        let mut tx = pool.begin().await?;
-        djogi::set_tenant(&mut tx, tenant_id).await?;  // SET LOCAL — clears on commit
-        let invoices = Invoice::objects().fetch_all(&mut tx).await?;
-        tx.commit().await?;
+        let tx = pool.begin().await?;
+        let mut tx_ctx = DjogiContext::from_transaction(tx);
+        djogi::set_tenant(&mut tx_ctx, tenant_id).await?;  // SET LOCAL — clears on commit
+        let invoices = Invoice::objects().fetch_all(&mut tx_ctx).await?;
+        tx_ctx.commit().await?;
     }
 }
 ```
@@ -512,8 +528,9 @@ async fn batch_job(pool: &PgPool, tenant_ids: Vec<HeerId>) {
 
 ```rust
 // WRONG — "I couldn't figure out the filter syntax so I bypassed it"
+let mut ctx = DjogiContext::from_pool(pool.clone());
 let results: Vec<Invoice> = djogi::raw::query_insecurely(
-    &pool,
+    &mut ctx,
     "SELECT * FROM invoices WHERE status = 'open'",
     (),
 ).await?;
@@ -523,14 +540,15 @@ let results: Vec<Invoice> = djogi::raw::query_insecurely(
 
 ```rust
 // CORRECT — raw query that still respects the transaction/tenant context
-let mut tx = pool.begin().await?;
-djogi::set_tenant(&mut tx, org_id).await?;
+let tx = pool.begin().await?;
+let mut tx_ctx = DjogiContext::from_transaction(tx);
+djogi::set_tenant(&mut tx_ctx, org_id).await?;
 
 let results: Vec<Invoice> = djogi::raw::query(
-    &mut tx,
+    &mut tx_ctx,
     "SELECT * FROM invoices WHERE status = $1 AND org_id = $2",
     ("open", org_id),
 ).await?;
 
-tx.commit().await?;
+tx_ctx.commit().await?;
 ```

@@ -21,12 +21,22 @@ For queries that exceed the `QuerySet` surface, raw `sqlx::QueryBuilder` is alwa
 
 These methods operate on a single known record by primary key or on an already-fetched model instance.
 
-### `Model::get(pool, id)`
+All examples below assume a `DjogiContext` constructed from the application pool:
+
+```rust
+use djogi::prelude::*;
+
+let mut ctx = DjogiContext::from_pool(pool.clone());
+```
+
+Every method takes `&mut ctx` so Djogi can thread transaction state, hooks, and per-request metadata through the call. To run inside a transaction, shadow `ctx` with `let mut tx_ctx = ctx.begin().await?;` and pass `&mut tx_ctx`.
+
+### `Model::get(ctx, id)`
 
 Fetches a single record by primary key. Returns `Err(djogi::Error::NotFound)` if no row matches.
 
 ```rust
-let post = Post::get(&pool, id).await?;
+let post = Post::get(&mut ctx, id).await?;
 ```
 
 Generated SQL:
@@ -36,12 +46,12 @@ FROM posts
 WHERE id = $1
 ```
 
-### `Model::create(pool, value)`
+### `Model::create(ctx, value)`
 
 Inserts a new row. Framework fields (`id`, `created_at`, `updated_at`) in the input struct are ignored — the framework populates them before the INSERT. The fully populated struct is returned via `RETURNING`.
 
 ```rust
-let post = Post::create(&pool, Post {
+let post = Post::create(&mut ctx, Post {
     title: "My Post".into(),
     slug: "my-post".into(),
     body: "Content here...".into(),
@@ -62,14 +72,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING id, title, slug, body, published, view_count, rating, published_at, created_at, updated_at
 ```
 
-### `instance.save(pool)`
+### `instance.save(ctx)`
 
 Updates the record in-place. `updated_at` is always refreshed. With dirty tracking disabled (default), a full-row UPDATE is issued. With dirty tracking enabled, only changed fields are included.
 
 ```rust
-let mut post = Post::get(&pool, id).await?;
+let mut post = Post::get(&mut ctx, id).await?;
 post.published = true;
-post.save(&pool).await?;
+post.save(&mut ctx).await?;
 ```
 
 Generated SQL (without dirty tracking):
@@ -80,22 +90,22 @@ SET title = $1, slug = $2, body = $3, published = $4, view_count = $5,
 WHERE id = $9
 ```
 
-### `instance.delete(pool)`
+### `instance.delete(ctx)`
 
 Deletes the record. The method consumes the instance so it cannot be used after deletion.
 
 ```rust
-let post = Post::get(&pool, id).await?;
-post.delete(&pool).await?;
+let post = Post::get(&mut ctx, id).await?;
+post.delete(&mut ctx).await?;
 // post is moved — cannot be used here
 ```
 
-### `instance.save_with_actor(pool, actor)`
+### `instance.save_with_actor(ctx, actor)`
 
 Like `save()`, but writes the actor string to the CRUD audit log entry (when `crud_log = true` is set on the model). Use for attributing changes to a specific user, service, or system.
 
 ```rust
-post.save_with_actor(&pool, "user:8312847293").await?;
+post.save_with_actor(&mut ctx, "user:8312847293").await?;
 ```
 
 ---
@@ -123,12 +133,12 @@ let published = Post::objects().filter(|f| f.published.eq(true));
 let recent = published.clone()
     .order_by(|f| f.published_at.desc())
     .limit(5)
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 let popular = published.clone()
     .order_by(|f| f.view_count.desc())
     .limit(5)
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 ---
@@ -143,22 +153,22 @@ The filter closure receives a typed accessor struct for the model's fields. Each
 // Single condition
 Post::objects()
     .filter(|f| f.published.eq(true))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 // Compound conditions using .and() and .or()
 Post::objects()
     .filter(|f| f.published.eq(true).and(f.view_count.gte(1000)))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 Post::objects()
     .filter(|f| f.rating.gt(4.0).or(f.view_count.gte(500)))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 // Chained .filter() calls are ANDed
 Post::objects()
     .filter(|f| f.published.eq(true))
     .filter(|f| f.view_count.gte(100))   // AND view_count >= 100
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 ### Field condition methods
@@ -191,12 +201,12 @@ For nullable columns, `is_null()` and `is_not_null()` are the typed options. `eq
 ```rust
 Post::objects()
     .filter(|f| f.published_at.is_null())     // published_at IS NULL
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 Post::objects()
     .filter(|f| f.rating.is_not_null())       // rating IS NOT NULL
     .filter(|f| f.rating.gte(4.5))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 ### JSONB subfield filters
@@ -208,13 +218,13 @@ For `Jsonb<T>` fields, the proc macro generates typed filter accessors for all k
 Vehicle::objects()
     .filter(|f| f.engine.horsepower.gte(300))
     // WHERE (engine->>'horsepower')::integer >= 300
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 // Filter on a known nested JSONB field
 Vehicle::objects()
     .filter(|f| f.engine.turbo.boost_psi.gte(15.0))
     // WHERE (engine->'turbo'->>'boost_psi')::float >= 15.0
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 ---
@@ -233,7 +243,7 @@ let filter = PostFilter::new()
 
 let posts = Post::objects()
     .filter_struct(filter)
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 `ModelFilter` is serializable — it can be stored, transmitted, and reconstructed. The shell uses this API because Rhai closures cannot capture Rust types.
@@ -265,7 +275,7 @@ Available operators for `ModelFilter`:
 Post::objects()
     .filter(|f| f.published.eq(true))
     .order_by(|f| f.published_at.desc())
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 Multiple orderings are applied in order:
@@ -274,7 +284,7 @@ Multiple orderings are applied in order:
 Post::objects()
     .order_by(|f| f.published_at.desc())   // primary: most recent first
     .order_by(|f| f.title.asc())           // secondary: alphabetical within same timestamp
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 ---
@@ -292,7 +302,7 @@ let posts = Post::objects()
     .order_by(|f| f.published_at.desc())
     .limit(page_size)
     .offset(page_size * (page - 1))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 ```
 
 > **Warning:** Offset pagination degrades with large offsets — Postgres must scan all skipped rows. For high-volume tables, use cursor-based pagination with a `WHERE id > $last_id` filter instead.
@@ -314,7 +324,7 @@ let comments = Comment::objects()
     .filter(|f| f.post_id.eq(post.id))
     .prefetch(CommentRelated::post())
     .prefetch(CommentRelated::author())
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 // After prefetch, resolved() is free — no additional query
 for comment in &comments {
@@ -339,48 +349,48 @@ SELECT id, username, ... FROM users WHERE id IN ($1, $2, ...);
 For loading a single related record on an already-fetched instance:
 
 ```rust
-let comment = Comment::get(&pool, id).await?;
-let post = comment.post_id.fetch(&pool).await?;   // one additional query
+let comment = Comment::get(&mut ctx, id).await?;
+let post = comment.post_id.fetch(&mut ctx).await?;   // one additional query
 ```
 
 ---
 
 ## Terminal Methods
 
-Terminal methods execute the accumulated query and return results. All require the connection pool and return `Result`.
+Terminal methods execute the accumulated query and return results. All require `&mut DjogiContext` and return `Result`.
 
 | Method | Returns | SQL | Notes |
 |---|---|---|---|
-| `.fetch_all(pool)` | `Result<Vec<T>>` | `SELECT ... [WHERE] [ORDER] [LIMIT] [OFFSET]` | Returns empty `Vec` if no rows match |
-| `.fetch_one(pool)` | `Result<T>` | `SELECT ... LIMIT 1` | Returns `Err(NotFound)` if no row |
-| `.fetch_optional(pool)` | `Result<Option<T>>` | `SELECT ... LIMIT 1` | Returns `Ok(None)` if no row |
-| `.count(pool)` | `Result<i64>` | `SELECT COUNT(*) FROM ...` | Applies all filters, ignores order/limit/offset |
-| `.exists(pool)` | `Result<bool>` | `SELECT EXISTS(SELECT 1 FROM ...)` | Efficient existence check |
-| `.first(pool)` | `Result<Option<T>>` | `SELECT ... ORDER BY id ASC LIMIT 1` | Earliest by PK |
-| `.last(pool)` | `Result<Option<T>>` | `SELECT ... ORDER BY id DESC LIMIT 1` | Latest by PK |
+| `.fetch_all(ctx)` | `Result<Vec<T>>` | `SELECT ... [WHERE] [ORDER] [LIMIT] [OFFSET]` | Returns empty `Vec` if no rows match |
+| `.fetch_one(ctx)` | `Result<T>` | `SELECT ... LIMIT 1` | Returns `Err(NotFound)` if no row |
+| `.fetch_optional(ctx)` | `Result<Option<T>>` | `SELECT ... LIMIT 1` | Returns `Ok(None)` if no row |
+| `.count(ctx)` | `Result<i64>` | `SELECT COUNT(*) FROM ...` | Applies all filters, ignores order/limit/offset |
+| `.exists(ctx)` | `Result<bool>` | `SELECT EXISTS(SELECT 1 FROM ...)` | Efficient existence check |
+| `.first(ctx)` | `Result<Option<T>>` | `SELECT ... ORDER BY id ASC LIMIT 1` | Earliest by PK |
+| `.last(ctx)` | `Result<Option<T>>` | `SELECT ... ORDER BY id DESC LIMIT 1` | Latest by PK |
 
 ```rust
 // Check before fetching
 let count = Post::objects()
     .filter(|f| f.published.eq(true))
-    .count(&pool).await?;
+    .count(&mut ctx).await?;
 
 println!("{} published posts", count);
 
 // Existence check (more efficient than count for yes/no questions)
 let has_published = Post::objects()
     .filter(|f| f.author_id.eq(user.id).and(f.published.eq(true)))
-    .exists(&pool).await?;
+    .exists(&mut ctx).await?;
 
 // Fetch one or get NotFound
 let post = Post::objects()
     .filter(|f| f.slug.eq("my-post"))
-    .fetch_one(&pool).await?;
+    .fetch_one(&mut ctx).await?;
 
 // Fetch one or get None
 let maybe_post = Post::objects()
     .filter(|f| f.slug.eq("my-post"))
-    .fetch_optional(&pool).await?;
+    .fetch_optional(&mut ctx).await?;
 
 if let Some(post) = maybe_post {
     println!("{}", post.title);
@@ -391,12 +401,12 @@ if let Some(post) = maybe_post {
 
 ## Bulk Operations
 
-### `Model::bulk_create(pool, records)`
+### `Model::bulk_create(ctx, records)`
 
 Inserts multiple records in a single statement. Returns the inserted records with framework fields populated.
 
 ```rust
-let posts = Post::bulk_create(&pool, vec![
+let posts = Post::bulk_create(&mut ctx, vec![
     Post { title: "First".into(), slug: "first".into(), ..Default::default() },
     Post { title: "Second".into(), slug: "second".into(), ..Default::default() },
     Post { title: "Third".into(), slug: "third".into(), ..Default::default() },
@@ -424,7 +434,7 @@ let memberships = vec![
     PersonGroup { id: ids[2], person_id: carol.id, group_id: group.id, role: "member".into(), ..Default::default() },
 ];
 
-PersonGroup::bulk_create(&pool, memberships).await?;
+PersonGroup::bulk_create(&mut ctx, memberships).await?;
 ```
 
 ---
@@ -437,11 +447,11 @@ Every terminal method has an `_insecurely()` variant that bypasses safety guards
 // Standard — enforces tenant scoping
 Post::objects()
     .filter(|f| f.org_id.eq(tenant_id))
-    .fetch_all(&pool).await?;
+    .fetch_all(&mut ctx).await?;
 
 // Bypasses tenant scoping checks — requires rationale
 Post::objects()
-    .fetch_all_insecurely(&pool).await?;
+    .fetch_all_insecurely(&mut ctx).await?;
 ```
 
 All `_insecurely()` calls are logged to the event log database with a full stack trace.
@@ -478,13 +488,13 @@ let results: Vec<PostWithCount> = qb.build_query_as().fetch_all(&pool).await?;
 
 Raw SQL queries are always typed — you declare the row struct via `#[derive(sqlx::FromRow)]`. Untyped dynamic rows are supported via `sqlx::Row` but are discouraged in production code.
 
-### `djogi::raw::query(pool, sql, binds)`
+### `djogi::raw::query(ctx, sql, binds)`
 
 A convenience wrapper for one-off parameterized queries:
 
 ```rust
 let results: Vec<PostWithCount> = djogi::raw::query(
-    &pool,
+    &mut ctx,
     "SELECT id, title, COUNT(c.id) AS comment_count \
      FROM posts p LEFT JOIN comments c ON c.post_id = p.id \
      WHERE p.published = $1 GROUP BY p.id LIMIT $2",
