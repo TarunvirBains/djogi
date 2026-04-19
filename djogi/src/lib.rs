@@ -36,6 +36,7 @@
 pub mod config;
 pub mod descriptor;
 pub mod error;
+pub(crate) mod ident;
 pub mod model;
 pub mod query;
 pub mod raw;

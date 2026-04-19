@@ -147,7 +147,7 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
                     // crate path — and it validates both identifiers before
                     // constructing the path to close the SQL-injection
                     // fabrication vector.
-                    ::djogi::relation::__private::__make_relation_path::<
+                    ::djogi::relation::__macro_support::__make_relation_path::<
                         #source_name,
                         #target_type,
                     >(
