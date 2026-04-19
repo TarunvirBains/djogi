@@ -281,12 +281,22 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     //   once outside the `async move`; cloning the pk there (rather than
     //   re-borrowing inside the future) keeps the `Send` bound on the
     //   returned future cheap to satisfy.
-    // * The `T::Pk: Clone + Send + Sync + 'a` bound matches the
-    //   closure's capture requirements. `ForeignKey::new(pk)` in the
-    //   filter closure consumes the cloned pk by value.
-    // * The `'static` bound on `T::Pk` is NOT needed here — the closure
-    //   captures `pk` by move and the resulting future holds it for its
-    //   own lifetime, so `'a` is the tightest bound that works.
+    // * The emitted executor bound omits a redundant `+ Send` —
+    //   `sqlx::Executor` already declares `Send` as a supertrait on its
+    //   own definition, so repeating it here would be dead syntax.
+    // * The `<Self as Model>::Pk` where-clause is dropped entirely.
+    //   `Model::Pk` already carries `Clone + Send + Sync + 'static` on
+    //   the trait itself (see `djogi/src/model.rs`); `'static: 'a` so
+    //   the outlive requirement is implied, `Clone` is the only extra
+    //   capability the closure uses and it is already satisfied for
+    //   every `Model` implementer. Repeating the bounds here would be
+    //   dead syntax and invited the over-eager review flag that
+    //   prompted this fixup.
+    // * The `+ Send` on the returned `impl Future` IS necessary — the
+    //   auto-trait bound on an opaque return type is not inherited
+    //   from the inner `async move` block, so callers that need to
+    //   `.await` the future on a multi-threaded executor still require
+    //   the explicit annotation.
     let expanded = quote! {
         #[automatically_derived]
         impl #receiver_type {
@@ -303,12 +313,6 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                         'a,
                         Database = ::djogi::__private::sqlx::Postgres,
                     >
-                    + ::std::marker::Send
-                    + 'a,
-                <Self as ::djogi::model::Model>::Pk:
-                    ::std::clone::Clone
-                    + ::std::marker::Send
-                    + ::std::marker::Sync
                     + 'a,
             {
                 // Capture the pk by value outside the async block so
@@ -329,14 +333,20 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         // these records to discover every registered reverse accessor.
         // The marker's `source` field is the receiver (the model the
         // method lives on); `target` is the model the accessor queries.
+        // Construction routes through the sealed
+        // `__make_reverse_relation_marker` constructor so `name` and
+        // `via` are validated against
+        // `crate::ident::const_assert_plain_ident` at const-eval time
+        // — a downstream crate cannot submit a fabricated marker
+        // carrying SQL metacharacters through the inventory slice.
         ::djogi::__private::inventory::submit! {
-            ::djogi::relation::registry::ReverseRelationMarker {
-                kind: #relation_kind_variant,
-                source: #receiver_lit,
-                name: #method_lit,
-                target: #returned_lit,
-                via: #via_lit,
-            }
+            ::djogi::relation::registry::__macro_support::__make_reverse_relation_marker(
+                #relation_kind_variant,
+                #receiver_lit,
+                #method_lit,
+                #returned_lit,
+                #via_lit,
+            )
         }
     };
 

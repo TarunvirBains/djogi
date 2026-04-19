@@ -77,14 +77,14 @@ fn main() {
     // the `#[doc(hidden)]` surface is fine; a production user would
     // add `inventory` as a direct dep.
     for marker in djogi::__private::inventory::iter::<ReverseRelationMarker> {
-        if marker.source == "Owner" && marker.name == "cars" {
-            assert_eq!(marker.kind, RelationKind::FK);
-            assert_eq!(marker.target, "Vehicle");
-            assert_eq!(marker.via, "owner_id");
+        if marker.source() == "Owner" && marker.name() == "cars" {
+            assert_eq!(marker.kind(), RelationKind::FK);
+            assert_eq!(marker.target(), "Vehicle");
+            assert_eq!(marker.via(), "owner_id");
             saw_cars = true;
         }
-        if marker.source == "Owner" && marker.name == "all_vehicles" {
-            assert_eq!(marker.kind, RelationKind::FK);
+        if marker.source() == "Owner" && marker.name() == "all_vehicles" {
+            assert_eq!(marker.kind(), RelationKind::FK);
             saw_all_vehicles = true;
         }
     }

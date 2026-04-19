@@ -54,10 +54,10 @@ fn main() {
 
     let mut saw_profile = false;
     for marker in djogi::__private::inventory::iter::<ReverseRelationMarker> {
-        if marker.source == "User" && marker.name == "profile" {
-            assert_eq!(marker.kind, RelationKind::O2O);
-            assert_eq!(marker.target, "Profile");
-            assert_eq!(marker.via, "user_id");
+        if marker.source() == "User" && marker.name() == "profile" {
+            assert_eq!(marker.kind(), RelationKind::O2O);
+            assert_eq!(marker.target(), "Profile");
+            assert_eq!(marker.via(), "user_id");
             saw_profile = true;
         }
     }

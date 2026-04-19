@@ -26,6 +26,18 @@
 //! 3 itself does not consume them; shipping the registry now is
 //! forward-compatibility infrastructure.
 //!
+//! The inventory marker provides metadata for tooling and future
+//! collision checks; runtime collision detection across reverse-relation
+//! accessors is out of scope for this commit. The macro emits a plain
+//! inherent method, so duplicate accessors with the same method name on
+//! the same receiver type already fail to compile via rustc's
+//! duplicate-definition error (see
+//! `tests/compile_fail/reverse_relation_duplicate_accessor.rs`). Detecting
+//! cross-macro-kind collisions (e.g. a `reverse_one_to_many!` and a
+//! `many_to_many!` both emitting `.cars()` on the same source) lands in
+//! a follow-up that walks `inventory::iter::<ReverseRelationMarker>`
+//! during startup registration.
+//!
 //! # How
 //!
 //! At link time, every `ReverseRelationMarker` submitted via `inventory::
@@ -35,13 +47,16 @@
 //! ```ignore
 //! for marker in inventory::iter::<ReverseRelationMarker> {
 //!     println!("{} has {} accessor pointing at {}",
-//!         marker.source, marker.name, marker.target);
+//!         marker.source(), marker.name(), marker.target());
 //! }
 //! ```
 //!
 //! # Where
 //!
 //! - `ReverseRelationMarker` — this module.
+//! - [`__macro_support::__make_reverse_relation_marker`] — the sole
+//!   validated constructor; the only supported caller is macro-emitted
+//!   code in `djogi-macros/src/reverse_relation.rs`.
 //! - `djogi_macros::reverse_one_to_many!` — emits the `inventory::
 //!   submit!` block.
 //! - `djogi_macros::reverse_one_to_one!` — same, with
@@ -56,6 +71,11 @@
 /// (e.g. polymorphic reverses, self-referential through-accessors)
 /// without breaking downstream pattern matches on the enum. Matching
 /// code must include a `_ => …` arm.
+///
+/// The enum itself stays public so consumers walking
+/// `inventory::iter::<ReverseRelationMarker>` can match on the kind,
+/// but fabrication of a full [`ReverseRelationMarker`] still goes
+/// through the validated constructor in [`__macro_support`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RelationKind {
@@ -89,33 +109,199 @@ pub enum RelationKind {
 /// identifier). Phase 3 itself does not walk these records; they are
 /// forward-compatibility infrastructure.
 ///
+/// # Seal
+///
+/// The fields are `pub(crate)` so downstream code cannot
+/// `inventory::submit!` a fabricated marker with arbitrary
+/// `source` / `name` / `target` / `via` strings. The `name` and `via`
+/// strings both flow into emitted SQL / Rust identifier positions; a
+/// hostile (or simply buggy) downstream marker carrying SQL
+/// metacharacters in either slot would be walked by future tooling as
+/// if it were macro-emitted. The only supported construction path is
+/// [`__macro_support::__make_reverse_relation_marker`], which routes
+/// both `name` and `via` through
+/// [`crate::ident::assert_plain_ident`]. `source` and `target` are
+/// Rust type names: they are validated at the macro call site via
+/// `debug_assert_ident!` (cheap) because Rust's own tokenizer already
+/// constrains the shapes reachable into a `syn::Ident`.
+///
+/// Accessors [`source`](Self::source), [`name`](Self::name),
+/// [`target`](Self::target), [`via`](Self::via), and
+/// [`kind`](Self::kind) expose the data read-only.
+///
 /// `#[doc(hidden)]` because the struct is populated by macro expansion,
-/// not by hand. The field shape is load-bearing for macro emission;
-/// downstream code should reach this type through
+/// not by hand. Downstream code should reach this type through
 /// `inventory::iter::<ReverseRelationMarker>` rather than constructing
 /// records directly.
 #[derive(Debug, Clone, Copy)]
 #[doc(hidden)]
 pub struct ReverseRelationMarker {
+    pub(crate) kind: RelationKind,
+    pub(crate) source: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) target: &'static str,
+    pub(crate) via: &'static str,
+}
+
+impl ReverseRelationMarker {
     /// Whether the accessor was registered by `reverse_one_to_many!`,
     /// `reverse_one_to_one!`, or (future) `many_to_many!`.
-    pub kind: RelationKind,
+    #[inline]
+    pub fn kind(&self) -> RelationKind {
+        self.kind
+    }
+
     /// Type name of the model the accessor method is attached to.
     /// Example: for `reverse_one_to_many!(Owner, cars -> Vehicle by
     /// owner_id)` this is `"Owner"`.
-    pub source: &'static str,
-    /// Method name the macro emitted on `source`. Example: `"cars"`.
-    pub name: &'static str,
+    #[inline]
+    pub fn source(&self) -> &'static str {
+        self.source
+    }
+
+    /// Method name the macro emitted on `source()`. Example: `"cars"`.
+    #[inline]
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
     /// Type name of the model the accessor returns rows of. Example:
     /// `"Vehicle"`.
-    pub target: &'static str,
-    /// Column name on the `target` table that carries the FK pointing
-    /// back at `source`. Example: `"owner_id"`. For M2M markers, this
-    /// is the through-model's FK column pointing at `source`.
-    pub via: &'static str,
+    #[inline]
+    pub fn target(&self) -> &'static str {
+        self.target
+    }
+
+    /// Column name on the `target()` table that carries the FK
+    /// pointing back at `source()`. Example: `"owner_id"`. For M2M
+    /// markers, this is the through-model's FK column pointing at
+    /// `source()`.
+    #[inline]
+    pub fn via(&self) -> &'static str {
+        self.via
+    }
 }
 
 ::inventory::collect!(ReverseRelationMarker);
+
+/// Macro-only entry point for constructing [`ReverseRelationMarker`]
+/// values. **Not** part of the stable public API.
+///
+/// `djogi-macros` emits a call into this module from the
+/// `reverse_one_to_many!` / `reverse_one_to_one!` / (future)
+/// `many_to_many!` expansion inside every `inventory::submit!` block.
+/// The items here are `pub` only so cross-crate codegen can reach
+/// them; the double-underscore prefix and `#[doc(hidden)]` marker
+/// signal that downstream code must not call these directly.
+///
+/// Mirrors the seal patterns in [`crate::relation::__macro_support`]
+/// (for `RelationPath::new`) and [`crate::query::field::__macro_support`]
+/// (for `FieldRef::new`): fields are `pub(crate)` and the only
+/// supported construction path routes identifier strings through the
+/// shared [`crate::ident::assert_plain_ident`] validator before the
+/// record reaches the inventory slice.
+#[doc(hidden)]
+pub mod __macro_support {
+    use super::{RelationKind, ReverseRelationMarker};
+    use crate::ident::const_assert_plain_ident;
+
+    /// Construct a [`ReverseRelationMarker`] from macro-emitted
+    /// identifier strings. The only supported caller is the
+    /// `::inventory::submit!` block that the reverse-relation
+    /// macros expand in the user's crate.
+    ///
+    /// Panics (at const-eval time — `inventory::submit!` wraps the
+    /// returned value in a `static` initializer) if `name` or `via`
+    /// violates any rule in
+    /// [`crate::ident::const_assert_plain_ident`]: empty, over 63
+    /// bytes, leading digit, a non-identifier byte, or a reserved
+    /// Postgres keyword. `name` names a Rust method emitted on the
+    /// receiver type and `via` names a Postgres column; both must
+    /// therefore satisfy the shared unquoted-identifier rule.
+    /// `source` and `target` are Rust type names reached via
+    /// `syn::Ident` in the macro, so the Rust tokenizer has already
+    /// rejected obviously malformed inputs at parse time; they are
+    /// passed through unmodified.
+    ///
+    /// `const fn` because `inventory::submit!` expands to
+    /// `static __INVENTORY: Node = Node { value: &{ <expr> }, ... };`
+    /// — the value expression must be const-evaluable or the build
+    /// fails with `E0015` (non-const in const context). Mirrors the
+    /// `const fn RelationPath::new` seal; both sit behind the shared
+    /// validator family.
+    #[doc(hidden)]
+    pub const fn __make_reverse_relation_marker(
+        kind: RelationKind,
+        source: &'static str,
+        name: &'static str,
+        target: &'static str,
+        via: &'static str,
+    ) -> ReverseRelationMarker {
+        const_assert_plain_ident(name, "reverse_relation_name");
+        const_assert_plain_ident(via, "reverse_relation_via");
+        ReverseRelationMarker {
+            kind,
+            source,
+            name,
+            target,
+            via,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn try_make(
+            name: &'static str,
+            via: &'static str,
+        ) -> std::thread::Result<ReverseRelationMarker> {
+            std::panic::catch_unwind(|| {
+                __make_reverse_relation_marker(RelationKind::FK, "Owner", name, "Vehicle", via)
+            })
+        }
+
+        #[test]
+        fn accepts_plain_identifiers() {
+            let marker = __make_reverse_relation_marker(
+                RelationKind::FK,
+                "Owner",
+                "cars",
+                "Vehicle",
+                "owner_id",
+            );
+            assert_eq!(marker.name(), "cars");
+            assert_eq!(marker.via(), "owner_id");
+            assert_eq!(marker.source(), "Owner");
+            assert_eq!(marker.target(), "Vehicle");
+            assert_eq!(marker.kind(), RelationKind::FK);
+        }
+
+        #[test]
+        fn rejects_bad_name() {
+            // Method name with a leading digit would panic at the
+            // shared validator — the same shape that would sneak
+            // through to identifier positions in macro-emitted code.
+            assert!(try_make("1bad", "owner_id").is_err());
+        }
+
+        #[test]
+        fn rejects_bad_via() {
+            // A via column carrying SQL metacharacters is the
+            // injection shape the seal prevents — symmetric with
+            // the `FieldRef` / `RelationPath` seals.
+            assert!(try_make("cars", "col) OR 1=1 --").is_err());
+        }
+
+        #[test]
+        fn rejects_reserved_via_keyword() {
+            // `select` is a reserved Postgres keyword; assert_plain_ident
+            // rejects it so emitted SQL cannot grow a `JOIN select ON ...`
+            // clause from downstream fabrication.
+            assert!(try_make("cars", "select").is_err());
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -124,15 +310,17 @@ mod tests {
     // Submit a marker from the test module so `inventory::iter` has at
     // least one entry to verify. `inventory::submit!` macros expand to
     // private items carrying the `ReverseRelationMarker` value into the
-    // link-time-collected slice.
+    // link-time-collected slice. Route construction through the sealed
+    // `__macro_support` constructor — the same path macro-emitted code
+    // takes.
     ::inventory::submit! {
-        ReverseRelationMarker {
-            kind: RelationKind::FK,
-            source: "TestSource",
-            name: "test_accessor",
-            target: "TestTarget",
-            via: "test_via_id",
-        }
+        crate::relation::registry::__macro_support::__make_reverse_relation_marker(
+            RelationKind::FK,
+            "TestSource",
+            "test_accessor",
+            "TestTarget",
+            "test_via_id",
+        )
     }
 
     #[test]
@@ -162,10 +350,10 @@ mod tests {
         // tests, downstream apps).
         let mut seen = false;
         for marker in ::inventory::iter::<ReverseRelationMarker> {
-            if marker.source == "TestSource" && marker.name == "test_accessor" {
-                assert_eq!(marker.kind, RelationKind::FK);
-                assert_eq!(marker.target, "TestTarget");
-                assert_eq!(marker.via, "test_via_id");
+            if marker.source() == "TestSource" && marker.name() == "test_accessor" {
+                assert_eq!(marker.kind(), RelationKind::FK);
+                assert_eq!(marker.target(), "TestTarget");
+                assert_eq!(marker.via(), "test_via_id");
                 seen = true;
             }
         }

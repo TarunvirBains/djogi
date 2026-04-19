@@ -122,6 +122,124 @@ const RESERVED_KEYWORDS: &[&str] = &[
     "with",
 ];
 
+/// Compile-time-evaluable identifier check.
+///
+/// Mirrors the four rules in [`assert_plain_ident`] but implemented
+/// with exclusively const-stable primitives so the result can panic
+/// during `const` evaluation — notably inside `inventory::submit!` on
+/// the reverse-relation registry path, where the macro must produce a
+/// `static` initializer.
+///
+/// `role` is the same label used by [`assert_plain_ident`] so panic
+/// messages stay identical whether the check fires at const-eval or
+/// runtime. Keyword lookup is a const-time linear scan of the sorted
+/// [`RESERVED_KEYWORDS`] slice (const slice indexing and byte
+/// comparison are stable; `slice::binary_search` is not yet const).
+/// The linear scan is O(77) — a handful of microseconds per call at
+/// build time and zero cost at runtime.
+pub(crate) const fn const_assert_plain_ident(value: &'static str, role: &'static str) {
+    // Mirror the runtime validator step-for-step. Each panic body uses
+    // plain string literals (no `format_args!`) because const-panic
+    // cannot format with runtime arguments — the messages drop the
+    // offending value but keep the `role` hook for triage. The runtime
+    // `assert_plain_ident` still emits full diagnostics with `value`
+    // interpolated; both paths share the same four rules.
+    let bytes = value.as_bytes();
+    assert!(
+        !bytes.is_empty(),
+        // `role` is &'static str but can't be interpolated in const-panic;
+        // a generic panic message is still actionable because the call
+        // site pinpoints the emission.
+        "djogi::ident: macro-emitted identifier must not be empty — this is a framework bug"
+    );
+    assert!(
+        bytes.len() <= MAX_IDENT_LEN,
+        "djogi::ident: macro-emitted identifier exceeds Postgres's 63-byte usable length \
+         (NAMEDATALEN - 1) — either the proc-macro emission is broken or downstream code \
+         bypassed the macro-support seal"
+    );
+    assert!(
+        bytes[0].is_ascii_alphabetic() || bytes[0] == b'_',
+        "djogi::ident: macro-emitted identifier must start with a letter or underscore \
+         — either the proc-macro emission is broken or downstream code bypassed the \
+         macro-support seal"
+    );
+    // Const-friendly indexed byte scan — `for` over a slice works in
+    // const fn on current stable but requires indexing, not iteration
+    // adapters like `all` / `iter().skip(1)`.
+    let mut i = 1;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        assert!(
+            byte.is_ascii_alphanumeric() || byte == b'_',
+            "djogi::ident: macro-emitted identifier contains a non-identifier character \
+             — either the proc-macro emission is broken or downstream code bypassed the \
+             macro-support seal"
+        );
+        i += 1;
+    }
+    // Reserved-keyword lookup. We can't call `slice::binary_search` or
+    // `str::to_ascii_lowercase` in const context, so the scan is
+    // linear and case-folds byte-by-byte inline. Every byte is ASCII
+    // alphanumeric or `_` by the preceding checks, so the case-fold
+    // is just "toggle bit 0x20 on ASCII uppercase".
+    let mut k = 0;
+    while k < RESERVED_KEYWORDS.len() {
+        let kw = RESERVED_KEYWORDS[k].as_bytes();
+        if const_eq_ignore_ascii_case(bytes, kw) {
+            // Const-panic path — `panic!` (not `assert!(false, ...)`)
+            // both satisfies `clippy::assertions_on_constants` and
+            // matches the "unreachable under a well-formed emission"
+            // intent of the seal.
+            panic!(
+                "djogi::ident: macro-emitted identifier is a reserved Postgres keyword and \
+                 cannot appear unquoted in generated SQL — either the proc-macro emission \
+                 is broken or downstream code bypassed the macro-support seal"
+            );
+        }
+        k += 1;
+    }
+    // `role` is threaded in for diagnostic parity with the runtime
+    // validator; the actual string does not participate in any check.
+    // Touching it keeps `#[allow(unused)]` off the signature and
+    // preserves the call shape if a future const-panic feature grows
+    // interpolation.
+    let _ = role;
+}
+
+/// Const-stable case-insensitive byte-slice comparison.
+///
+/// Works on ASCII-only inputs — every caller here has already
+/// passed the alphanumeric-or-underscore byte check in
+/// [`const_assert_plain_ident`]. Equivalent to
+/// `a.eq_ignore_ascii_case(b)` but usable in const context.
+const fn const_eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        // Lowercase both bytes with the ASCII bit-flip trick. Only
+        // touches 'A'..='Z' (0x41..=0x5A) and 'a'..='z' (0x61..=0x7A);
+        // underscores and digits are fixed under the flip.
+        let la = if a[i] >= b'A' && a[i] <= b'Z' {
+            a[i] | 0x20
+        } else {
+            a[i]
+        };
+        let lb = if b[i] >= b'A' && b[i] <= b'Z' {
+            b[i] | 0x20
+        } else {
+            b[i]
+        };
+        if la != lb {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Validate a macro-emitted identifier against the Postgres unquoted-
 /// identifier contract. Panics on the first rule violation. See the
 /// module-level doc for the four rules.
@@ -135,6 +253,12 @@ const RESERVED_KEYWORDS: &[&str] = &[
 /// emission or a downstream caller deliberately bypassing the macro-
 /// support seal — both are framework-bug or misuse cases that the
 /// caller cannot recover from.
+///
+/// Runtime twin of [`const_assert_plain_ident`]; keeping two entry
+/// points (rather than having the runtime path just call the const
+/// fn) lets the runtime variant emit richer `{value:?}`-interpolated
+/// diagnostics that const-panic cannot today. Both paths enforce the
+/// identical contract.
 #[inline]
 pub(crate) fn assert_plain_ident(value: &'static str, role: &'static str) {
     assert!(

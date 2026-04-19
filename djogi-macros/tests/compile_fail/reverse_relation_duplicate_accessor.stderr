@@ -1,0 +1,10 @@
+error[E0592]: duplicate definitions with name `cars`
+  --> tests/compile_fail/reverse_relation_duplicate_accessor.rs:34:1
+   |
+34 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ duplicate definitions for `cars`
+...
+40 | djogi::reverse_one_to_many!(Owner, cars -> Vehicle by owner_id);
+   | --------------------------------------------------------------- other definition for `cars`
+   |
+   = note: this error originates in the macro `djogi::reverse_one_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
