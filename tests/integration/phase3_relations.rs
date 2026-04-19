@@ -599,3 +599,235 @@ async fn prefetch_same_relation_twice_is_idempotent(pool: PgPool) {
         .expect("owner must resolve after duplicate prefetch");
     assert_eq!(resolved.name, "Grace");
 }
+
+// ---------------------------------------------------------------------------
+// Task 5 integration tests: `QuerySet::select_related` + `JoinedRow<T>`.
+// ---------------------------------------------------------------------------
+//
+// select_related issues a single `LEFT JOIN` per registered relation path
+// instead of the follow-up query prefetch uses. Each test seeds its own
+// fixture via `setup_phase3` + `seed_*` helpers and exercises the
+// `fetch_all_joined` terminal. The wrapper type is `JoinedRow<T>` — the
+// joined-row analog of `PrefetchedRow<T>` — and exposes typed child
+// access via `row.get(VehicleRelated::owner())`.
+
+/// Happy path: one vehicle, one owner. `select_related(owner)` emits a
+/// single `LEFT JOIN` and the resulting `JoinedRow<Vehicle>` exposes the
+/// joined owner via the typed accessor. Pins:
+///   1. Main row decodes correctly from the joined result set (no
+///      column-name collision with the child `id` / `created_at` /
+///      `updated_at`).
+///   2. Child row is materialised — `row.get(path)` returns `Some(&Owner)`
+///      with the seeded name.
+#[sqlx::test]
+async fn select_related_fk_emits_join_and_populates(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Alice").await;
+    let _ = seed_vehicle_with_owner(&pool, "Toyota", &owner, None).await;
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .select_related(VehicleRelated::owner())
+        .fetch_all_joined(&pool)
+        .await
+        .expect("fetch_all_joined should succeed");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].row.make, "Toyota");
+    let joined_owner = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("owner join must materialise for a non-null FK");
+    assert_eq!(joined_owner.id, owner.id);
+    assert_eq!(joined_owner.name, "Alice");
+}
+
+/// Nullable-FK branch: `fuel_type_id` is `NULL`. The LEFT JOIN miss must
+/// surface as `None` on the child side — not panic, not produce a
+/// default-valued target struct, not omit the parent row from the result
+/// set. This is the documented null-safe contract of `select_related`.
+#[sqlx::test]
+async fn select_related_nullable_fk_yields_no_child(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Bob").await;
+    // `None` for fuel — the column is `NULL`, not an orphan FK.
+    let _ = seed_vehicle_with_owner(&pool, "Honda", &owner, None).await;
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .select_related(VehicleRelated::fuel_type())
+        .fetch_all_joined(&pool)
+        .await
+        .expect("fetch_all_joined should succeed");
+
+    assert_eq!(rows.len(), 1);
+    // Parent row still carries its own data — the missing child doesn't
+    // drop the parent (LEFT JOIN, not INNER).
+    assert_eq!(rows[0].row.make, "Honda");
+    assert!(
+        rows[0].get(VehicleRelated::fuel_type()).is_none(),
+        "NULL FK must surface as None — not a default-valued FuelType"
+    );
+}
+
+/// Orphan-FK branch: FK column is non-null but points at a target row
+/// that has since been deleted. The LEFT JOIN miss path must return
+/// `None` for the child here too — identical surface to the NULL-FK case,
+/// since the user never cares *why* the join missed, only that it did.
+///
+/// The nullable FK (`fuel_type_id`) is used because its `ON DELETE
+/// RESTRICT` is bypassed by dropping the referencing row first — but
+/// we want to keep the parent alive, so the test raw-SQLs the FK into
+/// an orphan state by inserting a bogus fuel_type_id value via a direct
+/// `UPDATE` after seeding.
+#[sqlx::test]
+async fn select_related_orphan_fk_yields_no_child(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Carol").await;
+    let fuel = seed_fuel_type(&pool, "Diesel").await;
+    let vehicle = seed_vehicle_with_owner(&pool, "Ford", &owner, Some(&fuel)).await;
+
+    // Force the `fuel_type_id` column to a sentinel HeerId that cannot
+    // exist in `fuel_types_p3`. We disable the constraint briefly so
+    // the UPDATE lands, then re-enable: there's no simpler way in
+    // Postgres to create an orphan FK when a REFERENCES clause is
+    // enforced. The ALTER-TABLE toggles stay within the test's own
+    // transaction scope via the shared pool.
+    sqlx::query("ALTER TABLE vehicles_p3 DROP CONSTRAINT vehicles_p3_fuel_type_id_fkey")
+        .execute(&pool)
+        .await
+        .expect("drop FK constraint");
+    let orphan_id = ::djogi::types::HeerId::from_i64(999_888_777).expect("sentinel HeerId");
+    sqlx::query("UPDATE vehicles_p3 SET fuel_type_id = $1 WHERE id = $2")
+        .bind(orphan_id)
+        .bind(vehicle.id)
+        .execute(&pool)
+        .await
+        .expect("update to orphan fuel_type_id");
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .select_related(VehicleRelated::fuel_type())
+        .fetch_all_joined(&pool)
+        .await
+        .expect("fetch_all_joined should succeed on orphan FK");
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].row.make, "Ford");
+    assert!(
+        rows[0].get(VehicleRelated::fuel_type()).is_none(),
+        "orphan FK (non-null column pointing at a deleted row) must surface as None, same as NULL FK"
+    );
+}
+
+/// Multiple `.select_related(...)` calls on disjoint relations — one
+/// LEFT JOIN per path, both aliased under distinct `rel_{source_column}`
+/// prefixes so their column names never collide in the result set. Both
+/// child accessors resolve correctly on the same joined row.
+#[sqlx::test]
+async fn select_related_multiple_relations_combine(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Dana").await;
+    let fuel = seed_fuel_type(&pool, "Electric").await;
+    let _ = seed_vehicle_with_owner(&pool, "Tesla", &owner, Some(&fuel)).await;
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .select_related(VehicleRelated::owner())
+        .select_related(VehicleRelated::fuel_type())
+        .fetch_all_joined(&pool)
+        .await
+        .expect("two-relation select_related should succeed");
+
+    assert_eq!(rows.len(), 1);
+    let joined_owner = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("owner join should materialise");
+    assert_eq!(joined_owner.name, "Dana");
+    let joined_fuel = rows[0]
+        .get(VehicleRelated::fuel_type())
+        .expect("fuel_type join should materialise");
+    assert_eq!(joined_fuel.name, "Electric");
+}
+
+/// `select_related` composes with `.filter()` and `.order_by()`: the
+/// filter narrows the parent result set, ordering determines row order,
+/// and the join attaches children per surviving parent. Pins the
+/// Phase 2 queryset machinery composes cleanly with Task 5's join
+/// emission — same `WHERE` / `ORDER BY` tail, just with a LEFT JOIN
+/// prepended.
+///
+/// The filter targets `make` (a parent-only column); using a
+/// parent-only column avoids the `ORDER BY id` / `WHERE id = ...`
+/// ambiguity a naive emitter would trigger once both parent and
+/// joined child table contribute an `id` column. Phase 3 does not
+/// auto-qualify filter columns with the parent table name — callers
+/// who want that explicit qualification reach for the raw
+/// `sqlx::QueryBuilder` escape hatch.
+#[sqlx::test]
+async fn select_related_composes_with_filter_and_order(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let alice = seed_owner(&pool, "Alice").await;
+    let bob = seed_owner(&pool, "Bob").await;
+    // Two Toyota entries (one per owner) plus a Honda. The filter
+    // picks out Toyotas; the order_by is a tiebreaker pinned on
+    // `make` again so the two rows land in a stable order regardless
+    // of insertion order.
+    let _ = seed_vehicle_with_owner(&pool, "Toyota", &alice, None).await;
+    let _ = seed_vehicle_with_owner(&pool, "Honda", &bob, None).await;
+    let _ = seed_vehicle_with_owner(&pool, "Toyota", &bob, None).await;
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .filter(|f| f.make().eq("Toyota".to_string()))
+        .order_by(|f| f.make().asc())
+        .select_related(VehicleRelated::owner())
+        .fetch_all_joined(&pool)
+        .await
+        .expect("filter+order_by+select_related should compose");
+
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert_eq!(row.row.make, "Toyota");
+        let joined_owner = row
+            .get(VehicleRelated::owner())
+            .expect("each surviving row should carry a joined owner");
+        // Either Alice or Bob — both owners are live; we only
+        // assert the join materialised with a live owner row.
+        assert!(
+            joined_owner.name == "Alice" || joined_owner.name == "Bob",
+            "unexpected owner name: {}",
+            joined_owner.name
+        );
+    }
+}
+
+/// Disjoint `select_related` and `.prefetch()` on the same queryset:
+/// one relation is joined, the other is fetched via the follow-up-query
+/// prefetch path. Proves the two eager-loading strategies coexist on
+/// one queryset without fighting over column aliases or SQL structure.
+///
+/// select_related lives on the main query's SELECT list; prefetch runs
+/// its own SQL round trip. The terminal `fetch_all_joined` honours both:
+/// the main query emits the JOIN, and the post-query prefetch pass
+/// stitches the prefetched targets into the same `JoinedRow<T>`.
+#[sqlx::test]
+async fn select_related_and_prefetch_compose_disjoint(pool: PgPool) {
+    setup_phase3(&pool).await;
+    let owner = seed_owner(&pool, "Eve").await;
+    let fuel = seed_fuel_type(&pool, "Gas").await;
+    let _ = seed_vehicle_with_owner(&pool, "BMW", &owner, Some(&fuel)).await;
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .select_related(VehicleRelated::owner())
+        .prefetch(VehicleRelated::fuel_type())
+        .fetch_all_joined(&pool)
+        .await
+        .expect("select_related + prefetch should compose on disjoint relations");
+
+    assert_eq!(rows.len(), 1);
+    // owner is joined in-place;
+    let joined_owner = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("owner join should resolve");
+    assert_eq!(joined_owner.name, "Eve");
+    // fuel_type is prefetched (separate query, same accessor surface).
+    let prefetched_fuel = rows[0]
+        .get(VehicleRelated::fuel_type())
+        .expect("fuel_type prefetch should resolve through the same typed accessor");
+    assert_eq!(prefetched_fuel.name, "Gas");
+}

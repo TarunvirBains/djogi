@@ -9,6 +9,7 @@ pub mod attrs;
 pub mod crud;
 pub mod descriptor;
 pub mod filter;
+pub mod from_joined_row;
 pub mod from_row;
 pub mod inject;
 pub mod relations;
@@ -61,6 +62,14 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 2. FromRow impl — Task 5 wires this up.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
+    // 2b. FromJoinedRow impl — Phase 3 Task 5. Sibling to `from_row` that
+    //     accepts a `prefix` parameter; used by `QuerySet::select_related`
+    //     to decode both parent (empty prefix) and child
+    //     (`"rel_{source_column}."`) from a single joined row. Emitted
+    //     for every model so `.select_related(path)` never fails at
+    //     compile time for lack of a decoder.
+    let from_joined_row = from_joined_row::expand(&struct_item, &model_attrs, &field_attrs);
+
     // 3. Model trait impl (CRUD) — Tasks 7–9 wire this up.
     let model_impl = crud::expand(&struct_item, &model_attrs, &field_attrs);
 
@@ -89,6 +98,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     Ok(quote::quote! {
         #expanded
         #from_row
+        #from_joined_row
         #model_impl
         #descriptor
         #stubs

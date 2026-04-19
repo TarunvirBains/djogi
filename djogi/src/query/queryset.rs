@@ -58,8 +58,10 @@ use crate::model::Model;
 use crate::query::condition::Condition;
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
+use crate::relation::joined_row::FromJoinedRow;
 use crate::relation::path::RelationPath;
 use crate::relation::prefetch::{ErasedPrefetch, prefetch_loader};
+use crate::relation::select_related::{ErasedSelectRelated, child_descriptor, join_decoder};
 use std::hash::Hash;
 use std::marker::PhantomData;
 
@@ -125,6 +127,20 @@ pub struct QuerySet<T: Model> {
     /// and behaves exactly as if no prefetch was registered — prefetches
     /// only take effect on the dedicated terminal.
     pub(crate) prefetch_paths: Vec<ErasedPrefetch>,
+    /// Registered `select_related` paths — one entry per call to
+    /// [`QuerySet::select_related`]. Consumed by
+    /// [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined)
+    /// to emit `LEFT JOIN` clauses and aliased child columns on the main
+    /// query (no follow-up round trips — that's the whole point of
+    /// `select_related` over `prefetch`). Deduplicated on registration
+    /// by `source_column` in the same way `prefetch_paths` is: a second
+    /// `.select_related(path)` for the same source column is a no-op.
+    /// Kept separate from `prefetch_paths` because the two emission
+    /// strategies are structurally different — one expands the
+    /// `SELECT` list + adds a JOIN, the other fans out into a per-
+    /// path follow-up query — and combining them would leak that
+    /// distinction into the type.
+    pub(crate) select_related_paths: Vec<ErasedSelectRelated>,
     /// Covariant `T` tag; never owns or borrows a `T`.
     _model: PhantomData<fn() -> T>,
 }
@@ -143,6 +159,10 @@ impl<T: Model> Clone for QuerySet<T> {
             // prefetch registrations across any `if`/`else` branch that
             // keeps a partially-built queryset around.
             prefetch_paths: self.prefetch_paths.clone(),
+            // `ErasedSelectRelated: Clone` for the same reason — the
+            // struct carries only `&'static str`, a static slice, and
+            // a fn pointer, so cloning is bit-copy-cheap.
+            select_related_paths: self.select_related_paths.clone(),
             _model: PhantomData,
         }
     }
@@ -159,6 +179,7 @@ impl<T: Model> std::fmt::Debug for QuerySet<T> {
             .field("offset", &self.offset)
             .field("is_empty", &self.is_empty)
             .field("prefetch_paths", &self.prefetch_paths)
+            .field("select_related_paths", &self.select_related_paths)
             .finish()
     }
 }
@@ -183,6 +204,7 @@ impl<T: Model> QuerySet<T> {
             offset: None,
             is_empty: false,
             prefetch_paths: Vec::new(),
+            select_related_paths: Vec::new(),
             _model: PhantomData,
         }
     }
@@ -452,6 +474,97 @@ impl<T: Model> QuerySet<T> {
             source_column: path.source_column(),
             parent_table: T::table_name(),
             loader: prefetch_loader::<T, Target>,
+        });
+        self
+    }
+
+    /// Register a single-hop `select_related` against `path`. The target
+    /// rows are materialised via a `LEFT JOIN` on the main query — no
+    /// follow-up round trip, unlike
+    /// [`prefetch`](QuerySet::prefetch). Each registered path is
+    /// consumed by
+    /// [`fetch_all_joined`](crate::query::QuerySet::fetch_all_joined),
+    /// which returns `Vec<JoinedRow<T>>` exposing the joined target(s)
+    /// via the same typed [`RelationPath`] the caller passed in.
+    ///
+    /// Calling `.select_related(path)` twice with the same path is
+    /// idempotent — the second registration is a no-op by
+    /// [`RelationPath::source_column`] equality, matching the
+    /// dedup rule on `prefetch`. No `Vec` spam, no duplicate join in
+    /// the emitted SQL.
+    ///
+    /// # Why the bounds on `Child`
+    ///
+    /// The `select_related` emitter aliases every child column in the
+    /// `SELECT` list under a `rel_{source_column}.{col}` prefix. The
+    /// [`FromJoinedRow`](crate::relation::FromJoinedRow) bound on
+    /// `Child` captures the decoder that reads those aliased columns
+    /// back into a concrete `Child` instance — the macro-emitted
+    /// sibling of `FromRow` that takes a prefix parameter. Without
+    /// this bound the emitter would have no way to decode the
+    /// child side of the join.
+    ///
+    /// `Child: Send + Sync + 'static` is the erasure contract — the
+    /// decoded child is boxed as `Box<dyn Any + Send + Sync>` so it can
+    /// share storage with heterogeneous child types on a single
+    /// queryset (`.select_related(owner).select_related(fuel_type)`).
+    ///
+    /// # Multi-relation per queryset
+    ///
+    /// Phase 3 supports multiple `.select_related(...)` calls on the
+    /// same queryset — each produces its own `LEFT JOIN` with a
+    /// `rel_{source_column}` alias. Aliases never collide because
+    /// source columns are unique per parent model by construction.
+    /// Multi-**hop** `select_related` (chained targets) is out of
+    /// scope for Phase 3 — [`RelationPath`] only carries a single hop
+    /// at the type level.
+    ///
+    /// ```ignore
+    /// let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+    ///     .filter(|f| f.make.eq("Tesla"))
+    ///     .select_related(VehicleRelated::owner())
+    ///     .fetch_all_joined(&pool).await?;
+    ///
+    /// for row in &rows {
+    ///     let owner: &Owner = row.get(VehicleRelated::owner()).unwrap();
+    ///     println!("{} owned by {}", row.row.make, owner.name);
+    /// }
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn select_related<Child>(mut self, path: RelationPath<T, Child>) -> Self
+    where
+        Child: Model + FromJoinedRow + Send + Sync + 'static,
+    {
+        // Idempotent registration: if a select_related for this
+        // source column is already registered, don't append a
+        // duplicate. Duplicate entries would emit two identical
+        // `LEFT JOIN` clauses with the same alias — Postgres would
+        // raise a "table name specified more than once" error on
+        // execution, turning a silent repeat into a runtime failure
+        // far from the call site. The dedup key is `source_column`
+        // because the `RelationPath` type parameters pin `Source` /
+        // `Child` at the type level; two paths with the same source
+        // column pointing at the same child are the same relation by
+        // construction.
+        if self
+            .select_related_paths
+            .iter()
+            .any(|p| p.source_column == path.source_column())
+        {
+            return self;
+        }
+
+        self.select_related_paths.push(ErasedSelectRelated {
+            source_column: path.source_column(),
+            child_table: path.target_table(),
+            decoder: join_decoder::<Child>,
+            // `child_descriptor::<Child>` coerces to a plain `fn` pointer
+            // that the SELECT-list emitter uses to read every child
+            // column name. Going through the descriptor (rather than a
+            // pre-projected `Vec<&'static str>`) avoids an allocation
+            // per `.select_related(...)` call and lets later phases
+            // pull richer metadata off the same hook.
+            child_descriptor: child_descriptor::<Child>,
         });
         self
     }

@@ -477,6 +477,72 @@ pub(crate) fn build_select<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, P
     qb
 }
 
+/// Build `SELECT {parent_cols} FROM <table> {left joins} [WHERE ...]
+/// [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the select_related variant.
+///
+/// # What
+///
+/// Mirror of [`build_select`], but:
+/// 1. Replaces `*` in the projection with the aliased column list built
+///    by [`crate::relation::select_related::select_columns`] — parent
+///    columns stay unqualified, each joined child's columns land under
+///    a `"rel_{source_column}.{col}"` alias.
+/// 2. Appends one `LEFT JOIN` clause per registered path, via
+///    [`crate::relation::select_related::push_joins`].
+///
+/// # Why a separate emitter
+///
+/// Keeping `build_select` unchanged means a queryset with no
+/// registered select_related paths still emits the exact SQL Phase 2
+/// shipped — no regression risk, no surprise `LEFT JOIN` on plain
+/// `fetch_all` call sites. The joined variant is reached only via
+/// [`QuerySet::fetch_all_joined`](crate::query::QuerySet::fetch_all_joined),
+/// which explicitly opts into the joined decode path.
+///
+/// # `DistinctMode` interaction
+///
+/// Phase 3 Task 5 does not ship `DISTINCT` interaction with
+/// select_related — the parent's `DISTINCT` semantics depend on
+/// whether the joined columns should participate in the distinct
+/// tuple, which is a Phase 4+ design decision. If the queryset has a
+/// non-`None` `DistinctMode`, the emitter preserves it exactly: `SELECT
+/// DISTINCT {parent_cols}...`. Callers who combine `.distinct()` with
+/// `.select_related(...)` get consistent shape — distinct is applied
+/// to the full projection (parent + aliased children) — but they
+/// should verify the emitted SQL matches their intent.
+pub(crate) fn build_select_joined<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
+    let mut qb = QueryBuilder::new("");
+    let col_list = crate::relation::select_related::select_columns::<T>(&qs.select_related_paths);
+    match &qs.distinct {
+        DistinctMode::None => {
+            qb.push("SELECT ");
+            qb.push(col_list);
+            qb.push(" FROM ");
+        }
+        DistinctMode::Plain => {
+            qb.push("SELECT DISTINCT ");
+            qb.push(col_list);
+            qb.push(" FROM ");
+        }
+        DistinctMode::On(cols) => {
+            qb.push("SELECT DISTINCT ON (");
+            for (i, c) in cols.iter().enumerate() {
+                if i > 0 {
+                    qb.push(", ");
+                }
+                qb.push(*c);
+            }
+            qb.push(") ");
+            qb.push(col_list);
+            qb.push(" FROM ");
+        }
+    }
+    qb.push(T::table_name());
+    crate::relation::select_related::push_joins::<T>(&mut qb, &qs.select_related_paths);
+    push_tail(&mut qb, qs);
+    qb
+}
+
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
 /// [`DistinctMode`].
 ///
