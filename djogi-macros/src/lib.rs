@@ -7,9 +7,14 @@
 //! - `reverse_one_to_many!` / `reverse_one_to_one!` — function-like
 //!   macros emitting reverse-relation accessor methods on the target
 //!   model plus an `inventory::submit!` registration record.
+//! - `many_to_many!` — function-like macro emitting one direction of
+//!   a many-to-many relation: the `ManyToMany<Target>` trait impl,
+//!   a named inherent accessor on the source type, and an
+//!   `inventory::submit!` registration record.
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
+mod many_to_many;
 mod model;
 mod reverse_relation;
 
@@ -108,4 +113,48 @@ pub fn reverse_one_to_one(input: TokenStream) -> TokenStream {
         reverse_relation::AccessorKindOpaque::ONE_TO_ONE,
     )
     .into()
+}
+
+/// Emit one direction of a many-to-many relation — the
+/// `ManyToMany<Target>` trait impl, the named inherent accessor on the
+/// source type, and an inventory marker for Phase 4.5.
+///
+/// Invocation form:
+///
+/// ```ignore
+/// djogi::many_to_many!(
+///     Person, Group,
+///     through  = PersonGroup,
+///     this_fk  = person_id,
+///     that_fk  = group_id,
+///     relation = "groups"
+/// );
+/// // expands to (roughly):
+/// //
+/// // impl djogi::relation::ManyToMany<Group> for Person {
+/// //     type Through = PersonGroup;
+/// //     const RELATION: &'static str = "groups";
+/// //     fn this_fk() -> &'static str { "person_id" }
+/// //     fn that_fk() -> &'static str { "group_id" }
+/// //     async fn related(...) { ... }
+/// //     async fn add_related(...) { ... }
+/// //     async fn remove_related(...) { ... }
+/// // }
+/// //
+/// // impl Person {
+/// //     pub fn groups<'a, E>(&'a self, executor: E)
+/// //         -> impl Future<Output = Result<Vec<Group>, DjogiError>> + Send + 'a
+/// //     where E: sqlx::Executor<'a, Database = sqlx::Postgres> + Copy + 'a,
+/// //     { <Self as ManyToMany<Group>>::related(self, executor) }
+/// // }
+/// //
+/// // inventory::submit! { ReverseRelationMarker { kind: M2M, ... } }
+/// ```
+///
+/// See [`djogi_macros::many_to_many`] module docs (crate-internal) for
+/// the full expansion shape, the rationale for emitting one direction
+/// per call, and the seal story for the identifier arguments.
+#[proc_macro]
+pub fn many_to_many(input: TokenStream) -> TokenStream {
+    many_to_many::expand(input.into()).into()
 }
