@@ -1336,6 +1336,7 @@ mod tests {
         cache_ttl: None,
         rationale: None,
         indexes: &[],
+        is_through: false,
     };
 
     fn owners_join_descriptor() -> &'static ModelDescriptor {

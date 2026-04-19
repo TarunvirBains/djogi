@@ -264,6 +264,8 @@ pub fn expand(
     all_field_descriptors.push(updated_at_desc);
     all_field_descriptors.extend(user_field_descriptors);
 
+    let is_through = model_attrs.through;
+
     quote! {
         ::djogi::__private::inventory::submit! {
             ::djogi::ModelDescriptor {
@@ -281,6 +283,8 @@ pub fn expand(
                 cache_ttl: None,
                 rationale: None,
                 indexes: &[],
+                // Task 6 (phase3-relations): `#[model(table = "...", through)]`
+                is_through: #is_through,
             }
         }
     }

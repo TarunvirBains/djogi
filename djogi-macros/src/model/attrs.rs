@@ -36,6 +36,21 @@ pub struct ModelAttrs {
     /// Users must then initialise all fields explicitly instead of relying
     /// on struct-update syntax (`..Model::default()`).
     pub no_default: bool,
+    /// When `true`, this model is a many-to-many through / junction model.
+    ///
+    /// Set via `#[model(table = "...", through)]`. The flag flows through
+    /// to [`ModelDescriptor::is_through`](djogi::descriptor::ModelDescriptor::is_through)
+    /// at codegen time, where it acts as a marker that:
+    ///
+    /// - This table is the junction for a specific `impl ManyToMany<Target> for Source`.
+    /// - Phase 6's migration differ may later suppress standalone-model
+    ///   admin/routing affordances for through tables (deferred).
+    ///
+    /// Through models remain ordinary queryable `Model`s — the flag is
+    /// documentation and future differentiation, not a structural
+    /// constraint. Users still `#[derive(Model)]` them as normal and
+    /// query them with the standard `QuerySet` API.
+    pub through: bool,
 }
 
 /// Parsed `pk = "..."` value.
@@ -60,6 +75,8 @@ impl ModelAttrs {
         let mut pk: Option<PkStrategy> = Option::None;
         let mut no_default = false;
         let mut seen_no_default = false;
+        let mut through = false;
+        let mut seen_through = false;
 
         for meta in &metas {
             match meta {
@@ -73,6 +90,17 @@ impl ModelAttrs {
                     }
                     seen_no_default = true;
                     no_default = true;
+                }
+                // Flag-only attribute: `through`
+                Meta::Path(path) if path.is_ident("through") => {
+                    if seen_through {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `through` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_through = true;
+                    through = true;
                 }
                 Meta::NameValue(MetaNameValue {
                     path,
@@ -105,7 +133,7 @@ impl ModelAttrs {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
-                                "unknown #[model] attribute `{}`; expected `table`, `pk`, or `no_default`",
+                                "unknown #[model] attribute `{}`; expected `table`, `pk`, `no_default`, or `through`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -114,7 +142,7 @@ impl ModelAttrs {
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "expected `key = \"value\"` attribute or bare flag (`no_default`)",
+                        "expected `key = \"value\"` attribute or bare flag (`no_default`, `through`)",
                     ));
                 }
             }
@@ -132,6 +160,7 @@ impl ModelAttrs {
             table,
             pk,
             no_default,
+            through,
         })
     }
 }

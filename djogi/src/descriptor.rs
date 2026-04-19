@@ -293,6 +293,21 @@ pub struct ModelDescriptor {
     /// Named index declarations. Phase 1 emits an empty slice by default.
     /// Migration generation for these lands in Phase 6.
     pub indexes: &'static [IndexSpec],
+
+    // ── Many-to-many (Task 6, phase3-relations plan) ────────────────────────
+    /// `true` when the model is a `#[model(table = "...", through)]`
+    /// junction table for a specific `impl ManyToMany<Target> for Source`.
+    ///
+    /// Through models remain ordinary queryable `Model`s — this flag is
+    /// purely a marker carried in the descriptor for downstream consumers:
+    ///
+    /// - Phase 6's migration differ can suppress standalone admin /
+    ///   routing affordances for through tables (deferred).
+    /// - Human-facing tools (`djogi docs`, the shell's `.list_models`)
+    ///   can hide through tables from the primary model list.
+    ///
+    /// `#[derive(Model)]` without `through` sets this to `false`.
+    pub is_through: bool,
 }
 
 inventory::collect!(ModelDescriptor);
