@@ -41,13 +41,18 @@ error[E0080]: evaluation panicked: djogi::ident: macro-emitted identifier contai
 34 | | );
    | |_^ evaluation of `_` failed inside this call
    |
-note: inside `__const_assert_plain_ident`
+note: inside `djogi::relation::registry::__macro_support::__const_assert_plain_ident`
   --> $WORKSPACE/djogi/src/relation/registry.rs
    |
    |         const_assert_plain_ident(value, role);
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 note: inside `djogi::ident::const_assert_plain_ident`
-  --> $WORKSPACE/djogi/src/ident.rs
+  --> $RUST/core/src/panic.rs
+   |
+   |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+   |
+  ::: $WORKSPACE/djogi/src/ident.rs
    |
    | /         assert!(
    | |             byte.is_ascii_alphanumeric() || byte == b'_',
@@ -55,4 +60,4 @@ note: inside `djogi::ident::const_assert_plain_ident`
    | |              — either the proc-macro emission is broken or downstream code bypassed the \
    | |              macro-support seal"
    | |         );
-   | |_________^ the failure occurred here
+   | |_________- in this macro invocation
