@@ -248,6 +248,18 @@ pub mod __macro_support {
         }
     }
 
+    /// Validate a macro-emitted identifier in const context without
+    /// constructing a marker.
+    ///
+    /// `many_to_many!` needs this for `that_fk`: unlike `relation` and
+    /// `this_fk`, it does not flow through the stored
+    /// [`ReverseRelationMarker`] fields, but it still becomes a
+    /// SQL-facing `&'static str` through `ManyToMany::that_fk()`.
+    #[doc(hidden)]
+    pub const fn __const_assert_plain_ident(value: &'static str, role: &'static str) {
+        const_assert_plain_ident(value, role);
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -259,6 +271,10 @@ pub mod __macro_support {
             std::panic::catch_unwind(|| {
                 __make_reverse_relation_marker(RelationKind::FK, "Owner", name, "Vehicle", via)
             })
+        }
+
+        fn try_const_assert(value: &'static str) -> std::thread::Result<()> {
+            std::panic::catch_unwind(|| __const_assert_plain_ident(value, "test_role"))
         }
 
         #[test]
@@ -299,6 +315,12 @@ pub mod __macro_support {
             // rejects it so emitted SQL cannot grow a `JOIN select ON ...`
             // clause from downstream fabrication.
             assert!(try_make("cars", "select").is_err());
+        }
+
+        #[test]
+        fn const_assert_wrapper_rejects_reserved_keywords() {
+            assert!(try_const_assert("owner_id").is_ok());
+            assert!(try_const_assert("select").is_err());
         }
     }
 }

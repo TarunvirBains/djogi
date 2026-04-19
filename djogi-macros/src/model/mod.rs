@@ -17,7 +17,7 @@ pub mod stubs;
 
 use attrs::ModelAttrs;
 use proc_macro2::TokenStream;
-use syn::{ItemStruct, parse2};
+use syn::{Fields, ItemStruct, parse2};
 
 /// Called from `lib.rs`. Returns the full expanded token stream, or a
 /// compile-error token stream on parse/validation failure.
@@ -37,6 +37,8 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .iter()
         .map(attrs::FieldAttrs::parse)
         .collect::<syn::Result<_>>()?;
+
+    validate_through_model_shape(&struct_item, &model_attrs)?;
 
     // Strip `#[field(...)]` attributes from user fields. We already captured
     // their semantics into `field_attrs` above; leaving the raw attribute on
@@ -105,4 +107,46 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #filter
         #related
     })
+}
+
+/// `#[model(..., through)]` marks a many-to-many junction model and must
+/// therefore carry at least two `ForeignKey<T>` columns.
+///
+/// The relation macros depend on one FK back to each side of the relation.
+/// Treating `through` as a pure marker would let obviously-invalid junction
+/// structs compile and only fail much later when Task 7 macros tried to use
+/// them. Task 8 pins this earlier with a compile-fail fixture.
+fn validate_through_model_shape(
+    struct_item: &ItemStruct,
+    model_attrs: &ModelAttrs,
+) -> syn::Result<()> {
+    if !model_attrs.through {
+        return Ok(());
+    }
+
+    let fk_count = match &struct_item.fields {
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .filter(|field| {
+                matches!(
+                    attrs::detect_relation(&field.ty),
+                    Some(attrs::RelationInfo {
+                        kind: attrs::RelationKind::ForeignKey,
+                        ..
+                    })
+                )
+            })
+            .count(),
+        Fields::Unnamed(_) | Fields::Unit => 0,
+    };
+
+    if fk_count >= 2 {
+        Ok(())
+    } else {
+        Err(syn::Error::new_spanned(
+            &struct_item.ident,
+            "a `#[model(through)]` struct must declare at least two `ForeignKey<T>` fields",
+        ))
+    }
 }

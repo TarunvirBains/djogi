@@ -11,11 +11,13 @@ the `#[model]` proc macro derives ORM methods, `FromRow` deserialization,
 and inventory registration. Your job is to work within that derivation chain
 — not around it.
 
-> **Current scope:** Phase 1 (models + CRUD + descriptor) and Phase 2
-> (`QuerySet<T>` + filters + bulk update/delete) ship. The `cargo djogi`
-> CLI, `cargo djogi migrate`, the Rhai shell, relations (FK / M2M),
-> RLS / tenant isolation, and the expression layer (Phase 4+) do not.
-> This guide covers what actually ships today. Planned features are
+> **Current scope:** Phases 1 through 3 ship: models + CRUD + descriptor,
+> `QuerySet<T>` + filters + bulk update/delete, and relations
+> (`ForeignKey<T>`, `OneToOneField<T>`, prefetch / `select_related`,
+> reverse accessors, explicit-through M2M). The `cargo djogi` CLI,
+> `cargo djogi migrate`, the Rhai shell, RLS / tenant isolation, and the
+> expression layer (Phase 4+) do not. This guide covers what actually
+> ships today. Planned features are
 > documented in [the roadmap](../roadmap/index.md).
 
 ---

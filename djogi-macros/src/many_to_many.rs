@@ -123,13 +123,13 @@
 //!   expansion time; a typo produces `no method named ... found`.
 //! - As Rust struct-literal field names inside `add_related`'s
 //!   junction construction — same rustc validation.
-//! - As `&'static str` values inside the inventory marker — validated
-//!   at const-eval time by
-//!   [`djogi::relation::registry::__macro_support::__make_reverse_relation_marker`]
-//!   via [`djogi::ident::const_assert_plain_ident`]. That panic fires
-//!   before the marker reaches the inventory slice, so any hostile
-//!   string would turn into a compile error pointing at the macro
-//!   invocation.
+//! - As `&'static str` values returned by `RELATION` / `this_fk()` /
+//!   `that_fk()`. All three are routed through
+//!   [`djogi::relation::registry::__macro_support::__const_assert_plain_ident`]
+//!   at const-eval time; `relation` and `this_fk` additionally flow
+//!   through the inventory marker constructor. That panic fires before
+//!   the marker reaches the inventory slice, so any hostile string
+//!   turns into a compile error pointing at the macro invocation.
 //!
 //! The `relation` string is also validated through the same const
 //! path — it names both a Rust method on `Source` and a registry
@@ -372,6 +372,29 @@ pub fn expand(input: TokenStream) -> TokenStream {
     let source_str = source_type.to_string();
     let target_str = target_type.to_string();
 
+    // Const-time guard for every user-supplied identifier string the
+    // macro bakes into SQL-facing associated items. `relation` and
+    // `this_fk` already flow through the inventory marker constructor,
+    // but `that_fk` only appears in `ManyToMany::that_fk()`. Emitting
+    // one explicit const guard here keeps the three inputs under the
+    // same stricter Postgres-identifier seal.
+    let identifier_guard = quote! {
+        const _: () = {
+            ::djogi::relation::registry::__macro_support::__const_assert_plain_ident(
+                #relation_lit,
+                "many_to_many_relation",
+            );
+            ::djogi::relation::registry::__macro_support::__const_assert_plain_ident(
+                #this_fk_str,
+                "many_to_many_this_fk",
+            );
+            ::djogi::relation::registry::__macro_support::__const_assert_plain_ident(
+                #that_fk_str,
+                "many_to_many_that_fk",
+            );
+        };
+    };
+
     // Named accessor documentation — read at the method call site in
     // rustdoc. The body intentionally restates the macro invocation
     // shape so a user hovering `person.groups(&pool)` sees where the
@@ -586,9 +609,10 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
     // Inventory marker. Routed through the existing sealed
     // `__make_reverse_relation_marker` constructor so `name` (the
-    // relation string) and `via` (the `this_fk` column) both pass the
-    // shared `const_assert_plain_ident` check at const-eval time — the
-    // same gate that protects the reverse-relation markers.
+    // relation string) and `via` (the `this_fk` column) pass the shared
+    // const identifier validator at the registry boundary. `that_fk` is
+    // validated by `identifier_guard` above because it is not persisted
+    // in the marker record.
     //
     // `via` carries the `this_fk` column (not `that_fk`) because
     // Phase 4.5's projection generator walks the registry to discover
@@ -616,6 +640,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // parsing one giant TokenStream — and matches the reverse-relation
     // macro's internal structure.
     quote! {
+        #identifier_guard
         #trait_impl
         #accessor_impl
         #inventory_submit

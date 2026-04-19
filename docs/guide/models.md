@@ -4,7 +4,7 @@
 
 A Djogi model is a plain Rust struct annotated with `#[model(table = "...")]`. The proc macro injects the three framework fields (`id`, `created_at`, `updated_at`), generates all CRUD methods, registers the model with the descriptor system via `inventory`, and emits a `FromRow` impl for sqlx deserialization. You define only the business fields.
 
-This document is a Phase 1 reference. For attributes and field types that aren't shipped yet, see [the models roadmap](../roadmap/models.md).
+This document is primarily a Phase 1 reference for core model definition. For shipped relation field types, eager loading, and explicit-through many-to-many declarations, see the [relations guide](./relations.md). For features that still are not shipped, see [the models roadmap](../roadmap/models.md).
 
 ---
 
@@ -235,7 +235,7 @@ Phase 1 maps these Rust types to SQL column types:
 | `RanjId` | `UUID` | via heeranjid `sqlx::Encode`/`Decode` |
 | `Option<T>` | nullable | wraps any of the above |
 
-For types not in this table (`Jsonb<T>`, `ForeignKey<T>`, `GeoPoint`, etc.), see [the models roadmap](../roadmap/models.md).
+For shipped relation field types like `ForeignKey<T>` and `OneToOneField<T>`, see the [relations guide](./relations.md). For types that still are not shipped (`Jsonb<T>`, `GeoPoint`, etc.), see [the models roadmap](../roadmap/models.md).
 
 ---
 
