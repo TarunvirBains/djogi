@@ -143,6 +143,24 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Filter-API integration — forward to the wrapped `ForeignKey<T>`.
+// ---------------------------------------------------------------------------
+//
+// Mirror `ForeignKey<T>: IntoFilterValue` so that reverse-O2O accessors
+// (Phase 3 Task 7) can emit the same `.eq(OneToOneField::new(pk))`
+// closure body the reverse-FK macro uses. The wrapped `ForeignKey<T>`
+// already carries the projection into `FilterValue` through its PK type.
+
+impl<T: Model> crate::query::field::IntoFilterValue for OneToOneField<T>
+where
+    T::Pk: crate::query::field::IntoFilterValue + Clone,
+{
+    fn into_filter_value(self) -> crate::query::condition::FilterValue {
+        self.0.into_filter_value()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Post-fetch / post-prefetch resolved wrapper — mirrors `ForeignKeyResolved`.
 // ---------------------------------------------------------------------------
 

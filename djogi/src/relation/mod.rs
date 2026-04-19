@@ -21,6 +21,13 @@
 //!   row stitching glue (Task 5).
 //! - `many_to_many.rs` / `ManyToMany<Target>` trait + through-model
 //!   plumbing (Task 6).
+//! - `registry.rs` — inventory-based registry of reverse / M2M
+//!   accessors emitted by `reverse_one_to_many!`,
+//!   `reverse_one_to_one!`, and the future `many_to_many!` macro
+//!   (Task 7). `registry::RelationKind` is a distinct enum from
+//!   `path::RelationKind` — the former discriminates macro-emitted
+//!   accessor *kinds* (FK / O2O / M2M), the latter discriminates
+//!   field-level relation *shapes* (ForeignKey / OneToOne).
 //!
 //! See `docs/guide/relations.md` (Phase 3 Task 8) for the user-facing
 //! guide once later tasks land.
@@ -31,6 +38,7 @@ pub mod on_delete;
 pub mod one_to_one;
 pub mod path;
 pub mod prefetch;
+pub mod registry;
 pub mod select_related;
 
 pub use foreign_key::{ForeignKey, ForeignKeyResolved};

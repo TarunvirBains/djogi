@@ -200,6 +200,32 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Filter-API integration — `ForeignKey<T>` projects through the target PK.
+// ---------------------------------------------------------------------------
+//
+// A reverse-FK accessor (Phase 3 Task 7) filters the source table by its
+// FK column: `Vehicle::objects().filter(|f| f.owner_id().eq(
+// ForeignKey::new(owner.id)))`. The closure `.eq` call infers `V =
+// ForeignKey<Owner>` from the field-handle's declared type; to satisfy the
+// `V: IntoFilterValue` bound on `FieldRef::eq` we forward into the
+// target's PK projection. No new `FilterValue` discriminant is needed —
+// the FK round-trips through the SQL layer as its PK type, which is
+// exactly the binding the condition tree already knows how to emit.
+//
+// `T::Pk: Clone` matches the bound already required by `ForeignKey::key`
+// (and by the `Clone` impl on the wrapper itself), so this impl adds no
+// new capability constraints on concrete `T`.
+
+impl<T: Model> crate::query::field::IntoFilterValue for ForeignKey<T>
+where
+    T::Pk: crate::query::field::IntoFilterValue + Clone,
+{
+    fn into_filter_value(self) -> crate::query::condition::FilterValue {
+        self.key.into_filter_value()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Post-fetch / post-prefetch resolved wrapper.
 // ---------------------------------------------------------------------------
 
