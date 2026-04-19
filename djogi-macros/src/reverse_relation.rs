@@ -215,9 +215,21 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     // macro invocation sees the exact identifier they wrote.
     let filter_method = format_ident!("{}", via_column);
 
-    // Per-kind variations: terminal, return-type inner shape, and
-    // RelationKind marker variant.
-    let (return_inner_ty, terminal_call, relation_kind_variant): (
+    // Per-kind variations: terminal, return-type inner shape,
+    // RelationKind marker variant, and the relation-wrapper
+    // constructor used inside the filter closure.
+    //
+    // `wrapper_ctor` names the exact type the `FieldRef::eq(value)`
+    // closure receives. For reverse-FK, the forward column is
+    // `ForeignKey<Receiver>`; for reverse-O2O, the forward column is
+    // `OneToOneField<Receiver>`. The field-handle's `V` generic is
+    // bound to the declared field type, so the value we bind to
+    // `.eq(...)` must match that wrapper exactly — the
+    // `IntoFilterValue` impls on both wrappers project through the
+    // inner PK, so the resulting SQL is identical, but the type the
+    // closure body constructs is different by kind.
+    let (return_inner_ty, terminal_call, relation_kind_variant, wrapper_ctor): (
+        TokenStream,
         TokenStream,
         TokenStream,
         TokenStream,
@@ -226,11 +238,13 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
             quote! { ::std::vec::Vec<#returned_type> },
             quote! { fetch_all(executor) },
             quote! { ::djogi::relation::registry::RelationKind::FK },
+            quote! { ::djogi::relation::ForeignKey::<#receiver_type>::new(pk) },
         ),
         AccessorKind::OneToOne => (
             quote! { ::std::option::Option<#returned_type> },
             quote! { first(executor) },
             quote! { ::djogi::relation::registry::RelationKind::O2O },
+            quote! { ::djogi::relation::OneToOneField::<#receiver_type>::new(pk) },
         ),
     };
 
@@ -304,10 +318,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                 let pk = <Self as ::djogi::model::Model>::pk_value(self).clone();
                 async move {
                     <#returned_type as ::djogi::model::Model>::objects()
-                        .filter(move |f| {
-                            f.#filter_method()
-                                .eq(::djogi::relation::ForeignKey::<#receiver_type>::new(pk))
-                        })
+                        .filter(move |f| f.#filter_method().eq(#wrapper_ctor))
                         .#terminal_call
                         .await
                 }
