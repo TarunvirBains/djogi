@@ -34,6 +34,7 @@
 
 pub mod foreign_key;
 pub mod joined_row;
+pub mod many_to_many;
 pub mod on_delete;
 pub mod one_to_one;
 pub mod path;
@@ -43,6 +44,7 @@ pub mod select_related;
 
 pub use foreign_key::{ForeignKey, ForeignKeyResolved};
 pub use joined_row::{FromJoinedRow, JoinedRow};
+pub use many_to_many::ManyToMany;
 pub use on_delete::OnDelete;
 pub use one_to_one::{OneToOneField, OneToOneFieldResolved};
 pub use path::{RelationKind, RelationPath};
