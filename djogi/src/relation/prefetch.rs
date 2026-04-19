@@ -31,7 +31,7 @@
 //! target rows paired with their originating parent PKs via a `LEFT JOIN`:
 //!
 //! ```sql
-//! SELECT p.id AS __djogi_parent_id, t.*
+//! SELECT p.id AS __djogi_parent_id, t.col_1, t.col_2, …, t.col_N
 //! FROM <parent_table> p
 //! LEFT JOIN <target_table> t ON t.id = p.<source_column>
 //! WHERE p.id IN ($1, $2, …, $N)
@@ -43,14 +43,24 @@
 //! the per-distinct-arity prepared plan cost is an accepted trade-off
 //! for keeping the framework's type bounds minimal.
 //!
+//! The target columns are enumerated explicitly (via
+//! `<Target as Model>::descriptor().fields`) rather than using `t.*`:
+//! that way the `__djogi_parent_id` synthetic alias cannot collide with
+//! any real column on the target — if a user declared a column literally
+//! named `__djogi_parent_id`, `t.*` would return two `__djogi_parent_id`
+//! columns and `try_get` would pick one at the sqlx layer with no
+//! guarantee it is the parent PK. Explicit enumeration removes the
+//! conflict surface entirely; the synthetic alias is the only column
+//! under that name in the result set by construction.
+//!
 //! - The `LEFT JOIN` naturally handles nullable FK columns: rows whose
-//!   `source_column` is `NULL` appear with every `t.*` field null-decoded,
-//!   which surfaces as `None` on the per-parent result slot.
+//!   `source_column` is `NULL` appear with every enumerated target
+//!   column null-decoded, which surfaces as `None` on the per-parent
+//!   result slot.
 //! - The aliased `__djogi_parent_id` gives the stitcher a way back to the
-//!   parent row irrespective of whether target columns were null. The `t.*`
-//!   columns come after, so a `FromRow` implementation for `Target` that
-//!   looks up columns by name still works (the alias is unique and does not
-//!   conflict with user column names).
+//!   parent row irrespective of whether target columns were null. The
+//!   target columns come after, so a `FromRow` implementation for
+//!   `Target` that looks up columns by name still works.
 //! - Target rows are not deduplicated at the SQL layer — two parent rows
 //!   pointing at the same target produce two result rows, each carrying
 //!   the same target payload under its own parent PK. Stitching preserves
@@ -290,10 +300,13 @@ impl std::fmt::Debug for ErasedPrefetch {
 /// the runtime path needs:
 ///
 /// - `Source: Model` — lets us name `Source::Pk` for downcasting.
-/// - `Source::Pk: sqlx::Type + Encode + Decode + PgHasArrayType + Eq +
-///   Hash + Clone + 'static + Send + Sync` — required to bind the
-///   `ANY($1)` array, decode the `__djogi_parent_id` column, dedupe the
+/// - `Source::Pk: sqlx::Type + Encode + Decode + Eq + Hash + Clone +
+///   'static + Send + Sync` — required to bind the per-parent `IN (...)`
+///   arguments, decode the `__djogi_parent_id` column, dedupe the
 ///   query-side input, and use the PK as a HashMap key for stitching.
+///   No `PgHasArrayType` bound — the emitter uses `IN (...)` rather
+///   than `ANY($1)` precisely so the HeeRanjID PKs (which do not
+///   implement that trait) slot into the prefetch path unchanged.
 /// - `Target: Model + FromRow + Send + Unpin + 'static` — the LEFT JOIN
 ///   returns target columns; `FromRow` decodes them, `Any` erases the
 ///   concrete type for the return channel.
@@ -364,7 +377,7 @@ where
 
         // Build the stitching query:
         //
-        //   SELECT p.id AS __djogi_parent_id, t.*
+        //   SELECT p.id AS __djogi_parent_id, t.col_1, t.col_2, ..., t.col_N
         //   FROM <parent_table> p
         //   LEFT JOIN <target_table> t ON t.id = p.<source_column>
         //   WHERE p.id IN ($1, $2, ..., $N)
@@ -385,12 +398,24 @@ where
         // deleted target emit target columns as NULL, which the null
         // probe below surfaces as `None`.
         //
-        // `__djogi_parent_id` is deliberately verbose — no user model
-        // declares a column that long with a djogi prefix, so the
-        // `Target::from_row` lookup by name is guaranteed not to collide.
+        // Target columns are enumerated explicitly via
+        // `Target::descriptor().fields` rather than using `t.*`. This
+        // keeps the synthetic `__djogi_parent_id` alias safe against a
+        // hypothetical user column of the same name: `t.*` would pull
+        // a second `__djogi_parent_id` into the result set and sqlx's
+        // name-based `try_get` would pick one with no stable guarantee
+        // which. Enumeration guarantees the alias is the sole column
+        // under that name in the result set, without forcing the
+        // framework to reserve `__djogi_parent_id` in user-space naming.
         let target_table = <Target as Model>::table_name();
+        let target_fields = <Target as Model>::descriptor().fields;
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new("");
-        qb.push("SELECT p.id AS __djogi_parent_id, t.* FROM ");
+        qb.push("SELECT p.id AS __djogi_parent_id");
+        for field in target_fields {
+            qb.push(", t.");
+            qb.push(field.name);
+        }
+        qb.push(" FROM ");
         qb.push(parent_table);
         qb.push(" p LEFT JOIN ");
         qb.push(target_table);
@@ -647,7 +672,7 @@ mod tests {
         let pr: PrefetchedRow<Parent> = PrefetchedRow::new(row, relations);
 
         let path: RelationPath<Parent, Child> =
-            RelationPath::__new("child_id", "children", RelationKind::ForeignKey);
+            RelationPath::new("child_id", "children", RelationKind::ForeignKey);
         assert!(pr.get(path).is_some(), "resolved child should be present");
     }
 
@@ -658,7 +683,7 @@ mod tests {
         // lookup layer.
         let pr: PrefetchedRow<Parent> = PrefetchedRow::new(Parent, HashMap::new());
         let path: RelationPath<Parent, Child> =
-            RelationPath::__new("child_id", "children", RelationKind::ForeignKey);
+            RelationPath::new("child_id", "children", RelationKind::ForeignKey);
         assert!(pr.get(path).is_none());
     }
 

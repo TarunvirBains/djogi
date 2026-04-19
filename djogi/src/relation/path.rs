@@ -18,14 +18,25 @@
 //! would be emitted. This is the feature — relations are a place where
 //! mismatched targets are a nasty silent source of wrong results.
 //!
-//! # Why a `pub(crate) __new` constructor
+//! # Sealed constructor
 //!
-//! The `RelationPath::__new` constructor is `pub` but `#[doc(hidden)]` —
-//! only the `{Source}Related` code path in the proc macro emits it. Users
-//! never write `RelationPath::__new(...)` directly; they call the typed
-//! accessor (`VehicleRelated::owner()`) that wraps it. The leading
-//! double-underscore is the framework convention for "visible only so the
-//! macro can reach it; not part of the public API".
+//! [`RelationPath::new`] is `pub(crate)` — the type cannot be constructed from
+//! downstream crates. Proc-macro-emitted `{Source}Related` methods reach it via
+//! the `#[doc(hidden)] pub` helper [`__private::__make_relation_path`] in
+//! `djogi::relation`, which validates the identifier strings before
+//! instantiating the path. That helper exists only so `#[derive(Model)]` in
+//! `djogi-macros` can emit user-crate code that calls it; it is not part of
+//! the stable public API and its name carries the framework-internal
+//! double-underscore convention.
+//!
+//! The seal closes the SQL-injection vector that existed while `__new` was
+//! `pub` with `#[doc(hidden)]`: downstream code could previously fabricate a
+//! `RelationPath` whose `source_column` / `target_table` strings contained
+//! quotes, spaces, or SQL metacharacters, and those strings flowed straight
+//! into `sqlx::QueryBuilder::push` in the prefetch / select_related emitters.
+//! With the constructor `pub(crate)` and the macro helper performing a
+//! `[A-Za-z0-9_]` character-class check on both identifier args, no value of
+//! `RelationPath` can carry an injection payload.
 //!
 //! # Phase 3 scope
 //!
@@ -95,15 +106,20 @@ pub struct RelationPath<Source: Model, Target: Model> {
 }
 
 impl<Source: Model, Target: Model> RelationPath<Source, Target> {
-    /// Construct a relation path. **Not** part of the public API — the
-    /// `#[doc(hidden)]` plus double-underscore signal that only the
-    /// `{Source}Related` codegen in `djogi-macros` calls this.
+    /// Construct a relation path. Crate-private — downstream code goes through
+    /// the macro-emitted `{Source}Related::relation_name()` accessor, which
+    /// reaches this constructor via
+    /// [`__private::__make_relation_path`](super::__private::__make_relation_path)
+    /// after validating the identifier strings.
     ///
-    /// `const fn` so the macro can emit the constructor call at method
-    /// return position without an intermediate allocation or late-bound
-    /// arguments; matches the ZST nature of the struct.
-    #[doc(hidden)]
-    pub const fn __new(
+    /// The seal prevents the SQL-injection fabrication vector documented on
+    /// the module header: arbitrary `&'static str` inputs can no longer reach
+    /// the SQL emitter via a downstream-constructed `RelationPath`.
+    ///
+    /// `const fn` so the macro helper can call this in `const` contexts if a
+    /// later phase needs `const`-promoted relation paths; matches the ZST
+    /// nature of the struct.
+    pub(crate) const fn new(
         source_column: &'static str,
         target_table: &'static str,
         kind: RelationKind,
@@ -209,7 +225,7 @@ mod tests {
     #[test]
     fn relation_path_holds_source_column_and_target_table() {
         let p: RelationPath<Src, Dst> =
-            RelationPath::__new("dst_id", "dsts", RelationKind::ForeignKey);
+            RelationPath::new("dst_id", "dsts", RelationKind::ForeignKey);
         assert_eq!(p.source_column(), "dst_id");
         assert_eq!(p.target_table(), "dsts");
         assert_eq!(p.kind(), RelationKind::ForeignKey);
@@ -220,8 +236,7 @@ mod tests {
         // OneToOne paths are the other variant Phase 3 Task 2 ships —
         // pin the discriminant so Task 7's `ManyToMany` addition
         // doesn't accidentally renumber the existing variants.
-        let p: RelationPath<Src, Dst> =
-            RelationPath::__new("dst_id", "dsts", RelationKind::OneToOne);
+        let p: RelationPath<Src, Dst> = RelationPath::new("dst_id", "dsts", RelationKind::OneToOne);
         assert_eq!(p.kind(), RelationKind::OneToOne);
     }
 

@@ -307,7 +307,7 @@ mod tests {
         let jr: JoinedRow<Parent> = JoinedRow::new(row, relations);
 
         let path: RelationPath<Parent, Child> =
-            RelationPath::__new("child_id", "children", RelationKind::ForeignKey);
+            RelationPath::new("child_id", "children", RelationKind::ForeignKey);
         assert!(jr.get(path).is_some(), "joined child should be present");
     }
 
@@ -317,7 +317,7 @@ mod tests {
         // LEFT JOIN miss (NULL FK / orphan) at the lookup layer.
         let jr: JoinedRow<Parent> = JoinedRow::new(Parent, HashMap::new());
         let path: RelationPath<Parent, Child> =
-            RelationPath::__new("child_id", "children", RelationKind::ForeignKey);
+            RelationPath::new("child_id", "children", RelationKind::ForeignKey);
         assert!(jr.get(path).is_none());
     }
 
@@ -345,7 +345,7 @@ mod tests {
         jr.relations_mut()
             .insert("child_id", Box::new(Child) as Box<dyn Any + Send + Sync>);
         let path: RelationPath<Parent, Child> =
-            RelationPath::__new("child_id", "children", RelationKind::ForeignKey);
+            RelationPath::new("child_id", "children", RelationKind::ForeignKey);
         assert!(
             jr.get(path).is_some(),
             "relations_mut insert should be observable via get"

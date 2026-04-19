@@ -141,7 +141,16 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
                     #source_name,
                     #target_type,
                 > {
-                    ::djogi::relation::RelationPath::__new(
+                    // Routes through the sealed macro-only entry point. The
+                    // `RelationPath::new` constructor itself is `pub(crate)`
+                    // in the djogi crate, so this helper is the only cross-
+                    // crate path — and it validates both identifiers before
+                    // constructing the path to close the SQL-injection
+                    // fabrication vector.
+                    ::djogi::relation::__private::__make_relation_path::<
+                        #source_name,
+                        #target_type,
+                    >(
                         #column_name,
                         <#target_type as ::djogi::model::Model>::table_name(),
                         #kind_path,
