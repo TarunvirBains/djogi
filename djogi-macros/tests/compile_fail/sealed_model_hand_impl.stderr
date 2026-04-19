@@ -1,0 +1,96 @@
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:36:22
+   |
+36 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                      ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:36:52
+   |
+36 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                                                    ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:42:22
+   |
+42 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                      ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:42:52
+   |
+42 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                                                    ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:49:22
+   |
+49 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                      ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:49:52
+   |
+49 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                                                    ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:55:22
+   |
+55 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                      ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:55:52
+   |
+55 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                                                    ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:61:22
+   |
+61 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                      ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `sqlx`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:61:52
+   |
+61 |             _e: impl sqlx::Executor<'a, Database = sqlx::Postgres>,
+   |                                                    ^^^^ use of unresolved module or unlinked crate `sqlx`
+   |
+   = help: if you wanted to use a crate named `sqlx`, use `cargo add sqlx` to add it to your `Cargo.toml`
+
+error[E0277]: the trait bound `Hostile: Sealed` is not satisfied
+  --> tests/compile_fail/sealed_model_hand_impl.rs:29:9
+   |
+29 |         fn pk_value(&self) -> &Self::Pk {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `Sealed` is not implemented for `Hostile`
+  --> tests/compile_fail/sealed_model_hand_impl.rs:15:1
+   |
+15 | pub struct Hostile;
+   | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `Model`
+  --> $WORKSPACE/djogi/src/model.rs
+   |
+   | pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
+   |                                                  ^^^^^^^^^^^^^^^^ required by this bound in `Model`

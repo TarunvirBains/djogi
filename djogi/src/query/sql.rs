@@ -835,6 +835,7 @@ mod tests {
     use crate::query::queryset::QuerySet;
 
     struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
     #[allow(clippy::manual_async_fn)]
     impl Model for Fake {
         type Pk = i64;

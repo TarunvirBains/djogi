@@ -418,6 +418,7 @@ mod tests {
     // modules — enough to satisfy the `Model` bound on `push_joins` /
     // `select_columns` without dragging in the full `#[model]` macro.
     struct Src;
+    impl crate::model::__sealed::Sealed for Src {}
     #[allow(clippy::manual_async_fn)]
     impl Model for Src {
         type Pk = HeerId;

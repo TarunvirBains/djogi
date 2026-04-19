@@ -611,6 +611,7 @@ mod tests {
 
     macro_rules! dummy_model {
         ($ty:ty, $table:literal) => {
+            impl crate::model::__sealed::Sealed for $ty {}
             #[allow(clippy::manual_async_fn)]
             impl crate::model::Model for $ty {
                 type Pk = HeerId;

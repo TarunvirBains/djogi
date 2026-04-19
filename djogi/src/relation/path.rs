@@ -175,6 +175,7 @@ mod tests {
 
     macro_rules! dummy_model {
         ($ty:ty, $table:literal) => {
+            impl crate::model::__sealed::Sealed for $ty {}
             impl Model for $ty {
                 type Pk = HeerId;
                 type Fields = ();

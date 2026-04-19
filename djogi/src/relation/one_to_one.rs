@@ -234,6 +234,7 @@ mod tests {
     /// `unwrap_err` reason spelled out in `foreign_key.rs`.
     #[derive(Debug, Clone)]
     struct Dummy;
+    impl crate::model::__sealed::Sealed for Dummy {}
     #[allow(clippy::manual_async_fn)]
     impl crate::model::Model for Dummy {
         type Pk = HeerId;

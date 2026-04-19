@@ -657,6 +657,7 @@ mod tests {
     // used in `query::field`'s unit tests — keeps QuerySet builder tests in
     // this file independent of the `#[model]` macro expansion path.
     struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
     impl Model for Fake {
         type Pk = i64;
         type Fields = ();

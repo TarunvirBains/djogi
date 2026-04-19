@@ -339,6 +339,7 @@ mod tests {
     /// `ForeignKeyResolved::clone` path stays exercised.
     #[derive(Debug, Clone)]
     struct Dummy;
+    impl crate::model::__sealed::Sealed for Dummy {}
     #[allow(clippy::manual_async_fn)]
     impl crate::model::Model for Dummy {
         type Pk = HeerId;

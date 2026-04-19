@@ -44,7 +44,28 @@ use crate::DjogiError;
 use crate::descriptor::ModelDescriptor;
 use std::future::Future;
 
-pub trait Model: Sized + Send + Sync + 'static {
+/// Seal marker for the [`Model`] trait.
+///
+/// `#[derive(Model)]` emits `impl djogi::model::__sealed::Sealed for T {}`
+/// alongside the `impl Model for T` block. A hand-rolled `impl Model`
+/// that skips `#[derive(Model)]` fails to compile because the sealed
+/// supertrait is unsatisfied — so hostile downstream code cannot
+/// fabricate a `Model` whose `table_name()` or `descriptor().fields[].name`
+/// smuggles SQL into the emitter's `sqlx::QueryBuilder::push` sites
+/// (per Codex review on de42874). The module is `#[doc(hidden)] pub`
+/// because `djogi-macros` emits a cross-crate path through it; the
+/// `__` prefix plus the seal-marker doc comment are the social signal
+/// that downstream code must never reach into it directly. A truly
+/// adversarial downstream crate could still name the path, but the
+/// threat model the seal defends against is accidental hand-impls
+/// and well-meaning-but-broken macro forks, not deliberate
+/// framework subversion (which has simpler routes via `unsafe`).
+#[doc(hidden)]
+pub mod __sealed {
+    pub trait Sealed {}
+}
+
+pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Primary key Rust type.
     /// - `pk = "heerid"` (default) → `HeerId`
     /// - `pk = "serial"` → `i32`

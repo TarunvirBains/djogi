@@ -164,6 +164,7 @@ pub mod __macro_support {
         // through the shared validator before constructing the ref.
         struct M;
 
+        impl crate::model::__sealed::Sealed for M {}
         impl Model for M {
             type Pk = crate::types::HeerId;
             type Fields = ();
@@ -622,6 +623,7 @@ mod tests {
     // change the trait signature, not just the impl. See `model.rs` for
     // the full rationale on `'a` lifetime + `+ Send` bound.
     struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
     #[allow(clippy::manual_async_fn)]
     impl crate::model::Model for Fake {
         type Pk = i64;
