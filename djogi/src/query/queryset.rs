@@ -257,6 +257,51 @@ impl<T: Model> QuerySet<T> {
         self
     }
 
+    /// AND an expression-IR predicate onto the condition tree.
+    ///
+    /// The closure receives a default-constructed `T::Fields` handle
+    /// and must return an [`Expr<bool>`](crate::expr::Expr) — i.e. a
+    /// comparison produced by the `eq` / `neq` / `gt` / `gte` / `lt` /
+    /// `lte` methods on `Expr<T>`. The returned expression is wrapped
+    /// in [`Condition::Expr`] and AND-ed onto `self.condition`; the
+    /// SQL emitter walks the expression via
+    /// [`crate::expr::sql::emit_expr`] instead of the Phase 2
+    /// column-vs-literal leaf emitter.
+    ///
+    /// # When to reach for `filter_expr` over `filter`
+    ///
+    /// [`QuerySet::filter`] (Phase 2) accepts predicates where the RHS
+    /// is always a literal — `f.balance.lt(100i64)`. `filter_expr`
+    /// generalises both sides: either operand can be a column ref, a
+    /// literal, or an arithmetic expression. Use it for:
+    ///
+    /// - Field-vs-field comparisons (`balance < overdraft_limit`).
+    /// - Arithmetic predicates (`balance + pending_credit > 0`).
+    /// - Predicates that build on [`crate::expr::Expr`] composition —
+    ///   future tasks extend this surface with aggregates, subqueries,
+    ///   and `CASE` (Phase 4 Tasks 4/5).
+    ///
+    /// The two methods compose: a queryset may have any mix of
+    /// `filter` and `filter_expr` clauses, and every call is AND-ed
+    /// onto the same tree.
+    ///
+    /// ```ignore
+    /// use djogi::prelude::*;
+    ///
+    /// let overdrawn = Account::objects()
+    ///     .filter_expr(|f| f.balance().as_expr().lt(f.overdraft_limit().as_expr()))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn filter_expr<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(T::Fields) -> crate::expr::Expr<bool>,
+    {
+        let expr = f(T::Fields::default());
+        self.condition = Condition::and(self.condition, Condition::Expr(expr));
+        self
+    }
+
     /// Add a typed filter closure **negated** (wrapped in SQL `NOT`), AND-ed
     /// onto the existing tree. Equivalent to Django's `QuerySet.exclude()`.
     ///

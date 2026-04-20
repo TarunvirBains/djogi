@@ -52,6 +52,11 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[derive(Debug, Clone)]
 pub struct Account {
     pub balance: i64,
+    /// Per-account overdraft cap. Task 3a's `field_vs_field_filter`
+    /// test compares `balance` against this column as an
+    /// `Expr<bool>` predicate; other Phase 4 tests leave it at the
+    /// `Default::default()` value (0) and do not touch it.
+    pub overdraft_limit: i64,
 }
 
 // Parent / child pair for the prefetch-inside-atomic test. The `_p4`
@@ -523,4 +528,71 @@ async fn prefetch_works_inside_atomic(pool: PgPool) {
     })
     .await
     .expect("prefetch inside atomic must succeed over tx-backed context");
+}
+
+// ---------------------------------------------------------------------------
+// Task 3a — Expression IR core
+//
+// Pins the field-vs-field comparison path: `filter_expr` accepts a
+// closure that returns `Expr<bool>`, and `Account::objects()
+//   .filter_expr(|f| f.balance.as_expr().lt(f.overdraft_limit.as_expr()))`
+// round-trips through the SQL emitter to a live Postgres query. The
+// unit tests in `djogi/src/expr/sql.rs` cover token-level SQL shape
+// assertions; this integration test proves the whole pipeline —
+// AST construction, `Condition::Expr` wrapping, `emit_expr`, and the
+// terminal `fetch_all` — works against a real database.
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn field_vs_field_filter(pool: PgPool) {
+    setup_phase4(&pool).await;
+
+    // Seed + query inside a single `atomic()` scope. The Phase 2
+    // integration pattern (`pool.begin()` + `SELECT set_heer_node_id(1)`)
+    // is what makes multi-INSERT fixtures robust against pool connections
+    // that were open before `ALTER DATABASE ... SET heer.node_id = '1'`
+    // took effect. `atomic()` threads the same kind of transactional
+    // session through `DjogiContext::Transaction` so the expression-IR
+    // entry point exercises the same tx-backed code path Phase 2 uses.
+    //
+    // Seed three rows spanning the three comparison outcomes relative
+    // to `balance < overdraft_limit`:
+    //   row A: balance 50, overdraft 100 -> matches (overdrawn).
+    //   row B: balance 100, overdraft 100 -> does not match (equal).
+    //   row C: balance 200, overdraft 100 -> does not match (surplus).
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            for (balance, overdraft_limit) in [(50i64, 100i64), (100, 100), (200, 100)] {
+                Account::create(
+                    ctx,
+                    Account {
+                        balance,
+                        overdraft_limit,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+
+            let overdrawn = Account::objects()
+                .filter_expr(|f| f.balance().as_expr().lt(f.overdraft_limit().as_expr()))
+                .fetch_all(ctx)
+                .await?;
+
+            assert_eq!(
+                overdrawn.len(),
+                1,
+                "only the row with balance < overdraft_limit should match"
+            );
+            assert!(
+                overdrawn.iter().all(|a| a.balance < a.overdraft_limit),
+                "every returned row must satisfy the predicate post-filter"
+            );
+            assert_eq!(overdrawn[0].balance, 50);
+            assert_eq!(overdrawn[0].overdraft_limit, 100);
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("atomic scope around the Task 3a fixture must succeed");
 }

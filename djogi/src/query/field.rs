@@ -102,6 +102,36 @@ impl<M: Model, V> FieldRef<M, V> {
     pub fn column(self) -> &'static str {
         self.column
     }
+
+    /// Promote this column handle into the expression IR as
+    /// [`Expr<V>`](crate::expr::Expr) — the entry point for
+    /// field-vs-field comparisons, arithmetic composition, and (in
+    /// later tasks) aggregates / subqueries / CASE.
+    ///
+    /// # Why a named method and not an `Into` impl?
+    ///
+    /// `FieldRef` already has typed lookup methods (`eq`, `neq`, …)
+    /// that return [`Condition`] directly for the literal-RHS case.
+    /// An `impl<M, V> From<FieldRef<M, V>> for Expr<V>` would make
+    /// every `FieldRef` transparently coerce into `Expr<V>`, which is
+    /// fine in isolation but would collide with future `Into` impls
+    /// (for example, the `IntoAssignments` / `IntoDistinctColumns`
+    /// bridges the Phase 2 API already ships). Keeping the promotion
+    /// explicit — call sites read `f.balance.as_expr().lt(f.overdraft_limit.as_expr())` —
+    /// also matches the Django / SeaORM idiom users are porting
+    /// queries from.
+    ///
+    /// The `column` string has already been validated by
+    /// [`crate::ident::assert_plain_ident`] at construction (see
+    /// [`__macro_support::__make_field_ref`]); the SQL emitter in
+    /// [`crate::expr::sql`] pushes it straight through `qb.push`
+    /// without re-validation.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn as_expr(self) -> crate::expr::Expr<V> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Field {
+            column: self.column,
+        })
+    }
 }
 
 /// Macro-only entry points. **Not** part of the stable public API.

@@ -32,6 +32,16 @@ pub enum Condition {
     Or(Vec<Condition>),
 
     Not(Box<Condition>),
+
+    /// Bridge from the typed expression IR (Phase 4 Task 3a) — an
+    /// `Expr<bool>` slotted into the filter tree by
+    /// [`crate::query::QuerySet::filter_expr`]. The SQL emitter
+    /// delegates to [`crate::expr::sql::emit_expr`] for this variant,
+    /// bypassing [`super::sql::emit_leaf`] because the expression IR
+    /// generalises both sides of the comparison (neither operand has
+    /// to be a bare column), making the Phase 2 column-vs-literal
+    /// leaf path the wrong abstraction for this emission.
+    Expr(crate::expr::Expr<bool>),
 }
 
 // Written out explicitly instead of `#[derive(Default)]` + `#[default]` on the

@@ -44,6 +44,7 @@ pub mod config;
 pub mod context;
 pub mod descriptor;
 pub mod error;
+pub mod expr;
 pub(crate) mod ident;
 pub mod model;
 pub mod query;
@@ -83,6 +84,7 @@ pub use descriptor::{
 };
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
 pub use error::DjogiError;
+pub use expr::Expr;
 pub use query::{
     Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
     UpdateAssignment, UpdateStmt,
@@ -99,6 +101,7 @@ pub mod prelude {
         FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
     };
     pub use crate::error::DjogiError;
+    pub use crate::expr::Expr;
     pub use crate::model::Model;
     pub use crate::query::{
         Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr,

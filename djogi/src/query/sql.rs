@@ -70,7 +70,7 @@ fn escape_like(s: &str) -> String {
 /// at the SQL level. The typed `FieldRef::is_null` / `is_not_null` lookups
 /// never route NULL through this path — they take the explicit `IS NULL` /
 /// `IS NOT NULL` operator branch.
-fn push_filter_value(qb: &mut QueryBuilder<'_, Postgres>, v: FilterValue) {
+pub(crate) fn push_filter_value(qb: &mut QueryBuilder<'_, Postgres>, v: FilterValue) {
     match v {
         FilterValue::String(s) => {
             qb.push_bind(s);
@@ -396,6 +396,15 @@ fn emit_condition(
                 emit_condition(qb, p, parent_table);
             }
             qb.push(")");
+        }
+        // Expression-IR bridge — delegates to the dedicated emitter in
+        // `expr::sql`. The expression tree carries its own column
+        // references + literals + nested arithmetic; `parent_table` is
+        // deliberately not threaded through (see the module-level
+        // comment in `expr::sql` for the scope note on select_related
+        // interaction, deferred to Task 5).
+        Condition::Expr(expr) => {
+            crate::expr::sql::emit_expr(qb, &expr.node);
         }
     }
 }
