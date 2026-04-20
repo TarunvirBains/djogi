@@ -684,7 +684,7 @@ mod tests {
             async { unreachable!() }
         }
         fn save<'ctx>(
-            &'ctx self,
+            &'ctx mut self,
             _ctx: &'ctx mut crate::context::DjogiContext,
         ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
         {

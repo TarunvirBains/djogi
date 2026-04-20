@@ -484,7 +484,7 @@ async fn crud_respects_transaction_boundary(pool: PgPool) {
     // (b) rollback — insert + save inside txn, rollback, row must NOT be visible
     let tx_rollback = pool.begin().await.unwrap();
     let mut tx_rollback_ctx = ::djogi::DjogiContext::from_transaction(tx_rollback);
-    let rolled_back = Post::create(
+    let mut rolled_back = Post::create(
         &mut tx_rollback_ctx,
         Post {
             title: "Rolled Back".into(),

@@ -404,6 +404,83 @@ async fn retry_on_conflict_short_circuits_on_non_lock_error(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// save() rehydration — `UPDATE ... RETURNING *` mutates `self` with
+// DB truth so triggers, server-side defaults, and the advanced
+// `updated_at` all surface on the receiver. Task 2 scope.
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn save_rehydrates_updated_at(pool: PgPool) {
+    setup_phase4(&pool).await;
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+
+    let mut account = Account::create(
+        &mut ctx,
+        Account {
+            balance: 1,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let first_ts = account.updated_at;
+
+    // The `now()` granularity inside a single Postgres statement is
+    // usually finer than the test can observe without a pause. 10ms is
+    // overkill for `clock_timestamp()` but stable against the
+    // statement-time `now()` the SET clause uses.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    account.balance = 999;
+    account.save(&mut ctx).await.unwrap();
+
+    assert!(
+        account.updated_at > first_ts,
+        "updated_at must advance after save (RETURNING * rehydration)"
+    );
+    assert_eq!(account.balance, 999);
+}
+
+#[sqlx::test]
+async fn save_reflects_trigger_modified_fields(pool: PgPool) {
+    setup_phase4(&pool).await;
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+
+    // BEFORE UPDATE trigger that bumps balance by 1 — verifies the
+    // receiver sees the trigger-adjusted value after save.
+    sqlx::query(
+        "CREATE OR REPLACE FUNCTION accounts_trigger() RETURNS trigger AS $$ \
+         BEGIN NEW.balance := NEW.balance + 1; RETURN NEW; END; \
+         $$ LANGUAGE plpgsql;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER t_accounts BEFORE UPDATE ON accounts \
+         FOR EACH ROW EXECUTE FUNCTION accounts_trigger();",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut account = Account::create(
+        &mut ctx,
+        Account {
+            balance: 100,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    account.balance = 200;
+    account.save(&mut ctx).await.unwrap();
+
+    // Trigger incremented by 1 during the UPDATE; RETURNING * rehydrates
+    // the receiver with the trigger-adjusted value.
+    assert_eq!(account.balance, 201);
+}
+
+// ---------------------------------------------------------------------------
 // Prefetch-in-atomic — proves `PrefetchLoaderFn` works over a
 // transaction-backed context.
 // ---------------------------------------------------------------------------

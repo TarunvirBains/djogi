@@ -263,7 +263,7 @@ pub trait Model: Sized + Send + Sync + 'static {
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
     fn save<'ctx>(
-        &'ctx self,
+        &'ctx mut self,
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx;
 

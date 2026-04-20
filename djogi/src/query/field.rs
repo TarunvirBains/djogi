@@ -190,7 +190,7 @@ pub mod __macro_support {
                 async { unreachable!() }
             }
             fn save<'ctx>(
-                &'ctx self,
+                &'ctx mut self,
                 _ctx: &'ctx mut crate::context::DjogiContext,
             ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx {
                 async { unreachable!() }
@@ -650,7 +650,7 @@ mod tests {
             async { unimplemented!() }
         }
         fn save<'ctx>(
-            &'ctx self,
+            &'ctx mut self,
             _ctx: &'ctx mut crate::context::DjogiContext,
         ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
         {

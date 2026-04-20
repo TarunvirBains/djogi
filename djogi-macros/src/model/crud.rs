@@ -14,7 +14,7 @@
 //!
 //!     fn get(ctx, id) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
 //!     fn create(ctx, value) -> impl Future<Output = Result<Self, DjogiError>> + Send { ... }
-//!     fn save<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
+//!     fn save<'ctx>(&'ctx mut self, ctx: &'ctx mut DjogiContext)
 //!         -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx { ... }
 //!     fn delete(self, ctx) -> impl Future<Output = Result<(), DjogiError>> + Send { ... }
 //!     fn refresh_from_db<'ctx>(&'ctx self, ctx: &'ctx mut DjogiContext)
@@ -201,10 +201,10 @@ pub fn expand(
         .collect();
     let id_param = n_user + 1;
     let save_sql = if n_user == 0 {
-        format!("UPDATE {table} SET updated_at = now() WHERE id = ${id_param}")
+        format!("UPDATE {table} SET updated_at = now() WHERE id = ${id_param} RETURNING *")
     } else {
         format!(
-            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param}",
+            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param} RETURNING *",
             set_list = set_clauses.join(", "),
         )
     };
@@ -324,17 +324,21 @@ pub fn expand(
 
     let save_body = quote! {
         async move {
-            let q = ::djogi::__private::sqlx::query(#save_sql)
+            let q = ::djogi::__private::sqlx::query_as::<
+                ::djogi::__private::sqlx::Postgres,
+                Self,
+            >(#save_sql)
             #(#save_field_binds)*
             #save_id_bind;
-            match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+            let row: Self = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
                 ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                    q.execute(&*__pool).await?;
+                    q.fetch_one(&*__pool).await?
                 }
                 ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                    q.execute(&mut **__tx).await?;
+                    q.fetch_one(&mut **__tx).await?
                 }
-            }
+            };
+            *self = row;
             ::std::result::Result::Ok(())
         }
     };
@@ -512,7 +516,7 @@ pub fn expand(
             }
 
             fn save<'ctx>(
-                &'ctx self,
+                &'ctx mut self,
                 ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,
