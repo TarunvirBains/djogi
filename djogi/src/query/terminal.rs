@@ -218,14 +218,13 @@ where
     ///
     /// # Context shape
     ///
-    /// Takes `&mut DjogiContext` matching every other terminal. Phase 3
-    /// ships pool-only support for prefetch fan-out — the loader
-    /// signature carries `&PgPool` so a pool-backed context is required.
-    /// A transaction-backed context (`atomic()` scope from Phase 4
-    /// Task 1 onwards) is surfaced as a `DjogiError::Sqlx` at this
-    /// entry point; the transaction-backed variant lands once the
-    /// prefetch loader is refactored to share a connection with the
-    /// outer transaction.
+    /// Takes `&mut DjogiContext` matching every other terminal. Both
+    /// pool-backed and transaction-backed contexts are supported: the
+    /// prefetch loader threads `&mut ContextInner` internally and
+    /// dispatches each fetch to either the pool or the outer
+    /// transaction via inline-match. Prefetch fan-out inside an
+    /// `atomic()` scope (Phase 4 Task 1) works transparently and sees
+    /// the scope's uncommitted writes.
     pub fn fetch_all_prefetched<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -242,38 +241,34 @@ where
                 return Ok(Vec::new());
             }
 
-            // Phase 3 prefetch loaders take a `&PgPool`. Pool-backed
-            // contexts are supported today; transaction-backed contexts
-            // will gain support once the loader signature is generalised
-            // (deferred to a later Phase 4 task — documented on the
-            // method).
-            let pool = ctx
-                .pool()
-                .ok_or_else(|| {
-                    sqlx::Error::Configuration(
-                        "fetch_all_prefetched requires a pool-backed DjogiContext; \
-                         transaction-backed prefetch is not supported yet"
-                            .into(),
-                    )
-                })?
-                .clone();
-
             // Snapshot prefetch paths before we consume `self` in the
             // main-query build. The shared SQL emitter borrows the
             // queryset, so we pull out what we need first.
             let prefetches = self.prefetch_paths.clone();
 
-            // Main query — identical shape to `fetch_all`.
+            // Main query — identical shape to `fetch_all`. Dispatches
+            // through the same inline-match on `ContextInner` every
+            // other terminal uses; prefetch fan-out inherits the same
+            // context variant below.
             let mut qb = build_select(&self);
-            let rows: Vec<T> = qb
-                .build_query_as::<T>()
-                .fetch_all(&pool)
-                .await
-                .map_err(DjogiError::from)?;
+            let rows: Vec<T> = {
+                let q = qb.build_query_as::<T>();
+                match ctx.inner_mut() {
+                    ContextInner::Pool(pool) => {
+                        q.fetch_all(&*pool).await.map_err(DjogiError::from)?
+                    }
+                    ContextInner::Transaction(tx) => {
+                        q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
+                    }
+                }
+            };
 
             // Apply each prefetch loader. Empty main result -> no
             // loaders run (short-circuit inside `apply_prefetches`).
-            apply_prefetches(&pool, &prefetches, rows).await
+            // The generalised loader signature lets the inner fan-out
+            // see the same transaction-backed context the main query
+            // ran on — no connection juggling.
+            apply_prefetches(ctx.inner_mut(), &prefetches, rows).await
         }
     }
 
@@ -324,11 +319,11 @@ where
     /// # Context shape
     ///
     /// Takes `&mut DjogiContext`, matching
-    /// [`fetch_all_prefetched`](Self::fetch_all_prefetched). Phase 3
-    /// ships pool-only: a transaction-backed context is surfaced as a
-    /// `DjogiError::Sqlx` at the entry point until the prefetch loader
-    /// signature is generalised to share a connection with the outer
-    /// transaction.
+    /// [`fetch_all_prefetched`](Self::fetch_all_prefetched). Pool-backed
+    /// and transaction-backed contexts are both supported — the main
+    /// query and prefetch fan-out both dispatch through an inline-match
+    /// on `ContextInner`, so `select_related` works inside an
+    /// `atomic()` scope and sees the scope's uncommitted writes.
     pub fn fetch_all_joined<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -345,17 +340,6 @@ where
                 return Ok(Vec::new());
             }
 
-            let pool = ctx
-                .pool()
-                .ok_or_else(|| {
-                    sqlx::Error::Configuration(
-                        "fetch_all_joined requires a pool-backed DjogiContext; \
-                         transaction-backed select_related is not supported yet"
-                            .into(),
-                    )
-                })?
-                .clone();
-
             // Snapshot prefetch + select_related paths before we build
             // the SQL — `build_select_joined` borrows the queryset
             // shape, not the path vectors.
@@ -371,11 +355,17 @@ where
             // (per registered path) child can be extracted via
             // `FromJoinedRow::from_prefixed_row`.
             let mut qb = build_select_joined(&self);
-            let rows: Vec<sqlx::postgres::PgRow> = qb
-                .build()
-                .fetch_all(&pool)
-                .await
-                .map_err(DjogiError::from)?;
+            let rows: Vec<sqlx::postgres::PgRow> = {
+                let q = qb.build();
+                match ctx.inner_mut() {
+                    ContextInner::Pool(pool) => {
+                        q.fetch_all(&*pool).await.map_err(DjogiError::from)?
+                    }
+                    ContextInner::Transaction(tx) => {
+                        q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
+                    }
+                }
+            };
 
             // Decode each row into a JoinedRow<T> carrying any joined
             // children. `apply_select_related` is pure CPU work — no
@@ -387,7 +377,7 @@ where
             // values. `stitch_prefetches_into_joined` short-circuits
             // when `prefetches` is empty, so there's no cost for the
             // common `select_related`-only path.
-            stitch_prefetches_into_joined(joined, &prefetches, &pool).await
+            stitch_prefetches_into_joined(joined, &prefetches, ctx.inner_mut()).await
         }
     }
 

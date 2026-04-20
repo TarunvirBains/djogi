@@ -104,9 +104,10 @@
 //! — see the Task 5 header comment on that module for the split rationale.
 
 use crate::DjogiError;
+use crate::context::ContextInner;
 use crate::model::Model;
 use crate::relation::path::RelationPath;
-use sqlx::{PgPool, Row, ValueRef};
+use sqlx::{Row, ValueRef};
 use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
@@ -236,8 +237,17 @@ impl<T: Model> PrefetchedRow<T> {
 /// keeps [`ErasedPrefetch`] allocation-free and avoids a virtual-call
 /// per registration. Every call site monomorphises [`prefetch_loader`]
 /// once and the resulting `fn` pointer has a fixed, ABI-stable address.
+///
+/// The loader takes `&'a mut ContextInner` rather than a bare `&'a PgPool`
+/// so prefetch fan-out works over both pool-backed and
+/// transaction-backed [`DjogiContext`](crate::context::DjogiContext)
+/// variants. Inside the loader body, each sqlx call site matches on the
+/// context variant and binds either `&*pool` (pool path) or `&mut **tx`
+/// (transaction path). Without this generalisation, `.prefetch(...)`
+/// inside an `atomic()` scope would fail with a
+/// `Sqlx::Configuration` error — see Phase 4 Task 1 for the closure.
 pub(crate) type PrefetchLoaderFn = for<'a> fn(
-    pool: &'a PgPool,
+    exec: &'a mut ContextInner,
     parent_table: &'static str,
     source_column: &'static str,
     parent_pks: Vec<Box<dyn Any + Send + Sync>>,
@@ -311,7 +321,7 @@ impl std::fmt::Debug for ErasedPrefetch {
 ///   returns target columns; `FromRow` decodes them, `Any` erases the
 ///   concrete type for the return channel.
 pub(crate) fn prefetch_loader<'a, Source, Target>(
-    pool: &'a PgPool,
+    exec: &'a mut ContextInner,
     parent_table: &'static str,
     source_column: &'static str,
     parent_pks: Vec<Box<dyn Any + Send + Sync>>,
@@ -435,7 +445,18 @@ where
         }
         qb.push(")");
 
-        let rows = qb.build().fetch_all(pool).await.map_err(DjogiError::from)?;
+        // Inline-match dispatch — same pattern every other CRUD /
+        // QuerySet terminal uses to thread `DjogiContext` through to
+        // sqlx. `ContextInner::Pool` fetches from the pool directly;
+        // `ContextInner::Transaction` reuses the outer transaction so
+        // the prefetch sees its own uncommitted writes.
+        let q = qb.build();
+        let rows = match exec {
+            ContextInner::Pool(pool) => q.fetch_all(&*pool).await.map_err(DjogiError::from)?,
+            ContextInner::Transaction(tx) => {
+                q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
+            }
+        };
 
         // Build HashMap<Source::Pk, Option<Target>>. Only insert an
         // `Option<Target>` entry once per distinct parent PK — if the
@@ -529,7 +550,7 @@ where
 /// dedupes by `source_column` on registration so calling
 /// `.prefetch(path)` twice is a no-op on the second call.
 pub(crate) async fn apply_prefetches<T>(
-    pool: &PgPool,
+    exec: &mut ContextInner,
     prefetches: &[ErasedPrefetch],
     rows: Vec<T>,
 ) -> Result<Vec<PrefetchedRow<T>>, DjogiError>
@@ -566,8 +587,13 @@ where
             })
             .collect();
 
+        // Re-borrow the context per loader iteration — each call hands
+        // the mutable reference back once the fetch completes, so the
+        // next prefetch can take a fresh borrow without lifetime
+        // overlap. Works transparently for both pool-backed and
+        // transaction-backed contexts.
         let aligned = (prefetch.loader)(
-            pool,
+            &mut *exec,
             prefetch.parent_table,
             prefetch.source_column,
             parent_pks_for_loader,
@@ -715,7 +741,7 @@ mod tests {
         // skip the fn pointer — pointer addresses are non-stable across
         // builds and would make debug output noisy.
         fn stub_loader<'a>(
-            _pool: &'a PgPool,
+            _exec: &'a mut ContextInner,
             _parent_table: &'static str,
             _source_column: &'static str,
             _parent_pks: Vec<Box<dyn Any + Send + Sync>>,

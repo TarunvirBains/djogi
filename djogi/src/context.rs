@@ -69,6 +69,8 @@
 //! context.
 
 use crate::DjogiError;
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 
 /// Type alias for an async callback that fires after commit.
@@ -262,13 +264,13 @@ impl DjogiContext {
     ///
     /// # Panics
     ///
-    /// If an on-commit callback panics, the panic propagates out of
-    /// `commit()` and aborts the drain loop — prior callbacks have already
-    /// fired; subsequent queued callbacks are dropped. This is the pragmatic
-    /// behavior for Phase 4 retrofit scope; panic-safe drain (via
-    /// `catch_unwind`-wrapped futures) is tracked for Phase 4 Task 1's
-    /// `atomic()` implementation. Callbacks that may panic should wrap their
-    /// own body in `std::panic::catch_unwind` or equivalent.
+    /// On-commit callbacks are drained panic-safely: each callback future
+    /// is wrapped in `AssertUnwindSafe(..).catch_unwind()`. A panicking
+    /// callback is logged via `tracing::error!` and the drain continues
+    /// with the next callback. The panic does **not** propagate out of
+    /// `commit()`. This matches Phase 4 v3 Q9 on error semantics: a
+    /// failing callback — whether it panics or returns `Err` — must not
+    /// fail the commit, and subsequent callbacks still fire.
     pub async fn commit(self) -> Result<(), DjogiError> {
         // Split the context so we can run the callbacks after consuming
         // the underlying transaction.
@@ -282,19 +284,7 @@ impl DjogiContext {
             ))),
             ContextInner::Transaction(tx) => {
                 tx.commit().await.map_err(DjogiError::from)?;
-
-                // Drain the on-commit queue in FIFO order. Per Q9, callback
-                // errors are logged but do not fail the commit, and every
-                // subsequent callback still fires.
-                for cb in on_commit {
-                    match cb().await {
-                        Ok(()) => {}
-                        Err(e) => tracing::error!(
-                            error = ?e,
-                            "on_commit callback failed; continuing",
-                        ),
-                    }
-                }
+                drain_on_commit(on_commit).await;
                 Ok(())
             }
         }
@@ -405,10 +395,81 @@ impl DjogiContext {
 
     /// Consume all registered on-commit callbacks and return them.
     ///
-    /// **Internal use only.** Called by `atomic()` after a successful commit.
+    /// **Internal use only.** Called by `atomic()` after a successful commit
+    /// on the outermost scope, and when a nested `atomic()` scope exits
+    /// successfully (nested callbacks promote to the outer stack). Used
+    /// together with [`append_on_commit_callbacks`](Self::append_on_commit_callbacks)
+    /// to move callbacks between contexts.
     #[allow(dead_code)]
-    pub(crate) fn take_on_commit_callbacks(self) -> Vec<OnCommitCallback> {
-        self.on_commit
+    pub(crate) fn take_on_commit_callbacks(&mut self) -> Vec<OnCommitCallback> {
+        std::mem::take(&mut self.on_commit)
+    }
+
+    /// Append a batch of on-commit callbacks to this context's queue.
+    ///
+    /// **Internal use only.** Used by `atomic()` on the nested-success
+    /// path: the inner context's callbacks are drained via
+    /// [`take_on_commit_callbacks`](Self::take_on_commit_callbacks) and
+    /// then appended here so they fire after the outermost commit.
+    /// Order is preserved across the promotion.
+    #[allow(dead_code)]
+    pub(crate) fn append_on_commit_callbacks(&mut self, callbacks: Vec<OnCommitCallback>) {
+        self.on_commit.extend(callbacks);
+    }
+
+    /// Length of the on-commit callback queue. Used by `transaction.rs`
+    /// to snapshot the queue before entering a nested `atomic()` scope
+    /// so inner-registered callbacks can be dropped on rollback.
+    pub(crate) fn on_commit_len(&self) -> usize {
+        self.on_commit.len()
+    }
+
+    /// Truncate the on-commit callback queue to `new_len`. Used by
+    /// `transaction.rs` to discard callbacks registered inside a
+    /// nested `atomic()` scope that rolled back.
+    pub(crate) fn on_commit_truncate(&mut self, new_len: usize) {
+        self.on_commit.truncate(new_len);
+    }
+}
+
+/// Drain a batch of on-commit callbacks panic-safely.
+///
+/// Wraps each callback future in `AssertUnwindSafe(..).catch_unwind()`
+/// so a panicking callback is logged via `tracing::error!` without
+/// aborting the drain loop. Callback `Err` returns are likewise logged
+/// and ignored — per Phase 4 v3 Q9 a callback failure must not fail the
+/// commit, and every subsequent callback still fires.
+///
+/// `AssertUnwindSafe` is the conventional escape hatch at async
+/// boundaries: user-supplied closures rarely satisfy `UnwindSafe`, and
+/// the callback body owns state that lives for the callback's lifetime
+/// alone, so there is no cross-callback shared state the panic could
+/// corrupt. Consumed by [`DjogiContext::commit`] and by `atomic()`.
+pub(crate) async fn drain_on_commit(callbacks: Vec<OnCommitCallback>) {
+    for cb in callbacks {
+        let result = AssertUnwindSafe(cb()).catch_unwind().await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(
+                error = ?e,
+                "on_commit callback returned Err; continuing",
+            ),
+            Err(panic_payload) => {
+                // Try to extract a message for the log line; fall back
+                // to a generic description otherwise. The payload itself
+                // is dropped here so the drain loop continues — this is
+                // the whole point of `catch_unwind`.
+                let msg = panic_payload
+                    .downcast_ref::<&'static str>()
+                    .copied()
+                    .or_else(|| panic_payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("<non-string panic payload>");
+                tracing::error!(
+                    panic = %msg,
+                    "on_commit callback panicked; continuing",
+                );
+            }
+        }
     }
 }
 

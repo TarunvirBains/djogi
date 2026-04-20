@@ -128,6 +128,34 @@ impl DjogiError {
     }
 }
 
+/// Return `true` if the sqlx error wraps a Postgres lock/serialization
+/// conflict — the class of failures that `retry_on_conflict()` is
+/// willing to re-run the closure through.
+///
+/// Matches three SQLSTATEs:
+///
+/// - `40001` (`serialization_failure`) — the classic MVCC serialization
+///   error on `SERIALIZABLE`/`REPEATABLE READ` isolation.
+/// - `40P01` (`deadlock_detected`) — Postgres detected a circular wait
+///   and aborted one of the participants.
+/// - `55P03` (`lock_not_available`) — a `NOWAIT` lock request could not
+///   acquire its lock immediately.
+///
+/// The full `DjogiError::LockConflict` variant is deferred to Phase 4
+/// Task 7 (row locks + bulk methods); this helper lands first so
+/// `atomic()` / `retry_on_conflict()` in Task 1 can classify retryable
+/// errors without waiting on the error-type refactor.
+///
+/// `sqlx::DatabaseError::code()` returns `Option<Cow<'_, str>>`, so the
+/// `.as_deref()` collapses `Cow::Owned` / `Cow::Borrowed` into a plain
+/// `&str` the `matches!` arm can compare against literal codes.
+pub(crate) fn is_lock_error(e: &sqlx::Error) -> bool {
+    matches!(
+        e.as_database_error().and_then(|db| db.code()).as_deref(),
+        Some("40001") | Some("40P01") | Some("55P03")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +190,71 @@ mod tests {
             msg.contains("prefetch") || msg.contains("select_related"),
             "expected remediation hint, got: {msg}"
         );
+    }
+
+    /// Minimal `sqlx::error::DatabaseError` stub for `is_lock_error`
+    /// classification tests. Only the `code()` path matters for
+    /// classification; all other methods return placeholder values
+    /// because `is_lock_error` never invokes them.
+    #[derive(Debug)]
+    struct StubDbError {
+        code: Option<String>,
+    }
+
+    impl std::fmt::Display for StubDbError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "stub db error code={:?}", self.code)
+        }
+    }
+
+    impl std::error::Error for StubDbError {}
+
+    impl sqlx::error::DatabaseError for StubDbError {
+        fn message(&self) -> &str {
+            "stub"
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            self.code.as_deref().map(std::borrow::Cow::Borrowed)
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn sqlx_err_with_code(code: &str) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(StubDbError {
+            code: Some(code.to_string()),
+        }))
+    }
+
+    #[test]
+    fn is_lock_error_matches_retryable_sqlstates() {
+        assert!(is_lock_error(&sqlx_err_with_code("40001")));
+        assert!(is_lock_error(&sqlx_err_with_code("40P01")));
+        assert!(is_lock_error(&sqlx_err_with_code("55P03")));
+    }
+
+    #[test]
+    fn is_lock_error_rejects_unrelated_sqlstate() {
+        // `23505` is `unique_violation` — a real error, but not one
+        // `retry_on_conflict` should retry. Classifying it as non-retryable
+        // proves the match arm is tight.
+        assert!(!is_lock_error(&sqlx_err_with_code("23505")));
+    }
+
+    #[test]
+    fn is_lock_error_rejects_non_database_error() {
+        // `RowNotFound` has no underlying DatabaseError, so `.code()` is
+        // `None` and the match fails.
+        assert!(!is_lock_error(&sqlx::Error::RowNotFound));
     }
 }

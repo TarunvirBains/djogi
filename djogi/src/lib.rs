@@ -49,6 +49,7 @@ pub mod model;
 pub mod query;
 pub mod raw;
 pub mod relation;
+pub mod transaction;
 pub mod types;
 
 /// Private re-exports used only by macro-generated code.
@@ -103,6 +104,9 @@ pub mod prelude {
         Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr,
         QuerySet,
     };
+    // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
+    // transaction scope + retry helper.
+    pub use crate::transaction::{atomic, retry_on_conflict};
     // Relation wrappers — unresolved (`ForeignKey`, `OneToOneField`) are
     // what user model structs declare; resolved (`ForeignKeyResolved`,
     // `OneToOneFieldResolved`) are what prefetched view structs receive,

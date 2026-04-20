@@ -944,83 +944,81 @@ async fn select_related_compose_with_order_by_created_at(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4 retrofit follow-up: tx-backed prefetch / select_related surface
-// a configuration error until the loader signature is generalised.
+// Phase 4 Task 1 closure: tx-backed prefetch / select_related now dispatch
+// through the generalised `PrefetchLoaderFn` and share the outer
+// transaction's connection.
 // ---------------------------------------------------------------------------
 //
-// Phase 3 ships pool-only support for the multi-query fan-out terminals
-// (`fetch_all_prefetched`, `fetch_all_joined`). Both entry points pattern
-// on `DjogiContext::pool()` and return a `sqlx::Error::Configuration`
-// when the context is transaction-backed — the follow-up query needs a
-// connection that participates in the outer transaction, which the
-// current loader signature can't promise. A future Phase 4 task will
-// generalise the loader so tx-backed contexts work end-to-end.
+// Phase 3 originally shipped pool-only support for the multi-query
+// fan-out terminals (`fetch_all_prefetched`, `fetch_all_joined`): the
+// loader signature carried `&PgPool`, so both terminals guarded at the
+// entry point and returned `sqlx::Error::Configuration` on a
+// transaction-backed context. Phase 4 Task 1 widened the loader
+// signature to `&mut ContextInner`, so both paths now work inside an
+// `atomic()` scope and see the scope's uncommitted writes.
 //
-// These two tests pin today's deliberate limitation so an accidental
-// change (e.g. dropping the `.pool()` check) surfaces as a red test
-// rather than a silently-wrong execution path against the wrong
-// connection.
+// The two tests below pin the new behavior — the very writes that
+// landed inside an open transaction are visible to the follow-up
+// prefetch / join query on the SAME transaction. An accidental
+// regression that switched either terminal back to a pool lookup
+// would fail to see those uncommitted writes and surface as a red
+// test.
 
-/// `fetch_all_prefetched` on a tx-backed context: the terminal must
-/// surface a `DjogiError::Sqlx(sqlx::Error::Configuration(..))` today
-/// without dispatching the prefetch loader.
-// TODO(phase4-task1): tighten to a dedicated `DjogiError` variant when
-// prefetch generalises to tx-backed contexts.
+/// `fetch_all_prefetched` on a tx-backed context: the generalised
+/// loader shares the outer transaction so the follow-up fetch sees
+/// the uncommitted parent write.
 #[sqlx::test]
-async fn fetch_all_prefetched_tx_backed_surfaces_configuration_error(pool: PgPool) {
+async fn fetch_all_prefetched_tx_backed_reads_uncommitted_writes(pool: PgPool) {
     setup_phase3(&pool).await;
-    // A populated parent row means the terminal can't short-circuit on
-    // structural-emptiness — the pool vs tx check runs before any SQL.
     let owner = seed_owner(&pool, "Kate").await;
-    let _ = seed_vehicle_with_owner(&pool, "Honda", &owner, None).await;
 
-    // Build a tx-backed context via the retrofit helper. `from_pool(..).begin()`
-    // exists as the low-level escape hatch until `atomic()` (Phase 4 Task 1)
-    // lands.
+    // Build a tx-backed context via the low-level `begin()` escape
+    // hatch. Inside this transaction we insert a vehicle, then run
+    // `fetch_all_prefetched` — only the generalised loader can see
+    // that row because it uses the same transaction's connection.
     let pool_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     let mut tx_ctx = pool_ctx
         .begin()
         .await
         .expect("begin() on a pool-backed context must succeed");
 
-    let err = Vehicle::objects()
+    // Ensure the tx-backed connection has `heer.node_id` set — see
+    // the `seed_owner` helper above for the full rationale behind
+    // setting it per-connection on sqlx::test pools.
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut **tx_ctx.tx().unwrap())
+        .await
+        .unwrap();
+
+    let vehicle = Vehicle::create(&mut tx_ctx, vehicle_for_insert("Honda", &owner, None))
+        .await
+        .expect("vehicle insert inside the tx must succeed");
+
+    let rows: Vec<PrefetchedRow<Vehicle>> = Vehicle::objects()
+        .filter(|f| f.id().eq(vehicle.id))
         .prefetch(VehicleRelated::owner())
         .fetch_all_prefetched(&mut tx_ctx)
         .await
-        .expect_err("fetch_all_prefetched must reject a tx-backed context in Phase 4 retrofit");
+        .expect("fetch_all_prefetched on tx-backed context now works");
 
-    // Assert the exact error shape the retrofit returns today. A dedicated
-    // variant would be cleaner but is out of scope per the fixup contract.
-    match err {
-        ::djogi::DjogiError::Sqlx(sqlx::Error::Configuration(msg)) => {
-            let s = msg.to_string();
-            assert!(
-                s.contains("fetch_all_prefetched"),
-                "configuration error must name the terminal that refused: {s}"
-            );
-        }
-        other => panic!(
-            "fetch_all_prefetched on tx-backed context returned unexpected error shape: {other:?}"
-        ),
-    }
+    assert_eq!(rows.len(), 1);
+    let fetched_owner = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("prefetched owner should be present for non-null FK");
+    assert_eq!(fetched_owner.name, "Kate");
 
-    // Explicit rollback so the test tears down cleanly and does not leak
-    // an open transaction into the pool. (The harness would eventually
-    // drop it anyway, but the explicit call keeps the assertion flow
-    // obvious on read.)
+    // Explicit rollback so the uncommitted write does not leak into
+    // the shared `sqlx::test` database state.
     tx_ctx.rollback().await.expect("rollback must succeed");
 }
 
 /// `fetch_all_joined` on a tx-backed context: same shape as the
-/// prefetch version — Phase 3 loader signature is pool-only until
-/// Phase 4 Task 1+ generalises it.
-// TODO(phase4-task1): tighten to a dedicated `DjogiError` variant when
-// prefetch generalises to tx-backed contexts.
+/// prefetch version — the join + prefetch stitcher both use the
+/// outer transaction's connection.
 #[sqlx::test]
-async fn fetch_all_joined_tx_backed_surfaces_configuration_error(pool: PgPool) {
+async fn fetch_all_joined_tx_backed_reads_uncommitted_writes(pool: PgPool) {
     setup_phase3(&pool).await;
     let owner = seed_owner(&pool, "Liam").await;
-    let _ = seed_vehicle_with_owner(&pool, "Kia", &owner, None).await;
 
     let pool_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
     let mut tx_ctx = pool_ctx
@@ -1028,24 +1026,29 @@ async fn fetch_all_joined_tx_backed_surfaces_configuration_error(pool: PgPool) {
         .await
         .expect("begin() on a pool-backed context must succeed");
 
-    let err = Vehicle::objects()
+    // Ensure the tx-backed connection has `heer.node_id` set — see
+    // the `seed_owner` helper above for the full rationale.
+    sqlx::query("SELECT set_heer_node_id(1)")
+        .execute(&mut **tx_ctx.tx().unwrap())
+        .await
+        .unwrap();
+
+    let vehicle = Vehicle::create(&mut tx_ctx, vehicle_for_insert("Kia", &owner, None))
+        .await
+        .expect("vehicle insert inside the tx must succeed");
+
+    let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
+        .filter(|f| f.id().eq(vehicle.id))
         .select_related(VehicleRelated::owner())
         .fetch_all_joined(&mut tx_ctx)
         .await
-        .expect_err("fetch_all_joined must reject a tx-backed context in Phase 4 retrofit");
+        .expect("fetch_all_joined on tx-backed context now works");
 
-    match err {
-        ::djogi::DjogiError::Sqlx(sqlx::Error::Configuration(msg)) => {
-            let s = msg.to_string();
-            assert!(
-                s.contains("fetch_all_joined"),
-                "configuration error must name the terminal that refused: {s}"
-            );
-        }
-        other => panic!(
-            "fetch_all_joined on tx-backed context returned unexpected error shape: {other:?}"
-        ),
-    }
+    assert_eq!(rows.len(), 1);
+    let fetched_owner = rows[0]
+        .get(VehicleRelated::owner())
+        .expect("joined owner should be present for non-null FK");
+    assert_eq!(fetched_owner.name, "Liam");
 
     tx_ctx.rollback().await.expect("rollback must succeed");
 }
