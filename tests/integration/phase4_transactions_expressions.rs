@@ -112,15 +112,53 @@ async fn setup_phase4(pool: &PgPool) {
     .execute(pool)
     .await
     .unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(pool)
-        .await
-        .unwrap();
 
+    // Prime every connection the `sqlx::test` pool may hand out.
+    // `ALTER DATABASE ... SET heer.node_id` takes effect for **new**
+    // connections — existing pool connections opened during the
+    // migration / seed phase above do not re-read the setting until
+    // they reconnect. `atomic(&pool, ...)` calls `pool.begin()`,
+    // which can reuse one of those stale connections; the subsequent
+    // `generate_id()` then raises SQLSTATE P0001
+    // ("heer.node_id is not set for this session"). We fan out
+    // enough parallel acquisitions to cover the default pool size,
+    // run `set_heer_node_id(1)` on each, and drop the handles so the
+    // connections return to the pool with the setting baked in.
+    //
+    // `sqlx::test` provisions up to 10 connections by default; 12
+    // here covers the ceiling with two extra slots for slack.
+    let mut handles = Vec::new();
+    for _ in 0..12 {
+        let pool = pool.clone();
+        handles.push(tokio::spawn(async move {
+            let mut conn = pool.acquire().await.unwrap();
+            sqlx::query("SELECT set_heer_node_id(1)")
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+        }));
+    }
+    for h in handles {
+        h.await.unwrap();
+    }
+
+    // Each `include_str!` below is a single-statement SQL file — the
+    // sqlx::migrate / sqlx::query execute path prepares each
+    // statement individually, so a file with multiple `;`-separated
+    // top-level statements raises SQLSTATE 42601 ("cannot insert
+    // multiple commands into a prepared statement"). The trigger-
+    // function definition and the trigger attachment sit in their
+    // own files (006 / 007) for that reason.
     const ACCOUNTS_DDL: &str = include_str!("migrations/phase4/001_accounts.sql");
     const LEDGERS_DDL: &str = include_str!("migrations/phase4/002_ledgers.sql");
     const ENTRIES_DDL: &str = include_str!("migrations/phase4/003_entries.sql");
     const NOTIFICATIONS_DDL: &str = include_str!("migrations/phase4/004_notifications.sql");
+    const NOTIFICATIONS_OUTBOX_DDL: &str =
+        include_str!("migrations/phase4/005_notifications_outbox.sql");
+    const NOTIFICATIONS_REWRITE_FN_DDL: &str =
+        include_str!("migrations/phase4/006_notifications_rewrite_fn.sql");
+    const NOTIFICATIONS_REWRITE_TRIGGER_DDL: &str =
+        include_str!("migrations/phase4/007_notifications_rewrite_trigger.sql");
 
     sqlx::query(ACCOUNTS_DDL)
         .execute(pool)
@@ -138,6 +176,18 @@ async fn setup_phase4(pool: &PgPool) {
         .execute(pool)
         .await
         .expect("apply 004_notifications.sql");
+    sqlx::query(NOTIFICATIONS_OUTBOX_DDL)
+        .execute(pool)
+        .await
+        .expect("apply 005_notifications_outbox.sql");
+    sqlx::query(NOTIFICATIONS_REWRITE_FN_DDL)
+        .execute(pool)
+        .await
+        .expect("apply 006_notifications_rewrite_fn.sql");
+    sqlx::query(NOTIFICATIONS_REWRITE_TRIGGER_DDL)
+        .execute(pool)
+        .await
+        .expect("apply 007_notifications_rewrite_trigger.sql");
 }
 
 fn entry_for_insert(memo: &str, ledger: &Ledger) -> Entry {
