@@ -164,6 +164,64 @@ fn descriptor_projection_map_scalar_entries() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Task 5 — relation-nesting projections
+// ─────────────────────────────────────────────────────────────────
+
+#[model(table = "owners_phase4_5_task5")]
+#[derive(Debug, Clone)]
+pub struct Owner {
+    #[field(expose(public, self_view, admin, export))]
+    pub name: String,
+}
+
+#[model(table = "vehicles_phase4_5_task5", no_default)]
+#[derive(Debug, Clone)]
+pub struct Vehicle {
+    #[field(expose(public, self_view, admin, export))]
+    pub make: String,
+
+    #[field(expose(public = "OwnerPublic", admin = "OwnerAdmin"))]
+    pub owner: ForeignKey<Owner>,
+}
+
+#[test]
+fn relation_nesting_tryfrom_fails_when_unresolved() {
+    use djogi::HeerId;
+    let v = Vehicle {
+        id: HeerId::from_i64(10).expect("valid heerid"),
+        created_at: ::djogi::DateTime::UNIX_EPOCH,
+        updated_at: ::djogi::DateTime::UNIX_EPOCH,
+        make: "Tesla".into(),
+        owner: ForeignKey::new(HeerId::from_i64(1).expect("valid heerid")),
+    };
+    let err = VehiclePublic::try_from(&v).expect_err("expected UnresolvedRelation");
+    // ProjectionError is #[non_exhaustive]; match must carry a wildcard
+    // to stay forward-compatible with later phases adding variants.
+    match err {
+        ::djogi::ProjectionError::UnresolvedRelation {
+            model,
+            field,
+            scope,
+        } => {
+            assert_eq!(model, "Vehicle");
+            assert_eq!(field, "owner");
+            assert_eq!(scope, "public");
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+#[test]
+fn scalar_peer_has_from_impl_available() {
+    let o = Owner {
+        name: "Alice".into(),
+        ..Owner::default()
+    };
+    let p = OwnerPublic::from(&o);
+    assert_eq!(p.name, "Alice");
+}
+
 #[test]
 fn serde_round_trip_admin_includes_internal_notes() {
     let user = User {

@@ -80,12 +80,14 @@ fn emit_projection_for_scope(
     n_framework: usize,
 ) -> TokenStream {
     let proj_name = format_ident!("{source}{suffix}");
+    let source_name_str = source.to_string();
 
     let fw_fields = framework_field_decls(model_attrs);
     let fw_inits = framework_field_inits(model_attrs);
 
     let mut user_fields: Vec<TokenStream> = Vec::new();
     let mut user_inits: Vec<TokenStream> = Vec::new();
+    let mut has_relation_entry = false;
 
     let user_field_pairs: Vec<_> = struct_item
         .fields
@@ -107,7 +109,8 @@ fn emit_projection_for_scope(
 
         let scalar_hit = attrs.expose.scalar_scopes.contains(scope);
         let relation_hit = attrs.expose.relation_scopes.get(scope);
-        let is_relation = detect_relation(fty).is_some();
+        let relation_info = detect_relation(fty);
+        let is_relation = relation_info.is_some();
 
         match (scalar_hit, relation_hit, is_relation) {
             // Field does not appear in this scope.
@@ -145,17 +148,42 @@ fn emit_projection_for_scope(
                 return syn::Error::new_spanned(field, msg).to_compile_error();
             }
 
-            // Relation form on relation field — Task 5 emits this. Task 3
-            // emits a `compile_error!` stub so any user who writes the
-            // relation form before Task 5 ships sees a loud, obvious error.
+            // Relation form on relation field — nest the peer projection
+            // via `.resolved()`. Option<FK> / Option<O2O> is deferred to a
+            // follow-up phase; reject it at codegen time with a loud error.
             (false, Some(peer), true) => {
+                if let Some(info) = &relation_info
+                    && info.nullable
+                {
+                    return syn::Error::new_spanned(
+                        field,
+                        "`Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` \
+                         in relation-form projections is deferred to a \
+                         follow-up phase; use a required FK in Phase 4.5",
+                    )
+                    .to_compile_error();
+                }
+                has_relation_entry = true;
                 let peer_ident: Ident =
                     syn::parse_str(peer).unwrap_or_else(|_| format_ident!("__djogi_invalid_peer"));
+                let fname_str = fname.to_string();
                 user_fields.push(quote! { pub #fname: #peer_ident, });
                 user_inits.push(quote! {
-                    #fname: compile_error!(
-                        "relation-nesting projections require Phase 4.5 Task 5 codegen"
-                    ),
+                    #fname: {
+                        let resolved = src.#fname.resolved().ok_or(
+                            ::djogi::ProjectionError::UnresolvedRelation {
+                                model: #source_name_str,
+                                field: #fname_str,
+                                scope: #scope,
+                            }
+                        )?;
+                        // Peer construction always goes through `From::from`:
+                        // Phase 4.5 Task 5 scope assumes scalar-only peers.
+                        // Nested-relation peers (peer itself `TryFrom`) are a
+                        // follow-up phase where cross-model dispatch can be
+                        // modelled properly.
+                        <#peer_ident as ::std::convert::From<&_>>::from(resolved)
+                    },
                 });
             }
         }
@@ -175,6 +203,36 @@ fn emit_projection_for_scope(
         #[serde(crate = "::djogi::__private::serde")]
     };
 
+    // Dispatch on relation-nesting presence: scalar-only projections get
+    // infallible `From<&Source>`; relation-nesting projections get
+    // `TryFrom<&Source>` with `Error = ProjectionError` so unresolved
+    // relations surface cleanly rather than panicking or producing
+    // partial payloads.
+    let conv_impl = if has_relation_entry {
+        quote! {
+            impl ::std::convert::TryFrom<&#source> for #proj_name {
+                type Error = ::djogi::ProjectionError;
+                fn try_from(src: &#source) -> ::std::result::Result<Self, Self::Error> {
+                    ::std::result::Result::Ok(Self {
+                        #(#fw_inits)*
+                        #(#user_inits)*
+                    })
+                }
+            }
+        }
+    } else {
+        quote! {
+            impl ::std::convert::From<&#source> for #proj_name {
+                fn from(src: &#source) -> Self {
+                    Self {
+                        #(#fw_inits)*
+                        #(#user_inits)*
+                    }
+                }
+            }
+        }
+    };
+
     quote! {
         #derive_path
         pub struct #proj_name {
@@ -182,14 +240,7 @@ fn emit_projection_for_scope(
             #(#user_fields)*
         }
 
-        impl ::std::convert::From<&#source> for #proj_name {
-            fn from(src: &#source) -> Self {
-                Self {
-                    #(#fw_inits)*
-                    #(#user_inits)*
-                }
-            }
-        }
+        #conv_impl
     }
 }
 
