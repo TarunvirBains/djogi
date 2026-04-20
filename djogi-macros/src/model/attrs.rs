@@ -324,6 +324,33 @@ pub struct FieldAttrs {
     /// the literal against the accepted set.
     #[darling(default)]
     pub outbox: Option<String>,
+    /// `#[field(sequence_within = "parent_fk_column")]` — assigns this
+    /// column a monotonically-increasing sequence scoped to the
+    /// parent-FK column named in the attribute value. Phase 4 Task
+    /// 7.6.
+    ///
+    /// At `create` time the macro wraps the INSERT in a counter
+    /// upsert against `<table>_seq_<parent_fk_column>`, captures the
+    /// returned `last_seq`, and assigns it to this field before the
+    /// main INSERT emits. Rollback of the outer `atomic()` cleans
+    /// both the counter increment and the main row.
+    ///
+    /// Only one field per model may carry `sequence_within` today.
+    /// Multiple-scope sequencing (two scoped counters on the same
+    /// model) would require multiple companion tables and is a
+    /// future extension.
+    ///
+    /// The attribute value must be a plain ASCII identifier — it is
+    /// embedded directly into the counter-upsert SQL. Byte-level
+    /// validation per `feedback_no_regex_in_djogi`.
+    ///
+    /// The companion-table DDL emission is DEFERRED to Phase 7
+    /// (migration system). Until then, downstream crates hand-write
+    /// the `<table>_seq_<parent_fk_column>` table alongside their
+    /// own migrations using the shape documented on
+    /// `create_sequence_counter_sql`.
+    #[darling(default)]
+    pub sequence_within: Option<String>,
 }
 
 impl FieldAttrs {
@@ -393,6 +420,30 @@ impl FieldAttrs {
                         "unknown outbox value `{outbox}`; expected one of: {}",
                         valid.join(", ")
                     ),
+                ));
+            }
+        }
+
+        if let Some(seq) = &attrs.sequence_within {
+            // Byte-level identifier check — no regex engine, no
+            // regex notation per `feedback_no_regex_in_djogi`.
+            // ASCII letter or underscore start, alphanumerics or
+            // underscores after.
+            let bytes = seq.as_bytes();
+            let ident_ok = !bytes.is_empty()
+                && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                && bytes
+                    .iter()
+                    .skip(1)
+                    .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+            if !ident_ok {
+                let span = find_named_str_lit_span(field, "sequence_within")
+                    .unwrap_or_else(|| field.span());
+                return Err(syn::Error::new(
+                    span,
+                    "`sequence_within` value must be a plain ASCII identifier \
+                     (letter or underscore, then alphanumerics/underscores) — \
+                     it is embedded directly into SQL",
                 ));
             }
         }

@@ -1514,6 +1514,7 @@ mod tests {
             renamed_from: None,
             rationale: None,
             outbox_exclude: false,
+            sequence_within: None,
             index_type: None,
             relation_kind: None,
             on_delete: None,

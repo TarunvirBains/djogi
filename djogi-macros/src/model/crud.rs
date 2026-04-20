@@ -112,7 +112,7 @@ use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
 pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
-    _field_attrs: &[FieldAttrs],
+    field_attrs: &[FieldAttrs],
 ) -> TokenStream {
     // pk = "none" skips Model impl in Phase 1 — Task 8 adds a composite-PK-
     // aware version. The other macro outputs (struct, Default, FromRow,
@@ -343,8 +343,97 @@ pub fn expand(
         }
     };
 
+    // Phase 4 Task 7.6 — detect `#[field(sequence_within = "parent_col")]`.
+    //
+    // `field_attrs[i]` maps 1:1 to `user_fields[i]` because both skip
+    // the framework columns at the front. At most one field may
+    // declare the attribute today (multi-scope sequencing is future
+    // work); a `compile_error!` token fires when users violate that.
+    //
+    // When set, the generated `create` body preempts the main INSERT
+    // with a counter upsert against the companion table
+    // `<table>_seq_<parent_col>` (hand-written by the caller today;
+    // the DDL side-channel emission is DEFERRED per the Phase 4 Task
+    // 6 outbox deferral pattern). The upsert returns the next seq
+    // value which is then assigned to the sequence field on `value`
+    // before the row INSERT emits. Rollback of the caller's
+    // `atomic()` scope cleans both the counter increment and the
+    // main row.
+    //
+    // The parent field must be shaped `ForeignKey<T>` where
+    // `T::Pk = HeerId` — the macro binds
+    // `value.<parent>.key().as_i64()` to a `BIGINT parent_id`
+    // column. RanjId and Serial parents are a future extension
+    // (companion-table shape + bind path must change in lockstep).
+    let seq_within_fields: Vec<(usize, &str)> = field_attrs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, fa)| fa.sequence_within.as_deref().map(|s| (i, s)))
+        .collect();
+    let (sequence_compile_err, sequence_upsert_preamble, create_value_binding) =
+        if seq_within_fields.len() > 1 {
+            let msg = "models may declare #[field(sequence_within = ...)] on at most one field; \
+                       multi-scope sequencing is a future extension";
+            (
+                quote! { ::std::compile_error!(#msg); },
+                quote! {},
+                quote! { let value = value; },
+            )
+        } else if let Some(&(seq_idx, parent_col)) = seq_within_fields.first() {
+            let seq_field_ident = &user_fields[seq_idx];
+            let parent_col_ident = format_ident!("{}", parent_col);
+            let seq_table = format!("{table}_seq_{parent_col}");
+            let upsert_sql = format!(
+                "INSERT INTO {seq_table} (parent_id, last_seq) VALUES ($1, 1) \
+                 ON CONFLICT (parent_id) DO UPDATE SET last_seq = {seq_table}.last_seq + 1 \
+                 RETURNING last_seq"
+            );
+            let preamble = quote! {
+                // Counter upsert — same ctx as the main INSERT so a
+                // rollback cleans the increment alongside the row.
+                // `ForeignKey::key()` returns the parent's Pk
+                // (HeerId for the supported case); `.as_i64()` binds
+                // to the companion table's `parent_id BIGINT`
+                // column. The match arms duplicate the query build
+                // to match the per-branch executor binding pattern
+                // used elsewhere in this file — the Pool/Transaction
+                // handles have different types, so the build cannot
+                // be hoisted out of the match.
+                let __seq_parent_id: i64 = value.#parent_col_ident.key().as_i64();
+                let __seq_row: (i64,) =
+                    match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                            ::djogi::__private::sqlx::query_as::<
+                                ::djogi::__private::sqlx::Postgres,
+                                (i64,),
+                            >(#upsert_sql)
+                                .bind(__seq_parent_id)
+                                .fetch_one(&*__pool)
+                                .await?
+                        }
+                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                            ::djogi::__private::sqlx::query_as::<
+                                ::djogi::__private::sqlx::Postgres,
+                                (i64,),
+                            >(#upsert_sql)
+                                .bind(__seq_parent_id)
+                                .fetch_one(&mut **__tx)
+                                .await?
+                        }
+                    };
+                value.#seq_field_ident = __seq_row.0;
+            };
+            // `value` needs to be mutable so we can assign the
+            // seq field.
+            (quote! {}, preamble, quote! { let mut value = value; })
+        } else {
+            (quote! {}, quote! {}, quote! { let value = value; })
+        };
+
     let create_body = quote! {
         async move {
+            #create_value_binding
+            #sequence_upsert_preamble
             let q = ::djogi::__private::sqlx::query_as::<
                 ::djogi::__private::sqlx::Postgres,
                 Self,
@@ -1110,6 +1199,7 @@ pub fn expand(
     // Assemble the full impl block.
     // -------------------------------------------------------------------------
     quote! {
+        #sequence_compile_err
         #create_with_id_impl
         #bulk_methods_impl
 

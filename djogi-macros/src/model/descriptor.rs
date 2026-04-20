@@ -73,6 +73,7 @@ pub fn expand(
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 // Framework columns carry no relation metadata — `id` is a
                 // PK, not an FK, and Phase 4.5's projection hookup lands
@@ -94,6 +95,7 @@ pub fn expand(
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
@@ -112,6 +114,7 @@ pub fn expand(
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
@@ -133,6 +136,7 @@ pub fn expand(
             renamed_from: None,
             rationale: None,
             outbox_exclude: false,
+            sequence_within: None,
             index_type: None,
             relation_kind: None,
             on_delete: None,
@@ -151,6 +155,7 @@ pub fn expand(
             renamed_from: None,
             rationale: None,
             outbox_exclude: false,
+            sequence_within: None,
             index_type: None,
             relation_kind: None,
             on_delete: None,
@@ -173,6 +178,14 @@ pub fn expand(
             // `FieldAttrs::parse` has already validated the string value,
             // so a non-`None` `outbox` attr always means "ignore" here.
             let outbox_exclude = fa.outbox.as_deref() == Some("ignore");
+            // Phase 4 Task 7.6 — `#[field(sequence_within = "col")]`
+            // scopes a monotonic sequence to a parent FK column. The
+            // macro runtime uses this descriptor slot to detect the
+            // scoped-sequence field in `Model::create`.
+            let sequence_within_tokens = match &fa.sequence_within {
+                Some(col) => quote! { ::std::option::Option::Some(#col) },
+                None => quote! { ::std::option::Option::None },
+            };
 
             // Detect FK / O2O relation shape before the generic scalar
             // `unwrap_option` strip — `detect_relation` itself handles the
@@ -250,6 +263,7 @@ pub fn expand(
                     // `descriptor.fields` at emit time and strips any key
                     // flagged here from the JSONB payload.
                     outbox_exclude: #outbox_exclude,
+                    sequence_within: #sequence_within_tokens,
                     index_type: None,
                     // Phase 3 Task 2 — relation metadata emitted only for FK/O2O
                     // columns. Non-relation columns keep `None`/`&[]`.
