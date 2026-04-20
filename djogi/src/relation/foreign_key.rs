@@ -551,4 +551,22 @@ mod tests {
         assert!(resolved.expect_resolved("M", "f").is_ok());
         assert!(resolved.resolved().is_some());
     }
+
+    #[test]
+    fn foreign_key_field_as_pk_expr_emits_bare_column() {
+        // `FieldRef<M, ForeignKey<T>>::as_pk_expr()` must emit the same
+        // bare column name that the default `as_expr()` does — the PK
+        // projection is a phantom-type narrowing, not an SQL rewrite.
+        // This asserts the shape the subquery correlated-FK pattern
+        // depends on.
+        use crate::expr::sql::emit_expr;
+        use crate::query::field::FieldRef;
+        use sqlx::{Postgres, QueryBuilder};
+
+        let fk_col: FieldRef<Dummy, ForeignKey<Dummy>> = FieldRef::new("ledger_id");
+        let expr: crate::expr::Expr<HeerId> = fk_col.as_pk_expr();
+        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        emit_expr(&mut qb, &expr.node);
+        assert_eq!(qb.sql().trim(), "ledger_id", "got: {}", qb.sql());
+    }
 }

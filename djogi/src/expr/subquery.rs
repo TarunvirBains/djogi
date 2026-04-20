@@ -219,6 +219,19 @@ impl Exists {
     /// Routing through `select_column = None` at the node level keeps
     /// the rendering decision ("`1` vs a column") inside the emitter,
     /// not the typed builder.
+    ///
+    /// # What this ignores about `qs`
+    ///
+    /// Mirrors the [`Subquery::new`] rule: only the table name and
+    /// condition tree flow into the emitted SQL. Ordering, limit/offset,
+    /// distinct mode, prefetch, and select_related registrations on the
+    /// inner queryset are silently dropped. For EXISTS this is almost
+    /// never a functional problem — the predicate is satisfied by the
+    /// existence of any matching row, so `ORDER BY` and `LIMIT` are
+    /// vestigial — but it is worth knowing that `Exists::new(qs.limit(1))`
+    /// does not constrain the planner's row search at all. Callers who
+    /// need row-bounded EXISTS semantics should drop to raw sqlx via
+    /// [`crate::raw`] until Phase 5 widens this surface.
     pub fn new<T: Model>(qs: QuerySet<T>) -> Self {
         Exists {
             node: SubqueryNode {
