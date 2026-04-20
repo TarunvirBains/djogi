@@ -424,6 +424,112 @@ where
             Ok(opt)
         }
     }
+
+    /// Find-or-create: return the first row matching the queryset, or
+    /// create a new row from `factory()` when none matches.
+    ///
+    /// The tuple's second element reports which branch ran —
+    /// `true` when a new row was inserted, `false` when an existing row
+    /// was found. This mirrors the Django ORM's `get_or_create` shape
+    /// so app-level consumers have the same "insert-if-absent" idiom
+    /// they're used to.
+    ///
+    /// # Lookup semantics
+    ///
+    /// The lookup uses [`first`](Self::first) — the same `LIMIT 1`
+    /// probe every "any row that matches" caller uses. If the
+    /// queryset's filter is not unique, this method returns the first
+    /// row the database chooses (non-deterministic without an
+    /// `order_by`). Call sites that need exactly-one semantics should
+    /// reach for `fetch_one` followed by a separate `create` branch
+    /// instead.
+    ///
+    /// # Transactions and races
+    ///
+    /// The SELECT and the INSERT are two separate statements. Under
+    /// concurrent writers a second caller may slip between the
+    /// probe and the create — the INSERT then collides with whatever
+    /// uniqueness constraint covers the filter. Wrap the call in
+    /// [`atomic`](crate::transaction::atomic) + one of:
+    ///
+    /// - `select_for_update()` on the queryset to serialise lookups
+    /// - an `ON CONFLICT` clause on the underlying table
+    ///
+    /// when the caller needs strict once-only semantics. Phase 4
+    /// Task 7.5 adds `create_or_find` for the conflict-key path.
+    ///
+    /// # Short-circuit
+    ///
+    /// A `QuerySet::none()`-derived queryset short-circuits the
+    /// lookup to `Ok(None)`, so the factory **runs and a row is
+    /// inserted**. Callers who want "no insert on structural-none"
+    /// must guard before calling.
+    pub fn get_or_create<'ctx, F>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+        factory: F,
+    ) -> impl Future<Output = Result<(T, bool), DjogiError>> + Send + 'ctx
+    where
+        F: FnOnce() -> T + Send + 'ctx,
+        T: 'ctx,
+    {
+        async move {
+            if let Some(row) = self.first(ctx).await? {
+                return Ok((row, false));
+            }
+            let created = T::create(ctx, factory()).await?;
+            Ok((created, true))
+        }
+    }
+
+    /// Update-or-create: find the first matching row and mutate it via
+    /// `updater`, or create a fresh row from `factory()` when none
+    /// matches.
+    ///
+    /// The tuple's second element reports which branch ran —
+    /// `true` when a new row was inserted, `false` when an existing
+    /// row was updated in place.
+    ///
+    /// # Semantics
+    ///
+    /// - Found branch: `updater(&mut row)` runs, then
+    ///   [`save`](crate::model::Model::save) rehydrates the row from
+    ///   `UPDATE ... RETURNING *` — `updated_at` advances and any
+    ///   trigger-mutated column surfaces in the returned `T`.
+    /// - Missing branch: `factory()` runs and
+    ///   [`create`](crate::model::Model::create) inserts the new row;
+    ///   the returned `T` is the `RETURNING *` rehydration.
+    ///
+    /// `updater` takes `&mut T` so callers can mutate multiple fields
+    /// in one pass without needing to rebuild the struct.
+    ///
+    /// # Race caveat
+    ///
+    /// Same non-atomic caveat as [`get_or_create`](Self::get_or_create)
+    /// — the SELECT and the UPDATE/INSERT are distinct statements.
+    /// Wrap in [`atomic`](crate::transaction::atomic) + a row lock
+    /// when strict once-only semantics are required.
+    pub fn update_or_create<'ctx, F, U>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+        factory: F,
+        updater: U,
+    ) -> impl Future<Output = Result<(T, bool), DjogiError>> + Send + 'ctx
+    where
+        F: FnOnce() -> T + Send + 'ctx,
+        U: FnOnce(&mut T) + Send + 'ctx,
+        T: 'ctx,
+    {
+        async move {
+            if let Some(mut row) = self.first(ctx).await? {
+                updater(&mut row);
+                row.save(ctx).await?;
+                return Ok((row, false));
+            }
+            let created = T::create(ctx, factory()).await?;
+            Ok((created, true))
+        }
+    }
 }
 
 // ── Scalar terminals (no FromRow bound needed) ────────────────────────────
