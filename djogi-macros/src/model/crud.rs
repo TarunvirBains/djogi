@@ -915,11 +915,194 @@ pub fn expand(
         }
     };
 
+    // -------------------------------------------------------------------------
+    // Phase 4 Task 7.5 — idempotency_key consumer wiring.
+    //
+    // `create_or_find` + `bulk_upsert_by_descriptor` are emitted for
+    // every model. When `#[model(idempotency_key = "col")]` is set
+    // they produce real upsert-on-idempotency-key semantics; when the
+    // attribute is absent, they produce stub bodies that return
+    // `DjogiError::MissingIdempotencyKey` at runtime — pointing
+    // callers at the attribute they need to add.
+    //
+    // The attribute value is validated in `attrs.rs` to be a plain
+    // ASCII identifier, so embedding `#idempotency_key` into the SQL
+    // is safe (no quote injection surface).
+    //
+    // Zero-user-field models emit the stub even when the attribute is
+    // set — the underlying bulk_upsert / create SQL is not emittable
+    // for zero-user-field models, so consumer wiring cannot deliver
+    // the advertised semantics. Same policy as bulk_create /
+    // bulk_upsert above.
+    // -------------------------------------------------------------------------
+    let idempotency_methods_impl = match (&model_attrs.idempotency_key, n_user) {
+        // Attribute set + at least one user column: real methods.
+        (Some(key_str), n) if n > 0 => {
+            let key_ident = format_ident!("{}", key_str);
+            let insert_or_nothing_sql = {
+                let cols: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
+                let col_list = cols.join(", ");
+                let placeholders: Vec<String> = (1..=n_user).map(|i| format!("${i}")).collect();
+                let ph_list = placeholders.join(", ");
+                format!(
+                    "INSERT INTO {table} ({col_list}) VALUES ({ph_list}) \
+                     ON CONFLICT ({key_str}) DO NOTHING RETURNING *"
+                )
+            };
+            let select_by_key_sql = format!("SELECT * FROM {table} WHERE {key_str} = $1 LIMIT 1");
+
+            // The `create_or_find` outbox emission policy — fire the
+            // Create event only when the insert actually inserted a
+            // row. Skipped on the "found existing row" branch so the
+            // outbox reflects the DB-truth "what changed". Non-events
+            // models emit nothing.
+            let create_or_find_outbox = if model_attrs.events {
+                quote! {
+                    ::djogi::outbox::emit_event(
+                        ctx,
+                        &__row,
+                        ::djogi::outbox::OutboxAction::Create,
+                    ).await?;
+                }
+            } else {
+                quote! {}
+            };
+
+            quote! {
+                /// Idempotent create — insert a row keyed off the
+                /// descriptor's `idempotency_key` attribute, or
+                /// return the existing row when the key conflicts.
+                ///
+                /// Shape:
+                /// `INSERT INTO <table> (<user-cols>) VALUES ($1,...)
+                ///  ON CONFLICT (<key>) DO NOTHING RETURNING *`.
+                /// On empty RETURNING (the "key already existed"
+                /// branch) the method re-SELECTs the existing row by
+                /// `<key> = row.<key>` and returns `(existing, false)`.
+                /// New rows return `(inserted, true)`.
+                ///
+                /// When the model does **not** declare
+                /// `#[model(idempotency_key = "...")]`, this method
+                /// emits [`DjogiError::MissingIdempotencyKey`] at
+                /// runtime pointing at the attribute that must be
+                /// added. Shipping the stub (rather than hiding the
+                /// method behind a cfg flag) keeps the API shape
+                /// uniform across models and surfaces the missing
+                /// attribute eagerly when a consumer expects it.
+                ///
+                /// When `#[model(events)]` is also set, only the
+                /// **newly-inserted** branch emits an outbox row —
+                /// the "found existing" branch reflects no state
+                /// change.
+                pub async fn create_or_find(
+                    ctx: &mut ::djogi::context::DjogiContext,
+                    row: Self,
+                ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
+                    let q = ::djogi::__private::sqlx::query_as::<
+                        ::djogi::__private::sqlx::Postgres,
+                        Self,
+                    >(#insert_or_nothing_sql)
+                    #(.bind(&row.#user_fields))*;
+                    let maybe_inserted: ::std::option::Option<Self> =
+                        match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                            ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                                q.fetch_optional(&*__pool).await?
+                            }
+                            ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                                q.fetch_optional(&mut **__tx).await?
+                            }
+                        };
+                    match maybe_inserted {
+                        ::std::option::Option::Some(__row) => {
+                            #create_or_find_outbox
+                            ::std::result::Result::Ok((__row, true))
+                        }
+                        ::std::option::Option::None => {
+                            // Conflict fired — re-SELECT the
+                            // existing row by the idempotency key.
+                            // The key-field value comes from the
+                            // caller's `row` input (unchanged across
+                            // the insert attempt).
+                            let q = ::djogi::__private::sqlx::query_as::<
+                                ::djogi::__private::sqlx::Postgres,
+                                Self,
+                            >(#select_by_key_sql)
+                            .bind(&row.#key_ident);
+                            let existing: Self =
+                                match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                                    ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                                        q.fetch_one(&*__pool).await?
+                                    }
+                                    ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                                        q.fetch_one(&mut **__tx).await?
+                                    }
+                                };
+                            ::std::result::Result::Ok((existing, false))
+                        }
+                    }
+                }
+
+                /// Bulk-upsert keyed off the descriptor's
+                /// `idempotency_key` attribute.
+                ///
+                /// Thin wrapper over [`bulk_upsert`] that passes the
+                /// declared idempotency-key column as the sole ON
+                /// CONFLICT target. Returns
+                /// [`DjogiError::MissingIdempotencyKey`] at runtime
+                /// if the attribute is not set.
+                pub async fn bulk_upsert_by_descriptor(
+                    ctx: &mut ::djogi::context::DjogiContext,
+                    rows: ::std::vec::Vec<Self>,
+                ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                    Self::bulk_upsert(ctx, rows, &[#key_str]).await
+                }
+            }
+        }
+        // Attribute NOT set, or zero-user-field model: stub bodies
+        // that return the missing-attribute error.
+        _ => {
+            let type_name_str = name.to_string();
+            quote! {
+                /// Idempotent create — requires
+                /// `#[model(idempotency_key = "...")]` on the model.
+                ///
+                /// Emits [`DjogiError::MissingIdempotencyKey`] at
+                /// runtime for models that haven't declared the
+                /// attribute. See the variant's rustdoc for the
+                /// remediation pointer.
+                pub async fn create_or_find(
+                    _ctx: &mut ::djogi::context::DjogiContext,
+                    _row: Self,
+                ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
+                    ::std::result::Result::Err(
+                        ::djogi::DjogiError::missing_idempotency_key(#type_name_str),
+                    )
+                }
+
+                /// Bulk-upsert by descriptor — requires
+                /// `#[model(idempotency_key = "...")]`.
+                ///
+                /// Same stub semantics as
+                /// [`create_or_find`]: runtime error pointing at
+                /// the missing attribute.
+                pub async fn bulk_upsert_by_descriptor(
+                    _ctx: &mut ::djogi::context::DjogiContext,
+                    _rows: ::std::vec::Vec<Self>,
+                ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                    ::std::result::Result::Err(
+                        ::djogi::DjogiError::missing_idempotency_key(#type_name_str),
+                    )
+                }
+            }
+        }
+    };
+
     let bulk_methods_impl = quote! {
         impl #impl_generics #name #ty_generics #where_clause {
             #bulk_create_impl
             #bulk_update_impl
             #bulk_upsert_impl
+            #idempotency_methods_impl
         }
     };
 

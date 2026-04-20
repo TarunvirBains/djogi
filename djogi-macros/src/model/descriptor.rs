@@ -274,6 +274,14 @@ pub fn expand(
 
     let is_through = model_attrs.through;
     let has_outbox = model_attrs.events;
+    // Phase 4 Task 7.5 — `#[model(idempotency_key = "column")]` emits the
+    // column name into the descriptor so runtime consumers
+    // (`create_or_find`, `bulk_upsert_by_descriptor`) can discover the
+    // conflict key. Non-idempotent models keep `None`.
+    let idempotency_key_tokens = match &model_attrs.idempotency_key {
+        Some(col) => quote! { ::std::option::Option::Some(#col) },
+        None => quote! { ::std::option::Option::None },
+    };
 
     quote! {
         ::djogi::__private::inventory::submit! {
@@ -291,7 +299,7 @@ pub fn expand(
                 // create/save/delete. `djogi::outbox::emit_event` keys off
                 // this flag at codegen time.
                 has_outbox: #has_outbox,
-                idempotency_key: None,
+                idempotency_key: #idempotency_key_tokens,
                 tenant_key: None,
                 cache_ttl: None,
                 rationale: None,

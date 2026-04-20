@@ -68,6 +68,31 @@ pub struct ModelAttrs {
     /// Models without `events` skip the outbox call entirely at
     /// macro-expansion time — there is no runtime cost for opt-out.
     pub events: bool,
+    /// The user-field name that serves as the idempotency key —
+    /// Phase 4 Task 7.5 consumer wiring.
+    ///
+    /// Set via `#[model(table = "...", idempotency_key = "request_id")]`.
+    /// When present, the macro emits two inherent methods:
+    ///
+    /// - `create_or_find(ctx, row)` — attempts an
+    ///   `INSERT ... ON CONFLICT (<this col>) DO NOTHING RETURNING *`
+    ///   and, on conflict, re-SELECTs the existing row. Returns
+    ///   `(Self, bool /* created */)`.
+    /// - `bulk_upsert_by_descriptor(ctx, rows)` — thin wrapper over
+    ///   [`bulk_upsert`] that reads this column as the sole ON
+    ///   CONFLICT target.
+    ///
+    /// When not set, both methods are still emitted as thin stubs
+    /// that return [`DjogiError::MissingIdempotencyKey`] at runtime —
+    /// simplest-possible pointer at the attribute the caller needs
+    /// to add. This mirrors Phase 1's approach of populating the
+    /// descriptor slot even for models that don't consume it yet.
+    ///
+    /// The inner string must be a plain ASCII-identifier column name
+    /// (letter/underscore start, alphanumerics and underscores after).
+    /// The parser rejects anything else so the value can be safely
+    /// embedded into the emitted SQL.
+    pub idempotency_key: Option<String>,
 }
 
 /// Parsed `pk = "..."` value.
@@ -96,6 +121,7 @@ impl ModelAttrs {
         let mut seen_through = false;
         let mut events = false;
         let mut seen_events = false;
+        let mut idempotency_key: Option<String> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -159,11 +185,37 @@ impl ModelAttrs {
                             PkStrategy::from_str(&s.value())
                                 .map_err(|msg| syn::Error::new_spanned(s, msg))?,
                         );
+                    } else if path.is_ident("idempotency_key") {
+                        if idempotency_key.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `idempotency_key` key in #[model(...)]",
+                            ));
+                        }
+                        let key_val = s.value();
+                        // Validate: plain ASCII identifier. Spelled out
+                        // byte-level per `feedback_no_regex_in_djogi` —
+                        // leading letter/underscore, rest alnum/underscore.
+                        let bytes = key_val.as_bytes();
+                        let ident_ok = !bytes.is_empty()
+                            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                            && bytes
+                                .iter()
+                                .skip(1)
+                                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+                        if !ident_ok {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "`idempotency_key` value must be a plain ASCII identifier \
+                                 (letter or underscore, then alphanumerics/underscores)",
+                            ));
+                        }
+                        idempotency_key = Some(key_val);
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
-                                "unknown #[model] attribute `{}`; expected `table`, `pk`, `no_default`, `through`, or `events`",
+                                "unknown #[model] attribute `{}`; expected `table`, `pk`, `idempotency_key`, `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -192,6 +244,7 @@ impl ModelAttrs {
             no_default,
             through,
             events,
+            idempotency_key,
         })
     }
 }

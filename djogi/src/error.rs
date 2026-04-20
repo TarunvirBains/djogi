@@ -101,6 +101,24 @@ pub enum DjogiError {
     #[error("JSON serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// A convenience method that consumes the descriptor's
+    /// `idempotency_key` slot
+    /// ([`create_or_find`](crate::model::Model) /
+    /// `bulk_upsert_by_descriptor`) was invoked against a model
+    /// whose `#[model(...)]` attribute does not set the key. Phase 4
+    /// Task 7.5 introduces this variant as the runtime pointer at
+    /// the attribute the caller needs to add.
+    ///
+    /// `model` is the `type_name` from [`ModelDescriptor::type_name`]
+    /// — a `&'static str` the macro lifts directly from the struct
+    /// identifier.
+    #[error(
+        "model '{model}' has no #[model(idempotency_key = \"...\")] declared; \
+         set one or use bulk_upsert with an explicit conflict-key slice"
+    )]
+    #[non_exhaustive]
+    MissingIdempotencyKey { model: &'static str },
+
     /// A runtime argument-validation failure produced by a CRUD
     /// convenience method — the caller's request is well-typed at
     /// compile time but fails a runtime invariant (e.g.
@@ -168,6 +186,18 @@ impl DjogiError {
     /// relation wrappers go through this constructor instead.
     pub fn relation_unloaded(model: &'static str, field: &'static str) -> Self {
         DjogiError::RelationUnloaded { model, field }
+    }
+
+    /// Construct a `MissingIdempotencyKey` error naming the model
+    /// whose `#[model(idempotency_key = "...")]` attribute was not
+    /// declared.
+    ///
+    /// Mirror of `not_found` / `multiple_objects` — exists so that
+    /// cross-crate callers (macro output in user crates) can produce
+    /// this variant despite `#[non_exhaustive]` blocking struct-
+    /// expression construction outside this crate.
+    pub fn missing_idempotency_key(model: &'static str) -> Self {
+        DjogiError::MissingIdempotencyKey { model }
     }
 }
 
