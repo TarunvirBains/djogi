@@ -48,6 +48,7 @@ pub mod expr;
 pub(crate) mod ident;
 pub mod model;
 pub mod outbox;
+pub mod projection;
 pub mod query;
 pub mod raw;
 pub mod relation;
@@ -65,6 +66,7 @@ pub mod types;
 #[doc(hidden)]
 pub mod __private {
     pub use inventory;
+    pub use serde;
     pub use sqlx;
 
     /// Reflexive type-equality witness. Implemented for every `T` as
@@ -86,6 +88,7 @@ pub use descriptor::{
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
 pub use error::DjogiError;
 pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+pub use projection::ProjectionError;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
     IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, UpdateAssignment, UpdateStmt,
@@ -104,6 +107,7 @@ pub mod prelude {
     pub use crate::error::DjogiError;
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
     pub use crate::model::Model;
+    pub use crate::projection::ProjectionError;
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
         IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
