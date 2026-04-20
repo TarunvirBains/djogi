@@ -58,7 +58,7 @@
 | Database target | Postgres only — permanent decision, not a limitation; enables JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING` |
 | Dev database reset | `cargo djogi db reset` — gated on `dev_mode = true` + localhost URL + `DJOGI_ENV != production` |
 | CLI interface | `cargo djogi` subcommand — installed via `cargo install djogi-cli`, idiomatic Rust toolchain |
-| Djogi's scope | Model derivation chain only — does not duplicate SQLx, HeeRanjId, Tokio, or any Rust web framework's responsibilities. Axum is the most-supported web-framework integration (opt-in via the `axum` feature flag); other frameworks integrate through their own per-framework flags (one flag per framework) or manual wiring. |
+| Djogi's scope | Model derivation chain only — does not duplicate SQLx, HeeRanjId, Tokio, or any Rust web framework's responsibilities. `axum` is the best-covered framework example today (opt-in via the `axum` feature flag); other frameworks integrate through their own per-framework flags or manual wiring. |
 | Public requirement translation | Private app requirements may inform Djogi, but specs/docs describe them only as product-agnostic framework capabilities |
 | Core vs companion crate boundary | Djogi keeps reusable data-layer primitives; domain policy, workflow logic, and specialized integrations belong in app crates or companion crates |
 | `Jsonb<T>` field type | `JSONB` column with typed schema, serde deserialization, validator validation, nested schema support |

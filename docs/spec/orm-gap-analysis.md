@@ -205,7 +205,7 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 | `UUIDField` | `uuid::Uuid` (for non-PK use) | Yes — already have RanjId for PKs, but plain UUID fields are common |
 | `BinaryField` | `Vec<u8>` / `&[u8]` | Maybe — Postgres BYTEA |
 | `DurationField` | `time::Duration` | Maybe — Postgres INTERVAL |
-| `TextField` vs `CharField` | Both `String` in Rust | No distinction needed — Postgres TEXT has no performance penalty over VARCHAR |
+| `TextField` vs `CharField` | Often both carry `String`, but they are different schema primitives | Yes — Djogi should preserve `TEXT` vs `VARCHAR(n)` intent in descriptors and migrations |
 | `SlugField`, `EmailField`, `URLField` | Validation wrappers over String | No — use validators, not distinct types. Unnecessary in a typed language. |
 | `FileField` / `ImageField` | Out of scope | No — Djogi is an ORM, not a file storage framework |
 | `GeneratedField` | `#[field(generated = "expression")]` | Yes — Postgres GENERATED ALWAYS AS is powerful |
@@ -215,7 +215,7 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 
 | Django | Djogi |
 |---|---|
-| CharField requires `max_length` (historical MySQL limitation) | Djogi: Postgres TEXT has no length penalty. `String` just works. `max_length` is opt-in CHECK constraint. |
+| CharField requires `max_length` (historical MySQL limitation) | Djogi should not copy Django's baggage, but it should still preserve the bounded-vs-unbounded distinction because `VARCHAR(n)` and `TEXT` are different schema shapes in migrations. The Rust value may still be string-like; the descriptor must not collapse them into one field kind. |
 | Django has ~30 field types, many are just CharField subclasses with validators | Djogi: fewer field types, more validators. Rust's type system handles the rest. |
 | Django's `auto_now` / `auto_now_add` are field options that bypass `save()` | Djogi: `created_at` / `updated_at` are framework-injected with DB defaults. Cleaner. Already better. |
 

@@ -2,6 +2,8 @@
 
 # Djogi Specification Index
 
+These documents define Djogi's public contract as a performance-sensitive, Postgres-native data runtime. The spec is not only about API shape; it also defines which query, write, migration, and observability primitives must exist so common production workloads remain efficient in-framework.
+
 ## Core
 
 - [Architecture Principles](./architecture-principles.md) — public requirements, single-responsibility, and framework boundaries
@@ -19,7 +21,7 @@
 - [Data Lifecycle & Governance](./data-lifecycle.md) — lifecycle classes, anonymize/archive/purge planning, legal holds
 - [Logging](./logging.md) — three-database architecture, CRUD audit trail, event tracing
 - [Distributed Topology & Residency](./topology.md) — read modes, placement metadata, and topology-aware migration guardrails
-- [Configuration, CLI & Integration](./configuration.md) — `Djogi.toml`, `cargo djogi`, app registration, web framework integration (Axum opt-in via the `axum` feature flag)
+- [Configuration, CLI & Integration](./configuration.md) — `Djogi.toml`, `cargo djogi`, app registration, and web framework integration (`axum` as the concrete example)
 
 ## Tools
 
@@ -34,7 +36,7 @@
 
 ## Planning
 
-- [Implementation Plan](./implementation-plan.md) — phased build sequence targeting production readiness
+- [Implementation Plan](./implementation-plan.md) — phased build sequence targeting production readiness without ORM-induced performance regressions
 - [ORM Gap Analysis](./orm-gap-analysis.md) — Django 6.0 deep dive, functional gaps, and where Djogi can do better
 
 ## Background

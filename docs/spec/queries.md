@@ -4,6 +4,10 @@
 
 ## 5. The Query API
 
+The query layer is not only a convenience surface. It is part of Djogi's performance contract.
+
+For common production workloads, the efficient Postgres form should be expressible in Djogi itself: explicit eager loading, set-based updates, expression-backed writes, locking, aggregation, typed result shaping, and Postgres-native operators. Raw SQL remains the escape hatch for uncommon SQL shape, not the normal way to recover performance lost to the ORM.
+
 ### 5.1 Await Strategy
 
 In application code, `.await` is required and explicit — standard Rust async, no surprises.
@@ -48,6 +52,8 @@ let active = Vehicle::objects().filter(|f| f.active.eq(true));
 let cheap = active.clone().filter(|f| f.price.lte(20_000)).fetch_all(&mut ctx).await?;
 let fast  = active.clone().filter(|f| f.horsepower.gte(300)).fetch_all(&mut ctx).await?;
 ```
+
+The query builder must make query count and SQL shape predictable. Djogi does not hide lazy loading behind field access; relation loading is always explicit (`fetch`, `prefetch`, `select_related`). If a query performs extra round trips, those round trips must be visible in the API surface.
 ### 5.4 Field Condition Methods
 
 | Method | SQL equivalent |
@@ -107,3 +113,15 @@ qb.push_bind(50);
 
 let results: Vec<Vehicle> = qb.build_query_as().fetch_all(&pool).await?;
 ```
+
+### 5.7 Performance Contract
+
+The query API is expected to support efficient Postgres forms for the workload shapes Djogi targets. That means:
+
+- expression-backed filtering and updates belong in-framework once Phase 4 lands
+- aggregation, subqueries, locking, and typed result shaping are part of normal ORM work, not exceptional edge cases
+- explicit eager loading must keep query counts understandable and avoid hidden N+1 behavior
+- large-result evaluation must eventually support streaming/chunking rather than requiring full materialization
+- generated SQL must remain inspectable, and `EXPLAIN` support belongs in the public query surface
+
+This contract is why Djogi owns its `ConditionBuilder` and later expression IR directly instead of treating advanced query power as an optional wrapper around raw SQL.

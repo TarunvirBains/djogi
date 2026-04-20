@@ -2,13 +2,14 @@
 
 # Scope & Boundaries
 
-Djogi is a public framework. Its requirements may be informed by real applications, but the repository must describe them in public, product-agnostic terms.
+Djogi is a public Postgres-native data framework. Its requirements may be informed by real applications, but the repository must describe them in public, product-agnostic terms.
 
 This document defines:
 
 - how application-derived requirements are translated into Djogi specs
 - what belongs in Djogi itself
 - what should live in a separate crate owned by an application or ecosystem layer
+- where Djogi stops so it does not quietly expand into a full application framework
 
 ---
 
@@ -43,8 +44,9 @@ A feature belongs in Djogi only if all of the following are true:
 1. It strengthens the model-to-database derivation chain, query/runtime layer, migration system, or framework-owned tooling.
 2. It is reusable across multiple applications in substantially the same form.
 3. It can be expressed without leaking domain-specific concepts.
-4. It composes cleanly with SQLx, Postgres, and any Rust web framework (Axum is the most-supported integration, opt-in via the `axum` feature flag) rather than re-owning their jobs.
+4. It composes cleanly with SQLx, Postgres, and any Rust web framework (`axum` is the best-covered example today, behind the `axum` feature flag) rather than re-owning their jobs.
 5. It would be awkward, repetitive, or error-prone for every app to reimplement separately.
+6. It helps preserve efficient Postgres execution for common production workloads rather than forcing applications to recover performance with ad hoc raw SQL.
 
 If a proposal fails any of those tests, it should default to an application crate or a separate companion crate.
 
@@ -61,6 +63,7 @@ This includes:
 - migration differ/generation/apply workflows
 - typed Postgres-native field support such as JSONB, arrays, enums, spatial metadata, and advanced indexes
 - transaction helpers, expressions, bulk operations, and concurrency-safe data primitives
+- performance-critical query/runtime features such as typed result shaping, row locking, streaming/chunked evaluation, and SQL introspection when they are needed to keep ORM usage from becoming the slow path
 - framework-owned shell/admin/audit tooling derived from `ModelDescriptor`
 - generic observability hooks tied directly to ORM/runtime behavior
 
@@ -120,6 +123,7 @@ Keep in Djogi:
 - generic metadata needed for future correctness, such as `tenant_key`, `partition_by`, `has_outbox`, or index specs
 - generic runtime hooks that let applications implement policy safely
 - generic audit/event plumbing where the framework can derive behavior mechanically
+- generic performance primitives needed by repeatable workload shapes such as feed reads, concurrent writes, job queues, multi-tenant isolation, and outbox/audit flows
 
 Move out of Djogi:
 
@@ -129,6 +133,10 @@ Move out of Djogi:
 - tenant routing strategies tied to one deployment layout
 
 The rule is "core primitive in Djogi, business policy outside Djogi."
+
+Djogi's boundary is therefore not "everything the app needs to scale." It is "the reusable Postgres primitives required so scaling does not depend on escaping the ORM for normal work."
+
+That boundary also means Djogi is not the owner of routing, request lifecycles, controller structure, or application shells. Those may integrate with Djogi, but they are not part of Djogi's core identity.
 
 ---
 

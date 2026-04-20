@@ -16,7 +16,7 @@ impl App for VehiclesApp {
     fn routes() -> Router { vehicles_router() }
 }
 ```
-Apps are registered at link time via `inventory`. At startup Djogi collects all registered apps, merges their `Router`s when a web-framework feature flag is active (e.g. `axum`), and makes all `ModelDescriptor`s available to the differ and shell. With no web-framework flag enabled, Djogi still registers app models and descriptors — only the router-merge step is skipped, letting adopters wire HTTP manually.
+Apps are registered at link time via `inventory`. At startup Djogi collects all registered apps, merges their `Router`s when a web-framework feature flag is active (for example `axum`), and makes all `ModelDescriptor`s available to the differ and shell. With no web-framework flag enabled, Djogi still registers app models and descriptors — only the router-merge step is skipped, letting adopters wire HTTP manually.
 ---
 
 ## 12. Configuration
@@ -84,15 +84,15 @@ cargo djogi init                             # add Djogi to existing project
 
 ## 16. Web Framework Integration
 
-Djogi is framework-agnostic at the core. HTTP routing, middleware, and extraction belong to whichever Rust web framework the adopter chooses, enabled through a single per-framework feature flag (one flag per framework, never per-feature×framework sub-flags). In v1, `axum` is the most-supported flag; future flags (`warp`, `actix`, etc.) follow the same pattern.
+Djogi is framework-agnostic at the core. HTTP routing, middleware, and extraction belong to whichever Rust web framework the adopter chooses, enabled through a single per-framework feature flag (one flag per framework, never per-feature×framework sub-flags). Today `axum` is the best-covered option; future flags (`warp`, `actix`, etc.) follow the same pattern.
 
-The rest of this section documents the Axum integration as a concrete example. Enable it with:
+The rest of this section uses Axum as a concrete example. Enable it with:
 
 ```toml
 djogi = { version = "0.1", features = ["axum"] }
 ```
 
-The framework does not hide Axum. Handlers are standard Axum handlers. The pool is accessed via standard `State` extraction.
+Djogi does not wrap Axum in a second routing abstraction. Handlers stay ordinary Axum handlers, and the pool is accessed through standard `State` extraction.
 ```rust
 async fn vehicle_detail(
     State(pool): State<PgPool>,
@@ -111,4 +111,4 @@ Djogi contributes at startup (under the `axum` feature):
 - Configures standard `tower` middleware (tracing, request ID, optional auth)
 - Optionally runs pending migrations on boot (configurable; default on in dev, off in production)
 
-The NODE_ID validation and migration-on-boot behaviours are framework-agnostic — they run whether or not a web-framework flag is enabled. Only the router-merging step is Axum-specific; equivalent glue ships under each future framework flag.
+The NODE_ID validation and migration-on-boot behaviours are framework-agnostic — they run whether or not a web-framework flag is enabled. Only the router-merging glue is Axum-specific here; equivalent glue ships under each future framework flag.
