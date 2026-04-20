@@ -137,6 +137,8 @@ The public API does NOT require user-defined field types to implement `Default`.
 
 The following types are supported in Phase 1. Anything not on this list is roadmap material (see `docs/roadmap/`).
 
+Phase 1's `String -> TEXT` rule is the bootstrap mapping, not the long-term public contract for every string-shaped column. The roadmap treats **bounded character storage** and **unbounded text storage** as distinct schema primitives, because `VARCHAR(n)` versus `TEXT` affects generated DDL, migration diffs, and schema intent even when both decode to Rust strings at runtime.
+
 | Rust Type | SQL Type (Postgres) |
 |---|---|
 | `String` | `TEXT` |
@@ -170,7 +172,7 @@ pub email: String,
 #[field(index)]
 pub slug: String,
 
-#[field(max_length = 100)]          // emits CHECK constraint
+#[field(max_length = 100)]          // Phase 1 bootstrap: emits CHECK constraint on TEXT
 pub slug: String,
 
 pub bio: Option<String>,            // Option<T> implies nullable
@@ -181,6 +183,8 @@ pub owner_id: ForeignKey<Owner>,
 #[field(renamed_from = "old_name")] // informs differ: rename not drop+add
 pub new_name: String,
 ```
+
+`#[field(max_length = N)]` is acceptable as the Phase 1 bootstrap surface, but the stronger roadmap contract is that bounded string fields and text fields remain distinguishable in descriptor metadata so migration tooling can treat `TEXT <-> VARCHAR(n)` as a real schema change rather than only as validation.
 
 ---
 

@@ -4,15 +4,19 @@
 
 ---
 
-Define your data schema as Rust structs, and the framework derives everything else — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, full derivation chain.
+Define your data schema as Rust structs, and Djogi derives the surrounding data machinery — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, one data-layer derivation chain.
 
-Djogi does not own routing, middleware, or rendering. The View layer belongs to whichever Rust web framework the adopter chooses — developers write standard handlers for that framework, not Djogi abstractions. Axum is the most-supported integration today (opt-in via the `axum` feature flag), but Djogi's core is web-framework-agnostic: Warp, Actix, Rocket, Poem, or any other Rust web framework can drive Djogi models through their own per-framework feature flag (one flag per framework) or through manual wiring. The rendering layer is similarly the developer's choice — Dioxus, Askama, Maud, or whatever fits.
+Djogi does not own routing, middleware, or rendering. The view layer belongs to whichever Rust web framework the adopter chooses — developers write ordinary handlers for that framework, not Djogi abstractions. Axum is the best-covered integration today (opt in with the `axum` feature flag), but Djogi's core is web-framework-agnostic: Warp, Actix, Rocket, Poem, or any other Rust web framework can drive Djogi models through their own per-framework feature flag or through manual wiring. The rendering layer is similarly the developer's choice — Dioxus, Askama, Maud, or whatever fits.
+
+Djogi is therefore not a full application framework. It is a Postgres-native data layer and model runtime with optional tooling built on top.
 
 **Design north star:** Define the model once, derive everything else — but make every derivation explicit and typed. No hidden middleware chains, no implicit magic, no convention-as-code. Typed and explicit, but never unnecessarily verbose.
 
+**Performance contract:** Djogi must make efficient Postgres forms expressible in-framework for common production workloads. Raw SQL remains available, but it should be the escape hatch for unusual SQL shape — not the normal way to recover performance lost to the ORM.
+
 **Public framework rule:** Djogi may be informed by demanding real-world applications, but this repository documents requirements only in product-agnostic systems language. Domain workflows, business policy, and app-specific integrations belong in application crates or separate companion crates, not in Djogi core.
 
-**Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via `generate_id()` (HeeRanjId), advisory locks for migration safety, `RETURNING` clauses, rich constraint system, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
+**Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via `generate_id()` (HeeRanjId), advisory locks for migration safety, `RETURNING` clauses, row locks, rich indexing options, strong constraint semantics, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
 
 ## Status
 
@@ -32,22 +36,22 @@ Djogi does not own routing, middleware, or rendering. The View layer belongs to 
 
 | Concern | Owner | Djogi's role |
 |---|---|---|
-| HTTP routing, middleware, request/response | Your Rust web framework of choice | Djogi's core is framework-agnostic; when the `axum` feature flag is enabled, Djogi wires registered app routers into Axum at startup — nothing more. Other frameworks follow the same opt-in-flag pattern (one flag per framework) or are wired manually. |
-| DB driver, connection pooling, row mapping | SQLx | Djogi wraps SQLx into a typed ORM layer (`Model`, `QuerySet`, `FromRow`, `ConditionBuilder`) but never hides it — raw `sqlx::QueryBuilder` is always an escape hatch |
+| HTTP routing, middleware, request/response | Your Rust web framework of choice | Djogi does not own the request lifecycle. Integrations are adapters; Axum is the best-covered example today, and other frameworks are wired through adapters or manually. |
+| DB driver, connection pooling, row mapping | SQLx | Djogi wraps SQLx into a typed ORM layer (`Model`, `QuerySet`, `FromRow`, `ConditionBuilder`) but never hides it — raw `sqlx::QueryBuilder` is always an escape hatch, not the default route to acceptable performance |
 | ID generation | HeeRanjId | Calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()` — owns nothing else |
 | Async runtime | Tokio | Uses it; does not configure it |
 | Model ↔ DB mapping | **Djogi** | Proc macro, field types, QuerySet, relations |
 | Migrations | **Djogi** | Differ, generation, snapshot management |
-| Shell | **Djogi** | Rhai REPL, model bindings, transaction control |
+| Shell tooling | **Djogi** (opt-in) | Rhai REPL and model-aware operational tooling built on top of the core runtime |
 | CRUD logging | **Djogi** | Audit trail, JSON-aware diffing |
 | JSONB schema fields | **Djogi** | `Jsonb<T>` — typed schemas over JSONB columns |
-| Admin panel | **Djogi** (opt-in) | Auto-generated from `ModelDescriptor`; Dioxus fullstack; `admin` feature flag |
+| Admin tooling | **Djogi** (opt-in) | Auto-generated operational UI derived from `ModelDescriptor`; adapter surface, not Djogi's core identity |
 
 ## Core Dependencies
 
 | Dependency | Role | Notes |
 |---|---|---|
-| `axum` | HTTP layer, routing, middleware | Opt-in via the `axum` feature flag; most-supported web-framework integration. Not a core dependency — Djogi's core runs without it. Other web frameworks integrate through their own per-framework feature flags (one flag per framework) or manual wiring. |
+| `axum` | HTTP layer, routing, middleware | Opt-in via the `axum` feature flag; the best-covered framework integration today. Not a core dependency — Djogi's core runs without it. Other web frameworks integrate through their own per-framework feature flags or manual wiring. |
 | `sqlx` | Async DB driver + migration runner | Postgres only |
 | `tokio` | Async runtime | Standard |
 | `serde` / `serde_json` | Serialization | Model ↔ JSON for shell and API |
@@ -71,7 +75,7 @@ my-app/
       vehicles/
         mod.rs              # djogi::register_app!(VehiclesApp)
         models.rs           # #[derive(Model)] structs + ManyToMany impls
-        routes.rs           # web-framework handlers (Axum shown; any Rust web framework works)
+        routes.rs           # web-framework handlers (Axum shown as the example; any Rust web framework works)
       people/
         mod.rs
         models.rs
@@ -122,7 +126,7 @@ The full framework specification lives in [`docs/spec/`](./docs/spec/index.md):
 | [Primary Keys](./docs/spec/primary-keys.md) | HeeRanjId: HeerId (64-bit), RanjId (128-bit UUIDv8), generation patterns |
 | [Migrations](./docs/spec/migrations.md) | Build-time drift detection, schema snapshots, differ |
 | [Logging](./docs/spec/logging.md) | Three-database architecture, CRUD audit trail, event tracing |
-| [Configuration & CLI](./docs/spec/configuration.md) | `Djogi.toml`, `cargo djogi`, app registration, web framework integration (Axum opt-in via `axum` feature) |
+| [Configuration & CLI](./docs/spec/configuration.md) | `Djogi.toml`, `cargo djogi`, app registration, and web framework integration (`axum` shown as the concrete example) |
 | [Shell](./docs/spec/shell.md) | Rhai REPL, transactions, import/export, seed scripts |
 | [Admin Panel](./docs/spec/admin.md) | Dioxus ModelForms, list views, validation, M2M inlines |
 | [Scope & Boundaries](./docs/spec/scope.md) | What belongs in Djogi vs an app crate or companion crate |

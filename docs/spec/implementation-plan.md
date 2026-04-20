@@ -2,7 +2,7 @@
 
 # Djogi Implementation Plan
 
-*Sequenced to reach production-readiness for a real-world Postgres-backed application (built on any Rust web framework — Axum is the most-supported integration via the opt-in `axum` feature flag) with ~36 entities, complex queries, PostGIS, and SeaORM migration path.*
+*Sequenced to reach production-readiness for a real-world Postgres-backed application built on any Rust web framework, with Axum used as the best-covered example today. The target shape includes non-trivial schema breadth, complex queries, PostGIS, and a strong fit alongside popular Rust ORM alternatives for Postgres-heavy applications.*
 
 ---
 
@@ -13,6 +13,30 @@
 3. **Raw SQL escape hatch ships in Phase 1** — the framework must never trap the developer
 4. **Tests against real Postgres** — no mocking the database; use `sqlx::test` fixtures
 5. **Postgres-only from day one** — every SQL string targets Postgres directly
+6. **Efficient Postgres forms belong in-framework for common work** — raw SQL is for unusual SQL shape, not for recovering performance lost to the ORM
+
+### Idiomatic Rust Guardrails
+
+Djogi should feel like a strong Rust data layer, not a framework that swallows the whole application. The roadmap should be implemented with the following constraints:
+
+- **Public API is type-first, not descriptor-first** — model authors primarily work with normal Rust types, wrappers, and derives; internal descriptor enums and metadata exist to drive SQL generation, migration diffing, and tooling
+- **Explicit over magical** — eager loading, transactions, lock behavior, projection boundaries, and escape hatches stay visible at the call site; avoid hidden I/O or implicit behavior shifts
+- **Core stays narrow** — the `djogi` crate owns Postgres-native model/query/write/runtime primitives; web-framework integration, admin surfaces, shell conveniences, and app policy layers remain opt-in and clearly layered
+- **Feature flags are real boundaries** — optional surfaces should not leak heavyweight dependencies or framework assumptions into the core data path
+- **Context objects stay disciplined** — `DjogiContext` may carry execution state needed for correctness, but it must not become a catch-all service locator for unrelated framework concerns
+- **Prefer typed wrappers over stringly configuration** — use types like `Jsonb<T>`, `Tracked<T>`, `ForeignKey<T>`, and future validated field types where they add safety; avoid replacing Rust types with piles of string-based annotations
+
+### Performance-Safe Workload Check
+
+Major roadmap items should be evaluated not only as isolated features, but against recurring workload families:
+
+- high-volume feed reads
+- concurrent engagement or accounting writes
+- job and queue claim flows
+- multi-tenant SaaS isolation
+- audit and outbox-heavy systems
+
+Djogi does not need product-specific abstractions for any of those domains. It does need the reusable query, write, locking, indexing, and observability primitives that keep those workloads efficient in-framework.
 
 ### Execution Strategy
 
@@ -23,6 +47,8 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 - **Workstream C: SQL/runtime behavior** — CRUD SQL builders, raw SQL escape hatch, transaction-compatible execution
 - **Workstream D: verification** — compile tests first, then `sqlx::test` integration coverage against real Postgres
 - **Workstream E: docs/decisions** — capture architectural constraints early so later phases are not built on invalid assumptions
+
+Every workstream should review new public API against the idiomatic-Rust guardrails above. If a proposal is easier to describe in descriptor jargon than in ordinary Rust types and methods, it is probably landing at the wrong layer.
 
 ### Phase 0a: Architecture Checkpoint
 
@@ -108,7 +134,7 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 ### Phase 1 Parallel Tracks
 
 - [ ] **Track A: metadata path** — `ModelDescriptor`, field definitions, `inventory` registration, compile-time tests
-- [ ] **Track B: runtime path** — `Model` trait, `DjogiConnection`, CRUD SQL generation, raw SQL helpers
+- [ ] **Track B: runtime path** — `Model` trait, CRUD SQL generation, raw SQL helpers
 - [ ] **Track C: macro path** — attribute parsing, generated impls, `FromRow`, descriptor emission
 - [ ] Merge point: one end-to-end model compiles and passes CRUD tests against Postgres
 
@@ -211,6 +237,8 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 **Goal:** Application-level transactions and field expressions for complex queries.
 
+Phase 4 is the main query/write power inflection point. It is where Djogi stops being "typed CRUD plus a builder" and starts owning the concurrency and expression substrate needed for serious production workloads.
+
 ### 4a: Transaction API
 
 - [ ] `djogi::transaction::atomic(pool, |txn| async { ... })` — closure-based, returns `Result`
@@ -252,13 +280,17 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 - [ ] `T::bulk_update(pool, vec, fields)` — batch update via CASE/WHEN
 - [ ] `T::bulk_upsert(pool, vec, conflict_fields, update_fields)` — INSERT ON CONFLICT DO UPDATE
 
-**Deliverable:** Full transaction support, field expressions, aggregation, subqueries, bulk upsert.
+**Deliverable:** Full transaction support, field expressions, aggregation, subqueries, bulk upsert, and the core lock-aware/write-efficient substrate expected of a production Postgres ORM.
 
 ---
 
 ## Phase 4.5: Projections & Shared Contracts
 
 **Goal:** Generate audience-specific transport-safe types from one model definition.
+
+This phase owns transport-safe contract generation. It does not replace Phase 4's query-time typed result shaping for aggregates, annotations, or other performance-sensitive query outputs.
+
+Projection generation should stay Rust-native: plain data structs, explicit conversions, and no hidden runtime dependency on SQLx, `DjogiContext`, or request-state machinery.
 
 - [ ] Add field exposure metadata for named projection scopes
 - [ ] Generate projection structs such as public/self/admin/export views
@@ -275,6 +307,10 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 **Goal:** First-class support for Postgres features that other ORMs treat as optional.
 
+Phase 5 takes the Phase 4 substrate and makes Postgres-native performance features first-class: typed JSONB and arrays, native aggregates, RLS hooks, index metadata, and typed field families whose schema intent must survive migration/runtime behavior.
+
+This phase is also where Djogi should prefer typed value wrappers and closed internal enums over schema-DSL sprawl. Descriptor richness belongs behind the scenes; model declarations should still read like idiomatic Rust.
+
 ### 5a: Postgres Enum Types
 
 - [ ] `#[derive(DjogiEnum)]` on Rust enums → Postgres `CREATE TYPE ... AS ENUM`
@@ -282,14 +318,21 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 - [ ] Support string-backed enums (`#[djogi_enum(as_string)]`) for schema evolution flexibility
 - [ ] Migration support: `ALTER TYPE ... ADD VALUE`
 
-### 5b: Postgres Array Fields
+### 5b: Typed String Field Primitives
+
+- [ ] Distinguish bounded character fields from unbounded text fields in descriptor metadata and migration diffs
+- [ ] Preserve `VARCHAR(n)` versus `TEXT` as an explicit schema choice rather than collapsing both into "String + validator"
+- [ ] Keep the Rust-side API ergonomic, but ensure `TEXT <-> VARCHAR(n)` is treated as a real alteration by the differ
+- [ ] Let validated field families such as email/phone/locale build on top of these primitives rather than re-defining string storage ad hoc
+
+### 5c: Postgres Array Fields
 
 - [ ] `Vec<String>` → `TEXT[]`, `Vec<i32>` → `INTEGER[]`, etc.
 - [ ] Array lookups: `contains` (`@>`), `contained_by` (`<@`), `overlap` (`&&`)
 - [ ] Array length: `.len()` lookup
 - [ ] Array index access in expressions: `field[0]`
 
-### 5c: Typed JSONB (`Jsonb<T>`)
+### 5d: Typed JSONB (`Jsonb<T>`)
 
 - [ ] `Jsonb<T>` with typed schema + unknown field preservation (per existing spec)
 - [ ] JSONB path lookups: `has_key` (`?`), `has_keys` (`?&`), `has_any_keys` (`?|`)
@@ -297,28 +340,28 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 - [ ] Subfield query filters via proc macro (per existing spec)
 - [ ] Validation on save with dot-notation error paths
 
-### 5d: Postgres-Native Aggregates
+### 5e: Postgres-Native Aggregates
 
 - [ ] `ArrayAgg(field)` → `ARRAY_AGG()` with ordering and distinct
 - [ ] `JsonAgg(field)` → `JSONB_AGG()`
 - [ ] `StringAgg(field, delimiter)` → `STRING_AGG()`
 - [ ] `BoolAnd` / `BoolOr` → `BOOL_AND()` / `BOOL_OR()`
 
-### 5e: Postgres-Native Indexes
+### 5f: Postgres-Native Indexes
 
 - [ ] `#[index(gin)]` / `#[index(gist)]` / `#[index(brin)]` — index type annotations
 - [ ] `OpClass` support for trigram and JSONB indexing
 - [ ] Partial indexes: `#[index(condition = "active = true")]`
 - [ ] Covering indexes: `#[index(include = ["field"])]`
 
-### 5f: Database Functions
+### 5g: Database Functions
 
 - [ ] Comparison: `Coalesce`, `Greatest`, `Least`, `NullIf`, `Cast`
 - [ ] Text: `Lower`, `Upper`, `Trim`, `Concat`, `Replace`, `Substr`, `Length`
 - [ ] DateTime: `Now`, `Extract`, `TruncDate`
 - [ ] Math: `Abs`, `Ceil`, `Floor`, `Round`
 
-**Deliverable:** Postgres enums, arrays, typed JSONB, native aggregates, indexes, database functions.
+**Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions.
 
 ---
 
@@ -371,6 +414,8 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 **Goal:** Add descriptor-level protected-field semantics and storage transforms.
 
+Protected-data support should extend the typed field story rather than replace it with policy soup. Sensitive-field metadata, codecs, and redaction rules belong in descriptor/tooling layers, while ordinary app code should continue to interact with clear Rust types.
+
 - [ ] Add field metadata for sensitivity, redaction scope, rationale, and lifecycle class
 - [ ] Add descriptor support for field codecs such as encrypted/tokenized/custom-serialized columns
 - [ ] Ensure CRUD generation and row decoding apply codecs consistently
@@ -419,6 +464,8 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 
 **Goal:** Interactive Rhai REPL and auto-generated admin panel.
 
+These surfaces are intentionally downstream of the core ORM/runtime. They are useful operational tools, but they must remain feature-gated adapters over the model/query layer rather than redefining the core identity of the crate.
+
 ### 8a: Shell (Rhai REPL)
 
 - [ ] `cargo djogi shell` — launches REPL with all models loaded
@@ -436,6 +483,8 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 - [ ] `admin` feature flag — opt-in dependency
 - [ ] Annotation-driven customization: `#[admin(list_display = [...])]`
 - [ ] Trait-based advanced customization: `impl AdminConfig for T`
+
+Admin integration may be Axum-oriented in practice, but that coupling should live in the feature-gated admin layer. Core model/query/runtime APIs should not require Axum types or assumptions.
 
 **Deliverable:** Working shell and admin panel.
 
@@ -493,7 +542,7 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 | 3: Relations | Medium | FK, prefetch, select_related, M2M |
 | 4: Txn & Expressions | Large | Transactions, F-expressions, aggregation, bulk upsert |
 | 4.5: Projections | Medium | Shared transport-safe contracts derived from models |
-| **→ SeaORM replacement viable** | | **Phases 0-4 cover all blocking requirements** |
+| **→ Strong option among Rust ORM alternatives for write-heavy Postgres services** | | **Phases 0-4 cover the blocking transaction, expression, and bulk-write substrate** |
 | 5: Postgres Native | Medium | Enums, arrays, JSONB, native aggregates |
 | 6: Migrations | Large | Full migration system |
 | 6.5: Protected Data | Medium | Sensitive-field metadata and codecs |
@@ -503,4 +552,4 @@ The roadmap below is still phase-ordered, but implementation should run in paral
 | 9: Logging | Medium | Audit trail |
 | 10: Topology | Large | Residency, replica semantics, distributed guardrails |
 
-**The critical path to SeaORM replacement is Phases 0–4.** Phase 4.5 improves contract hygiene and frontend/API reuse without changing that replacement boundary. Phases 5–10 add depth, governance, and scale-oriented capabilities that can land incrementally after migration begins.
+**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–10 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.
