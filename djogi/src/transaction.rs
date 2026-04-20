@@ -34,7 +34,6 @@
 
 use crate::DjogiError;
 use crate::context::{ContextInner, DjogiContext};
-use crate::error::is_lock_error;
 use futures::FutureExt;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, resume_unwind};
@@ -340,25 +339,24 @@ where
         match closure(ctx).await {
             Ok(value) => return Ok(value),
             Err(e) => {
-                // Two shapes count as retryable:
+                // Phase 4 Task 7.7 — route through the
+                // `DjogiError::is_transient` classifier so every new
+                // variant lands in one canonical place. The classifier
+                // covers:
                 //
-                // 1. `DjogiError::LockConflict(..)` — the Phase 4 Task 7
-                //    variant, produced by any terminal that funneled its
-                //    sqlx error through `error::map_lock_err` (every lock-
-                //    aware read path).
-                // 2. `DjogiError::Sqlx(sqlx_err)` where the underlying
-                //    SQLSTATE is retryable — this covers callers that
-                //    did NOT route through `map_lock_err` (raw sqlx
-                //    escape hatches, Phase 1/2 terminals that landed
-                //    before Task 7).
+                // 1. `DjogiError::LockConflict(..)` — the Task 7a
+                //    variant, produced by any terminal that funneled
+                //    its sqlx error through `error::map_lock_err`.
+                // 2. `DjogiError::Sqlx(sqlx_err)` with a retryable
+                //    SQLSTATE (40001 / 40P01 / 55P03) — covers callers
+                //    that did NOT route through `map_lock_err` (raw
+                //    sqlx escape hatches, Phase 1/2 terminals).
                 //
-                // Other `DjogiError` variants (serialization, not-found,
-                // etc.) surface on the first call.
-                let retryable = match &e {
-                    DjogiError::LockConflict(_) => true,
-                    DjogiError::Sqlx(sqlx_err) => is_lock_error(sqlx_err),
-                    _ => false,
-                };
+                // Terminal variants (NotFound, Validation, GoneAggregate,
+                // etc.) surface on the first call without retry — even
+                // infinite retries against a hard-deleted aggregate
+                // cannot succeed.
+                let retryable = e.is_transient();
                 if retryable && attempt < attempts {
                     tracing::debug!(
                         attempt,

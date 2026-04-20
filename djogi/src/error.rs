@@ -101,6 +101,33 @@ pub enum DjogiError {
     #[error("JSON serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// A DDD-style aggregate was hard-deleted mid-operation,
+    /// invalidating any further work against its id. Phase 4 Task
+    /// 7.7 introduces this variant as the canonical terminal signal
+    /// for "the aggregate you're operating on no longer exists" —
+    /// distinct from `NotFound` (which covers initial-lookup
+    /// misses) in that the caller already observed the aggregate
+    /// earlier in the same operation.
+    ///
+    /// `model` is the owning model's `type_name` (same source as
+    /// `MissingIdempotencyKey::model`). `id` is the PK rendered to
+    /// a string (no generic parameter so the error type stays
+    /// object-safe and usable across model boundaries). `reason` is
+    /// a `&'static str` describing why the aggregate is gone (e.g.
+    /// `"hard-deleted by admin"`, `"retention policy evicted"`).
+    ///
+    /// Classified as **terminal** by
+    /// [`DjogiError::is_transient`] — `retry_on_conflict` does not
+    /// retry this variant because retrying against a deleted row
+    /// cannot succeed.
+    #[error("aggregate '{model}' id={id} is gone: {reason}")]
+    #[non_exhaustive]
+    GoneAggregate {
+        model: &'static str,
+        id: String,
+        reason: &'static str,
+    },
+
     /// A convenience method that consumes the descriptor's
     /// `idempotency_key` slot
     /// ([`create_or_find`](crate::model::Model) /
@@ -198,6 +225,62 @@ impl DjogiError {
     /// expression construction outside this crate.
     pub fn missing_idempotency_key(model: &'static str) -> Self {
         DjogiError::MissingIdempotencyKey { model }
+    }
+
+    /// Construct a `GoneAggregate` error.
+    ///
+    /// Mirror of the other constructors — exists so that cross-crate
+    /// callers can produce this `#[non_exhaustive]` variant. `id` is
+    /// typically produced via `format!("{}", pk)` so the error is
+    /// independent of the originating model's `Pk` type.
+    pub fn gone_aggregate(model: &'static str, id: String, reason: &'static str) -> Self {
+        DjogiError::GoneAggregate { model, id, reason }
+    }
+
+    /// Classify this error as **transient** (retrying the closure
+    /// may succeed) or **terminal** (retrying will not help).
+    ///
+    /// `retry_on_conflict` uses this predicate to decide whether to
+    /// re-run its closure. The contract:
+    ///
+    /// | Variant | Classification |
+    /// |---------|----------------|
+    /// | [`LockConflict`](Self::LockConflict) | transient |
+    /// | [`Sqlx`](Self::Sqlx) with SQLSTATE `40001` / `40P01` / `55P03` | transient |
+    /// | [`Sqlx`](Self::Sqlx) with any other SQLSTATE | terminal |
+    /// | [`NotFound`](Self::NotFound) | terminal |
+    /// | [`MultipleObjects`](Self::MultipleObjects) | terminal |
+    /// | [`IdGeneration`](Self::IdGeneration) | terminal |
+    /// | [`RelationUnloaded`](Self::RelationUnloaded) | terminal |
+    /// | [`Serde`](Self::Serde) | terminal |
+    /// | [`Validation`](Self::Validation) | terminal |
+    /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
+    /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
+    ///
+    /// The Sqlx row reflects the existing `is_lock_error`
+    /// classifier: Postgres SQLSTATEs `40001` (serialization
+    /// failure), `40P01` (deadlock detected), and `55P03`
+    /// (lock not available / `NOWAIT` rejection) are the three
+    /// retryable codes. Unique-violation, foreign-key violation,
+    /// connection drops, and protocol errors all fall through to
+    /// terminal because retrying the same closure against a
+    /// constraint violation will fail the same way.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            DjogiError::LockConflict(_) => true,
+            DjogiError::Sqlx(e) => is_lock_error(e),
+            _ => false,
+        }
+    }
+
+    /// Inverse of [`is_transient`](Self::is_transient) — returns
+    /// `true` when retrying will not help.
+    ///
+    /// Provided as a convenience for call sites that read more
+    /// naturally as `err.is_terminal()` than `!err.is_transient()`.
+    /// Same contract, inverted.
+    pub fn is_terminal(&self) -> bool {
+        !self.is_transient()
     }
 }
 
@@ -395,6 +478,51 @@ mod tests {
         assert!(
             matches!(mapped, DjogiError::Sqlx(_)),
             "non-database error should produce Sqlx, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn is_transient_covers_lock_conflict_and_retryable_sqlx() {
+        // LockConflict — the typed variant that map_lock_err lifts —
+        // is always transient.
+        let lc = DjogiError::LockConflict(sqlx_err_with_code("55P03"));
+        assert!(lc.is_transient(), "LockConflict must be transient");
+        assert!(!lc.is_terminal(), "LockConflict must not be terminal");
+
+        // Raw Sqlx with retryable SQLSTATE — transient because
+        // `is_lock_error` reports it so. Covers escape-hatch paths
+        // that didn't route through map_lock_err.
+        for code in ["40001", "40P01", "55P03"] {
+            let err = DjogiError::Sqlx(sqlx_err_with_code(code));
+            assert!(
+                err.is_transient(),
+                "Sqlx with SQLSTATE {code} must be transient"
+            );
+        }
+
+        // Raw Sqlx with non-lock SQLSTATE — terminal.
+        let unique = DjogiError::Sqlx(sqlx_err_with_code("23505"));
+        assert!(unique.is_terminal(), "unique_violation must be terminal");
+        assert!(
+            !unique.is_transient(),
+            "unique_violation must not be transient"
+        );
+    }
+
+    #[test]
+    fn is_terminal_covers_every_known_variant() {
+        // Every non-Sqlx, non-LockConflict variant is terminal. Spell
+        // each out so the classification table in the rustdoc is
+        // pinned against drift: adding a new variant that should be
+        // transient forces the test author to update this match.
+        assert!(DjogiError::not_found("t").is_terminal());
+        assert!(DjogiError::multiple_objects("t", 2).is_terminal());
+        assert!(DjogiError::relation_unloaded("M", "f").is_terminal());
+        assert!(DjogiError::missing_idempotency_key("M").is_terminal());
+        assert!(DjogiError::Validation("bad".into()).is_terminal());
+        assert!(
+            DjogiError::gone_aggregate("M", "42".into(), "deleted").is_terminal(),
+            "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"
         );
     }
 }
