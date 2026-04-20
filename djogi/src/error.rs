@@ -101,6 +101,20 @@ pub enum DjogiError {
     #[error("JSON serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// A runtime argument-validation failure produced by a CRUD
+    /// convenience method — the caller's request is well-typed at
+    /// compile time but fails a runtime invariant (e.g.
+    /// `bulk_upsert`'s `conflict_cols` naming a column that does not
+    /// exist on the model). Phase 4 Task 7d introduces this variant
+    /// for `bulk_upsert`'s allow-list check; future phases may add
+    /// more callers.
+    ///
+    /// The inner `String` is a human-readable description of the
+    /// failure. No `&'static str` because callers interpolate the
+    /// offending column name / table name into the message.
+    #[error("validation error: {0}")]
+    Validation(String),
+
     /// A `FOR UPDATE NOWAIT` / `FOR UPDATE` request could not acquire
     /// its row lock, or a `SERIALIZABLE` / `REPEATABLE READ` transaction
     /// encountered a serialization failure, or Postgres detected a

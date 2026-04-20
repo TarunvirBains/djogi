@@ -515,10 +515,420 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // Phase 4 Task 7d — bulk methods (bulk_create / bulk_update / bulk_upsert).
+    //
+    // Emitted as a separate inherent `impl` block. Scope: the three
+    // Contract Decision #7 methods that operate on `Vec<Self>` or a
+    // list of primary keys. `in_bulk` (PK-keyed fetch) stays on
+    // `QuerySet<T>` — it is read-only and needs no per-model field
+    // knowledge.
+    //
+    // Zero-user-field edge case: `bulk_create` / `bulk_upsert` require
+    // at least one user column. Emitting the placeholder "(.push_bind
+    // nothing)" tuple produces `()` in SQL which Postgres rejects. We
+    // emit a compile-time `unimplemented!()` body for those models —
+    // callers can still use `create()` row-by-row.
+    // -------------------------------------------------------------------------
+    let bulk_insert_col_list = if n_user == 0 {
+        String::new()
+    } else {
+        user_fields
+            .iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    // For `bulk_upsert`'s ON CONFLICT DO UPDATE SET — every user col
+    // plus `updated_at = now()`. If the conflict key is itself a user
+    // col, EXCLUDED.col is that same incoming value, so leaving it in
+    // the SET list is semantically a no-op. Postgres accepts it.
+    let bulk_upsert_set_list = if n_user == 0 {
+        "updated_at = now()".to_string()
+    } else {
+        let mut parts: Vec<String> = user_fields
+            .iter()
+            .map(|f| format!("{f} = EXCLUDED.{f}"))
+            .collect();
+        parts.push("updated_at = now()".to_string());
+        parts.join(", ")
+    };
+
+    // Valid-column set for runtime validation of bulk_upsert's
+    // `conflict_cols` argument. Include the three framework columns
+    // (id / created_at / updated_at) so upserts on `id` (the common
+    // case) validate, as well as every user field. This closes the
+    // "user passes arbitrary string — gets SQL-injected" vector.
+    let bulk_valid_columns: Vec<String> = {
+        let mut v: Vec<String> = vec![
+            "id".to_string(),
+            "created_at".to_string(),
+            "updated_at".to_string(),
+        ];
+        v.extend(user_fields.iter().map(|f| f.to_string()));
+        v
+    };
+    let bulk_valid_columns_lit = bulk_valid_columns.iter().map(|s| quote! { #s });
+
+    // Per-row bind tokens for bulk_create / bulk_upsert's VALUES tail.
+    // Emits a leading "(" then push_bind per user field with ", "
+    // separators, then a trailing ")". Uses a `__first` flag on the
+    // outer row loop for row-separator handling.
+    //
+    // Zero-user-field branch never reaches this — n_user >= 1 gated by
+    // the per-method body.
+    let per_row_binds: TokenStream = if n_user == 0 {
+        quote! {}
+    } else {
+        let first_field = &user_fields[0];
+        let rest_fields = &user_fields[1..];
+        quote! {
+            __qb.push("(");
+            __qb.push_bind(&row.#first_field);
+            #(
+                __qb.push(", ");
+                __qb.push_bind(&row.#rest_fields);
+            )*
+            __qb.push(")");
+        }
+    };
+
+    // Outbox-per-row emission for bulk_create / bulk_upsert's
+    // rehydrated result rows. Iterate `&created` so outbox sees the
+    // DB-truth snapshot (post-RETURNING). No-op for non-events models.
+    let emit_outbox_bulk_create = if model_attrs.events {
+        quote! {
+            for __row in &created {
+                ::djogi::outbox::emit_event(
+                    ctx,
+                    __row,
+                    ::djogi::outbox::OutboxAction::Create,
+                ).await?;
+            }
+        }
+    } else {
+        quote! {}
+    };
+    let emit_outbox_bulk_save = if model_attrs.events {
+        quote! {
+            for __row in &created {
+                ::djogi::outbox::emit_event(
+                    ctx,
+                    __row,
+                    ::djogi::outbox::OutboxAction::Save,
+                ).await?;
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // bulk_update's id bind — HeerId needs `.as_i64()` on each element,
+    // RanjId / Serial bind directly. We route through FieldRef::in_list
+    // which takes `IntoIterator<Item = V>` where `V: IntoFilterValue`.
+    // HeerId / RanjId / i32 (Serial) all `impl IntoFilterValue`, so the
+    // same expression compiles for every pk_type.
+    //
+    // `Self::Pk` is already the right type at macro expansion time
+    // (see `pk_type_tokens` above), so we can forward `ids` verbatim
+    // into `.in_list(ids)`.
+    let bulk_update_impl = if n_user == 0 {
+        // Pathological case: no user fields to update + `updated_at`
+        // bumped via the existing `.update` emitter's implicit
+        // handling. We still emit a usable `bulk_update` — it just
+        // compiles down to an `UPDATE ... SET updated_at = now()`
+        // across the id list.
+        quote! {
+            /// Bulk-update every row whose primary key is in `ids`.
+            ///
+            /// Equivalent to
+            /// `Self::objects().filter(|f| f.id().in_list(ids)).update(closure).execute(ctx)`.
+            /// This method is sugar for the common "update these
+            /// specific rows" pattern without the caller spelling out
+            /// the filter chain.
+            pub async fn bulk_update<F, A>(
+                ctx: &mut ::djogi::context::DjogiContext,
+                ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
+                closure: F,
+            ) -> ::std::result::Result<u64, ::djogi::DjogiError>
+            where
+                F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A,
+                A: ::djogi::query::IntoAssignments,
+            {
+                if ids.is_empty() { return ::std::result::Result::Ok(0); }
+                <Self as ::djogi::model::Model>::objects()
+                    .filter(|f| f.id().in_list(ids))
+                    .update(closure)
+                    .execute(ctx)
+                    .await
+            }
+        }
+    } else {
+        quote! {
+            /// Bulk-update every row whose primary key is in `ids`.
+            ///
+            /// One `UPDATE` round trip emitting
+            /// `UPDATE <table> SET <assignments>, updated_at = now() WHERE id IN (...)`.
+            /// Empty `ids` short-circuits to `Ok(0)` without SQL.
+            ///
+            /// Equivalent to the explicit chain
+            /// `Self::objects().filter(|f| f.id().in_list(ids)).update(closure).execute(ctx)`;
+            /// this method is sugar for the common "update these
+            /// specific rows" pattern.
+            pub async fn bulk_update<F, A>(
+                ctx: &mut ::djogi::context::DjogiContext,
+                ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
+                closure: F,
+            ) -> ::std::result::Result<u64, ::djogi::DjogiError>
+            where
+                F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A,
+                A: ::djogi::query::IntoAssignments,
+            {
+                if ids.is_empty() { return ::std::result::Result::Ok(0); }
+                <Self as ::djogi::model::Model>::objects()
+                    .filter(|f| f.id().in_list(ids))
+                    .update(closure)
+                    .execute(ctx)
+                    .await
+            }
+        }
+    };
+
+    // bulk_create / bulk_upsert are elided for zero-user-field models.
+    let bulk_create_impl = if n_user == 0 {
+        quote! {
+            /// Not supported for zero-user-field models.
+            ///
+            /// A table with no non-framework columns cannot be bulk-
+            /// inserted — the emitted SQL would be `INSERT INTO t ()
+            /// VALUES ()` which Postgres rejects. Row-by-row
+            /// [`create`](::djogi::model::Model::create) still works
+            /// via the column's `DEFAULT`s.
+            #[doc(hidden)]
+            pub async fn bulk_create(
+                _ctx: &mut ::djogi::context::DjogiContext,
+                _rows: ::std::vec::Vec<Self>,
+            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                    "bulk_create requires at least one non-framework column".to_string()
+                ))
+            }
+        }
+    } else {
+        let insert_prefix = format!("INSERT INTO {table} ({bulk_insert_col_list}) VALUES ");
+        quote! {
+            /// Bulk-insert every row in `rows` and return the rehydrated
+            /// results.
+            ///
+            /// One `INSERT` round trip emitting
+            /// `INSERT INTO <table> (<user-cols>) VALUES (...), (...) RETURNING *`.
+            /// Framework columns (`id`, `created_at`, `updated_at`) are
+            /// populated by their column defaults and surface in the
+            /// returned rows.
+            ///
+            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
+            /// SQL — an empty `VALUES ()` clause is invalid Postgres.
+            ///
+            /// Postgres caps bound parameters at 65_535. With `N` user
+            /// columns per model, the effective cap is `65_535 / N`
+            /// rows per call. Chunk larger batches at the call site.
+            ///
+            /// When the model has `#[model(events)]`, outbox rows are
+            /// written per inserted row **after** rehydration (so the
+            /// outbox payload reflects DB-truth column defaults and
+            /// trigger mutations). Runs inside the caller's
+            /// transaction / atomic scope when `ctx` holds one.
+            pub async fn bulk_create(
+                ctx: &mut ::djogi::context::DjogiContext,
+                rows: ::std::vec::Vec<Self>,
+            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                if rows.is_empty() {
+                    return ::std::result::Result::Ok(::std::vec::Vec::new());
+                }
+                let mut __qb: ::djogi::__private::sqlx::QueryBuilder<
+                    '_,
+                    ::djogi::__private::sqlx::Postgres,
+                > = ::djogi::__private::sqlx::QueryBuilder::new(#insert_prefix);
+                {
+                    let mut __first = true;
+                    for row in rows.iter() {
+                        if __first { __first = false; } else { __qb.push(", "); }
+                        #per_row_binds
+                    }
+                }
+                __qb.push(" RETURNING *");
+                let __q = __qb.build_query_as::<Self>();
+                let created: ::std::vec::Vec<Self> =
+                    match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                            __q.fetch_all(&*__pool).await?
+                        }
+                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                            __q.fetch_all(&mut **__tx).await?
+                        }
+                    };
+                #emit_outbox_bulk_create
+                ::std::result::Result::Ok(created)
+            }
+        }
+    };
+
+    let bulk_upsert_impl = if n_user == 0 {
+        quote! {
+            /// Not supported for zero-user-field models.
+            ///
+            /// See [`bulk_create`] for the rationale — upsert emits
+            /// the same `INSERT INTO t (...) VALUES (...)` prefix
+            /// which is empty-clause-invalid for zero-user-field
+            /// tables.
+            #[doc(hidden)]
+            pub async fn bulk_upsert(
+                _ctx: &mut ::djogi::context::DjogiContext,
+                _rows: ::std::vec::Vec<Self>,
+                _conflict_cols: &[&'static str],
+            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                    "bulk_upsert requires at least one non-framework column".to_string()
+                ))
+            }
+        }
+    } else {
+        let insert_prefix = format!("INSERT INTO {table} (id, {bulk_insert_col_list}) VALUES ");
+        let do_update_set_clause = format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING *");
+
+        // For bulk_upsert the id column is included up front so
+        // callers can upsert with pre-allocated ids. Per-row bind tail
+        // needs the id bind before the user-field binds.
+        let pk_bind_for_upsert = match model_attrs.pk {
+            PkStrategy::HeerId => quote! { __qb.push_bind(row.id.as_i64()); },
+            PkStrategy::RanjId => quote! { __qb.push_bind(row.id); },
+            PkStrategy::Serial => quote! { __qb.push_bind(row.id); },
+            PkStrategy::None => unreachable!("handled by early return"),
+        };
+        let upsert_per_row_binds: TokenStream = {
+            let all_fields_iter = user_fields.iter();
+            quote! {
+                __qb.push("(");
+                #pk_bind_for_upsert
+                #(
+                    __qb.push(", ");
+                    __qb.push_bind(&row.#all_fields_iter);
+                )*
+                __qb.push(")");
+            }
+        };
+
+        quote! {
+            /// Bulk-upsert — `INSERT ... ON CONFLICT (<cols>) DO UPDATE SET ...`.
+            ///
+            /// Inserts every row in `rows`; on conflict against the
+            /// `conflict_cols` key, updates every user field plus
+            /// `updated_at = now()` with the incoming values
+            /// (`EXCLUDED.*`). Returns the rehydrated rows —
+            /// `RETURNING *` emits one row per input regardless of
+            /// whether it was inserted or updated.
+            ///
+            /// `conflict_cols` must reference real columns of this
+            /// model (framework or user). Unknown names return
+            /// [`DjogiError::Validation`] without a round trip — this
+            /// closes the SQL-injection vector from arbitrary
+            /// `&'static str` input.
+            ///
+            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
+            /// SQL. Empty `conflict_cols` returns
+            /// [`DjogiError::Validation`] — `ON CONFLICT ()` is
+            /// invalid SQL.
+            ///
+            /// Callers upserting with pre-allocated primary keys must
+            /// [`HeerId::generate_many(ctx, n)`](::djogi::types::HeerId::generate_many)
+            /// the ids up front — row.id is inserted verbatim, no
+            /// column default fires.
+            pub async fn bulk_upsert(
+                ctx: &mut ::djogi::context::DjogiContext,
+                rows: ::std::vec::Vec<Self>,
+                conflict_cols: &[&'static str],
+            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                if rows.is_empty() {
+                    return ::std::result::Result::Ok(::std::vec::Vec::new());
+                }
+                if conflict_cols.is_empty() {
+                    return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                        "bulk_upsert requires at least one conflict column".to_string()
+                    ));
+                }
+                // Validate every conflict column against the macro-
+                // emitted allow-list of real columns. Rejects typos
+                // and closes the arbitrary-string SQL-injection path.
+                const __VALID_COLS: &[&str] = &[ #(#bulk_valid_columns_lit),* ];
+                for col in conflict_cols {
+                    if !__VALID_COLS.contains(col) {
+                        return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                            ::std::format!(
+                                "unknown conflict column '{}' for table {}",
+                                col,
+                                #table,
+                            )
+                        ));
+                    }
+                }
+
+                let mut __qb: ::djogi::__private::sqlx::QueryBuilder<
+                    '_,
+                    ::djogi::__private::sqlx::Postgres,
+                > = ::djogi::__private::sqlx::QueryBuilder::new(#insert_prefix);
+                {
+                    let mut __first = true;
+                    for row in rows.iter() {
+                        if __first { __first = false; } else { __qb.push(", "); }
+                        #upsert_per_row_binds
+                    }
+                }
+                __qb.push(" ON CONFLICT (");
+                {
+                    let mut __first = true;
+                    for col in conflict_cols {
+                        if __first { __first = false; } else { __qb.push(", "); }
+                        __qb.push(*col);
+                    }
+                }
+                __qb.push(")");
+                __qb.push(#do_update_set_clause);
+                let __q = __qb.build_query_as::<Self>();
+                let created: ::std::vec::Vec<Self> =
+                    match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
+                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
+                            __q.fetch_all(&*__pool).await?
+                        }
+                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
+                            __q.fetch_all(&mut **__tx).await?
+                        }
+                    };
+                // Upsert outbox policy: emit a Save event per returned
+                // row — the caller does not tell us whether each row
+                // was inserted or updated, and "Save" is the
+                // action-agnostic variant. Consumers that need
+                // fine-grained distinction can read the row's
+                // `created_at == updated_at` tautology from the payload.
+                #emit_outbox_bulk_save
+                ::std::result::Result::Ok(created)
+            }
+        }
+    };
+
+    let bulk_methods_impl = quote! {
+        impl #impl_generics #name #ty_generics #where_clause {
+            #bulk_create_impl
+            #bulk_update_impl
+            #bulk_upsert_impl
+        }
+    };
+
+    // -------------------------------------------------------------------------
     // Assemble the full impl block.
     // -------------------------------------------------------------------------
     quote! {
         #create_with_id_impl
+        #bulk_methods_impl
 
         // Satisfy the `Model: __sealed::Sealed` supertrait. The sealed
         // module is `#[doc(hidden)] pub`, so downstream hand-rolled
