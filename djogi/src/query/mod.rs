@@ -22,6 +22,8 @@
 //! payload shapes, and the module layout can shift across phases without
 //! a semver bump.
 
+pub mod aggregate;
+pub mod annotate;
 pub mod condition;
 pub mod field;
 pub mod filter;
@@ -31,6 +33,8 @@ pub mod sql;
 pub mod terminal;
 pub mod update;
 
+pub use aggregate::AggregateQuery;
+pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
 pub use condition::Condition;
 pub use field::{FieldRef, IntoFilterValue};
 pub use filter::{FilterClause, Lookup, ModelFilter};

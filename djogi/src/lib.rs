@@ -84,10 +84,10 @@ pub use descriptor::{
 };
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
 pub use error::DjogiError;
-pub use expr::Expr;
+pub use expr::{AggregateExpr, Expr};
 pub use query::{
-    Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
-    UpdateAssignment, UpdateStmt,
+    AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
+    IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, UpdateAssignment, UpdateStmt,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -101,11 +101,11 @@ pub mod prelude {
         FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
     };
     pub use crate::error::DjogiError;
-    pub use crate::expr::Expr;
+    pub use crate::expr::{AggregateExpr, Expr};
     pub use crate::model::Model;
     pub use crate::query::{
-        Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr,
-        QuerySet,
+        AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
+        IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
     // transaction scope + retry helper.

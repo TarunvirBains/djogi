@@ -630,6 +630,173 @@ async fn prefetch_works_inside_atomic(pool: PgPool) {
 // terminal `fetch_all` — works against a real database.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Task 4 — Aggregate terminal (`SELECT <agg> FROM table [WHERE ...]`).
+//
+// Three tests pin the observable behaviour of the Task 4 surface:
+//
+//   * `aggregate_sum` — seeds three balances and asserts
+//     `.aggregate(|f| f.balance().sum()).fetch_one(ctx)` returns the
+//     expected scalar total. Proves the scalar path end-to-end: closure
+//     -> `AggregateExpr<i64>` -> `SELECT SUM(balance) FROM accounts`
+//     -> `query_scalar<i64>`.
+//
+//   * `aggregate_count_with_filter` — seeds four rows with mixed-sign
+//     balances and asserts `.count().filter(balance < 0)` returns the
+//     count of negative balances. Proves the `FILTER (WHERE ...)`
+//     clause threads through the emitter to Postgres and is honoured
+//     at scan time.
+//
+//   * `annotate_single_aggregate` — seeds two rows and asserts the
+//     annotation terminal returns `Vec<(Account, i64)>` with each
+//     aggregate aligned to its row. Uses a self-column aggregate
+//     (`f.balance().sum()`) rather than a reverse-relation aggregate;
+//     `f.orders.count()` is deferred to Task 5 along with the
+//     reverse-relation aggregate primitive.
+//
+// All three tests seed + query inside a single `atomic()` scope. Same
+// rationale as `bulk_update_arithmetic_expression` / `field_vs_field_filter`:
+// `heer.node_id` is pinned at the database level via
+// `setup_phase4`, but a pool connection that checked out before the
+// ALTER DATABASE took effect can still be missing the GUC. Opening a
+// fresh transaction inside the test grants all seeds + reads the same
+// transactional session — predictable and race-free.
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn aggregate_sum(pool: PgPool) {
+    setup_phase4(&pool).await;
+
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            for b in [10i64, 20, 30] {
+                Account::create(
+                    ctx,
+                    Account {
+                        balance: b,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+
+            let total: i64 = Account::objects()
+                .aggregate(|f| f.balance().sum())
+                .fetch_one(ctx)
+                .await?;
+            assert_eq!(total, 60, "SUM(balance) over three rows must sum literals");
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("aggregate sum scope must succeed");
+}
+
+#[sqlx::test]
+async fn aggregate_count_with_filter(pool: PgPool) {
+    setup_phase4(&pool).await;
+
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            // Two negative, two positive — the filtered count should
+            // return exactly the negative rows. Using `balance < 0`
+            // is the direct expression-IR equivalent of the plan's
+            // pseudocode `filter(balance < 0)`.
+            for b in [-5i64, 10, 20, -1] {
+                Account::create(
+                    ctx,
+                    Account {
+                        balance: b,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+
+            let n: i64 = Account::objects()
+                .aggregate(|f| {
+                    f.balance()
+                        .count()
+                        .filter(f.balance().as_expr().lt(Expr::literal(0i64)))
+                })
+                .fetch_one(ctx)
+                .await?;
+            assert_eq!(
+                n, 2,
+                "FILTER (WHERE balance < 0) must restrict COUNT to negative balances"
+            );
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("aggregate count+filter scope must succeed");
+}
+
+#[sqlx::test]
+async fn annotate_single_aggregate(pool: PgPool) {
+    setup_phase4(&pool).await;
+
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            // Two rows — aggregates are per-row when un-grouped, so
+            // `SUM(balance)` here rolls up to the full table per row
+            // in the absence of a GROUP BY. Task 4 pins the SQL
+            // shape; Task 5+ adds grouping. The important thing at
+            // this layer is that `Vec<(Account, i64)>` decodes
+            // end-to-end — every row carries its own agg slot.
+            Account::create(
+                ctx,
+                Account {
+                    balance: 10,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Account::create(
+                ctx,
+                Account {
+                    balance: 20,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            // `f.balance().sum()` — self-column aggregate as a single
+            // annotation. The plan's original pseudocode used a
+            // reverse-relation aggregate (`f.orders.count()`), but
+            // the reverse-relation aggregate primitive is not wired
+            // in Phase 3 and is deferred to Task 5. The self-column
+            // form still exercises every layer of the Task 4 surface
+            // (SELECT-list builder, name-based FromRow decode, typed
+            // tuple decode) without pulling Task 5 dependencies into
+            // this test.
+            let rows: Vec<(Account, i64)> = Account::objects()
+                .order_by(|f| f.balance().asc())
+                .annotate(|f| f.balance().sum())
+                .fetch_all(ctx)
+                .await?;
+
+            assert_eq!(rows.len(), 2, "both rows must come back");
+            // Because there is no GROUP BY, SUM rolls up to the full
+            // table — both rows carry the same scalar.
+            assert_eq!(
+                rows[0].1, 30,
+                "first row's aggregate slot must be total sum"
+            );
+            assert_eq!(
+                rows[1].1, 30,
+                "second row's aggregate slot must be total sum"
+            );
+            // And the model side still decodes normally.
+            assert_eq!(rows[0].0.balance, 10);
+            assert_eq!(rows[1].0.balance, 20);
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("annotate single aggregate scope must succeed");
+}
+
 #[sqlx::test]
 async fn field_vs_field_filter(pool: PgPool) {
     setup_phase4(&pool).await;

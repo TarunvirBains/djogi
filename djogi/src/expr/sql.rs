@@ -51,7 +51,7 @@
 //! `select_related`; `filter_expr` is aimed at non-joined predicates
 //! until Task 5.
 
-use crate::expr::node::{CmpOp, ExprNode};
+use crate::expr::node::{AggOp, CmpOp, ExprNode};
 use sqlx::{Postgres, QueryBuilder};
 
 /// Walk an [`ExprNode`] and push the corresponding SQL fragment onto
@@ -119,6 +119,55 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
                 CmpOp::Lte => " <= ",
             });
             emit_expr(qb, rhs);
+        }
+        ExprNode::Aggregate {
+            op,
+            arg,
+            filter,
+            cast_to: _,
+        } => {
+            // Bare aggregate emission — keyword, argument, closing
+            // paren, optional FILTER clause. The `cast_to` field is
+            // intentionally ignored here; the narrowing cast lives at
+            // the terminal layer (see
+            // [`crate::query::sql::emit_aggregate_with_cast`] and
+            // [`crate::query::sql::emit_aggregate_with_window_and_cast`])
+            // because its placement depends on whether the aggregate
+            // is used as a SELECT scalar (`(AGG(..))::TY`) or inside
+            // the annotate SELECT list with a window function
+            // (`(AGG(..) OVER ())::TY`). Keeping this arm bare means
+            // nested aggregates (Phase 5) don't accidentally pick up a
+            // cast they never asked for.
+            //
+            // `CountStar` is the only branch that emits a bare `*`
+            // inside the parens and deliberately skips the recursive
+            // `emit_expr(arg)` call — the `arg` slot on the typed
+            // wrapper carries an inert placeholder for that variant,
+            // never a real column reference.
+            match op {
+                AggOp::Count => qb.push("COUNT("),
+                AggOp::CountStar => qb.push("COUNT("),
+                AggOp::Sum => qb.push("SUM("),
+                AggOp::Avg => qb.push("AVG("),
+                AggOp::Min => qb.push("MIN("),
+                AggOp::Max => qb.push("MAX("),
+            };
+            if matches!(op, AggOp::CountStar) {
+                qb.push("*");
+            } else {
+                emit_expr(qb, arg);
+            }
+            qb.push(")");
+            // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
+            // filter inside the aggregate's per-row scan — the
+            // aggregate ignores rows where `cond` is false. `filter`
+            // is None on the bare call site; Some(cond) when
+            // `AggregateExpr::filter(...)` was chained.
+            if let Some(cond) = filter {
+                qb.push(" FILTER (WHERE ");
+                emit_expr(qb, cond);
+                qb.push(")");
+            }
         }
     }
 }

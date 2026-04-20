@@ -36,12 +36,12 @@
 
 use crate::query::condition::FilterValue;
 
-// TODO(Phase 4 Task 4/5): extend this enum with the variants sketched in the
-// plan's Contract Decision #3 — `Case { arms, otherwise }`, `Exists(..)`,
-// `Subquery(..)`, `Aggregate { op, arg, filter }`, `OuterRef { column }`.
-// The emitter in `expr::sql` will need matching arms in lockstep. The
-// `#[non_exhaustive]` marker is crate-private today (same-crate matches are
-// already exhaustive); it becomes relevant if/when this enum is re-exported.
+// TODO(Phase 4 Task 5): extend this enum with `Case { arms, otherwise }`,
+// `Exists(..)`, `Subquery(..)`, `OuterRef { column }`. Phase 4 Task 4 landed
+// the `Aggregate` variant below. The emitter in `expr::sql` needs matching
+// arms in lockstep. The `#[non_exhaustive]` marker is crate-private today
+// (same-crate matches are already exhaustive); it becomes relevant if/when
+// this enum is re-exported.
 
 /// Untyped expression tree. The typed [`super::Expr<T>`] wrapper carries
 /// the phantom `T` parameter and projects type safety over the dynamic
@@ -91,6 +91,92 @@ pub(crate) enum ExprNode {
         lhs: Box<ExprNode>,
         rhs: Box<ExprNode>,
     },
+
+    /// Aggregate function call — `COUNT(*)` / `COUNT(col)` / `SUM(col)`
+    /// / `AVG(col)` / `MIN(col)` / `MAX(col)` with an optional
+    /// `FILTER (WHERE ...)` post-filter clause. The typed
+    /// [`super::aggregate::AggregateExpr<Out>`] wrapper carries the Rust
+    /// return type (`i64` for `COUNT`, `f64` for `AVG`, `V` for
+    /// `SUM`/`MIN`/`MAX`) so the emitted scalar decodes to the right
+    /// Rust type without runtime casting.
+    ///
+    /// `arg` is the column or sub-expression being aggregated. For
+    /// `COUNT(*)` the dedicated [`AggOp::CountStar`] variant is paired
+    /// with an arbitrary `arg` (the emitter ignores it on that branch);
+    /// routing `*` through a separate op — rather than a magic
+    /// [`ExprNode::Field { column: "*" }`] sentinel — keeps the bare
+    /// star away from
+    /// [`crate::ident::assert_plain_ident`] / [`crate::ident::debug_assert_ident!`]
+    /// and from the column-qualification pass that select_related adds.
+    ///
+    /// `filter` is an optional boolean sub-expression that gates which
+    /// rows contribute to the aggregate. Postgres emits this as
+    /// `AGG(arg) FILTER (WHERE <cond>)`. `None` emits the bare aggregate.
+    Aggregate {
+        /// Which aggregate function to call.
+        op: AggOp,
+        /// The column or expression being aggregated. Ignored for
+        /// [`AggOp::CountStar`] (the emitter renders `COUNT(*)` regardless
+        /// of `arg`); the typed [`super::aggregate::AggregateExpr`] surface
+        /// stores a placeholder there.
+        arg: Box<ExprNode>,
+        /// Optional `FILTER (WHERE ...)` clause. `None` emits the bare
+        /// aggregate; `Some(cond)` emits
+        /// `AGG(arg) FILTER (WHERE <cond>)`.
+        filter: Option<Box<ExprNode>>,
+        /// Optional explicit Postgres-side cast applied to the aggregate
+        /// result. Emits as `AGG(arg)::<cast_to>` before the optional
+        /// `FILTER` clause is pushed.
+        ///
+        /// Why: Postgres widens integer aggregates — `SUM(BIGINT)` returns
+        /// `NUMERIC`, `AVG(BIGINT)` returns `NUMERIC`, `SUM(SMALLINT)`
+        /// returns `BIGINT`. The typed [`super::aggregate::AggregateExpr`]
+        /// surface promises `Out = V` for `SUM` over `V: Numeric` and
+        /// `Out = f64` for `AVG`, so the emitter narrows / casts back to
+        /// the Rust type sqlx can decode. The cast target is always a
+        /// framework-baked `&'static str` from
+        /// [`super::aggregate`]'s method bodies — never user input.
+        cast_to: Option<&'static str>,
+    },
+}
+
+/// Aggregate operator — the sub-discriminant inside [`ExprNode::Aggregate`].
+///
+/// The [`super::aggregate::AggregateExpr<Out>`] wrapper pins the Rust
+/// return type per variant (`i64` for `Count`/`CountStar`, `f64` for
+/// `Avg`, the column type `V` for `Sum`/`Min`/`Max`). The emitter in
+/// [`super::sql::emit_expr`] maps each variant to its SQL keyword and
+/// renders `COUNT(*)` specially for [`AggOp::CountStar`] so the bare `*`
+/// never flows through the identifier-validation / column-qualification
+/// paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AggOp {
+    /// `COUNT(col)` — returns `i64`. Counts non-null values of the
+    /// argument column.
+    Count,
+    /// `COUNT(*)` — returns `i64`. Counts every row in the grouping
+    /// (or the whole relation on an ungrouped aggregate). The
+    /// [`ExprNode::Aggregate::arg`] slot is ignored on this variant;
+    /// [`super::aggregate::AggregateExpr`] stores a placeholder there.
+    CountStar,
+    /// `SUM(col)` — returns `V` (the column's numeric type). Undefined
+    /// for non-numeric columns; the typed
+    /// [`super::aggregate::AggregateExpr::sum`] constructor gates this
+    /// on the sealed [`super::arithmetic::Numeric`] trait.
+    Sum,
+    /// `AVG(col)` — returns `f64`. Postgres widens integer averages to
+    /// `numeric`, but we decode to `f64` for ergonomics; callers who
+    /// need `Decimal` precision drop to raw sqlx until a Phase 5
+    /// `Decimal`-typed aggregate lands.
+    Avg,
+    /// `MIN(col)` — returns `V`. Requires the column type to be
+    /// Postgres-orderable; the typed surface gates on
+    /// sqlx `Type + Decode` rather than Rust `Ord` because `f64`
+    /// satisfies the former but not the latter.
+    Min,
+    /// `MAX(col)` — returns `V`. Same ordering requirement as
+    /// [`AggOp::Min`].
+    Max,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

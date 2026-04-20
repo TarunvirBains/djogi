@@ -67,12 +67,14 @@
 use crate::query::condition::FilterValue;
 use std::marker::PhantomData;
 
+pub mod aggregate;
 pub(crate) mod arithmetic;
 pub(crate) mod compare;
 pub(crate) mod literal;
 pub(crate) mod node;
 pub(crate) mod sql;
 
+pub use aggregate::AggregateExpr;
 use node::ExprNode;
 
 /// Typed expression handle — the public entry point for the IR.

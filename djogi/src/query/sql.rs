@@ -642,6 +642,160 @@ pub(crate) fn build_select_joined<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilde
     qb
 }
 
+/// Emit `(AGG(..))::CAST` for the scalar-aggregate path — wraps the
+/// bare aggregate in parens so the narrowing `::CAST` applies to the
+/// whole function call, including any `FILTER (WHERE ...)` tail.
+///
+/// `cast_to` is pulled from the [`crate::expr::node::ExprNode::Aggregate`]
+/// payload; `None` skips the cast entirely (used for `COUNT` /
+/// `MIN` / `MAX` where the Postgres return type already decodes into
+/// `Out` directly).
+pub(crate) fn emit_aggregate_with_cast(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    agg: &crate::expr::node::ExprNode,
+) {
+    if let crate::expr::node::ExprNode::Aggregate { cast_to, .. } = agg
+        && cast_to.is_some()
+    {
+        qb.push("(");
+        crate::expr::sql::emit_expr(qb, agg);
+        qb.push(")::");
+        // Safe because we matched `cast_to.is_some()` above; the
+        // pattern binding borrows immutably so we re-extract here.
+        if let crate::expr::node::ExprNode::Aggregate {
+            cast_to: Some(ty), ..
+        } = agg
+        {
+            qb.push(*ty);
+        }
+    } else {
+        crate::expr::sql::emit_expr(qb, agg);
+    }
+}
+
+/// Emit `(AGG(..) OVER ())::CAST` for the annotate-SELECT-list path —
+/// wraps the aggregate in a window function so the SELECT list is
+/// valid without a `GROUP BY` clause, then applies the optional
+/// narrowing cast.
+///
+/// # Why `OVER ()` rather than explicit `GROUP BY`
+///
+/// `annotate(|f| f.col().sum())` on a Task 4 queryset has no natural
+/// grouping key — the main row's PK would give a one-row-per-group
+/// partition (every aggregate collapses to the per-row column value).
+/// An unbounded window function (`OVER ()`) produces the table-wide
+/// aggregate value on every returned row, which is the useful
+/// semantics Django users expect when annotating a non-reverse-
+/// relation column.
+///
+/// Reverse-relation aggregates (`f.orders.count()` — Task 5 scope)
+/// may need `OVER (PARTITION BY parent.id)` after a LATERAL join;
+/// that is a deliberate scope boundary here. Task 4 aims for the
+/// simplest annotate shape that pairs with the self-column aggregate
+/// helpers already on `FieldRef`.
+pub(crate) fn emit_aggregate_with_window_and_cast(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    agg: &crate::expr::node::ExprNode,
+) {
+    let cast = match agg {
+        crate::expr::node::ExprNode::Aggregate { cast_to, .. } => *cast_to,
+        _ => None,
+    };
+    if cast.is_some() {
+        qb.push("(");
+    }
+    crate::expr::sql::emit_expr(qb, agg);
+    qb.push(" OVER ()");
+    if let Some(ty) = cast {
+        qb.push(")::");
+        qb.push(ty);
+    }
+}
+
+/// Build `SELECT <agg> FROM <table> [WHERE ...]` — the scalar-aggregate
+/// terminal for [`crate::query::aggregate::AggregateQuery::fetch_one`].
+///
+/// No `ORDER BY`, no `LIMIT`, no `OFFSET`, no `GROUP BY` — ungrouped
+/// aggregates collapse to exactly one result row regardless of the
+/// underlying cardinality, so those clauses would be meaningless.
+///
+/// The aggregate expression is emitted via [`emit_aggregate_with_cast`]
+/// so integer `SUM` / `AVG` results narrow back to the typed `Out`
+/// sqlx expects. `WHERE` uses the shared [`push_where`] helper so
+/// vacuously-true predicates are elided identically to every other
+/// terminal.
+pub(crate) fn build_aggregate_select<'a, T: Model>(
+    qs: &QuerySet<T>,
+    agg: &crate::expr::node::ExprNode,
+) -> QueryBuilder<'a, Postgres> {
+    let mut qb = QueryBuilder::new("SELECT ");
+    emit_aggregate_with_cast(&mut qb, agg);
+    qb.push(" FROM ");
+    qb.push(T::table_name());
+    push_where(&mut qb, qs);
+    qb
+}
+
+/// Build `SELECT t.*, <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1
+/// FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` —
+/// the annotation terminal for
+/// [`crate::query::annotate::AnnotatedQuerySet::fetch_all`].
+///
+/// # Why `t.*` plus aliased aggregates
+///
+/// `FromRow` looks up columns by name (see
+/// [`djogi-macros/src/model/from_row.rs`]) and ignores columns it does
+/// not recognise. The annotated row carries both the full `t.*`
+/// projection (decoded into `T`) and the aggregate columns under
+/// synthetic `__djogi_agg_N` aliases (decoded into the tuple slots).
+/// Each side reads its own column set; they never collide because
+/// model columns are user-chosen identifiers and the aggregate
+/// aliases use the framework-reserved `__djogi_agg_` prefix.
+///
+/// The alias prefix mirrors the `__djogi_parent_id` synthetic used by
+/// the prefetch loader — same reservation convention, same rationale
+/// (explicit prefix keeps user-space naming unrestricted).
+///
+/// # Columns argument
+///
+/// `push_columns` is a closure the caller supplies so the SELECT-list
+/// emission can inspect the typed tuple shape at compile time. The
+/// annotate terminal's `IntoAggregateTuple::push_columns` impl pushes
+/// `, <agg_expr> AS __djogi_agg_N` once per tuple arity slot; this
+/// emitter owns the `t.*` prefix and the `FROM` / `WHERE` / `ORDER BY`
+/// / `LIMIT` / `OFFSET` tail around it.
+///
+/// The table alias `t` is hard-coded because the annotate path does
+/// not support select_related joins in Task 4 — a joined annotate
+/// would need the same parent-table qualification
+/// [`build_select_joined`] applies, which is out of scope here. The
+/// Task 4 plan pins annotate to the single-table shape; Task 5 will
+/// generalise joins for both expression and annotate paths together.
+pub(crate) fn build_select_with_annotations<'a, T, F>(
+    qs: &QuerySet<T>,
+    push_columns: F,
+) -> QueryBuilder<'a, Postgres>
+where
+    T: Model,
+    F: FnOnce(&mut QueryBuilder<'a, Postgres>),
+{
+    let mut qb = QueryBuilder::new("");
+    // `SELECT t.*` prefix — the `t` alias is what the FROM clause
+    // below names the table as. Using `t.*` instead of enumerating
+    // every model column keeps the emitter simple; the columns land
+    // in the row in schema order and FromRow picks them up by name.
+    qb.push("SELECT t.*");
+    // Caller-provided per-aggregate comma-separated pushes. The
+    // trait impl prepends `, ` before each `<agg> AS __djogi_agg_N`
+    // so the SELECT list stays well-formed for arities 1..=4.
+    push_columns(&mut qb);
+    qb.push(" FROM ");
+    qb.push(T::table_name());
+    qb.push(" AS t");
+    push_tail(&mut qb, qs);
+    qb
+}
+
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
 /// [`DistinctMode`].
 ///
