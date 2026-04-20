@@ -121,6 +121,50 @@ fn serde_round_trip_public_excludes_password() {
 }
 
 #[test]
+fn descriptor_projection_map_scalar_entries() {
+    let desc = <User as ::djogi::prelude::Model>::descriptor();
+
+    // `display_name` exposed to all 4 scopes — 4 entries, all pointing
+    // at the column name.
+    let display_name_field = desc
+        .fields
+        .iter()
+        .find(|f| f.name == "display_name")
+        .expect("display_name field in descriptor");
+    let scopes: Vec<&str> = display_name_field
+        .projection_map
+        .iter()
+        .map(|(s, _)| *s)
+        .collect();
+    assert!(scopes.contains(&"public"));
+    assert!(scopes.contains(&"self_view"));
+    assert!(scopes.contains(&"admin"));
+    assert!(scopes.contains(&"export"));
+    for (_, emit_as) in display_name_field.projection_map {
+        assert_eq!(*emit_as, "display_name");
+    }
+
+    // `password_hash` has no expose — empty map.
+    let pwd = desc
+        .fields
+        .iter()
+        .find(|f| f.name == "password_hash")
+        .expect("password_hash field in descriptor");
+    assert_eq!(pwd.projection_map.len(), 0);
+
+    // Framework `id` defaults to all 4 scopes (Q13).
+    let id_field = desc
+        .fields
+        .iter()
+        .find(|f| f.name == "id")
+        .expect("id field in descriptor");
+    assert_eq!(id_field.projection_map.len(), 4);
+    for (_, emit_as) in id_field.projection_map {
+        assert_eq!(*emit_as, "id");
+    }
+}
+
+#[test]
 fn serde_round_trip_admin_includes_internal_notes() {
     let user = User {
         display_name: "Bob".into(),
