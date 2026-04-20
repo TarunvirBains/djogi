@@ -39,7 +39,7 @@
 //! helper's doc comment for the full explanation.
 
 use djogi::prelude::*;
-use djogi::transaction::atomic;
+use djogi::transaction::{atomic, retry_on_conflict};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -316,6 +316,91 @@ async fn savepoint_rollback_discards_inner_on_commit(pool: PgPool) {
 
     // Outer commit fires +1; inner rollback discards the +10.
     assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[sqlx::test]
+async fn nested_atomic_on_commit_promotes_to_outer(pool: PgPool) {
+    setup_phase4(&pool).await;
+    let count = Arc::new(AtomicUsize::new(0));
+
+    {
+        let count = count.clone();
+        atomic(&pool, |outer| {
+            Box::pin(async move {
+                atomic(&mut *outer, |inner| {
+                    Box::pin(async move {
+                        let c = count.clone();
+                        inner.on_commit(move || async move {
+                            c.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        });
+                        Ok::<_, DjogiError>(())
+                    })
+                })
+                .await?;
+                Ok::<_, DjogiError>(())
+            })
+        })
+        .await
+        .unwrap();
+    }
+
+    // Inner-registered callback was promoted to the outer queue on
+    // nested Ok, then drained after the outer commit.
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "inner on_commit registered during nested Ok must fire after outer commit"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// retry_on_conflict — happy path + non-lock short-circuit. Actual
+// lock-error retry semantics need a real concurrent scenario and are
+// exercised in Task 7 (row locks).
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn retry_on_conflict_does_not_retry_on_success(pool: PgPool) {
+    setup_phase4(&pool).await;
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let result = retry_on_conflict(&mut ctx, 3, async move |_ctx| {
+        c.fetch_add(1, Ordering::SeqCst);
+        Ok::<i32, DjogiError>(42)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result, 42);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "closure that returns Ok on the first call must run exactly once"
+    );
+}
+
+#[sqlx::test]
+async fn retry_on_conflict_short_circuits_on_non_lock_error(pool: PgPool) {
+    setup_phase4(&pool).await;
+    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = calls.clone();
+    let result = retry_on_conflict(&mut ctx, 5, async move |_ctx| {
+        c.fetch_add(1, Ordering::SeqCst);
+        Err::<(), _>(DjogiError::not_found("forced"))
+    })
+    .await;
+
+    assert!(result.is_err(), "non-lock error must surface");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "non-lock errors must not retry regardless of attempts budget"
+    );
 }
 
 // ---------------------------------------------------------------------------

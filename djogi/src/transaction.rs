@@ -194,22 +194,13 @@ impl IntoAtomicScope for &mut DjogiContext {
             return Err(DjogiError::from(e));
         }
 
-        // Build a scratch context for the inner closure. The inner
-        // context holds NO transaction of its own — every fetch
-        // re-dispatches to the parent's transaction via `inner_mut()`.
-        // We give it a borrowed handle by swapping the parent's
-        // `ContextInner` out temporarily and restoring it after the
-        // closure returns.
-        //
-        // Actually simpler: pass `self` (the already-borrowed parent
-        // context) straight through. The inner closure writes to the
-        // same transaction; any on_commit callbacks it registers land
-        // on the parent's queue — which is exactly the promote-on-success
-        // semantics we want IF we also drop them on rollback.
-        //
-        // To implement drop-on-rollback we snapshot the parent's
-        // callback-queue length before entering the closure, then on
-        // rollback we truncate back to that length.
+        // Nested path shares the parent context directly — inner
+        // writes land on the same transaction, inner on_commit
+        // callbacks land on the parent's queue. To honour the
+        // "discard on rollback" half of the promote-on-Ok semantics
+        // we snapshot the parent's callback-queue length before
+        // entering the closure and truncate back to it on the Err /
+        // panic branches.
         let callbacks_before = self.on_commit_queue_len();
 
         let inner_result = AssertUnwindSafe(closure(self)).catch_unwind().await;

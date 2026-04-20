@@ -393,30 +393,6 @@ impl DjogiContext {
         self.on_commit.push(boxed);
     }
 
-    /// Consume all registered on-commit callbacks and return them.
-    ///
-    /// **Internal use only.** Called by `atomic()` after a successful commit
-    /// on the outermost scope, and when a nested `atomic()` scope exits
-    /// successfully (nested callbacks promote to the outer stack). Used
-    /// together with [`append_on_commit_callbacks`](Self::append_on_commit_callbacks)
-    /// to move callbacks between contexts.
-    #[allow(dead_code)]
-    pub(crate) fn take_on_commit_callbacks(&mut self) -> Vec<OnCommitCallback> {
-        std::mem::take(&mut self.on_commit)
-    }
-
-    /// Append a batch of on-commit callbacks to this context's queue.
-    ///
-    /// **Internal use only.** Used by `atomic()` on the nested-success
-    /// path: the inner context's callbacks are drained via
-    /// [`take_on_commit_callbacks`](Self::take_on_commit_callbacks) and
-    /// then appended here so they fire after the outermost commit.
-    /// Order is preserved across the promotion.
-    #[allow(dead_code)]
-    pub(crate) fn append_on_commit_callbacks(&mut self, callbacks: Vec<OnCommitCallback>) {
-        self.on_commit.extend(callbacks);
-    }
-
     /// Length of the on-commit callback queue. Used by `transaction.rs`
     /// to snapshot the queue before entering a nested `atomic()` scope
     /// so inner-registered callbacks can be dropped on rollback.
