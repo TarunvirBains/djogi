@@ -1,0 +1,5 @@
+error: unknown scope `notascope`; expected one of: public, self_view, admin, export, none, internal
+ --> tests/compile_fail/expose_unknown_scope.rs:8:20
+  |
+8 |     #[field(expose(notascope))]
+  |                    ^^^^^^^^^

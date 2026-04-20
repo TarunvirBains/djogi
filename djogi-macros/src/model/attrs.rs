@@ -12,7 +12,7 @@
 //! hand-rolled behaviour without each new key duplicating the same
 //! `Meta::NameValue` match arm.
 
-use darling::FromField;
+use darling::{FromField, FromMeta};
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
@@ -351,6 +351,218 @@ pub struct FieldAttrs {
     /// `create_sequence_counter_sql`.
     #[darling(default)]
     pub sequence_within: Option<String>,
+
+    /// `#[field(expose(...))]` — Phase 4.5 projection membership.
+    ///
+    /// Default = empty spec = field does not appear in any transport
+    /// projection. Populated by [`FieldAttrs::parse`] via a raw-attr walk
+    /// because darling's derive cannot destructure the two-form grammar:
+    ///
+    /// - Scalar form: `expose(public, self_view, admin, export)` — the
+    ///   field appears in each listed scope under its column name.
+    /// - Relation form: `expose(public = "UserSummary", ...)` — the field
+    ///   is the named peer projection in each listed scope.
+    /// - Sentinels: `expose(none)` / `expose(internal)` — accepted no-op
+    ///   sentinels, identical to an absent `expose` annotation.
+    ///
+    /// Multiple `#[field(expose(...))]` attrs on the same field are
+    /// merged; duplicate scope declarations (across or within attrs) are
+    /// rejected with span-precise errors. Sentinels cannot mix with real
+    /// scopes on the same field.
+    ///
+    /// Darling parses a single `expose(...)` attribute via the
+    /// [`FromMeta`] impl on [`ExposeSpec`]; cross-attribute merging
+    /// (multiple `#[field(expose(...))]` on the same field) is handled
+    /// in [`FieldAttrs::parse`] via a raw-attr walk.
+    #[darling(default)]
+    pub expose: ExposeSpec,
+}
+
+/// Per-field projection exposure spec — parsed from `#[field(expose(...))]`.
+///
+/// See [`FieldAttrs::expose`] for the grammar summary. Scope names are
+/// order-insensitive (stored in a [`HashSet`]/[`HashMap`]); source order
+/// only matters for error-span recovery, which falls back to the enclosing
+/// attribute list span.
+///
+/// The parser stores BOTH the scalar set and the relation map because a
+/// field CAN carry both across multiple attrs — e.g.
+/// `#[field(expose(public))] #[field(expose(admin = "OwnerDetail"))]` marks
+/// the field scalar in `public` and relation-nested in `admin`. At codegen
+/// time (Phase 4.5 Task 3 / Task 5) the scope membership is the union; the
+/// emitter looks up the relation map to decide if the projection entry is
+/// a column name or a peer-projection type.
+///
+/// `none` / `internal` set [`Self::suppressed`] and are mutually exclusive
+/// with any other scope (per Q11 in the Phase 4.5 v3 plan). They mean
+/// "this field does not appear in any transport projection" — same
+/// semantics as omitting the `expose` annotation.
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+pub struct ExposeSpec {
+    /// Scopes this field appears in via the scalar form.
+    pub scalar_scopes: std::collections::HashSet<String>,
+    /// Scopes this field appears in via the relation form; value is the
+    /// peer projection type name.
+    pub relation_scopes: std::collections::HashMap<String, String>,
+    /// `true` when the user wrote `expose(none)` or `expose(internal)`.
+    /// Semantically identical to an absent `expose` annotation.
+    pub suppressed: bool,
+}
+
+impl ExposeSpec {
+    /// Canonical built-in scope names. `none` / `internal` are handled
+    /// specially (suppression sentinels) and NOT in this list — they are
+    /// grammar tokens, not scopes.
+    pub const BUILTIN_SCOPES: &'static [&'static str] = &["public", "self_view", "admin", "export"];
+
+    fn is_suppressor(name: &str) -> bool {
+        matches!(name, "none" | "internal")
+    }
+
+    fn is_builtin_scope(name: &str) -> bool {
+        Self::BUILTIN_SCOPES.contains(&name)
+    }
+
+    /// Parse the `expose(...)` argument list from a single
+    /// `#[field(expose(...))]` attribute. Returns a fresh [`ExposeSpec`]
+    /// covering just that attribute's tokens; cross-attribute merging
+    /// lives in [`FieldAttrs::parse`].
+    fn parse_list(list: &syn::MetaList) -> syn::Result<Self> {
+        let mut spec = ExposeSpec::default();
+        let nested = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+
+        if nested.is_empty() {
+            return Err(syn::Error::new_spanned(
+                list,
+                "`expose(...)` requires at least one scope; \
+                 write `expose(public)` / `expose(none)` / etc.",
+            ));
+        }
+
+        let mut saw_suppressor = false;
+        for meta in &nested {
+            match meta {
+                Meta::Path(path) => {
+                    let ident = path.get_ident().ok_or_else(|| {
+                        syn::Error::new_spanned(path, "expected a scope name (identifier)")
+                    })?;
+                    let name = ident.to_string();
+
+                    if Self::is_suppressor(&name) {
+                        saw_suppressor = true;
+                        spec.suppressed = true;
+                        continue;
+                    }
+                    if !Self::is_builtin_scope(&name) {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!(
+                                "unknown scope `{name}`; expected one of: \
+                                 public, self_view, admin, export, none, internal"
+                            ),
+                        ));
+                    }
+                    if spec.relation_scopes.contains_key(&name) {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!(
+                                "scope `{name}` already declared with a peer \
+                                 projection name; pick one form per scope"
+                            ),
+                        ));
+                    }
+                    if !spec.scalar_scopes.insert(name.clone()) {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!("scope `{name}` listed more than once"),
+                        ));
+                    }
+                }
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value:
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }),
+                    ..
+                }) => {
+                    let ident = path.get_ident().ok_or_else(|| {
+                        syn::Error::new_spanned(path, "expected a scope name (identifier)")
+                    })?;
+                    let name = ident.to_string();
+
+                    if Self::is_suppressor(&name) {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!(
+                                "the `{name}` scope does not accept a nested \
+                                 projection name; write `expose({name})` alone"
+                            ),
+                        ));
+                    }
+                    if !Self::is_builtin_scope(&name) {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!(
+                                "unknown scope `{name}`; expected one of: \
+                                 public, self_view, admin, export"
+                            ),
+                        ));
+                    }
+                    if spec.scalar_scopes.contains(&name) {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!(
+                                "scope `{name}` already declared as bare scope; \
+                                 pick one form per scope"
+                            ),
+                        ));
+                    }
+                    if spec
+                        .relation_scopes
+                        .insert(name.clone(), s.value())
+                        .is_some()
+                    {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!("scope `{name}` listed more than once"),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "expected `scope` or `scope = \"PeerProjection\"`",
+                    ));
+                }
+            }
+        }
+
+        if saw_suppressor && (!spec.scalar_scopes.is_empty() || !spec.relation_scopes.is_empty()) {
+            return Err(syn::Error::new_spanned(
+                list,
+                "`none` / `internal` cannot be combined with other scopes; \
+                 omit them when declaring real scopes",
+            ));
+        }
+
+        Ok(spec)
+    }
+}
+
+impl FromMeta for ExposeSpec {
+    fn from_meta(item: &syn::Meta) -> darling::Result<Self> {
+        match item {
+            syn::Meta::List(list) => Self::parse_list(list).map_err(darling::Error::from),
+            _ => Err(darling::Error::custom(
+                "`expose` requires the list form `expose(...)`; \
+                 write `expose(public)` / `expose(public = \"UserSummary\")` / \
+                 `expose(none)` / etc.",
+            )
+            .with_span(item)),
+        }
+    }
 }
 
 impl FieldAttrs {
@@ -375,7 +587,8 @@ impl FieldAttrs {
         // attribute tokens; `From<darling::Error> for syn::Error` preserves
         // them, so rely on the built-in conversion rather than collapsing
         // everything onto the whole field with `new_spanned`.
-        let attrs = <Self as darling::FromField>::from_field(field).map_err(syn::Error::from)?;
+        let mut attrs =
+            <Self as darling::FromField>::from_field(field).map_err(syn::Error::from)?;
 
         if let Some(on_delete) = &attrs.on_delete {
             let valid = [
@@ -424,6 +637,77 @@ impl FieldAttrs {
             }
         }
 
+        // Walk raw `#[field(expose(...))]` attrs — darling's declarative
+        // derive cannot destructure the two-form `expose(scope)` vs
+        // `expose(scope = "Peer")` grammar, so we recover the tokens
+        // ourselves. Multiple `#[field(expose(...))]` attrs on the same
+        // field are merged into one `ExposeSpec`; conflict detection
+        // (duplicate scope across attrs, `none` combined with anything)
+        // runs at merge time.
+        let mut expose = ExposeSpec::default();
+        for attr in &field.attrs {
+            if !attr.path().is_ident("field") {
+                continue;
+            }
+            let Ok(inner) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            else {
+                // If the attr doesn't parse as a comma-separated Meta list,
+                // darling has already emitted a better diagnostic; skip.
+                continue;
+            };
+            for nested in &inner {
+                let Meta::List(list) = nested else { continue };
+                if !list.path.is_ident("expose") {
+                    continue;
+                }
+                let parsed = ExposeSpec::parse_list(list)?;
+                if parsed.suppressed {
+                    if !expose.scalar_scopes.is_empty() || !expose.relation_scopes.is_empty() {
+                        return Err(syn::Error::new_spanned(
+                            list,
+                            "cannot combine `none`/`internal` with other `expose` \
+                             annotations on the same field",
+                        ));
+                    }
+                    expose.suppressed = true;
+                } else {
+                    if expose.suppressed {
+                        return Err(syn::Error::new_spanned(
+                            list,
+                            "cannot combine other `expose` annotations with a prior \
+                             `none`/`internal` on the same field",
+                        ));
+                    }
+                    for scope in parsed.scalar_scopes {
+                        if expose.relation_scopes.contains_key(&scope)
+                            || !expose.scalar_scopes.insert(scope.clone())
+                        {
+                            return Err(syn::Error::new_spanned(
+                                list,
+                                format!(
+                                    "scope `{scope}` declared more than once across \
+                                     attributes on this field"
+                                ),
+                            ));
+                        }
+                    }
+                    for (scope, peer) in parsed.relation_scopes {
+                        if expose.scalar_scopes.contains(&scope)
+                            || expose.relation_scopes.insert(scope.clone(), peer).is_some()
+                        {
+                            return Err(syn::Error::new_spanned(
+                                list,
+                                format!(
+                                    "scope `{scope}` declared more than once across \
+                                     attributes on this field"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(seq) = &attrs.sequence_within {
             // Byte-level identifier check — no regex engine, no
             // regex notation per `feedback_no_regex_in_djogi`.
@@ -448,6 +732,7 @@ impl FieldAttrs {
             }
         }
 
+        attrs.expose = expose;
         Ok(attrs)
     }
 }
