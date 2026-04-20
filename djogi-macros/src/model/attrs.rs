@@ -352,29 +352,42 @@ pub struct FieldAttrs {
     #[darling(default)]
     pub sequence_within: Option<String>,
 
-    /// `#[field(expose(...))]` — Phase 4.5 projection membership.
+    /// `#[field(expose(...))]` — per-attribute parsed specs. Darling
+    /// accepts **multiple** `#[field(expose(...))]` attributes on the
+    /// same field via `#[darling(multiple)]`; each one is parsed
+    /// independently by [`ExposeSpec`]'s `FromMeta` impl. The merged
+    /// [`Self::expose`] is assembled in [`FieldAttrs::parse`] by folding
+    /// this Vec (cross-attr duplicate detection + `none`/`internal`
+    /// exclusivity run at merge time).
     ///
-    /// Default = empty spec = field does not appear in any transport
-    /// projection. Populated by [`FieldAttrs::parse`] via a raw-attr walk
-    /// because darling's derive cannot destructure the two-form grammar:
+    /// Without `#[darling(multiple)]`, darling would raise
+    /// `Duplicate field \`expose\`` on the second occurrence — the
+    /// multi-attr merge path needs this opt-in to exist at all.
     ///
+    /// Users never read this field; it is the darling landing site for
+    /// the rename. Read [`Self::expose`] instead.
+    #[darling(multiple, rename = "expose")]
+    pub expose_raw: Vec<ExposeSpec>,
+
+    /// Merged `expose(...)` spec across every `#[field(expose(...))]`
+    /// attribute on this field — the single source of truth downstream
+    /// code (descriptor emission, projection codegen) reads.
+    ///
+    /// Grammar summary:
     /// - Scalar form: `expose(public, self_view, admin, export)` — the
     ///   field appears in each listed scope under its column name.
     /// - Relation form: `expose(public = "UserSummary", ...)` — the field
     ///   is the named peer projection in each listed scope.
     /// - Sentinels: `expose(none)` / `expose(internal)` — accepted no-op
-    ///   sentinels, identical to an absent `expose` annotation.
+    ///   sentinels, identical to an absent `expose` annotation; mutually
+    ///   exclusive with real scopes on the same field.
     ///
-    /// Multiple `#[field(expose(...))]` attrs on the same field are
-    /// merged; duplicate scope declarations (across or within attrs) are
-    /// rejected with span-precise errors. Sentinels cannot mix with real
-    /// scopes on the same field.
-    ///
-    /// Darling parses a single `expose(...)` attribute via the
-    /// [`FromMeta`] impl on [`ExposeSpec`]; cross-attribute merging
-    /// (multiple `#[field(expose(...))]` on the same field) is handled
-    /// in [`FieldAttrs::parse`] via a raw-attr walk.
-    #[darling(default)]
+    /// `#[darling(skip)]` here is safe because users only ever write
+    /// `#[field(expose(...))]` (which lands in [`Self::expose_raw`] via
+    /// the rename above); nobody writes `#[field(expose = ...)]` as a
+    /// name-value targeting this field, so darling's "unknown field"
+    /// error path is never triggered.
+    #[darling(skip)]
     pub expose: ExposeSpec,
 }
 
