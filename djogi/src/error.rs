@@ -170,10 +170,15 @@ impl DjogiError {
 /// - `55P03` (`lock_not_available`) — a `NOWAIT` lock request could not
 ///   acquire its lock immediately.
 ///
-/// The full `DjogiError::LockConflict` variant is deferred to Phase 4
-/// Task 7 (row locks + bulk methods); this helper lands first so
-/// `atomic()` / `retry_on_conflict()` in Task 1 can classify retryable
-/// errors without waiting on the error-type refactor.
+/// Task 7 (row locks) ships the dedicated
+/// [`DjogiError::LockConflict`] variant alongside [`map_lock_err`],
+/// which lifts errors whose SQLSTATE matches this predicate into the
+/// typed variant. Call paths that care about the distinction
+/// (terminals under a `select_for_update` / `nowait` / `skip_locked`
+/// builder) route through `map_lock_err`; this standalone predicate
+/// is still useful for `retry_on_conflict`'s classifier arm that
+/// inspects raw [`DjogiError::Sqlx`] (escape hatches that bypassed
+/// `map_lock_err`).
 ///
 /// `sqlx::DatabaseError::code()` returns `Option<Cow<'_, str>>`, so the
 /// `.as_deref()` collapses `Cow::Owned` / `Cow::Borrowed` into a plain
@@ -308,5 +313,44 @@ mod tests {
         // `RowNotFound` has no underlying DatabaseError, so `.code()` is
         // `None` and the match fails.
         assert!(!is_lock_error(&sqlx::Error::RowNotFound));
+    }
+
+    #[test]
+    fn map_lock_err_lifts_retryable_sqlstates_into_lock_conflict() {
+        // Every retryable SQLSTATE round-trips through `map_lock_err`
+        // into the typed `LockConflict` variant. Callers can then
+        // pattern-match on the variant without re-classifying the
+        // sqlx error themselves.
+        for code in ["40001", "40P01", "55P03"] {
+            let mapped = map_lock_err(sqlx_err_with_code(code));
+            assert!(
+                matches!(mapped, DjogiError::LockConflict(_)),
+                "SQLSTATE {code} should produce LockConflict, got {mapped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_lock_err_passes_unrelated_sqlstate_through_as_sqlx() {
+        // Non-lock SQLSTATEs (e.g. `23505` unique_violation) fall
+        // through into `DjogiError::Sqlx` unchanged — `map_lock_err`
+        // must not over-classify.
+        let mapped = map_lock_err(sqlx_err_with_code("23505"));
+        assert!(
+            matches!(mapped, DjogiError::Sqlx(_)),
+            "non-lock SQLSTATE should produce Sqlx, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_lock_err_passes_non_database_error_through_as_sqlx() {
+        // Errors that carry no DatabaseError (connection drops,
+        // protocol errors, `RowNotFound`) have no SQLSTATE to inspect
+        // and must fall through to `Sqlx` — never `LockConflict`.
+        let mapped = map_lock_err(sqlx::Error::RowNotFound);
+        assert!(
+            matches!(mapped, DjogiError::Sqlx(_)),
+            "non-database error should produce Sqlx, got {mapped:?}"
+        );
     }
 }

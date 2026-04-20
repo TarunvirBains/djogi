@@ -265,12 +265,14 @@ where
             let rows: Vec<T> = {
                 let q = qb.build_query_as::<T>();
                 match ctx.inner_mut() {
-                    ContextInner::Pool(pool) => {
-                        q.fetch_all(&*pool).await.map_err(DjogiError::from)?
-                    }
-                    ContextInner::Transaction(tx) => {
-                        q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
-                    }
+                    ContextInner::Pool(pool) => q
+                        .fetch_all(&*pool)
+                        .await
+                        .map_err(crate::error::map_lock_err)?,
+                    ContextInner::Transaction(tx) => q
+                        .fetch_all(&mut **tx)
+                        .await
+                        .map_err(crate::error::map_lock_err)?,
                 }
             };
 
@@ -369,12 +371,14 @@ where
             let rows: Vec<sqlx::postgres::PgRow> = {
                 let q = qb.build();
                 match ctx.inner_mut() {
-                    ContextInner::Pool(pool) => {
-                        q.fetch_all(&*pool).await.map_err(DjogiError::from)?
-                    }
-                    ContextInner::Transaction(tx) => {
-                        q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
-                    }
+                    ContextInner::Pool(pool) => q
+                        .fetch_all(&*pool)
+                        .await
+                        .map_err(crate::error::map_lock_err)?,
+                    ContextInner::Transaction(tx) => q
+                        .fetch_all(&mut **tx)
+                        .await
+                        .map_err(crate::error::map_lock_err)?,
                 }
             };
 
@@ -416,13 +420,14 @@ where
             let mut qb = build_select(&qs);
             let q = qb.build_query_as::<T>();
             let opt: Option<T> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => {
-                    q.fetch_optional(&*pool).await.map_err(DjogiError::from)?
-                }
+                ContextInner::Pool(pool) => q
+                    .fetch_optional(&*pool)
+                    .await
+                    .map_err(crate::error::map_lock_err)?,
                 ContextInner::Transaction(tx) => q
                     .fetch_optional(&mut **tx)
                     .await
-                    .map_err(DjogiError::from)?,
+                    .map_err(crate::error::map_lock_err)?,
             };
             Ok(opt)
         }

@@ -34,10 +34,14 @@
 /// Row-level lock mode accumulated on a [`QuerySet`](crate::query::QuerySet).
 ///
 /// Crate-private: users configure the lock via the typed builder
-/// methods (`select_for_update` / `nowait` / `skip_locked`) which gate
-/// the variant transitions. Keeping the enum itself `pub(crate)`
-/// prevents downstream code from constructing illegal combinations
-/// (e.g. `ForUpdateNowait` without first calling `select_for_update`).
+/// methods (`select_for_update` / `nowait` / `skip_locked`). The
+/// builders have last-call-wins semantics — `.nowait()` and
+/// `.skip_locked()` may be called standalone (they imply
+/// `FOR UPDATE`), and chaining either after `.select_for_update()`
+/// simply overwrites the base variant. Keeping the enum `pub(crate)`
+/// means downstream code cannot hand-construct a variant that bypasses
+/// the `push_tail` emitter, which is the only path that produces
+/// Postgres-valid lock SQL.
 ///
 /// `Default` is `None` so a fresh `QuerySet<T>` carries no lock tail
 /// — the same behaviour shipped before Task 7 landed.
