@@ -91,6 +91,15 @@ pub enum DjogiError {
         model: &'static str,
         field: &'static str,
     },
+
+    /// JSON serialization / deserialization failed. Raised by the Phase 4
+    /// Task 6 transactional-outbox emitter when `serde_json::to_value`
+    /// cannot lower a model row into a JSON document — typically because
+    /// a user field's `Serialize` impl returned an error. Wraps the
+    /// `serde_json::Error` verbatim so the caller can inspect the
+    /// underlying failure.
+    #[error("JSON serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
 }
 
 impl DjogiError {

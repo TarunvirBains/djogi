@@ -47,6 +47,7 @@ pub mod error;
 pub mod expr;
 pub(crate) mod ident;
 pub mod model;
+pub mod outbox;
 pub mod query;
 pub mod raw;
 pub mod relation;

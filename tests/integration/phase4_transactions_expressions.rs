@@ -81,6 +81,19 @@ pub struct Entry {
     pub memo: String,
 }
 
+// Events-enabled model for Phase 4 Task 6. `kind` is the payload-
+// visible column; `internal_notes` is excluded from the outbox payload
+// via `#[field(outbox = "ignore")]`. Kept separate from `Account` so
+// Tasks 1–5 assertions that count rows in `accounts_outbox` stay
+// unaffected (non-events models write nothing there).
+#[model(table = "notifications", events)]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Notification {
+    pub kind: String,
+    #[field(outbox = "ignore")]
+    pub internal_notes: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Fixture helpers
 // ---------------------------------------------------------------------------
@@ -107,6 +120,7 @@ async fn setup_phase4(pool: &PgPool) {
     const ACCOUNTS_DDL: &str = include_str!("migrations/phase4/001_accounts.sql");
     const LEDGERS_DDL: &str = include_str!("migrations/phase4/002_ledgers.sql");
     const ENTRIES_DDL: &str = include_str!("migrations/phase4/003_entries.sql");
+    const NOTIFICATIONS_DDL: &str = include_str!("migrations/phase4/004_notifications.sql");
 
     sqlx::query(ACCOUNTS_DDL)
         .execute(pool)
@@ -120,6 +134,10 @@ async fn setup_phase4(pool: &PgPool) {
         .execute(pool)
         .await
         .expect("apply 003_entries.sql");
+    sqlx::query(NOTIFICATIONS_DDL)
+        .execute(pool)
+        .await
+        .expect("apply 004_notifications.sql");
 }
 
 fn entry_for_insert(memo: &str, ledger: &Ledger) -> Entry {
@@ -1108,4 +1126,258 @@ async fn scalar_subquery_in_filter(pool: PgPool) {
     })
     .await
     .expect("scalar subquery filter scope must succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Task 6 — transactional outbox
+// ---------------------------------------------------------------------------
+//
+// Every test in this block uses `Notification` (the events-enabled
+// model) — wiring `#[model(events)]` onto `Account` would affect every
+// Tasks 1–5 test that counts rows or inspects tables, so we use a
+// dedicated model instead. See the `Notification` definition above for
+// the attribute shape.
+
+#[sqlx::test(migrations = false)]
+async fn outbox_row_written_on_create_in_atomic(pool: PgPool) {
+    // Baseline: one `create` inside `atomic()` produces exactly one
+    // outbox row with the expected action and row_id.
+    setup_phase4(&pool).await;
+
+    let created = atomic(&pool, |ctx| {
+        Box::pin(async move {
+            Notification::create(
+                ctx,
+                Notification {
+                    kind: "welcome".to_string(),
+                    internal_notes: None,
+                    ..Default::default()
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .expect("create inside atomic must succeed");
+
+    let outbox_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications_outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(outbox_count, 1, "expected exactly one outbox row");
+
+    let (row_id, action): (i64, String) =
+        sqlx::query_as("SELECT row_id, action FROM notifications_outbox LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        row_id,
+        created.id.as_i64(),
+        "outbox row_id must match the primary row's id"
+    );
+    assert_eq!(
+        action, "create",
+        "outbox action column must record 'create'"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn outbox_rolled_back_on_err(pool: PgPool) {
+    // Returning `Err` from `atomic()` rolls the transaction back,
+    // discarding both the primary row AND the outbox companion. This
+    // is the core guarantee of the transactional-outbox pattern — the
+    // outbox and the primary write share one atomic scope.
+    setup_phase4(&pool).await;
+
+    let result = atomic(&pool, |ctx| {
+        Box::pin(async move {
+            Notification::create(
+                ctx,
+                Notification {
+                    kind: "doomed".to_string(),
+                    internal_notes: None,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Err::<(), _>(DjogiError::not_found("forced-rollback"))
+        })
+    })
+    .await;
+    assert!(result.is_err(), "atomic() must propagate the forced error");
+
+    let primary: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let outbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications_outbox")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(primary, 0, "primary row must be rolled back");
+    assert_eq!(
+        outbox, 0,
+        "outbox row must be rolled back with the primary row"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn outbox_payload_excludes_ignored_fields(pool: PgPool) {
+    // `#[field(outbox = "ignore")]` must strip the column from the
+    // emitted JSONB payload. Framework-injected columns (id/created_at/
+    // updated_at) are expected to remain — they carry no exclusion flag.
+    setup_phase4(&pool).await;
+
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            Notification::create(
+                ctx,
+                Notification {
+                    kind: "sensitive".to_string(),
+                    internal_notes: Some("do-not-leak".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("create inside atomic must succeed");
+
+    let payload: serde_json::Value =
+        sqlx::query_scalar("SELECT payload FROM notifications_outbox LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let obj = payload
+        .as_object()
+        .expect("payload must serialize as a JSON object");
+    assert!(obj.contains_key("kind"), "kind must remain in the payload");
+    assert!(
+        !obj.contains_key("internal_notes"),
+        "outbox = \"ignore\" field must be stripped, got: {obj:?}"
+    );
+    assert!(
+        obj.contains_key("id") && obj.contains_key("created_at"),
+        "framework columns must remain visible in the payload"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
+    // After `save()` rehydrates the receiver from `RETURNING *`, the
+    // outbox payload carries the DB-refreshed `updated_at` — the
+    // timestamp is post-UPDATE, not the pre-save caller value.
+    setup_phase4(&pool).await;
+
+    let created = atomic(&pool, |ctx| {
+        Box::pin(async move {
+            Notification::create(
+                ctx,
+                Notification {
+                    kind: "pending".to_string(),
+                    internal_notes: None,
+                    ..Default::default()
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .expect("create must succeed");
+
+    // Clear the `create` outbox row so we assert cleanly on `save`.
+    sqlx::query("DELETE FROM notifications_outbox")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut subject = created.clone();
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            subject.kind = "acknowledged".to_string();
+            subject.save(ctx).await?;
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("save must succeed");
+
+    let (action, payload): (String, serde_json::Value) =
+        sqlx::query_as("SELECT action, payload FROM notifications_outbox LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        action, "save",
+        "save path must record 'save' in the outbox action column"
+    );
+    let obj = payload.as_object().unwrap();
+    assert_eq!(
+        obj["kind"],
+        serde_json::Value::String("acknowledged".to_string()),
+        "payload must carry the post-save value, not the pre-save one"
+    );
+}
+
+#[sqlx::test(migrations = false)]
+async fn outbox_delete_captures_predelete_snapshot(pool: PgPool) {
+    // `delete(self, ctx)` consumes `self`, but the outbox row must
+    // carry the pre-delete payload — proving the emission happens
+    // before `self` is dropped at function scope end.
+    setup_phase4(&pool).await;
+
+    let created = atomic(&pool, |ctx| {
+        Box::pin(async move {
+            Notification::create(
+                ctx,
+                Notification {
+                    kind: "goodbye".to_string(),
+                    internal_notes: None,
+                    ..Default::default()
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .expect("create must succeed");
+
+    sqlx::query("DELETE FROM notifications_outbox")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            created.clone().delete(ctx).await?;
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .expect("delete must succeed");
+
+    let (action, payload): (String, serde_json::Value) =
+        sqlx::query_as("SELECT action, payload FROM notifications_outbox LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(action, "delete");
+    let obj = payload.as_object().unwrap();
+    assert_eq!(
+        obj["kind"],
+        serde_json::Value::String("goodbye".to_string()),
+        "delete payload must be the pre-delete snapshot"
+    );
+
+    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        remaining, 0,
+        "primary row must be gone after delete; outbox remains"
+    );
 }

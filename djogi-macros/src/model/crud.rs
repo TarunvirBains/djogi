@@ -121,6 +121,46 @@ pub fn expand(
         return TokenStream::new();
     }
 
+    // Phase 4 Task 6 — `#[model(table = "...", events)]` opts the model
+    // into transactional outbox emission. We inline the outbox call at
+    // macro-expansion time (not via a runtime `if has_outbox` branch)
+    // so non-events models do not carry the `serde::Serialize` bound
+    // implied by `emit_event`. Non-events emits nothing here — the
+    // `if` gate on `events` compiles away entirely for those models.
+    let emit_outbox_create = if model_attrs.events {
+        quote! {
+            ::djogi::outbox::emit_event(
+                ctx,
+                &row,
+                ::djogi::outbox::OutboxAction::Create,
+            ).await?;
+        }
+    } else {
+        quote! {}
+    };
+    let emit_outbox_save = if model_attrs.events {
+        quote! {
+            ::djogi::outbox::emit_event(
+                ctx,
+                &*self,
+                ::djogi::outbox::OutboxAction::Save,
+            ).await?;
+        }
+    } else {
+        quote! {}
+    };
+    let emit_outbox_delete = if model_attrs.events {
+        quote! {
+            ::djogi::outbox::emit_event(
+                ctx,
+                &self,
+                ::djogi::outbox::OutboxAction::Delete,
+            ).await?;
+        }
+    } else {
+        quote! {}
+    };
+
     let name = &struct_item.ident;
     let fields_name = format_ident!("{}Fields", name);
     let (impl_generics, ty_generics, where_clause) = struct_item.generics.split_for_impl();
@@ -318,6 +358,10 @@ pub fn expand(
                     q.fetch_one(&mut **__tx).await?
                 }
             };
+            // Phase 4 Task 6 — outbox emission (no-op for non-events models).
+            // Runs in the same ctx so a transactional caller gets the
+            // outbox row committed/rolled back atomically with `row`.
+            #emit_outbox_create
             ::std::result::Result::Ok(row)
         }
     };
@@ -339,6 +383,10 @@ pub fn expand(
                 }
             };
             *self = row;
+            // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
+            // values (triggers, column defaults), so emission runs AFTER the
+            // `*self = row` rehydration. No-op for non-events models.
+            #emit_outbox_save
             ::std::result::Result::Ok(())
         }
     };
@@ -355,6 +403,10 @@ pub fn expand(
                     q.execute(&mut **__tx).await?;
                 }
             }
+            // Phase 4 Task 6 — outbox carries the pre-delete snapshot
+            // (reads `self` before it drops at function scope end).
+            // No-op for non-events models.
+            #emit_outbox_delete
             ::std::result::Result::Ok(())
         }
     };

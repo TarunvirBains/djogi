@@ -51,6 +51,21 @@ pub struct ModelAttrs {
     /// constraint. Users still `#[derive(Model)]` them as normal and
     /// query them with the standard `QuerySet` API.
     pub through: bool,
+    /// When `true`, this model emits a transactional outbox row on every
+    /// successful `create` / `save` / `delete` performed through a
+    /// `DjogiContext`.
+    ///
+    /// Set via `#[model(table = "...", events)]`. The flag flows through
+    /// to [`ModelDescriptor::has_outbox`](djogi::descriptor::ModelDescriptor::has_outbox)
+    /// at codegen time, where `djogi::outbox::emit_event` keys off it to
+    /// decide whether to write to `{table}_outbox` inside the active
+    /// transaction. Phase 4 Task 6 lands the CRUD-side emission; Phase 7
+    /// consumes the DDL side-channel that the macro writes to
+    /// `target/djogi_outbox/{table}_outbox.sql`.
+    ///
+    /// Models without `events` skip the outbox call entirely at
+    /// macro-expansion time — there is no runtime cost for opt-out.
+    pub events: bool,
 }
 
 /// Parsed `pk = "..."` value.
@@ -77,6 +92,8 @@ impl ModelAttrs {
         let mut seen_no_default = false;
         let mut through = false;
         let mut seen_through = false;
+        let mut events = false;
+        let mut seen_events = false;
 
         for meta in &metas {
             match meta {
@@ -101,6 +118,17 @@ impl ModelAttrs {
                     }
                     seen_through = true;
                     through = true;
+                }
+                // Flag-only attribute: `events`
+                Meta::Path(path) if path.is_ident("events") => {
+                    if seen_events {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `events` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_events = true;
+                    events = true;
                 }
                 Meta::NameValue(MetaNameValue {
                     path,
@@ -133,7 +161,7 @@ impl ModelAttrs {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
-                                "unknown #[model] attribute `{}`; expected `table`, `pk`, `no_default`, or `through`",
+                                "unknown #[model] attribute `{}`; expected `table`, `pk`, `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -142,7 +170,7 @@ impl ModelAttrs {
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "expected `key = \"value\"` attribute or bare flag (`no_default`, `through`)",
+                        "expected `key = \"value\"` attribute or bare flag (`no_default`, `through`, `events`)",
                     ));
                 }
             }
@@ -161,6 +189,7 @@ impl ModelAttrs {
             pk,
             no_default,
             through,
+            events,
         })
     }
 }
@@ -228,6 +257,18 @@ pub struct FieldAttrs {
     /// set (darling's derive alone cannot constrain a `String` domain).
     #[darling(default)]
     pub on_delete: Option<String>,
+    /// `#[field(outbox = "ignore")]` — strip this column from the
+    /// transactional outbox payload emitted by models with
+    /// `#[model(events)]`.
+    ///
+    /// Only valid value today is `"ignore"` (the field name appears in
+    /// the outbox-exclude set for Phase 4 Task 6). The single-valued
+    /// enum shape lives behind a string literal so future additions
+    /// (`outbox = "encrypt"`, `outbox = "hash"`, etc.) slot in without
+    /// reshaping the macro surface. [`FieldAttrs::parse`] post-validates
+    /// the literal against the accepted set.
+    #[darling(default)]
+    pub outbox: Option<String>,
 }
 
 impl FieldAttrs {
@@ -282,6 +323,25 @@ impl FieldAttrs {
             }
         }
 
+        if let Some(outbox) = &attrs.outbox {
+            // Only `"ignore"` is accepted today; future Phase 6+ values
+            // (`"encrypt"`, `"hash"`) would slot into this list without
+            // reshaping the attr surface. Mirrors the on_delete span
+            // recovery pattern so the error underlines the literal,
+            // not the whole field.
+            let valid = ["ignore"];
+            if !valid.contains(&outbox.as_str()) {
+                let span = find_named_str_lit_span(field, "outbox").unwrap_or_else(|| field.span());
+                return Err(syn::Error::new(
+                    span,
+                    format!(
+                        "unknown outbox value `{outbox}`; expected one of: {}",
+                        valid.join(", ")
+                    ),
+                ));
+            }
+        }
+
         Ok(attrs)
     }
 }
@@ -289,13 +349,23 @@ impl FieldAttrs {
 /// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
 /// the literal bound to `on_delete`, if present.
 ///
+/// Thin wrapper around [`find_named_str_lit_span`] kept for readability at
+/// the callsite.
+fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
+    find_named_str_lit_span(field, "on_delete")
+}
+
+/// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
+/// the string literal bound to `key`, if present.
+///
 /// Used by [`FieldAttrs::parse`] to recover the offending literal's span
 /// after darling has already reduced the attribute to a `String`. Returns
 /// `None` only if the attribute structure does not match the expected
-/// `on_delete = "literal"` shape — darling's own parse will have rejected
-/// that upstream, so the caller falls back to the field's span as a last
-/// resort without losing the error.
-fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
+/// `key = "literal"` shape — darling's own parse will have rejected that
+/// upstream, so the caller falls back to the field's span as a last
+/// resort without losing the error. Shared between `on_delete` and
+/// `outbox` validation to keep the span-recovery logic in one place.
+fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2::Span> {
     for attr in &field.attrs {
         if !attr.path().is_ident("field") {
             continue;
@@ -313,7 +383,7 @@ fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
                     }),
                 ..
             }) = meta
-                && path.is_ident("on_delete")
+                && path.is_ident(key)
             {
                 return Some(lit.span());
             }

@@ -168,6 +168,11 @@ pub fn expand(
             // Raw identifiers (`r#type`) must serialize to the bare SQL
             // column name — matches the stripping pattern in `stubs.rs`.
             let name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            // Phase 4 Task 6 — `#[field(outbox = "ignore")]` marks the
+            // column as excluded from the transactional outbox payload.
+            // `FieldAttrs::parse` has already validated the string value,
+            // so a non-`None` `outbox` attr always means "ignore" here.
+            let outbox_exclude = fa.outbox.as_deref() == Some("ignore");
 
             // Detect FK / O2O relation shape before the generic scalar
             // `unwrap_option` strip — `detect_relation` itself handles the
@@ -239,9 +244,12 @@ pub fn expand(
                     indexed: #indexed,
                     max_length: #max_length,
                     renamed_from: #renamed_from,
-                    // Phase 1 defaults — populated by later phases' attr parsers.
                     rationale: None,
-                    outbox_exclude: false,
+                    // Phase 4 Task 6 — `#[field(outbox = "ignore")]` toggles
+                    // per-column outbox exclusion. The outbox helper walks
+                    // `descriptor.fields` at emit time and strips any key
+                    // flagged here from the JSONB payload.
+                    outbox_exclude: #outbox_exclude,
                     index_type: None,
                     // Phase 3 Task 2 — relation metadata emitted only for FK/O2O
                     // columns. Non-relation columns keep `None`/`&[]`.
@@ -265,6 +273,7 @@ pub fn expand(
     all_field_descriptors.extend(user_field_descriptors);
 
     let is_through = model_attrs.through;
+    let has_outbox = model_attrs.events;
 
     quote! {
         ::djogi::__private::inventory::submit! {
@@ -277,7 +286,11 @@ pub fn expand(
                 ],
                 // Phase 1 defaults — populated by later phases' attr parsers.
                 partition_by: None,
-                has_outbox: false,
+                // Phase 4 Task 6 — `#[model(table = "...", events)]` toggles
+                // transactional outbox emission on every ctx-scoped
+                // create/save/delete. `djogi::outbox::emit_event` keys off
+                // this flag at codegen time.
+                has_outbox: #has_outbox,
                 idempotency_key: None,
                 tenant_key: None,
                 cache_ttl: None,
