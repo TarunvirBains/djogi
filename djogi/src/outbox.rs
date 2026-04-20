@@ -51,13 +51,16 @@
 //! key-based (not index-based) so that even if serde's field order
 //! drifts, the filter stays correct.
 //!
-//! # DDL side-channel (Phase 7 handoff)
+//! # DDL side-channel (Phase 7 handoff — deferred)
 //!
-//! The macro also writes a DDL stub to
+//! The eventual plan is for the macro to write a DDL stub to
 //! `target/djogi_outbox/{table}_outbox.sql` at build time so the Phase
-//! 7 migration differ can consume it. Phase 4 integration tests hand-
-//! write the matching DDL in `tests/integration/migrations/phase4/*.sql`
-//! until Phase 7 ships.
+//! 7 migration differ can consume it. **That emission is not shipped
+//! today** — this module ships only the runtime payload/insert path.
+//! Phase 4 integration tests hand-write the matching DDL in
+//! `tests/integration/migrations/phase4/*.sql`; Phase 6 / Phase 7 will
+//! land the macro-side side-channel and retire those hand-written
+//! fixtures.
 
 use crate::DjogiError;
 use crate::context::{__ContextInnerForMacros, DjogiContext};

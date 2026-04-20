@@ -1268,8 +1268,18 @@ async fn outbox_payload_excludes_ignored_fields(pool: PgPool) {
 #[sqlx::test(migrations = false)]
 async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
     // After `save()` rehydrates the receiver from `RETURNING *`, the
-    // outbox payload carries the DB-refreshed `updated_at` — the
-    // timestamp is post-UPDATE, not the pre-save caller value.
+    // outbox payload must reflect DB-rewritten state — not the caller's
+    // pre-save Rust value.
+    //
+    // Proof: migration 004 installs a BEFORE UPDATE trigger that
+    // appends " (db-rewritten)" to `kind` on every UPDATE. The caller
+    // assigns `subject.kind = "acknowledged"`; if the outbox payload
+    // came from the pre-save Rust receiver, the value would be
+    // `"acknowledged"`. If it came from `RETURNING *` post-trigger, the
+    // value is `"acknowledged (db-rewritten)"`. Only the latter is
+    // observable from Postgres; the test asserts on it to close the
+    // refresh-vs-pre-save ambiguity Codex flagged against the weaker
+    // pre-fixup assertion.
     setup_phase4(&pool).await;
 
     let created = atomic(&pool, |ctx| {
@@ -1295,15 +1305,23 @@ async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
         .unwrap();
 
     let mut subject = created.clone();
-    atomic(&pool, |ctx| {
+    let post_save_kind = atomic(&pool, |ctx| {
         Box::pin(async move {
             subject.kind = "acknowledged".to_string();
             subject.save(ctx).await?;
-            Ok::<_, DjogiError>(())
+            // `save` rehydrates `subject` from `RETURNING *`, which
+            // reflects the BEFORE UPDATE trigger's rewrite. Return the
+            // rehydrated value so the assertion can compare against it.
+            Ok::<_, DjogiError>(subject.kind.clone())
         })
     })
     .await
     .expect("save must succeed");
+
+    assert_eq!(
+        post_save_kind, "acknowledged (db-rewritten)",
+        "save receiver must reflect the BEFORE UPDATE trigger's rewrite"
+    );
 
     let (action, payload): (String, serde_json::Value) =
         sqlx::query_as("SELECT action, payload FROM notifications_outbox LIMIT 1")
@@ -1317,8 +1335,9 @@ async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
     let obj = payload.as_object().unwrap();
     assert_eq!(
         obj["kind"],
-        serde_json::Value::String("acknowledged".to_string()),
-        "payload must carry the post-save value, not the pre-save one"
+        serde_json::Value::String("acknowledged (db-rewritten)".to_string()),
+        "payload must carry the DB-rewritten value — a pre-refresh payload \
+         would read `acknowledged` without the trigger suffix"
     );
 }
 

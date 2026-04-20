@@ -59,9 +59,11 @@ pub struct ModelAttrs {
     /// to [`ModelDescriptor::has_outbox`](djogi::descriptor::ModelDescriptor::has_outbox)
     /// at codegen time, where `djogi::outbox::emit_event` keys off it to
     /// decide whether to write to `{table}_outbox` inside the active
-    /// transaction. Phase 4 Task 6 lands the CRUD-side emission; Phase 7
-    /// consumes the DDL side-channel that the macro writes to
-    /// `target/djogi_outbox/{table}_outbox.sql`.
+    /// transaction. Phase 4 Task 6 lands the CRUD-side emission; macro-
+    /// side DDL emission to `target/djogi_outbox/{table}_outbox.sql` (so
+    /// the Phase 7 migration differ can consume it) is **deferred**. For
+    /// now, downstream crates hand-write the `{table}_outbox` DDL
+    /// alongside their own migrations.
     ///
     /// Models without `events` skip the outbox call entirely at
     /// macro-expansion time — there is no runtime cost for opt-out.
