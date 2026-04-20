@@ -89,24 +89,16 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
             crate::query::sql::push_filter_value(qb, v.clone());
         }
         ExprNode::Add(lhs, rhs) => {
-            emit_expr(qb, lhs);
-            qb.push(" + ");
-            emit_expr(qb, rhs);
+            emit_arith(qb, lhs, " + ", rhs);
         }
         ExprNode::Sub(lhs, rhs) => {
-            emit_expr(qb, lhs);
-            qb.push(" - ");
-            emit_expr(qb, rhs);
+            emit_arith(qb, lhs, " - ", rhs);
         }
         ExprNode::Mul(lhs, rhs) => {
-            emit_expr(qb, lhs);
-            qb.push(" * ");
-            emit_expr(qb, rhs);
+            emit_arith(qb, lhs, " * ", rhs);
         }
         ExprNode::Div(lhs, rhs) => {
-            emit_expr(qb, lhs);
-            qb.push(" / ");
-            emit_expr(qb, rhs);
+            emit_arith(qb, lhs, " / ", rhs);
         }
         ExprNode::Cmp { op, lhs, rhs } => {
             emit_expr(qb, lhs);
@@ -169,6 +161,42 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
                 qb.push(")");
             }
         }
+    }
+}
+
+/// Emit an arithmetic binary node with parens around any arithmetic
+/// sub-expression.
+///
+/// SQL precedence binds `*` / `/` tighter than `+` / `-`, so a
+/// Rust-built tree like `Mul(Add(a, b), c)` would silently re-parse as
+/// `a + (b * c)` if we emitted `a + b * c`. Wrapping every arithmetic
+/// sub-expression in explicit parens preserves the structural grouping
+/// the user wrote. The outer arm still picks up its own operator
+/// between the two wrapped sides.
+///
+/// Non-arithmetic operands (field refs, literals, comparisons,
+/// aggregates) don't need wrapping — they're already single tokens or
+/// already self-parenthesised — so the wrap is gated on the sub-node's
+/// discriminant.
+fn emit_arith(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    lhs: &ExprNode,
+    op: &'static str,
+    rhs: &ExprNode,
+) {
+    emit_wrapped_if_arith(qb, lhs);
+    qb.push(op);
+    emit_wrapped_if_arith(qb, rhs);
+}
+
+fn emit_wrapped_if_arith(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
+    match node {
+        ExprNode::Add(..) | ExprNode::Sub(..) | ExprNode::Mul(..) | ExprNode::Div(..) => {
+            qb.push("(");
+            emit_expr(qb, node);
+            qb.push(")");
+        }
+        _ => emit_expr(qb, node),
     }
 }
 
@@ -283,5 +311,58 @@ mod tests {
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         assert!(sql.contains("view_count + $1"), "got: {sql}");
+    }
+
+    #[test]
+    fn emit_arithmetic_mixed_precedence_wraps_inner_ops() {
+        // Rust-level `(a + b) * c` builds `Mul(Add(a, b), c)`. Without
+        // grouping, the emitter would produce `a + b * c` which SQL
+        // binds as `a + (b * c)` — the opposite of what the user wrote.
+        // Every arithmetic sub-expression must be wrapped in explicit
+        // parens to preserve the structural grouping.
+        let a: FieldRef<Post, i32> = FieldRef::new("a");
+        let b: FieldRef<Post, i32> = FieldRef::new("b");
+        let c: FieldRef<Post, i32> = FieldRef::new("c");
+        let expr = (a.as_expr() + b.as_expr()) * c.as_expr();
+        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        emit_expr(&mut qb, &expr.node);
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "(a + b) * c", "got: {sql}");
+    }
+
+    #[test]
+    fn emit_arithmetic_mixed_precedence_wraps_rhs_ops() {
+        // `a + (b - c)` builds `Add(a, Sub(b, c))`. Rust already picked
+        // the grouping; the emitter must echo it. Without the rhs
+        // wrap the SQL would be `a + b - c` which re-parses left-
+        // associative as `(a + b) - c` — wrong.
+        let a: FieldRef<Post, i32> = FieldRef::new("a");
+        let b: FieldRef<Post, i32> = FieldRef::new("b");
+        let c: FieldRef<Post, i32> = FieldRef::new("c");
+        let expr = a.as_expr() + (b.as_expr() - c.as_expr());
+        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        emit_expr(&mut qb, &expr.node);
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "a + (b - c)", "got: {sql}");
+    }
+
+    #[test]
+    fn emit_arithmetic_flat_left_associative_no_spurious_parens() {
+        // `a + b + c` builds `Add(Add(a, b), c)` via left-to-right
+        // evaluation of the `+` operator. The inner `Add(a, b)` IS an
+        // arithmetic sub-expression, so the emitter wraps it. That's
+        // structurally accurate — `(a + b) + c` and `a + b + c` are
+        // semantically identical, and the explicit grouping hurts
+        // nothing. The test pins the shipped behaviour so a future
+        // optimisation that elides parens for associative peers
+        // (same-op chains) has an explicit decision point.
+        let a: FieldRef<Post, i32> = FieldRef::new("a");
+        let b: FieldRef<Post, i32> = FieldRef::new("b");
+        let c: FieldRef<Post, i32> = FieldRef::new("c");
+        let expr = a.as_expr() + b.as_expr() + c.as_expr();
+        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        emit_expr(&mut qb, &expr.node);
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "(a + b) + c", "got: {sql}");
     }
 }

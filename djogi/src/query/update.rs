@@ -191,12 +191,12 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
 /// ```ignore
 /// // col = col + 1
 /// Account::objects()
-///     .update(|f| f.balance.set_expr(f.balance.as_expr() + Expr::literal(1i64)))
+///     .update(|f| f.balance().set_expr(f.balance().as_expr() + Expr::literal(1i64)))
 ///     .execute(&mut ctx).await?;
 ///
 /// // col = other_col  (field-vs-field copy)
 /// Account::objects()
-///     .update(|f| f.balance.set_expr(f.overdraft_limit.as_expr()))
+///     .update(|f| f.balance().set_expr(f.overdraft_limit().as_expr()))
 ///     .execute(&mut ctx).await?;
 /// ```
 ///
