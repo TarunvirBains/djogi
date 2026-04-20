@@ -56,3 +56,8 @@ harness = true
 name = "phase4_transactions_expressions"
 path = "../tests/integration/phase4_transactions_expressions.rs"
 harness = true
+
+[[test]]
+name = "phase4_5_projections"
+path = "../tests/integration/phase4_5_projections.rs"
+harness = true
