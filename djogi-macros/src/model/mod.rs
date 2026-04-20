@@ -12,6 +12,7 @@ pub mod filter;
 pub mod from_joined_row;
 pub mod from_row;
 pub mod inject;
+pub mod outer_ref;
 pub mod relations;
 pub mod stubs;
 
@@ -97,6 +98,14 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    prefetch / select_related in Phase 3 Tasks 4 + 5.
     let related = relations::expand(&struct_item);
 
+    // 8. {Model}OuterRef — typed outer-scope column references for
+    //    correlated subqueries (Phase 4 Task 5). Same shape as
+    //    `{Model}Fields` but the accessors are associated functions
+    //    (no receiver) returning `OuterRef<Self, V>` instead of
+    //    `FieldRef<Self, V>`. Consumed by `Subquery::new` / `Exists::new`
+    //    when building EXISTS / scalar-subquery predicates.
+    let outer = outer_ref::expand(&struct_item, &model_attrs);
+
     Ok(quote::quote! {
         #expanded
         #from_row
@@ -106,6 +115,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #stubs
         #filter
         #related
+        #outer
     })
 }
 

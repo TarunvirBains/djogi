@@ -84,7 +84,7 @@ pub use descriptor::{
 };
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
 pub use error::DjogiError;
-pub use expr::{AggregateExpr, Expr};
+pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
     IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, UpdateAssignment, UpdateStmt,
@@ -101,7 +101,7 @@ pub mod prelude {
         FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
     };
     pub use crate::error::DjogiError;
-    pub use crate::expr::{AggregateExpr, Expr};
+    pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
     pub use crate::model::Model;
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,

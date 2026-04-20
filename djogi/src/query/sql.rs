@@ -347,7 +347,17 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf, parent_table: Opti
 /// in a joined-variant emission lands as `{table}.{column}`; the non-joined
 /// path passes `None` and gets bare names, preserving byte-for-byte parity
 /// with Phase 2 output.
-fn emit_condition(
+///
+/// `pub(crate)` because Phase 4 Task 5 needs this entry point to lower the
+/// [`Condition`] tree that backs a subquery's `WHERE` clause (a
+/// [`SubqueryNode`](crate::expr::node::SubqueryNode) stores the parent
+/// queryset's accumulated condition tree verbatim and lets this emitter
+/// render it at subquery-emission time — see
+/// [`crate::expr::sql::emit_subquery`]). Keeping the emitter itself
+/// module-private would force a duplicate walk inside `expr::sql`; widening
+/// to `pub(crate)` reuses the shipped, battle-tested condition emitter
+/// without copy-pasting its every `LookupOp` arm.
+pub(crate) fn emit_condition(
     qb: &mut QueryBuilder<'_, Postgres>,
     c: Condition,
     parent_table: Option<&'static str>,

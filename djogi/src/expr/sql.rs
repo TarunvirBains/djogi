@@ -51,7 +51,7 @@
 //! `select_related`; `filter_expr` is aimed at non-joined predicates
 //! until Task 5.
 
-use crate::expr::node::{AggOp, CmpOp, ExprNode};
+use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
 use sqlx::{Postgres, QueryBuilder};
 
 /// Walk an [`ExprNode`] and push the corresponding SQL fragment onto
@@ -161,6 +161,136 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
                 qb.push(")");
             }
         }
+        ExprNode::Case { arms, otherwise } => {
+            // CASE WHEN <cond> THEN <val> ... ELSE <default> END.
+            //
+            // `otherwise` is required by construction (the typed builder
+            // surface [`super::case::CaseBuilder::otherwise`] produces
+            // the `Expr<V>` only after the caller supplies a default)
+            // — no `Option` / `if let` branch here, the ELSE arm is
+            // always rendered. This matches the plan's Step 3 decision
+            // that a CASE with no matching arm must never silently
+            // produce NULL against a column the user expected to be
+            // non-null.
+            qb.push("CASE ");
+            for (cond, val) in arms {
+                qb.push("WHEN ");
+                emit_expr(qb, cond);
+                qb.push(" THEN ");
+                emit_expr(qb, val);
+                qb.push(" ");
+            }
+            qb.push("ELSE ");
+            emit_expr(qb, otherwise);
+            qb.push(" END");
+        }
+        ExprNode::Exists(sub) => {
+            // EXISTS (<subquery>) — subquery renders SELECT 1 because
+            // EXISTS only cares about row presence. `emit_subquery`
+            // special-cases the `None` select_column arm for exactly
+            // this reason; the [`super::subquery::Exists`] typed
+            // constructor is the sole producer of this shape and always
+            // sets `select_column = None`.
+            qb.push("EXISTS (");
+            emit_subquery(qb, sub);
+            qb.push(")");
+        }
+        ExprNode::Subquery(sub) => {
+            // Scalar subquery — must be wrapped in parens so it slots
+            // into arithmetic / comparison positions without re-parsing
+            // the outer expression. `emit_subquery` handles the
+            // `SELECT <col> FROM ... WHERE ...` body; the outer parens
+            // here are structural.
+            qb.push("(");
+            emit_subquery(qb, sub);
+            qb.push(")");
+        }
+        ExprNode::OuterRef { column } => {
+            // Outer-scope column reference — emitted unqualified.
+            // Postgres resolves the name against the enclosing query
+            // scope when the inner `FROM` list has no matching column.
+            // Same-named collisions between inner and outer scope
+            // trigger `42702 column reference "X" is ambiguous`; the
+            // typed surface flags this limitation on
+            // [`super::subquery::OuterRef`]. The qualified form is
+            // deferred alongside the `parent_table` threading for
+            // `select_related + filter_expr` composition.
+            //
+            // Column strings reach this arm only via the sealed macro
+            // entry point
+            // [`super::subquery::__macro_support::__make_outer_ref`]
+            // (macro-emitted code) or the crate-private
+            // [`super::subquery::OuterRef::new`] (test / internal
+            // helpers) — both run through
+            // [`crate::ident::assert_plain_ident`] before the value
+            // lands here. Safe to push as a raw SQL token.
+            qb.push(*column);
+        }
+    }
+}
+
+/// Emit a [`SubqueryNode`] body — `SELECT <col or 1> FROM <table>
+/// [WHERE <condition>]`.
+///
+/// Shared by both [`ExprNode::Exists`] and [`ExprNode::Subquery`] — they
+/// differ only in (a) whether the node carries a `select_column` and
+/// (b) whether the outer arm wraps the result in `EXISTS (..)` / `(..)`.
+/// `emit_subquery` itself renders the common body; the outer wrap lives
+/// at the arm level.
+///
+/// # Why `emit_condition` and not a second [`emit_expr`] walk?
+///
+/// The subquery's `WHERE` clause is a [`Condition`] tree (not an
+/// [`ExprNode`]) because it was built through the Phase 2
+/// [`crate::query::QuerySet::filter`] / [`crate::query::QuerySet::filter_expr`]
+/// path — those accumulate `Condition` with a full `LookupOp` vocabulary
+/// (ILIKE, BETWEEN, IS NULL, IN list, …). Reusing
+/// [`crate::query::sql::emit_condition`] lets every lookup op compose
+/// inside a subquery without a parallel `ExprNode`-side emitter, which
+/// would duplicate every `LookupOp` arm and drift over time. The tradeoff
+/// is that [`super::subquery::Exists::new`] / [`super::subquery::Subquery::new`]
+/// clone the inner queryset's condition tree at construction time; that
+/// clone is cheap (the tree is shallow Vec<_> + enum variants) and the
+/// correlated-subquery build sites are a hot-path outlier, not the norm.
+fn emit_subquery(qb: &mut QueryBuilder<'_, Postgres>, node: &SubqueryNode) {
+    qb.push("SELECT ");
+    match &node.select_column {
+        Some(col) => {
+            // `col` is a `&'static str` from
+            // [`crate::query::field::FieldRef::column`], validated at
+            // `FieldRef::new` construction time. Safe to push raw.
+            qb.push(*col);
+        }
+        None => {
+            // EXISTS path — the constant 1 stands in for "some value"
+            // because EXISTS ignores column values entirely. Using the
+            // literal `1` rather than `*` avoids an unnecessary SELECT-
+            // list expansion on the planner side and matches the
+            // idiomatic Postgres form for EXISTS subqueries.
+            qb.push("1");
+        }
+    }
+    qb.push(" FROM ");
+    // Table name is always `<T as Model>::table_name()` from the typed
+    // surface — macro-baked, never user input.
+    qb.push(node.table);
+    if let Some(cond) = &node.where_clause {
+        qb.push(" WHERE ");
+        // Clone: `emit_condition` consumes its `Condition` input by
+        // value (payload strings / boxed values move into bind calls).
+        // The subquery tree is referenced, not owned, because a single
+        // `SubqueryNode` may be emitted more than once if, e.g., a
+        // retry path re-emits the same outer `ExprNode`. The clone is
+        // structural (Vec / Box / enum variants; no deep data), so the
+        // cost is proportional to the filter's shape, not the row
+        // count the filter evaluates against.
+        //
+        // `parent_table = None` — the subquery's own table is the
+        // primary `FROM` source, so bare column references in the
+        // subquery's WHERE resolve to it unambiguously; qualified
+        // emission waits for the broader `parent_table` threading
+        // change flagged in `expr::sql`'s header comment.
+        crate::query::sql::emit_condition(qb, cond.clone(), None);
     }
 }
 

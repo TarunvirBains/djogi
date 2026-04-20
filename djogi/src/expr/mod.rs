@@ -69,13 +69,17 @@ use std::marker::PhantomData;
 
 pub mod aggregate;
 pub(crate) mod arithmetic;
+pub mod case;
 pub(crate) mod compare;
 pub(crate) mod literal;
 pub(crate) mod node;
 pub(crate) mod sql;
+pub mod subquery;
 
 pub use aggregate::AggregateExpr;
+pub use case::{Case, CaseBuilder};
 use node::ExprNode;
+pub use subquery::{Exists, OuterRef, Subquery};
 
 /// Typed expression handle — the public entry point for the IR.
 ///

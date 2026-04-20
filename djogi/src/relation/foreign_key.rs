@@ -228,6 +228,82 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Expression-IR integration — `FieldRef<M, ForeignKey<T>>` ↔ `Expr<T::Pk>`.
+// ---------------------------------------------------------------------------
+//
+// The generic `FieldRef::as_expr` (Phase 4 Task 3a) returns
+// `Expr<ForeignKey<T>>` — typed by the field's declared Rust type. That
+// shape is correct for equality lookups against a `ForeignKey<T>` value
+// but inconvenient for correlated subqueries: the outer side typically
+// carries an `Expr<T::Pk>` (the target model's `id` column), not an
+// `Expr<ForeignKey<T>>`. Since the FK column round-trips through SQLx
+// as its target PK (`T::Pk`), the underlying SQL shape is identical —
+// the only gap is at the typed layer.
+//
+// `as_pk_expr` bridges that gap: it rewraps the same column reference
+// at `Expr<T::Pk>`, so a correlated subquery can compose an `Entry.ledger_id`
+// FieldRef against a `LedgerOuterRef::id()` OuterRef without a turbofish
+// or an explicit cast. Emits the same bare column name — no SQL-level
+// change, only a typed-layer projection.
+//
+// Rejected alternatives:
+//   - `impl From<OuterRef<T, T::Pk>> for Expr<ForeignKey<T>>` — would
+//     force the outer side to know the FK wrapper, backwards from the
+//     natural call-site reading.
+//   - Special-casing `FieldRef<M, ForeignKey<T>>::eq` to accept
+//     `Expr<T::Pk>` — would diverge from the Task 3a `Expr::eq` shape
+//     which takes a same-`V` operand.
+//   - A blanket `impl<T, V> From<OuterRef<T, V>> for Expr<ForeignKey<?>>`
+//     — would coerce too eagerly and break type discipline on non-FK
+//     expressions.
+//
+// Keeping the projection explicit (`as_pk_expr`) means the typed
+// surface stays honest: the FK ↔ PK unification happens at the exact
+// call site where the user needs it, not silently elsewhere.
+
+impl<M: Model, T: Model> crate::query::field::FieldRef<M, ForeignKey<T>> {
+    /// Promote this foreign-key column handle into an
+    /// `Expr<T::Pk>` — the target PK's type — so it composes with
+    /// [`crate::expr::OuterRef`] / [`crate::query::field::FieldRef`]
+    /// handles on the target side inside a correlated subquery.
+    ///
+    /// SQL-wise: emits the same bare column name as
+    /// [`crate::query::field::FieldRef::as_expr`] — the column stores
+    /// `T::Pk` on the DB side regardless of the Rust wrapper. The only
+    /// difference is the phantom type on the resulting `Expr`: this
+    /// method returns `Expr<T::Pk>` where the default `as_expr` would
+    /// return `Expr<ForeignKey<T>>`.
+    ///
+    /// # When to reach for this
+    ///
+    /// Correlated subqueries: the outer side typically surfaces
+    /// `OuterRef<Target, Target::Pk>::id().as_expr()` (an
+    /// `Expr<Target::Pk>`), and the inner FK field needs to match
+    /// that shape for `.eq(..)` to type-check.
+    ///
+    /// ```ignore
+    /// // `Entry.ledger_id: ForeignKey<Ledger>` — compare against
+    /// // the outer `Ledger.id`:
+    /// inner.ledger_id().as_pk_expr()
+    ///     .eq(LedgerOuterRef::id().as_expr())
+    /// ```
+    ///
+    /// # Why not `as_expr().project()` or similar?
+    ///
+    /// Explicit method name documents the intent at the call site —
+    /// "I am projecting a FK handle through its PK for use alongside a
+    /// target-side expression". A generic projection would read
+    /// identically to `as_expr()` at the grep level but have subtly
+    /// different type semantics.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn as_pk_expr(self) -> crate::expr::Expr<T::Pk> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Field {
+            column: self.column(),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Post-fetch / post-prefetch resolved wrapper.
 // ---------------------------------------------------------------------------
 

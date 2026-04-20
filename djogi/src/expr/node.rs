@@ -34,14 +34,14 @@
 //! - [`crate::query::condition::Condition::Expr`] — the bridge that promotes
 //!   an `Expr<bool>` into the filter tree.
 
-use crate::query::condition::FilterValue;
+use crate::query::condition::{Condition, FilterValue};
 
-// TODO(Phase 4 Task 5): extend this enum with `Case { arms, otherwise }`,
-// `Exists(..)`, `Subquery(..)`, `OuterRef { column }`. Phase 4 Task 4 landed
-// the `Aggregate` variant below. The emitter in `expr::sql` needs matching
-// arms in lockstep. The `#[non_exhaustive]` marker is crate-private today
-// (same-crate matches are already exhaustive); it becomes relevant if/when
-// this enum is re-exported.
+// Phase 4 Task 5 landed the `Case` / `Exists` / `Subquery` / `OuterRef`
+// variants alongside the `SubqueryNode` payload at the bottom of this
+// file. The emitter in `expr::sql` has matching arms in lockstep. The
+// `#[non_exhaustive]` marker is crate-private today (same-crate matches
+// are already exhaustive); it becomes relevant if/when this enum is
+// re-exported.
 
 /// Untyped expression tree. The typed [`super::Expr<T>`] wrapper carries
 /// the phantom `T` parameter and projects type safety over the dynamic
@@ -138,6 +138,106 @@ pub(crate) enum ExprNode {
         /// [`super::aggregate`]'s method bodies — never user input.
         cast_to: Option<&'static str>,
     },
+
+    /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE
+    /// <default> END` — multi-armed conditional expression.
+    ///
+    /// The typed builder [`super::case::Case`] / [`super::case::CaseBuilder`]
+    /// is the sole construction path. Every arm is a
+    /// `(condition, value)` pair — the condition is an arbitrary
+    /// [`ExprNode`] that evaluates to boolean (typed as `Expr<bool>` at
+    /// the builder surface), the value is the expression whose result
+    /// becomes the CASE output when that arm fires. `otherwise` is
+    /// **required** (not `Option`) per the Task 5 plan — forcing the
+    /// user to decide on the default avoids the silent-NULL footgun
+    /// where a CASE with no matching arm produces NULL against a column
+    /// the user expected to be non-null.
+    Case {
+        /// Ordered list of `(condition, value)` pairs. Emitted as
+        /// `WHEN <cond> THEN <val>` in vector order; the first arm
+        /// whose condition is true wins per Postgres semantics.
+        arms: Vec<(ExprNode, ExprNode)>,
+        /// `ELSE <default>` expression — evaluated when no arm's
+        /// condition is true. Required (no NULL default) per plan
+        /// Step 3 decision.
+        otherwise: Box<ExprNode>,
+    },
+
+    /// `EXISTS (<subquery>)` — boolean-valued subquery predicate.
+    ///
+    /// The typed surface [`super::subquery::Exists`] owns the construction
+    /// path; the wrapped [`SubqueryNode`] carries the correlated
+    /// queryset's table + optional `WHERE` payload. `select_column` on
+    /// the node is always `None` for this variant — the emitter renders
+    /// `SELECT 1` regardless of the wrapped queryset's columns because
+    /// EXISTS only cares about row-presence, never scalar values.
+    Exists(Box<SubqueryNode>),
+
+    /// Scalar subquery — `(SELECT <col> FROM ... WHERE ... [LIMIT 1])`
+    /// usable as any other `Expr<V>` in the outer tree.
+    ///
+    /// The typed surface [`super::subquery::Subquery<T, V>`] owns the
+    /// construction path. `select_column` is always `Some(col)` for
+    /// this variant; the emitter renders the stored column verbatim
+    /// (already validated at `FieldRef::new` construction time).
+    Subquery(Box<SubqueryNode>),
+
+    /// Outer-scope column reference inside a correlated subquery.
+    ///
+    /// Emits the column name unqualified — Postgres resolves the name
+    /// against the enclosing query scope when there is no matching
+    /// column in the subquery's own `FROM` list. When both inner and
+    /// outer tables expose a same-named column, the unqualified
+    /// emission is ambiguous and Postgres raises `42702`. Task 5 ships
+    /// the unqualified form; a qualified variant (carrying the outer
+    /// table alias) is deferred alongside the broader `parent_table`
+    /// threading needed for `select_related + filter_expr` composition.
+    /// See the rustdoc on [`super::subquery::OuterRef`] for the caller-
+    /// side workaround.
+    OuterRef {
+        /// The column name in the outer scope. Validated at
+        /// [`super::subquery::__macro_support::__make_outer_ref`]
+        /// construction time via
+        /// [`crate::ident::assert_plain_ident`]; safe to push directly.
+        column: &'static str,
+    },
+}
+
+/// Internal subquery payload — the untyped counterpart to the typed
+/// [`super::subquery::Subquery<T, V>`] / [`super::subquery::Exists`]
+/// wrappers.
+///
+/// Carries the minimum the emitter needs to render
+/// `SELECT <col or 1> FROM <table> [WHERE <condition>]`:
+///
+/// - `table` — always `<T as Model>::table_name()` from the typed
+///   surface (a `&'static str`; never user input).
+/// - `select_column` — `Some(col)` for scalar subqueries (the typed
+///   wrapper pins it via [`crate::query::field::FieldRef`] so the
+///   identifier is always validated); `None` for EXISTS, where the
+///   emitter renders `SELECT 1`.
+/// - `where_clause` — the correlated predicate, stored as a
+///   [`Condition`] tree (not lowered to [`ExprNode`]). Reusing the
+///   battle-tested [`crate::query::sql::emit_condition`] walk means
+///   every `LookupOp` variant the Phase 2 `filter` closure produces
+///   composes inside a subquery without parallel emitter code. See the
+///   module header on [`super::subquery`] for the rationale behind the
+///   "store `Condition` alongside" design decision the plan's Task 5
+///   brief laid out.
+#[derive(Debug, Clone)]
+pub(crate) struct SubqueryNode {
+    /// Subquery's `FROM` table — `<T as Model>::table_name()` from the
+    /// typed [`super::subquery::Subquery<T, V>`] surface.
+    pub(crate) table: &'static str,
+    /// Scalar subqueries store `Some(col)`; the EXISTS path stores
+    /// `None` and the emitter renders `SELECT 1`.
+    pub(crate) select_column: Option<&'static str>,
+    /// The subquery's `WHERE` clause — the correlated predicate,
+    /// carried verbatim from the typed
+    /// [`crate::query::QuerySet<T>`]'s accumulated
+    /// [`Condition`] tree. `None` when the typed queryset carries no
+    /// filters; the emitter skips the `WHERE` clause on that branch.
+    pub(crate) where_clause: Option<Condition>,
 }
 
 /// Aggregate operator — the sub-discriminant inside [`ExprNode::Aggregate`].
