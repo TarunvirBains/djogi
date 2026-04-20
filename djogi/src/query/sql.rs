@@ -790,10 +790,20 @@ pub(crate) fn build_update<'a, T: Model>(
         // `V: IntoFilterValue`, which never produces `FilterValue::Null`).
         qb.push(a.column());
         qb.push(" = ");
-        // `push_filter_value` consumes the value; clone because the emitter
-        // takes `assignments` by reference so the `UpdateStmt` retains its
-        // payload for retry/clone.
-        push_filter_value(&mut qb, a.value().clone());
+        // Dispatch literal vs expression-IR payload. Literals go through
+        // `push_filter_value` (a single `$n` bind); expression trees
+        // recurse through `emit_expr`, which emits arithmetic, field
+        // refs, and nested binds. `clone()` on the literal path retains
+        // the `UpdateStmt`'s payload for retry; the Expr arm borrows
+        // the inner `ExprNode` by reference.
+        match a.value() {
+            crate::query::update::AssignmentValue::Literal(v) => {
+                push_filter_value(&mut qb, v.clone());
+            }
+            crate::query::update::AssignmentValue::Expr(node) => {
+                crate::expr::sql::emit_expr(&mut qb, node);
+            }
+        }
     }
     // Always stamp `updated_at = now()` on bulk updates — matches
     // single-row save(). `now()` is a SQL literal, not a user value, so
@@ -1212,10 +1222,10 @@ mod tests {
     fn update_single_assignment_emits_set_and_updated_at() {
         // Single assignment + no filter: one bind for the user value,
         // `updated_at = now()` stamped by the emitter, no `WHERE`.
-        use crate::query::update::UpdateAssignment;
+        use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
-            value: FilterValue::I32(999),
+            value: AssignmentValue::Literal(FilterValue::I32(999)),
         };
         let qs: QuerySet<Fake> = QuerySet::new();
         let qb = build_update(&qs, &[a]);
@@ -1231,14 +1241,14 @@ mod tests {
     fn update_multiple_assignments_comma_separate_binds() {
         // Two assignments: `SET col = $1, col = $2, updated_at = now()`.
         // Only the user's values consume bind slots; `now()` is raw SQL.
-        use crate::query::update::UpdateAssignment;
+        use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
-            value: FilterValue::I32(1),
+            value: AssignmentValue::Literal(FilterValue::I32(1)),
         };
         let b = UpdateAssignment {
             column: "published",
-            value: FilterValue::Bool(true),
+            value: AssignmentValue::Literal(FilterValue::Bool(true)),
         };
         let qs: QuerySet<Fake> = QuerySet::new();
         let qb = build_update(&qs, &[a, b]);
@@ -1254,10 +1264,10 @@ mod tests {
         // Assignments take $1; the filter leaf takes $2. Positional
         // numbering is contiguous — sqlx's `QueryBuilder` assigns them
         // in push order regardless of clause.
-        use crate::query::update::UpdateAssignment;
+        use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
-            value: FilterValue::I32(42),
+            value: AssignmentValue::Literal(FilterValue::I32(42)),
         };
         let qs: QuerySet<Fake> = QuerySet::new()
             .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));

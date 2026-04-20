@@ -486,6 +486,93 @@ async fn save_reflects_trigger_modified_fields(pool: PgPool) {
 }
 
 // ---------------------------------------------------------------------------
+// Task 3b: expression-backed UPDATE assignments — `col = col + N`
+// ---------------------------------------------------------------------------
+
+#[sqlx::test]
+async fn bulk_update_arithmetic_expression(pool: PgPool) {
+    setup_phase4(&pool).await;
+
+    // Seed two accounts; wrapping in `atomic()` keeps the connection's
+    // `heer.node_id` GUC pinned across every pool-checkout during the
+    // multi-INSERT seed (same rationale as phase3_relations).
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            Account::create(
+                ctx,
+                Account {
+                    balance: 10,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Account::create(
+                ctx,
+                Account {
+                    balance: 20,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            // balance = balance + 5 — expression-backed UPDATE.
+            let n = Account::objects()
+                .update(|f| {
+                    f.balance()
+                        .set_expr(f.balance().as_expr() + Expr::literal(5i64))
+                })
+                .execute(ctx)
+                .await?;
+            assert_eq!(n, 2, "both rows must be updated");
+
+            let balances: Vec<i64> = Account::objects()
+                .order_by(|f| f.balance().asc())
+                .fetch_all(ctx)
+                .await?
+                .into_iter()
+                .map(|a| a.balance)
+                .collect();
+            assert_eq!(balances, vec![15, 25]);
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
+#[sqlx::test]
+async fn bulk_update_field_to_field_copy(pool: PgPool) {
+    setup_phase4(&pool).await;
+
+    atomic(&pool, |ctx| {
+        Box::pin(async move {
+            Account::create(
+                ctx,
+                Account {
+                    balance: 100,
+                    overdraft_limit: 200,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+            // balance = overdraft_limit — field-vs-field assignment.
+            let n = Account::objects()
+                .update(|f| f.balance().set_expr(f.overdraft_limit().as_expr()))
+                .execute(ctx)
+                .await?;
+            assert_eq!(n, 1);
+
+            let rows = Account::objects().fetch_all(ctx).await?;
+            assert_eq!(rows[0].balance, 200);
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
+// ---------------------------------------------------------------------------
 // Prefetch-in-atomic — proves `PrefetchLoaderFn` works over a
 // transaction-backed context.
 // ---------------------------------------------------------------------------
