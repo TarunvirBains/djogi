@@ -304,9 +304,12 @@ where
 /// Classifies errors via [`crate::error::is_lock_error`] — SQLSTATEs
 /// `40001`, `40P01`, `55P03` are considered retryable. Every other
 /// error (constraint violations, not-found, etc.) surfaces on the
-/// first call. Pure retry with no backoff in Phase 4 Task 1; Task 7
-/// will add exponential / jittered backoff together with the full
-/// `DjogiError::LockConflict` variant.
+/// first call. Phase 4 Task 7 added the
+/// [`DjogiError::LockConflict`](crate::DjogiError::LockConflict)
+/// variant; the retry predicate now classifies either that variant
+/// directly or a raw `Sqlx(sqlx_err)` whose SQLSTATE matches. Pure
+/// retry with no backoff today — exponential / jittered backoff is
+/// intentionally deferred until the need is measured.
 ///
 /// The closure is invoked with `&mut DjogiContext` so it can be used
 /// either inside an existing `atomic()` scope (where `ctx` already
@@ -337,7 +340,25 @@ where
         match closure(ctx).await {
             Ok(value) => return Ok(value),
             Err(e) => {
-                let retryable = matches!(&e, DjogiError::Sqlx(sqlx_err) if is_lock_error(sqlx_err));
+                // Two shapes count as retryable:
+                //
+                // 1. `DjogiError::LockConflict(..)` — the Phase 4 Task 7
+                //    variant, produced by any terminal that funneled its
+                //    sqlx error through `error::map_lock_err` (every lock-
+                //    aware read path).
+                // 2. `DjogiError::Sqlx(sqlx_err)` where the underlying
+                //    SQLSTATE is retryable — this covers callers that
+                //    did NOT route through `map_lock_err` (raw sqlx
+                //    escape hatches, Phase 1/2 terminals that landed
+                //    before Task 7).
+                //
+                // Other `DjogiError` variants (serialization, not-found,
+                // etc.) surface on the first call.
+                let retryable = match &e {
+                    DjogiError::LockConflict(_) => true,
+                    DjogiError::Sqlx(sqlx_err) => is_lock_error(sqlx_err),
+                    _ => false,
+                };
                 if retryable && attempt < attempts {
                     tracing::debug!(
                         attempt,

@@ -141,6 +141,12 @@ pub struct QuerySet<T: Model> {
     /// path follow-up query — and combining them would leak that
     /// distinction into the type.
     pub(crate) select_related_paths: Vec<ErasedSelectRelated>,
+    /// Row-level lock mode — Phase 4 Task 7. Default [`LockMode::None`]
+    /// emits no tail; the three `ForUpdate*` variants append `FOR
+    /// UPDATE [NOWAIT|SKIP LOCKED]` to the SELECT. See
+    /// [`crate::query::lock`] for the full behaviour table and the
+    /// pool-backed footgun note.
+    pub(crate) lock: crate::query::lock::LockMode,
     /// Covariant `T` tag; never owns or borrows a `T`.
     _model: PhantomData<fn() -> T>,
 }
@@ -163,6 +169,8 @@ impl<T: Model> Clone for QuerySet<T> {
             // struct carries only `&'static str`, a static slice, and
             // a fn pointer, so cloning is bit-copy-cheap.
             select_related_paths: self.select_related_paths.clone(),
+            // `LockMode` is `Copy` — bit-copy is trivial.
+            lock: self.lock,
             _model: PhantomData,
         }
     }
@@ -180,6 +188,7 @@ impl<T: Model> std::fmt::Debug for QuerySet<T> {
             .field("is_empty", &self.is_empty)
             .field("prefetch_paths", &self.prefetch_paths)
             .field("select_related_paths", &self.select_related_paths)
+            .field("lock", &self.lock)
             .finish()
     }
 }
@@ -205,6 +214,7 @@ impl<T: Model> QuerySet<T> {
             is_empty: false,
             prefetch_paths: Vec::new(),
             select_related_paths: Vec::new(),
+            lock: crate::query::lock::LockMode::None,
             _model: PhantomData,
         }
     }
@@ -411,6 +421,61 @@ impl<T: Model> QuerySet<T> {
             "QuerySet::offset(n = {n}) overflows i64 — Postgres bind type is BIGINT"
         );
         self.offset = Some(n as i64);
+        self
+    }
+
+    /// Append `FOR UPDATE` to the emitted SELECT — acquire an exclusive
+    /// row-level lock on every selected row for the duration of the
+    /// enclosing transaction.
+    ///
+    /// # Footgun — wrap in `atomic()`
+    ///
+    /// A `FOR UPDATE` lock is scoped to the active transaction. A
+    /// pool-backed context auto-commits each statement, so
+    /// `Post::objects().select_for_update().fetch_all(&mut pool_ctx)`
+    /// acquires the lock and releases it the instant the implicit
+    /// transaction closes — **no mutual exclusion** against a concurrent
+    /// writer between the fetch and the subsequent `save`. Every
+    /// correctness-sensitive use of `select_for_update` MUST sit inside
+    /// an [`atomic()`](crate::transaction::atomic) scope.
+    ///
+    /// # Chaining with `nowait` / `skip_locked`
+    ///
+    /// Use [`QuerySet::nowait`] or [`QuerySet::skip_locked`] AFTER
+    /// `select_for_update` to pick the contention behaviour. Calling
+    /// either without first calling `select_for_update` promotes the
+    /// lock to `FOR UPDATE NOWAIT` / `FOR UPDATE SKIP LOCKED`
+    /// respectively — they imply the base lock.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn select_for_update(mut self) -> Self {
+        self.lock = crate::query::lock::LockMode::ForUpdate;
+        self
+    }
+
+    /// Promote the SELECT lock to `FOR UPDATE NOWAIT` — acquire the
+    /// lock if available, else return immediately with Postgres
+    /// SQLSTATE `55P03` (`lock_not_available`), which terminals
+    /// classify as [`DjogiError::LockConflict`](crate::DjogiError::LockConflict).
+    ///
+    /// Callable standalone (implies `select_for_update`). Combining
+    /// with [`skip_locked`](QuerySet::skip_locked) — last call wins.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn nowait(mut self) -> Self {
+        self.lock = crate::query::lock::LockMode::ForUpdateNowait;
+        self
+    }
+
+    /// Promote the SELECT lock to `FOR UPDATE SKIP LOCKED` — silently
+    /// skip rows locked by another session and return only the
+    /// unlocked rows.
+    ///
+    /// The idiomatic shape for work-queue consumers: multiple workers
+    /// can pull jobs concurrently without blocking each other.
+    /// Callable standalone (implies `select_for_update`). Combining
+    /// with [`nowait`](QuerySet::nowait) — last call wins.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn skip_locked(mut self) -> Self {
+        self.lock = crate::query::lock::LockMode::ForUpdateSkipLocked;
         self
     }
 

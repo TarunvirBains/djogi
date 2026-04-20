@@ -120,10 +120,14 @@ where
             let mut qb = build_select(&self);
             let q = qb.build_query_as::<T>();
             let rows: Vec<T> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.fetch_all(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
-                }
+                ContextInner::Pool(pool) => q
+                    .fetch_all(&*pool)
+                    .await
+                    .map_err(crate::error::map_lock_err)?,
+                ContextInner::Transaction(tx) => q
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(crate::error::map_lock_err)?,
             };
             Ok(rows)
         }
@@ -159,10 +163,14 @@ where
             let mut qb = build_select(&qs);
             let q = qb.build_query_as::<T>();
             let rows: Vec<T> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.fetch_all(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
-                }
+                ContextInner::Pool(pool) => q
+                    .fetch_all(&*pool)
+                    .await
+                    .map_err(crate::error::map_lock_err)?,
+                ContextInner::Transaction(tx) => q
+                    .fetch_all(&mut **tx)
+                    .await
+                    .map_err(crate::error::map_lock_err)?,
             };
             match rows.len() {
                 0 => Err(DjogiError::not_found(T::table_name())),

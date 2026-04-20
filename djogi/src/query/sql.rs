@@ -536,6 +536,12 @@ fn push_tail_qualified<T: Model>(
         qb.push(" OFFSET ");
         qb.push_bind(n);
     }
+    // Row-lock tail — `FOR UPDATE [NOWAIT|SKIP LOCKED]` — is the last
+    // thing Postgres accepts on a SELECT, after `LIMIT`/`OFFSET`.
+    // `LockMode::None` is a no-op so the pre-Task-7 SELECT shape is
+    // byte-for-byte preserved for querysets that never touched the
+    // lock builders.
+    qs.lock.push_tail(qb);
 }
 
 /// Build `SELECT [DISTINCT [ON (...)]] * FROM <table> [WHERE ...]
@@ -1608,6 +1614,78 @@ mod tests {
         assert!(
             !sql.contains("fakes.id"),
             "bare query must not qualify: {sql}"
+        );
+    }
+
+    // ── Phase 4 Task 7 — row-lock SQL tails ───────────────────────────
+
+    #[test]
+    fn select_for_update_appends_lock_tail() {
+        let qs: QuerySet<Fake> = QuerySet::new().select_for_update();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE"),
+            "expected FOR UPDATE tail, got: {sql}"
+        );
+        assert!(
+            !sql.contains("NOWAIT") && !sql.contains("SKIP LOCKED"),
+            "select_for_update must not escalate to NOWAIT / SKIP LOCKED"
+        );
+    }
+
+    #[test]
+    fn nowait_appends_for_update_nowait_tail() {
+        // `.nowait()` alone — implies the base `FOR UPDATE` per the
+        // rustdoc contract.
+        let qs: QuerySet<Fake> = QuerySet::new().nowait();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE NOWAIT"),
+            "expected FOR UPDATE NOWAIT tail, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn skip_locked_appends_for_update_skip_locked_tail() {
+        let qs: QuerySet<Fake> = QuerySet::new().skip_locked();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
+            "expected FOR UPDATE SKIP LOCKED tail, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lock_tail_follows_limit_and_offset() {
+        // Postgres requires `FOR UPDATE` after `LIMIT`/`OFFSET`. The
+        // emitter must match that order — swapping them yields a
+        // syntax error the caller only sees at runtime.
+        let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(5).select_for_update();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        let limit_idx = sql.find("LIMIT").expect("LIMIT must appear");
+        let offset_idx = sql.find("OFFSET").expect("OFFSET must appear");
+        let lock_idx = sql.find("FOR UPDATE").expect("FOR UPDATE must appear");
+        assert!(
+            limit_idx < offset_idx && offset_idx < lock_idx,
+            "expected LIMIT ... OFFSET ... FOR UPDATE order, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lock_builder_last_call_wins_across_nowait_skip_locked() {
+        // Chaining `.nowait().skip_locked()` — the skip_locked call
+        // overwrites the nowait variant. Mirrors the rustdoc contract.
+        let qs: QuerySet<Fake> = QuerySet::new().nowait().skip_locked();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(sql.contains("SKIP LOCKED"), "got: {sql}");
+        assert!(
+            !sql.contains("NOWAIT"),
+            "skip_locked must have overwritten nowait: {sql}"
         );
     }
 }

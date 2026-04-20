@@ -100,6 +100,26 @@ pub enum DjogiError {
     /// underlying failure.
     #[error("JSON serialization error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    /// A `FOR UPDATE NOWAIT` / `FOR UPDATE` request could not acquire
+    /// its row lock, or a `SERIALIZABLE` / `REPEATABLE READ` transaction
+    /// encountered a serialization failure, or Postgres detected a
+    /// deadlock and aborted one participant. Phase 4 Task 7 introduces
+    /// this variant so the retry helper (`retry_on_conflict`) and the
+    /// caller can branch on lock-contention vs other database errors.
+    ///
+    /// Retryable SQLSTATE classes carried here:
+    ///
+    /// - `40001` — `serialization_failure`
+    /// - `40P01` — `deadlock_detected`
+    /// - `55P03` — `lock_not_available` (`NOWAIT` rejection)
+    ///
+    /// Other `sqlx::Error::Database` failures — `unique_violation`,
+    /// `foreign_key_violation`, connection drops — still flow through
+    /// [`Sqlx`](DjogiError::Sqlx). The classifier
+    /// [`is_lock_error`] keeps the variant boundary tight.
+    #[error("lock conflict: {0}")]
+    LockConflict(#[source] sqlx::Error),
 }
 
 impl DjogiError {
@@ -163,6 +183,29 @@ pub(crate) fn is_lock_error(e: &sqlx::Error) -> bool {
         e.as_database_error().and_then(|db| db.code()).as_deref(),
         Some("40001") | Some("40P01") | Some("55P03")
     )
+}
+
+/// Lower a raw `sqlx::Error` into either
+/// [`DjogiError::LockConflict`] (for retryable SQLSTATEs 40001/40P01/
+/// 55P03) or [`DjogiError::Sqlx`] (for everything else).
+///
+/// Every terminal that honours row locking — `select_for_update` /
+/// `nowait` / `skip_locked` — runs its SELECT's error through this so
+/// the caller can pattern-match on `LockConflict` without re-
+/// classifying the SQLSTATE itself. Bulk methods that need retry
+/// semantics (Task 7 `bulk_create` / `bulk_update` under
+/// `retry_on_conflict`) use the same path.
+///
+/// Callers that don't care about the distinction can still use `?`:
+/// `From<sqlx::Error> for DjogiError` returns
+/// [`DjogiError::Sqlx`] verbatim, so unclassified error paths stay
+/// identical to pre-Task-7 behaviour.
+pub(crate) fn map_lock_err(e: sqlx::Error) -> DjogiError {
+    if is_lock_error(&e) {
+        DjogiError::LockConflict(e)
+    } else {
+        DjogiError::Sqlx(e)
+    }
 }
 
 #[cfg(test)]
