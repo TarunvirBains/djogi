@@ -13,6 +13,7 @@ pub mod from_joined_row;
 pub mod from_row;
 pub mod inject;
 pub mod outer_ref;
+pub mod projections;
 pub mod relations;
 pub mod stubs;
 
@@ -106,6 +107,13 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    when building EXISTS / scalar-subquery predicates.
     let outer = outer_ref::expand(&struct_item, &model_attrs);
 
+    // 9. Projection structs + conversion impls (Phase 4.5). Emits
+    //    {Model}Public / SelfView / Admin / Export plus scalar `From<&Self>`
+    //    (Task 3) / relation-nesting `TryFrom<&Self>` (Task 5) impls.
+    //    Reads `FieldAttrs.expose` for scope membership; framework columns
+    //    (id / created_at / updated_at) default into every projection (Q13).
+    let projections_ts = projections::expand(&struct_item, &model_attrs, &field_attrs);
+
     Ok(quote::quote! {
         #expanded
         #from_row
@@ -116,6 +124,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #filter
         #related
         #outer
+        #projections_ts
     })
 }
 

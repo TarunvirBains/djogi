@@ -26,11 +26,11 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 - **Phase 2** — lazy `QuerySet<T>`, typed `FieldRef<M, V>` lookups (`eq` / `gte` / `in_list` / `contains` / …), `Condition` tree + SQL emitter, terminal reads (`fetch_all` / `fetch_one` / `first` / `count` / `exists`), ordering + pagination + `DISTINCT` / `DISTINCT ON`, programmatic `{Model}Filter` + `filter_struct`, bulk `update` / `delete`. See [the queries guide](./docs/guide/queries.md).
 - **Phase 3** — `ForeignKey<T>`, `OneToOneField<T>`, typed relation paths, explicit eager loading (`prefetch` / `select_related`), reverse accessor macros, and explicit-through `ManyToMany` support. See the [relations guide](./docs/guide/relations.md).
 - **Phase 4** — `DjogiContext` + `atomic()` scope, savepoint nesting, `on_commit` callbacks, `save(&mut self)` with `RETURNING *` rehydration, transactional outbox (`#[model(events)]`), expression IR (`Expr<T>`: arithmetic, field-vs-field, CASE/WHEN, `EXISTS`, typed `OuterRef<M, V>` correlated subqueries), typed aggregates + annotations (`count`/`sum`/`avg`/`min`/`max` with `FILTER(WHERE)`), row locks (`select_for_update` / `nowait` / `skip_locked`), `DjogiError::LockConflict` + `is_transient` classification + `retry_on_conflict`, and write-path convenience (`get_or_create`, `update_or_create`, `in_bulk`, `bulk_create`, `bulk_update`, `bulk_upsert`, `create_or_find`, `bulk_upsert_by_descriptor`, scoped-sequence numbering via `#[field(sequence_within = "...")]`). See the [transactions guide](./docs/guide/transactions.md), [expressions guide](./docs/guide/expressions.md), and [outbox guide](./docs/guide/outbox.md).
+- **Phase 4.5** — opt-in transport projections derived from every `#[model]` struct. `#[field(expose(public, self_view, admin, export))]` (scalar form) or `#[field(expose(public = "PeerProjection"))]` (relation form) generates four audience-specific Rust types per model (`{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`) with unconditional `serde::Serialize` / `Deserialize` derives. Default exposure is `internal` — absent annotation means the field does NOT appear in any transport projection. Scalar-only projections emit `impl From<&Model>`; relation-nesting projections emit `impl TryFrom<&Model>` with `Error = ProjectionError::UnresolvedRelation`. `FieldDescriptor.projection_map` is populated so later phases can consume projection metadata without re-parsing attributes. See the [projections guide](./docs/guide/projections.md).
 
 **Coming** — design-locked but not yet implemented:
 
-- Phase 4.5 — projections + shared contracts (companion-model `View` structs derived from the source model's field subset).
-- Phase 5 — Postgres-native: partitioning, RLS / `TenantScoped<T>`, Jsonb path ops.
+- Phase 5 — SQL foundation swap (sqlx → `tokio-postgres` + `postgres-types` + `deadpool-postgres`) enabling protocol-native features: `COPY` bulk ingest, `LISTEN/NOTIFY` outbox delivery, cursor-based streaming, pipelined batch writes. Followed by a hand-rolled migration runner (cross-referenced against refinery, sea-query, Django, Alembic, Flyway for edge cases) and Postgres-native extensions (partitioning, RLS / `TenantScoped<T>`, Jsonb path ops).
 - Phase 6+ — `cargo djogi migrate`, Rhai shell, admin panel.
 
 ## What Djogi Owns
@@ -38,7 +38,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 | Concern | Owner | Djogi's role |
 |---|---|---|
 | HTTP routing, middleware, request/response | Your Rust web framework of choice | Djogi does not own the request lifecycle. Integrations are adapters; Axum is the best-covered example today, and other frameworks are wired through adapters or manually. |
-| DB driver, connection pooling, row mapping | SQLx | Djogi wraps SQLx into a typed ORM layer (`Model`, `QuerySet`, `FromRow`, `ConditionBuilder`) but never hides it — raw `sqlx::QueryBuilder` is always an escape hatch, not the default route to acceptable performance |
+| DB driver, connection pooling, row mapping | SQLx (through Phase 4.5; `tokio-postgres` + `deadpool-postgres` from Phase 5) | Djogi wraps the driver into a typed ORM layer (`Model`, `QuerySet`, `FromRow`, `ConditionBuilder`) but never hides it — raw query-builder escape hatches remain available |
 | ID generation | HeeRanjId | Calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()` — owns nothing else |
 | Async runtime | Tokio | Uses it; does not configure it |
 | Model ↔ DB mapping | **Djogi** | Proc macro, field types, QuerySet, relations |

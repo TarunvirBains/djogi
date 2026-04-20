@@ -1,0 +1,5 @@
+error: `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` in relation-form projections is deferred to a follow-up phase; use a required FK in Phase 4.5
+  --> tests/compile_fail/expose_relation_form_on_optional_fk.rs:17:5
+   |
+17 |     pub owner: Option<ForeignKey<Owner>>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

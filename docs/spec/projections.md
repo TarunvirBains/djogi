@@ -50,21 +50,42 @@ UserAdmin
 UserExport
 ```
 
-Generated conversions:
+Generated conversions split on whether the projection nests a peer
+projection through a relation field:
 
 ```rust
+// Scalar-only projection — infallible.
 impl From<&User> for UserPublic
-impl From<&User> for UserSelfView
-impl From<&User> for UserAdmin
-impl From<&User> for UserExport
+
+// Relation-nesting projection (at least one `expose(scope = "Peer")`
+// entry on a `ForeignKey<T>` / `OneToOneField<T>` field). Returns
+// `ProjectionError::UnresolvedRelation { model, field, scope }` when
+// the relation wasn't prefetched / selected before the conversion.
+impl TryFrom<&Vehicle> for VehiclePublic {
+    type Error = djogi::ProjectionError;
+    // ...
+}
 ```
+
+`ProjectionError` is `#[non_exhaustive]` so later phases (protected-data,
+codec failures) can add variants without a breaking change. Callers
+matching on the error must include `_ => ...`.
 
 Generated types must:
 
 - be plain Rust structs
-- derive `Serialize` / `Deserialize` when possible
+- derive `Debug`, `Clone`, `Serialize`, `Deserialize` unconditionally
 - avoid SQLx/runtime traits
 - be importable by shared API/frontend crates
+
+`internal` is accepted as a grammar sentinel equivalent to `none` — no
+`{Model}Internal` struct is generated. The model struct itself IS the
+internal form.
+
+`Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` in relation-form
+`expose` is rejected with a loud compile error in Phase 4.5 — cross-model
+dispatch of `Option<&T>` → peer projection is a follow-up-phase
+extension.
 
 Anything beyond that is additive and should not block the first spec closure.
 

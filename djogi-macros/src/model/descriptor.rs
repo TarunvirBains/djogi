@@ -81,7 +81,12 @@ pub fn expand(
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[],
+                projection_map: &[
+                    ("public", "id"),
+                    ("self_view", "id"),
+                    ("admin", "id"),
+                    ("export", "id"),
+                ],
             }
         }),
         PkStrategy::RanjId => Some(quote! {
@@ -100,7 +105,12 @@ pub fn expand(
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[],
+                projection_map: &[
+                    ("public", "id"),
+                    ("self_view", "id"),
+                    ("admin", "id"),
+                    ("export", "id"),
+                ],
             }
         }),
         PkStrategy::Serial => Some(quote! {
@@ -119,7 +129,12 @@ pub fn expand(
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[],
+                projection_map: &[
+                    ("public", "id"),
+                    ("self_view", "id"),
+                    ("admin", "id"),
+                    ("export", "id"),
+                ],
             }
         }),
         PkStrategy::None => None,
@@ -141,7 +156,12 @@ pub fn expand(
             relation_kind: None,
             on_delete: None,
             target_type_name: None,
-            projection_map: &[],
+            projection_map: &[
+                ("public", "created_at"),
+                ("self_view", "created_at"),
+                ("admin", "created_at"),
+                ("export", "created_at"),
+            ],
         }
     };
     let updated_at_desc = quote! {
@@ -160,7 +180,12 @@ pub fn expand(
             relation_kind: None,
             on_delete: None,
             target_type_name: None,
-            projection_map: &[],
+            projection_map: &[
+                ("public", "updated_at"),
+                ("self_view", "updated_at"),
+                ("admin", "updated_at"),
+                ("export", "updated_at"),
+            ],
         }
     };
 
@@ -214,6 +239,12 @@ pub fn expand(
                 Some(s) => quote! { Some(#s) },
                 None => quote! { None },
             };
+
+            // Phase 4.5 — populate projection_map from the parsed
+            // `#[field(expose(...))]` spec. Scalar scopes map to this
+            // column's name; relation scopes map to the peer projection
+            // type name. Empty / suppressed specs emit `&[]`.
+            let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
 
             // Relation metadata — `None`/`&[]` for scalar columns.
             //
@@ -270,7 +301,7 @@ pub fn expand(
                     relation_kind: #relation_kind_tokens,
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
-                    projection_map: &[],
+                    projection_map: #projection_map_tokens,
                 }
             }
         })
@@ -323,6 +354,33 @@ pub fn expand(
             }
         }
     }
+}
+
+/// Emit a `&'static [(&'static str, &'static str)]` literal from an
+/// `ExposeSpec`. Scalar scope entries map scope → column name; relation
+/// scope entries map scope → peer projection type name. Empty / suppressed
+/// specs emit `&[]`.
+///
+/// Entries are sorted by scope name so descriptor snapshots don't churn
+/// based on the underlying `HashSet` / `HashMap` iteration order.
+fn build_projection_map_tokens(
+    spec: &crate::model::attrs::ExposeSpec,
+    column_name: &str,
+) -> TokenStream {
+    if spec.suppressed || (spec.scalar_scopes.is_empty() && spec.relation_scopes.is_empty()) {
+        return quote! { &[] };
+    }
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for scope in &spec.scalar_scopes {
+        pairs.push((scope.clone(), column_name.to_string()));
+    }
+    for (scope, peer) in &spec.relation_scopes {
+        pairs.push((scope.clone(), peer.clone()));
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let entries: Vec<TokenStream> = pairs.iter().map(|(s, e)| quote! { (#s, #e) }).collect();
+    quote! { &[ #(#entries,)* ] }
 }
 
 fn sql_str_to_tokens(s: &str) -> TokenStream {

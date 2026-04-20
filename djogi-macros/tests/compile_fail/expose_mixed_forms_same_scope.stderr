@@ -1,0 +1,5 @@
+error: scope `public` already declared as bare scope; pick one form per scope
+ --> tests/compile_fail/expose_mixed_forms_same_scope.rs:8:28
+  |
+8 |     #[field(expose(public, public = "VehicleSummary"))]
+  |                            ^^^^^^
