@@ -177,16 +177,31 @@ Djogi does not generate UI components, hooks, routes, or frontend state containe
 
 ## Projection Conversions
 
-Djogi generates conversions from model to projection.
+Djogi generates conversions from model to projection. The macro
+dispatches on whether the projection nests a peer projection through
+a relation field:
 
-Required baseline:
+- Scalar-only projection (no `expose(scope = "Peer")` entries) —
+  `impl From<&Model> for Projection`. Infallible; straight-line
+  construction.
+- Relation-nesting projection (at least one `expose(scope = "Peer")`
+  on a `ForeignKey<T>` / `OneToOneField<T>` field) —
+  `impl TryFrom<&Model> for Projection` with
+  `type Error = djogi::ProjectionError`. Returns
+  `ProjectionError::UnresolvedRelation { model, field, scope }` when
+  the relation wasn't prefetched / selected before the conversion.
 
-- `impl From<&Model> for Projection`
+Scalar-only projections also satisfy `TryFrom<&Model>` via the stdlib
+blanket `impl<T, U> TryFrom<U> for T where U: Into<T>` with
+`Error = Infallible`, and `impl From<Infallible> for ProjectionError`
+bridges the two error types so nested `try_from(..)?` calls compose
+uniformly. That is what lets a relation-nesting projection embed a
+scalar-only peer without the emitter knowing the peer's shape.
 
 Optional additive support later:
 
 - owned conversion variants
-- fallible conversions when projection rules require transformation
+- user-defined fallible transforms beyond `UnresolvedRelation`
 
 The point is to replace handwritten mapping layers that are repetitive and prone to drift.
 
@@ -205,7 +220,7 @@ Rules:
 Relation fields reuse the same `expose(...)` attribute as scalars, with a key-value form that names the nested projection per scope:
 
 ```rust
-#[field(expose(public = "UserSummary", self_view = "UserDetail", admin))]
+#[field(expose(public = "UserSummary", self_view = "UserDetail"))]
 pub owner: ForeignKey<User>,
 ```
 
@@ -213,7 +228,7 @@ Form semantics:
 
 - `expose(scope)` on a scalar field — include as the native type in `scope`.
 - `expose(scope = "ProjType")` on a relation field — include in `scope` rendered as the named nested projection. The macro rejects this form on scalar fields.
-- `expose(scope)` on a relation field — reserved; the macro should require an explicit nested projection name rather than fall back to the raw persistence model.
+- `expose(scope)` on a relation field — **compile error** in Phase 4.5. The nested transport shape must always be named explicitly; there is no fallback to the raw persistence model.
 
 The exact syntax may evolve, but the contract is stable: nested transport shapes must remain projection-based, and the attribute name stays `expose` so scope membership lives in one place.
 
