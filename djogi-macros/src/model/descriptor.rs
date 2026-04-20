@@ -73,6 +73,7 @@ pub fn expand(
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 // Framework columns carry no relation metadata — `id` is a
                 // PK, not an FK, and Phase 4.5's projection hookup lands
@@ -94,6 +95,7 @@ pub fn expand(
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
@@ -112,6 +114,7 @@ pub fn expand(
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
@@ -133,6 +136,7 @@ pub fn expand(
             renamed_from: None,
             rationale: None,
             outbox_exclude: false,
+            sequence_within: None,
             index_type: None,
             relation_kind: None,
             on_delete: None,
@@ -151,6 +155,7 @@ pub fn expand(
             renamed_from: None,
             rationale: None,
             outbox_exclude: false,
+            sequence_within: None,
             index_type: None,
             relation_kind: None,
             on_delete: None,
@@ -168,6 +173,19 @@ pub fn expand(
             // Raw identifiers (`r#type`) must serialize to the bare SQL
             // column name — matches the stripping pattern in `stubs.rs`.
             let name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            // Phase 4 Task 6 — `#[field(outbox = "ignore")]` marks the
+            // column as excluded from the transactional outbox payload.
+            // `FieldAttrs::parse` has already validated the string value,
+            // so a non-`None` `outbox` attr always means "ignore" here.
+            let outbox_exclude = fa.outbox.as_deref() == Some("ignore");
+            // Phase 4 Task 7.6 — `#[field(sequence_within = "col")]`
+            // scopes a monotonic sequence to a parent FK column. The
+            // macro runtime uses this descriptor slot to detect the
+            // scoped-sequence field in `Model::create`.
+            let sequence_within_tokens = match &fa.sequence_within {
+                Some(col) => quote! { ::std::option::Option::Some(#col) },
+                None => quote! { ::std::option::Option::None },
+            };
 
             // Detect FK / O2O relation shape before the generic scalar
             // `unwrap_option` strip — `detect_relation` itself handles the
@@ -239,9 +257,13 @@ pub fn expand(
                     indexed: #indexed,
                     max_length: #max_length,
                     renamed_from: #renamed_from,
-                    // Phase 1 defaults — populated by later phases' attr parsers.
                     rationale: None,
-                    outbox_exclude: false,
+                    // Phase 4 Task 6 — `#[field(outbox = "ignore")]` toggles
+                    // per-column outbox exclusion. The outbox helper walks
+                    // `descriptor.fields` at emit time and strips any key
+                    // flagged here from the JSONB payload.
+                    outbox_exclude: #outbox_exclude,
+                    sequence_within: #sequence_within_tokens,
                     index_type: None,
                     // Phase 3 Task 2 — relation metadata emitted only for FK/O2O
                     // columns. Non-relation columns keep `None`/`&[]`.
@@ -265,6 +287,15 @@ pub fn expand(
     all_field_descriptors.extend(user_field_descriptors);
 
     let is_through = model_attrs.through;
+    let has_outbox = model_attrs.events;
+    // Phase 4 Task 7.5 — `#[model(idempotency_key = "column")]` emits the
+    // column name into the descriptor so runtime consumers
+    // (`create_or_find`, `bulk_upsert_by_descriptor`) can discover the
+    // conflict key. Non-idempotent models keep `None`.
+    let idempotency_key_tokens = match &model_attrs.idempotency_key {
+        Some(col) => quote! { ::std::option::Option::Some(#col) },
+        None => quote! { ::std::option::Option::None },
+    };
 
     quote! {
         ::djogi::__private::inventory::submit! {
@@ -277,8 +308,12 @@ pub fn expand(
                 ],
                 // Phase 1 defaults — populated by later phases' attr parsers.
                 partition_by: None,
-                has_outbox: false,
-                idempotency_key: None,
+                // Phase 4 Task 6 — `#[model(table = "...", events)]` toggles
+                // transactional outbox emission on every ctx-scoped
+                // create/save/delete. `djogi::outbox::emit_event` keys off
+                // this flag at codegen time.
+                has_outbox: #has_outbox,
+                idempotency_key: #idempotency_key_tokens,
                 tenant_key: None,
                 cache_ttl: None,
                 rationale: None,

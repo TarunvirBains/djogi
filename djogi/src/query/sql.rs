@@ -70,7 +70,7 @@ fn escape_like(s: &str) -> String {
 /// at the SQL level. The typed `FieldRef::is_null` / `is_not_null` lookups
 /// never route NULL through this path — they take the explicit `IS NULL` /
 /// `IS NOT NULL` operator branch.
-fn push_filter_value(qb: &mut QueryBuilder<'_, Postgres>, v: FilterValue) {
+pub(crate) fn push_filter_value(qb: &mut QueryBuilder<'_, Postgres>, v: FilterValue) {
     match v {
         FilterValue::String(s) => {
             qb.push_bind(s);
@@ -347,7 +347,17 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf, parent_table: Opti
 /// in a joined-variant emission lands as `{table}.{column}`; the non-joined
 /// path passes `None` and gets bare names, preserving byte-for-byte parity
 /// with Phase 2 output.
-fn emit_condition(
+///
+/// `pub(crate)` because Phase 4 Task 5 needs this entry point to lower the
+/// [`Condition`] tree that backs a subquery's `WHERE` clause (a
+/// [`SubqueryNode`](crate::expr::node::SubqueryNode) stores the parent
+/// queryset's accumulated condition tree verbatim and lets this emitter
+/// render it at subquery-emission time — see
+/// [`crate::expr::sql::emit_subquery`]). Keeping the emitter itself
+/// module-private would force a duplicate walk inside `expr::sql`; widening
+/// to `pub(crate)` reuses the shipped, battle-tested condition emitter
+/// without copy-pasting its every `LookupOp` arm.
+pub(crate) fn emit_condition(
     qb: &mut QueryBuilder<'_, Postgres>,
     c: Condition,
     parent_table: Option<&'static str>,
@@ -396,6 +406,15 @@ fn emit_condition(
                 emit_condition(qb, p, parent_table);
             }
             qb.push(")");
+        }
+        // Expression-IR bridge — delegates to the dedicated emitter in
+        // `expr::sql`. The expression tree carries its own column
+        // references + literals + nested arithmetic; `parent_table` is
+        // deliberately not threaded through (see the module-level
+        // comment in `expr::sql` for the scope note on select_related
+        // interaction, deferred to Task 5).
+        Condition::Expr(expr) => {
+            crate::expr::sql::emit_expr(qb, &expr.node);
         }
     }
 }
@@ -517,6 +536,12 @@ fn push_tail_qualified<T: Model>(
         qb.push(" OFFSET ");
         qb.push_bind(n);
     }
+    // Row-lock tail — `FOR UPDATE [NOWAIT|SKIP LOCKED]` — is the last
+    // thing Postgres accepts on a SELECT, after `LIMIT`/`OFFSET`.
+    // `LockMode::None` is a no-op so the pre-Task-7 SELECT shape is
+    // byte-for-byte preserved for querysets that never touched the
+    // lock builders.
+    qs.lock.push_tail(qb);
 }
 
 /// Build `SELECT [DISTINCT [ON (...)]] * FROM <table> [WHERE ...]
@@ -630,6 +655,160 @@ pub(crate) fn build_select_joined<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilde
     qb.push(T::table_name());
     crate::relation::select_related::push_joins::<T>(&mut qb, &qs.select_related_paths);
     push_tail_qualified(&mut qb, qs, parent_table);
+    qb
+}
+
+/// Emit `(AGG(..))::CAST` for the scalar-aggregate path — wraps the
+/// bare aggregate in parens so the narrowing `::CAST` applies to the
+/// whole function call, including any `FILTER (WHERE ...)` tail.
+///
+/// `cast_to` is pulled from the [`crate::expr::node::ExprNode::Aggregate`]
+/// payload; `None` skips the cast entirely (used for `COUNT` /
+/// `MIN` / `MAX` where the Postgres return type already decodes into
+/// `Out` directly).
+pub(crate) fn emit_aggregate_with_cast(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    agg: &crate::expr::node::ExprNode,
+) {
+    if let crate::expr::node::ExprNode::Aggregate { cast_to, .. } = agg
+        && cast_to.is_some()
+    {
+        qb.push("(");
+        crate::expr::sql::emit_expr(qb, agg);
+        qb.push(")::");
+        // Safe because we matched `cast_to.is_some()` above; the
+        // pattern binding borrows immutably so we re-extract here.
+        if let crate::expr::node::ExprNode::Aggregate {
+            cast_to: Some(ty), ..
+        } = agg
+        {
+            qb.push(*ty);
+        }
+    } else {
+        crate::expr::sql::emit_expr(qb, agg);
+    }
+}
+
+/// Emit `(AGG(..) OVER ())::CAST` for the annotate-SELECT-list path —
+/// wraps the aggregate in a window function so the SELECT list is
+/// valid without a `GROUP BY` clause, then applies the optional
+/// narrowing cast.
+///
+/// # Why `OVER ()` rather than explicit `GROUP BY`
+///
+/// `annotate(|f| f.col().sum())` on a Task 4 queryset has no natural
+/// grouping key — the main row's PK would give a one-row-per-group
+/// partition (every aggregate collapses to the per-row column value).
+/// An unbounded window function (`OVER ()`) produces the table-wide
+/// aggregate value on every returned row, which is the useful
+/// semantics Django users expect when annotating a non-reverse-
+/// relation column.
+///
+/// Reverse-relation aggregates (`f.orders.count()` — Task 5 scope)
+/// may need `OVER (PARTITION BY parent.id)` after a LATERAL join;
+/// that is a deliberate scope boundary here. Task 4 aims for the
+/// simplest annotate shape that pairs with the self-column aggregate
+/// helpers already on `FieldRef`.
+pub(crate) fn emit_aggregate_with_window_and_cast(
+    qb: &mut QueryBuilder<'_, Postgres>,
+    agg: &crate::expr::node::ExprNode,
+) {
+    let cast = match agg {
+        crate::expr::node::ExprNode::Aggregate { cast_to, .. } => *cast_to,
+        _ => None,
+    };
+    if cast.is_some() {
+        qb.push("(");
+    }
+    crate::expr::sql::emit_expr(qb, agg);
+    qb.push(" OVER ()");
+    if let Some(ty) = cast {
+        qb.push(")::");
+        qb.push(ty);
+    }
+}
+
+/// Build `SELECT <agg> FROM <table> [WHERE ...]` — the scalar-aggregate
+/// terminal for [`crate::query::aggregate::AggregateQuery::fetch_one`].
+///
+/// No `ORDER BY`, no `LIMIT`, no `OFFSET`, no `GROUP BY` — ungrouped
+/// aggregates collapse to exactly one result row regardless of the
+/// underlying cardinality, so those clauses would be meaningless.
+///
+/// The aggregate expression is emitted via [`emit_aggregate_with_cast`]
+/// so integer `SUM` / `AVG` results narrow back to the typed `Out`
+/// sqlx expects. `WHERE` uses the shared [`push_where`] helper so
+/// vacuously-true predicates are elided identically to every other
+/// terminal.
+pub(crate) fn build_aggregate_select<'a, T: Model>(
+    qs: &QuerySet<T>,
+    agg: &crate::expr::node::ExprNode,
+) -> QueryBuilder<'a, Postgres> {
+    let mut qb = QueryBuilder::new("SELECT ");
+    emit_aggregate_with_cast(&mut qb, agg);
+    qb.push(" FROM ");
+    qb.push(T::table_name());
+    push_where(&mut qb, qs);
+    qb
+}
+
+/// Build `SELECT t.*, <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1
+/// FROM <table> [WHERE ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` —
+/// the annotation terminal for
+/// [`crate::query::annotate::AnnotatedQuerySet::fetch_all`].
+///
+/// # Why `t.*` plus aliased aggregates
+///
+/// `FromRow` looks up columns by name (see
+/// [`djogi-macros/src/model/from_row.rs`]) and ignores columns it does
+/// not recognise. The annotated row carries both the full `t.*`
+/// projection (decoded into `T`) and the aggregate columns under
+/// synthetic `__djogi_agg_N` aliases (decoded into the tuple slots).
+/// Each side reads its own column set; they never collide because
+/// model columns are user-chosen identifiers and the aggregate
+/// aliases use the framework-reserved `__djogi_agg_` prefix.
+///
+/// The alias prefix mirrors the `__djogi_parent_id` synthetic used by
+/// the prefetch loader — same reservation convention, same rationale
+/// (explicit prefix keeps user-space naming unrestricted).
+///
+/// # Columns argument
+///
+/// `push_columns` is a closure the caller supplies so the SELECT-list
+/// emission can inspect the typed tuple shape at compile time. The
+/// annotate terminal's `IntoAggregateTuple::push_columns` impl pushes
+/// `, <agg_expr> AS __djogi_agg_N` once per tuple arity slot; this
+/// emitter owns the `t.*` prefix and the `FROM` / `WHERE` / `ORDER BY`
+/// / `LIMIT` / `OFFSET` tail around it.
+///
+/// The table alias `t` is hard-coded because the annotate path does
+/// not support select_related joins in Task 4 — a joined annotate
+/// would need the same parent-table qualification
+/// [`build_select_joined`] applies, which is out of scope here. The
+/// Task 4 plan pins annotate to the single-table shape; Task 5 will
+/// generalise joins for both expression and annotate paths together.
+pub(crate) fn build_select_with_annotations<'a, T, F>(
+    qs: &QuerySet<T>,
+    push_columns: F,
+) -> QueryBuilder<'a, Postgres>
+where
+    T: Model,
+    F: FnOnce(&mut QueryBuilder<'a, Postgres>),
+{
+    let mut qb = QueryBuilder::new("");
+    // `SELECT t.*` prefix — the `t` alias is what the FROM clause
+    // below names the table as. Using `t.*` instead of enumerating
+    // every model column keeps the emitter simple; the columns land
+    // in the row in schema order and FromRow picks them up by name.
+    qb.push("SELECT t.*");
+    // Caller-provided per-aggregate comma-separated pushes. The
+    // trait impl prepends `, ` before each `<agg> AS __djogi_agg_N`
+    // so the SELECT list stays well-formed for arities 1..=4.
+    push_columns(&mut qb);
+    qb.push(" FROM ");
+    qb.push(T::table_name());
+    qb.push(" AS t");
+    push_tail(&mut qb, qs);
     qb
 }
 
@@ -781,10 +960,20 @@ pub(crate) fn build_update<'a, T: Model>(
         // `V: IntoFilterValue`, which never produces `FilterValue::Null`).
         qb.push(a.column());
         qb.push(" = ");
-        // `push_filter_value` consumes the value; clone because the emitter
-        // takes `assignments` by reference so the `UpdateStmt` retains its
-        // payload for retry/clone.
-        push_filter_value(&mut qb, a.value().clone());
+        // Dispatch literal vs expression-IR payload. Literals go through
+        // `push_filter_value` (a single `$n` bind); expression trees
+        // recurse through `emit_expr`, which emits arithmetic, field
+        // refs, and nested binds. `clone()` on the literal path retains
+        // the `UpdateStmt`'s payload for retry; the Expr arm borrows
+        // the inner `ExprNode` by reference.
+        match a.value() {
+            crate::query::update::AssignmentValue::Literal(v) => {
+                push_filter_value(&mut qb, v.clone());
+            }
+            crate::query::update::AssignmentValue::Expr(node) => {
+                crate::expr::sql::emit_expr(&mut qb, node);
+            }
+        }
     }
     // Always stamp `updated_at = now()` on bulk updates — matches
     // single-row save(). `now()` is a SQL literal, not a user value, so
@@ -862,7 +1051,7 @@ mod tests {
             async { unreachable!() }
         }
         fn save<'ctx>(
-            &'ctx self,
+            &'ctx mut self,
             _ctx: &'ctx mut crate::context::DjogiContext,
         ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
         {
@@ -1203,10 +1392,10 @@ mod tests {
     fn update_single_assignment_emits_set_and_updated_at() {
         // Single assignment + no filter: one bind for the user value,
         // `updated_at = now()` stamped by the emitter, no `WHERE`.
-        use crate::query::update::UpdateAssignment;
+        use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
-            value: FilterValue::I32(999),
+            value: AssignmentValue::Literal(FilterValue::I32(999)),
         };
         let qs: QuerySet<Fake> = QuerySet::new();
         let qb = build_update(&qs, &[a]);
@@ -1222,14 +1411,14 @@ mod tests {
     fn update_multiple_assignments_comma_separate_binds() {
         // Two assignments: `SET col = $1, col = $2, updated_at = now()`.
         // Only the user's values consume bind slots; `now()` is raw SQL.
-        use crate::query::update::UpdateAssignment;
+        use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
-            value: FilterValue::I32(1),
+            value: AssignmentValue::Literal(FilterValue::I32(1)),
         };
         let b = UpdateAssignment {
             column: "published",
-            value: FilterValue::Bool(true),
+            value: AssignmentValue::Literal(FilterValue::Bool(true)),
         };
         let qs: QuerySet<Fake> = QuerySet::new();
         let qb = build_update(&qs, &[a, b]);
@@ -1245,10 +1434,10 @@ mod tests {
         // Assignments take $1; the filter leaf takes $2. Positional
         // numbering is contiguous — sqlx's `QueryBuilder` assigns them
         // in push order regardless of clause.
-        use crate::query::update::UpdateAssignment;
+        use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
             column: "view_count",
-            value: FilterValue::I32(42),
+            value: AssignmentValue::Literal(FilterValue::I32(42)),
         };
         let qs: QuerySet<Fake> = QuerySet::new()
             .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));
@@ -1325,6 +1514,7 @@ mod tests {
             renamed_from: None,
             rationale: None,
             outbox_exclude: false,
+            sequence_within: None,
             index_type: None,
             relation_kind: None,
             on_delete: None,
@@ -1425,6 +1615,78 @@ mod tests {
         assert!(
             !sql.contains("fakes.id"),
             "bare query must not qualify: {sql}"
+        );
+    }
+
+    // ── Phase 4 Task 7 — row-lock SQL tails ───────────────────────────
+
+    #[test]
+    fn select_for_update_appends_lock_tail() {
+        let qs: QuerySet<Fake> = QuerySet::new().select_for_update();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE"),
+            "expected FOR UPDATE tail, got: {sql}"
+        );
+        assert!(
+            !sql.contains("NOWAIT") && !sql.contains("SKIP LOCKED"),
+            "select_for_update must not escalate to NOWAIT / SKIP LOCKED"
+        );
+    }
+
+    #[test]
+    fn nowait_appends_for_update_nowait_tail() {
+        // `.nowait()` alone — implies the base `FOR UPDATE` per the
+        // rustdoc contract.
+        let qs: QuerySet<Fake> = QuerySet::new().nowait();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE NOWAIT"),
+            "expected FOR UPDATE NOWAIT tail, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn skip_locked_appends_for_update_skip_locked_tail() {
+        let qs: QuerySet<Fake> = QuerySet::new().skip_locked();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(
+            sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
+            "expected FOR UPDATE SKIP LOCKED tail, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lock_tail_follows_limit_and_offset() {
+        // Postgres requires `FOR UPDATE` after `LIMIT`/`OFFSET`. The
+        // emitter must match that order — swapping them yields a
+        // syntax error the caller only sees at runtime.
+        let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(5).select_for_update();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        let limit_idx = sql.find("LIMIT").expect("LIMIT must appear");
+        let offset_idx = sql.find("OFFSET").expect("OFFSET must appear");
+        let lock_idx = sql.find("FOR UPDATE").expect("FOR UPDATE must appear");
+        assert!(
+            limit_idx < offset_idx && offset_idx < lock_idx,
+            "expected LIMIT ... OFFSET ... FOR UPDATE order, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lock_builder_last_call_wins_across_nowait_skip_locked() {
+        // Chaining `.nowait().skip_locked()` — the skip_locked call
+        // overwrites the nowait variant. Mirrors the rustdoc contract.
+        let qs: QuerySet<Fake> = QuerySet::new().nowait().skip_locked();
+        let qb = build_select(&qs);
+        let sql = qb.sql();
+        assert!(sql.contains("SKIP LOCKED"), "got: {sql}");
+        assert!(
+            !sql.contains("NOWAIT"),
+            "skip_locked must have overwritten nowait: {sql}"
         );
     }
 }

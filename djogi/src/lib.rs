@@ -44,11 +44,14 @@ pub mod config;
 pub mod context;
 pub mod descriptor;
 pub mod error;
+pub mod expr;
 pub(crate) mod ident;
 pub mod model;
+pub mod outbox;
 pub mod query;
 pub mod raw;
 pub mod relation;
+pub mod transaction;
 pub mod types;
 
 /// Private re-exports used only by macro-generated code.
@@ -82,9 +85,10 @@ pub use descriptor::{
 };
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
 pub use error::DjogiError;
+pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
 pub use query::{
-    Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
-    UpdateAssignment, UpdateStmt,
+    AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
+    IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, UpdateAssignment, UpdateStmt,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -98,11 +102,15 @@ pub mod prelude {
         FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
     };
     pub use crate::error::DjogiError;
+    pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
     pub use crate::model::Model;
     pub use crate::query::{
-        Condition, FieldRef, FilterClause, IntoFilterValue, Lookup, ModelFilter, OrderExpr,
-        QuerySet,
+        AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
+        IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
     };
+    // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
+    // transaction scope + retry helper.
+    pub use crate::transaction::{atomic, retry_on_conflict};
     // Relation wrappers — unresolved (`ForeignKey`, `OneToOneField`) are
     // what user model structs declare; resolved (`ForeignKeyResolved`,
     // `OneToOneFieldResolved`) are what prefetched view structs receive,

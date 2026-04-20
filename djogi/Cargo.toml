@@ -22,6 +22,7 @@ inventory.workspace = true
 figment.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -49,4 +50,9 @@ harness = true
 [[test]]
 name = "phase3_relations"
 path = "../tests/integration/phase3_relations.rs"
+harness = true
+
+[[test]]
+name = "phase4_transactions_expressions"
+path = "../tests/integration/phase4_transactions_expressions.rs"
 harness = true

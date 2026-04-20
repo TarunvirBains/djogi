@@ -47,6 +47,13 @@ thiserror = "2"
 # subscriber wiring is the adopter's choice.
 tracing = "0.1"
 
+# Future combinators — specifically `FutureExt::catch_unwind` for the
+# panic-safe on_commit drain and the `atomic()` panic propagation guard
+# (Phase 4 Task 1). The std `catch_unwind` only works on closures; async
+# futures require the `futures` variant. `default-features = false` keeps
+# the surface minimal — we only consume `catch_unwind`.
+futures = { version = "0.3", default-features = false, features = ["std"] }
+
 # Testing
 trybuild = { version = "1", features = ["diff"] }
 

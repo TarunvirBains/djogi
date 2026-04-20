@@ -133,8 +133,13 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send;
 
     /// Update all user-defined fields for this row. Sets `updated_at = now()`.
+    ///
+    /// On success `self` is rehydrated from the `UPDATE ... RETURNING *`
+    /// result — `updated_at` advances, and any column mutated by a
+    /// `BEFORE UPDATE` trigger or server-side default surfaces in the
+    /// receiver. In-memory state cannot drift from database truth.
     fn save<'ctx>(
-        &'ctx self,
+        &'ctx mut self,
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<(), DjogiError>> + Send + 'ctx;
 

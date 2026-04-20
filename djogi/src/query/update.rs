@@ -40,10 +40,13 @@
 //! always a structurally-valid scalar `FilterValue` (never a `List`, `Pair`,
 //! or `Null`, which the UPDATE emitter has no sensible rendering for).
 //!
-//! Users who need richer SQL (`col = col + 1`, `col = NOW() - interval`,
-//! `col = other_col`) use the raw `sqlx::QueryBuilder` escape hatch in
-//! [`crate::raw`]; expression-backed SET lands in Phase 4 alongside the
-//! rest of the expression layer.
+//! Users who need `col = col + N`, `col = other_col`, or other
+//! field-vs-field / arithmetic assignments reach for the expression
+//! builder [`FieldRef::set_expr`]: it wraps an [`crate::expr::Expr<V>`]
+//! IR tree into the same [`UpdateAssignment`] shape the literal `.set(v)`
+//! produces. For richer SQL the emitter cannot express (`NOW() - interval
+//! '1 day'`, `CASE WHEN ...` before Task 5 lands), the raw
+//! `sqlx::QueryBuilder` escape hatch in [`crate::raw`] is still there.
 //!
 //! # `updated_at = now()` stamping
 //!
@@ -77,18 +80,19 @@ use crate::query::sql::{build_delete, build_update};
 use std::future::Future;
 use std::marker::PhantomData;
 
-/// A single `SET column = value` clause — produced by [`FieldRef::set`].
+/// A single `SET column = value` clause — produced by [`FieldRef::set`]
+/// (literal) or [`FieldRef::set_expr`] (expression IR).
 ///
 /// # Invariants
 ///
 /// Fields are `pub(crate)` so the only way to construct an
-/// `UpdateAssignment` from outside this crate is [`FieldRef::set`]. That
-/// funnel routes the value through [`IntoFilterValue`], so `value` is
-/// always a structurally-valid scalar `FilterValue` (never `List`,
-/// `Pair`, or `Null`) and `column` is always a macro-baked
-/// `&'static str`. The UPDATE emitter ([`crate::query::sql::build_update`])
-/// relies on both invariants — the same reasoning that makes `FilterClause`'s
-/// fields `pub(crate)` in Task 8.
+/// `UpdateAssignment` from outside this crate is [`FieldRef::set`] or
+/// [`FieldRef::set_expr`]. The literal path funnels through
+/// [`IntoFilterValue`], so a `Literal` payload is always a structurally-
+/// valid scalar `FilterValue` (never `List`, `Pair`, or `Null`). The
+/// expression path takes a typed `Expr<V>` wrapper; the inner
+/// `ExprNode` is crate-private so downstream code cannot fabricate
+/// unsafe tree shapes. `column` is always a macro-baked `&'static str`.
 ///
 /// `Debug` + `Clone` are derived so callers can log pending assignments
 /// and retry an `UpdateStmt` without re-running the builder closure.
@@ -96,21 +100,47 @@ use std::marker::PhantomData;
 pub struct UpdateAssignment {
     /// SQL column name — macro-baked literal, never user input.
     pub(crate) column: &'static str,
-    /// Already-projected bind value. Scalar `FilterValue` only; the
-    /// UPDATE emitter routes this through `push_filter_value`, which
-    /// panics on `List`/`Pair`/`Null`. The `FieldRef::set` constructor
-    /// and `IntoFilterValue` together guarantee we never reach that
-    /// panic.
-    pub(crate) value: FilterValue,
+    /// Assignment payload — either a projected literal or an IR tree.
+    pub(crate) value: AssignmentValue,
+}
+
+/// The right-hand side of an `UpdateAssignment`.
+///
+/// `Literal` carries a single bind value (the Phase 2 shape). `Expr`
+/// carries an IR node whose emission (`col = col + 1`, `col = other_col`,
+/// arithmetic combinations) is handled by the Phase 4 expression emitter.
+#[derive(Debug, Clone)]
+pub(crate) enum AssignmentValue {
+    /// Literal value — emitted as a single `$n` bind via
+    /// [`crate::query::sql::push_filter_value`].
+    Literal(FilterValue),
+    /// Expression IR — emitted via
+    /// [`crate::expr::sql::emit_expr`]; the emitter recurses through
+    /// arithmetic, field refs, and comparisons.
+    Expr(crate::expr::node::ExprNode),
 }
 
 impl UpdateAssignment {
-    /// Internal constructor — called only by [`FieldRef::set`]. Kept
-    /// `pub(crate)` because the public-API path is the typed
-    /// `FieldRef::set` surface; hand-building an assignment from
-    /// downstream code would bypass the `V: IntoFilterValue` type check.
+    /// Internal constructor for literal assignments — called only by
+    /// [`FieldRef::set`]. Kept `pub(crate)` because the public-API path
+    /// is the typed `FieldRef::set` surface; hand-building an assignment
+    /// from downstream code would bypass the `V: IntoFilterValue` type
+    /// check.
     pub(crate) fn new(column: &'static str, value: FilterValue) -> Self {
-        Self { column, value }
+        Self {
+            column,
+            value: AssignmentValue::Literal(value),
+        }
+    }
+
+    /// Internal constructor for expression-backed assignments — called
+    /// only by [`FieldRef::set_expr`]. The `ExprNode` tree is already
+    /// `V`-safe at construction; the emitter walks it directly.
+    pub(crate) fn new_expr(column: &'static str, node: crate::expr::node::ExprNode) -> Self {
+        Self {
+            column,
+            value: AssignmentValue::Expr(node),
+        }
     }
 
     /// Internal accessor for the column name. Used by the SQL emitter
@@ -120,10 +150,11 @@ impl UpdateAssignment {
         self.column
     }
 
-    /// Internal accessor for the bound value. Used by the SQL emitter
-    /// when pushing the `SET col = $n` bind.
+    /// Internal accessor for the assignment payload. Used by the SQL
+    /// emitter to dispatch between the literal-bind and expression-IR
+    /// emission paths.
     #[doc(hidden)]
-    pub fn value(&self) -> &FilterValue {
+    pub(crate) fn value(&self) -> &AssignmentValue {
         &self.value
     }
 }
@@ -148,6 +179,38 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
     pub fn set(self, value: V) -> UpdateAssignment {
         UpdateAssignment::new(self.column(), value.into_filter_value())
+    }
+}
+
+/// Expression-backed assignment builder — `field.set_expr(Expr<V>)`
+/// produces an [`UpdateAssignment`] whose SQL right-hand side is the
+/// compiled IR tree rather than a single bind.
+///
+/// Typical call sites:
+///
+/// ```ignore
+/// // col = col + 1
+/// Account::objects()
+///     .update(|f| f.balance().set_expr(f.balance().as_expr() + Expr::literal(1i64)))
+///     .execute(&mut ctx).await?;
+///
+/// // col = other_col  (field-vs-field copy)
+/// Account::objects()
+///     .update(|f| f.balance().set_expr(f.overdraft_limit().as_expr()))
+///     .execute(&mut ctx).await?;
+/// ```
+///
+/// The `V: IntoFilterValue` bound is kept for symmetry with
+/// [`FieldRef::set`] — both entry points flow through the same typed
+/// surface, and the `ExprNode` tree has already committed to a value
+/// type by the time the user reaches this method.
+impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
+    /// Build an expression-backed `SET column = <expr>` assignment for
+    /// [`QuerySet::update`]. `<expr>` composes field references,
+    /// arithmetic, and literals via the [`crate::expr::Expr<V>`] IR.
+    #[must_use = "assignments are lazy — drop one and the SET clause is silently omitted"]
+    pub fn set_expr(self, expr: crate::expr::Expr<V>) -> UpdateAssignment {
+        UpdateAssignment::new_expr(self.column(), expr.node)
     }
 }
 
@@ -404,7 +467,7 @@ mod tests {
             async { unreachable!() }
         }
         fn save<'ctx>(
-            &'ctx self,
+            &'ctx mut self,
             _ctx: &'ctx mut crate::context::DjogiContext,
         ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
         {
@@ -430,7 +493,23 @@ mod tests {
         let f: FieldRef<Fake, i32> = FieldRef::new("view_count");
         let a = f.set(42i32);
         assert_eq!(a.column(), "view_count");
-        assert!(matches!(a.value(), FilterValue::I32(42)));
+        assert!(matches!(
+            a.value(),
+            crate::query::update::AssignmentValue::Literal(FilterValue::I32(42))
+        ));
+    }
+
+    #[test]
+    fn field_ref_set_expr_builds_expression_assignment() {
+        use crate::expr::Expr;
+        let f: FieldRef<Fake, i64> = FieldRef::new("balance");
+        // balance + 5
+        let a = f.set_expr(f.as_expr() + Expr::literal(5i64));
+        assert_eq!(a.column(), "balance");
+        assert!(matches!(
+            a.value(),
+            crate::query::update::AssignmentValue::Expr(_)
+        ));
     }
 
     #[test]

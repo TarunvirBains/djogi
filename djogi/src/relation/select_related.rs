@@ -63,9 +63,10 @@
 //!   queryset; the terminal honours both.
 
 use crate::DjogiError;
+use crate::context::ContextInner;
 use crate::model::Model;
 use crate::relation::joined_row::{FromJoinedRow, JoinedRow};
-use sqlx::{PgPool, Postgres, QueryBuilder, Row, ValueRef};
+use sqlx::{Postgres, QueryBuilder, Row, ValueRef};
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -357,7 +358,7 @@ where
 pub(crate) async fn stitch_prefetches_into_joined<T>(
     mut joined: Vec<JoinedRow<T>>,
     prefetches: &[crate::relation::prefetch::ErasedPrefetch],
-    pool: &PgPool,
+    exec: &mut ContextInner,
 ) -> Result<Vec<JoinedRow<T>>, DjogiError>
 where
     T: Model,
@@ -388,8 +389,10 @@ where
             .iter()
             .map(|jr| Box::new(jr.row.pk_value().clone()) as Box<dyn Any + Send + Sync>)
             .collect();
+        // Re-borrow the context per loader iteration — see the mirror
+        // call site in `prefetch::apply_prefetches` for the full note.
         let aligned = (prefetch.loader)(
-            pool,
+            &mut *exec,
             prefetch.parent_table,
             prefetch.source_column,
             parent_pks_for_loader,
@@ -452,7 +455,7 @@ mod tests {
             async { unreachable!() }
         }
         fn save<'ctx>(
-            &'ctx self,
+            &'ctx mut self,
             _ctx: &'ctx mut crate::context::DjogiContext,
         ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
             async { unreachable!() }
@@ -499,6 +502,7 @@ mod tests {
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
@@ -515,6 +519,7 @@ mod tests {
                 renamed_from: None,
                 rationale: None,
                 outbox_exclude: false,
+                sequence_within: None,
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
@@ -546,6 +551,7 @@ mod tests {
             renamed_from: None,
             rationale: None,
             outbox_exclude: false,
+            sequence_within: None,
             index_type: None,
             relation_kind: None,
             on_delete: None,

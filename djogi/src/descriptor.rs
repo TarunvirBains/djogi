@@ -176,6 +176,17 @@ pub struct FieldDescriptor {
     /// `#[field(outbox = "ignore")]` — exclude the field from the outbox
     /// payload. Declared in Phase 1; outbox writes land in Phase 5.
     pub outbox_exclude: bool,
+    /// `#[field(sequence_within = "parent_fk_column")]` — parent FK
+    /// column that scopes this field's monotonic sequence. When
+    /// `Some(col)`, the emitted `Model::create` runs a counter
+    /// upsert against `<table>_seq_<col>` inside the caller's
+    /// atomic scope before inserting the row, captures the returned
+    /// `last_seq`, and writes it into this field. Phase 4 Task 7.6.
+    ///
+    /// `None` for every field that is not scope-sequenced. The
+    /// macro enforces that at most one field per model carries this
+    /// attribute (multi-scope sequencing is a future extension).
+    pub sequence_within: Option<&'static str>,
     /// Override the index method for this field's implicit index.
     /// `None` falls back to `IndexType::BTree`. Declared in Phase 1;
     /// migration generation for non-BTree methods lands in Phase 6.

@@ -91,6 +91,94 @@ pub enum DjogiError {
         model: &'static str,
         field: &'static str,
     },
+
+    /// JSON serialization / deserialization failed. Raised by the Phase 4
+    /// Task 6 transactional-outbox emitter when `serde_json::to_value`
+    /// cannot lower a model row into a JSON document — typically because
+    /// a user field's `Serialize` impl returned an error. Wraps the
+    /// `serde_json::Error` verbatim so the caller can inspect the
+    /// underlying failure.
+    #[error("JSON serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
+
+    /// A DDD-style aggregate was hard-deleted mid-operation,
+    /// invalidating any further work against its id. Phase 4 Task
+    /// 7.7 introduces this variant as the canonical terminal signal
+    /// for "the aggregate you're operating on no longer exists" —
+    /// distinct from `NotFound` (which covers initial-lookup
+    /// misses) in that the caller already observed the aggregate
+    /// earlier in the same operation.
+    ///
+    /// `model` is the owning model's `type_name` (same source as
+    /// `MissingIdempotencyKey::model`). `id` is the PK rendered to
+    /// a string (no generic parameter so the error type stays
+    /// object-safe and usable across model boundaries). `reason` is
+    /// a `&'static str` describing why the aggregate is gone (e.g.
+    /// `"hard-deleted by admin"`, `"retention policy evicted"`).
+    ///
+    /// Classified as **terminal** by
+    /// [`DjogiError::is_transient`] — `retry_on_conflict` does not
+    /// retry this variant because retrying against a deleted row
+    /// cannot succeed.
+    #[error("aggregate '{model}' id={id} is gone: {reason}")]
+    #[non_exhaustive]
+    GoneAggregate {
+        model: &'static str,
+        id: String,
+        reason: &'static str,
+    },
+
+    /// A convenience method that consumes the descriptor's
+    /// `idempotency_key` slot
+    /// ([`create_or_find`](crate::model::Model) /
+    /// `bulk_upsert_by_descriptor`) was invoked against a model
+    /// whose `#[model(...)]` attribute does not set the key. Phase 4
+    /// Task 7.5 introduces this variant as the runtime pointer at
+    /// the attribute the caller needs to add.
+    ///
+    /// `model` is the `type_name` from [`ModelDescriptor::type_name`]
+    /// — a `&'static str` the macro lifts directly from the struct
+    /// identifier.
+    #[error(
+        "model '{model}' has no #[model(idempotency_key = \"...\")] declared; \
+         set one or use bulk_upsert with an explicit conflict-key slice"
+    )]
+    #[non_exhaustive]
+    MissingIdempotencyKey { model: &'static str },
+
+    /// A runtime argument-validation failure produced by a CRUD
+    /// convenience method — the caller's request is well-typed at
+    /// compile time but fails a runtime invariant (e.g.
+    /// `bulk_upsert`'s `conflict_cols` naming a column that does not
+    /// exist on the model). Phase 4 Task 7d introduces this variant
+    /// for `bulk_upsert`'s allow-list check; future phases may add
+    /// more callers.
+    ///
+    /// The inner `String` is a human-readable description of the
+    /// failure. No `&'static str` because callers interpolate the
+    /// offending column name / table name into the message.
+    #[error("validation error: {0}")]
+    Validation(String),
+
+    /// A `FOR UPDATE NOWAIT` / `FOR UPDATE` request could not acquire
+    /// its row lock, or a `SERIALIZABLE` / `REPEATABLE READ` transaction
+    /// encountered a serialization failure, or Postgres detected a
+    /// deadlock and aborted one participant. Phase 4 Task 7 introduces
+    /// this variant so the retry helper (`retry_on_conflict`) and the
+    /// caller can branch on lock-contention vs other database errors.
+    ///
+    /// Retryable SQLSTATE classes carried here:
+    ///
+    /// - `40001` — `serialization_failure`
+    /// - `40P01` — `deadlock_detected`
+    /// - `55P03` — `lock_not_available` (`NOWAIT` rejection)
+    ///
+    /// Other `sqlx::Error::Database` failures — `unique_violation`,
+    /// `foreign_key_violation`, connection drops — still flow through
+    /// [`Sqlx`](DjogiError::Sqlx). The classifier
+    /// [`is_lock_error`] keeps the variant boundary tight.
+    #[error("lock conflict: {0}")]
+    LockConflict(#[source] sqlx::Error),
 }
 
 impl DjogiError {
@@ -125,6 +213,130 @@ impl DjogiError {
     /// relation wrappers go through this constructor instead.
     pub fn relation_unloaded(model: &'static str, field: &'static str) -> Self {
         DjogiError::RelationUnloaded { model, field }
+    }
+
+    /// Construct a `MissingIdempotencyKey` error naming the model
+    /// whose `#[model(idempotency_key = "...")]` attribute was not
+    /// declared.
+    ///
+    /// Mirror of `not_found` / `multiple_objects` — exists so that
+    /// cross-crate callers (macro output in user crates) can produce
+    /// this variant despite `#[non_exhaustive]` blocking struct-
+    /// expression construction outside this crate.
+    pub fn missing_idempotency_key(model: &'static str) -> Self {
+        DjogiError::MissingIdempotencyKey { model }
+    }
+
+    /// Construct a `GoneAggregate` error.
+    ///
+    /// Mirror of the other constructors — exists so that cross-crate
+    /// callers can produce this `#[non_exhaustive]` variant. `id` is
+    /// typically produced via `format!("{}", pk)` so the error is
+    /// independent of the originating model's `Pk` type.
+    pub fn gone_aggregate(model: &'static str, id: String, reason: &'static str) -> Self {
+        DjogiError::GoneAggregate { model, id, reason }
+    }
+
+    /// Classify this error as **transient** (retrying the closure
+    /// may succeed) or **terminal** (retrying will not help).
+    ///
+    /// `retry_on_conflict` uses this predicate to decide whether to
+    /// re-run its closure. The contract:
+    ///
+    /// | Variant | Classification |
+    /// |---------|----------------|
+    /// | [`LockConflict`](Self::LockConflict) | transient |
+    /// | [`Sqlx`](Self::Sqlx) with SQLSTATE `40001` / `40P01` / `55P03` | transient |
+    /// | [`Sqlx`](Self::Sqlx) with any other SQLSTATE | terminal |
+    /// | [`NotFound`](Self::NotFound) | terminal |
+    /// | [`MultipleObjects`](Self::MultipleObjects) | terminal |
+    /// | [`IdGeneration`](Self::IdGeneration) | terminal |
+    /// | [`RelationUnloaded`](Self::RelationUnloaded) | terminal |
+    /// | [`Serde`](Self::Serde) | terminal |
+    /// | [`Validation`](Self::Validation) | terminal |
+    /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
+    /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
+    ///
+    /// The Sqlx row reflects the existing `is_lock_error`
+    /// classifier: Postgres SQLSTATEs `40001` (serialization
+    /// failure), `40P01` (deadlock detected), and `55P03`
+    /// (lock not available / `NOWAIT` rejection) are the three
+    /// retryable codes. Unique-violation, foreign-key violation,
+    /// connection drops, and protocol errors all fall through to
+    /// terminal because retrying the same closure against a
+    /// constraint violation will fail the same way.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            DjogiError::LockConflict(_) => true,
+            DjogiError::Sqlx(e) => is_lock_error(e),
+            _ => false,
+        }
+    }
+
+    /// Inverse of [`is_transient`](Self::is_transient) — returns
+    /// `true` when retrying will not help.
+    ///
+    /// Provided as a convenience for call sites that read more
+    /// naturally as `err.is_terminal()` than `!err.is_transient()`.
+    /// Same contract, inverted.
+    pub fn is_terminal(&self) -> bool {
+        !self.is_transient()
+    }
+}
+
+/// Return `true` if the sqlx error wraps a Postgres lock/serialization
+/// conflict — the class of failures that `retry_on_conflict()` is
+/// willing to re-run the closure through.
+///
+/// Matches three SQLSTATEs:
+///
+/// - `40001` (`serialization_failure`) — the classic MVCC serialization
+///   error on `SERIALIZABLE`/`REPEATABLE READ` isolation.
+/// - `40P01` (`deadlock_detected`) — Postgres detected a circular wait
+///   and aborted one of the participants.
+/// - `55P03` (`lock_not_available`) — a `NOWAIT` lock request could not
+///   acquire its lock immediately.
+///
+/// Task 7 (row locks) ships the dedicated
+/// [`DjogiError::LockConflict`] variant alongside [`map_lock_err`],
+/// which lifts errors whose SQLSTATE matches this predicate into the
+/// typed variant. Call paths that care about the distinction
+/// (terminals under a `select_for_update` / `nowait` / `skip_locked`
+/// builder) route through `map_lock_err`; this standalone predicate
+/// is still useful for `retry_on_conflict`'s classifier arm that
+/// inspects raw [`DjogiError::Sqlx`] (escape hatches that bypassed
+/// `map_lock_err`).
+///
+/// `sqlx::DatabaseError::code()` returns `Option<Cow<'_, str>>`, so the
+/// `.as_deref()` collapses `Cow::Owned` / `Cow::Borrowed` into a plain
+/// `&str` the `matches!` arm can compare against literal codes.
+pub(crate) fn is_lock_error(e: &sqlx::Error) -> bool {
+    matches!(
+        e.as_database_error().and_then(|db| db.code()).as_deref(),
+        Some("40001") | Some("40P01") | Some("55P03")
+    )
+}
+
+/// Lower a raw `sqlx::Error` into either
+/// [`DjogiError::LockConflict`] (for retryable SQLSTATEs 40001/40P01/
+/// 55P03) or [`DjogiError::Sqlx`] (for everything else).
+///
+/// Every terminal that honours row locking — `select_for_update` /
+/// `nowait` / `skip_locked` — runs its SELECT's error through this so
+/// the caller can pattern-match on `LockConflict` without re-
+/// classifying the SQLSTATE itself. Bulk methods that need retry
+/// semantics (Task 7 `bulk_create` / `bulk_update` under
+/// `retry_on_conflict`) use the same path.
+///
+/// Callers that don't care about the distinction can still use `?`:
+/// `From<sqlx::Error> for DjogiError` returns
+/// [`DjogiError::Sqlx`] verbatim, so unclassified error paths stay
+/// identical to pre-Task-7 behaviour.
+pub(crate) fn map_lock_err(e: sqlx::Error) -> DjogiError {
+    if is_lock_error(&e) {
+        DjogiError::LockConflict(e)
+    } else {
+        DjogiError::Sqlx(e)
     }
 }
 
@@ -161,6 +373,156 @@ mod tests {
         assert!(
             msg.contains("prefetch") || msg.contains("select_related"),
             "expected remediation hint, got: {msg}"
+        );
+    }
+
+    /// Minimal `sqlx::error::DatabaseError` stub for `is_lock_error`
+    /// classification tests. Only the `code()` path matters for
+    /// classification; all other methods return placeholder values
+    /// because `is_lock_error` never invokes them.
+    #[derive(Debug)]
+    struct StubDbError {
+        code: Option<String>,
+    }
+
+    impl std::fmt::Display for StubDbError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "stub db error code={:?}", self.code)
+        }
+    }
+
+    impl std::error::Error for StubDbError {}
+
+    impl sqlx::error::DatabaseError for StubDbError {
+        fn message(&self) -> &str {
+            "stub"
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            self.code.as_deref().map(std::borrow::Cow::Borrowed)
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    fn sqlx_err_with_code(code: &str) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(StubDbError {
+            code: Some(code.to_string()),
+        }))
+    }
+
+    #[test]
+    fn is_lock_error_matches_retryable_sqlstates() {
+        assert!(is_lock_error(&sqlx_err_with_code("40001")));
+        assert!(is_lock_error(&sqlx_err_with_code("40P01")));
+        assert!(is_lock_error(&sqlx_err_with_code("55P03")));
+    }
+
+    #[test]
+    fn is_lock_error_rejects_unrelated_sqlstate() {
+        // `23505` is `unique_violation` — a real error, but not one
+        // `retry_on_conflict` should retry. Classifying it as non-retryable
+        // proves the match arm is tight.
+        assert!(!is_lock_error(&sqlx_err_with_code("23505")));
+    }
+
+    #[test]
+    fn is_lock_error_rejects_non_database_error() {
+        // `RowNotFound` has no underlying DatabaseError, so `.code()` is
+        // `None` and the match fails.
+        assert!(!is_lock_error(&sqlx::Error::RowNotFound));
+    }
+
+    #[test]
+    fn map_lock_err_lifts_retryable_sqlstates_into_lock_conflict() {
+        // Every retryable SQLSTATE round-trips through `map_lock_err`
+        // into the typed `LockConflict` variant. Callers can then
+        // pattern-match on the variant without re-classifying the
+        // sqlx error themselves.
+        for code in ["40001", "40P01", "55P03"] {
+            let mapped = map_lock_err(sqlx_err_with_code(code));
+            assert!(
+                matches!(mapped, DjogiError::LockConflict(_)),
+                "SQLSTATE {code} should produce LockConflict, got {mapped:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn map_lock_err_passes_unrelated_sqlstate_through_as_sqlx() {
+        // Non-lock SQLSTATEs (e.g. `23505` unique_violation) fall
+        // through into `DjogiError::Sqlx` unchanged — `map_lock_err`
+        // must not over-classify.
+        let mapped = map_lock_err(sqlx_err_with_code("23505"));
+        assert!(
+            matches!(mapped, DjogiError::Sqlx(_)),
+            "non-lock SQLSTATE should produce Sqlx, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn map_lock_err_passes_non_database_error_through_as_sqlx() {
+        // Errors that carry no DatabaseError (connection drops,
+        // protocol errors, `RowNotFound`) have no SQLSTATE to inspect
+        // and must fall through to `Sqlx` — never `LockConflict`.
+        let mapped = map_lock_err(sqlx::Error::RowNotFound);
+        assert!(
+            matches!(mapped, DjogiError::Sqlx(_)),
+            "non-database error should produce Sqlx, got {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn is_transient_covers_lock_conflict_and_retryable_sqlx() {
+        // LockConflict — the typed variant that map_lock_err lifts —
+        // is always transient.
+        let lc = DjogiError::LockConflict(sqlx_err_with_code("55P03"));
+        assert!(lc.is_transient(), "LockConflict must be transient");
+        assert!(!lc.is_terminal(), "LockConflict must not be terminal");
+
+        // Raw Sqlx with retryable SQLSTATE — transient because
+        // `is_lock_error` reports it so. Covers escape-hatch paths
+        // that didn't route through map_lock_err.
+        for code in ["40001", "40P01", "55P03"] {
+            let err = DjogiError::Sqlx(sqlx_err_with_code(code));
+            assert!(
+                err.is_transient(),
+                "Sqlx with SQLSTATE {code} must be transient"
+            );
+        }
+
+        // Raw Sqlx with non-lock SQLSTATE — terminal.
+        let unique = DjogiError::Sqlx(sqlx_err_with_code("23505"));
+        assert!(unique.is_terminal(), "unique_violation must be terminal");
+        assert!(
+            !unique.is_transient(),
+            "unique_violation must not be transient"
+        );
+    }
+
+    #[test]
+    fn is_terminal_covers_every_known_variant() {
+        // Every non-Sqlx, non-LockConflict variant is terminal. Spell
+        // each out so the classification table in the rustdoc is
+        // pinned against drift: adding a new variant that should be
+        // transient forces the test author to update this match.
+        assert!(DjogiError::not_found("t").is_terminal());
+        assert!(DjogiError::multiple_objects("t", 2).is_terminal());
+        assert!(DjogiError::relation_unloaded("M", "f").is_terminal());
+        assert!(DjogiError::missing_idempotency_key("M").is_terminal());
+        assert!(DjogiError::Validation("bad".into()).is_terminal());
+        assert!(
+            DjogiError::gone_aggregate("M", "42".into(), "deleted").is_terminal(),
+            "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"
         );
     }
 }
