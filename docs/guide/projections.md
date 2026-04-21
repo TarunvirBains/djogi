@@ -124,14 +124,18 @@ here), or a hand-written DTO.
 #[field(expose(public, public = "X"))]   // ERROR — scope `public` declared twice
 ```
 
-But different scopes can use different forms on the same field:
+Different scopes on a relation field must each name their peer
+projection explicitly — scalar form (a bare scope name) is rejected
+on relation fields so the nested transport shape is always visible
+at the call site:
 
 ```rust
-#[field(expose(public, admin = "OwnerDetail"))]
+#[field(expose(public = "OwnerSummary", admin = "OwnerDetail"))]
 pub owner: ForeignKey<Owner>,
 ```
 
-(Though most models stick to one form per field for readability.)
+Using `#[field(expose(public, admin = "OwnerDetail"))]` on a relation
+field is a compile error (see the compile-errors table below).
 
 ## Default exposure is `internal`
 

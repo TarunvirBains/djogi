@@ -82,10 +82,10 @@ pub fn expand(
                 on_delete: None,
                 target_type_name: None,
                 projection_map: &[
-                    ("public", "id"),
-                    ("self_view", "id"),
                     ("admin", "id"),
                     ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
                 ],
             }
         }),
@@ -106,10 +106,10 @@ pub fn expand(
                 on_delete: None,
                 target_type_name: None,
                 projection_map: &[
-                    ("public", "id"),
-                    ("self_view", "id"),
                     ("admin", "id"),
                     ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
                 ],
             }
         }),
@@ -130,10 +130,10 @@ pub fn expand(
                 on_delete: None,
                 target_type_name: None,
                 projection_map: &[
-                    ("public", "id"),
-                    ("self_view", "id"),
                     ("admin", "id"),
                     ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
                 ],
             }
         }),
@@ -157,10 +157,10 @@ pub fn expand(
             on_delete: None,
             target_type_name: None,
             projection_map: &[
-                ("public", "created_at"),
-                ("self_view", "created_at"),
                 ("admin", "created_at"),
                 ("export", "created_at"),
+                ("public", "created_at"),
+                ("self_view", "created_at"),
             ],
         }
     };
@@ -181,10 +181,10 @@ pub fn expand(
             on_delete: None,
             target_type_name: None,
             projection_map: &[
-                ("public", "updated_at"),
-                ("self_view", "updated_at"),
                 ("admin", "updated_at"),
                 ("export", "updated_at"),
+                ("public", "updated_at"),
+                ("self_view", "updated_at"),
             ],
         }
     };

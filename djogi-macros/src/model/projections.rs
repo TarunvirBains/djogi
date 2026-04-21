@@ -177,12 +177,14 @@ fn emit_projection_for_scope(
                                 scope: #scope,
                             }
                         )?;
-                        // Peer construction always goes through `From::from`:
-                        // Phase 4.5 Task 5 scope assumes scalar-only peers.
-                        // Nested-relation peers (peer itself `TryFrom`) are a
-                        // follow-up phase where cross-model dispatch can be
-                        // modelled properly.
-                        <#peer_ident as ::std::convert::From<&_>>::from(resolved)
+                        // Peer construction goes through `TryFrom::try_from(...)?`
+                        // uniformly: scalar-only peers satisfy it via the
+                        // Phase 4.5-emitted `TryFrom<&Peer, Error = ProjectionError>`
+                        // wrapper that returns `Ok(From::from(...))`; relation-
+                        // nesting peers satisfy it via their own fallible
+                        // emission. This unifies scalar and nested-relation peer
+                        // usage — Vehicle → Owner → Department nesting composes.
+                        <#peer_ident as ::std::convert::TryFrom<&_>>::try_from(resolved)?
                     },
                 });
             }
@@ -203,11 +205,26 @@ fn emit_projection_for_scope(
         #[serde(crate = "::djogi::__private::serde")]
     };
 
-    // Dispatch on relation-nesting presence: scalar-only projections get
-    // infallible `From<&Source>`; relation-nesting projections get
-    // `TryFrom<&Source>` with `Error = ProjectionError` so unresolved
-    // relations surface cleanly rather than panicking or producing
-    // partial payloads.
+    // Dispatch on relation-nesting presence.
+    //
+    // - **Scalar-only** projections emit `impl From<&Source>`. The
+    //   stdlib provides a blanket `impl<T, U> TryFrom<U> for T where
+    //   U: Into<T>` (with `Error = Infallible`), so a scalar-only
+    //   projection automatically satisfies `TryFrom<&Source>` too. The
+    //   relation-nesting emitter above calls
+    //   `<Peer as TryFrom<&_>>::try_from(resolved)?` uniformly; the `?`
+    //   coerces the blanket's `Infallible` error into `ProjectionError`
+    //   via the `impl From<Infallible> for ProjectionError` glue in
+    //   `djogi/src/projection.rs`. That is what makes transitive
+    //   nesting (Vehicle → Owner → Department) compose without the
+    //   relation-nesting emitter knowing each peer's shape.
+    //
+    //   Emitting an explicit `TryFrom<&Source, Error = ProjectionError>`
+    //   here would conflict with the stdlib blanket (E0119) — don't.
+    //
+    // - **Relation-nesting** projections emit only `impl TryFrom<&Source>`
+    //   with `Error = ProjectionError`. A scalar `From` is unsound for
+    //   this case because the `.resolved()` probe is fallible.
     let conv_impl = if has_relation_entry {
         quote! {
             impl ::std::convert::TryFrom<&#source> for #proj_name {
