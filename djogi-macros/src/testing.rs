@@ -96,8 +96,9 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
             use ::std::panic::AssertUnwindSafe;
 
             // Inner async fn holds the original test body, called with the
-            // DjogiContext from setup_test_db.
-            async fn #inner_name(#ctx_arg_name: ::djogi::DjogiContext) {
+            // DjogiContext from setup_test_db. The parameter is always `mut`
+            // so the test body can call `&mut self` methods on the context.
+            async fn #inner_name(mut #ctx_arg_name: ::djogi::DjogiContext) {
                 #fn_body
             }
 

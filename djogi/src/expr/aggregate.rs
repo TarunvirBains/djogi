@@ -332,7 +332,7 @@ mod tests {
     use super::*;
     use crate::descriptor::ModelDescriptor;
     use crate::expr::sql::emit_expr;
-    use sqlx::{Postgres, QueryBuilder};
+    use crate::pg::accumulator::SqlAccumulator;
 
     // Inert local model — mirrors the `Fake` stub used across the
     // expr/query unit tests. Only `table_name` matters for these
@@ -398,7 +398,7 @@ mod tests {
         // cover the wrapped forms.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "SUM(amount)", "got: {sql}");
@@ -408,7 +408,7 @@ mod tests {
     fn emit_count_field() {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "COUNT(amount)", "got: {sql}");
@@ -418,7 +418,7 @@ mod tests {
     fn emit_count_star() {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count_star();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "COUNT(*)", "got: {sql}");
@@ -430,7 +430,7 @@ mod tests {
         // Terminal layer wraps with the narrowing cast.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.avg();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "AVG(amount)", "got: {sql}");
@@ -439,12 +439,12 @@ mod tests {
     #[test]
     fn emit_min_max_field() {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &f.min().node);
         assert_eq!(qb.sql().trim(), "MIN(amount)");
 
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &f.max().node);
         assert_eq!(qb.sql().trim(), "MAX(amount)");
     }
@@ -458,7 +458,7 @@ mod tests {
         let g: FieldRef<Txn, i64> = FieldRef::new("amount");
         let cond = f.as_expr().lt(Expr::literal(0i64));
         let agg = g.count().filter(cond);
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert!(
@@ -477,7 +477,7 @@ mod tests {
         let b = g.as_expr().gt(Expr::literal(100i64));
         let h: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = h.count().filter(a).filter(b);
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         // Second filter (gt) should appear; first (lt) should not.

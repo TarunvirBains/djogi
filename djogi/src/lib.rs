@@ -48,6 +48,7 @@ pub mod expr;
 pub(crate) mod ident;
 pub mod model;
 pub mod outbox;
+pub mod pg;
 pub mod projection;
 pub mod query;
 pub mod raw;
@@ -64,12 +65,42 @@ pub mod types;
 /// `::djogi::__private::inventory::submit!` so that users only need `djogi` as
 /// a direct dependency — they never need to add `sqlx`, `inventory`, or
 /// `time` themselves.
+///
+/// T2 adds `::djogi::__private::pg` containing the new SQL substrate types
+/// (`SqlAccumulator`, `PgConnection`, `ToSql`, `FromSql`, `PgRow`). Macro-
+/// emitted code that previously routed through `::djogi::__private::sqlx::*`
+/// for executor dispatch now routes through `::djogi::__private::pg::*`.
+/// `pub use sqlx` stays in `__private` through T9 for the `#[sqlx::test]`
+/// dev-dep harness compatibility.
 #[doc(hidden)]
 pub mod __private {
     pub use futures;
     pub use inventory;
     pub use serde;
+    // Kept through T9 for the #[sqlx::test] dev-dep integration test harness.
+    // T8 removes this re-export when the harness is switched to #[djogi_test].
+    pub use postgres_types;
     pub use sqlx;
+    pub use tokio_postgres;
+
+    /// New SQL substrate re-exports for macro-emitted code.
+    ///
+    /// Macro emission routes through `::djogi::__private::pg::*` rather than
+    /// directly importing `tokio_postgres::*` or `postgres_types::*` — this
+    /// keeps the macro output decoupled from the exact crate versions and
+    /// allows Djogi to add wrapper types without changing the macro-emitted
+    /// call sites. See `feedback_macro_path_routing.md` for the rationale.
+    pub mod pg {
+        pub use crate::pg::accumulator::SqlAccumulator;
+        pub use crate::pg::connection::PgConnection;
+        /// T2 bridge trait — emitted by `#[model]` alongside sqlx `FromRow`.
+        /// T3 replaces this with the public `FromPgRow` trait.
+        pub use crate::pg::decode::FromPgRowBridge;
+        pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
+        pub use ::tokio_postgres::Row as PgRow;
+        pub use ::tokio_postgres::Statement;
+        // T3 will add: pub use crate::pg::decode::{try_get_scalar, try_get_tuple};
+    }
 
     /// Reflexive type-equality witness. Implemented for every `T` as
     /// `T: SameAs<T>`, so the **only** way for `A: SameAs<B>` to hold is

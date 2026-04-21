@@ -8,5 +8,6 @@ error[E0599]: no function or associated item named `create` found for struct `Cu
    |                     ^^^^^^ function or associated item not found in `Custom`
    |
    = help: items from traits can only be used if the trait is implemented and in scope
-   = note: the following trait defines an item `create`, perhaps you need to implement it:
-           candidate #1: `djogi::model::Model`
+   = note: the following traits define an item `create`, perhaps you need to implement one of them:
+           candidate #1: `deadpool::managed::manager::Manager`
+           candidate #2: `djogi::model::Model`

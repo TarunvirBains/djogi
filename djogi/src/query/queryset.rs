@@ -548,21 +548,15 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn prefetch<Target>(mut self, path: RelationPath<T, Target>) -> Self
     where
-        T::Pk: sqlx::Type<sqlx::Postgres>
-            + for<'q> sqlx::Encode<'q, sqlx::Postgres>
-            + for<'r> sqlx::Decode<'r, sqlx::Postgres>
+        T::Pk: postgres_types::ToSql
+            + for<'r> postgres_types::FromSql<'r>
             + Eq
             + Hash
             + Clone
             + Send
             + Sync
             + 'static,
-        Target: Model
-            + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>
-            + Clone
-            + Send
-            + Unpin
-            + 'static,
+        Target: Model + crate::pg::decode::FromPgRowBridge + Clone + Send + Unpin + 'static,
     {
         // Idempotent registration: if a prefetch for this source column
         // is already registered, don't append a duplicate. Duplicate

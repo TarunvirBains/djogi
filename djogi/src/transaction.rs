@@ -3,10 +3,10 @@
 //! # `atomic()` at a glance
 //!
 //! `atomic(&pool, |ctx| async move { ... })` is the outermost entry
-//! point: it calls `pool.begin()`, wraps the transaction in a fresh
-//! [`DjogiContext`](crate::DjogiContext), runs the closure, commits on
-//! `Ok`, rolls back on `Err`, and drains the on-commit callback queue
-//! after a successful commit. Nested calls —
+//! point: it acquires a connection from the pool, issues `BEGIN`, wraps
+//! the connection in a fresh [`DjogiContext`](crate::DjogiContext), runs
+//! the closure, commits on `Ok`, rolls back on `Err`, and drains the
+//! on-commit callback queue after a successful commit. Nested calls —
 //! `atomic(&mut *outer, |inner| async move { ... })` — push a
 //! Postgres savepoint rather than opening a new transaction: the inner
 //! scope rolls back to / releases the savepoint on `Err`/`Ok`
@@ -20,7 +20,7 @@
 //! [`AssertUnwindSafe`](std::panic::AssertUnwindSafe) and polled through
 //! [`FutureExt::catch_unwind`](futures::FutureExt::catch_unwind); on
 //! the panic branch we issue the appropriate rollback (outer
-//! `Transaction::rollback` or `ROLLBACK TO SAVEPOINT`) **before** the
+//! `ROLLBACK` or `ROLLBACK TO SAVEPOINT`) **before** the
 //! panic resumes. `AssertUnwindSafe` is the conventional escape hatch
 //! for async boundaries — user-supplied closures rarely implement
 //! `UnwindSafe`, and the context state touched inside the closure is
@@ -34,6 +34,7 @@
 
 use crate::DjogiError;
 use crate::context::{ContextInner, DjogiContext};
+use crate::pg::pool::DjogiPool;
 use futures::FutureExt;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, resume_unwind};
@@ -48,19 +49,19 @@ use std::pin::Pin;
 /// lets the outer `atomic()` signature use a `for<'a>` higher-ranked
 /// bound without falling into the "async closure implementation not
 /// general enough" inference hole that bare `AsyncFnOnce` hits today.
-///
-/// Mirrors the pattern `sqlx::Connection::transaction` uses — see the
-/// sqlx source for the same shape.
 pub type AtomicFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>> + Send + 'a>>;
 
 // ---------------------------------------------------------------------------
-// Sealed trait — `&PgPool` and `&mut DjogiContext` are the only scopes.
+// Sealed trait — `&DjogiPool` and `&mut DjogiContext` are the only scopes.
 // ---------------------------------------------------------------------------
 
 mod sealed {
     pub trait Sealed {}
-    impl Sealed for &sqlx::PgPool {}
+    impl Sealed for &crate::pg::pool::DjogiPool {}
     impl Sealed for &mut crate::DjogiContext {}
+    // Bridge for the `#[sqlx::test]` integration test harness (T2–T9 shim).
+    // T10 removes this once every integration test migrates to `#[djogi_test]`.
+    impl Sealed for &sqlx::PgPool {}
 }
 
 /// Entry point for [`atomic()`].
@@ -79,15 +80,6 @@ pub trait IntoAtomicScope: sealed::Sealed {
     /// outermost transaction open + commit/rollback + callback drain
     /// (pool path) or savepoint push + release/rollback-to + callback
     /// promotion (nested path).
-    ///
-    /// `#[doc(hidden)]` on the method surface: callers go through
-    /// [`atomic()`].
-    ///
-    /// The returned future is not `+ Send` bounded on the trait — the
-    /// impls are concrete `async fn`s and infer `Send`-ness from the
-    /// closure the caller supplies. Bounding the trait return would
-    /// force the caller's `Send`-non-`Send` properties through a
-    /// contract boundary; leaving it open lets both flavours compose.
     fn run_atomic<F, R>(
         self,
         closure: F,
@@ -101,14 +93,16 @@ pub trait IntoAtomicScope: sealed::Sealed {
 // Pool-backed impl — the outermost entry point.
 // ---------------------------------------------------------------------------
 
-impl IntoAtomicScope for &sqlx::PgPool {
+impl IntoAtomicScope for &DjogiPool {
     async fn run_atomic<F, R>(self, closure: F) -> Result<R, DjogiError>
     where
         R: Send + 'static,
         F: for<'a> FnOnce(&'a mut DjogiContext) -> AtomicFuture<'a, R> + Send,
     {
-        let tx = self.begin().await.map_err(DjogiError::from)?;
-        let mut ctx = DjogiContext::from_transaction(tx);
+        // Acquire a connection and begin a transaction.
+        let mut conn = self.get().await?;
+        conn.batch_execute("BEGIN").await?;
+        let mut ctx = DjogiContext::from_connection(conn);
 
         // Poll the closure through `catch_unwind` so a panic turns into
         // a caught payload. See the module-level panic-semantics docs.
@@ -117,17 +111,12 @@ impl IntoAtomicScope for &sqlx::PgPool {
         match result {
             Ok(Ok(value)) => {
                 // Closure succeeded — commit and drain on-commit queue.
-                // Commit consumes the context and drains panic-safely
-                // (see `DjogiContext::commit`).
                 ctx.commit().await?;
                 Ok(value)
             }
             Ok(Err(err)) => {
                 // Closure returned Err — roll the transaction back and
-                // surface the original error. The rollback itself may
-                // fail (dropped connection, etc.); in that case the
-                // original error is what the user cares about, so we
-                // log the rollback failure and return the closure err.
+                // surface the original error.
                 if let Err(rb_err) = ctx.rollback().await {
                     tracing::error!(
                         error = ?rb_err,
@@ -182,24 +171,19 @@ impl IntoAtomicScope for &mut DjogiContext {
 
         let sp_sql = format!("SAVEPOINT {savepoint_name}");
         let push_result = match self.inner_mut() {
-            ContextInner::Transaction(tx) => sqlx::query(&sp_sql).execute(&mut **tx).await,
-            // Unreachable because of the guard above, but keep the
-            // exhaustive match so a future `ContextInner` variant
-            // surfaces at compile time.
+            ContextInner::Transaction(conn) => conn.batch_execute(&sp_sql).await,
+            // Unreachable because of the guard above.
             ContextInner::Pool(_) => unreachable!("guard above rules this out"),
         };
         if let Err(e) = push_result {
             self.decrement_savepoint_depth();
-            return Err(DjogiError::from(e));
+            return Err(e);
         }
 
         // Nested path shares the parent context directly — inner
         // writes land on the same transaction, inner on_commit
-        // callbacks land on the parent's queue. To honour the
-        // "discard on rollback" half of the promote-on-Ok semantics
-        // we snapshot the parent's callback-queue length before
-        // entering the closure and truncate back to it on the Err /
-        // panic branches.
+        // callbacks land on the parent's queue. Snapshot before
+        // entering the closure so we can truncate on rollback.
         let callbacks_before = self.on_commit_queue_len();
 
         let inner_result = AssertUnwindSafe(closure(self)).catch_unwind().await;
@@ -210,13 +194,11 @@ impl IntoAtomicScope for &mut DjogiContext {
                 // the parent queue (promoted).
                 let release_sql = format!("RELEASE SAVEPOINT {savepoint_name}");
                 let release_res = match self.inner_mut() {
-                    ContextInner::Transaction(tx) => {
-                        sqlx::query(&release_sql).execute(&mut **tx).await
-                    }
+                    ContextInner::Transaction(conn) => conn.batch_execute(&release_sql).await,
                     ContextInner::Pool(_) => unreachable!(),
                 };
                 self.decrement_savepoint_depth();
-                release_res.map_err(DjogiError::from)?;
+                release_res?;
                 Ok(value)
             }
             Ok(Err(err)) => {
@@ -253,6 +235,33 @@ impl IntoAtomicScope for &mut DjogiContext {
                 resume_unwind(panic_payload);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test harness bridge — `&sqlx::Pool<Postgres>` scope (T2–T9 shim).
+//
+// The `#[sqlx::test]` harness hands each test a `sqlx::PgPool`. All of the
+// Phase 1–4 integration tests call `atomic(&pool, ...)` with that pool.
+// This impl constructs a `DjogiPool` from the sqlx pool's connection URL
+// (via `DjogiContext::from_sqlx_pool_for_test`) and delegates to the
+// `&DjogiPool` impl.
+//
+// T10 removes this once every integration test migrates to `#[djogi_test]`.
+// ---------------------------------------------------------------------------
+
+impl IntoAtomicScope for &sqlx::PgPool {
+    async fn run_atomic<F, R>(self, closure: F) -> Result<R, DjogiError>
+    where
+        R: Send + 'static,
+        F: for<'a> FnOnce(&'a mut DjogiContext) -> AtomicFuture<'a, R> + Send,
+    {
+        let ctx = DjogiContext::from_sqlx_pool_for_test(self.clone()).await?;
+        let pool = ctx
+            .pool()
+            .expect("from_sqlx_pool_for_test always creates a pool-backed context")
+            .clone();
+        (&pool).run_atomic(closure).await
     }
 }
 
@@ -300,30 +309,11 @@ where
 /// Re-run `closure` up to `attempts` times on lock / serialization
 /// conflicts.
 ///
-/// Classifies errors via [`crate::error::is_lock_error`] — SQLSTATEs
+/// Classifies errors via [`crate::DjogiError::is_transient`] — SQLSTATEs
 /// `40001`, `40P01`, `55P03` are considered retryable. Every other
 /// error (constraint violations, not-found, etc.) surfaces on the
-/// first call. Phase 4 Task 7 added the
-/// [`DjogiError::LockConflict`](crate::DjogiError::LockConflict)
-/// variant; the retry predicate now classifies either that variant
-/// directly or a raw `Sqlx(sqlx_err)` whose SQLSTATE matches. Pure
-/// retry with no backoff today — exponential / jittered backoff is
-/// intentionally deferred until the need is measured.
-///
-/// The closure is invoked with `&mut DjogiContext` so it can be used
-/// either inside an existing `atomic()` scope (where `ctx` already
-/// carries a transaction) or with a pool-backed context. On a
-/// transaction-backed context the retry re-runs the closure against
-/// the SAME transaction — useful for idempotent logical retries
-/// inside a single transaction; on a pool-backed context each retry
-/// still shares the context. Callers that need a fresh transaction
-/// per attempt should compose `retry_on_conflict` with `atomic()`
-/// at the call site.
-///
-/// # Panics
-///
-/// A closure panic propagates on the current attempt; panics are not
-/// classified as retryable.
+/// first call. Pure retry with no backoff today — exponential / jittered
+/// backoff is intentionally deferred until the need is measured.
 pub async fn retry_on_conflict<F, R>(
     ctx: &mut DjogiContext,
     attempts: u32,
@@ -339,23 +329,6 @@ where
         match closure(ctx).await {
             Ok(value) => return Ok(value),
             Err(e) => {
-                // Phase 4 Task 7.7 — route through the
-                // `DjogiError::is_transient` classifier so every new
-                // variant lands in one canonical place. The classifier
-                // covers:
-                //
-                // 1. `DjogiError::LockConflict(..)` — the Task 7a
-                //    variant, produced by any terminal that funneled
-                //    its sqlx error through `error::map_lock_err`.
-                // 2. `DjogiError::Sqlx(sqlx_err)` with a retryable
-                //    SQLSTATE (40001 / 40P01 / 55P03) — covers callers
-                //    that did NOT route through `map_lock_err` (raw
-                //    sqlx escape hatches, Phase 1/2 terminals).
-                //
-                // Terminal variants (NotFound, Validation, GoneAggregate,
-                // etc.) surface on the first call without retry — even
-                // infinite retries against a hard-deleted aggregate
-                // cannot succeed.
                 let retryable = e.is_transient();
                 if retryable && attempt < attempts {
                     tracing::debug!(
@@ -373,56 +346,38 @@ where
 
 // ---------------------------------------------------------------------------
 // Internal helpers bolted onto `DjogiContext` for the nested path.
-//
-// Declared here rather than in `context.rs` because they exist solely
-// to support the nested `atomic()` dispatch; keeping them co-located
-// with the only caller makes the coupling obvious.
 // ---------------------------------------------------------------------------
 
 impl DjogiContext {
-    /// Current length of the on-commit callback queue. Used by the
-    /// nested `atomic()` impl to snapshot the queue before entering
-    /// the closure so inner-registered callbacks can be dropped on
-    /// rollback.
+    /// Current length of the on-commit callback queue.
     pub(crate) fn on_commit_queue_len(&self) -> usize {
         self.on_commit_len()
     }
 
-    /// Truncate the on-commit callback queue back to `new_len`. Used
-    /// by the nested `atomic()` impl on the rollback / panic branches
-    /// to discard callbacks registered inside the inner scope.
+    /// Truncate the on-commit callback queue back to `new_len`.
     pub(crate) fn truncate_on_commit_queue(&mut self, new_len: usize) {
         self.on_commit_truncate(new_len);
     }
 
     /// Issue `ROLLBACK TO SAVEPOINT` followed by `RELEASE SAVEPOINT`.
     /// Returns `Some(err)` on the first failure, `None` if both
-    /// succeeded. Used by the nested impl on the Err / panic branches.
-    ///
-    /// The RELEASE is still issued after a successful ROLLBACK so the
-    /// savepoint name is reusable; a failed ROLLBACK short-circuits
-    /// since a subsequent RELEASE against a non-existent savepoint
-    /// would return its own error and obscure the original.
-    async fn run_rollback_to_release(
-        &mut self,
-        rb_sql: &str,
-        rel_sql: &str,
-    ) -> Option<sqlx::Error> {
+    /// succeeded.
+    async fn run_rollback_to_release(&mut self, rb_sql: &str, rel_sql: &str) -> Option<DjogiError> {
         match self.inner_mut() {
-            ContextInner::Transaction(tx) => {
-                if let Err(e) = sqlx::query(rb_sql).execute(&mut **tx).await {
+            ContextInner::Transaction(conn) => {
+                if let Err(e) = conn.batch_execute(rb_sql).await {
                     return Some(e);
                 }
-                if let Err(e) = sqlx::query(rel_sql).execute(&mut **tx).await {
+                if let Err(e) = conn.batch_execute(rel_sql).await {
                     return Some(e);
                 }
                 None
             }
-            ContextInner::Pool(_) => Some(sqlx::Error::Configuration(
+            ContextInner::Pool(_) => Some(DjogiError::Sqlx(sqlx::Error::Configuration(
                 "run_rollback_to_release called on a pool-backed context; \
                  this is a framework-invariant bug"
                     .into(),
-            )),
+            ))),
         }
     }
 }

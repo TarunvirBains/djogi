@@ -15,36 +15,33 @@
 //! 5. The database is dropped after the test body returns.
 
 #[djogi::djogi_test]
-async fn djogi_test_context_is_usable(ctx: djogi::DjogiContext) {
+async fn djogi_test_context_is_usable(mut ctx: djogi::DjogiContext) {
     // Verify that the context has a valid pool connection by running
-    // a trivial query through the underlying pool.
-    //
-    // ctx.pool() returns Some(&PgPool) for a pool-backed context, which
-    // is what setup_test_db produces.
-    let pool = ctx
-        .pool()
-        .expect("djogi_test: context should be pool-backed");
-
-    let result: i64 = sqlx::query_scalar("SELECT 1::bigint")
-        .fetch_one(pool)
+    // a trivial query through the underlying pool's public helper.
+    let rows = ctx
+        .__query_one_for_macros("SELECT 1::bigint AS val", &[])
         .await
         .expect("SELECT 1::bigint should succeed");
+
+    let result: i64 = rows
+        .try_get::<_, i64>("val")
+        .expect("val column should decode as i64");
 
     assert_eq!(result, 1, "SELECT 1 should return 1");
 }
 
 #[djogi::djogi_test]
-async fn djogi_test_heeranjid_is_installed(ctx: djogi::DjogiContext) {
+async fn djogi_test_heeranjid_is_installed(mut ctx: djogi::DjogiContext) {
     // Verify that HeeRanjID functions are available — generate_id() returns
     // a positive integer, confirming the extension + node setup ran.
-    let pool = ctx
-        .pool()
-        .expect("djogi_test: context should be pool-backed");
-
-    let id: i64 = sqlx::query_scalar("SELECT generate_id()")
-        .fetch_one(pool)
+    let row = ctx
+        .__query_one_for_macros("SELECT generate_id() AS id", &[])
         .await
         .expect("generate_id() should be available after HeeRanjID setup");
+
+    let id: i64 = row
+        .try_get::<_, i64>("id")
+        .expect("id column should decode as i64");
 
     assert!(
         id > 0,

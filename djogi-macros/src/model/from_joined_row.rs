@@ -58,7 +58,9 @@ pub fn expand(
 
     // One prefix-aware `try_get` per field. `format!` happens once per call —
     // the overhead is a small String allocation per field per decoded row,
-    // swamped by the sqlx decode cost itself.
+    // swamped by the DB decode cost itself. The tokio-postgres `try_get`
+    // signature is `try_get<'a, I, T>(&'a self, idx: I)` — we fix `I = &str`
+    // (the column name) and let Rust infer `T` from the field's declared type.
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -69,7 +71,7 @@ pub fn expand(
             let raw_name = fname.to_string();
             let col_name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
             quote! {
-                #fname: row.try_get::<_, &str>(&::std::format!("{}{}", prefix, #col_name))?
+                #fname: row.try_get::<_, _>(&::std::format!("{}{}", prefix, #col_name) as &str)?
             }
         })
         .collect();
@@ -77,11 +79,10 @@ pub fn expand(
     quote! {
         impl #impl_generics ::djogi::relation::FromJoinedRow for #name #ty_generics #where_clause {
             fn from_prefixed_row(
-                row: &::djogi::__private::sqlx::postgres::PgRow,
+                row: &::djogi::__private::tokio_postgres::Row,
                 prefix: &str,
-            ) -> ::djogi::__private::sqlx::Result<Self> {
-                use ::djogi::__private::sqlx::Row;
-                Ok(Self {
+            ) -> ::std::result::Result<Self, ::djogi::__private::tokio_postgres::Error> {
+                ::std::result::Result::Ok(Self {
                     #(#field_assignments,)*
                 })
             }

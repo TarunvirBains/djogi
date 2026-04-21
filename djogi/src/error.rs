@@ -1,19 +1,21 @@
 //! The single error type returned by every framework CRUD operation.
 //!
 //! `DjogiError` wraps the sources of failure that can occur when a `Model`
-//! method runs: sqlx errors, expected-row-count violations, and ID generation
-//! failures from `heeranjid-sqlx`. Keeping one error type at the public API
-//! makes `?`-propagation ergonomic: user code calls `Post::get(&pool, id).await?`
+//! method runs: database driver errors, expected-row-count violations, and ID
+//! generation failures. Keeping one error type at the public API makes
+//! `?`-propagation ergonomic: user code calls `Post::get(&pool, id).await?`
 //! and gets a `DjogiError` without having to juggle per-subsystem errors.
 //!
 //! The variants correspond 1:1 to the failure modes the generated CRUD impls
 //! can produce:
-//! - `Sqlx` — raw database/driver failures (network, constraints, SQL).
+//! - `Sqlx` — raw database/driver failures (network, constraints, SQL). In T2
+//!   this variant carries both `sqlx::Error` and `tokio_postgres::Error` (via
+//!   `From` impls). T6 renames it to `Db`.
 //! - `NotFound` — `.get()` / `.fetch_one()` saw zero rows; carries the
 //!   offending table name for observability.
 //! - `MultipleObjects` — `.fetch_one()` saw more than one row; carries the
 //!   table name plus the actual count observed.
-//! - `IdGeneration` — `generate_heerid` / `generate_ranjid` DB calls failed.
+//! - `IdGeneration` — ID generation DB calls failed.
 //! - `RelationUnloaded` — a relation accessor (`ForeignKeyResolved::expect_resolved`
 //!   / `OneToOneFieldResolved::expect_resolved`) was invoked against a cache
 //!   that was never populated. Raised from the strict path where the caller
@@ -44,9 +46,42 @@
 
 use thiserror::Error;
 
+/// A newtype wrapping a boxed error for ID-generation failures.
+///
+/// T2 pre-renames the `DjogiError::IdGeneration` payload from
+/// `heeranjid_sqlx::GenerateError` to this local newtype, removing the runtime
+/// dependency on `heeranjid-sqlx`. The newtype wraps any `Box<dyn Error + Send
+/// + Sync>` so future callers can supply HeeRanjID 0.2's postgres-codec errors
+/// without this crate coupling to a specific error type. T6 decides the final
+/// variant name and payload shape.
+#[derive(Debug)]
+pub struct IdGenerationError(pub Box<dyn std::error::Error + Send + Sync>);
+
+impl std::fmt::Display for IdGenerationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for IdGenerationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+impl IdGenerationError {
+    /// Wrap any `Error + Send + Sync + 'static` into an `IdGenerationError`.
+    pub fn new<E: std::error::Error + Send + Sync + 'static>(e: E) -> Self {
+        IdGenerationError(Box::new(e))
+    }
+}
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DjogiError {
+    /// Raw database or driver error. In T2 this carries `sqlx::Error` (via the
+    /// `#[from]` impl) and also accepts `tokio_postgres::Error` (via a manual
+    /// `From` impl below). T6 renames this variant to `Db`.
     #[error("database error: {0}")]
     Sqlx(#[from] sqlx::Error),
 
@@ -69,8 +104,13 @@ pub enum DjogiError {
         count_seen: usize,
     },
 
+    /// ID generation failed.
+    ///
+    /// T2 pre-renames the payload from `heeranjid_sqlx::GenerateError` to the
+    /// local `IdGenerationError` newtype, removing the runtime dependency on
+    /// `heeranjid-sqlx`. T6 decides the final variant name and payload shape.
     #[error("id generation failed: {0}")]
-    IdGeneration(#[from] heeranjid_sqlx::GenerateError),
+    IdGeneration(IdGenerationError),
 
     /// A relation accessor that requires an eagerly-loaded cache
     /// (`ForeignKeyResolved::expect_resolved` / `OneToOneFieldResolved::expect_resolved`)
@@ -173,12 +213,24 @@ pub enum DjogiError {
     /// - `40P01` — `deadlock_detected`
     /// - `55P03` — `lock_not_available` (`NOWAIT` rejection)
     ///
-    /// Other `sqlx::Error::Database` failures — `unique_violation`,
+    /// Other database failures — `unique_violation`,
     /// `foreign_key_violation`, connection drops — still flow through
     /// [`Sqlx`](DjogiError::Sqlx). The classifier
     /// [`is_lock_error`] keeps the variant boundary tight.
     #[error("lock conflict: {0}")]
     LockConflict(#[source] sqlx::Error),
+}
+
+/// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
+///
+/// In T2, tokio-postgres errors flow into the existing `DjogiError::Sqlx` variant
+/// via a protocol-level conversion. T6 renames the variant to `DjogiError::Db`
+/// and removes the sqlx wrapper. The `LockConflict` variant detection is ported
+/// to SQLSTATE comparison via `tokio_postgres::error::SqlState`.
+impl From<tokio_postgres::Error> for DjogiError {
+    fn from(e: tokio_postgres::Error) -> Self {
+        map_pg_err(e)
+    }
 }
 
 impl DjogiError {
@@ -297,16 +349,6 @@ impl DjogiError {
 /// - `55P03` (`lock_not_available`) — a `NOWAIT` lock request could not
 ///   acquire its lock immediately.
 ///
-/// Task 7 (row locks) ships the dedicated
-/// [`DjogiError::LockConflict`] variant alongside [`map_lock_err`],
-/// which lifts errors whose SQLSTATE matches this predicate into the
-/// typed variant. Call paths that care about the distinction
-/// (terminals under a `select_for_update` / `nowait` / `skip_locked`
-/// builder) route through `map_lock_err`; this standalone predicate
-/// is still useful for `retry_on_conflict`'s classifier arm that
-/// inspects raw [`DjogiError::Sqlx`] (escape hatches that bypassed
-/// `map_lock_err`).
-///
 /// `sqlx::DatabaseError::code()` returns `Option<Cow<'_, str>>`, so the
 /// `.as_deref()` collapses `Cow::Owned` / `Cow::Borrowed` into a plain
 /// `&str` the `matches!` arm can compare against literal codes.
@@ -315,6 +357,26 @@ pub(crate) fn is_lock_error(e: &sqlx::Error) -> bool {
         e.as_database_error().and_then(|db| db.code()).as_deref(),
         Some("40001") | Some("40P01") | Some("55P03")
     )
+}
+
+/// Return `true` if the tokio-postgres error carries a lock/serialization
+/// SQLSTATE — the class of failures `retry_on_conflict()` is willing to
+/// re-run the closure through.
+///
+/// Matches three SQLSTATEs using `tokio_postgres::error::SqlState` constants:
+/// - `SqlState::SERIALIZATION_FAILURE` — `40001`
+/// - `SqlState::DEADLOCK_DETECTED` — `40P01`
+/// - `SqlState::LOCK_NOT_AVAILABLE` — `55P03`
+pub(crate) fn is_pg_lock_error(e: &tokio_postgres::Error) -> bool {
+    use tokio_postgres::error::SqlState;
+    e.as_db_error()
+        .map(|db| {
+            let code = db.code();
+            code == &SqlState::T_R_SERIALIZATION_FAILURE
+                || code == &SqlState::T_R_DEADLOCK_DETECTED
+                || code == &SqlState::LOCK_NOT_AVAILABLE
+        })
+        .unwrap_or(false)
 }
 
 /// Lower a raw `sqlx::Error` into either
@@ -332,11 +394,39 @@ pub(crate) fn is_lock_error(e: &sqlx::Error) -> bool {
 /// `From<sqlx::Error> for DjogiError` returns
 /// [`DjogiError::Sqlx`] verbatim, so unclassified error paths stay
 /// identical to pre-Task-7 behaviour.
+#[allow(dead_code)] // sqlx-based lock classifier; kept through T9 alongside the sqlx::Error variants.
 pub(crate) fn map_lock_err(e: sqlx::Error) -> DjogiError {
     if is_lock_error(&e) {
         DjogiError::LockConflict(e)
     } else {
         DjogiError::Sqlx(e)
+    }
+}
+
+/// Lower a `tokio_postgres::Error` into either `DjogiError::LockConflict`
+/// (for retryable SQLSTATEs) or `DjogiError::Sqlx` (wrapping via protocol
+/// conversion for everything else).
+///
+/// T6 renames `DjogiError::Sqlx` to `DjogiError::Db` and updates the
+/// `LockConflict` payload type. For T2 the sqlx variant serves as the
+/// catch-all container.
+pub(crate) fn map_pg_err(e: tokio_postgres::Error) -> DjogiError {
+    if is_pg_lock_error(&e) {
+        // Lock conflict — wrap in the existing LockConflict variant. In T2
+        // the payload is still sqlx::Error; we convert via the protocol-string
+        // bridge. T6 changes the payload type.
+        DjogiError::LockConflict(sqlx::Error::Protocol(e.to_string()))
+    } else if let Some(db) = e.as_db_error() {
+        // Database-level error — embed the SQLSTATE code in the protocol
+        // message so callers (including integration tests) can inspect it.
+        // Format: "SQLSTATE:<code> <message>".
+        // T6 replaces this with a proper DjogiError::Db(DbError) variant.
+        let msg = format!("SQLSTATE:{} {}", db.code().code(), db.message());
+        DjogiError::Sqlx(sqlx::Error::Protocol(msg))
+    } else {
+        // All other tokio-postgres errors go into the Sqlx variant in T2.
+        // T6 renames this to DjogiError::Db(DbError).
+        DjogiError::Sqlx(sqlx::Error::Protocol(e.to_string()))
     }
 }
 

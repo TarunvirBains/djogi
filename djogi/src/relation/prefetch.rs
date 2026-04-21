@@ -106,13 +106,16 @@
 use crate::DjogiError;
 use crate::context::ContextInner;
 use crate::model::Model;
+use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::decode::FromPgRowBridge;
 use crate::relation::path::RelationPath;
-use sqlx::{Row, ValueRef};
+use postgres_types::ToSql;
 use std::any::Any;
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 use std::pin::Pin;
+use tokio_postgres::types::FromSql;
 
 /// Type-erased resolved-target payload. One `Box` per prefetched row
 /// slot; `Option` so NULL FKs and orphan LEFT JOIN misses can carry
@@ -306,20 +309,20 @@ impl std::fmt::Debug for ErasedPrefetch {
 /// resolved to a live target row, or `None` otherwise (NULL FK or
 /// LEFT JOIN miss).
 ///
-/// The generic bounds spell out the full set of sqlx / `Any` contracts
-/// the runtime path needs:
+/// The generic bounds spell out the full set of `postgres_types` / `Any`
+/// contracts the runtime path needs:
 ///
 /// - `Source: Model` — lets us name `Source::Pk` for downcasting.
-/// - `Source::Pk: sqlx::Type + Encode + Decode + Eq + Hash + Clone +
+/// - `Source::Pk: postgres_types::ToSql + FromSql + Eq + Hash + Clone +
 ///   'static + Send + Sync` — required to bind the per-parent `IN (...)`
 ///   arguments, decode the `__djogi_parent_id` column, dedupe the
 ///   query-side input, and use the PK as a HashMap key for stitching.
-///   No `PgHasArrayType` bound — the emitter uses `IN (...)` rather
-///   than `ANY($1)` precisely so the HeeRanjID PKs (which do not
-///   implement that trait) slot into the prefetch path unchanged.
-/// - `Target: Model + FromRow + Send + Unpin + 'static` — the LEFT JOIN
-///   returns target columns; `FromRow` decodes them, `Any` erases the
-///   concrete type for the return channel.
+///   No array-type bound — the emitter uses `IN (...)` rather than
+///   `ANY($1)` precisely so the HeeRanjID PKs slot in unchanged.
+/// - `Target: Model + __from_pg_row + Clone + Send + Unpin + 'static` —
+///   the LEFT JOIN returns target columns; `__from_pg_row` decodes them
+///   from a `tokio_postgres::Row`, `Any` erases the concrete type for
+///   the return channel.
 pub(crate) fn prefetch_loader<'a, Source, Target>(
     exec: &'a mut ContextInner,
     parent_table: &'static str,
@@ -328,17 +331,8 @@ pub(crate) fn prefetch_loader<'a, Source, Target>(
 ) -> Pin<Box<dyn Future<Output = Result<AlignedTargets, DjogiError>> + Send + 'a>>
 where
     Source: Model,
-    Source::Pk: sqlx::Type<sqlx::Postgres>
-        + for<'q> sqlx::Encode<'q, sqlx::Postgres>
-        + for<'r> sqlx::Decode<'r, sqlx::Postgres>
-        + Eq
-        + Hash
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    Target:
-        Model + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Clone + Send + Unpin + 'static,
+    Source::Pk: ToSql + for<'r> FromSql<'r> + Eq + Hash + Clone + Send + Sync + 'static,
+    Target: Model + FromPgRowBridge + Clone + Send + Unpin + 'static,
 {
     Box::pin(async move {
         // Down-erase the parent PK list. Every element was `Box::new`'d
@@ -354,7 +348,7 @@ where
             })
             .collect();
 
-        // Deduplicate the parent-PK list for the ANY($1) bind. Preserves
+        // Deduplicate the parent-PK list for the IN (...) bind. Preserves
         // correctness — duplicates would just make Postgres do redundant
         // index probes — while cutting bind-array size on highly-
         // repetitive parent lists (paginated pages with the same parent
@@ -385,7 +379,7 @@ where
             return Ok(out);
         }
 
-        // Build the stitching query:
+        // Build the stitching query using SqlAccumulator:
         //
         //   SELECT p.id AS __djogi_parent_id, t.col_1, t.col_2, ..., t.col_N
         //   FROM <parent_table> p
@@ -393,15 +387,9 @@ where
         //   WHERE p.id IN ($1, $2, ..., $N)
         //
         // `IN (...)` with one bind per parent PK is used rather than
-        // `ANY($1)` with a single array bind: `ANY` would require
-        // `Source::Pk: sqlx::postgres::PgHasArrayType`, which neither
-        // `HeerId` nor `RanjId` implement (the sibling HeeRanjID crate
-        // ships `Type`/`Encode`/`Decode` only). Emitting an `IN` list
-        // via `QueryBuilder::separated` keeps the bound surface
-        // minimal — every PK type already implements `Encode + Type`
-        // because `Model::Pk` requires it. The downside is one prepared
-        // plan per distinct list arity; this is the accepted trade-off
-        // versus forcing a `PgHasArrayType` addition to HeeRanjID.
+        // `ANY($1)` — no array-type bound is needed so the HeeRanjID PKs
+        // slot in unchanged. The downside is one prepared plan per distinct
+        // list arity; this is the accepted trade-off.
         //
         // LEFT JOIN naturally handles nullable FKs and orphan targets:
         // parent rows with NULL `source_column` or whose FK points at a
@@ -409,53 +397,45 @@ where
         // probe below surfaces as `None`.
         //
         // Target columns are enumerated explicitly via
-        // `Target::descriptor().fields` rather than using `t.*`. This
-        // keeps the synthetic `__djogi_parent_id` alias safe against a
-        // hypothetical user column of the same name: `t.*` would pull
-        // a second `__djogi_parent_id` into the result set and sqlx's
-        // name-based `try_get` would pick one with no stable guarantee
-        // which. Enumeration guarantees the alias is the sole column
-        // under that name in the result set, without forcing the
-        // framework to reserve `__djogi_parent_id` in user-space naming.
+        // `Target::descriptor().fields` rather than using `t.*` to keep
+        // the synthetic `__djogi_parent_id` alias unambiguous.
         let target_table = <Target as Model>::table_name();
         let target_fields = <Target as Model>::descriptor().fields;
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new("");
-        qb.push("SELECT p.id AS __djogi_parent_id");
+        let mut acc = SqlAccumulator::new("SELECT p.id AS __djogi_parent_id");
         for field in target_fields {
             // The Model trait is sealed, so `target_fields` comes from a
             // `#[derive(Model)]`-emitted descriptor — `field.name` should
             // already satisfy the identifier contract. Re-validate in
-            // debug builds so a malformed emission (or a downstream macro
-            // pretending to be `#[derive(Model)]`) surfaces as a loud
+            // debug builds so a malformed emission surfaces as a loud
             // framework-bug panic instead of malformed SQL.
             crate::ident::debug_assert_ident!(field.name, "field_name");
-            qb.push(", t.");
-            qb.push(field.name);
+            acc.push_sql(", t.");
+            acc.push_sql(field.name);
         }
-        qb.push(" FROM ");
-        qb.push(parent_table);
-        qb.push(" p LEFT JOIN ");
-        qb.push(target_table);
-        qb.push(" t ON t.id = p.");
-        qb.push(source_column);
-        qb.push(" WHERE p.id IN (");
-        let mut sep = qb.separated(", ");
-        for pk in &unique_pks {
-            sep.push_bind(pk.clone());
-        }
-        qb.push(")");
+        acc.push_sql(" FROM ");
+        acc.push_sql(parent_table);
+        acc.push_sql(" p LEFT JOIN ");
+        acc.push_sql(target_table);
+        acc.push_sql(" t ON t.id = p.");
+        acc.push_sql(source_column);
+        acc.push_sql(" WHERE p.id IN (");
+        acc.push_list_binds(unique_pks.iter().cloned());
+        acc.push_sql(")");
 
-        // Inline-match dispatch — same pattern every other CRUD /
-        // QuerySet terminal uses to thread `DjogiContext` through to
-        // sqlx. `ContextInner::Pool` fetches from the pool directly;
-        // `ContextInner::Transaction` reuses the outer transaction so
-        // the prefetch sees its own uncommitted writes.
-        let q = qb.build();
+        // Inline-match dispatch — `ContextInner::Pool` acquires a fresh
+        // connection per call; `ContextInner::Transaction` reuses the
+        // outer transaction so the prefetch sees its own uncommitted writes.
+        let (sql, binds) = acc.into_parts();
+        let params: Vec<&(dyn ToSql + Sync)> = binds
+            .iter()
+            .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+            .collect();
         let rows = match exec {
-            ContextInner::Pool(pool) => q.fetch_all(&*pool).await.map_err(DjogiError::from)?,
-            ContextInner::Transaction(tx) => {
-                q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
+            ContextInner::Pool(pool) => {
+                let mut conn = pool.get().await?;
+                conn.query(&sql, &params).await?
             }
+            ContextInner::Transaction(conn) => conn.query(&sql, &params).await?,
         };
 
         // Build HashMap<Source::Pk, Option<Target>>. Only insert an
@@ -470,14 +450,14 @@ where
             let parent_pk: Source::Pk =
                 row.try_get("__djogi_parent_id").map_err(DjogiError::from)?;
 
-            // Probe the raw value of the target's `id` column to
-            // distinguish a LEFT JOIN miss (all target columns NULL)
-            // from a real target row. Using `try_get_raw` avoids
-            // committing to a specific `Target::Pk` type here — the
-            // PK type may differ from `Source::Pk`.
+            // Probe the target's `id` column to distinguish a LEFT JOIN
+            // miss (all target columns NULL) from a real target row.
+            // Decode as `Option<i64>` — NULL maps to `None`, which is
+            // the miss signal regardless of the actual `Target::Pk` type.
+            // tokio-postgres `try_get` signature: `try_get<T>(idx: I)`.
             let target_is_null = row
-                .try_get_raw("id")
-                .map(|v| v.is_null())
+                .try_get::<_, Option<i64>>("id")
+                .map(|v| v.is_none())
                 // A missing `id` column would be a schema bug; err on
                 // the side of "no target" so the caller sees `None`
                 // rather than a cryptic decode error.
@@ -486,7 +466,9 @@ where
             let slot = if target_is_null {
                 None
             } else {
-                Some(Target::from_row(&row).map_err(DjogiError::from)?)
+                // Decode via the T2 bridge method emitted alongside sqlx::FromRow.
+                // T3 will replace this with `Target: FromPgRow` trait impl.
+                Some(Target::__from_pg_row(&row))
             };
 
             parent_to_target.entry(parent_pk).or_insert(slot);

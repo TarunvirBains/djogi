@@ -19,12 +19,11 @@
 //! # Why a dedicated pending handle
 //!
 //! The aggregate terminal is a scalar decode, not a row decode, so it
-//! needs a different sqlx entry point (`query_scalar` instead of
-//! `query_as`). Keeping the typed-scalar pending struct separate from
-//! [`QuerySet<T>`] preserves Phase 2's terminal signatures byte-for-
-//! byte — no call site that reaches `.fetch_all(ctx)` is forced to
-//! learn a new return type. The cost is one tiny wrapper struct; the
-//! benefit is clean additivity.
+//! needs a different entry point from the row terminals. Keeping the
+//! typed-scalar pending struct separate from [`QuerySet<T>`] preserves
+//! Phase 2's terminal signatures byte-for-byte — no call site that
+//! reaches `.fetch_all(ctx)` is forced to learn a new return type. The
+//! cost is one tiny wrapper struct; the benefit is clean additivity.
 //!
 //! # Clause set
 //!
@@ -50,11 +49,12 @@
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
-use crate::context::{ContextInner, DjogiContext};
+use crate::context::DjogiContext;
 use crate::expr::AggregateExpr;
 use crate::model::Model;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::build_aggregate_select;
+use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -62,8 +62,8 @@ use std::marker::PhantomData;
 /// terminated with [`Self::fetch_one`].
 ///
 /// Holds the upstream queryset (for the `FROM` + `WHERE` clauses) plus
-/// the aggregate expression itself. `Out` is the Rust type sqlx decodes
-/// the scalar result into — it is threaded from the wrapped
+/// the aggregate expression itself. `Out` is the Rust type the driver
+/// decodes the scalar result into — it is threaded from the wrapped
 /// [`AggregateExpr<Out>`].
 ///
 /// `#[must_use]` because an unawaited pending query is always a
@@ -77,17 +77,13 @@ pub struct AggregateQuery<T: Model, Out> {
 
 impl<T: Model, Out> AggregateQuery<T, Out>
 where
-    Out: for<'r> sqlx::Decode<'r, sqlx::Postgres>
-        + sqlx::Type<sqlx::Postgres>
-        + Send
-        + Unpin
-        + 'static,
+    Out: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     /// Execute the aggregate query and decode the single scalar result.
     ///
-    /// Dispatches through the same inline-match on [`ContextInner`]
-    /// every other terminal uses — aggregate queries work inside an
-    /// `atomic()` scope and see the scope's uncommitted writes.
+    /// Dispatches through the context's execution helpers — aggregate
+    /// queries work inside an `atomic()` scope and see the scope's
+    /// uncommitted writes.
     ///
     /// # Short-circuit
     ///
@@ -96,11 +92,10 @@ where
     /// NULL; AVG on empty → NULL) and the typed surface cannot
     /// synthesise a `NULL` value at the Rust level without an
     /// `Out: Default` bound — which would exclude the `i64`-decode
-    /// path sqlx already supports transparently. So the query runs and
-    /// Postgres returns the per-op empty result, which sqlx then
-    /// decodes (or errors on NULL for non-Option `Out`). Callers who
-    /// need an `Option<V>` shape on MIN/MAX wrap `Out` themselves at
-    /// the call site (e.g. `aggregate(|f| f.col().min()).fetch_one::<Option<i64>>(ctx)`).
+    /// path. So the query runs and Postgres returns the per-op empty
+    /// result, which is then decoded (or errors on NULL for non-Option
+    /// `Out`). Callers who need an `Option<V>` shape on MIN/MAX wrap
+    /// `Out` themselves at the call site.
     pub fn fetch_one<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -110,14 +105,14 @@ where
         Out: 'ctx,
     {
         async move {
-            let mut qb = build_aggregate_select(&self.qs, &self.agg.node);
-            let q = qb.build_query_scalar::<Out>();
-            let v: Out = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.fetch_one(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.fetch_one(&mut **tx).await.map_err(DjogiError::from)?
-                }
-            };
+            let acc = build_aggregate_select(&self.qs, &self.agg.node);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let row = ctx.query_one(&sql, &params).await?;
+            let v: Out = row.try_get(0).map_err(DjogiError::from)?;
             Ok(v)
         }
     }

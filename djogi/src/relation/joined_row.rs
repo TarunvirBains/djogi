@@ -83,9 +83,9 @@
 
 use crate::model::Model;
 use crate::relation::path::RelationPath;
-use sqlx::postgres::PgRow;
 use std::any::Any;
 use std::collections::HashMap;
+use tokio_postgres::Row as PgRow;
 
 /// Post-`select_related` wrapper pairing a main-query row with joined
 /// relations.
@@ -193,20 +193,29 @@ impl<T: Model> JoinedRow<T> {
 ///
 /// For every field `name: Ty` on the struct (including the framework-
 /// injected `id` / `created_at` / `updated_at`), the generated impl
-/// decodes `row.try_get::<Ty, _>(&format!("{prefix}{name}"))`. Parent
+/// decodes `row.try_get::<Ty>(&format!("{prefix}{name}"))`. Parent
 /// decoding passes `""`; child decoding passes `"rel_{source_column}."`
 /// — matching the alias shape [`crate::relation::select_related`]
 /// emits in its `SELECT` list.
 ///
+/// # Row type: `tokio_postgres::Row`
+///
+/// T2 ports the row type from `sqlx::postgres::PgRow` to
+/// `tokio_postgres::Row`. The `tokio_postgres::Row::try_get::<T, _>(col)`
+/// method accepts a column name string and returns `Result<T, _>` — the
+/// same API shape the previous sqlx version used, just backed by
+/// tokio-postgres's `FromSql` trait rather than sqlx's `Decode` trait.
+/// T3 will formalize this into a named `FromPgRow` trait with proper
+/// encapsulation; for T2 the trait exists solely to bridge the
+/// `select_related` decode path.
+///
 /// # Why a bespoke trait (not a `FromRow` adapter)
 ///
-/// sqlx's [`FromRow`](sqlx::FromRow) looks columns up by bare name —
-/// there is no hook to rename them at decode time. A wrapper newtype
-/// around `PgRow` that intercepted every lookup would work but adds an
-/// extra indirection per column; the proc macro already generates
-/// field-name-aware decode blocks for `FromRow`, so emitting a sibling
-/// prefix-aware version is both simpler and closer to the existing
-/// implementation shape.
+/// sqlx's `FromRow` looks columns up by bare name — there is no hook to
+/// rename them at decode time. tokio-postgres does not have a `FromRow`
+/// analog at all; row access is always explicit via column name or index.
+/// This trait codifies the prefix-aware decode contract for the
+/// `select_related` path; T3 will clean it up into `FromPgRow`.
 ///
 /// # Phase 3 scope
 ///
@@ -218,16 +227,14 @@ impl<T: Model> JoinedRow<T> {
 /// impls.
 pub trait FromJoinedRow: Sized {
     /// Decode `Self` from `row`, reading each field under
-    /// `"{prefix}{field_name}"` via
-    /// [`try_get`](sqlx::Row::try_get).
+    /// `"{prefix}{field_name}"` via `row.try_get::<T>(name)`.
     ///
-    /// An empty prefix (`""`) degenerates to the same column lookups
-    /// [`FromRow`](sqlx::FromRow) would perform — the parent side of
-    /// a `select_related` join uses this spelling. A non-empty prefix
-    /// of the form `"rel_{source_column}."` matches the aliased
-    /// columns the select_related SQL emitter produces for the
-    /// child side.
-    fn from_prefixed_row(row: &PgRow, prefix: &str) -> Result<Self, sqlx::Error>;
+    /// An empty prefix (`""`) decodes the parent side of a
+    /// `select_related` join using bare column names (same columns
+    /// `__from_pg_row` would read). A non-empty prefix of the form
+    /// `"rel_{source_column}."` matches the aliased columns the
+    /// select_related SQL emitter produces for the child side.
+    fn from_prefixed_row(row: &PgRow, prefix: &str) -> Result<Self, tokio_postgres::Error>;
 }
 
 #[cfg(test)]

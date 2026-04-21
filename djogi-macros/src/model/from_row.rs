@@ -1,10 +1,17 @@
-//! Generates `impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for T`.
+//! Generates `impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for T` (T2 bridge)
+//! and `impl FromPgRowBridge for T` (T2 tokio-postgres decode path).
 //!
 //! # What
-//! Emits a `FromRow` implementation for every `#[model]`-annotated struct so
-//! that SQLx can deserialize Postgres query results directly into the user's
-//! type — including the three framework-injected fields (`id`, `created_at`,
-//! `updated_at`).
+//! Emits two `impl` blocks for every `#[model]`-annotated struct:
+//!
+//! 1. `impl sqlx::FromRow` — kept through T9 for the `#[sqlx::test]` dev-dep
+//!    integration test harness. Removed in T10 when the harness switches to
+//!    `#[djogi_test]`.
+//!
+//! 2. `impl FromPgRowBridge` — T2 bridge for the tokio-postgres runtime path.
+//!    Provides `fn __from_pg_row(row: &tokio_postgres::Row) -> Self`, which
+//!    decodes each field by column name. T3 replaces this with the public
+//!    `FromPgRow` trait and removes `FromPgRowBridge`.
 //!
 //! # Why
 //! SQLx's own `#[derive(FromRow)]` cannot see the injected fields because they
@@ -27,7 +34,8 @@ use syn::ItemStruct;
 
 use super::attrs::{FieldAttrs, ModelAttrs};
 
-/// Generate the `FromRow` impl for `struct_item`.
+/// Generate the `FromRow` (sqlx) and `FromPgRowBridge` (T2 tokio-postgres) impls
+/// for `struct_item`.
 ///
 /// `model_attrs` and `field_attrs` are accepted for API consistency with other
 /// `expand` functions and for future use (e.g. `column` overrides).
@@ -53,6 +61,25 @@ pub fn expand(
         })
         .collect();
 
+    // T2 bridge: `__from_pg_row` — decodes via tokio-postgres `Row::try_get`.
+    // Same name-based convention as the sqlx path.  T3 replaces this with the
+    // public `FromPgRow` trait and removes `FromPgRowBridge` entirely.
+    let pg_field_assignments: Vec<TokenStream> = struct_item
+        .fields
+        .iter()
+        .map(|f| {
+            let fname = f.ident.as_ref().expect("only named structs supported");
+            let col_name = fname.to_string();
+            quote! {
+                #fname: row.try_get(#col_name)
+                    .unwrap_or_else(|e| panic!(
+                        "FromPgRowBridge: failed to decode field '{}' from row: {}",
+                        #col_name, e
+                    ))
+            }
+        })
+        .collect();
+
     // Use `::djogi::__private::sqlx` rather than bare `::sqlx` so that
     // macro-generated code compiles in any crate that depends on `djogi` —
     // users should not need `sqlx` as a direct dependency just to use `#[model]`.
@@ -69,6 +96,18 @@ pub fn expand(
                 Ok(Self {
                     #(#field_assignments,)*
                 })
+            }
+        }
+
+        // T2 bridge — tokio-postgres decode path.  Emitted alongside sqlx::FromRow;
+        // T3 will replace this with the public `FromPgRow` trait impl.
+        impl #impl_generics ::djogi::__private::pg::FromPgRowBridge
+        for #name #ty_generics #where_clause
+        {
+            fn __from_pg_row(row: &::djogi::__private::tokio_postgres::Row) -> Self {
+                Self {
+                    #(#pg_field_assignments,)*
+                }
             }
         }
     }

@@ -74,17 +74,17 @@ impl LockMode {
     /// and the joined-select variant emit row locks — terminals
     /// (`count`, `exists`, aggregates) never carry a lock because they
     /// don't return rows the caller can hold open against.
-    pub(crate) fn push_tail(self, qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>) {
+    pub(crate) fn push_tail(self, acc: &mut crate::pg::accumulator::SqlAccumulator) {
         match self {
             LockMode::None => {}
             LockMode::ForUpdate => {
-                qb.push(" FOR UPDATE");
+                acc.push_sql(" FOR UPDATE");
             }
             LockMode::ForUpdateNowait => {
-                qb.push(" FOR UPDATE NOWAIT");
+                acc.push_sql(" FOR UPDATE NOWAIT");
             }
             LockMode::ForUpdateSkipLocked => {
-                qb.push(" FOR UPDATE SKIP LOCKED");
+                acc.push_sql(" FOR UPDATE SKIP LOCKED");
             }
         }
     }
@@ -93,34 +93,34 @@ impl LockMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::{Postgres, QueryBuilder};
+    use crate::pg::accumulator::SqlAccumulator;
 
     #[test]
     fn none_emits_no_tail() {
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        LockMode::None.push_tail(&mut qb);
-        assert_eq!(qb.sql(), "");
+        let mut acc = SqlAccumulator::new("");
+        LockMode::None.push_tail(&mut acc);
+        assert_eq!(acc.sql(), "");
     }
 
     #[test]
     fn for_update_emits_bare_clause() {
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        LockMode::ForUpdate.push_tail(&mut qb);
-        assert_eq!(qb.sql().trim(), "FOR UPDATE");
+        let mut acc = SqlAccumulator::new("");
+        LockMode::ForUpdate.push_tail(&mut acc);
+        assert_eq!(acc.sql().trim(), "FOR UPDATE");
     }
 
     #[test]
     fn for_update_nowait_emits_nowait() {
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        LockMode::ForUpdateNowait.push_tail(&mut qb);
-        assert_eq!(qb.sql().trim(), "FOR UPDATE NOWAIT");
+        let mut acc = SqlAccumulator::new("");
+        LockMode::ForUpdateNowait.push_tail(&mut acc);
+        assert_eq!(acc.sql().trim(), "FOR UPDATE NOWAIT");
     }
 
     #[test]
     fn for_update_skip_locked_emits_skip_locked() {
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        LockMode::ForUpdateSkipLocked.push_tail(&mut qb);
-        assert_eq!(qb.sql().trim(), "FOR UPDATE SKIP LOCKED");
+        let mut acc = SqlAccumulator::new("");
+        LockMode::ForUpdateSkipLocked.push_tail(&mut acc);
+        assert_eq!(acc.sql().trim(), "FOR UPDATE SKIP LOCKED");
     }
 
     #[test]

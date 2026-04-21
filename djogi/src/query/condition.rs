@@ -216,6 +216,8 @@ pub enum FilterValue {
     List(Vec<FilterValue>),
     /// BETWEEN a AND b payload (two bound values).
     Pair(Box<FilterValue>, Box<FilterValue>),
+    /// `NUMERIC` / `DECIMAL` column values (Phase 5).
+    Decimal(rust_decimal::Decimal),
 }
 
 #[cfg(test)]

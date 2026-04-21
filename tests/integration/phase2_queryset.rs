@@ -156,7 +156,9 @@ async fn seed_posts(pool: &PgPool) {
 
 #[sqlx::test]
 async fn fetch_all_no_filter(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let rows = Post::objects().fetch_all(&mut ctx).await.unwrap();
@@ -165,7 +167,9 @@ async fn fetch_all_no_filter(pool: PgPool) {
 
 #[sqlx::test]
 async fn fetch_all_with_filter(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let rows = Post::objects()
@@ -178,7 +182,9 @@ async fn fetch_all_with_filter(pool: PgPool) {
 
 #[sqlx::test]
 async fn fetch_one_exact_match(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let row = Post::objects()
@@ -191,7 +197,9 @@ async fn fetch_one_exact_match(pool: PgPool) {
 
 #[sqlx::test]
 async fn fetch_one_zero_rows_is_not_found(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let err = Post::objects()
@@ -204,7 +212,9 @@ async fn fetch_one_zero_rows_is_not_found(pool: PgPool) {
 
 #[sqlx::test]
 async fn fetch_one_multiple_rows_is_multiple_objects(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let err = Post::objects()
@@ -217,7 +227,9 @@ async fn fetch_one_multiple_rows_is_multiple_objects(pool: PgPool) {
 
 #[sqlx::test]
 async fn first_returns_some_or_none(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let some = Post::objects()
@@ -237,7 +249,9 @@ async fn first_returns_some_or_none(pool: PgPool) {
 
 #[sqlx::test]
 async fn count_returns_row_count(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let n = Post::objects().count(&mut ctx).await.unwrap();
@@ -252,7 +266,9 @@ async fn count_returns_row_count(pool: PgPool) {
 
 #[sqlx::test]
 async fn exists_returns_bool(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     assert!(
@@ -273,7 +289,9 @@ async fn exists_returns_bool(pool: PgPool) {
 
 #[sqlx::test]
 async fn none_short_circuits_every_terminal(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -308,7 +326,9 @@ async fn none_short_circuits_every_terminal(pool: PgPool) {
 
 #[sqlx::test]
 async fn limit_offset_paginate(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let page1 = Post::objects()
@@ -332,7 +352,9 @@ async fn limit_offset_paginate(pool: PgPool) {
 
 #[sqlx::test]
 async fn nested_and_or(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     let rows = Post::objects()
@@ -347,7 +369,9 @@ async fn nested_and_or(pool: PgPool) {
 
 #[sqlx::test]
 async fn in_list_and_between(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -373,7 +397,9 @@ async fn in_list_and_between(pool: PgPool) {
 
 #[sqlx::test]
 async fn filter_struct_matches_closure_results(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     // Task 8 parity check: `filter_struct` (programmatic) and `filter`
     // (closure) must produce structurally equivalent filters for the
     // same set of lookups. Row-count equality is necessary but not
@@ -430,7 +456,9 @@ async fn filter_struct_matches_closure_results(pool: PgPool) {
 
 #[sqlx::test]
 async fn filter_struct_empty_is_identity(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     // A filter with zero setters should not AND anything onto the
     // queryset — terminal fetch should see every row `seed_posts`
     // inserted. This exercises the early-return branch in
@@ -449,7 +477,9 @@ async fn filter_struct_empty_is_identity(pool: PgPool) {
 
 #[sqlx::test]
 async fn filter_struct_single_clause_unwraps_to_leaf(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     // A single-clause filter should emit SQL equivalent to a bare leaf
     // (no wrapping And). We can't inspect the emitted SQL from an
     // integration test, but we can verify the single-clause case
@@ -483,7 +513,9 @@ async fn filter_struct_single_clause_unwraps_to_leaf(pool: PgPool) {
 
 #[sqlx::test]
 async fn bulk_update_sets_values_and_returns_count(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -509,7 +541,9 @@ async fn bulk_update_sets_values_and_returns_count(pool: PgPool) {
 
 #[sqlx::test]
 async fn bulk_update_none_short_circuits(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -540,7 +574,9 @@ async fn bulk_update_none_short_circuits(pool: PgPool) {
 
 #[sqlx::test]
 async fn bulk_delete_removes_rows_and_returns_count(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -567,7 +603,9 @@ async fn bulk_delete_removes_rows_and_returns_count(pool: PgPool) {
 
 #[sqlx::test]
 async fn bulk_update_stamps_updated_at(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     // Contract: bulk update must always stamp `updated_at = now()`, even
     // when the user did not set it themselves. Parity with single-row
     // `save()`, which also bumps `updated_at` on every write.
@@ -629,7 +667,9 @@ async fn bulk_update_stamps_updated_at(pool: PgPool) {
 
 #[sqlx::test]
 async fn distinct_on_and_plain(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
     // Add duplicate titles so DISTINCT ON has real work to do. Same
@@ -717,7 +757,9 @@ async fn distinct_on_and_plain(pool: PgPool) {
 /// terminal paths (row-returning vs scalar) against that branch.
 #[sqlx::test]
 async fn in_list_empty_returns_zero_rows(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -741,7 +783,9 @@ async fn in_list_empty_returns_zero_rows(pool: PgPool) {
 /// survives.
 #[sqlx::test]
 async fn not_in_list_empty_returns_all_rows(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -769,7 +813,9 @@ async fn not_in_list_empty_returns_all_rows(pool: PgPool) {
 /// `"xdeal"` row plays the same role for the `_` escape check.
 #[sqlx::test]
 async fn string_contains_escapes_percent_and_underscore(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -830,7 +876,9 @@ async fn string_contains_escapes_percent_and_underscore(pool: PgPool) {
 /// exactly the one unpublished row.
 #[sqlx::test]
 async fn exclude_wraps_in_not(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -858,7 +906,9 @@ async fn exclude_wraps_in_not(pool: PgPool) {
 /// So the expected title order is: delta, beta, alpha, gamma.
 #[sqlx::test]
 async fn order_by_stacks_across_multiple_calls(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -892,7 +942,9 @@ async fn order_by_stacks_across_multiple_calls(pool: PgPool) {
 /// `score = NULL` drives the positioning assertion.
 #[sqlx::test]
 async fn order_by_nulls_first_renders(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 
@@ -973,7 +1025,9 @@ async fn order_by_nulls_first_renders(pool: PgPool) {
 /// `updated_at == created_at` catches both halves of that regression.
 #[sqlx::test]
 async fn bulk_update_empty_assignments_short_circuits(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup(&pool).await;
     seed_posts(&pool).await;
 

@@ -17,13 +17,25 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 uuid = { version = "1", features = ["serde", "v4"] }
-rust_decimal = "1"
+rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
 rust_decimal_macros = "1"
 
-# HeeRanjId — resolved from crates.io 0.1.2. The `sqlx` feature enables
-# `sqlx::Decode`/`Encode`/`Type` impls for `HeerId` (BIGINT) and `RanjId`
-# (UUID), which the `#[model]` macro requires for typed PK columns.
-heeranjid = { version = "0.1.2", features = ["sqlx"] }
+# New SQL substrate — tokio-postgres + postgres-types + deadpool-postgres.
+# These replace sqlx as the runtime executor; sqlx remains in dev-dependencies
+# for the existing #[sqlx::test] integration test harness through T9.
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime", "with-time-0_3", "with-serde_json-1", "with-uuid-1"] }
+postgres-types = { version = "0.2", default-features = false, features = ["with-serde_json-1", "with-time-0_3", "with-uuid-1"] }
+deadpool-postgres = "0.14"
+bytes = "1"
+
+# HeeRanjId — bumped to 0.2 for tokio-postgres / postgres-types codec support.
+# The `postgres` feature enables `postgres_types::ToSql`/`FromSql` impls for
+# `HeerId` (BIGINT) and `RanjId` (UUID). heeranjid-sqlx stays only as a
+# dev-dependency for the #[sqlx::test] harness through T8.
+# Both features enabled: `postgres` for tokio-postgres ToSql/FromSql (T2+),
+# `sqlx` for the sqlx::Encode/Decode impls required by the sqlx::FromRow impl
+# emitted by #[model] (preserved through T9 for the #[sqlx::test] harness).
+heeranjid = { version = "0.2", features = ["postgres", "sqlx"] }
 heeranjid-sqlx = "0.1.2"
 
 # Proc macro

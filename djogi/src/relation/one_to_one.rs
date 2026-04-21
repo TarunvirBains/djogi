@@ -20,6 +20,8 @@
 
 use crate::model::Model;
 use crate::relation::foreign_key::{ForeignKey, ForeignKeyResolved};
+use bytes::BytesMut;
+use postgres_types::{FromSql, IsNull, ToSql, Type};
 
 /// Unique-constrained 1:1 relation field.
 ///
@@ -105,7 +107,56 @@ impl<T: Model> OneToOneField<T> {
 }
 
 // ---------------------------------------------------------------------------
-// sqlx integration — forward through the inner `ForeignKey<T>`.
+// postgres_types integration — primary codec for T2+.
+// Delegates through the inner `ForeignKey<T>` to `T::Pk`.
+//
+// T2→T3 bridge: the sqlx `Type`/`Encode`/`Decode` impls below this block
+// are kept so that macro-emitted `impl sqlx::FromRow` bodies (which use
+// `row.try_get::<OneToOneField<T>, _>(col)`) continue to compile through T3.
+// T3 removes both the sqlx emission in `from_row.rs` and these bridge impls.
+// ---------------------------------------------------------------------------
+
+impl<T: Model> ToSql for OneToOneField<T>
+where
+    T::Pk: ToSql,
+{
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        // Delegate through the inner ForeignKey<T>, which delegates to T::Pk::to_sql.
+        self.0.to_sql(ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        <T::Pk as ToSql>::accepts(ty)
+    }
+
+    postgres_types::to_sql_checked!();
+}
+
+impl<'a, T: Model> FromSql<'a> for OneToOneField<T>
+where
+    T::Pk: FromSql<'a>,
+{
+    fn from_sql(
+        ty: &Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        // Decode T::Pk, then wrap in ForeignKey and then OneToOneField.
+        let pk = <T::Pk as FromSql<'a>>::from_sql(ty, raw)?;
+        Ok(OneToOneField::new(pk))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        <T::Pk as FromSql<'a>>::accepts(ty)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sqlx bridge impls — T2→T3 only. Forward through the inner `ForeignKey<T>`.
+// T3 removes these once macro-emitted `FromRow` is replaced with `FromPgRow`.
 // ---------------------------------------------------------------------------
 
 impl<T: Model> sqlx::Type<sqlx::Postgres> for OneToOneField<T>

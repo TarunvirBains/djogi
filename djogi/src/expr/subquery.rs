@@ -439,7 +439,7 @@ mod tests {
     use crate::Expr;
     use crate::descriptor::ModelDescriptor;
     use crate::expr::sql::emit_expr;
-    use sqlx::{Postgres, QueryBuilder};
+    use crate::pg::accumulator::SqlAccumulator;
 
     // Inert local model — only `table_name` matters for emission tests.
     struct Ledger;
@@ -547,7 +547,7 @@ mod tests {
         // construction.
         let qs: QuerySet<Entry> = QuerySet::new();
         let expr = Exists::new(qs).as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "EXISTS (SELECT 1 FROM entries)", "got: {sql}");
@@ -566,7 +566,7 @@ mod tests {
         let qs: QuerySet<Entry> =
             QuerySet::new().filter_expr(|_| inner_col.as_expr().eq(outer_ref.as_expr()));
         let expr = Exists::new(qs).as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         assert_eq!(
@@ -584,7 +584,7 @@ mod tests {
         let id_col: FieldRef<Entry, i64> = FieldRef::new("id");
         let qs: QuerySet<Entry> = QuerySet::new().filter(|_| memo.eq("opening".to_string()));
         let expr = Subquery::new(qs, id_col).as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         // One bind for the "opening" literal — assert structural shape
@@ -602,7 +602,7 @@ mod tests {
         // column name, no qualifier.
         let r: OuterRef<Ledger, i64> = OuterRef::new("id");
         let expr: Expr<i64> = r.as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         assert_eq!(qb.sql().trim(), "id", "got: {}", qb.sql());
     }

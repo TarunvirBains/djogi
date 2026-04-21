@@ -63,9 +63,10 @@
 //! fixtures.
 
 use crate::DjogiError;
-use crate::context::{__ContextInnerForMacros, DjogiContext};
+use crate::context::DjogiContext;
 use crate::descriptor::ModelDescriptor;
 use crate::model::Model;
+use postgres_types::ToSql;
 use serde::Serialize;
 
 /// The three CRUD operations a model can emit an outbox row for.
@@ -115,7 +116,7 @@ impl OutboxAction {
 /// # Error flow
 ///
 /// - `serde_json::to_value` failure → `DjogiError::Serde`.
-/// - `sqlx::execute` failure → `DjogiError::Sqlx`.
+/// - Database execute failure → `DjogiError::Pg`.
 ///
 /// Both are propagated verbatim so the calling CRUD method's `?`
 /// rolls the transaction back on any failure.
@@ -137,20 +138,13 @@ pub async fn emit_event<T: Model + Serialize>(
 ) -> Result<(), DjogiError> {
     let payload = build_payload(row, T::descriptor())?;
     let sql = insert_sql(T::table_name());
+    let action_str = action.as_sql_str();
 
-    let q = sqlx::query(&sql)
-        .bind(row.pk_value())
-        .bind(action.as_sql_str())
-        .bind(payload);
-
-    match DjogiContext::__inner_mut_for_macros(ctx) {
-        __ContextInnerForMacros::Pool(pool) => {
-            q.execute(&*pool).await?;
-        }
-        __ContextInnerForMacros::Transaction(tx) => {
-            q.execute(&mut **tx).await?;
-        }
-    }
+    // Build the parameter slice. `T::Pk: ToSql` is guaranteed by the
+    // `Model` trait bound added in T2. `serde_json::Value` is `ToSql`
+    // via tokio-postgres' `with-serde_json-1` feature.
+    let params: &[&(dyn ToSql + Sync)] = &[row.pk_value(), &action_str, &payload];
+    ctx.execute(&sql, params).await?;
     Ok(())
 }
 
@@ -159,7 +153,7 @@ pub async fn emit_event<T: Model + Serialize>(
 /// Convention — `{table}_outbox` suffix — matches the DDL the macro
 /// emits into `target/djogi_outbox/`. Three positional binds:
 ///
-/// 1. `row_id` — primary row's PK (`T::Pk` bound via sqlx)
+/// 1. `row_id` — primary row's PK (`T::Pk: postgres_types::ToSql`)
 /// 2. `action` — `'create' | 'save' | 'delete'` text literal
 /// 3. `payload` — JSONB document produced by [`build_payload`]
 ///

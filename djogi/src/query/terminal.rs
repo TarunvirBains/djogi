@@ -18,20 +18,13 @@
 //! state in terminal.rs beyond the documented `limit` override in
 //! `fetch_one` / `first`).
 //!
-//! # Context dispatch and `Send` futures
+//! # Context dispatch
 //!
-//! Each terminal takes `&mut DjogiContext`, matching the pattern established by
-//! the Phase 4-retrofitted `Model` trait methods: the same call site works
-//! against a pool-backed context or a transaction-backed one. Internally the
-//! terminal pattern-matches on [`ContextInner`] to dispatch the sqlx query
-//! against the appropriate handle — see `djogi::context` module docs for the
-//! inline-match rationale.
-//!
-//! Returning `impl Future<Output = ...> + Send` (RPITIT) means callers can
-//! `.await` results across task boundaries — required for any async runtime
-//! context that spawns terminals onto a multi-thread runtime (e.g. an Axum
-//! handler running on Tokio's multi-thread runtime under the opt-in `axum`
-//! feature).
+//! Each terminal takes `&mut DjogiContext` and calls through the context's
+//! execution helpers (`query_all`, `query_opt`, `query_one`, `execute`),
+//! which dispatch to either a pool-acquired connection or the active
+//! transaction connection transparently. The same call site works against
+//! a pool-backed context or a transaction-backed one.
 //!
 //! # `is_empty` short-circuit contract
 //!
@@ -65,13 +58,10 @@
 //! Every terminal returns `impl Future<Output = ...> + Send` rather than
 //! using bare `async fn`. The explicit `+ Send` bound matches the Phase 1
 //! `Model` trait shape (`model.rs`) and guarantees the returned future can
-//! be `.await`ed across task boundaries — critical for any async runtime
+//! be `.await`ed across task boundaries — required for any async runtime
 //! context that spawns terminals onto a multi-thread runtime (e.g. an Axum
-//! handler on Tokio's multi-thread runtime). `async fn` in trait / impl
-//! position does not
-//! automatically carry `+ Send` on the returned future; spelling the bound
-//! explicitly keeps the call site free of "future is not Send" errors that
-//! would otherwise show up far from where the bound is missing.
+//! handler running on Tokio's multi-thread runtime under the opt-in `axum`
+//! feature).
 //!
 //! `clippy::manual_async_fn` fires on this pattern; the lint is allowed at
 //! the module level because the explicit-bound form is the deliberate
@@ -83,25 +73,36 @@
 use crate::DjogiError;
 use crate::context::{ContextInner, DjogiContext};
 use crate::model::Model;
+use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::decode::FromPgRowBridge;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_count, build_exists, build_select, build_select_joined};
 use crate::relation::joined_row::{FromJoinedRow, JoinedRow};
 use crate::relation::prefetch::{PrefetchedRow, apply_prefetches};
 use crate::relation::select_related::{apply_select_related, stitch_prefetches_into_joined};
-use sqlx::{Postgres, QueryBuilder};
+use postgres_types::ToSql;
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 
-// ── Row-returning terminals (require `T: FromRow`) ────────────────────────
-//
-// `fetch_all` / `fetch_one` / `first` decode rows into `T`, so they need
-// `T: for<'r> FromRow<'r, PgRow>`. `count` / `exists` return scalars and
-// are in a separate impl block below with no FromRow bound.
+// ── Helper: unpack SqlAccumulator → (sql, params_vec) ─────────────────────
+
+/// Convert an `SqlAccumulator` into a SQL string + a slice-compatible
+/// params vec usable with the context's execution helpers.
+///
+/// Returns `(sql, owned_binds)` where `owned_binds` is a
+/// `Vec<Box<dyn ToSql + Sync + Send>>` (the same type the accumulator
+/// stores). Callers build a `&[&(dyn ToSql + Sync)]` borrow slice from it
+/// for the actual call.
+fn acc_into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
+    acc.into_parts()
+}
+
+// ── Row-returning terminals (require `T: FromPgRowBridge`) ────────────────────────
 
 impl<T: Model> QuerySet<T>
 where
-    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+    T: FromPgRowBridge + Send + Unpin,
 {
     /// Execute the query and collect every matching row into a `Vec<T>`.
     ///
@@ -120,19 +121,15 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
-            let mut qb = build_select(&self);
-            let q = qb.build_query_as::<T>();
-            let rows: Vec<T> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q
-                    .fetch_all(&*pool)
-                    .await
-                    .map_err(crate::error::map_lock_err)?,
-                ContextInner::Transaction(tx) => q
-                    .fetch_all(&mut **tx)
-                    .await
-                    .map_err(crate::error::map_lock_err)?,
-            };
-            Ok(rows)
+            let acc = build_select(&self);
+            let (sql, binds) = acc_into_sql_and_binds(acc);
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows = ctx.query_all(&sql, &params).await?;
+            let result: Vec<T> = rows.iter().map(|r| T::__from_pg_row(r)).collect();
+            Ok(result)
         }
     }
 
@@ -163,18 +160,13 @@ where
             // multiple-rows error path without a `COUNT(*)` round trip.
             let mut qs = self;
             qs.limit = Some(2);
-            let mut qb = build_select(&qs);
-            let q = qb.build_query_as::<T>();
-            let rows: Vec<T> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q
-                    .fetch_all(&*pool)
-                    .await
-                    .map_err(crate::error::map_lock_err)?,
-                ContextInner::Transaction(tx) => q
-                    .fetch_all(&mut **tx)
-                    .await
-                    .map_err(crate::error::map_lock_err)?,
-            };
+            let acc = build_select(&qs);
+            let (sql, binds) = acc_into_sql_and_binds(acc);
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows = ctx.query_all(&sql, &params).await?;
             match rows.len() {
                 0 => Err(DjogiError::not_found(T::table_name())),
                 1 => {
@@ -186,7 +178,7 @@ where
                         .into_iter()
                         .next()
                         .expect("rows.len() == 1 was just matched");
-                    Ok(row)
+                    Ok(T::__from_pg_row(&row))
                 }
                 // `n` here is a sentinel: because we force `LIMIT 2`
                 // above, `n` is always exactly 2 on this branch — not the
@@ -257,24 +249,15 @@ where
             // queryset, so we pull out what we need first.
             let prefetches = self.prefetch_paths.clone();
 
-            // Main query — identical shape to `fetch_all`. Dispatches
-            // through the same inline-match on `ContextInner` every
-            // other terminal uses; prefetch fan-out inherits the same
-            // context variant below.
-            let mut qb = build_select(&self);
-            let rows: Vec<T> = {
-                let q = qb.build_query_as::<T>();
-                match ctx.inner_mut() {
-                    ContextInner::Pool(pool) => q
-                        .fetch_all(&*pool)
-                        .await
-                        .map_err(crate::error::map_lock_err)?,
-                    ContextInner::Transaction(tx) => q
-                        .fetch_all(&mut **tx)
-                        .await
-                        .map_err(crate::error::map_lock_err)?,
-                }
-            };
+            // Main query — identical shape to `fetch_all`.
+            let acc = build_select(&self);
+            let (sql, binds) = acc_into_sql_and_binds(acc);
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let pg_rows = ctx.query_all(&sql, &params).await?;
+            let rows: Vec<T> = pg_rows.iter().map(|r| T::__from_pg_row(r)).collect();
 
             // Apply each prefetch loader. Empty main result -> no
             // loaders run (short-circuit inside `apply_prefetches`).
@@ -334,8 +317,8 @@ where
     /// Takes `&mut DjogiContext`, matching
     /// [`fetch_all_prefetched`](Self::fetch_all_prefetched). Pool-backed
     /// and transaction-backed contexts are both supported — the main
-    /// query and prefetch fan-out both dispatch through an inline-match
-    /// on `ContextInner`, so `select_related` works inside an
+    /// query and prefetch fan-out both dispatch through the context
+    /// helpers, so `select_related` works inside an
     /// `atomic()` scope and sees the scope's uncommitted writes.
     pub fn fetch_all_joined<'ctx>(
         self,
@@ -364,22 +347,21 @@ where
             // `select_related_paths` is non-empty; with an empty path
             // list it degenerates to `SELECT {parent}.* FROM ...` — same
             // shape as `build_select` minus the `*` shortcut. The
-            // decoded rows come back as raw `PgRow`s so both parent and
-            // (per registered path) child can be extracted via
-            // `FromJoinedRow::from_prefixed_row`.
-            let mut qb = build_select_joined(&self);
-            let rows: Vec<sqlx::postgres::PgRow> = {
-                let q = qb.build();
-                match ctx.inner_mut() {
-                    ContextInner::Pool(pool) => q
-                        .fetch_all(&*pool)
-                        .await
-                        .map_err(crate::error::map_lock_err)?,
-                    ContextInner::Transaction(tx) => q
-                        .fetch_all(&mut **tx)
-                        .await
-                        .map_err(crate::error::map_lock_err)?,
+            // decoded rows come back as raw `tokio_postgres::Row`s so
+            // both parent and (per registered path) child can be
+            // extracted via `FromJoinedRow::from_prefixed_row`.
+            let acc = build_select_joined(&self);
+            let (sql, binds) = acc_into_sql_and_binds(acc);
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows: Vec<tokio_postgres::Row> = match ctx.inner_mut() {
+                ContextInner::Pool(pool) => {
+                    let mut conn = pool.get().await?;
+                    conn.query(&sql, &params).await?
                 }
+                ContextInner::Transaction(conn) => conn.query(&sql, &params).await?,
             };
 
             // Decode each row into a JoinedRow<T> carrying any joined
@@ -417,19 +399,14 @@ where
             }
             let mut qs = self;
             qs.limit = Some(1);
-            let mut qb = build_select(&qs);
-            let q = qb.build_query_as::<T>();
-            let opt: Option<T> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q
-                    .fetch_optional(&*pool)
-                    .await
-                    .map_err(crate::error::map_lock_err)?,
-                ContextInner::Transaction(tx) => q
-                    .fetch_optional(&mut **tx)
-                    .await
-                    .map_err(crate::error::map_lock_err)?,
-            };
-            Ok(opt)
+            let acc = build_select(&qs);
+            let (sql, binds) = acc_into_sql_and_binds(acc);
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let opt = ctx.query_opt(&sql, &params).await?;
+            Ok(opt.as_ref().map(|r| T::__from_pg_row(r)))
         }
     }
 
@@ -592,56 +569,35 @@ where
             // on the `{Model}Fields::id` FieldRef — the field bag is a
             // per-model ZST emitted by the macro and not reachable
             // from this generic method. Any additional filters /
-            // orderings the caller stacked on `self` are composed via
-            // `AND` + appended after the PK probe so the produced SQL
-            // is `SELECT * FROM t WHERE id IN (...) AND (<user WHERE>)`
-            // when the user layered more constraints.
-            let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("SELECT * FROM ");
-            qb.push(T::table_name());
-            qb.push(" WHERE id IN (");
-            {
-                let mut sep = qb.separated(", ");
-                for id in ids {
-                    sep.push_bind(id);
-                }
-            }
-            qb.push(")");
-            // The user's filters + orderings still apply. Re-use the
-            // main emitter to append them — but we need them inside a
-            // parenthesised `AND (...)` so precedence is preserved.
-            //
-            // Simplest correct path: emit the `QuerySet`'s WHERE
-            // through a dedicated builder helper. For now we just drop
-            // any user-stacked filters on this method — documented
-            // inline; callers who need combined semantics can use
-            // `.filter(...).fetch_all(...)` and key it themselves.
+            // orderings the caller stacked on `self` are dropped for
+            // this call; callers who need combined semantics should use
+            // `.filter(...).fetch_all(...)` and key the result themselves.
             //
             // TODO(phase4-task7d): layer user filters back in via a
             // dedicated `build_where_only` helper so `in_bulk` honours
             // upstream `.filter(...)` calls.
-            let rows: Vec<T> = {
-                let q = qb.build_query_as::<T>();
-                match ctx.inner_mut() {
-                    ContextInner::Pool(pool) => q
-                        .fetch_all(&*pool)
-                        .await
-                        .map_err(crate::error::map_lock_err)?,
-                    ContextInner::Transaction(tx) => q
-                        .fetch_all(&mut **tx)
-                        .await
-                        .map_err(crate::error::map_lock_err)?,
-                }
-            };
-            let mut out: HashMap<T::Pk, T> = HashMap::with_capacity(rows.len());
-            for row in rows {
-                out.insert(row.pk_value().clone(), row);
+            let mut acc = SqlAccumulator::new("SELECT * FROM ");
+            acc.push_sql(T::table_name());
+            acc.push_sql(" WHERE id IN (");
+            acc.push_list_binds(ids.iter().cloned());
+            acc.push_sql(")");
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let pg_rows = ctx.query_all(&sql, &params).await?;
+            let mut out: HashMap<T::Pk, T> = HashMap::with_capacity(pg_rows.len());
+            for row in &pg_rows {
+                let item = T::__from_pg_row(row);
+                out.insert(item.pk_value().clone(), item);
             }
             Ok(out)
         }
     }
 }
 
-// ── Scalar terminals (no FromRow bound needed) ────────────────────────────
+// ── Scalar terminals (no FromPgRowBridge bound needed) ─────────────────────────────
 
 impl<T: Model> QuerySet<T> {
     /// `SELECT COUNT(*) FROM <table> [WHERE ...]`.
@@ -661,14 +617,14 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(0);
             }
-            let mut qb = build_count(&self);
-            let q = qb.build_query_scalar::<i64>();
-            let n: i64 = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.fetch_one(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.fetch_one(&mut **tx).await.map_err(DjogiError::from)?
-                }
-            };
+            let acc = build_count(&self);
+            let (sql, binds) = acc_into_sql_and_binds(acc);
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let row = ctx.query_one(&sql, &params).await?;
+            let n: i64 = row.try_get(0).map_err(DjogiError::from)?;
             Ok(n)
         }
     }
@@ -691,14 +647,14 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(false);
             }
-            let mut qb = build_exists(&self);
-            let q = qb.build_query_scalar::<bool>();
-            let b: bool = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.fetch_one(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.fetch_one(&mut **tx).await.map_err(DjogiError::from)?
-                }
-            };
+            let acc = build_exists(&self);
+            let (sql, binds) = acc_into_sql_and_binds(acc);
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let row = ctx.query_one(&sql, &params).await?;
+            let b: bool = row.try_get(0).map_err(DjogiError::from)?;
             Ok(b)
         }
     }

@@ -224,7 +224,9 @@ async fn atomic_commits_on_success(pool: PgPool) {
     .await
     .expect("atomic should commit on Ok");
 
-    let mut verify_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut verify_ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     let count: i64 = Account::objects().count(&mut verify_ctx).await.unwrap();
     assert_eq!(count, 1, "committed row must be visible after the scope");
 }
@@ -249,7 +251,9 @@ async fn atomic_rolls_back_on_err(pool: PgPool) {
     .await;
     assert!(res.is_err(), "closure returned Err must surface");
 
-    let mut verify_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut verify_ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     let count: i64 = Account::objects().count(&mut verify_ctx).await.unwrap();
     assert_eq!(count, 0, "rollback must leave no rows");
 }
@@ -293,7 +297,9 @@ async fn nested_atomic_uses_savepoints(pool: PgPool) {
     .await
     .expect("outer atomic must still commit after nested rollback");
 
-    let mut verify_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut verify_ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     let count: i64 = Account::objects().count(&mut verify_ctx).await.unwrap();
     assert_eq!(count, 1, "only the outer row survives the nested rollback");
 }
@@ -443,7 +449,9 @@ async fn nested_atomic_on_commit_promotes_to_outer(pool: PgPool) {
 #[sqlx::test]
 async fn retry_on_conflict_does_not_retry_on_success(pool: PgPool) {
     setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
 
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
@@ -465,7 +473,9 @@ async fn retry_on_conflict_does_not_retry_on_success(pool: PgPool) {
 #[sqlx::test]
 async fn retry_on_conflict_short_circuits_on_non_lock_error(pool: PgPool) {
     setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
 
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
@@ -492,7 +502,9 @@ async fn retry_on_conflict_short_circuits_on_non_lock_error(pool: PgPool) {
 #[sqlx::test]
 async fn save_rehydrates_updated_at(pool: PgPool) {
     setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
 
     let mut account = Account::create(
         &mut ctx,
@@ -523,7 +535,9 @@ async fn save_rehydrates_updated_at(pool: PgPool) {
 #[sqlx::test]
 async fn save_reflects_trigger_modified_fields(pool: PgPool) {
     setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
 
     // BEFORE UPDATE trigger that bumps balance by 1 — verifies the
     // receiver sees the trigger-adjusted value after save.
