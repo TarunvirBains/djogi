@@ -1,10 +1,10 @@
-//! Phase 4.5 — projection annotation forms must all parse cleanly.
+//! Phase 4.5 — visage annotation forms must all parse cleanly.
 //!
 //! Compile-pass baseline for every legal form of `#[field(expose(...))]`.
 //! If any form regresses (parser rejects it, codegen fails on a valid
 //! combination), this file stops compiling and trybuild surfaces it.
 //!
-//! Task 2 delivers the parser only — the projection structs themselves
+//! Task 2 delivers the parser only — the visage structs themselves
 //! land in Task 3. This fixture therefore only exercises the parse path;
 //! it does NOT yet reference `UserPublic`, `UserAdmin`, etc.
 use djogi::prelude::*;

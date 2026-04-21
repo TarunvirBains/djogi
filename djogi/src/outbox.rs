@@ -220,7 +220,7 @@ mod tests {
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[],
+                visage_map: &[],
             },
             FieldDescriptor {
                 name: "secret",
@@ -237,7 +237,7 @@ mod tests {
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[],
+                visage_map: &[],
             },
         ];
 
@@ -263,7 +263,7 @@ mod tests {
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[],
+                visage_map: &[],
             },
             FieldDescriptor {
                 name: "secret",
@@ -280,7 +280,7 @@ mod tests {
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[],
+                visage_map: &[],
             },
         ];
 

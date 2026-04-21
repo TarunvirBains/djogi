@@ -1,22 +1,22 @@
-//! Phase 4.5 — emit projection structs + conversion impls from `#[model]`.
+//! Phase 4.5 — emit visage structs + conversion impls from `#[model]`.
 //!
-//! For each `#[model]` struct, generate four projection structs:
+//! For each `#[model]` struct, generate four visage structs:
 //! `{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`.
 //! Each struct carries (in source order):
 //!
 //! 1. Framework columns (`id`, `created_at`, `updated_at`) — always
-//!    included in every projection, regardless of user annotations (Q13).
+//!    included in every visage, regardless of user annotations (Q13).
 //! 2. User fields annotated with `expose(scope)` (scalar) or
 //!    `expose(scope = "PeerProjection")` (relation — deferred to Task 5).
 //!
-//! Each projection derives `Debug`, `Clone`, `serde::Serialize`,
+//! Each visage derives `Debug`, `Clone`, `serde::Serialize`,
 //! `serde::Deserialize` unconditionally (D3). Conversion impls:
 //!
-//! - **Scalar-only** projection (no relation-form entries): `impl From<&Model>`
+//! - **Scalar-only** visage (no relation-form entries): `impl From<&Model>`
 //!   — infallible straight-line construction.
-//! - **Relation-nesting** projection (at least one `expose(scope = "Peer")`
+//! - **Relation-nesting** visage (at least one `expose(scope = "Peer")`
 //!   entry on a relation field): `impl TryFrom<&Model>` with
-//!   `Error = ProjectionError` — Task 5 replaces the Task-3 stub.
+//!   `Error = VisageError` — Task 5 replaces the Task-3 stub.
 //!
 //! Path routing: every type reference in emitted code goes through
 //! `::djogi::*` (`feedback_macro_path_routing.md`) so users never depend on
@@ -27,7 +27,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Ident, ItemStruct};
 
-/// Every scope emits one generated projection struct, in this fixed order.
+/// Every scope emits one generated visage struct, in this fixed order.
 const SCOPES: &[(&str, &str)] = &[
     ("public", "Public"),
     ("self_view", "SelfView"),
@@ -50,7 +50,7 @@ pub fn expand(
         _ => 3,
     };
 
-    let projections: Vec<TokenStream> = SCOPES
+    let visages: Vec<TokenStream> = SCOPES
         .iter()
         .map(|(scope, suffix)| {
             emit_projection_for_scope(
@@ -66,7 +66,7 @@ pub fn expand(
         .collect();
 
     quote! {
-        #(#projections)*
+        #(#visages)*
     }
 }
 
@@ -133,7 +133,7 @@ fn emit_projection_for_scope(
             // Scalar form on relation field — reject at codegen time.
             (true, None, true) => {
                 let msg = format!(
-                    "relation fields require an explicit peer projection name; \
+                    "relation fields require an explicit peer visage name; \
                      write `expose({scope} = \"PeerProjection\")`"
                 );
                 return syn::Error::new_spanned(field, msg).to_compile_error();
@@ -148,7 +148,7 @@ fn emit_projection_for_scope(
                 return syn::Error::new_spanned(field, msg).to_compile_error();
             }
 
-            // Relation form on relation field — nest the peer projection
+            // Relation form on relation field — nest the peer visage
             // via `.resolved()`. Option<FK> / Option<O2O> is deferred to a
             // follow-up phase; reject it at codegen time with a loud error.
             (false, Some(peer), true) => {
@@ -158,7 +158,7 @@ fn emit_projection_for_scope(
                     return syn::Error::new_spanned(
                         field,
                         "`Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` \
-                         in relation-form projections is deferred to a \
+                         in relation-form visages is deferred to a \
                          follow-up phase; use a required FK in Phase 4.5",
                     )
                     .to_compile_error();
@@ -171,7 +171,7 @@ fn emit_projection_for_scope(
                 user_inits.push(quote! {
                     #fname: {
                         let resolved = src.#fname.resolved().ok_or(
-                            ::djogi::ProjectionError::UnresolvedRelation {
+                            ::djogi::VisageError::UnresolvedRelation {
                                 model: #source_name_str,
                                 field: #fname_str,
                                 scope: #scope,
@@ -179,7 +179,7 @@ fn emit_projection_for_scope(
                         )?;
                         // Peer construction goes through `TryFrom::try_from(...)?`
                         // uniformly: scalar-only peers satisfy it via the
-                        // Phase 4.5-emitted `TryFrom<&Peer, Error = ProjectionError>`
+                        // Phase 4.5-emitted `TryFrom<&Peer, Error = VisageError>`
                         // wrapper that returns `Ok(From::from(...))`; relation-
                         // nesting peers satisfy it via their own fallible
                         // emission. This unifies scalar and nested-relation peer
@@ -207,28 +207,28 @@ fn emit_projection_for_scope(
 
     // Dispatch on relation-nesting presence.
     //
-    // - **Scalar-only** projections emit `impl From<&Source>`. The
+    // - **Scalar-only** visages emit `impl From<&Source>`. The
     //   stdlib provides a blanket `impl<T, U> TryFrom<U> for T where
     //   U: Into<T>` (with `Error = Infallible`), so a scalar-only
-    //   projection automatically satisfies `TryFrom<&Source>` too. The
+    //   visage automatically satisfies `TryFrom<&Source>` too. The
     //   relation-nesting emitter above calls
     //   `<Peer as TryFrom<&_>>::try_from(resolved)?` uniformly; the `?`
-    //   coerces the blanket's `Infallible` error into `ProjectionError`
-    //   via the `impl From<Infallible> for ProjectionError` glue in
-    //   `djogi/src/projection.rs`. That is what makes transitive
+    //   coerces the blanket's `Infallible` error into `VisageError`
+    //   via the `impl From<Infallible> for VisageError` glue in
+    //   `djogi/src/visage.rs`. That is what makes transitive
     //   nesting (Vehicle → Owner → Department) compose without the
     //   relation-nesting emitter knowing each peer's shape.
     //
-    //   Emitting an explicit `TryFrom<&Source, Error = ProjectionError>`
+    //   Emitting an explicit `TryFrom<&Source, Error = VisageError>`
     //   here would conflict with the stdlib blanket (E0119) — don't.
     //
-    // - **Relation-nesting** projections emit only `impl TryFrom<&Source>`
-    //   with `Error = ProjectionError`. A scalar `From` is unsound for
+    // - **Relation-nesting** visages emit only `impl TryFrom<&Source>`
+    //   with `Error = VisageError`. A scalar `From` is unsound for
     //   this case because the `.resolved()` probe is fallible.
     let conv_impl = if has_relation_entry {
         quote! {
             impl ::std::convert::TryFrom<&#source> for #proj_name {
-                type Error = ::djogi::ProjectionError;
+                type Error = ::djogi::VisageError;
                 fn try_from(src: &#source) -> ::std::result::Result<Self, Self::Error> {
                     ::std::result::Result::Ok(Self {
                         #(#fw_inits)*

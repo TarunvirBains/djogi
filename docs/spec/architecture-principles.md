@@ -15,7 +15,7 @@ Its architecture is guided by six principles:
 4. Postgres-native correctness over generic abstraction.
    Djogi prefers explicit Postgres features and SQLx integration over lowest-common-denominator portability.
 5. Performance-safe abstractions over ORM convenience.
-   Djogi must not force slower database shapes for common production workloads. Set-based writes, explicit eager loading, row locks, typed projections, and Postgres-native query forms belong in the framework when they are needed to keep the efficient path available without dropping to raw SQL.
+   Djogi must not force slower database shapes for common production workloads. Set-based writes, explicit eager loading, row locks, typed visages, and Postgres-native query forms belong in the framework when they are needed to keep the efficient path available without dropping to raw SQL.
 6. Performance-safe defaults over hidden behavior.
    No hidden lazy loads, no implicit row-by-row fallback where a set-based form is expected, and no abstraction that obscures query count, lock semantics, or write amplification. If the framework does extra work, that work must be explicit.
 

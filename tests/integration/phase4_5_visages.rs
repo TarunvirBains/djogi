@@ -1,13 +1,13 @@
-//! Phase 4.5 — projection generation and conversion tests.
+//! Phase 4.5 — visage generation and conversion tests.
 //!
 //! Pure codegen + serde tests: no database, no tokio runtime needed.
 //! Verifies:
 //!
-//! 1. Generated projection structs contain only exposed fields.
+//! 1. Generated visage structs contain only exposed fields.
 //! 2. Framework columns (`id`, `created_at`, `updated_at`) appear in every
-//!    projection regardless of user annotations (Q13).
+//!    visage regardless of user annotations (Q13).
 //! 3. `From<&Model>` preserves values for scalar fields.
-//! 4. Serde round-trip via JSON keeps the projection shape intact and
+//! 4. Serde round-trip via JSON keeps the visage shape intact and
 //!    excludes non-exposed fields.
 
 use djogi::prelude::*;
@@ -21,7 +21,7 @@ pub struct User {
     #[field(expose(self_view, admin, export))]
     pub email: String,
 
-    // Absent — default internal; must NOT appear in any projection.
+    // Absent — default internal; must NOT appear in any visage.
     pub password_hash: String,
 
     #[field(expose(admin))]
@@ -132,7 +132,7 @@ fn descriptor_projection_map_scalar_entries() {
         .find(|f| f.name == "display_name")
         .expect("display_name field in descriptor");
     let scopes: Vec<&str> = display_name_field
-        .projection_map
+        .visage_map
         .iter()
         .map(|(s, _)| *s)
         .collect();
@@ -140,7 +140,7 @@ fn descriptor_projection_map_scalar_entries() {
     assert!(scopes.contains(&"self_view"));
     assert!(scopes.contains(&"admin"));
     assert!(scopes.contains(&"export"));
-    for (_, emit_as) in display_name_field.projection_map {
+    for (_, emit_as) in display_name_field.visage_map {
         assert_eq!(*emit_as, "display_name");
     }
 
@@ -150,7 +150,7 @@ fn descriptor_projection_map_scalar_entries() {
         .iter()
         .find(|f| f.name == "password_hash")
         .expect("password_hash field in descriptor");
-    assert_eq!(pwd.projection_map.len(), 0);
+    assert_eq!(pwd.visage_map.len(), 0);
 
     // Framework `id` defaults to all 4 scopes (Q13).
     let id_field = desc
@@ -158,14 +158,14 @@ fn descriptor_projection_map_scalar_entries() {
         .iter()
         .find(|f| f.name == "id")
         .expect("id field in descriptor");
-    assert_eq!(id_field.projection_map.len(), 4);
-    for (_, emit_as) in id_field.projection_map {
+    assert_eq!(id_field.visage_map.len(), 4);
+    for (_, emit_as) in id_field.visage_map {
         assert_eq!(*emit_as, "id");
     }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Task 5 — relation-nesting projections
+// Task 5 — relation-nesting visages
 // ─────────────────────────────────────────────────────────────────
 
 #[model(table = "owners_phase4_5_task5")]
@@ -196,10 +196,10 @@ fn relation_nesting_tryfrom_fails_when_unresolved() {
         owner: ForeignKey::new(HeerId::from_i64(1).expect("valid heerid")),
     };
     let err = VehiclePublic::try_from(&v).expect_err("expected UnresolvedRelation");
-    // ProjectionError is #[non_exhaustive]; match must carry a wildcard
+    // VisageError is #[non_exhaustive]; match must carry a wildcard
     // to stay forward-compatible with later phases adding variants.
     match err {
-        ::djogi::ProjectionError::UnresolvedRelation {
+        ::djogi::VisageError::UnresolvedRelation {
             model,
             field,
             scope,

@@ -371,13 +371,13 @@ pub struct FieldAttrs {
 
     /// Merged `expose(...)` spec across every `#[field(expose(...))]`
     /// attribute on this field — the single source of truth downstream
-    /// code (descriptor emission, projection codegen) reads.
+    /// code (descriptor emission, visage codegen) reads.
     ///
     /// Grammar summary:
     /// - Scalar form: `expose(public, self_view, admin, export)` — the
     ///   field appears in each listed scope under its column name.
     /// - Relation form: `expose(public = "UserSummary", ...)` — the field
-    ///   is the named peer projection in each listed scope.
+    ///   is the named peer visage in each listed scope.
     /// - Sentinels: `expose(none)` / `expose(internal)` — accepted no-op
     ///   sentinels, identical to an absent `expose` annotation; mutually
     ///   exclusive with real scopes on the same field.
@@ -391,7 +391,7 @@ pub struct FieldAttrs {
     pub expose: ExposeSpec,
 }
 
-/// Per-field projection exposure spec — parsed from `#[field(expose(...))]`.
+/// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
 ///
 /// See [`FieldAttrs::expose`] for the grammar summary. Scope names are
 /// order-insensitive (stored in a [`HashSet`]/[`HashMap`]); source order
@@ -403,12 +403,12 @@ pub struct FieldAttrs {
 /// `#[field(expose(public))] #[field(expose(admin = "OwnerDetail"))]` marks
 /// the field scalar in `public` and relation-nested in `admin`. At codegen
 /// time (Phase 4.5 Task 3 / Task 5) the scope membership is the union; the
-/// emitter looks up the relation map to decide if the projection entry is
-/// a column name or a peer-projection type.
+/// emitter looks up the relation map to decide if the visage entry is
+/// a column name or a peer-visage type.
 ///
 /// `none` / `internal` set [`Self::suppressed`] and are mutually exclusive
 /// with any other scope (per Q11 in the Phase 4.5 v3 plan). They mean
-/// "this field does not appear in any transport projection" — same
+/// "this field does not appear in any transport visage" — same
 /// semantics as omitting the `expose` annotation.
 #[derive(Debug, Default)]
 #[allow(dead_code)]
@@ -416,7 +416,7 @@ pub struct ExposeSpec {
     /// Scopes this field appears in via the scalar form.
     pub scalar_scopes: std::collections::HashSet<String>,
     /// Scopes this field appears in via the relation form; value is the
-    /// peer projection type name.
+    /// peer visage type name.
     pub relation_scopes: std::collections::HashMap<String, String>,
     /// `true` when the user wrote `expose(none)` or `expose(internal)`.
     /// Semantically identical to an absent `expose` annotation.
@@ -481,7 +481,7 @@ impl ExposeSpec {
                             path,
                             format!(
                                 "scope `{name}` already declared with a peer \
-                                 projection name; pick one form per scope"
+                                 visage name; pick one form per scope"
                             ),
                         ));
                     }
@@ -510,7 +510,7 @@ impl ExposeSpec {
                             path,
                             format!(
                                 "the `{name}` scope does not accept a nested \
-                                 projection name; write `expose({name})` alone"
+                                 visage name; write `expose({name})` alone"
                             ),
                         ));
                     }

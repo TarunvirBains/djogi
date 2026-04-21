@@ -76,7 +76,7 @@ After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets
 
 ### What Djogi Owns vs Delegates
 
-Djogi is a Model-first framework — narrow in scope, deep within that scope. It targets **Postgres exclusively** (permanent design decision — JSONB, HeeRanjId, advisory locks, transactional DDL, and `RETURNING` all depend on it). It does **not** wrap or compete with:
+Djogi is a Model-first framework — narrow in scope, deep within that scope. It targets **Postgres 18 and later, exclusively** (permanent design decisions — JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING`, and latest Postgres features all depend on it; earlier versions explicitly unsupported per `docs/spec/decisions.md`). It does **not** wrap or compete with:
 - **Any web framework (Axum, Warp, Actix, Rocket, Poem, …)** — HTTP routing/middleware/extraction. Djogi's core is web-framework-agnostic; per-framework integrations (extractors that surface `DjogiContext`/`AuthContext` from request state, optional router-merging helpers) ship as opt-in sub-feature flags (`axum`, `warp`, `actix`, etc.). Adopters pick whichever HTTP layer fits their app and enable the matching flag — or none, if they wire integration manually.
 - **SQLx** — Djogi wraps SQLx into a typed ORM layer (`Model`, `QuerySet`, `FromRow`, `ConditionBuilder`) but never hides it — raw `sqlx::QueryBuilder` is always an escape hatch.
 - **HeeRanjId** — ID generation. Djogi calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()`.

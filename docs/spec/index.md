@@ -8,7 +8,7 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 
 - [Architecture Principles](./architecture-principles.md) — public requirements, single-responsibility, and framework boundaries
 - [Models & Field System](./models.md) — `#[model]` attribute, field types, annotations, dirty tracking
-- [Projections & Shared Contracts](./projections.md) — generated audience-specific transport types from one model definition
+- [Visages & Shared Contracts](./visages.md) — generated audience-specific transport types from one model definition
 - [Query API](./queries.md) — QuerySet, conditions, programmatic filters, ConditionBuilder
 - [JSONB Schema Fields](./jsonb.md) — `Jsonb<T>`, unknown field preservation, validation, subfield queries
 - [Relations](./relations.md) — ForeignKey, ManyToMany, explicit through models

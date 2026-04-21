@@ -1,23 +1,23 @@
 > [Back to README](../../ReadMe.MD) | [All Specs](./index.md)
 
-# Projections & Shared Contracts
+# Visages & Shared Contracts
 
-Djogi models are backend truths. Frontends, APIs, admin surfaces, and export flows should usually consume derived projection types rather than raw model structs.
+Djogi models are backend truths. Frontends, APIs, admin surfaces, and export flows should usually consume derived visage types rather than raw model structs.
 
-This spec defines projection generation as a first-class framework capability.
+This spec defines visage generation as a first-class framework capability.
 
 ---
 
 ## Goals
 
-Projection generation exists to solve four recurring problems:
+Visage generation exists to solve four recurring problems:
 
 1. Prevent raw persistence models from leaking across transport boundaries.
 2. Generate audience-specific views from one model definition.
 3. Keep field-visibility rules centralized in model metadata instead of duplicating mapping code.
 4. Produce Rust types that can be shared safely between backend and frontend crates.
 
-Projection generation is backend-first but not server-only. Djogi does not own frontend rendering, but it may generate transport-safe and UI-safe Rust types from model descriptors.
+Visage generation is backend-first but not server-only. Djogi does not own frontend rendering, but it may generate transport-safe and UI-safe Rust types from model descriptors.
 
 ---
 
@@ -50,24 +50,24 @@ UserAdmin
 UserExport
 ```
 
-Generated conversions split on whether the projection nests a peer
-projection through a relation field:
+Generated conversions split on whether the visage nests a peer
+visage through a relation field:
 
 ```rust
-// Scalar-only projection — infallible.
+// Scalar-only visage — infallible.
 impl From<&User> for UserPublic
 
-// Relation-nesting projection (at least one `expose(scope = "Peer")`
+// Relation-nesting visage (at least one `expose(scope = "Peer")`
 // entry on a `ForeignKey<T>` / `OneToOneField<T>` field). Returns
-// `ProjectionError::UnresolvedRelation { model, field, scope }` when
+// `VisageError::UnresolvedRelation { model, field, scope }` when
 // the relation wasn't prefetched / selected before the conversion.
 impl TryFrom<&Vehicle> for VehiclePublic {
-    type Error = djogi::ProjectionError;
+    type Error = djogi::VisageError;
     // ...
 }
 ```
 
-`ProjectionError` is `#[non_exhaustive]` so later phases (protected-data,
+`VisageError` is `#[non_exhaustive]` so later phases (protected-data,
 codec failures) can add variants without a breaking change. Callers
 matching on the error must include `_ => ...`.
 
@@ -84,7 +84,7 @@ internal form.
 
 `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` in relation-form
 `expose` is rejected with a loud compile error in Phase 4.5 — cross-model
-dispatch of `Option<&T>` → peer projection is a follow-up-phase
+dispatch of `Option<&T>` → peer visage is a follow-up-phase
 extension.
 
 Anything beyond that is additive and should not block the first spec closure.
@@ -99,15 +99,15 @@ Djogi treats a `#[model]` struct as:
 
 - the schema definition
 - the query/runtime type
-- the source of truth for derivable projections
+- the source of truth for derivable visages
 
 It does **not** assume that the same struct should be serialized directly to clients.
 
 ---
 
-## Projection Scopes
+## Visage Scopes
 
-Djogi supports named projection scopes. The built-in canonical scopes are:
+Djogi supports named visage scopes. The built-in canonical scopes are:
 
 - `public`
 - `self_view`
@@ -144,7 +144,7 @@ This metadata is compile-time descriptor data, not a runtime permission system.
 
 ## Generated Types
 
-For each requested projection scope, Djogi generates a concrete Rust struct.
+For each requested visage scope, Djogi generates a concrete Rust struct.
 
 Example:
 
@@ -165,7 +165,7 @@ pub struct UserAdmin {
 }
 ```
 
-Generated projection types:
+Generated visage types:
 
 - derive `Serialize` / `Deserialize` when their fields support it
 - are independent of SQLx and database connection traits
@@ -175,27 +175,27 @@ Djogi does not generate UI components, hooks, routes, or frontend state containe
 
 ---
 
-## Projection Conversions
+## Visage Conversions
 
-Djogi generates conversions from model to projection. The macro
-dispatches on whether the projection nests a peer projection through
+Djogi generates conversions from model to visage. The macro
+dispatches on whether the visage nests a peer visage through
 a relation field:
 
-- Scalar-only projection (no `expose(scope = "Peer")` entries) —
-  `impl From<&Model> for Projection`. Infallible; straight-line
+- Scalar-only visage (no `expose(scope = "Peer")` entries) —
+  `impl From<&Model> for Visage`. Infallible; straight-line
   construction.
-- Relation-nesting projection (at least one `expose(scope = "Peer")`
+- Relation-nesting visage (at least one `expose(scope = "Peer")`
   on a `ForeignKey<T>` / `OneToOneField<T>` field) —
-  `impl TryFrom<&Model> for Projection` with
-  `type Error = djogi::ProjectionError`. Returns
-  `ProjectionError::UnresolvedRelation { model, field, scope }` when
+  `impl TryFrom<&Model> for Visage` with
+  `type Error = djogi::VisageError`. Returns
+  `VisageError::UnresolvedRelation { model, field, scope }` when
   the relation wasn't prefetched / selected before the conversion.
 
-Scalar-only projections also satisfy `TryFrom<&Model>` via the stdlib
+Scalar-only visages also satisfy `TryFrom<&Model>` via the stdlib
 blanket `impl<T, U> TryFrom<U> for T where U: Into<T>` with
-`Error = Infallible`, and `impl From<Infallible> for ProjectionError`
+`Error = Infallible`, and `impl From<Infallible> for VisageError`
 bridges the two error types so nested `try_from(..)?` calls compose
-uniformly. That is what lets a relation-nesting projection embed a
+uniformly. That is what lets a relation-nesting visage embed a
 scalar-only peer without the emitter knowing the peer's shape.
 
 Optional additive support later:
@@ -209,15 +209,15 @@ The point is to replace handwritten mapping layers that are repetitive and prone
 
 ## Relations
 
-Projections may include related data, but only through projected forms.
+Visages may include related data, but only through projected forms.
 
 Rules:
 
-- a projection must never include a raw related persistence model
-- related fields included in a projection must point to a named projection for the related model
-- relation loading semantics remain explicit; projection generation does not imply lazy loading
+- a visage must never include a raw related persistence model
+- related fields included in a visage must point to a named visage for the related model
+- relation loading semantics remain explicit; visage generation does not imply lazy loading
 
-Relation fields reuse the same `expose(...)` attribute as scalars, with a key-value form that names the nested projection per scope:
+Relation fields reuse the same `expose(...)` attribute as scalars, with a key-value form that names the nested visage per scope:
 
 ```rust
 #[field(expose(public = "UserSummary", self_view = "UserDetail"))]
@@ -227,34 +227,34 @@ pub owner: ForeignKey<User>,
 Form semantics:
 
 - `expose(scope)` on a scalar field — include as the native type in `scope`.
-- `expose(scope = "ProjType")` on a relation field — include in `scope` rendered as the named nested projection. The macro rejects this form on scalar fields.
+- `expose(scope = "ProjType")` on a relation field — include in `scope` rendered as the named nested visage. The macro rejects this form on scalar fields.
 - `expose(scope)` on a relation field — **compile error** in Phase 4.5. The nested transport shape must always be named explicitly; there is no fallback to the raw persistence model.
 
-The exact syntax may evolve, but the contract is stable: nested transport shapes must remain projection-based, and the attribute name stays `expose` so scope membership lives in one place.
+The exact syntax may evolve, but the contract is stable: nested transport shapes must remain visage-based, and the attribute name stays `expose` so scope membership lives in one place.
 
 ---
 
 ## Typed JSON Fields
 
-When a model contains typed JSON-backed fields, projection rules apply at the field boundary first.
+When a model contains typed JSON-backed fields, visage rules apply at the field boundary first.
 
 Baseline behavior:
 
 - include the whole typed JSON field
 - exclude the whole typed JSON field
 
-Later additive behavior may allow subfield projection, but Phase 4.5 only requires field-level control.
+Later additive behavior may allow subfield visage, but Phase 4.5 only requires field-level control.
 
 ---
 
 ## Compile-Time Validation
 
-Projection generation must fail at compile time when:
+Visage generation must fail at compile time when:
 
-- a projection references a field excluded from that scope
-- two generated projection names collide
-- a nested projection references a missing related projection
-- a projection requests a field whose type is not serializable for its requested derive set
+- a visage references a field excluded from that scope
+- two generated visage names collide
+- a nested visage references a missing related visage
+- a visage requests a field whose type is not serializable for its requested derive set
 
 Djogi should prefer compile-time diagnostics over runtime surprises.
 
@@ -264,10 +264,10 @@ Djogi should prefer compile-time diagnostics over runtime surprises.
 
 The following are explicitly deferred beyond the minimum Phase 4.5 surface:
 
-- custom user-defined projection scopes
-- projection renaming rules beyond the default canonical names
-- partial JSON subfield projections
-- fallible transforms during projection generation
+- custom user-defined visage scopes
+- visage renaming rules beyond the default canonical names
+- partial JSON subfield visages
+- fallible transforms during visage generation
 - route-specific wrapper DTO generation
 
 The first shipping surface should stay small.
@@ -276,7 +276,7 @@ The first shipping surface should stay small.
 
 ## Descriptor Integration
 
-Projection metadata belongs in `ModelDescriptor` / `FieldDescriptor`.
+Visage metadata belongs in `ModelDescriptor` / `FieldDescriptor`.
 
 This is important because the same exposure rules should later inform:
 
@@ -286,16 +286,16 @@ This is important because the same exposure rules should later inform:
 - shell display defaults
 - protected-field governance
 
-Projection support is therefore not just DTO codegen. It is a foundational contract layer for later phases.
+Visage support is therefore not just DTO codegen. It is a foundational contract layer for later phases.
 
 ---
 
 ## Shared-Crate Use
 
-Generated projections are intended to support a shared-contract crate pattern:
+Generated visages are intended to support a shared-contract crate pattern:
 
-- backend route handlers return projection structs
-- frontend crates import the same projection structs
+- backend route handlers return visage structs
+- frontend crates import the same visage structs
 - raw models stay in backend/data crates
 
 This keeps persistence concerns and transport concerns separate without duplicating type definitions by hand.

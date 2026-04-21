@@ -109,6 +109,15 @@ At minimum:
 
 Lifecycle tooling must compose with Djogi’s existing migration, shell, and logging phases rather than acting as a standalone subsystem.
 
+When logging uses separate databases, lifecycle auditability should continue to work without forcing maintainers to reason about cross-database internals. The intended contract is:
+
+- lifecycle applies write their domain effects to the app database
+- lifecycle audit records follow the configured CRUD/event logging policy
+- if the active profile is `strict_audit`, lifecycle applies are subject to the same fail-closed CRUD audit requirement as ordinary writes
+- event-log emission for lifecycle operations remains best-effort unless an advanced override says otherwise
+
+This keeps lifecycle behavior aligned with the same logging profile maintainers already chose for the rest of the system.
+
 ---
 
 ## Relationship to Protected Data
