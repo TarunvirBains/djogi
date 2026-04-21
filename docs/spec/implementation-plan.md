@@ -377,7 +377,21 @@ This phase is also where Djogi should prefer typed value wrappers and closed int
 - [ ] `ts_rank` / `ts_rank_cd` as aggregate helpers for ranking result ordering
 - [ ] Dictionary choice surfaced in migration diffs (so dictionary changes show up as an alteration)
 
-**Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions, streaming terminals, full-text search.
+### 5j: Projection Query Surface + Boundary Enforcement
+
+Phase 4.5 shipped projections as output-shape types only: `{Model}Public` / `SelfView` / `Admin` / `Export` carry `impl TryFrom<&Model>` for conversion but have no query-side surface. Phase 5 §5j makes projections first-class query entities with compile-time scope enforcement, filling Phase 4.5's explicit M2M projection deferral in the process.
+
+- [ ] Projection as query entry point: `PublicRegisteredOwner::filter(|o| o.display_name.eq("Ada")).fetch_all(&mut ctx).await?` — every projection type gets the full QuerySet surface (filter, order, limit, fetch terminals) that models already have
+- [ ] Per-projection generated field-accessor types: alongside `{Model}Fields`, each projection emits `{Projection}Fields` surfacing only the fields the projection exposes. Attempting to reference a non-exposed field in a closure is a compile error, not a runtime omission
+- [ ] Forward-FK boundary enforcement: relation fields in the projection's accessor type point to projection-scoped peer accessors. `PublicRegisteredOwner::filter(|o| o.address.city.eq("Toronto"))` compiles; `.address.street` does not compile when `AddressPublic` exposes only `.city`. Enforcement is compile-time via the type system — zero runtime cost
+- [ ] Reverse-FK boundary enforcement: symmetrical. From `AddressPublic`, the reverse accessor to owners returns `QuerySet<PublicRegisteredOwner>` where the closure receiver is `PublicRegisteredOwnerFields`
+- [ ] M2M boundary enforcement: projection-scoped M2M accessor methods return projection-scoped QuerySets. Through-model fields can opt into their own projection via `#[field(expose(...))]` on through-model fields, producing e.g. `UserInterestPublic`. Through-model projections participate in the same boundary enforcement. Fills the Phase 4.5 deferral "M2M projections — projections nest only through `ForeignKey<T>` / `OneToOneField<T>`; M2M stitching is manual"
+- [ ] SELECT narrowing: projection-scoped QuerySets emit SELECT with only the projection's exposed columns, not the full model. This is the headline performance win — projections stop being only an output shape and start paying off at the query side
+- [ ] Mutation scope: projection-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a projection emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
+- [ ] Prefetch composition: `Model::filter(...).prefetch(model::relation_as::<PeerProjection>)` is the API for declaring a prefetch into a specific peer projection (detailed shape deferred to v2/v3 spec)
+- [ ] Interaction with §8c: Phase 8c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`"
+
+**Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions, streaming terminals, full-text search, projection query surface with compile-time FK / reverse-FK / M2M boundary enforcement.
 
 ---
 
@@ -540,7 +554,21 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 - [ ] Severity gating: `--deny <lint>` turns a Tier 1 warning into a non-zero exit code for CI. Tier 2 lints default to warn-only; `--deny experimental` is an explicit opt-in for teams willing to accept Tier 2 false-positive risk
 - [ ] Scope: pure static analysis beyond what a `cargo build` already produces. No database connection, no query execution. The pre-existing `target/djogi_models.json` build artifact is the only runtime input
 
-**Deliverable:** Working shell, admin panel, and `cargo djogi analyze query` lint pass.
+### 8d: `djqry` SQL Override Registry
+
+When a multi-hop macro-query compiles to a plan that is significantly worse than a hand-written query, the escape hatch today is `ctx.raw_query::<T>(...)` — which fragments the codebase visually and decouples the site from descriptor-aware tooling (static analyzer, admin surface, observability labels). `djqry` keeps the hand-tuned SQL in its own file while surfacing it as a typed method on the relevant models, preserving the declarative call-site shape elsewhere and giving the override the same type-safety, tracing, and analyzer treatment as macro-generated queries.
+
+- [ ] `djqry/` directory at repo root holds `.sql` files; each file declares one override via frontmatter header comments
+- [ ] Frontmatter schema: `@name` (method name, snake_case), `@on` (comma-separated list of models and / or projections; `_global` for non-model-scoped overrides), `@returns` (Rust type implementing `FromPgRow`), `@binds` (positional bind types — `()` for none), `@replaces` (multi-line canonical macro-query the override optimizes — documentation plus drift-check source), `@signature` (fingerprint hash bumped on manual re-verification)
+- [ ] Build-time generation: a new stage in the existing `build.rs` pipeline (alongside `target/djogi_models.json` emission) parses every `.sql` file, validates frontmatter against descriptor metadata, and emits per-owner `impl` blocks adding a `djqry` associated module with compiled methods. Call site reads `Vehicle::djqry::expired_registrations(&mut ctx).await?`. The `djqry` namespace (spelled that way — not `q`, not `query`) is distinctive, grep-able, and zero collision risk
+- [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §8c uses the `@on:` list to reason about which node-visits the override covers
+- [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
+- [ ] Drift detection — opt-in: `cargo djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
+- [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 9b / 9e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
+- [ ] Error modes flagged at build time: missing required frontmatter field, unknown `@on` owner, `@returns` type missing `FromPgRow`, `@binds` arity mismatch with `$N` placeholder count in SQL, reserved-name collision with framework-generated methods, `@signature` mismatch
+- [ ] Scope limits: v1 is read-only (SELECT-shaped overrides). `UPDATE` / `DELETE` / `INSERT` overrides deferred until a concrete use case surfaces — raw `ctx.execute_raw` remains available in the interim
+
+**Deliverable:** Working shell, admin panel, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods.
 
 ---
 

@@ -82,6 +82,14 @@ The inefficient-query debugging story is split across two phases because the two
 
 Layer 3 (production observability — distributed traces, slow-query callbacks, `metrics` histograms) lives in Phase 9 §9b/9c/9d. Together the three layers form the complete debug story: Phase 8c catches problems before request time in CI, Phase 9e catches them in the local dev loop, Phase 9b/9c/9d surface them in staging + production. There is no hybrid "drawer in staging" surface — non-dev environments use §9b/9c/9d only.
 
+### 3.7 Projection query surface + FK / M2M boundary enforcement → Phase 5 (§5j)
+
+Added 2026-04-21 during a brainstorming session. Phase 4.5 shipped projections as output-shape types only; Phase 5 §5j makes them first-class query entities: `PublicRegisteredOwner::filter(...)` returns `Vec<PublicRegisteredOwner>` with SELECT narrowed to the projection's exposed columns. Compile-time enforcement via generated per-projection `{Projection}Fields` accessor types — out-of-scope field access (`o.address.street` when `AddressPublic` exposes only `.city`) does not compile. Forward-FK, reverse-FK, and M2M (including through-model projection attribution) all participate in the same boundary. Fills the Phase 4.5 explicit deferral "M2M projections — projections nest only through `ForeignKey<T>` / `OneToOneField<T>`; M2M stitching is manual."
+
+### 3.8 `djqry` SQL override registry → Phase 8 (§8d)
+
+Added 2026-04-21 during the same brainstorming session. `djqry/` directory holds hand-tuned SQL files with frontmatter declaring owner(s), return type, binds, and the canonical macro-query the override optimizes. Build pipeline emits typed methods on each listed owner's `djqry` namespace (`Vehicle::djqry::expired_registrations(&mut ctx).await?`), preserving the declarative call-site shape elsewhere while routing the expensive query through hand-written SQL. Build-time fingerprint drift check mandatory; opt-in `cargo djqry verify` runs both paths against a live database and diffs results (CI gate). Every override dispatch fires a tracing event so observability surfaces distinguish hand-tuned queries from macro-generated ones. Read-only in v1; mutations deferred. `@on:` accepts projection types too, composing with §5j.
+
 ---
 
 ## 4. Unscheduled roadmap items
