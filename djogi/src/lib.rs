@@ -20,7 +20,6 @@
 //! | `error`      | `DjogiError` — the one error type returned by every `Model` method. |
 //! | `model`      | The `Model` trait the macro implements for every user struct. Defined in Phase 1 Task 2. |
 //! | `query`      | Filter AST: public API is `Condition` + `FieldRef` (plus `QuerySet<T>` and `OrderExpr`). Low-level enums (`Leaf`, `LookupOp`, `FilterValue`) live under `djogi::query::internal` for advanced/custom emitters. Filled in across Phase 2. |
-//! | `raw`        | `djogi::raw::*` escape hatches for when `QuerySet` is too limiting. Fully implemented in Phase 1 Task 11. |
 //! | `relation`   | Relation field types — `ForeignKey<T>`, `OneToOneField<T>`, resolved-cache wrappers, and `OnDelete`. Landed in Phase 3 Task 1; extended by Tasks 2–6 with `RelationPath`, `ManyToMany`, and the macro glue. |
 //! | `types`      | `DateTime`, `Date`, and re-exports of `HeerId`/`RanjId` — the canonical types imported via `prelude`. |
 //!
@@ -51,7 +50,6 @@ pub mod outbox;
 pub mod pg;
 pub mod projection;
 pub mod query;
-pub mod raw;
 pub mod relation;
 pub mod testing;
 pub mod transaction;
@@ -61,26 +59,20 @@ pub mod types;
 ///
 /// These are `#[doc(hidden)]` because they are an implementation detail of the
 /// `#[model]` macro, not part of the public API. Macro-emitted code uses fully
-/// qualified paths like `::djogi::__private::sqlx::FromRow` and
-/// `::djogi::__private::inventory::submit!` so that users only need `djogi` as
-/// a direct dependency — they never need to add `sqlx`, `inventory`, or
-/// `time` themselves.
+/// qualified paths like `::djogi::__private::inventory::submit!` so that users
+/// only need `djogi` as a direct dependency — they never need to add
+/// `inventory` or `time` themselves.
 ///
 /// T2 adds `::djogi::__private::pg` containing the new SQL substrate types
 /// (`SqlAccumulator`, `PgConnection`, `ToSql`, `FromSql`, `PgRow`). Macro-
-/// emitted code that previously routed through `::djogi::__private::sqlx::*`
-/// for executor dispatch now routes through `::djogi::__private::pg::*`.
-/// `pub use sqlx` stays in `__private` through T9 for the `#[sqlx::test]`
-/// dev-dep harness compatibility.
+/// emitted code routes through `::djogi::__private::pg::*` rather than
+/// importing `tokio_postgres` / `postgres_types` directly.
 #[doc(hidden)]
 pub mod __private {
     pub use futures;
     pub use inventory;
-    pub use serde;
-    // Kept through T9 for the #[sqlx::test] dev-dep integration test harness.
-    // T8 removes this re-export when the harness is switched to #[djogi_test].
     pub use postgres_types;
-    pub use sqlx;
+    pub use serde;
     pub use tokio_postgres;
 
     /// New SQL substrate re-exports for macro-emitted code.

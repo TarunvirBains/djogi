@@ -53,7 +53,7 @@
 //! direct dependency. Paths like `::sqlx::query_as` or `::inventory::iter`
 //! would fail with E0433 unless the user explicitly added those crates. To
 //! avoid that, all external crate references are routed through
-//! `::djogi::__private::sqlx`, `::djogi::__private::inventory`, and
+//! `::djogi::__private::pg`, `::djogi::__private::inventory`, and
 //! `::djogi::types`. This is the same convention established in Task 5
 //! (`from_row.rs`) and Task 6 (`descriptor.rs`).
 //!

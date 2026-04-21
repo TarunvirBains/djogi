@@ -59,8 +59,10 @@
 
 use crate::DjogiError;
 use crate::pg::connection::PgConnection;
+use crate::pg::decode::{FromPgRow, try_get_scalar};
 use crate::pg::pool::DjogiPool;
 use futures::FutureExt;
+use postgres_types::FromSql;
 use postgres_types::ToSql;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -571,6 +573,90 @@ impl DjogiContext {
     /// nested `atomic()` scope that rolled back.
     pub(crate) fn on_commit_truncate(&mut self, new_len: usize) {
         self.on_commit.truncate(new_len);
+    }
+}
+
+impl DjogiContext {
+    /// Execute ad-hoc SQL and decode every returned row into `T`.
+    ///
+    /// Use this when Djogi's `QuerySet` surface is too restrictive for a
+    /// one-off projection or join but you still want Djogi-managed
+    /// connection / transaction dispatch and `DjogiError` mapping.
+    ///
+    /// `binds` are positional Postgres parameters for `$1`, `$2`, …
+    /// in `sql`, passed in the same order they appear in the statement.
+    /// If this method is called inside [`atomic()`](crate::transaction::atomic),
+    /// it reuses the active transaction / savepoint connection rather than
+    /// escaping to a separate pool checkout.
+    ///
+    /// `T: FromPgRow` means callers can pass either a `#[model]`-derived
+    /// struct or any hand-written row shape that implements
+    /// [`FromPgRow`](crate::FromPgRow).
+    pub async fn raw_query<T: FromPgRow>(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<T>, DjogiError> {
+        let rows = self.query_all(sql, binds).await?;
+        rows.iter().map(T::from_pg_row).collect()
+    }
+
+    /// Execute ad-hoc SQL expected to return exactly one row decoded as `T`.
+    ///
+    /// This is the single-row sibling of [`raw_query`](Self::raw_query):
+    /// use it for hand-written SELECTs where `QuerySet::get()` cannot
+    /// express the projection but the result shape still matches a
+    /// `FromPgRow` decoder.
+    ///
+    /// `binds` map positionally to `$1`, `$2`, … in `sql`. When called
+    /// inside [`atomic()`](crate::transaction::atomic), the query runs on
+    /// the active transaction / savepoint connection.
+    ///
+    /// `T` may be a `#[model]` type or a custom struct with a manual
+    /// [`FromPgRow`](crate::FromPgRow) impl for an ad-hoc row shape.
+    pub async fn raw_fetch_one<T: FromPgRow>(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<T, DjogiError> {
+        let row = self.query_one(sql, binds).await?;
+        T::from_pg_row(&row)
+    }
+
+    /// Execute ad-hoc SQL expected to return exactly one scalar column.
+    ///
+    /// This is the escape hatch for statements such as
+    /// `SELECT COUNT(*) ...` or `SELECT EXISTS (...)`. The first column of
+    /// the single returned row is decoded as `T`.
+    ///
+    /// `binds` are positional Postgres parameters for `$1`, `$2`, …
+    /// in `sql`. Inside [`atomic()`](crate::transaction::atomic), this
+    /// method respects the active transaction / savepoint automatically.
+    pub async fn raw_scalar<T>(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<T, DjogiError>
+    where
+        T: for<'a> FromSql<'a> + Send + 'static,
+    {
+        let row = self.query_one(sql, binds).await?;
+        try_get_scalar(&row, 0)
+    }
+
+    /// Execute ad-hoc DML / DDL and return the affected-row count.
+    ///
+    /// Use this for `INSERT`, `UPDATE`, `DELETE`, or other statements
+    /// outside the typed `QuerySet` surface. `binds` map positionally to
+    /// `$1`, `$2`, … in `sql`, and calls inside
+    /// [`atomic()`](crate::transaction::atomic) reuse the active
+    /// transaction / savepoint connection.
+    pub async fn raw_execute(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<u64, DjogiError> {
+        self.execute(sql, binds).await
     }
 }
 

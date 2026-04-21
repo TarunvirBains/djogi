@@ -778,11 +778,10 @@ async fn rich_field_types_roundtrip(pool: PgPool) {
 }
 
 // ==========================================================================
-// TASK 11 — djogi::raw escape-hatch API
+// TASK 11 — raw SQL escape hatch via `DjogiContext`
 // ==========================================================================
 
 #[sqlx::test]
-#[ignore = "djogi::raw is a todo!() stub in T2; re-enable in T5"]
 async fn raw_query_as_returns_typed_models(pool: PgPool) {
     let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
         .await
@@ -802,21 +801,17 @@ async fn raw_query_as_returns_typed_models(pool: PgPool) {
     .await
     .unwrap();
 
-    // T5 note: bind_fn closure shape will change; placeholder type annotation for compile.
-    let results: Vec<Post> = ::djogi::raw::query_as(
-        &mut ctx,
-        "SELECT * FROM posts WHERE published = $1",
-        |_q: ()| (),
-    )
-    .await
-    .expect("raw query_as should succeed");
+    let published = true;
+    let results: Vec<Post> = ctx
+        .raw_query("SELECT * FROM posts WHERE published = $1", &[&published])
+        .await
+        .expect("raw query should succeed");
 
     assert!(!results.is_empty(), "at least one published post expected");
     assert!(results.iter().all(|p| p.published));
 }
 
 #[sqlx::test]
-#[ignore = "djogi::raw is a todo!() stub in T2; re-enable in T5"]
 async fn raw_query_scalar_returns_count(pool: PgPool) {
     let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
         .await
@@ -836,22 +831,15 @@ async fn raw_query_scalar_returns_count(pool: PgPool) {
     .await
     .unwrap();
 
-    // T5 note: bind_fn closure shape will change; placeholder type annotation for compile.
-    let count: i64 =
-        ::djogi::raw::query_scalar(&mut ctx, "SELECT COUNT(*) FROM posts", |_q: ()| ())
-            .await
-            .expect("count scalar should succeed");
+    let count: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .expect("count scalar should succeed");
 
     assert!(count >= 1);
 }
 
-// T5 deferred: djogi::raw::{query_scalar, execute} are todo!() stubs in T2.
-// These three tests are marked #[ignore] until T5 implements the tokio-postgres
-// raw API bodies. The test bodies are kept in-place so T5 only needs to un-ignore
-// them (and remove the _pool parameter suppression where applicable).
-
 #[sqlx::test]
-#[ignore = "djogi::raw is a todo!() stub in T2; re-enable in T5"]
 async fn raw_execute_runs_without_return(pool: PgPool) {
     setup_posts(&pool).await;
     let _pc = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
@@ -859,43 +847,43 @@ async fn raw_execute_runs_without_return(pool: PgPool) {
         .unwrap();
     let mut tx_ctx = _pc.begin().await.unwrap();
 
-    // T5 note: bind_fn closure shape will change; placeholder type annotations for compile.
-    let before: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut tx_ctx, "SELECT COUNT(*) FROM posts", |_: ()| ())
-            .await
-            .unwrap();
+    let before: i64 = tx_ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
 
-    ::djogi::raw::execute(
-        &mut tx_ctx,
-        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-        |_: ()| (),
-    )
-    .await
-    .expect("raw execute should succeed");
+    let title = "Raw Insert Title".to_string();
+    let body = "Raw Insert Body".to_string();
+    let published = false;
+    let view_count = 42i32;
+    let rows = tx_ctx
+        .raw_execute(
+            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+            &[&title, &body, &published, &view_count],
+        )
+        .await
+        .expect("raw execute should succeed");
+    assert_eq!(rows, 1, "raw insert should affect one row");
 
-    let after: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut tx_ctx, "SELECT COUNT(*) FROM posts", |_: ()| ())
-            .await
-            .unwrap();
+    let after: i64 = tx_ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
     assert_eq!(after, before + 1, "execute must insert exactly one row");
     tx_ctx.commit().await.unwrap();
 }
 
 #[sqlx::test]
-#[ignore = "djogi::raw is a todo!() stub in T2; re-enable in T5"]
 async fn raw_query_scalar_returns_not_found_for_empty_result(pool: PgPool) {
     let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
         .await
         .unwrap();
     setup_posts(&pool).await;
 
-    // T5 note: bind_fn closure shape will change; placeholder type annotation for compile.
-    let result: Result<i64, ::djogi::DjogiError> = ::djogi::raw::query_scalar(
-        &mut ctx,
-        "SELECT view_count FROM posts WHERE id = $1",
-        |_: ()| (), // T5: was |q| q.bind(-1i64)
-    )
-    .await;
+    let missing_id = -1i64;
+    let result: Result<i64, ::djogi::DjogiError> = ctx
+        .raw_scalar("SELECT view_count FROM posts WHERE id = $1", &[&missing_id])
+        .await;
 
     assert!(
         matches!(result, Err(::djogi::DjogiError::NotFound { .. })),
@@ -905,36 +893,47 @@ async fn raw_query_scalar_returns_not_found_for_empty_result(pool: PgPool) {
 }
 
 #[sqlx::test]
-#[ignore = "djogi::raw is a todo!() stub in T2; re-enable in T5"]
 async fn raw_works_inside_transaction(pool: PgPool) {
     let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
         .await
         .unwrap();
     setup_posts(&pool).await;
 
-    // T5 note: bind_fn closure shape will change; placeholder type annotations for compile.
     // --- (a) commit path ---
     let _pc_a = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
         .await
         .unwrap();
     let mut tx_ctx = _pc_a.begin().await.unwrap();
-    let before_commit: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut tx_ctx, "SELECT COUNT(*) FROM posts", |_: ()| ())
-            .await
-            .unwrap();
-    ::djogi::raw::execute(
-        &mut tx_ctx,
-        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-        |_: ()| (),
-    )
-    .await
-    .expect("raw execute inside committed txn should succeed");
+    let before_commit: i64 = tx_ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
+    let commit_title = "Committed Raw Insert".to_string();
+    let commit_body = "body".to_string();
+    let commit_published = true;
+    let commit_view_count = 1i32;
+    let committed_rows = tx_ctx
+        .raw_execute(
+            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+            &[
+                &commit_title,
+                &commit_body,
+                &commit_published,
+                &commit_view_count,
+            ],
+        )
+        .await
+        .expect("raw execute inside committed txn should succeed");
+    assert_eq!(
+        committed_rows, 1,
+        "commit-path raw insert must affect one row"
+    );
     tx_ctx.commit().await.unwrap();
 
-    let after_commit: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut ctx, "SELECT COUNT(*) FROM posts", |_: ()| ())
-            .await
-            .unwrap();
+    let after_commit: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
     assert_eq!(
         after_commit,
         before_commit + 1,
@@ -946,19 +945,32 @@ async fn raw_works_inside_transaction(pool: PgPool) {
         .await
         .unwrap();
     let mut tx_ctx = _pc_b.begin().await.unwrap();
-    ::djogi::raw::execute(
-        &mut tx_ctx,
-        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-        |_: ()| (),
-    )
-    .await
-    .expect("raw execute inside rollback txn should succeed");
+    let rollback_title = "Rolled Back Raw Insert".to_string();
+    let rollback_body = "body".to_string();
+    let rollback_published = false;
+    let rollback_view_count = 2i32;
+    let rolled_back_rows = tx_ctx
+        .raw_execute(
+            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+            &[
+                &rollback_title,
+                &rollback_body,
+                &rollback_published,
+                &rollback_view_count,
+            ],
+        )
+        .await
+        .expect("raw execute inside rollback txn should succeed");
+    assert_eq!(
+        rolled_back_rows, 1,
+        "rollback-path raw insert must affect one row before rollback"
+    );
     tx_ctx.rollback().await.unwrap();
 
-    let after_rollback: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut ctx, "SELECT COUNT(*) FROM posts", |_: ()| ())
-            .await
-            .unwrap();
+    let after_rollback: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
     assert_eq!(
         after_rollback, after_commit,
         "rolled-back raw insert must NOT be visible"

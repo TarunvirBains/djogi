@@ -347,7 +347,8 @@ impl<T: Model> QuerySet<T> {
     /// where `value: V: IntoFilterValue`. Expression-backed SET
     /// (`col = col + 1`, `col = NOW()`, `col = other_col`) lands in
     /// Phase 4 alongside the rest of the expression layer; until then,
-    /// `djogi::raw::execute` is the documented escape hatch.
+    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute)
+    /// is the documented escape hatch.
     ///
     /// The returned [`UpdateStmt`] is inert — the actual SQL runs when
     /// the caller invokes [`UpdateStmt::execute`] with a
@@ -389,7 +390,8 @@ impl<T: Model> QuerySet<T> {
     /// clause (an unfiltered queryset) is still a real DELETE — it
     /// removes every row in the table. Callers who want "wipe this
     /// table" DDL-style reach for `TRUNCATE` via
-    /// [`crate::raw::execute`]; this method only runs `DELETE FROM`.
+    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute);
+    /// this method only runs `DELETE FROM`.
     ///
     /// ```ignore
     /// Post::objects()
