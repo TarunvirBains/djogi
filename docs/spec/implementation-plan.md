@@ -129,7 +129,7 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 
 **Phase 1.5 amendment (2026-04-16):** Phase 1 canonicalizes `sqlx::Executor<Database = Postgres>` as the connection abstraction for all CRUD operations. Later phases may introduce a thin Djogi-owned adapter (e.g. `DjogiContext`, planned in Phase 4) if transaction-context policies or pool safety guards require more structure — but such an adapter must extend, not replace, the Phase 1 `Executor` contract. No `DjogiConnection` type exists in Phase 1.
 
-**Phase 4 amendment (2026-04-19):** Per Phase 4 v3's Q1 resolution, the Phase 1 `sqlx::Executor` contract was **replaced** (not extended) by `&mut DjogiContext`. `DjogiContext` carries either a pool or an active transaction and pattern-matches on the inner variant at each sqlx boundary. Every Phase 1/2/3 CRUD / QuerySet / relation signature retrofitted accordingly; the retrofit is a single concentrated commit on `phase4-retrofit`. See `docs/superpowers/plans/2026-04-18-phase4-transactions-expressions-v3.md` for the full rationale.
+**Phase 4 amendment (2026-04-19):** Per Phase 4 v3's Q1 resolution, the Phase 1 `sqlx::Executor` contract was **replaced** (not extended) by `&mut DjogiContext`. `DjogiContext` carries either a pool or an active transaction and pattern-matches on the inner variant at each sqlx boundary. Every Phase 1/2/3 CRUD / QuerySet / relation signature retrofitted accordingly; the retrofit shipped as a single concentrated commit on `phase4-retrofit`.
 
 ### Phase 1 Parallel Tracks
 
@@ -361,7 +361,23 @@ This phase is also where Djogi should prefer typed value wrappers and closed int
 - [ ] DateTime: `Now`, `Extract`, `TruncDate`
 - [ ] Math: `Abs`, `Ceil`, `Floor`, `Round`
 
-**Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions.
+### 5h: Streaming / Cursor Terminals
+
+- [ ] `QuerySet::stream(&mut ctx)` returning an `impl Stream<Item = Result<T>>` backed by a Postgres named cursor
+- [ ] Cursor lifecycle pinned to an active `atomic()` scope (cursors are transaction-local in Postgres)
+- [ ] Configurable fetch-size window (default 1000 rows per `FETCH`)
+- [ ] Backpressure via `Stream` polling; never buffer the full result set in memory
+- [ ] Escape-hatch `ctx.raw_stream(sql, binds)` for streaming raw queries
+
+### 5i: Full-Text Search
+
+- [ ] `tsvector` field type (`TsVector`) + `tsquery` predicate type (`TsQuery`)
+- [ ] Model-level `#[model(fts = { source = "title, body", dictionary = "english" })]` generates a `GENERATED ALWAYS AS` column + GIN index
+- [ ] Query-site `.filter(|m| m.search.matches(query("planet earth")))` produces `@@` match predicates
+- [ ] `ts_rank` / `ts_rank_cd` as aggregate helpers for ranking result ordering
+- [ ] Dictionary choice surfaced in migration diffs (so dictionary changes show up as an alteration)
+
+**Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions, streaming terminals, full-text search.
 
 ---
 
@@ -406,7 +422,18 @@ This phase is also where Djogi should prefer typed value wrappers and closed int
 - [ ] Support raw SQL data migrations (hand-written `.sql` files in `migrations/`)
 - [ ] Support Rhai script data migrations (`.rhai` files using shell model API)
 
-**Deliverable:** Full migration system with drift detection, SQL generation, CLI, data migrations.
+### 6f: Online / Zero-Downtime Migration Patterns
+
+- [ ] Advisory-lock-based single-active-migration coordination (no two `cargo djogi migrate` invocations apply concurrently against the same database)
+- [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL)
+- [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]`
+- [ ] Two-phase type widening: add new-type column, backfill, cut over, drop old (analogous pattern)
+- [ ] Safe NOT NULL addition: `ADD COLUMN ... DEFAULT value` (Postgres 11+ makes this fast-path without table rewrite) plus a `VALIDATE` pass for pre-existing-table columns
+- [ ] Constraint addition with `NOT VALID` + `VALIDATE` as separate steps
+- [ ] Backfill orchestration primitive: chunked `UPDATE ... WHERE pk BETWEEN $1 AND $2` with configurable chunk size, delay between chunks, progress reporting
+- [ ] Destructive-op detection: dropping a column, dropping a table, narrowing a type — gated behind `--allow-destructive` (already in 6a) with an additional "migration is not online" warning emitted at generation time
+
+**Deliverable:** Full migration system with drift detection, SQL generation, CLI, data migrations, online migration patterns.
 
 ---
 
@@ -506,15 +533,82 @@ Admin integration may be Axum-oriented in practice, but that coupling should liv
 
 ## Phase 9: CRUD Logging & Observability
 
-**Goal:** Automated audit trail and event logging.
+**Goal:** Automated audit trail plus concrete observability hooks (tracing, metrics, slow-query callbacks) that apps can integrate with standard Rust observability crates.
 
-- [ ] Three-database architecture: app, crud_logs, event_logs
+### 9a: Audit Trail
+
+- [ ] Three-database architecture: app, crud_logs, event_logs (pools already defined in Phase 0/1)
 - [ ] Per-model `#[model(crud_log = true)]` — auto-provision mirror `_logs` table
 - [ ] JSON-aware diffing with dot-notation paths through `Jsonb<T>` nesting
 - [ ] Actor attribution via `save_with_actor()` or request-context hook
-- [ ] Event logging via `tracing` subscriber layer → event log database
 
-**Deliverable:** Audit trail and observability infrastructure.
+### 9b: Tracing Integration
+
+- [ ] Emit a `tracing::Span` per query with fields: `sql_text` (truncated, no bind values), `duration_ms`, `rows_affected`, `pool_wait_ms`, `model_name` (when derivable)
+- [ ] Span attachment to surrounding `atomic()` scope's span (so transactions appear as parent spans over their queries)
+- [ ] Opt-out per model via `#[model(trace = false)]` for hot-path tables
+
+### 9c: Slow-Query Callbacks
+
+- [ ] `djogi::observe::register_slow_query_handler(threshold: Duration, handler: impl Fn(&QueryTelemetry))`
+- [ ] `QueryTelemetry` carries: sql, duration, row count, backend pid, lock wait time, which connection pool
+- [ ] Guaranteed called after query completion (success or error); handler runs on the query task's executor
+
+### 9d: Metrics Emission
+
+- [ ] `metrics` crate integration: histograms for query duration, counters for rows affected, gauges for pool utilization + idle vs active connections
+- [ ] Per-model breakdown labels (opt-in via `#[model(metrics = true)]`)
+- [ ] Pool-level metrics per the three-pool architecture
+
+### 9e: Admin-UI Observability Views
+
+- [ ] Phase 8's admin layer surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 9b/9c/9d are wired
+- [ ] Zero additional cost when the admin feature isn't enabled; the hooks stand alone
+
+### 9f: Event Logging
+
+- [ ] Event logging via `tracing` subscriber layer writing to the event log database
+- [ ] Schema for events: timestamp, level, target, fields, parent span id
+- [ ] Retention policy opt-in (delete events older than N days)
+
+**Deliverable:** Audit trail + tracing spans + slow-query hooks + metrics + admin dashboards + event logging.
+
+---
+
+## Phase 9.5: Operational Tooling
+
+**Goal:** Turnkey solution for the boring-but-critical operational work every Postgres app needs — backups, vacuums, maintenance schedules, disaster recovery drills. Without this, teams hand-roll it inconsistently and find out in production it was wrong.
+
+### 9.5a: Scheduled Backups
+
+- [ ] `cargo djogi ops backup setup --daily [--weekly] [--retention 14d]` — generates a platform-appropriate scheduler config (cron fragment, systemd timer unit, or launchd plist) + a backup script that wraps `pg_dump --format=custom` with sane defaults (parallelism, compression)
+- [ ] `cargo djogi ops backup now` — one-shot manual backup
+- [ ] `cargo djogi ops backup verify <file>` — runs `pg_restore --list` to confirm the archive is restorable
+- [ ] Storage targets: local path, S3-compatible (via env-var-configured endpoint + credentials), optional `rclone` passthrough
+- [ ] Retention policy enforcement (prune backups older than configured retention)
+
+### 9.5b: Point-In-Time Recovery (opt-in)
+
+- [ ] `cargo djogi ops pitr setup` — configures WAL archiving to a specified target, generates `restore.conf` template
+- [ ] `cargo djogi ops pitr restore --target-time '...'` — restore drill runbook that produces a new database at a specific wall-clock time
+
+### 9.5c: Vacuum / Maintenance Scheduling
+
+- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` in migration SQL
+- [ ] `cargo djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
+- [ ] `cargo djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
+
+### 9.5d: Health Checks
+
+- [ ] `cargo djogi ops doctor` — checks pool utilization, long-running transactions (> N seconds), table bloat estimates, index bloat, replication lag if configured, `pg_stat_statements` top-N slow queries
+- [ ] Each check returns a pass/warn/fail with a suggested remediation
+
+### 9.5e: Operator Runbooks
+
+- [ ] Generate opinionated Markdown runbooks under `docs/ops/` covering: "my backup failed", "restore from last night", "I accidentally dropped a table", "vacuum is blocked"
+- [ ] Runbooks reference the specific `cargo djogi ops` commands that resolve each scenario
+
+**Deliverable:** Djogi apps get production-grade ops (backups, PITR, vacuum, health, runbooks) without cobbling them together per project.
 
 ---
 
@@ -543,13 +637,14 @@ Admin integration may be Axum-oriented in practice, but that coupling should liv
 | 4: Txn & Expressions | Large | Transactions, F-expressions, aggregation, bulk upsert |
 | 4.5: Projections | Medium | Shared transport-safe contracts derived from models |
 | **→ Strong option among Rust ORM alternatives for write-heavy Postgres services** | | **Phases 0-4 cover the blocking transaction, expression, and bulk-write substrate** |
-| 5: Postgres Native | Medium | Enums, arrays, JSONB, native aggregates |
-| 6: Migrations | Large | Full migration system |
+| 5: Postgres Native | Medium | Enums, arrays, JSONB, native aggregates, streaming terminals, full-text search |
+| 6: Migrations | Large | Full migration system including online / zero-downtime patterns |
 | 6.5: Protected Data | Medium | Sensitive-field metadata and codecs |
 | 7: Hooks & Composition | Medium | Lifecycle hooks, abstract models, proxy, computed properties |
 | 8: Shell & Admin | Medium | Interactive tools |
 | 8.5: Lifecycle | Medium | Governance and lifecycle planning (depends on 6.5) |
-| 9: Logging | Medium | Audit trail |
+| 9: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
+| 9.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
 | 10: Topology | Large | Residency, replica semantics, distributed guardrails |
 
 **The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–10 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.

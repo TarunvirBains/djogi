@@ -56,6 +56,7 @@
 | Migrations folder | Git submodule — pipeline-managed, invisible to developer day-to-day |
 | Migration down files | Always generated as a pair; data loss on destructive rollback documented in file |
 | Database target | Postgres only — permanent decision, not a limitation; enables JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING` |
+| Postgres version floor | Postgres 18 — no support for older versions. Rationale: Djogi is pre-publish and unapologetic about adoption shape; teams migrating an existing app to Djogi have substantial app-side work regardless, so bundling a Postgres upgrade is a small marginal cost. The framework will freely use any Postgres 18+ feature (extended protocol niceties, latest JSONB work, `MERGE`, logical replication, generated-column expressiveness) without version-gating fallbacks. |
 | Dev database reset | `cargo djogi db reset` — gated on `dev_mode = true` + localhost URL + `DJOGI_ENV != production` |
 | CLI interface | `cargo djogi` subcommand — installed via `cargo install djogi-cli`, idiomatic Rust toolchain |
 | Djogi's scope | Model derivation chain only — does not duplicate SQLx, HeeRanjId, Tokio, or any Rust web framework's responsibilities. `axum` is the best-covered framework example today (opt-in via the `axum` feature flag); other frameworks integrate through their own per-framework flags or manual wiring. |

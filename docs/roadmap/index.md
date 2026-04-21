@@ -15,6 +15,7 @@ For features that currently ship, see [the user guides](../guide/index.md).
 | [Querying (roadmap)](./querying.md) | Phase 2 | QuerySet filter closures, terminal fetchers, programmatic filter API |
 | [Security (roadmap)](./security.md) | Phase 5+ | Row-Level Security, `TenantScoped<T>`, `_insecurely()`, intent persistence |
 | [CLI (roadmap)](./cli.md) | Phase 6–8 | `cargo djogi migrate / docs / check / analyze / stats / prepare` |
+| [Future work (roadmap)](./future-work.md) | Mixed | Scope expansions to existing phases (online migrations, observability, ops tooling, streaming, FTS) + unscheduled items (version floor, multi-tenancy patterns, benchmarks) + phase-independent ideas (request pipelining exploitation, compile-time SQL validation macro) |
 
 Each document is dated and revision-controlled; when a phase ships, the
 corresponding roadmap doc merges into `docs/guide/` with phase-accurate

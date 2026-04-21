@@ -4,7 +4,7 @@ This document maps common app patterns to the earliest Djogi phase at which they
 
 **Sourcing:** this table is maintained as phases merge. Each phase plan owns the patterns it introduces; this doc aggregates them in one place. The initial population covers Phases 1 through 11 from the canonical implementation plan (`docs/spec/implementation-plan.md`) and the planned midpoint phases (4.5, 5.5, 6.5, 7.5, 8.5, 9.5).
 
-**Canonical sequence reference:** `docs/superpowers/plans/MASTER-BUILD-SEQUENCE.md`.
+**Canonical sequence reference:** `docs/spec/implementation-plan.md`.
 
 ---
 
@@ -82,6 +82,5 @@ This is codified in the `/complete-phase` skill. Skipping the update is a merge 
 ## Cross-References
 
 - `docs/spec/implementation-plan.md` — canonical phase sequence and scope definitions.
-- `docs/superpowers/plans/MASTER-BUILD-SEQUENCE.md` — per-phase execution plans and amendment history.
 - `docs/spec/scope.md` — public vs internal API boundaries (determines what's safe to depend on).
 - `docs/spec/architecture-principles.md` — design principles that frame "safe to adopt".
