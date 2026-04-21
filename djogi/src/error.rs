@@ -168,20 +168,22 @@ pub enum DjogiError {
         reason: &'static str,
     },
 
-    /// A column decode failure produced by `FromPgRowBridge::__from_pg_row`.
+    /// A column decode failure produced by
+    /// [`FromPgRow::from_pg_row`](crate::pg::decode::FromPgRow::from_pg_row).
     ///
     /// Raised when `tokio_postgres::Row::try_get` returns an error for a
-    /// model field — for example, when a column is missing from the result
-    /// set or its wire type cannot be converted to the expected Rust type.
-    /// Preserves the Phase 4 contract: every CRUD failure flows through
+    /// model field — for example, when the wire type at a given ordinal
+    /// position cannot be converted to the expected Rust type. Preserves
+    /// the Phase 4 contract: every CRUD failure flows through
     /// `DjogiError` rather than aborting the task via `panic!`.
     ///
-    /// The inner `String` carries the column name and the driver error so
-    /// the caller can identify which field failed without inspecting the
-    /// raw `tokio_postgres::Error`.
+    /// The inner `String` carries the column name and the driver error
+    /// so the caller can identify which field failed without inspecting
+    /// the raw `tokio_postgres::Error`.
     ///
-    /// T3 replaces this variant with a richer `DjogiError::Db` / `FromPgRow`
-    /// error shape once `FromPgRowBridge` is removed.
+    /// T6 will rename this variant to `DjogiError::Db` (wrapping a
+    /// driver-neutral `DbError`) as part of the broader error-surface
+    /// rewrite.
     #[error("row decode error: {0}")]
     Decode(String),
 

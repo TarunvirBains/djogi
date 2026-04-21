@@ -35,21 +35,15 @@
 //! internally; user code receives it as the field type on a prefetched
 //! view struct, never binds it back into another query.
 //!
-//! `sqlx::FromRow` decode (for the T2→T3 bridge period) is handled by
-//! the macro-emitted `FromRow` impl which calls `row.try_get(col_name)?`.
-//! `ForeignKey<T>` implements `sqlx::Decode` / `sqlx::Type` / `sqlx::Encode`
-//! during T2 so the macro-emitted `FromRow` bodies continue to compile until
-//! T3 replaces them with `__from_pg_row`.
+//! Row decode is handled by the macro-emitted
+//! [`FromPgRow::from_pg_row`](crate::pg::decode::FromPgRow::from_pg_row) impl
+//! which calls `row.try_get(i)` positionally. `ForeignKey<T>` is decoded
+//! through its `postgres_types::FromSql` impl below.
 
 use crate::model::Model;
 use bytes::BytesMut;
 use postgres_types::{FromSql, IsNull, ToSql, Type};
 use std::marker::PhantomData;
-
-// Also keep sqlx impls during the T2 → T3 bridge window so macro-emitted
-// FromRow bodies can still call row.try_get for ForeignKey columns. T3
-// will replace the FromRow emission with __from_pg_row and remove this block.
-use sqlx::{Database, Decode, Encode, Postgres};
 
 /// Strongly-typed PK-only reference to a related model.
 ///
@@ -119,7 +113,7 @@ impl<T: Model> ForeignKey<T> {
     ///
     /// This is the constructor user code calls when building a row for
     /// insert: `Vehicle { owner: ForeignKey::new(owner.id), ... }`.
-    /// Row decode and `sqlx::Decode` both funnel through this.
+    /// Row decode (via the `postgres_types::FromSql` impl below) funnels through this.
     #[inline]
     pub fn new(key: T::Pk) -> Self {
         Self {
@@ -211,51 +205,12 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// sqlx bridge impls — kept through T3 for macro-emitted FromRow decode.
-//
-// Macro-emitted `impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for T`
-// calls `row.try_get("col")` for every field including FK fields. Those
-// calls need `ForeignKey<T>: sqlx::Decode + sqlx::Type` to resolve. Once
-// T3 replaces the FromRow emission with `__from_pg_row` these impls are
-// removed alongside the FromRow emission.
-// ---------------------------------------------------------------------------
-
-impl<T: Model> sqlx::Type<Postgres> for ForeignKey<T>
-where
-    T::Pk: sqlx::Type<Postgres>,
-{
-    fn type_info() -> <Postgres as Database>::TypeInfo {
-        <T::Pk as sqlx::Type<Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &<Postgres as Database>::TypeInfo) -> bool {
-        <T::Pk as sqlx::Type<Postgres>>::compatible(ty)
-    }
-}
-
-impl<'q, T: Model> Encode<'q, Postgres> for ForeignKey<T>
-where
-    T::Pk: Encode<'q, Postgres>,
-{
-    fn encode_by_ref(
-        &self,
-        buf: &mut <Postgres as Database>::ArgumentBuffer<'q>,
-    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        <T::Pk as Encode<'q, Postgres>>::encode_by_ref(&self.key, buf)
-    }
-}
-
-impl<'r, T: Model> Decode<'r, Postgres> for ForeignKey<T>
-where
-    T::Pk: Decode<'r, Postgres>,
-{
-    fn decode(
-        value: <Postgres as Database>::ValueRef<'r>,
-    ) -> Result<Self, sqlx::error::BoxDynError> {
-        <T::Pk as Decode<'r, Postgres>>::decode(value).map(ForeignKey::new)
-    }
-}
+// The sqlx::Type/Encode/Decode bridge impls that previously lived here
+// existed solely to support the macro-emitted `impl sqlx::FromRow for T`.
+// T3 replaced that emission with `impl FromPgRow for T` (ordinal decode
+// via `postgres_types::FromSql`), so the sqlx bridges are dead code and
+// have been removed. `ForeignKey<T>` is now decoded entirely through its
+// `postgres_types::FromSql` impl above.
 
 // ---------------------------------------------------------------------------
 // Filter-API integration — `ForeignKey<T>` projects through the target PK.

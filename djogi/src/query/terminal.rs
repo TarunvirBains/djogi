@@ -74,7 +74,7 @@ use crate::DjogiError;
 use crate::context::{ContextInner, DjogiContext};
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::pg::decode::FromPgRowBridge;
+use crate::pg::decode::FromPgRow;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_count, build_exists, build_select, build_select_joined};
 use crate::relation::joined_row::{FromJoinedRow, JoinedRow};
@@ -98,11 +98,11 @@ fn acc_into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + S
     acc.into_parts()
 }
 
-// ── Row-returning terminals (require `T: FromPgRowBridge`) ────────────────────────
+// ── Row-returning terminals (require `T: FromPgRow`) ────────────────────────
 
 impl<T: Model> QuerySet<T>
 where
-    T: FromPgRowBridge + Send + Unpin,
+    T: FromPgRow + Send + Unpin,
 {
     /// Execute the query and collect every matching row into a `Vec<T>`.
     ///
@@ -130,7 +130,7 @@ where
             let rows = ctx.query_all(&sql, &params).await?;
             let result: Vec<T> = rows
                 .iter()
-                .map(|r| T::__from_pg_row(r))
+                .map(|r| T::from_pg_row(r))
                 .collect::<Result<Vec<T>, _>>()?;
             Ok(result)
         }
@@ -181,7 +181,7 @@ where
                         .into_iter()
                         .next()
                         .expect("rows.len() == 1 was just matched");
-                    T::__from_pg_row(&row)
+                    T::from_pg_row(&row)
                 }
                 // `n` here is a sentinel: because we force `LIMIT 2`
                 // above, `n` is always exactly 2 on this branch — not the
@@ -262,7 +262,7 @@ where
             let pg_rows = ctx.query_all(&sql, &params).await?;
             let rows: Vec<T> = pg_rows
                 .iter()
-                .map(|r| T::__from_pg_row(r))
+                .map(|r| T::from_pg_row(r))
                 .collect::<Result<Vec<T>, _>>()?;
 
             // Apply each prefetch loader. Empty main result -> no
@@ -412,7 +412,7 @@ where
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
             let opt = ctx.query_opt(&sql, &params).await?;
-            opt.as_ref().map(|r| T::__from_pg_row(r)).transpose()
+            opt.as_ref().map(|r| T::from_pg_row(r)).transpose()
         }
     }
 
@@ -582,7 +582,9 @@ where
             // TODO(phase4-task7d): layer user filters back in via a
             // dedicated `build_where_only` helper so `in_bulk` honours
             // upstream `.filter(...)` calls.
-            let mut acc = SqlAccumulator::new("SELECT * FROM ");
+            let mut acc = SqlAccumulator::new("SELECT ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(" FROM ");
             acc.push_sql(T::table_name());
             acc.push_sql(" WHERE id IN (");
             acc.push_list_binds(ids.iter().cloned());
@@ -595,7 +597,7 @@ where
             let pg_rows = ctx.query_all(&sql, &params).await?;
             let mut out: HashMap<T::Pk, T> = HashMap::with_capacity(pg_rows.len());
             for row in &pg_rows {
-                let item = T::__from_pg_row(row)?;
+                let item = T::from_pg_row(row)?;
                 out.insert(item.pk_value().clone(), item);
             }
             Ok(out)
@@ -603,7 +605,7 @@ where
     }
 }
 
-// ── Scalar terminals (no FromPgRowBridge bound needed) ─────────────────────────────
+// ── Scalar terminals (no FromPgRow bound needed) ─────────────────────────────
 
 impl<T: Model> QuerySet<T> {
     /// `SELECT COUNT(*) FROM <table> [WHERE ...]`.

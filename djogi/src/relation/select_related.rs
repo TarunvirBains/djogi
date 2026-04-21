@@ -298,8 +298,8 @@ pub(crate) fn select_columns<T: Model>(paths: &[ErasedSelectRelated]) -> String 
 /// for that path.
 ///
 /// `FromJoinedRow::from_prefixed_row(row, "")` decodes the parent
-/// with the empty prefix — identical to what `__from_pg_row` would
-/// produce for a bare-columns row, but reusing the same trait across
+/// with the empty prefix — similar in spirit to what `FromPgRow::from_pg_row`
+/// reads for a bare-columns row, but reusing the same trait across
 /// both sides keeps the macro emission small (one extra impl per model).
 pub(crate) fn decode_joined_row<T: Model + FromJoinedRow>(
     row: &PgRow,

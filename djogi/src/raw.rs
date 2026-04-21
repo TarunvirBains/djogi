@@ -8,9 +8,9 @@
 //! Phase 5-Zero T2 removes the sqlx executor model from `DjogiContext`. The `raw`
 //! module's implementation requires the full tokio-postgres execution path that T5
 //! will build (typed bind arrays via `postgres_types::ToSql`, row decode via
-//! `__from_pg_row`, and the cleaned-up `PgConnection` dispatch helpers). Stubbing
-//! the bodies here prevents T2's compiler from seeing sqlx executor calls after
-//! the pool/transaction types have switched, without forcing T5's scope into T2.
+//! `FromPgRow::from_pg_row`, and the cleaned-up `PgConnection` dispatch helpers).
+//! Stubbing the bodies here prevents T2's compiler from seeing sqlx executor calls
+//! after the pool/transaction types have switched, without forcing T5's scope into T2.
 //!
 //! T5 will replace every `todo!()` body with the real tokio-postgres implementation.
 //!

@@ -73,3 +73,8 @@ harness = true
 name = "djogi_test_smoke"
 path = "../tests/integration/djogi_test_smoke.rs"
 harness = true
+
+[[test]]
+name = "phase5_zero_from_pg_row"
+path = "../tests/integration/phase5_zero_from_pg_row.rs"
+harness = true

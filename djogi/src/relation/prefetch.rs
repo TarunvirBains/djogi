@@ -107,7 +107,7 @@ use crate::DjogiError;
 use crate::context::ContextInner;
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::pg::decode::FromPgRowBridge;
+use crate::pg::decode::FromPgRow;
 use crate::relation::path::RelationPath;
 use postgres_types::ToSql;
 use std::any::Any;
@@ -319,8 +319,8 @@ impl std::fmt::Debug for ErasedPrefetch {
 ///   query-side input, and use the PK as a HashMap key for stitching.
 ///   No array-type bound — the emitter uses `IN (...)` rather than
 ///   `ANY($1)` precisely so the HeeRanjID PKs slot in unchanged.
-/// - `Target: Model + __from_pg_row + Clone + Send + Unpin + 'static` —
-///   the LEFT JOIN returns target columns; `__from_pg_row` decodes them
+/// - `Target: Model + FromPgRow + Clone + Send + Unpin + 'static` —
+///   the LEFT JOIN returns target columns; `FromPgRow::from_pg_row` decodes them
 ///   from a `tokio_postgres::Row`, `Any` erases the concrete type for
 ///   the return channel.
 pub(crate) fn prefetch_loader<'a, Source, Target>(
@@ -332,7 +332,7 @@ pub(crate) fn prefetch_loader<'a, Source, Target>(
 where
     Source: Model,
     Source::Pk: ToSql + for<'r> FromSql<'r> + Eq + Hash + Clone + Send + Sync + 'static,
-    Target: Model + FromPgRowBridge + Clone + Send + Unpin + 'static,
+    Target: Model + FromPgRow + Clone + Send + Unpin + 'static,
 {
     Box::pin(async move {
         // Down-erase the parent PK list. Every element was `Box::new`'d
@@ -381,10 +381,18 @@ where
 
         // Build the stitching query using SqlAccumulator:
         //
-        //   SELECT p.id AS __djogi_parent_id, t.col_1, t.col_2, ..., t.col_N
+        //   SELECT t.col_1, t.col_2, ..., t.col_N, p.id AS __djogi_parent_id
         //   FROM <parent_table> p
         //   LEFT JOIN <target_table> t ON t.id = p.<source_column>
         //   WHERE p.id IN ($1, $2, ..., $N)
+        //
+        // Target columns come FIRST in the canonical `FromPgRow::COLUMN_LIST`
+        // order so `FromPgRow::from_pg_row` decodes them positionally
+        // (ordinals 0..N_COLS) and the per-column name guards pass. The
+        // synthetic `__djogi_parent_id` alias lands at position N_COLS
+        // and is read by name (`row.try_get("__djogi_parent_id")`), which
+        // is tolerant of its ordinal position shifting if the target
+        // gains more columns in a future schema revision.
         //
         // `IN (...)` with one bind per parent PK is used rather than
         // `ANY($1)` — no array-type bound is needed so the HeeRanjID PKs
@@ -398,20 +406,25 @@ where
         //
         // Target columns are enumerated explicitly via
         // `Target::descriptor().fields` rather than using `t.*` to keep
-        // the synthetic `__djogi_parent_id` alias unambiguous.
+        // the wire shape stable across migrations that might list user
+        // columns before framework columns (the Phase 4 `accounts` case).
         let target_table = <Target as Model>::table_name();
         let target_fields = <Target as Model>::descriptor().fields;
-        let mut acc = SqlAccumulator::new("SELECT p.id AS __djogi_parent_id");
-        for field in target_fields {
+        let mut acc = SqlAccumulator::new("SELECT ");
+        for (i, field) in target_fields.iter().enumerate() {
             // The Model trait is sealed, so `target_fields` comes from a
             // `#[derive(Model)]`-emitted descriptor — `field.name` should
             // already satisfy the identifier contract. Re-validate in
             // debug builds so a malformed emission surfaces as a loud
             // framework-bug panic instead of malformed SQL.
             crate::ident::debug_assert_ident!(field.name, "field_name");
-            acc.push_sql(", t.");
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            acc.push_sql("t.");
             acc.push_sql(field.name);
         }
+        acc.push_sql(", p.id AS __djogi_parent_id");
         acc.push_sql(" FROM ");
         acc.push_sql(parent_table);
         acc.push_sql(" p LEFT JOIN ");
@@ -466,9 +479,10 @@ where
             let slot = if target_is_null {
                 None
             } else {
-                // Decode via the T2 bridge method emitted alongside sqlx::FromRow.
-                // T3 will replace this with `Target: FromPgRow` trait impl.
-                Some(Target::__from_pg_row(&row)?)
+                // Decode via `FromPgRow::from_pg_row` — T3's canonical public
+                // trait. Emitted by `#[model]` with `COLUMN_LIST`, ordinal
+                // decode, and per-column debug-mode name guards.
+                Some(Target::from_pg_row(&row)?)
             };
 
             parent_to_target.entry(parent_pk).or_insert(slot);

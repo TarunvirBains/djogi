@@ -195,22 +195,56 @@ pub fn expand(
     let n_user = user_fields.len();
 
     // -------------------------------------------------------------------------
+    // Canonical column list — the comma-joined sequence of column names in
+    // struct-field order after injection. `id, created_at, updated_at,
+    // <user_fields>`. Matches `FromPgRow::COLUMN_LIST` emitted by
+    // `from_row.rs` byte-for-byte so the `SELECT {column_list}` and
+    // `RETURNING {column_list}` SQL below is decoded positionally by
+    // `FromPgRow::from_pg_row`.
+    //
+    // Replaces the historical `SELECT *` / `RETURNING *` spelling — that
+    // shape leaked DDL column order into the decode path and would
+    // mis-decode against migrations that happen to list user columns
+    // before framework columns (Phase 4's `accounts` fixture is the
+    // canonical example).
+    //
+    // Strips raw-identifier prefixes (`r#type` -> `type`) to match the
+    // convention already used in `stubs.rs` / `descriptor.rs` /
+    // `from_row.rs`.
+    // -------------------------------------------------------------------------
+    let framework_cols: [&str; 3] = ["id", "created_at", "updated_at"];
+    let user_col_names: Vec<String> = user_fields
+        .iter()
+        .map(|i| {
+            let raw = i.to_string();
+            raw.strip_prefix("r#").unwrap_or(&raw).to_string()
+        })
+        .collect();
+    let column_list: String = framework_cols
+        .iter()
+        .map(|s| (*s).to_string())
+        .chain(user_col_names.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // -------------------------------------------------------------------------
     // `create` SQL: INSERT with user fields only; DB handles the framework
-    // columns via column defaults. RETURNING * brings back the full row.
+    // columns via column defaults. `RETURNING {column_list}` brings back the
+    // full row in canonical order for ordinal decode.
     //
     // For zero-user-field models we must use `DEFAULT VALUES` — empty parens
     // `()` are invalid SQL and `INSERT ... () VALUES ()` is rejected by
     // Postgres. `DEFAULT VALUES` is standard SQL and Postgres-supported.
     // -------------------------------------------------------------------------
     let insert_sql = if n_user == 0 {
-        format!("INSERT INTO {table} DEFAULT VALUES RETURNING *")
+        format!("INSERT INTO {table} DEFAULT VALUES RETURNING {column_list}")
     } else {
         let insert_columns: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
         let insert_col_list = insert_columns.join(", ");
         let insert_placeholders: Vec<String> = (1..=n_user).map(|i| format!("${i}")).collect();
         let insert_placeholder_list = insert_placeholders.join(", ");
         format!(
-            "INSERT INTO {table} ({insert_col_list}) VALUES ({insert_placeholder_list}) RETURNING *"
+            "INSERT INTO {table} ({insert_col_list}) VALUES ({insert_placeholder_list}) RETURNING {column_list}"
         )
     };
     // Create params: one &(dyn ToSql + Sync) per user field, in order.
@@ -245,10 +279,12 @@ pub fn expand(
         .collect();
     let id_param = n_user + 1;
     let save_sql = if n_user == 0 {
-        format!("UPDATE {table} SET updated_at = now() WHERE id = ${id_param} RETURNING *")
+        format!(
+            "UPDATE {table} SET updated_at = now() WHERE id = ${id_param} RETURNING {column_list}"
+        )
     } else {
         format!(
-            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param} RETURNING *",
+            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param} RETURNING {column_list}",
             set_list = set_clauses.join(", "),
         )
     };
@@ -282,7 +318,7 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // `get` SQL: SELECT * WHERE id = $1. `id` comes in as an owned Self::Pk.
     // -------------------------------------------------------------------------
-    let get_sql = format!("SELECT * FROM {table} WHERE id = $1");
+    let get_sql = format!("SELECT {column_list} FROM {table} WHERE id = $1");
 
     let id_param_for_get = match model_attrs.pk {
         PkStrategy::HeerId => {
@@ -350,7 +386,7 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // Every body calls the public-but-hidden execution helpers on `ctx`
     // (`ctx.__query_opt_for_macros`, `ctx.__query_one_for_macros`, etc.) and
-    // decodes rows via `FromPgRowBridge::__from_pg_row`. These helpers are
+    // decodes rows via `FromPgRow::from_pg_row`. These helpers are
     // accessible from user crates (macro-generated code runs outside `djogi`)
     // even though the underlying `pub(crate)` methods are not. See
     // djogi/src/context.rs for the execution helper rationale.
@@ -361,7 +397,7 @@ pub fn expand(
             ];
             match ctx.__query_opt_for_macros(#get_sql, __params).await? {
                 ::std::option::Option::Some(__row) => {
-                    <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__row)
+                    <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
                 }
                 ::std::option::Option::None => {
                     ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
@@ -452,7 +488,7 @@ pub fn expand(
                 #(#create_param_entries,)*
             ];
             let __raw_row = ctx.__query_one_for_macros(#insert_sql, __params).await?;
-            let row = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw_row)?;
+            let row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
             // Phase 4 Task 6 — outbox emission (no-op for non-events models).
             // Runs in the same ctx so a transactional caller gets the
             // outbox row committed/rolled back atomically with `row`.
@@ -468,7 +504,7 @@ pub fn expand(
                 #save_id_param,
             ];
             let __raw_row = ctx.__query_one_for_macros(#save_sql, __params).await?;
-            let row: Self = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw_row)?;
+            let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
             *self = row;
             // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
             // values (triggers, column defaults), so emission runs AFTER the
@@ -499,7 +535,7 @@ pub fn expand(
             ];
             match ctx.__query_opt_for_macros(#get_sql, __params).await? {
                 ::std::option::Option::Some(__row) => {
-                    <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__row)
+                    <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
                 }
                 ::std::option::Option::None => {
                     ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
@@ -531,7 +567,9 @@ pub fn expand(
     // -------------------------------------------------------------------------
     let create_with_id_impl = if matches!(model_attrs.pk, PkStrategy::HeerId) {
         let insert_with_id_sql = if n_user == 0 {
-            format!("INSERT INTO {table} (id) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING *")
+            format!(
+                "INSERT INTO {table} (id) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING {column_list}"
+            )
         } else {
             let cols: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
             let col_list = cols.join(", ");
@@ -539,7 +577,7 @@ pub fn expand(
             let vals: Vec<String> = (2..=n_user + 1).map(|n| format!("${n}")).collect();
             let val_list = vals.join(", ");
             format!(
-                "INSERT INTO {table} (id, {col_list}) VALUES ($1, {val_list}) ON CONFLICT (id) DO NOTHING RETURNING *"
+                "INSERT INTO {table} (id, {col_list}) VALUES ($1, {val_list}) ON CONFLICT (id) DO NOTHING RETURNING {column_list}"
             )
         };
 
@@ -573,7 +611,7 @@ pub fn expand(
                     let __maybe_row = ctx.__query_opt_for_macros(#insert_with_id_sql, __params).await?;
                     match __maybe_row {
                         ::std::option::Option::Some(__raw) => {
-                            <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw)
+                            <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)
                         }
                         ::std::option::Option::None => {
                             let mut v = value;
@@ -791,12 +829,13 @@ pub fn expand(
         }
     } else {
         let insert_prefix = format!("INSERT INTO {table} ({bulk_insert_col_list}) VALUES ");
+        let bulk_returning_suffix = format!(" RETURNING {column_list}");
         quote! {
             /// Bulk-insert every row in `rows` and return the rehydrated
             /// results.
             ///
             /// One `INSERT` round trip emitting
-            /// `INSERT INTO <table> (<user-cols>) VALUES (...), (...) RETURNING *`.
+            /// `INSERT INTO <table> (<user-cols>) VALUES (...), (...) RETURNING <column_list>`.
             /// Framework columns (`id`, `created_at`, `updated_at`) are
             /// populated by their column defaults and surface in the
             /// returned rows.
@@ -828,14 +867,14 @@ pub fn expand(
                         #per_row_binds
                     }
                 }
-                __acc.push_sql(" RETURNING *");
+                __acc.push_sql(#bulk_returning_suffix);
                 let (__sql, __binds) = __acc.into_parts();
                 let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
                     __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
                 let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
                 let created: ::std::vec::Vec<Self> = __raw_rows
                     .iter()
-                    .map(|r| <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(r))
+                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
                     .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
                 #emit_outbox_bulk_create
                 ::std::result::Result::Ok(created)
@@ -864,7 +903,8 @@ pub fn expand(
         }
     } else {
         let insert_prefix = format!("INSERT INTO {table} (id, {bulk_insert_col_list}) VALUES ");
-        let do_update_set_clause = format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING *");
+        let do_update_set_clause =
+            format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING {column_list}");
 
         // For bulk_upsert the id column is included up front so
         // callers can upsert with pre-allocated ids. Per-row bind tail
@@ -898,8 +938,8 @@ pub fn expand(
             /// `conflict_cols` key, updates every user field plus
             /// `updated_at = now()` with the incoming values
             /// (`EXCLUDED.*`). Returns the rehydrated rows —
-            /// `RETURNING *` emits one row per input regardless of
-            /// whether it was inserted or updated.
+            /// `RETURNING <column_list>` emits one row per input
+            /// regardless of whether it was inserted or updated.
             ///
             /// `conflict_cols` must reference real columns of this
             /// model (framework or user). Unknown names return
@@ -969,7 +1009,7 @@ pub fn expand(
                 let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
                 let created: ::std::vec::Vec<Self> = __raw_rows
                     .iter()
-                    .map(|r| <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(r))
+                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
                     .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
                 // Upsert outbox policy: emit a Save event per returned
                 // row — the caller does not tell us whether each row
@@ -1014,10 +1054,11 @@ pub fn expand(
                 let ph_list = placeholders.join(", ");
                 format!(
                     "INSERT INTO {table} ({col_list}) VALUES ({ph_list}) \
-                     ON CONFLICT ({key_str}) DO NOTHING RETURNING *"
+                     ON CONFLICT ({key_str}) DO NOTHING RETURNING {column_list}"
                 )
             };
-            let select_by_key_sql = format!("SELECT * FROM {table} WHERE {key_str} = $1 LIMIT 1");
+            let select_by_key_sql =
+                format!("SELECT {column_list} FROM {table} WHERE {key_str} = $1 LIMIT 1");
 
             // The `create_or_find` outbox emission policy — fire the
             // Create event only when the insert actually inserted a
@@ -1043,7 +1084,7 @@ pub fn expand(
                 ///
                 /// Shape:
                 /// `INSERT INTO <table> (<user-cols>) VALUES ($1,...)
-                ///  ON CONFLICT (<key>) DO NOTHING RETURNING *`.
+                ///  ON CONFLICT (<key>) DO NOTHING RETURNING <column_list>`.
                 /// On empty RETURNING (the "key already existed"
                 /// branch) the method re-SELECTs the existing row by
                 /// `<key> = row.<key>` and returns `(existing, false)`.
@@ -1075,7 +1116,7 @@ pub fn expand(
                     ).await?;
                     match __maybe_inserted {
                         ::std::option::Option::Some(__raw) => {
-                            let __row = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw)?;
+                            let __row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
                             #create_or_find_outbox
                             ::std::result::Result::Ok((__row, true))
                         }
@@ -1092,7 +1133,7 @@ pub fn expand(
                                 #select_by_key_sql,
                                 __select_params,
                             ).await?;
-                            let existing = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw)?;
+                            let existing = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
                             ::std::result::Result::Ok((existing, false))
                         }
                     }

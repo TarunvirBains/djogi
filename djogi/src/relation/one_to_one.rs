@@ -107,13 +107,8 @@ impl<T: Model> OneToOneField<T> {
 }
 
 // ---------------------------------------------------------------------------
-// postgres_types integration — primary codec for T2+.
+// postgres_types integration — primary codec.
 // Delegates through the inner `ForeignKey<T>` to `T::Pk`.
-//
-// T2→T3 bridge: the sqlx `Type`/`Encode`/`Decode` impls below this block
-// are kept so that macro-emitted `impl sqlx::FromRow` bodies (which use
-// `row.try_get::<OneToOneField<T>, _>(col)`) continue to compile through T3.
-// T3 removes both the sqlx emission in `from_row.rs` and these bridge impls.
 // ---------------------------------------------------------------------------
 
 impl<T: Model> ToSql for OneToOneField<T>
@@ -154,46 +149,12 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// sqlx bridge impls — T2→T3 only. Forward through the inner `ForeignKey<T>`.
-// T3 removes these once macro-emitted `FromRow` is replaced with `FromPgRow`.
-// ---------------------------------------------------------------------------
-
-impl<T: Model> sqlx::Type<sqlx::Postgres> for OneToOneField<T>
-where
-    T::Pk: sqlx::Type<sqlx::Postgres>,
-{
-    fn type_info() -> <sqlx::Postgres as sqlx::Database>::TypeInfo {
-        <ForeignKey<T> as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &<sqlx::Postgres as sqlx::Database>::TypeInfo) -> bool {
-        <ForeignKey<T> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
-    }
-}
-
-impl<'q, T: Model> sqlx::Encode<'q, sqlx::Postgres> for OneToOneField<T>
-where
-    T::Pk: sqlx::Encode<'q, sqlx::Postgres>,
-{
-    fn encode_by_ref(
-        &self,
-        buf: &mut <sqlx::Postgres as sqlx::Database>::ArgumentBuffer<'q>,
-    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        <ForeignKey<T> as sqlx::Encode<'q, sqlx::Postgres>>::encode_by_ref(&self.0, buf)
-    }
-}
-
-impl<'r, T: Model> sqlx::Decode<'r, sqlx::Postgres> for OneToOneField<T>
-where
-    T::Pk: sqlx::Decode<'r, sqlx::Postgres>,
-{
-    fn decode(
-        value: <sqlx::Postgres as sqlx::Database>::ValueRef<'r>,
-    ) -> Result<Self, sqlx::error::BoxDynError> {
-        <ForeignKey<T> as sqlx::Decode<'r, sqlx::Postgres>>::decode(value).map(OneToOneField)
-    }
-}
+// The sqlx::Type/Encode/Decode bridge impls that previously lived here
+// existed solely to support the macro-emitted `impl sqlx::FromRow for T`.
+// T3 replaced that emission with `impl FromPgRow for T` (ordinal decode
+// via `postgres_types::FromSql`), so the sqlx bridges are dead code and
+// have been removed. `OneToOneField<T>` is now decoded entirely through
+// its `postgres_types::FromSql` impl above.
 
 // ---------------------------------------------------------------------------
 // Filter-API integration — forward to the wrapped `ForeignKey<T>`.

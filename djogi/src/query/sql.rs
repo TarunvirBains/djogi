@@ -35,6 +35,7 @@
 
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::decode::FromPgRow;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::order::{Direction, NullsOrder};
 use crate::query::queryset::{DistinctMode, QuerySet};
@@ -537,21 +538,31 @@ fn push_tail_qualified<T: Model>(
     qs.lock.push_tail(acc);
 }
 
-/// Build `SELECT [DISTINCT [ON (...)]] * FROM <table> [WHERE ...]
+/// Build `SELECT [DISTINCT [ON (...)]] <COLUMN_LIST> FROM <table> [WHERE ...]
 /// [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
 ///
 /// The queryset is borrowed, not consumed — terminal methods (`fetch_all`,
 /// `fetch_one`, `first`) may need to mutate the queryset (e.g. `fetch_one`
 /// overrides the user-set `limit` to 2 so it can distinguish single-row
 /// success from multiple-row failure) before or after calling this builder.
-pub(crate) fn build_select<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumulator {
     let mut acc = SqlAccumulator::new("");
+    // Emit the canonical `FromPgRow::COLUMN_LIST` rather than `*`. Ordinal
+    // decode (T3) relies on wire column order matching struct-field order;
+    // `SELECT *` leaks DDL column order into the decode path, which
+    // Phase 4 fixtures like `accounts` (user columns before framework
+    // columns) do not guarantee. Baking the canonical list pins the
+    // order regardless of migration shape.
     match &qs.distinct {
         DistinctMode::None => {
-            acc.push_sql("SELECT * FROM ");
+            acc.push_sql("SELECT ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(" FROM ");
         }
         DistinctMode::Plain => {
-            acc.push_sql("SELECT DISTINCT * FROM ");
+            acc.push_sql("SELECT DISTINCT ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(" FROM ");
         }
         DistinctMode::On(cols) => {
             acc.push_sql("SELECT DISTINCT ON (");
@@ -561,7 +572,9 @@ pub(crate) fn build_select<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
                 }
                 acc.push_sql(c);
             }
-            acc.push_sql(") * FROM ");
+            acc.push_sql(") ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(" FROM ");
         }
     }
     acc.push_sql(T::table_name());
@@ -770,15 +783,26 @@ pub(crate) fn build_select_with_annotations<T, F>(
     push_columns: F,
 ) -> SqlAccumulator
 where
-    T: Model,
+    T: Model + FromPgRow,
     F: FnOnce(&mut SqlAccumulator),
 {
     let mut acc = SqlAccumulator::new("");
-    // `SELECT t.*` prefix — the `t` alias is what the FROM clause
-    // below names the table as. Using `t.*` instead of enumerating
-    // every model column keeps the emitter simple; the columns land
-    // in the row in schema order and the decode path picks them up by index.
-    acc.push_sql("SELECT t.*");
+    // `SELECT t.<c1>, t.<c2>, ...` prefix — the `t` alias is what the
+    // FROM clause below names the table as. Explicit `t.<col>` for
+    // every canonical column (matching `FromPgRow::COLUMNS`) pins the
+    // wire order so the ordinal decode path can read them positionally
+    // regardless of DDL column order. Trailing aggregate columns pushed
+    // by `push_columns` land AFTER the canonical prefix and are
+    // ignored by `FromPgRow::from_pg_row` (whose column-count assert
+    // is `>= N_COLS`, not `==`).
+    acc.push_sql("SELECT ");
+    for (i, col) in <T as FromPgRow>::COLUMNS.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql("t.");
+        acc.push_sql(col);
+    }
     // Caller-provided per-aggregate comma-separated pushes. The
     // trait impl prepends `, ` before each `<agg> AS __djogi_agg_N`
     // so the SELECT list stays well-formed for arities 1..=4.
@@ -1050,6 +1074,20 @@ mod tests {
         }
     }
 
+    // T3: the SQL emitter bounds on `T: FromPgRow` so it can interpolate
+    // `COLUMN_LIST` into `SELECT` / `SELECT DISTINCT` shapes. The unit
+    // tests below exercise SQL-text shape only (no row decode), so we
+    // supply a stub impl with a single `id` column — enough for
+    // `COLUMN_LIST` to be non-empty without pretending the fake model
+    // has a full schema.
+    impl FromPgRow for Fake {
+        const COLUMNS: &'static [&'static str] = &["id"];
+        const COLUMN_LIST: &'static str = "id";
+        fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
+            unreachable!("SQL-text unit tests do not exercise row decode")
+        }
+    }
+
     // `SqlAccumulator::sql()` exposes the emitted SQL text — that is what we
     // assert on. Bind values don't appear in `.sql()`, they are tracked
     // separately and substituted as `$1`, `$2`, …; counting placeholders is
@@ -1060,7 +1098,7 @@ mod tests {
         let qs: QuerySet<Fake> = QuerySet::new();
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     #[test]
@@ -1096,7 +1134,7 @@ mod tests {
     fn select_distinct_plain_emits_distinct_keyword() {
         let qs: QuerySet<Fake> = QuerySet::new().distinct();
         let acc = build_select(&qs);
-        assert!(acc.sql().contains("SELECT DISTINCT * FROM fakes"));
+        assert!(acc.sql().contains("SELECT DISTINCT id FROM fakes"));
     }
 
     #[test]
@@ -1229,7 +1267,7 @@ mod tests {
         let acc = build_select(&qs);
         let sql = acc.sql();
         assert!(
-            sql.contains("SELECT DISTINCT ON (title, view_count) * FROM fakes"),
+            sql.contains("SELECT DISTINCT ON (title, view_count) id FROM fakes"),
             "got: {sql}"
         );
     }
@@ -1338,7 +1376,7 @@ mod tests {
         qs.condition = Condition::And(Vec::new());
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     #[test]
@@ -1350,7 +1388,7 @@ mod tests {
         qs.condition = Condition::And(vec![Condition::True, Condition::And(Vec::new())]);
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     #[test]
@@ -1361,7 +1399,7 @@ mod tests {
         qs.condition = Condition::Not(Box::new(Condition::Or(Vec::new())));
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     // ── Task 9: UPDATE / DELETE emitter ───────────────────────────────

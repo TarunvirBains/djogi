@@ -231,7 +231,7 @@ pub trait FromJoinedRow: Sized {
     ///
     /// An empty prefix (`""`) decodes the parent side of a
     /// `select_related` join using bare column names (same columns
-    /// `__from_pg_row` would read). A non-empty prefix of the form
+    /// `FromPgRow::from_pg_row` would read). A non-empty prefix of the form
     /// `"rel_{source_column}."` matches the aliased columns the
     /// select_related SQL emitter produces for the child side.
     fn from_prefixed_row(row: &PgRow, prefix: &str) -> Result<Self, tokio_postgres::Error>;

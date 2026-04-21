@@ -72,26 +72,34 @@ async fn setup_posts(pool: &PgPool) {
 }
 
 // ---------------------------------------------------------------------------
-// FromRow test (Task 5)
+// FromPgRow test (T3)
 // ---------------------------------------------------------------------------
+//
+// Phase 5-Zero T3 replaced the macro-emitted `sqlx::FromRow` impl with
+// `FromPgRow` (ordinal decode + debug-build column-name guard). This
+// test round-trips a row through `Post::create` so it exercises the
+// full path (INSERT + `RETURNING <COLUMN_LIST>` + positional decode)
+// that replaces the old `sqlx::query_as::<_, Post>` shape.
 
 #[sqlx::test]
-async fn from_row_deserializes_correctly(pool: PgPool) {
+async fn from_pg_row_deserializes_correctly(pool: PgPool) {
+    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
+        .await
+        .unwrap();
     setup_posts(&pool).await;
 
-    // Insert a row manually, then fetch it — tests FromRow in isolation
-    let row = sqlx::query_as::<_, Post>(
-        "INSERT INTO posts (title, body, published, view_count)
-         VALUES ($1, $2, $3, $4)
-         RETURNING *",
+    let row = Post::create(
+        &mut ctx,
+        Post {
+            title: "Hello World".into(),
+            body: "First post body".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
     )
-    .bind("Hello World")
-    .bind("First post body")
-    .bind(false)
-    .bind(0i32)
-    .fetch_one(&pool)
     .await
-    .expect("INSERT + FromRow should succeed");
+    .expect("create should succeed via FromPgRow decode");
 
     assert_eq!(row.title, "Hello World");
     assert_eq!(row.body, "First post body");

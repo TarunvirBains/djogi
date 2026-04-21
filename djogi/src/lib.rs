@@ -93,13 +93,14 @@ pub mod __private {
     pub mod pg {
         pub use crate::pg::accumulator::SqlAccumulator;
         pub use crate::pg::connection::PgConnection;
-        /// T2 bridge trait — emitted by `#[model]` alongside sqlx `FromRow`.
-        /// T3 replaces this with the public `FromPgRow` trait.
-        pub use crate::pg::decode::FromPgRowBridge;
+        /// Canonical row-decode trait (T3). Emitted by `#[model]` with
+        /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
+        /// `from_pg_row` body guarded by per-column `debug_assert!`s.
+        pub use crate::pg::decode::FromPgRow;
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
         pub use ::tokio_postgres::Statement;
-        // T3 will add: pub use crate::pg::decode::{try_get_scalar, try_get_tuple};
+        // T4 will add: pub use crate::pg::decode::{try_get_scalar, try_get_tuple};
     }
 
     /// Reflexive type-equality witness. Implemented for every `T` as
@@ -119,6 +120,7 @@ pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
+pub use pg::decode::FromPgRow;
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
 // *runtime helper* it calls (`::djogi::testing::setup_test_db`) is gated on
@@ -146,6 +148,7 @@ pub mod prelude {
     pub use crate::error::DjogiError;
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
     pub use crate::model::Model;
+    pub use crate::pg::decode::FromPgRow;
     pub use crate::projection::ProjectionError;
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,

@@ -1,52 +1,109 @@
-//! Crate-private row-decode bridge for T2.
+//! Public row-decode trait for the tokio-postgres runtime.
 //!
 //! # What
 //!
-//! [`FromPgRowBridge`] is a crate-private trait emitted by the `#[model]` macro
-//! (via `djogi-macros/src/model/from_row.rs`) alongside the existing sqlx
-//! `FromRow` impl. It provides a single method `__from_pg_row` that decodes a
-//! `tokio_postgres::Row` into the implementing type by name-based column lookup.
+//! [`FromPgRow`] is the canonical row-decode trait emitted by
+//! `#[model]` (see `djogi-macros/src/model/from_row.rs`). Every model
+//! gets:
 //!
-//! # T2 bridge purpose
+//! - [`FromPgRow::COLUMNS`] — a `&'static [&'static str]` listing the
+//!   column names the macro baked in, in canonical SELECT order
+//!   (framework fields first: `id`, `created_at`, `updated_at`, then
+//!   user fields in declaration order).
+//! - [`FromPgRow::COLUMN_LIST`] — the same list joined with `", "`,
+//!   ready to interpolate into `SELECT {COLUMN_LIST} FROM t` and
+//!   `RETURNING {COLUMN_LIST}` SQL text.
+//! - [`FromPgRow::from_pg_row`] — positional decode via
+//!   `row.try_get(0)`, `row.try_get(1)`, … matching the `COLUMNS`
+//!   order.
 //!
-//! The T2 terminals (`query/terminal.rs`, `relation/prefetch.rs`) need to decode
-//! `tokio_postgres::Row` into model types `T`, but they cannot use sqlx's
-//! `FromRow` trait directly (sqlx rows and tokio-postgres rows are unrelated
-//! types). Rather than introducing a full `FromPgRow` public trait (T3's job),
-//! T2 introduces this crate-private bridge trait that the macro emits alongside
-//! the existing sqlx impl.
+//! # Why ordinal, not name-based
 //!
-//! Generic code that needs to decode `T` from a `tokio_postgres::Row` bounds on
-//! `T: FromPgRowBridge`. The macro emits the implementation using ordinal column
-//! access matching the struct field order from `build_select`.
+//! Ordinal decode skips the per-call name-to-index hash table
+//! `tokio_postgres::Row::try_get::<_, &str>(col)` walks on every
+//! field. For a row with N columns, ordinal decode is one index read
+//! per column; name-based is N string comparisons per column (quadratic
+//! in N). The CRUD / QuerySet terminals emit `SELECT {COLUMN_LIST}`
+//! (baked at macro time) so the wire column order is always the
+//! struct-field order, and positional decode is sound.
 //!
-//! # T3 migration
+//! # Drift safeguard — debug-build name guard
 //!
-//! T3 replaces this module with the public `FromPgRow` trait, removes the sqlx
-//! `FromRow` emission, and converts all bounded sites from `FromPgRowBridge` to
-//! `FromPgRow`. At that point this module is deleted.
+//! The macro emits `debug_assert_eq!(row.columns()[i].name(),
+//! Self::COLUMNS[i])` per column. Column-order drift (caller sends a
+//! SELECT that doesn't match `COLUMN_LIST`; a future refactor
+//! reshapes the builder; a test fixture hand-rolls the wrong SELECT)
+//! panics loudly under `cargo test`. Release builds drop the assert —
+//! ordinal decode stays a single `try_get(i)` call with no per-row
+//! overhead.
+//!
+//! Joined-row decode uses a different trait ([`FromJoinedRow`], T4)
+//! because `select_related` adds aliased child columns whose
+//! ordinal positions depend on the runtime prefetch graph, not the
+//! canonical struct shape.
+//!
+//! [`FromJoinedRow`]: crate::relation::joined_row::FromJoinedRow
 
-/// Crate-private row-decode bridge trait.
+/// Canonical row-decode trait for `#[model]`-annotated structs.
 ///
-/// Implemented by `#[model]`-annotated structs (via macro emission in
-/// `from_row.rs`) for the T2 tokio-postgres decode path. Each field is decoded
-/// from the `tokio_postgres::Row` by name, in struct-field order.
+/// Do not implement this manually — `#[model]` emits the impl. Users
+/// can still bound generic code on `T: FromPgRow` (e.g. to accept any
+/// model in a helper function), which is the intended public shape.
 ///
-/// Do not implement this trait manually — only the `#[model]` macro emits it.
-/// It will be replaced by the public `FromPgRow` trait in T3.
-pub trait FromPgRowBridge: Sized {
-    /// Decode `Self` from a `tokio_postgres::Row` by column name.
+/// # Contract
+///
+/// Implementors must guarantee that:
+/// 1. [`COLUMNS`](Self::COLUMNS) lists fields in the exact order
+///    [`from_pg_row`](Self::from_pg_row) reads them from the row
+///    (ordinal position matches slice index).
+/// 2. [`COLUMN_LIST`](Self::COLUMN_LIST) equals
+///    [`COLUMNS`](Self::COLUMNS)`.join(", ")` — callers interpolate
+///    it into SQL text expecting exactly that shape.
+/// 3. [`from_pg_row`](Self::from_pg_row) returns
+///    [`Err(DjogiError::Decode)`](crate::DjogiError::Decode) on any
+///    column-level type-conversion failure, not panic. (The
+///    debug_assert on column-name drift is a separate invariant
+///    violation and is allowed to panic.)
+pub trait FromPgRow: Sized {
+    /// Column names in the canonical SELECT order (framework fields
+    /// first, then user fields).
     ///
-    /// Returns `Err(DjogiError::Decode(...))` if any column is missing or its
-    /// wire type cannot be converted to the expected Rust type. This preserves
-    /// the Phase 4 contract that every CRUD failure flows through
-    /// [`DjogiError`](crate::DjogiError) rather than aborting the task via
-    /// `panic!`.
+    /// `COLUMNS[i]` is the name of the column decoded by
+    /// `from_pg_row` at ordinal position `i`. The macro uses this
+    /// slice both to emit the per-column `debug_assert_eq!` name
+    /// guard and to build [`COLUMN_LIST`](Self::COLUMN_LIST) at
+    /// compile time.
+    const COLUMNS: &'static [&'static str];
+
+    /// Canonical column list for SQL emission — the same names as
+    /// [`COLUMNS`](Self::COLUMNS), joined with `", "`. Baked at macro
+    /// time so callers never need to allocate.
     ///
-    /// The column names match the struct field names by convention (snake_case),
-    /// which is the same convention `build_select` / `build_select_joined` uses
-    /// in the SQL emitter. An empty-prefix call decodes the bare unaliased
-    /// columns; `select_related` prefixed decoding is handled by
-    /// [`crate::relation::joined_row::FromJoinedRow`] instead.
-    fn __from_pg_row(row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError>;
+    /// Interpolate directly into SQL text:
+    ///
+    /// ```ignore
+    /// let sql = format!("SELECT {} FROM {} WHERE id = $1",
+    ///                   <User as FromPgRow>::COLUMN_LIST,
+    ///                   User::table_name());
+    /// ```
+    const COLUMN_LIST: &'static str;
+
+    /// Decode `Self` from a `tokio_postgres::Row` positionally.
+    ///
+    /// Column ordinals are fixed at macro time and match
+    /// [`COLUMNS`](Self::COLUMNS) index-for-index. Callers must
+    /// supply a row produced by a SELECT whose projection matches
+    /// [`COLUMN_LIST`](Self::COLUMN_LIST) — the CRUD and QuerySet
+    /// terminals shipped by Djogi guarantee this; hand-rolled SELECTs
+    /// must either interpolate `COLUMN_LIST` or supply columns in the
+    /// same order.
+    ///
+    /// Returns [`DjogiError::Decode`](crate::DjogiError::Decode) with
+    /// the offending column name on wire-type mismatch.
+    ///
+    /// In debug builds, a `debug_assert_eq!` on each
+    /// `row.columns()[i].name()` panics if the wire shape drifts
+    /// from [`COLUMNS`](Self::COLUMNS). Release builds skip the
+    /// guard.
+    fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError>;
 }

@@ -556,7 +556,7 @@ impl<T: Model> QuerySet<T> {
             + Send
             + Sync
             + 'static,
-        Target: Model + crate::pg::decode::FromPgRowBridge + Clone + Send + Unpin + 'static,
+        Target: Model + crate::pg::decode::FromPgRow + Clone + Send + Unpin + 'static,
     {
         // Idempotent registration: if a prefetch for this source column
         // is already registered, don't append a duplicate. Duplicate
