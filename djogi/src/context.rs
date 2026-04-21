@@ -521,7 +521,10 @@ impl DjogiContext {
         sql: &str,
         binds: &[&(dyn ToSql + Sync)],
     ) -> Result<T, DjogiError> {
-        let row = self.query_one(sql, binds).await?;
+        let row = self
+            .query_opt(sql, binds)
+            .await?
+            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
         T::from_pg_row(&row)
     }
 
@@ -542,7 +545,10 @@ impl DjogiContext {
     where
         T: for<'a> FromSql<'a> + Send + 'static,
     {
-        let row = self.query_one(sql, binds).await?;
+        let row = self
+            .query_opt(sql, binds)
+            .await?
+            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
         try_get_scalar(&row, 0)
     }
 
