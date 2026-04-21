@@ -599,9 +599,13 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 ### 9a: Audit Trail
 
 - [ ] Three-database architecture: app, crud_logs, event_logs (pools already defined in Phase 0/1)
+- [ ] Profile-first logging config: `light`, `balanced`, `strict_audit`; advanced per-sink overrides only as escape hatches
 - [ ] Per-model `#[model(crud_log = true)]` — auto-provision mirror `_logs` table
 - [ ] JSON-aware diffing with dot-notation paths through `Jsonb<T>` nesting
 - [ ] Actor attribution via `save_with_actor()` or request-context hook
+- [ ] Make CRUD delivery semantics explicit: best-effort, durable bounded retry, or fail-closed depending on profile
+- [ ] Surface sink health and degraded mode clearly in metrics / CLI / tracing output
+- [ ] Document and enforce that strict audit means rejecting app writes when required CRUD audit cannot be satisfied, not cross-database atomic commit
 
 ### 9b: Tracing Integration
 
@@ -636,6 +640,13 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Event logging via `tracing` subscriber layer writing to the event log database
 - [ ] Schema for events: timestamp, level, target, fields, parent span id
 - [ ] Retention policy opt-in (delete events older than N days)
+- [ ] Keep event logging best-effort in built-in profiles; expose dropped-event counters and sink-failure warnings
+
+### 9g: Log-Database Operations
+
+- [ ] Unified operator workflow for app / CRUD-log / event-log migrations with explicit per-database labeling
+- [ ] `db reset` remains app-first; touching logging databases requires explicit flags
+- [ ] Startup checks honor profile semantics: `light` tolerates missing sinks, `balanced` starts degraded with warnings, `strict_audit` refuses startup when required CRUD audit sink is unavailable
 
 **Deliverable:** Audit trail + tracing spans + slow-query hooks + metrics + admin dashboards + event logging.
 

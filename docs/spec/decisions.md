@@ -34,9 +34,13 @@
 | Shell headless execution | `cargo djogi shell --run scripts/name.rhai` — runs script without entering REPL |
 | Query engine | Djogi-owned `ConditionBuilder` wrapping `sqlx::QueryBuilder` — no third-party query builder |
 | Raw SQLx escape hatch | Always available — `sqlx::QueryBuilder` directly accessible |
-| CRUD log architecture | Separate `myapp_crud_logs` database; per-model mirror tables; async writes |
+| CRUD log architecture | Separate `myapp_crud_logs` database; per-model mirror tables; delivery policy derived from a logging profile (`light`, `balanced`, `strict_audit`) with advanced overrides only as escape hatches |
 | Event log architecture | Separate `myapp_event_logs` database; `tracing`-powered; severity-routed |
 | Log database lifecycle | `db reset` wipes app DB only; `--wipe-crud-logs` / `--wipe-all-logs` for log DBs |
+| Logging UX | Profile-first configuration, not a matrix of operational knobs; maintainers should choose a profile and stop |
+| Cross-database logging semantics | Djogi does not promise distributed atomic commit across app, CRUD-log, and event-log databases; stricter audit behavior is enforced by policy, not by pretending the databases commit atomically together |
+| CRUD log failure policy | `light` = best-effort, `balanced` = durable bounded retry with health warnings, `strict_audit` = fail-closed for required audit writes |
+| Event log failure policy | Best-effort by default under all built-in profiles; outages surface as warnings and metrics, not retroactive app-write failure |
 | Admin panel | Optional HTMX + Askama; `admin` feature flag; mounted at `/_admin/` |
 | Admin form generation | Auto-generated from `ModelDescriptor` — zero per-model UI code required |
 | Admin validation | Auto-generated from field annotations + optional `impl AdminClean` hook |

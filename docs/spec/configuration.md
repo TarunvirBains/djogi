@@ -25,9 +25,19 @@ Apps are registered at link time via `inventory`. At startup Djogi collects all 
 ```toml
 [database]
 url = "postgres://localhost/myapp"
+crud_log_url = "postgres://localhost/myapp_crud_logs"
+event_log_url = "postgres://localhost/myapp_event_logs"
 max_connections = 10
 dev_mode = false
 # NODE_ID is set as an environment variable, not in Djogi.toml — it is infrastructure config
+
+[logging]
+profile = "balanced"      # one of: light, balanced, strict_audit
+
+# Optional escape hatches for teams with unusual requirements.
+# Normal adopters should pick a profile and stop there.
+crud_delivery = "derive"  # derive | best_effort | durable | fail_closed
+event_delivery = "derive" # derive | off | best_effort | durable
 
 [server]
 host = "0.0.0.0"
@@ -47,7 +57,15 @@ error_log_retention = "1y"                    # auto-purge logs older than this 
 [features]
 dirty_tracking = false
 ```
-`DATABASE_URL` env var always overrides `[database].url`. Secrets live in env vars, never in `Djogi.toml`.
+`DATABASE_URL` env var always overrides `[database].url`. `CRUD_LOG_URL` and `EVENT_LOG_URL` likewise override their matching `[database]` entries when set. Secrets live in env vars, never in `Djogi.toml`.
+
+Logging should be easy to adopt. The intended maintainer workflow is to choose a `logging.profile` and use the defaults:
+
+- `light` — app database required; CRUD and event logs are best-effort and may be dropped during sink outages
+- `balanced` — app database required; CRUD logs use durable bounded retry with health warnings; event logs remain best-effort
+- `strict_audit` — app database required; CRUD logs are fail-closed; event logs remain best-effort unless explicitly overridden
+
+The explicit `crud_delivery` and `event_delivery` keys are escape hatches, not the primary UX. Djogi should document profile-based setup first and treat individual overrides as advanced operations work.
 ---
 
 ## 14. CLI — `cargo djogi`
