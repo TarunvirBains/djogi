@@ -1,4 +1,4 @@
-//! `JoinedRow<T>` — the post-`select_related` row wrapper + its decoder trait.
+//! `JoinedRow<T>` — the post-`select_related` row wrapper.
 //!
 //! # What
 //!
@@ -23,7 +23,7 @@
 //! (`fetch_all_prefetched` / `fetch_all_joined`) with distinct generic
 //! bounds — prefetch needs `T::Pk: Encode + Type + ...` for the
 //! follow-up `IN (...)` bind, whereas select_related needs `T:
-//! FromJoinedRow` for single-row decoding. Giving each path its own
+//! FromJoinedPgRow` for single-row decoding. Giving each path its own
 //! wrapper type keeps those bounds from leaking into the other
 //! terminal's signature and makes the one-query-vs-two-query split
 //! legible in the types: "I have a `JoinedRow<Vehicle>`" tells the
@@ -55,23 +55,6 @@
 //! distinguishes LEFT JOIN misses (all child columns NULL) from live
 //! child rows, matching the probe Task 4's prefetch loader established.
 //!
-//! # The `FromJoinedRow` trait — decoder contract
-//!
-//! Every `#[model]`-emitted struct implements
-//! [`FromJoinedRow`]. The implementation iterates the struct's fields
-//! and calls `row.try_get::<Type, _>(&format!("{prefix}{column}"))` for
-//! each, exactly mirroring the unprefixed lookups [`FromRow`] already
-//! performs. Parent decoding passes an empty prefix (`""`); child
-//! decoding passes `"rel_{source_column}."`. Both cases share one
-//! method, so the macro only emits one extra impl per model.
-//!
-//! `FromJoinedRow` is macro-emitted rather than blanket-implemented via
-//! `FromRow` because sqlx's `FromRow` reads columns by their bare name
-//! — there is no "prefix" knob to thread through, and intercepting
-//! every lookup with a newtype wrapper around `PgRow` would be both
-//! slower (indirection per column) and more invasive than the
-//! sibling impl the macro already emits for `FromRow`.
-//!
 //! # Where
 //!
 //! Consumed by [`crate::relation::select_related::apply_select_related`]
@@ -79,11 +62,10 @@
 //! The post-fetch wrapper is returned as-is to user code — there is no
 //! terminal-free "join this and forget about prefetch" access path in
 //! Phase 3; callers consume the typed handle or reach for the raw
-//! `sqlx::QueryBuilder` escape hatch.
+//! `ctx.raw_execute` / `ctx.raw_scalar` escape hatch.
 
 use crate::model::Model;
 use crate::relation::path::RelationPath;
-use sqlx::postgres::PgRow;
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -116,7 +98,7 @@ use std::collections::HashMap;
 /// prefetch wrapper's contract.
 pub struct JoinedRow<T: Model> {
     /// The parent-query row, decoded via
-    /// [`FromJoinedRow::from_prefixed_row`] with an empty prefix.
+    /// [`FromJoinedPgRow::from_joined_pg_row`] with an empty prefix.
     /// Relation columns on this row remain in their raw (unresolved)
     /// shape — the `ForeignKey<T>` wrapper is just a PK newtype; the
     /// joined child lives in [`JoinedRow::relations`], not here.
@@ -185,49 +167,6 @@ impl<T: Model> JoinedRow<T> {
     ) -> &mut HashMap<&'static str, Box<dyn Any + Send + Sync>> {
         &mut self.relations
     }
-}
-
-/// Prefix-aware row decoder emitted per model by `#[model]`.
-///
-/// # Contract
-///
-/// For every field `name: Ty` on the struct (including the framework-
-/// injected `id` / `created_at` / `updated_at`), the generated impl
-/// decodes `row.try_get::<Ty, _>(&format!("{prefix}{name}"))`. Parent
-/// decoding passes `""`; child decoding passes `"rel_{source_column}."`
-/// — matching the alias shape [`crate::relation::select_related`]
-/// emits in its `SELECT` list.
-///
-/// # Why a bespoke trait (not a `FromRow` adapter)
-///
-/// sqlx's [`FromRow`](sqlx::FromRow) looks columns up by bare name —
-/// there is no hook to rename them at decode time. A wrapper newtype
-/// around `PgRow` that intercepted every lookup would work but adds an
-/// extra indirection per column; the proc macro already generates
-/// field-name-aware decode blocks for `FromRow`, so emitting a sibling
-/// prefix-aware version is both simpler and closer to the existing
-/// implementation shape.
-///
-/// # Phase 3 scope
-///
-/// The trait signature is deliberately minimal — a single `prefix`
-/// parameter, one `try_get` per field, no hook for per-field codecs or
-/// computed columns. Future amendments that need joined decoding for
-/// expression columns (Phase 4) or projection aliases (Phase 4.5) can
-/// extend the trait with default-methods without breaking existing
-/// impls.
-pub trait FromJoinedRow: Sized {
-    /// Decode `Self` from `row`, reading each field under
-    /// `"{prefix}{field_name}"` via
-    /// [`try_get`](sqlx::Row::try_get).
-    ///
-    /// An empty prefix (`""`) degenerates to the same column lookups
-    /// [`FromRow`](sqlx::FromRow) would perform — the parent side of
-    /// a `select_related` join uses this spelling. A non-empty prefix
-    /// of the form `"rel_{source_column}."` matches the aliased
-    /// columns the select_related SQL emitter produces for the
-    /// child side.
-    fn from_prefixed_row(row: &PgRow, prefix: &str) -> Result<Self, sqlx::Error>;
 }
 
 #[cfg(test)]

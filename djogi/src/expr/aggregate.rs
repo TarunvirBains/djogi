@@ -24,8 +24,8 @@
 //!
 //! The scalar terminal ([`crate::query::aggregate::AggregateQuery::fetch_one`])
 //! and the per-column decode on [`crate::query::annotate::AnnotatedQuerySet`]
-//! both drive `sqlx::query_scalar::<_, Out>()` / `row.try_get::<Out, _>(..)`
-//! — sqlx needs to know the Rust type up front. `Out` is that pin: it
+//! both drive `tokio_postgres::Client::query_one` / `row.get::<_, Out>(..)`
+//! — the decoder needs to know the Rust type up front. `Out` is that pin: it
 //! captures whatever the aggregate returns so the SELECT-list builder
 //! never needs runtime type reflection. No `AggregateExpr<Any>` — the
 //! compile-time bound is the whole point.
@@ -35,10 +35,10 @@
 //! Rust's `Ord` is the natural "orderable" trait, but `f32` / `f64` do
 //! not implement it (NaN makes total order impossible in Rust). Postgres
 //! happily runs `MIN`/`MAX` on both integer and floating-point columns,
-//! so the typed surface gates `min()` / `max()` on sqlx's decode / type
+//! so the typed surface gates `min()` / `max()` on `postgres_types::FromSql`
 //! bounds rather than Rust `Ord`. Any column whose value type decodes
-//! from a Postgres scalar (`V: sqlx::Type<Postgres> + for<'r>
-//! sqlx::Decode<'r, Postgres>`) can be aggregated — that covers `i16`,
+//! from a Postgres scalar (`V: for<'r> postgres_types::FromSql<'r>`)
+//! can be aggregated — that covers `i16`,
 //! `i32`, `i64`, `f32`, `f64`, `Decimal`, `time::OffsetDateTime`,
 //! `time::Date`, `String`, and the HeeRanjID PK types.
 //!
@@ -218,14 +218,14 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `Out = V` for ergonomics (most call sites sum into the same
     /// scalar type they declared on the column), and the emitter
     /// narrows the result back with an explicit `::<V::SUM_CAST>`
-    /// cast so sqlx can decode directly into `V`.
+    /// cast so the decoder can return `V` directly.
     ///
     /// This means a sum that overflows the original column's range
     /// raises a `numeric_value_out_of_range` error at query time —
     /// Postgres refuses to truncate on the narrowing cast. That is
     /// deliberate: silent truncation would be worse than an error.
     /// Users aggregating values that exceed `V::MAX` should declare a
-    /// larger column type or drop to raw sqlx for a `NUMERIC` /
+    /// larger column type or use `ctx.raw_scalar` for a `NUMERIC` /
     /// `Decimal` decode; Phase 5's `Decimal` `Numeric` impl is the
     /// framework-supported path for precision-critical sums.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
@@ -249,9 +249,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// Averages non-null values. Postgres returns `NUMERIC` for
     /// integer inputs and `DOUBLE PRECISION` for floating-point
     /// inputs; the typed surface pins `Out = f64` for both by
-    /// emitting an explicit `::DOUBLE PRECISION` cast so sqlx decodes
-    /// uniformly into `f64`. Callers who need `Decimal`-precision
-    /// averages drop to raw sqlx until Phase 5's `Decimal` support
+    /// emitting an explicit `::DOUBLE PRECISION` cast so the decoder
+    /// returns uniformly `f64`. Callers who need `Decimal`-precision
+    /// averages use `ctx.raw_scalar` until Phase 5's `Decimal` support
     /// lands.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn avg(self) -> AggregateExpr<f64> {
@@ -332,7 +332,7 @@ mod tests {
     use super::*;
     use crate::descriptor::ModelDescriptor;
     use crate::expr::sql::emit_expr;
-    use sqlx::{Postgres, QueryBuilder};
+    use crate::pg::accumulator::SqlAccumulator;
 
     // Inert local model — mirrors the `Fake` stub used across the
     // expr/query unit tests. Only `table_name` matters for these
@@ -398,7 +398,7 @@ mod tests {
         // cover the wrapped forms.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.sum();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "SUM(amount)", "got: {sql}");
@@ -408,7 +408,7 @@ mod tests {
     fn emit_count_field() {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "COUNT(amount)", "got: {sql}");
@@ -418,7 +418,7 @@ mod tests {
     fn emit_count_star() {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.count_star();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "COUNT(*)", "got: {sql}");
@@ -430,7 +430,7 @@ mod tests {
         // Terminal layer wraps with the narrowing cast.
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = f.avg();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "AVG(amount)", "got: {sql}");
@@ -439,12 +439,12 @@ mod tests {
     #[test]
     fn emit_min_max_field() {
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &f.min().node);
         assert_eq!(qb.sql().trim(), "MIN(amount)");
 
         let f: FieldRef<Txn, i64> = FieldRef::new("amount");
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &f.max().node);
         assert_eq!(qb.sql().trim(), "MAX(amount)");
     }
@@ -458,7 +458,7 @@ mod tests {
         let g: FieldRef<Txn, i64> = FieldRef::new("amount");
         let cond = f.as_expr().lt(Expr::literal(0i64));
         let agg = g.count().filter(cond);
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert!(
@@ -477,7 +477,7 @@ mod tests {
         let b = g.as_expr().gt(Expr::literal(100i64));
         let h: FieldRef<Txn, i64> = FieldRef::new("amount");
         let agg = h.count().filter(a).filter(b);
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         // Second filter (gt) should appear; first (lt) should not.

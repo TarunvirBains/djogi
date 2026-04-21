@@ -163,8 +163,8 @@ mod tests {
     use crate::Expr;
     use crate::descriptor::ModelDescriptor;
     use crate::expr::sql::emit_expr;
+    use crate::pg::accumulator::SqlAccumulator;
     use crate::query::field::FieldRef;
-    use sqlx::{Postgres, QueryBuilder};
 
     // Inert local model — mirrors the stub pattern used across the
     // expr / query unit tests. Only `table_name` matters; no CRUD
@@ -230,7 +230,7 @@ mod tests {
             Expr::literal("overdrawn".to_string()),
         )
         .otherwise(Expr::literal("ok".to_string()));
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         assert_eq!(
@@ -256,7 +256,7 @@ mod tests {
             Expr::literal("zero".to_string()),
         )
         .otherwise(Expr::literal("ok".to_string()));
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         assert_eq!(

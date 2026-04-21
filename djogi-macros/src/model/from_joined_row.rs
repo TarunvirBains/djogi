@@ -1,30 +1,25 @@
-//! Generates `impl ::djogi::relation::FromJoinedRow for T`.
+//! Generates `impl ::djogi::pg::decode::FromJoinedPgRow for T`.
 //!
 //! # What
 //!
 //! Emits the prefix-aware row decoder for every `#[model]`-annotated struct.
-//! The generated `from_prefixed_row(row, prefix)` reads each field under
+//! The generated `from_joined_pg_row(row, prefix)` reads each field under
 //! `"{prefix}{column_name}"` via `row.try_get(...)`, letting the
 //! `select_related` emitter decode both the parent (empty prefix) and a
 //! child (e.g. `"rel_owner_id."`) from the same joined row without
 //! column-name collisions.
 //!
-//! # Why a sibling impl to `FromRow`
+//! # Why a sibling impl to `FromPgRow`
 //!
-//! sqlx's [`FromRow`](sqlx::FromRow) looks columns up by bare name — there is
-//! no "prefix" knob to thread through, and intercepting every lookup with a
-//! newtype wrapper around `PgRow` would be both slower (indirection per
-//! column) and more invasive than the sibling impl this module emits. The
-//! implementation shape is otherwise identical to `from_row::expand`'s
-//! emission: one `row.try_get` per field, column name == field name by
-//! convention (snake_case).
+//! [`FromPgRow`](::djogi::pg::decode::FromPgRow) decodes by canonical
+//! projection order and therefore has no prefix parameter. Joined decode
+//! needs a caller-supplied alias stem, so the macro emits a sibling impl
+//! with one `row.try_get` per field under `"{prefix}{column_name}"`.
 //!
-//! An empty prefix (`""`) degenerates to the same lookups `FromRow` would
-//! perform — passing `""` to `from_prefixed_row` is operationally equivalent
-//! to calling `T::from_row(&row)`. The macro intentionally does NOT blanket-
-//! impl `FromJoinedRow` via `FromRow` because the two live on different
-//! tree-shaking paths: a user who never touches `select_related` never pays
-//! the extra monomorphisation of `from_prefixed_row`, and vice versa.
+//! An empty prefix (`""`) degenerates to the same column names the model
+//! declares directly. The macro intentionally does not derive joined decode
+//! through `FromPgRow`: one path is positional, the other is name-based and
+//! prefix-aware.
 //!
 //! # How
 //!
@@ -44,7 +39,7 @@ use syn::ItemStruct;
 
 use super::attrs::{FieldAttrs, ModelAttrs};
 
-/// Generate the `FromJoinedRow` impl for `struct_item`.
+/// Generate the `FromJoinedPgRow` impl for `struct_item`.
 ///
 /// `model_attrs` and `field_attrs` are accepted for API consistency with the
 /// sibling `from_row::expand` and for future use (e.g. `column` overrides).
@@ -58,7 +53,9 @@ pub fn expand(
 
     // One prefix-aware `try_get` per field. `format!` happens once per call —
     // the overhead is a small String allocation per field per decoded row,
-    // swamped by the sqlx decode cost itself.
+    // swamped by the DB decode cost itself. The tokio-postgres `try_get`
+    // signature is `try_get<'a, I, T>(&'a self, idx: I)` — we fix `I = &str`
+    // (the column name) and let Rust infer `T` from the field's declared type.
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -69,19 +66,18 @@ pub fn expand(
             let raw_name = fname.to_string();
             let col_name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
             quote! {
-                #fname: row.try_get::<_, &str>(&::std::format!("{}{}", prefix, #col_name))?
+                #fname: row.try_get::<_, _>(&::std::format!("{}{}", prefix, #col_name) as &str)?
             }
         })
         .collect();
 
     quote! {
-        impl #impl_generics ::djogi::relation::FromJoinedRow for #name #ty_generics #where_clause {
-            fn from_prefixed_row(
-                row: &::djogi::__private::sqlx::postgres::PgRow,
+        impl #impl_generics ::djogi::pg::decode::FromJoinedPgRow for #name #ty_generics #where_clause {
+            fn from_joined_pg_row(
+                row: &::djogi::__private::tokio_postgres::Row,
                 prefix: &str,
-            ) -> ::djogi::__private::sqlx::Result<Self> {
-                use ::djogi::__private::sqlx::Row;
-                Ok(Self {
+            ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+                ::std::result::Result::Ok(Self {
                     #(#field_assignments,)*
                 })
             }

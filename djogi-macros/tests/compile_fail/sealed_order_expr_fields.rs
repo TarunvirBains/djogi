@@ -4,7 +4,7 @@
 // which let any downstream crate build an ordering expression whose
 // column string carried SQL-injection payloads or malformed
 // identifiers. That string flowed straight into
-// `sqlx::QueryBuilder::push` inside `query::sql`'s `push_tail` and
+// `SqlAccumulator::push_sql` inside `query::sql`'s `push_tail` and
 // `build_count` emitters.
 //
 // This test pins the seal at the type system: downstream code must not

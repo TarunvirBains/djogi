@@ -46,7 +46,7 @@
 //! IR tree into the same [`UpdateAssignment`] shape the literal `.set(v)`
 //! produces. For richer SQL the emitter cannot express (`NOW() - interval
 //! '1 day'`, `CASE WHEN ...` before Task 5 lands), the raw
-//! `sqlx::QueryBuilder` escape hatch in [`crate::raw`] is still there.
+//! `SqlAccumulator` escape hatch in [`crate::raw`] is still there.
 //!
 //! # `updated_at = now()` stamping
 //!
@@ -71,12 +71,13 @@
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
-use crate::context::{ContextInner, DjogiContext};
+use crate::context::DjogiContext;
 use crate::model::Model;
 use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_delete, build_update};
+use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -300,10 +301,10 @@ impl<T: Model> UpdateStmt<T> {
     /// [`QuerySet::count`] — the same call site works against a pool-
     /// backed context or a transaction-backed one post-Phase-4 retrofit.
     ///
-    /// Returns `u64` — the raw row-count sqlx surfaces from
-    /// [`sqlx::postgres::PgQueryResult::rows_affected`]. Postgres' UPDATE
-    /// rowcount is non-negative by definition, so there is no sign
-    /// conversion at the call site.
+    /// Returns `u64` — the row-count from `tokio_postgres`'s
+    /// `CommandTag::rows_affected()`. Postgres' UPDATE rowcount is
+    /// non-negative by definition, so there is no sign conversion at
+    /// the call site.
     pub fn execute<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -324,15 +325,14 @@ impl<T: Model> UpdateStmt<T> {
             if self.qs.is_empty() || self.assignments.is_empty() {
                 return Ok(0);
             }
-            let mut qb = build_update(&self.qs, &self.assignments);
-            let q = qb.build();
-            let result = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.execute(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.execute(&mut **tx).await.map_err(DjogiError::from)?
-                }
-            };
-            Ok(result.rows_affected())
+            let acc = build_update(&self.qs, &self.assignments);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows_affected = ctx.execute(&sql, &params).await?;
+            Ok(rows_affected)
         }
     }
 }
@@ -347,11 +347,12 @@ impl<T: Model> QuerySet<T> {
     /// where `value: V: IntoFilterValue`. Expression-backed SET
     /// (`col = col + 1`, `col = NOW()`, `col = other_col`) lands in
     /// Phase 4 alongside the rest of the expression layer; until then,
-    /// `djogi::raw::execute` is the documented escape hatch.
+    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute)
+    /// is the documented escape hatch.
     ///
     /// The returned [`UpdateStmt`] is inert — the actual SQL runs when
     /// the caller invokes [`UpdateStmt::execute`] with a
-    /// `sqlx::Executor`. Splitting the builder from the terminal keeps
+    /// `&mut DjogiContext`. Splitting the builder from the terminal keeps
     /// the call-site shape symmetric with the read terminals
     /// (`fetch_all`, `count`, etc.) and lets callers log, inspect, or
     /// retry the pending statement without re-running the closure.
@@ -389,7 +390,8 @@ impl<T: Model> QuerySet<T> {
     /// clause (an unfiltered queryset) is still a real DELETE — it
     /// removes every row in the table. Callers who want "wipe this
     /// table" DDL-style reach for `TRUNCATE` via
-    /// [`crate::raw::execute`]; this method only runs `DELETE FROM`.
+    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute);
+    /// this method only runs `DELETE FROM`.
     ///
     /// ```ignore
     /// Post::objects()
@@ -409,15 +411,14 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(0);
             }
-            let mut qb = build_delete(&self);
-            let q = qb.build();
-            let result = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.execute(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.execute(&mut **tx).await.map_err(DjogiError::from)?
-                }
-            };
-            Ok(result.rows_affected())
+            let acc = build_delete(&self);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows_affected = ctx.execute(&sql, &params).await?;
+            Ok(rows_affected)
         }
     }
 }

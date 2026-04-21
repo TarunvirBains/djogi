@@ -42,6 +42,15 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 
     validate_through_model_shape(&struct_item, &model_attrs)?;
 
+    // Field names become unquoted SQL column names in the emitted
+    // `COLUMN_LIST` — reject any that would break `SELECT` /
+    // `RETURNING` text. Runs BEFORE `inject::expand` so the error span
+    // lands on the user-declared field, not on an injected one, and
+    // BEFORE any token emission so a malformed name produces one crisp
+    // diagnostic instead of a cascade of downstream failures. See
+    // `crate::ident` for the full rule set and rationale.
+    crate::ident::validate_field_column_names(&struct_item)?;
+
     // Strip `#[field(...)]` attributes from user fields. We already captured
     // their semantics into `field_attrs` above; leaving the raw attribute on
     // the struct surface would confuse rustc, which does not recognise
@@ -66,7 +75,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 2. FromRow impl — Task 5 wires this up.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 2b. FromJoinedRow impl — Phase 3 Task 5. Sibling to `from_row` that
+    // 2b. FromJoinedPgRow impl — Phase 3 Task 5. Sibling to `from_row` that
     //     accepts a `prefix` parameter; used by `QuerySet::select_related`
     //     to decode both parent (empty prefix) and child
     //     (`"rel_{source_column}."`) from a single joined row. Emitted

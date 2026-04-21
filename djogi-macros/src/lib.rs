@@ -14,9 +14,11 @@
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
+mod ident;
 mod many_to_many;
 mod model;
 mod reverse_relation;
+mod testing;
 
 use proc_macro::TokenStream;
 
@@ -154,4 +156,53 @@ pub fn reverse_one_to_one(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn many_to_many(input: TokenStream) -> TokenStream {
     many_to_many::expand(input.into()).into()
+}
+
+/// Per-test database lifecycle harness.
+///
+/// Transforms an `async fn my_test(ctx: DjogiContext)` into a
+/// `#[tokio::test]`-runnable wrapper that:
+///
+/// 1. Creates a fresh `djogi_test_<uuid>` Postgres database.
+/// 2. Installs the HeeRanjID schema and seeds the default node.
+/// 3. Sets `heer.node_id = '1'` at the database level so all connections
+///    inherit the node ID without per-connection setup.
+/// 4. Constructs a `DjogiContext` from a deadpool-postgres pool.
+/// 5. Passes the context to the test body.
+/// 6. Drops the database when the body returns — whether normally or via panic.
+///
+/// The runtime machinery uses `tokio_postgres` directly (no sqlx) and calls
+/// `heeranjid::postgres_schema::install_schema` and `seed_default_node` from
+/// heeranjid 0.2.1.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// use djogi::DjogiContext;
+///
+/// #[djogi_macros::djogi_test]
+/// async fn my_test(ctx: DjogiContext) {
+///     // ctx is a DjogiContext backed by a fresh, isolated per-test DB.
+///     // HeeRanjID is installed and the default node is seeded.
+///     // The database is dropped automatically when this function returns.
+/// }
+/// ```
+///
+/// # Attribute arguments
+///
+/// `#[djogi_test]` takes no arguments in v1. Future versions may accept
+/// options such as `migrations = "path/to/sql"` to apply fixtures before
+/// the test body runs.
+///
+/// # Requirements
+///
+/// - `DATABASE_URL` must be set to a Postgres connection URL pointing at a
+///   cluster where the test runner has `CREATE DATABASE` / `DROP DATABASE`
+///   privileges.
+/// - The annotated function must be `async` and have exactly one parameter
+///   of type `DjogiContext` (or any name — the type check happens at
+///   compile time of the test crate, not in the macro).
+#[proc_macro_attribute]
+pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
+    testing::expand(attr.into(), item.into()).into()
 }

@@ -21,13 +21,13 @@
 //!
 //! # Why aliased child columns (not `SELECT t.*`)
 //!
-//! sqlx's `FromRow` looks columns up by bare name — `try_get("id")`
+//! A prefix-aware decoder looks columns up by the exact alias name — `try_get("id")`
 //! finds the first column named `id`, which would be ambiguous the
 //! moment both parent and child tables contribute an `id`. Aliasing
 //! the child columns under `"rel_{source_column}.{col}"` — with a
 //! literal dot embedded in the alias — gives every column a unique
 //! name in the result set and lets the
-//! [`FromJoinedRow`](crate::relation::joined_row::FromJoinedRow)
+//! [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow)
 //! decoder use the `"{prefix}{column}"` shape without collision.
 //!
 //! The quoted-dot alias matches the table-qualified form Postgres would
@@ -52,9 +52,10 @@
 //! surface (Phase 4) rather than silently changing the default's
 //! semantics.
 //!
-//! # Phase 3 scope
+//! # T2 scope
 //!
-//! - Single-hop only — no chained `select_related(path_a.path_b)`.
+//! - Single-hop only — no chained `select_related(path_a.path_b)`. Multi-hop
+//!   decode lands in T4.
 //! - Multi-relation-per-queryset **is** supported (multiple
 //!   `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
 //!   each producing its own aliased `LEFT JOIN`).
@@ -65,23 +66,24 @@
 use crate::DjogiError;
 use crate::context::ContextInner;
 use crate::model::Model;
-use crate::relation::joined_row::{FromJoinedRow, JoinedRow};
-use sqlx::{Postgres, QueryBuilder, Row, ValueRef};
+use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::decode::FromJoinedPgRow;
+use crate::relation::joined_row::JoinedRow;
 use std::any::Any;
 use std::collections::HashMap;
+use tokio_postgres::Row as PgRow;
 
 /// Decoder function type for a single child column in the select_related
 /// path. One monomorphised `fn` per `(Parent, Child)` pair — same erasure
 /// strategy Task 4's prefetch loader uses.
 ///
 /// Returns `Some(Box<Child>)` when the child row materialised, or
-/// `None` on a LEFT JOIN miss. The probe for miss-vs-hit is
-/// [`try_get_raw`](sqlx::Row::try_get_raw) on the child's `id` alias —
-/// same shape as the prefetch stitcher's null probe, keeping the
-/// miss-detection logic consistent across eager-load strategies.
+/// `None` on a LEFT JOIN miss. The probe for miss-vs-hit uses
+/// `tokio_postgres::Row::try_get::<i64>(id_alias)` on the child's `id`
+/// alias — a NULL result indicates a LEFT JOIN miss.
 pub(crate) type JoinDecoderFn =
     for<'r> fn(
-        row: &'r sqlx::postgres::PgRow,
+        row: &'r PgRow,
         prefix: &str,
     ) -> Result<Option<Box<dyn Any + Send + Sync>>, DjogiError>;
 
@@ -154,57 +156,56 @@ impl std::fmt::Debug for ErasedSelectRelated {
 
 /// Monomorphised join decoder for a concrete `Child`.
 ///
-/// Probes `row.try_get_raw("{prefix}id").is_null()` to distinguish
-/// LEFT JOIN misses (NULL child columns end-to-end) from live child
-/// rows. Live rows decode via
-/// [`FromJoinedRow::from_prefixed_row`](crate::relation::joined_row::FromJoinedRow).
-/// The emitted prefix here is `"rel_{source_column}."` — matching the
-/// SELECT-list aliases the SQL emitter produces.
+/// Probes the child `id` column (under the prefixed alias) for NULL to
+/// distinguish LEFT JOIN misses (NULL child columns end-to-end) from live
+/// child rows. The probe uses `row.try_get::<Option<i64>>(id_alias)` —
+/// a `None` result indicates a LEFT JOIN miss (NULL FK or orphan target).
+///
+/// This works for `HeerId`-keyed models (BIGINT) and is the standard
+/// T2 probe. T4 will generalise this to other PK types via the
+/// `FromPgRow` trait's column-index probing.
 ///
 /// Returns `Ok(None)` on miss so the caller can omit the child from
 /// the row's relation map; returns `Ok(Some(box))` on hit; propagates
-/// sqlx errors on decode failure. A missing `{prefix}id` column
+/// decode errors on decode failure. A missing `{prefix}id` column
 /// surfaces as a conservative `None` (rather than a cryptic decode
 /// error) because a schema mismatch at that level is a framework bug
 /// the test suite would catch, not a user-facing fault.
 pub(crate) fn join_decoder<Child>(
-    row: &sqlx::postgres::PgRow,
+    row: &PgRow,
     prefix: &str,
 ) -> Result<Option<Box<dyn Any + Send + Sync>>, DjogiError>
 where
-    Child: Model + FromJoinedRow + Send + Sync + 'static,
+    Child: Model + FromJoinedPgRow + Send + Sync + 'static,
 {
     // Build the id-alias lookup: "{prefix}id". Inlining `format!` here
     // is fine — the hot path is one call per (row, path), which is a
     // negligible allocation next to the row decode itself.
     let id_alias = format!("{prefix}id");
 
-    // `try_get_raw` returns a `PgValueRef` we can probe for NULL
-    // without committing to a specific Rust type — matches the
-    // prefetch loader's approach. A missing column is a
-    // schema/aliasing bug at the framework layer (emitter/descriptor
-    // drift), not a user-facing fault: in debug builds we surface it
-    // loudly via `debug_assert!`; in release builds we stay
-    // conservative and treat the miss as "no child" so the caller
-    // sees `None` rather than a cryptic decode error.
-    let raw = row.try_get_raw(id_alias.as_str());
+    // Probe for LEFT JOIN miss: if the aliased `id` column is NULL then
+    // the join found no child row. `try_get::<Option<i64>>` returns
+    // `Ok(None)` for SQL NULL and `Ok(Some(v))` for a live integer.
+    // A missing column (schema/aliasing bug) returns `Err` — we treat
+    // that conservatively as "no child" and emit a debug assertion so
+    // the test suite catches the framework-level mismatch early.
+    let id_probe: Result<Option<i64>, _> = row.try_get(id_alias.as_str());
     debug_assert!(
-        raw.is_ok(),
+        id_probe.is_ok(),
         "select_related: missing join alias '{id_alias}' on joined row — framework bug (check select_columns emission vs push_joins alias)"
     );
-    let child_is_null = raw.map(|v| v.is_null()).unwrap_or(true);
+    let child_is_null = id_probe.map(|v| v.is_none()).unwrap_or(true);
 
     if child_is_null {
         return Ok(None);
     }
 
-    let child =
-        <Child as FromJoinedRow>::from_prefixed_row(row, prefix).map_err(DjogiError::from)?;
+    let child = <Child as FromJoinedPgRow>::from_joined_pg_row(row, prefix)?;
     Ok(Some(Box::new(child) as Box<dyn Any + Send + Sync>))
 }
 
 /// Append the `LEFT JOIN` clauses for every registered select_related
-/// path to `qb`.
+/// path to `acc`.
 ///
 /// Emits one `LEFT JOIN {child_table} rel_{source_column} ON
 /// {parent_table}.{source_column} = rel_{source_column}.id` per path.
@@ -214,23 +215,20 @@ where
 /// ensures no duplicate registrations.
 ///
 /// All identifiers are `&'static str` literals (baked by the
-/// `#[model]` macro), so `push(...)` is safe without quoting.
-pub(crate) fn push_joins<T: Model>(
-    qb: &mut QueryBuilder<'_, Postgres>,
-    paths: &[ErasedSelectRelated],
-) {
+/// `#[model]` macro), so `push_sql(...)` is safe without quoting.
+pub(crate) fn push_joins<T: Model>(acc: &mut SqlAccumulator, paths: &[ErasedSelectRelated]) {
     for path in paths {
-        qb.push(" LEFT JOIN ");
-        qb.push(path.child_table);
-        qb.push(" rel_");
-        qb.push(path.source_column);
-        qb.push(" ON ");
-        qb.push(T::table_name());
-        qb.push(".");
-        qb.push(path.source_column);
-        qb.push(" = rel_");
-        qb.push(path.source_column);
-        qb.push(".id");
+        acc.push_sql(" LEFT JOIN ");
+        acc.push_sql(path.child_table);
+        acc.push_sql(" rel_");
+        acc.push_sql(path.source_column);
+        acc.push_sql(" ON ");
+        acc.push_sql(T::table_name());
+        acc.push_sql(".");
+        acc.push_sql(path.source_column);
+        acc.push_sql(" = rel_");
+        acc.push_sql(path.source_column);
+        acc.push_sql(".id");
     }
 }
 
@@ -248,7 +246,7 @@ pub(crate) fn push_joins<T: Model>(
 /// joined child's columns are aliased as `"rel_{source_column}.{col}"`
 /// — the embedded dot matches the shape Postgres uses internally for
 /// table-qualified projections and gives the
-/// [`FromJoinedRow`](crate::relation::joined_row::FromJoinedRow)
+/// [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow)
 /// decoder a stable, collision-free lookup key.
 ///
 /// The returned `String` is pushed onto the builder verbatim — no
@@ -299,16 +297,15 @@ pub(crate) fn select_columns<T: Model>(paths: &[ErasedSelectRelated]) -> String 
 /// [`JoinedRow::get`](crate::relation::JoinedRow::get) returns `None`
 /// for that path.
 ///
-/// `FromJoinedRow::from_prefixed_row(row, "")` decodes the parent
-/// with the empty prefix — identical to what
-/// [`FromRow::from_row`](sqlx::FromRow::from_row) would produce for a
-/// bare-columns row, but reusing the same trait across both sides
-/// keeps the macro emission small (one extra impl per model).
-pub(crate) fn decode_joined_row<T: Model + FromJoinedRow>(
-    row: &sqlx::postgres::PgRow,
+/// `FromJoinedPgRow::from_joined_pg_row(row, "")` decodes the parent
+/// with the empty prefix — similar in spirit to what `FromPgRow::from_pg_row`
+/// reads for a bare-columns row, but reusing the same trait across
+/// both sides keeps the macro emission small (one extra impl per model).
+pub(crate) fn decode_joined_row<T: Model + FromJoinedPgRow>(
+    row: &PgRow,
     paths: &[ErasedSelectRelated],
 ) -> Result<JoinedRow<T>, DjogiError> {
-    let parent = <T as FromJoinedRow>::from_prefixed_row(row, "").map_err(DjogiError::from)?;
+    let parent = <T as FromJoinedPgRow>::from_joined_pg_row(row, "")?;
     let mut relations: HashMap<&'static str, Box<dyn Any + Send + Sync>> =
         HashMap::with_capacity(paths.len());
     for path in paths {
@@ -328,11 +325,11 @@ pub(crate) fn decode_joined_row<T: Model + FromJoinedRow>(
 /// helpers so the emitter can be unit-tested in isolation from the
 /// decode path.
 pub(crate) fn apply_select_related<T>(
-    rows: Vec<sqlx::postgres::PgRow>,
+    rows: Vec<PgRow>,
     paths: &[ErasedSelectRelated],
 ) -> Result<Vec<JoinedRow<T>>, DjogiError>
 where
-    T: Model + FromJoinedRow,
+    T: Model + FromJoinedPgRow,
 {
     let mut out: Vec<JoinedRow<T>> = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -421,6 +418,7 @@ mod tests {
     use super::*;
     use crate::descriptor::{FieldDescriptor, FieldSqlType, ModelDescriptor, PkType};
     use crate::model::Model;
+    use crate::pg::accumulator::SqlAccumulator;
     use crate::types::HeerId;
     use std::future::Future;
 
@@ -475,7 +473,7 @@ mod tests {
     }
 
     fn dummy_decoder(
-        _row: &sqlx::postgres::PgRow,
+        _row: &PgRow,
         _prefix: &str,
     ) -> Result<Option<Box<dyn Any + Send + Sync>>, DjogiError> {
         // Never invoked by the SQL-emission unit tests — they only
@@ -587,9 +585,9 @@ mod tests {
             decoder: dummy_decoder,
             child_descriptor: owners_descriptor,
         };
-        let mut qb = QueryBuilder::<Postgres>::new("SELECT * FROM srcs");
-        push_joins::<Src>(&mut qb, &[path]);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("SELECT * FROM srcs");
+        push_joins::<Src>(&mut acc, &[path]);
+        let sql = acc.sql();
         assert!(
             sql.contains("LEFT JOIN owners rel_owner_id ON srcs.owner_id = rel_owner_id.id"),
             "expected aliased LEFT JOIN, got: {sql}"
@@ -615,9 +613,9 @@ mod tests {
                 child_descriptor: fuel_types_descriptor,
             },
         ];
-        let mut qb = QueryBuilder::<Postgres>::new("SELECT * FROM srcs");
-        push_joins::<Src>(&mut qb, &paths);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("SELECT * FROM srcs");
+        push_joins::<Src>(&mut acc, &paths);
+        let sql = acc.sql();
         assert!(
             sql.contains("LEFT JOIN owners rel_owner_id"),
             "missing owner join in: {sql}"

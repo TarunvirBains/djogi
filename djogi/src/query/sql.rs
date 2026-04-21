@@ -1,18 +1,15 @@
 //! SQL emission — walks `Condition` + `QuerySet` state and populates a
-//! [`sqlx::QueryBuilder<Postgres>`] with correct positional binds.
+//! [`SqlAccumulator`] with correct positional binds.
 //!
 //! # What
 //!
 //! The public entry points are [`build_select`], [`build_count`], and
 //! [`build_exists`]. Each consumes a borrowed [`QuerySet<T>`] and returns a
-//! pre-populated [`sqlx::QueryBuilder<'_, sqlx::Postgres>`] ready for
-//! [`build_query_as`](sqlx::QueryBuilder::build_query_as) or
-//! [`build_query_scalar`](sqlx::QueryBuilder::build_query_scalar) at the
-//! terminal-method call site.
+//! pre-populated [`SqlAccumulator`] ready for execution via `PgConnection`.
 //!
 //! # Why
 //!
-//! Every value flows through [`sqlx::QueryBuilder::push_bind`] — **never**
+//! Every value flows through [`SqlAccumulator::push_bind`] — **never**
 //! string interpolation of user-controlled data. Table names and column
 //! names are the only items inserted as raw text, and both are
 //! `&'static str` literals baked in by the `#[model]` macro (table name via
@@ -32,16 +29,16 @@
 //!
 //! # Where
 //!
-//! Consumed by [`crate::query::terminal`], which wraps each builder in the
-//! appropriate `fetch_all` / `fetch_one` / `fetch_optional` / `scalar` call
-//! against a user-provided `sqlx::Executor`. The emitter never executes SQL
-//! — that is the terminal layer's responsibility.
+//! Consumed by [`crate::query::terminal`], which wraps each accumulator in the
+//! appropriate execution call against the caller-provided `DjogiContext`. The
+//! emitter never executes SQL — that is the terminal layer's responsibility.
 
 use crate::model::Model;
+use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::decode::FromPgRow;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::order::{Direction, NullsOrder};
 use crate::query::queryset::{DistinctMode, QuerySet};
-use sqlx::{Postgres, QueryBuilder};
 
 /// Escape LIKE/ILIKE wildcards (`%`, `_`, `\\`) so user input is treated
 /// literally. The emitter adds its own surrounding `%` for contains /
@@ -60,7 +57,7 @@ fn escape_like(s: &str) -> String {
     out
 }
 
-/// Push a scalar [`FilterValue`] onto the builder as a single bound
+/// Push a scalar [`FilterValue`] onto the accumulator as a single bound
 /// parameter. `List` / `Pair` are compound and are handled at the operator
 /// level (`IN`, `NOT IN`, `BETWEEN`) — reaching this function with either
 /// variant is a framework bug, not a user error.
@@ -70,46 +67,49 @@ fn escape_like(s: &str) -> String {
 /// at the SQL level. The typed `FieldRef::is_null` / `is_not_null` lookups
 /// never route NULL through this path — they take the explicit `IS NULL` /
 /// `IS NOT NULL` operator branch.
-pub(crate) fn push_filter_value(qb: &mut QueryBuilder<'_, Postgres>, v: FilterValue) {
+pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
     match v {
         FilterValue::String(s) => {
-            qb.push_bind(s);
+            acc.push_bind(s);
         }
         FilterValue::I16(n) => {
-            qb.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::I32(n) => {
-            qb.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::I64(n) => {
-            qb.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::F32(n) => {
-            qb.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::F64(n) => {
-            qb.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::Bool(b) => {
-            qb.push_bind(b);
+            acc.push_bind(b);
         }
         FilterValue::DateTime(d) => {
-            qb.push_bind(d);
+            acc.push_bind(d);
         }
         FilterValue::Date(d) => {
-            qb.push_bind(d);
+            acc.push_bind(d);
         }
         FilterValue::Uuid(u) => {
-            qb.push_bind(u);
+            acc.push_bind(u);
         }
         FilterValue::HeerId(h) => {
-            qb.push_bind(h);
+            acc.push_bind(h);
         }
         FilterValue::RanjId(r) => {
-            qb.push_bind(r);
+            acc.push_bind(r);
+        }
+        FilterValue::Decimal(d) => {
+            acc.push_bind(d);
         }
         FilterValue::Null => {
-            qb.push("NULL");
+            acc.push_null_literal();
         }
         FilterValue::List(_) | FilterValue::Pair(_, _) => {
             // These are handled at the operator level (see `emit_leaf`) and
@@ -126,50 +126,48 @@ pub(crate) fn push_filter_value(qb: &mut QueryBuilder<'_, Postgres>, v: FilterVa
     }
 }
 
-/// Emit a list element for `IN (...)` / `NOT IN (...)` via a
-/// [`Separated`](sqlx::query_builder::Separated) writer. Factored out of
-/// `emit_leaf`'s `In`/`NotIn` arm so the variant switch lives in one place;
-/// `Separated` internally handles the `, ` between successive binds.
-fn push_list_element(
-    sep: &mut sqlx::query_builder::Separated<'_, '_, Postgres, &'static str>,
-    v: FilterValue,
-) {
+/// Emit a list element for `IN (...)` / `NOT IN (...)`.
+/// Factored out of `emit_leaf`'s `In`/`NotIn` arm.
+fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
     match v {
         FilterValue::String(s) => {
-            sep.push_bind(s);
+            acc.push_bind(s);
         }
         FilterValue::I16(n) => {
-            sep.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::I32(n) => {
-            sep.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::I64(n) => {
-            sep.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::F32(n) => {
-            sep.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::F64(n) => {
-            sep.push_bind(n);
+            acc.push_bind(n);
         }
         FilterValue::Bool(b) => {
-            sep.push_bind(b);
+            acc.push_bind(b);
         }
         FilterValue::DateTime(d) => {
-            sep.push_bind(d);
+            acc.push_bind(d);
         }
         FilterValue::Date(d) => {
-            sep.push_bind(d);
+            acc.push_bind(d);
         }
         FilterValue::Uuid(u) => {
-            sep.push_bind(u);
+            acc.push_bind(u);
         }
         FilterValue::HeerId(h) => {
-            sep.push_bind(h);
+            acc.push_bind(h);
         }
         FilterValue::RanjId(r) => {
-            sep.push_bind(r);
+            acc.push_bind(r);
+        }
+        FilterValue::Decimal(d) => {
+            acc.push_bind(d);
         }
         FilterValue::Null | FilterValue::List(_) | FilterValue::Pair(_, _) => {
             // Same reasoning as `push_filter_value`: enum is
@@ -183,7 +181,7 @@ fn push_list_element(
 
 /// Emit a single [`Leaf`] — `column op value`. The column name is a
 /// `&'static str` from the macro-baked `FieldRef::column()`, so it is safe
-/// to `qb.push(col)` without quoting. The value always goes through
+/// to `acc.push_sql(col)` without quoting. The value always goes through
 /// `push_bind`.
 ///
 /// When `parent_table` is `Some(table)`, the emitted column reference is
@@ -194,115 +192,111 @@ fn push_list_element(
 /// join-aware helpers that wrap `build_select_joined`. The non-joined
 /// [`build_select`] path passes `None` and emits bare column names
 /// unchanged — byte-for-byte identical to the Phase 2 output.
-fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf, parent_table: Option<&'static str>) {
+fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static str>) {
     let col = leaf.column;
     // Helper: push the column reference, qualified with `{parent_table}.`
     // when requested. Keeps the op-switch tidy — every arm that previously
-    // called `qb.push(col)` now calls `push_col(qb, col, parent_table)`.
-    fn push_col(
-        qb: &mut QueryBuilder<'_, Postgres>,
-        col: &'static str,
-        parent_table: Option<&'static str>,
-    ) {
+    // called `acc.push_sql(col)` now calls `push_col(acc, col, parent_table)`.
+    fn push_col(acc: &mut SqlAccumulator, col: &'static str, parent_table: Option<&'static str>) {
         if let Some(table) = parent_table {
-            qb.push(table);
-            qb.push(".");
+            acc.push_sql(table);
+            acc.push_sql(".");
         }
-        qb.push(col);
+        acc.push_sql(col);
     }
     match leaf.op {
         LookupOp::Eq => {
-            push_col(qb, col, parent_table);
-            qb.push(" = ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" = ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::Neq => {
-            push_col(qb, col, parent_table);
-            qb.push(" <> ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" <> ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::Gt => {
-            push_col(qb, col, parent_table);
-            qb.push(" > ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" > ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::Gte => {
-            push_col(qb, col, parent_table);
-            qb.push(" >= ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" >= ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::Lt => {
-            push_col(qb, col, parent_table);
-            qb.push(" < ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" < ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::Lte => {
-            push_col(qb, col, parent_table);
-            qb.push(" <= ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" <= ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::IsNull => {
-            push_col(qb, col, parent_table);
-            qb.push(" IS NULL");
+            push_col(acc, col, parent_table);
+            acc.push_sql(" IS NULL");
         }
         LookupOp::IsNotNull => {
-            push_col(qb, col, parent_table);
-            qb.push(" IS NOT NULL");
+            push_col(acc, col, parent_table);
+            acc.push_sql(" IS NOT NULL");
         }
         LookupOp::IContains => {
-            push_col(qb, col, parent_table);
-            qb.push(" ILIKE ");
+            push_col(acc, col, parent_table);
+            acc.push_sql(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
                 _ => unreachable!("IContains requires FilterValue::String"),
             };
-            qb.push_bind(format!("%{}%", escape_like(&s)));
+            acc.push_bind(format!("%{}%", escape_like(&s)));
         }
         LookupOp::IStartsWith => {
-            push_col(qb, col, parent_table);
-            qb.push(" ILIKE ");
+            push_col(acc, col, parent_table);
+            acc.push_sql(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
                 _ => unreachable!("IStartsWith requires FilterValue::String"),
             };
-            qb.push_bind(format!("{}%", escape_like(&s)));
+            acc.push_bind(format!("{}%", escape_like(&s)));
         }
         LookupOp::IEndsWith => {
-            push_col(qb, col, parent_table);
-            qb.push(" ILIKE ");
+            push_col(acc, col, parent_table);
+            acc.push_sql(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
                 _ => unreachable!("IEndsWith requires FilterValue::String"),
             };
-            qb.push_bind(format!("%{}", escape_like(&s)));
+            acc.push_bind(format!("%{}", escape_like(&s)));
         }
         LookupOp::IExact => {
-            qb.push("LOWER(");
-            push_col(qb, col, parent_table);
-            qb.push(") = LOWER(");
-            push_filter_value(qb, leaf.value);
-            qb.push(")");
+            acc.push_sql("LOWER(");
+            push_col(acc, col, parent_table);
+            acc.push_sql(") = LOWER(");
+            push_filter_value(acc, leaf.value);
+            acc.push_sql(")");
         }
         LookupOp::Regex => {
-            push_col(qb, col, parent_table);
-            qb.push(" ~ ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" ~ ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::IRegex => {
-            push_col(qb, col, parent_table);
-            qb.push(" ~* ");
-            push_filter_value(qb, leaf.value);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" ~* ");
+            push_filter_value(acc, leaf.value);
         }
         LookupOp::Between => {
             let (a, b) = match leaf.value {
                 FilterValue::Pair(a, b) => (*a, *b),
                 _ => unreachable!("Between requires FilterValue::Pair"),
             };
-            push_col(qb, col, parent_table);
-            qb.push(" BETWEEN ");
-            push_filter_value(qb, a);
-            qb.push(" AND ");
-            push_filter_value(qb, b);
+            push_col(acc, col, parent_table);
+            acc.push_sql(" BETWEEN ");
+            push_filter_value(acc, a);
+            acc.push_sql(" AND ");
+            push_filter_value(acc, b);
         }
         LookupOp::In | LookupOp::NotIn => {
             let list = match leaf.value {
@@ -315,25 +309,25 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf, parent_table: Opti
             // `not_in_list`.
             if list.is_empty() {
                 if matches!(leaf.op, LookupOp::In) {
-                    qb.push("FALSE");
+                    acc.push_sql("FALSE");
                 } else {
-                    qb.push("TRUE");
+                    acc.push_sql("TRUE");
                 }
                 return;
             }
-            push_col(qb, col, parent_table);
-            qb.push(if matches!(leaf.op, LookupOp::In) {
+            push_col(acc, col, parent_table);
+            acc.push_sql(if matches!(leaf.op, LookupOp::In) {
                 " IN ("
             } else {
                 " NOT IN ("
             });
-            // `separated(", ")` handles the inter-element comma; each element
-            // is still a separate bound parameter (`$n`).
-            let mut sep = qb.separated(", ");
-            for v in list {
-                push_list_element(&mut sep, v);
+            for (i, v) in list.into_iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(", ");
+                }
+                push_list_element(acc, v);
             }
-            qb.push(")");
+            acc.push_sql(")");
         }
     }
 }
@@ -341,7 +335,7 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf, parent_table: Opti
 /// Walk a [`Condition`] tree and emit the corresponding SQL fragment.
 /// Called recursively for `Not`/`And`/`Or`. The input is consumed by value
 /// because payloads (`String`, `Vec<FilterValue>`, `Box<FilterValue>`) move
-/// into the builder one bind at a time.
+/// into the accumulator one bind at a time.
 ///
 /// `parent_table` threads through unchanged so every bare column reference
 /// in a joined-variant emission lands as `{table}.{column}`; the non-joined
@@ -358,54 +352,54 @@ fn emit_leaf(qb: &mut QueryBuilder<'_, Postgres>, leaf: Leaf, parent_table: Opti
 /// to `pub(crate)` reuses the shipped, battle-tested condition emitter
 /// without copy-pasting its every `LookupOp` arm.
 pub(crate) fn emit_condition(
-    qb: &mut QueryBuilder<'_, Postgres>,
+    acc: &mut SqlAccumulator,
     c: Condition,
     parent_table: Option<&'static str>,
 ) {
     match c {
         Condition::True => {
-            qb.push("TRUE");
+            acc.push_sql("TRUE");
         }
         Condition::Leaf(l) => {
-            emit_leaf(qb, l, parent_table);
+            emit_leaf(acc, l, parent_table);
         }
         Condition::Not(inner) => {
-            qb.push("NOT (");
-            emit_condition(qb, *inner, parent_table);
-            qb.push(")");
+            acc.push_sql("NOT (");
+            emit_condition(acc, *inner, parent_table);
+            acc.push_sql(")");
         }
         Condition::And(parts) => {
             // Empty `And(vec![])` is the vacuous-truth identity — documented
             // on the `Condition::And` variant. `Condition::and()` never
             // constructs one, but external callers technically can.
             if parts.is_empty() {
-                qb.push("TRUE");
+                acc.push_sql("TRUE");
                 return;
             }
-            qb.push("(");
+            acc.push_sql("(");
             for (i, p) in parts.into_iter().enumerate() {
                 if i > 0 {
-                    qb.push(" AND ");
+                    acc.push_sql(" AND ");
                 }
-                emit_condition(qb, p, parent_table);
+                emit_condition(acc, p, parent_table);
             }
-            qb.push(")");
+            acc.push_sql(")");
         }
         Condition::Or(parts) => {
             // Empty `Or(vec![])` is the vacuous-falsehood identity — see the
             // variant doc and the condition tests.
             if parts.is_empty() {
-                qb.push("FALSE");
+                acc.push_sql("FALSE");
                 return;
             }
-            qb.push("(");
+            acc.push_sql("(");
             for (i, p) in parts.into_iter().enumerate() {
                 if i > 0 {
-                    qb.push(" OR ");
+                    acc.push_sql(" OR ");
                 }
-                emit_condition(qb, p, parent_table);
+                emit_condition(acc, p, parent_table);
             }
-            qb.push(")");
+            acc.push_sql(")");
         }
         // Expression-IR bridge — delegates to the dedicated emitter in
         // `expr::sql`. The expression tree carries its own column
@@ -414,7 +408,7 @@ pub(crate) fn emit_condition(
         // comment in `expr::sql` for the scope note on select_related
         // interaction, deferred to Task 5).
         Condition::Expr(expr) => {
-            crate::expr::sql::emit_expr(qb, &expr.node);
+            crate::expr::sql::emit_expr(acc, &expr.node);
         }
     }
 }
@@ -448,8 +442,8 @@ fn is_vacuously_true(c: &Condition) -> bool {
 /// [`build_select_joined`]) uses this shim, which forwards to
 /// [`push_where_qualified`] with `parent_table = None` — bare column
 /// references are emitted exactly as Phase 2 shipped.
-fn push_where<T: Model>(qb: &mut QueryBuilder<'_, Postgres>, qs: &QuerySet<T>) {
-    push_where_qualified(qb, qs, None);
+fn push_where<T: Model>(acc: &mut SqlAccumulator, qs: &QuerySet<T>) {
+    push_where_qualified(acc, qs, None);
 }
 
 /// Qualification-aware variant of [`push_where`]. When `parent_table`
@@ -459,16 +453,16 @@ fn push_where<T: Model>(qb: &mut QueryBuilder<'_, Postgres>, qs: &QuerySet<T>) {
 /// children that share the same column name (`id`, `created_at`,
 /// `updated_at`). `None` preserves Phase 2's bare-name emission.
 fn push_where_qualified<T: Model>(
-    qb: &mut QueryBuilder<'_, Postgres>,
+    acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
 ) {
     if !is_vacuously_true(&qs.condition) {
-        qb.push(" WHERE ");
+        acc.push_sql(" WHERE ");
         // `emit_condition` consumes the tree — clone the borrowed reference
         // so the original QuerySet remains usable (matters for `fetch_one`'s
         // LIMIT-override path, which reuses the same queryset).
-        emit_condition(qb, qs.condition.clone(), parent_table);
+        emit_condition(acc, qs.condition.clone(), parent_table);
     }
 }
 
@@ -478,8 +472,8 @@ fn push_where_qualified<T: Model>(
 ///
 /// Shim for the non-joined path — forwards to [`push_tail_qualified`]
 /// with `parent_table = None`.
-fn push_tail<T: Model>(qb: &mut QueryBuilder<'_, Postgres>, qs: &QuerySet<T>) {
-    push_tail_qualified(qb, qs, None);
+fn push_tail<T: Model>(acc: &mut SqlAccumulator, qs: &QuerySet<T>) {
+    push_tail_qualified(acc, qs, None);
 }
 
 /// Qualification-aware variant of [`push_tail`]. `parent_table` threads
@@ -488,40 +482,40 @@ fn push_tail<T: Model>(qb: &mut QueryBuilder<'_, Postgres>, qs: &QuerySet<T>) {
 /// `LIMIT` / `OFFSET` need no qualification — they carry no column
 /// references.
 fn push_tail_qualified<T: Model>(
-    qb: &mut QueryBuilder<'_, Postgres>,
+    acc: &mut SqlAccumulator,
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
 ) {
-    push_where_qualified(qb, qs, parent_table);
+    push_where_qualified(acc, qs, parent_table);
 
     if !qs.ordering.is_empty() {
-        qb.push(" ORDER BY ");
+        acc.push_sql(" ORDER BY ");
         for (i, o) in qs.ordering.iter().enumerate() {
             if i > 0 {
-                qb.push(", ");
+                acc.push_sql(", ");
             }
             // Qualify the column under the parent table when
             // select_related is active — same rationale as `push_col`
             // inside `emit_leaf`.
             if let Some(table) = parent_table {
-                qb.push(table);
-                qb.push(".");
+                acc.push_sql(table);
+                acc.push_sql(".");
             }
-            qb.push(o.column);
+            acc.push_sql(o.column);
             match o.direction {
                 Direction::Asc => {
-                    qb.push(" ASC");
+                    acc.push_sql(" ASC");
                 }
                 Direction::Desc => {
-                    qb.push(" DESC");
+                    acc.push_sql(" DESC");
                 }
             }
             match o.nulls {
                 NullsOrder::First => {
-                    qb.push(" NULLS FIRST");
+                    acc.push_sql(" NULLS FIRST");
                 }
                 NullsOrder::Last => {
-                    qb.push(" NULLS LAST");
+                    acc.push_sql(" NULLS LAST");
                 }
                 NullsOrder::Default => {}
             }
@@ -529,57 +523,67 @@ fn push_tail_qualified<T: Model>(
     }
 
     if let Some(n) = qs.limit {
-        qb.push(" LIMIT ");
-        qb.push_bind(n);
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n);
     }
     if let Some(n) = qs.offset {
-        qb.push(" OFFSET ");
-        qb.push_bind(n);
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n);
     }
     // Row-lock tail — `FOR UPDATE [NOWAIT|SKIP LOCKED]` — is the last
     // thing Postgres accepts on a SELECT, after `LIMIT`/`OFFSET`.
     // `LockMode::None` is a no-op so the pre-Task-7 SELECT shape is
     // byte-for-byte preserved for querysets that never touched the
     // lock builders.
-    qs.lock.push_tail(qb);
+    qs.lock.push_tail(acc);
 }
 
-/// Build `SELECT [DISTINCT [ON (...)]] * FROM <table> [WHERE ...]
+/// Build `SELECT [DISTINCT [ON (...)]] <COLUMN_LIST> FROM <table> [WHERE ...]
 /// [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
 ///
 /// The queryset is borrowed, not consumed — terminal methods (`fetch_all`,
 /// `fetch_one`, `first`) may need to mutate the queryset (e.g. `fetch_one`
 /// overrides the user-set `limit` to 2 so it can distinguish single-row
 /// success from multiple-row failure) before or after calling this builder.
-pub(crate) fn build_select<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
-    let mut qb = QueryBuilder::new("");
+pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("");
+    // Emit the canonical `FromPgRow::COLUMN_LIST` rather than `*`. Ordinal
+    // decode (T3) relies on wire column order matching struct-field order;
+    // `SELECT *` leaks DDL column order into the decode path, which
+    // Phase 4 fixtures like `accounts` (user columns before framework
+    // columns) do not guarantee. Baking the canonical list pins the
+    // order regardless of migration shape.
     match &qs.distinct {
         DistinctMode::None => {
-            qb.push("SELECT * FROM ");
+            acc.push_sql("SELECT ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(" FROM ");
         }
         DistinctMode::Plain => {
-            qb.push("SELECT DISTINCT * FROM ");
+            acc.push_sql("SELECT DISTINCT ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(" FROM ");
         }
         DistinctMode::On(cols) => {
-            qb.push("SELECT DISTINCT ON (");
+            acc.push_sql("SELECT DISTINCT ON (");
             for (i, c) in cols.iter().enumerate() {
                 if i > 0 {
-                    qb.push(", ");
+                    acc.push_sql(", ");
                 }
-                qb.push(*c);
+                acc.push_sql(c);
             }
-            qb.push(") * FROM ");
+            acc.push_sql(") ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(" FROM ");
         }
     }
-    qb.push(T::table_name());
-    push_tail(&mut qb, qs);
-    qb
+    acc.push_sql(T::table_name());
+    push_tail(&mut acc, qs);
+    acc
 }
 
 /// Build `SELECT {parent_cols} FROM <table> {left joins} [WHERE ...]
 /// [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the select_related variant.
-///
-/// # What
 ///
 /// Mirror of [`build_select`], but:
 /// 1. Replaces `*` in the projection with the aliased column list built
@@ -609,8 +613,8 @@ pub(crate) fn build_select<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, P
 /// `.select_related(...)` get consistent shape — distinct is applied
 /// to the full projection (parent + aliased children) — but they
 /// should verify the emitted SQL matches their intent.
-pub(crate) fn build_select_joined<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
-    let mut qb = QueryBuilder::new("");
+pub(crate) fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("");
     let col_list = crate::relation::select_related::select_columns::<T>(&qs.select_related_paths);
     // Every bare column reference that follows — `WHERE ...`,
     // `ORDER BY ...`, `DISTINCT ON (...)` — is qualified with the
@@ -623,39 +627,39 @@ pub(crate) fn build_select_joined<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilde
     let parent_table: Option<&'static str> = Some(T::table_name());
     match &qs.distinct {
         DistinctMode::None => {
-            qb.push("SELECT ");
-            qb.push(col_list);
-            qb.push(" FROM ");
+            acc.push_sql("SELECT ");
+            acc.push_sql(&col_list);
+            acc.push_sql(" FROM ");
         }
         DistinctMode::Plain => {
-            qb.push("SELECT DISTINCT ");
-            qb.push(col_list);
-            qb.push(" FROM ");
+            acc.push_sql("SELECT DISTINCT ");
+            acc.push_sql(&col_list);
+            acc.push_sql(" FROM ");
         }
         DistinctMode::On(cols) => {
-            qb.push("SELECT DISTINCT ON (");
+            acc.push_sql("SELECT DISTINCT ON (");
             for (i, c) in cols.iter().enumerate() {
                 if i > 0 {
-                    qb.push(", ");
+                    acc.push_sql(", ");
                 }
                 // Qualify DISTINCT ON columns under the parent table
                 // so `SELECT DISTINCT ON (id) ...` on a joined query
                 // becomes `SELECT DISTINCT ON (vehicles.id) ...` and
                 // sidesteps the same ambiguity Postgres raises on bare
                 // `WHERE id = ...`.
-                qb.push(T::table_name());
-                qb.push(".");
-                qb.push(*c);
+                acc.push_sql(T::table_name());
+                acc.push_sql(".");
+                acc.push_sql(c);
             }
-            qb.push(") ");
-            qb.push(col_list);
-            qb.push(" FROM ");
+            acc.push_sql(") ");
+            acc.push_sql(&col_list);
+            acc.push_sql(" FROM ");
         }
     }
-    qb.push(T::table_name());
-    crate::relation::select_related::push_joins::<T>(&mut qb, &qs.select_related_paths);
-    push_tail_qualified(&mut qb, qs, parent_table);
-    qb
+    acc.push_sql(T::table_name());
+    crate::relation::select_related::push_joins::<T>(&mut acc, &qs.select_related_paths);
+    push_tail_qualified(&mut acc, qs, parent_table);
+    acc
 }
 
 /// Emit `(AGG(..))::CAST` for the scalar-aggregate path — wraps the
@@ -667,25 +671,25 @@ pub(crate) fn build_select_joined<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilde
 /// `MIN` / `MAX` where the Postgres return type already decodes into
 /// `Out` directly).
 pub(crate) fn emit_aggregate_with_cast(
-    qb: &mut QueryBuilder<'_, Postgres>,
+    acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
 ) {
     if let crate::expr::node::ExprNode::Aggregate { cast_to, .. } = agg
         && cast_to.is_some()
     {
-        qb.push("(");
-        crate::expr::sql::emit_expr(qb, agg);
-        qb.push(")::");
+        acc.push_sql("(");
+        crate::expr::sql::emit_expr(acc, agg);
+        acc.push_sql(")::");
         // Safe because we matched `cast_to.is_some()` above; the
         // pattern binding borrows immutably so we re-extract here.
         if let crate::expr::node::ExprNode::Aggregate {
             cast_to: Some(ty), ..
         } = agg
         {
-            qb.push(*ty);
+            acc.push_sql(ty);
         }
     } else {
-        crate::expr::sql::emit_expr(qb, agg);
+        crate::expr::sql::emit_expr(acc, agg);
     }
 }
 
@@ -710,7 +714,7 @@ pub(crate) fn emit_aggregate_with_cast(
 /// simplest annotate shape that pairs with the self-column aggregate
 /// helpers already on `FieldRef`.
 pub(crate) fn emit_aggregate_with_window_and_cast(
-    qb: &mut QueryBuilder<'_, Postgres>,
+    acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
 ) {
     let cast = match agg {
@@ -718,13 +722,13 @@ pub(crate) fn emit_aggregate_with_window_and_cast(
         _ => None,
     };
     if cast.is_some() {
-        qb.push("(");
+        acc.push_sql("(");
     }
-    crate::expr::sql::emit_expr(qb, agg);
-    qb.push(" OVER ()");
+    crate::expr::sql::emit_expr(acc, agg);
+    acc.push_sql(" OVER ()");
     if let Some(ty) = cast {
-        qb.push(")::");
-        qb.push(ty);
+        acc.push_sql(")::");
+        acc.push_sql(ty);
     }
 }
 
@@ -737,19 +741,19 @@ pub(crate) fn emit_aggregate_with_window_and_cast(
 ///
 /// The aggregate expression is emitted via [`emit_aggregate_with_cast`]
 /// so integer `SUM` / `AVG` results narrow back to the typed `Out`
-/// sqlx expects. `WHERE` uses the shared [`push_where`] helper so
+/// the decoder expects. `WHERE` uses the shared [`push_where`] helper so
 /// vacuously-true predicates are elided identically to every other
 /// terminal.
-pub(crate) fn build_aggregate_select<'a, T: Model>(
+pub(crate) fn build_aggregate_select<T: Model>(
     qs: &QuerySet<T>,
     agg: &crate::expr::node::ExprNode,
-) -> QueryBuilder<'a, Postgres> {
-    let mut qb = QueryBuilder::new("SELECT ");
-    emit_aggregate_with_cast(&mut qb, agg);
-    qb.push(" FROM ");
-    qb.push(T::table_name());
-    push_where(&mut qb, qs);
-    qb
+) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("SELECT ");
+    emit_aggregate_with_cast(&mut acc, agg);
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    push_where(&mut acc, qs);
+    acc
 }
 
 /// Build `SELECT t.*, <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1
@@ -759,18 +763,12 @@ pub(crate) fn build_aggregate_select<'a, T: Model>(
 ///
 /// # Why `t.*` plus aliased aggregates
 ///
-/// `FromRow` looks up columns by name (see
-/// [`djogi-macros/src/model/from_row.rs`]) and ignores columns it does
-/// not recognise. The annotated row carries both the full `t.*`
+/// The annotated row carries both the full `t.*`
 /// projection (decoded into `T`) and the aggregate columns under
 /// synthetic `__djogi_agg_N` aliases (decoded into the tuple slots).
 /// Each side reads its own column set; they never collide because
 /// model columns are user-chosen identifiers and the aggregate
 /// aliases use the framework-reserved `__djogi_agg_` prefix.
-///
-/// The alias prefix mirrors the `__djogi_parent_id` synthetic used by
-/// the prefetch loader — same reservation convention, same rationale
-/// (explicit prefix keeps user-space naming unrestricted).
 ///
 /// # Columns argument
 ///
@@ -780,36 +778,40 @@ pub(crate) fn build_aggregate_select<'a, T: Model>(
 /// `, <agg_expr> AS __djogi_agg_N` once per tuple arity slot; this
 /// emitter owns the `t.*` prefix and the `FROM` / `WHERE` / `ORDER BY`
 /// / `LIMIT` / `OFFSET` tail around it.
-///
-/// The table alias `t` is hard-coded because the annotate path does
-/// not support select_related joins in Task 4 — a joined annotate
-/// would need the same parent-table qualification
-/// [`build_select_joined`] applies, which is out of scope here. The
-/// Task 4 plan pins annotate to the single-table shape; Task 5 will
-/// generalise joins for both expression and annotate paths together.
-pub(crate) fn build_select_with_annotations<'a, T, F>(
+pub(crate) fn build_select_with_annotations<T, F>(
     qs: &QuerySet<T>,
     push_columns: F,
-) -> QueryBuilder<'a, Postgres>
+) -> SqlAccumulator
 where
-    T: Model,
-    F: FnOnce(&mut QueryBuilder<'a, Postgres>),
+    T: Model + FromPgRow,
+    F: FnOnce(&mut SqlAccumulator),
 {
-    let mut qb = QueryBuilder::new("");
-    // `SELECT t.*` prefix — the `t` alias is what the FROM clause
-    // below names the table as. Using `t.*` instead of enumerating
-    // every model column keeps the emitter simple; the columns land
-    // in the row in schema order and FromRow picks them up by name.
-    qb.push("SELECT t.*");
+    let mut acc = SqlAccumulator::new("");
+    // `SELECT t.<c1>, t.<c2>, ...` prefix — the `t` alias is what the
+    // FROM clause below names the table as. Explicit `t.<col>` for
+    // every canonical column (matching `FromPgRow::COLUMNS`) pins the
+    // wire order so the ordinal decode path can read them positionally
+    // regardless of DDL column order. Trailing aggregate columns pushed
+    // by `push_columns` land AFTER the canonical prefix and are
+    // ignored by `FromPgRow::from_pg_row` (whose column-count assert
+    // is `>= N_COLS`, not `==`).
+    acc.push_sql("SELECT ");
+    for (i, col) in <T as FromPgRow>::COLUMNS.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql("t.");
+        acc.push_sql(col);
+    }
     // Caller-provided per-aggregate comma-separated pushes. The
     // trait impl prepends `, ` before each `<agg> AS __djogi_agg_N`
     // so the SELECT list stays well-formed for arities 1..=4.
-    push_columns(&mut qb);
-    qb.push(" FROM ");
-    qb.push(T::table_name());
-    qb.push(" AS t");
-    push_tail(&mut qb, qs);
-    qb
+    push_columns(&mut acc);
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+    push_tail(&mut acc, qs);
+    acc
 }
 
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
@@ -829,24 +831,24 @@ where
 /// `ORDER BY`); we prepend the distinct columns and then append any
 /// user-supplied ordering so the emitted SQL is syntactically valid and
 /// semantically stable.
-pub(crate) fn build_count<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
+pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
     match &qs.distinct {
         DistinctMode::None => {
             // Fast path — plain row count, no subquery wrap.
-            let mut qb = QueryBuilder::new("SELECT COUNT(*) FROM ");
-            qb.push(T::table_name());
-            push_where(&mut qb, qs);
-            qb
+            let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM ");
+            acc.push_sql(T::table_name());
+            push_where(&mut acc, qs);
+            acc
         }
         DistinctMode::Plain => {
             // `COUNT(*)` over `SELECT DISTINCT *` counts distinct whole-row
             // tuples. No ordering needed inside the subquery — DISTINCT has
             // no prefix requirement.
-            let mut qb = QueryBuilder::new("SELECT COUNT(*) FROM (SELECT DISTINCT * FROM ");
-            qb.push(T::table_name());
-            push_where(&mut qb, qs);
-            qb.push(") AS sub");
-            qb
+            let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM (SELECT DISTINCT * FROM ");
+            acc.push_sql(T::table_name());
+            push_where(&mut acc, qs);
+            acc.push_sql(") AS sub");
+            acc
         }
         DistinctMode::On(cols) => {
             // `DISTINCT ON (a, b)` requires `ORDER BY a, b [, ...]`. We
@@ -854,22 +856,22 @@ pub(crate) fn build_count<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Po
             // subquery is always well-formed. Duplicates (user already
             // ordered by a distinct column) are harmless — Postgres ignores
             // repeated expressions in ORDER BY for ordering purposes.
-            let mut qb = QueryBuilder::new("SELECT COUNT(*) FROM (SELECT DISTINCT ON (");
+            let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM (SELECT DISTINCT ON (");
             for (i, c) in cols.iter().enumerate() {
                 if i > 0 {
-                    qb.push(", ");
+                    acc.push_sql(", ");
                 }
-                qb.push(*c);
+                acc.push_sql(c);
             }
-            qb.push(") * FROM ");
-            qb.push(T::table_name());
-            push_where(&mut qb, qs);
-            qb.push(" ORDER BY ");
+            acc.push_sql(") * FROM ");
+            acc.push_sql(T::table_name());
+            push_where(&mut acc, qs);
+            acc.push_sql(" ORDER BY ");
             for (i, c) in cols.iter().enumerate() {
                 if i > 0 {
-                    qb.push(", ");
+                    acc.push_sql(", ");
                 }
-                qb.push(*c);
+                acc.push_sql(c);
             }
             // Append user ordering after the required prefix. Direction /
             // nulls qualifiers only apply to user-supplied columns; the
@@ -877,28 +879,28 @@ pub(crate) fn build_count<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Po
             // (ASC NULLS LAST for most types), which is fine because the
             // outer COUNT does not care about row order.
             for o in qs.ordering.iter() {
-                qb.push(", ");
-                qb.push(o.column);
+                acc.push_sql(", ");
+                acc.push_sql(o.column);
                 match o.direction {
                     Direction::Asc => {
-                        qb.push(" ASC");
+                        acc.push_sql(" ASC");
                     }
                     Direction::Desc => {
-                        qb.push(" DESC");
+                        acc.push_sql(" DESC");
                     }
                 }
                 match o.nulls {
                     NullsOrder::First => {
-                        qb.push(" NULLS FIRST");
+                        acc.push_sql(" NULLS FIRST");
                     }
                     NullsOrder::Last => {
-                        qb.push(" NULLS LAST");
+                        acc.push_sql(" NULLS LAST");
                     }
                     NullsOrder::Default => {}
                 }
             }
-            qb.push(") AS sub");
-            qb
+            acc.push_sql(") AS sub");
+            acc
         }
     }
 }
@@ -909,12 +911,12 @@ pub(crate) fn build_count<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Po
 /// the queryset's `limit` slot: EXISTS returns a single boolean regardless
 /// of how many rows match, so `LIMIT 1` here is a micro-optimization that
 /// tells Postgres to stop scanning once one match is found.
-pub(crate) fn build_exists<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
-    let mut qb = QueryBuilder::new("SELECT EXISTS(SELECT 1 FROM ");
-    qb.push(T::table_name());
-    push_where(&mut qb, qs);
-    qb.push(" LIMIT 1)");
-    qb
+pub(crate) fn build_exists<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("SELECT EXISTS(SELECT 1 FROM ");
+    acc.push_sql(T::table_name());
+    push_where(&mut acc, qs);
+    acc.push_sql(" LIMIT 1)");
+    acc
 }
 
 /// Build `UPDATE <table> SET col = $1, col = $2, updated_at = now()
@@ -925,8 +927,8 @@ pub(crate) fn build_exists<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, P
 /// user-supplied value. The `updated_at = now()` tail is always appended,
 /// even when the caller's closure omitted it: parity with the single-row
 /// `save()` path, which also bumps `updated_at` on every write. Users who
-/// need to preserve `updated_at` across a bulk update reach for the raw
-/// `sqlx::QueryBuilder` escape hatch — same as any other ORM layer that
+/// need to preserve `updated_at` across a bulk update reach for raw SQL
+/// via `ctx.raw_execute` (T5) — same as any other ORM layer that
 /// treats the audit column as non-optional.
 ///
 /// `WHERE` is emitted via the shared [`push_where`] helper, so
@@ -942,24 +944,24 @@ pub(crate) fn build_exists<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, P
 /// `assignments.is_empty()` before reaching this emitter, so the emitter
 /// itself does not need a runtime guard. Panicking here would be
 /// defensive-programming noise; the short-circuit is the real safety rail.
-pub(crate) fn build_update<'a, T: Model>(
+pub(crate) fn build_update<T: Model>(
     qs: &QuerySet<T>,
     assignments: &[crate::query::update::UpdateAssignment],
-) -> QueryBuilder<'a, Postgres> {
-    let mut qb = QueryBuilder::new("UPDATE ");
-    qb.push(T::table_name());
-    qb.push(" SET ");
+) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("UPDATE ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" SET ");
     for (i, a) in assignments.iter().enumerate() {
         if i > 0 {
-            qb.push(", ");
+            acc.push_sql(", ");
         }
-        // Column names are macro-baked `&'static str` literals — `push`
+        // Column names are macro-baked `&'static str` literals — `push_sql`
         // (not `push_bind`). Values always go through `push_filter_value`
         // which calls `push_bind` for every variant except `Null`
         // (unreachable here because `FieldRef::set` requires
         // `V: IntoFilterValue`, which never produces `FilterValue::Null`).
-        qb.push(a.column());
-        qb.push(" = ");
+        acc.push_sql(a.column());
+        acc.push_sql(" = ");
         // Dispatch literal vs expression-IR payload. Literals go through
         // `push_filter_value` (a single `$n` bind); expression trees
         // recurse through `emit_expr`, which emits arithmetic, field
@@ -968,21 +970,21 @@ pub(crate) fn build_update<'a, T: Model>(
         // the inner `ExprNode` by reference.
         match a.value() {
             crate::query::update::AssignmentValue::Literal(v) => {
-                push_filter_value(&mut qb, v.clone());
+                push_filter_value(&mut acc, v.clone());
             }
             crate::query::update::AssignmentValue::Expr(node) => {
-                crate::expr::sql::emit_expr(&mut qb, node);
+                crate::expr::sql::emit_expr(&mut acc, node);
             }
         }
     }
     // Always stamp `updated_at = now()` on bulk updates — matches
     // single-row save(). `now()` is a SQL literal, not a user value, so
-    // `push` is correct (no bind slot needed). Position-wise this is a
+    // `push_sql` is correct (no bind slot needed). Position-wise this is a
     // trailing clause after the user's SET list; the leading ", " handles
     // the separator even when the user supplied only one assignment.
-    qb.push(", updated_at = now()");
-    push_where(&mut qb, qs);
-    qb
+    acc.push_sql(", updated_at = now()");
+    push_where(&mut acc, qs);
+    acc
 }
 
 /// Build `DELETE FROM <table> [WHERE ...]`.
@@ -999,11 +1001,11 @@ pub(crate) fn build_update<'a, T: Model>(
 /// being removed, so auditing the timestamp has no meaning. Audit of
 /// deletions lives in the Phase 1 `_logs` mirror tables (populated by
 /// the `crud_log_url` pool).
-pub(crate) fn build_delete<'a, T: Model>(qs: &QuerySet<T>) -> QueryBuilder<'a, Postgres> {
-    let mut qb = QueryBuilder::new("DELETE FROM ");
-    qb.push(T::table_name());
-    push_where(&mut qb, qs);
-    qb
+pub(crate) fn build_delete<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("DELETE FROM ");
+    acc.push_sql(T::table_name());
+    push_where(&mut acc, qs);
+    acc
 }
 
 #[cfg(test)]
@@ -1072,7 +1074,21 @@ mod tests {
         }
     }
 
-    // `QueryBuilder::sql()` exposes the emitted SQL text — that is what we
+    // T3: the SQL emitter bounds on `T: FromPgRow` so it can interpolate
+    // `COLUMN_LIST` into `SELECT` / `SELECT DISTINCT` shapes. The unit
+    // tests below exercise SQL-text shape only (no row decode), so we
+    // supply a stub impl with a single `id` column — enough for
+    // `COLUMN_LIST` to be non-empty without pretending the fake model
+    // has a full schema.
+    impl FromPgRow for Fake {
+        const COLUMNS: &'static [&'static str] = &["id"];
+        const COLUMN_LIST: &'static str = "id";
+        fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
+            unreachable!("SQL-text unit tests do not exercise row decode")
+        }
+    }
+
+    // `SqlAccumulator::sql()` exposes the emitted SQL text — that is what we
     // assert on. Bind values don't appear in `.sql()`, they are tracked
     // separately and substituted as `$1`, `$2`, …; counting placeholders is
     // the unit-test-level proxy for "the right number of binds were made".
@@ -1080,17 +1096,17 @@ mod tests {
     #[test]
     fn select_no_filter_omits_where() {
         let qs: QuerySet<Fake> = QuerySet::new();
-        let qb = build_select(&qs);
-        let sql = qb.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        let acc = build_select(&qs);
+        let sql = acc.sql().trim().to_string();
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     #[test]
     fn select_with_leaf_filter_emits_where_with_one_bind() {
         let qs: QuerySet<Fake> =
             QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("WHERE a = $1"), "got: {sql}");
     }
 
@@ -1099,8 +1115,8 @@ mod tests {
         let qs: QuerySet<Fake> = QuerySet::new()
             .filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))))
             .filter(|_| Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false))));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         // Flattened And(vec![a, b]) → "(a = $1 AND b = $2)"
         assert!(sql.contains("WHERE (a = $1 AND b = $2)"), "got: {sql}");
     }
@@ -1109,23 +1125,23 @@ mod tests {
     fn select_with_exclude_wraps_not() {
         let qs: QuerySet<Fake> = QuerySet::new()
             .exclude(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("WHERE NOT (a = $1)"), "got: {sql}");
     }
 
     #[test]
     fn select_distinct_plain_emits_distinct_keyword() {
         let qs: QuerySet<Fake> = QuerySet::new().distinct();
-        let qb = build_select(&qs);
-        assert!(qb.sql().contains("SELECT DISTINCT * FROM fakes"));
+        let acc = build_select(&qs);
+        assert!(acc.sql().contains("SELECT DISTINCT id FROM fakes"));
     }
 
     #[test]
     fn select_limit_offset_pushes_two_binds() {
         let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(5);
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("LIMIT $1"), "got: {sql}");
         assert!(sql.contains("OFFSET $2"), "got: {sql}");
     }
@@ -1138,8 +1154,8 @@ mod tests {
             value: FilterValue::List(Vec::new()),
         };
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("WHERE FALSE"), "got: {sql}");
     }
 
@@ -1151,8 +1167,8 @@ mod tests {
             value: FilterValue::List(Vec::new()),
         };
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("WHERE TRUE"), "got: {sql}");
     }
 
@@ -1168,8 +1184,8 @@ mod tests {
             ]),
         };
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("id IN ($1, $2, $3)"), "got: {sql}");
     }
 
@@ -1184,8 +1200,8 @@ mod tests {
             ),
         };
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("age BETWEEN $1 AND $2"), "got: {sql}");
     }
 
@@ -1197,8 +1213,8 @@ mod tests {
             value: FilterValue::Null,
         };
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("deleted_at IS NULL"), "got: {sql}");
         // No placeholder should appear — IS NULL is operator-only.
         assert!(!sql.contains('$'), "expected no binds, got: {sql}");
@@ -1207,8 +1223,8 @@ mod tests {
     #[test]
     fn count_ignores_order_limit_offset() {
         let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(5);
-        let qb = build_count(&qs);
-        let sql = qb.sql();
+        let acc = build_count(&qs);
+        let sql = acc.sql();
         assert!(sql.starts_with("SELECT COUNT(*) FROM fakes"));
         assert!(
             !sql.contains("LIMIT"),
@@ -1223,8 +1239,8 @@ mod tests {
     #[test]
     fn exists_emits_limit_1_inside_subquery() {
         let qs: QuerySet<Fake> = QuerySet::new();
-        let qb = build_exists(&qs);
-        let sql = qb.sql();
+        let acc = build_exists(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("SELECT EXISTS(SELECT 1 FROM fakes"));
         assert!(sql.contains("LIMIT 1"));
     }
@@ -1236,8 +1252,8 @@ mod tests {
             direction: Direction::Asc,
             nulls: NullsOrder::Last,
         });
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("ORDER BY title ASC NULLS LAST"), "got: {sql}");
     }
 
@@ -1248,10 +1264,10 @@ mod tests {
         // machinery (tested separately).
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.distinct = DistinctMode::On(vec!["title", "view_count"]);
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(
-            sql.contains("SELECT DISTINCT ON (title, view_count) * FROM fakes"),
+            sql.contains("SELECT DISTINCT ON (title, view_count) id FROM fakes"),
             "got: {sql}"
         );
     }
@@ -1270,8 +1286,8 @@ mod tests {
             value: FilterValue::String("50% off_sale\\".to_string()),
         };
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("title ILIKE $1"), "got: {sql}");
     }
 
@@ -1292,8 +1308,8 @@ mod tests {
         // silently returned the base row count — a correctness bug on a
         // public terminal.
         let qs: QuerySet<Fake> = QuerySet::new().distinct();
-        let qb = build_count(&qs);
-        let sql = qb.sql();
+        let acc = build_count(&qs);
+        let sql = acc.sql();
         assert!(
             sql.contains("SELECT COUNT(*) FROM (SELECT DISTINCT * FROM fakes)"),
             "got: {sql}"
@@ -1308,8 +1324,8 @@ mod tests {
         // well-formed even when the user supplied no ordering.
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.distinct = DistinctMode::On(vec!["title", "view_count"]);
-        let qb = build_count(&qs);
-        let sql = qb.sql();
+        let acc = build_count(&qs);
+        let sql = acc.sql();
         assert!(
             sql.contains(
                 "SELECT COUNT(*) FROM (SELECT DISTINCT ON (title, view_count) * FROM fakes"
@@ -1331,8 +1347,8 @@ mod tests {
             nulls: NullsOrder::Last,
         });
         qs.distinct = DistinctMode::On(vec!["title"]);
-        let qb = build_count(&qs);
-        let sql = qb.sql();
+        let acc = build_count(&qs);
+        let sql = acc.sql();
         assert!(
             sql.contains("ORDER BY title, view_count DESC NULLS LAST"),
             "got: {sql}"
@@ -1344,8 +1360,8 @@ mod tests {
         // Regression guard for the `DistinctMode::None` fast path — the
         // plain count must not pick up an unnecessary subquery wrap.
         let qs: QuerySet<Fake> = QuerySet::new();
-        let qb = build_count(&qs);
-        let sql = qb.sql().trim().to_string();
+        let acc = build_count(&qs);
+        let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "SELECT COUNT(*) FROM fakes");
     }
 
@@ -1358,9 +1374,9 @@ mod tests {
         // the SQL.
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.condition = Condition::And(Vec::new());
-        let qb = build_select(&qs);
-        let sql = qb.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        let acc = build_select(&qs);
+        let sql = acc.sql().trim().to_string();
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     #[test]
@@ -1370,9 +1386,9 @@ mod tests {
         // cleanup as the flat empty-And case.
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.condition = Condition::And(vec![Condition::True, Condition::And(Vec::new())]);
-        let qb = build_select(&qs);
-        let sql = qb.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        let acc = build_select(&qs);
+        let sql = acc.sql().trim().to_string();
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     #[test]
@@ -1381,9 +1397,9 @@ mod tests {
         // vacuously true. Handled by the same skip path.
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.condition = Condition::Not(Box::new(Condition::Or(Vec::new())));
-        let qb = build_select(&qs);
-        let sql = qb.sql().trim().to_string();
-        assert_eq!(sql, "SELECT * FROM fakes");
+        let acc = build_select(&qs);
+        let sql = acc.sql().trim().to_string();
+        assert_eq!(sql, "SELECT id FROM fakes");
     }
 
     // ── Task 9: UPDATE / DELETE emitter ───────────────────────────────
@@ -1398,8 +1414,8 @@ mod tests {
             value: AssignmentValue::Literal(FilterValue::I32(999)),
         };
         let qs: QuerySet<Fake> = QuerySet::new();
-        let qb = build_update(&qs, &[a]);
-        let sql = qb.sql();
+        let acc = build_update(&qs, &[a]);
+        let sql = acc.sql();
         assert!(
             sql.contains("UPDATE fakes SET view_count = $1, updated_at = now()"),
             "got: {sql}"
@@ -1421,8 +1437,8 @@ mod tests {
             value: AssignmentValue::Literal(FilterValue::Bool(true)),
         };
         let qs: QuerySet<Fake> = QuerySet::new();
-        let qb = build_update(&qs, &[a, b]);
-        let sql = qb.sql();
+        let acc = build_update(&qs, &[a, b]);
+        let sql = acc.sql();
         assert!(
             sql.contains("SET view_count = $1, published = $2, updated_at = now()"),
             "got: {sql}"
@@ -1432,7 +1448,7 @@ mod tests {
     #[test]
     fn update_with_filter_emits_where_with_bind_offset() {
         // Assignments take $1; the filter leaf takes $2. Positional
-        // numbering is contiguous — sqlx's `QueryBuilder` assigns them
+        // numbering is contiguous — the accumulator assigns them
         // in push order regardless of clause.
         use crate::query::update::{AssignmentValue, UpdateAssignment};
         let a = UpdateAssignment {
@@ -1441,8 +1457,8 @@ mod tests {
         };
         let qs: QuerySet<Fake> = QuerySet::new()
             .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(true))));
-        let qb = build_update(&qs, &[a]);
-        let sql = qb.sql();
+        let acc = build_update(&qs, &[a]);
+        let sql = acc.sql();
         assert!(
             sql.contains("SET view_count = $1, updated_at = now()"),
             "got: {sql}"
@@ -1456,8 +1472,8 @@ mod tests {
         // semantics as raw `DELETE FROM table`. Callers who want safety
         // chain a filter.
         let qs: QuerySet<Fake> = QuerySet::new();
-        let qb = build_delete(&qs);
-        let sql = qb.sql().trim().to_string();
+        let acc = build_delete(&qs);
+        let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "DELETE FROM fakes");
     }
 
@@ -1465,8 +1481,8 @@ mod tests {
     fn delete_with_filter_emits_where() {
         let qs: QuerySet<Fake> = QuerySet::new()
             .filter(|_| Condition::Leaf(Leaf::eq_raw("published", FilterValue::Bool(false))));
-        let qb = build_delete(&qs);
-        let sql = qb.sql();
+        let acc = build_delete(&qs);
+        let sql = acc.sql();
         assert!(sql.starts_with("DELETE FROM fakes"), "got: {sql}");
         assert!(sql.contains("WHERE published = $1"), "got: {sql}");
     }
@@ -1477,8 +1493,8 @@ mod tests {
         // for SELECT — `DELETE FROM table` without `WHERE TRUE` noise.
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.condition = Condition::And(Vec::new());
-        let qb = build_delete(&qs);
-        let sql = qb.sql().trim().to_string();
+        let acc = build_delete(&qs);
+        let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "DELETE FROM fakes");
     }
 
@@ -1536,7 +1552,7 @@ mod tests {
     }
 
     fn dummy_join_decoder(
-        _row: &sqlx::postgres::PgRow,
+        _row: &tokio_postgres::Row,
         _prefix: &str,
     ) -> Result<Option<Box<dyn std::any::Any + Send + Sync>>, crate::DjogiError> {
         // Never invoked — these tests only exercise SQL emission.
@@ -1561,8 +1577,8 @@ mod tests {
         let mut qs: QuerySet<Fake> =
             QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
         qs.select_related_paths.push(owner_path());
-        let qb = build_select_joined(&qs);
-        let sql = qb.sql();
+        let acc = build_select_joined(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("WHERE fakes.id = $1"), "got: {sql}");
         // And the LEFT JOIN stays in place — the fix must not drop the
         // join clause while qualifying the where.
@@ -1583,8 +1599,8 @@ mod tests {
             nulls: NullsOrder::Default,
         });
         qs.select_related_paths.push(owner_path());
-        let qb = build_select_joined(&qs);
-        let sql = qb.sql();
+        let acc = build_select_joined(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("ORDER BY fakes.created_at ASC"), "got: {sql}");
     }
 
@@ -1597,8 +1613,8 @@ mod tests {
         let mut qs: QuerySet<Fake> = QuerySet::new();
         qs.distinct = DistinctMode::On(vec!["id"]);
         qs.select_related_paths.push(owner_path());
-        let qb = build_select_joined(&qs);
-        let sql = qb.sql();
+        let acc = build_select_joined(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("SELECT DISTINCT ON (fakes.id)"), "got: {sql}");
     }
 
@@ -1609,8 +1625,8 @@ mod tests {
         // shipped SQL byte-for-byte.
         let qs: QuerySet<Fake> =
             QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("id", FilterValue::I64(42))));
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(sql.contains("WHERE id = $1"), "got: {sql}");
         assert!(
             !sql.contains("fakes.id"),
@@ -1623,8 +1639,8 @@ mod tests {
     #[test]
     fn select_for_update_appends_lock_tail() {
         let qs: QuerySet<Fake> = QuerySet::new().select_for_update();
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(
             sql.trim_end().ends_with("FOR UPDATE"),
             "expected FOR UPDATE tail, got: {sql}"
@@ -1640,8 +1656,8 @@ mod tests {
         // `.nowait()` alone — implies the base `FOR UPDATE` per the
         // rustdoc contract.
         let qs: QuerySet<Fake> = QuerySet::new().nowait();
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(
             sql.trim_end().ends_with("FOR UPDATE NOWAIT"),
             "expected FOR UPDATE NOWAIT tail, got: {sql}"
@@ -1651,8 +1667,8 @@ mod tests {
     #[test]
     fn skip_locked_appends_for_update_skip_locked_tail() {
         let qs: QuerySet<Fake> = QuerySet::new().skip_locked();
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(
             sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
             "expected FOR UPDATE SKIP LOCKED tail, got: {sql}"
@@ -1665,8 +1681,8 @@ mod tests {
         // emitter must match that order — swapping them yields a
         // syntax error the caller only sees at runtime.
         let qs: QuerySet<Fake> = QuerySet::new().limit(10).offset(5).select_for_update();
-        let qb = build_select(&qs);
-        let sql = qb.sql();
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         let limit_idx = sql.find("LIMIT").expect("LIMIT must appear");
         let offset_idx = sql.find("OFFSET").expect("OFFSET must appear");
         let lock_idx = sql.find("FOR UPDATE").expect("FOR UPDATE must appear");
@@ -1681,12 +1697,11 @@ mod tests {
         // Chaining `.nowait().skip_locked()` — the skip_locked call
         // overwrites the nowait variant. Mirrors the rustdoc contract.
         let qs: QuerySet<Fake> = QuerySet::new().nowait().skip_locked();
-        let qb = build_select(&qs);
-        let sql = qb.sql();
-        assert!(sql.contains("SKIP LOCKED"), "got: {sql}");
+        let acc = build_select(&qs);
+        let sql = acc.sql();
         assert!(
-            !sql.contains("NOWAIT"),
-            "skip_locked must have overwritten nowait: {sql}"
+            sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
+            "expected skip_locked to win over nowait, got: {sql}"
         );
     }
 }

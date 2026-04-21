@@ -57,8 +57,8 @@ use crate::expr::node::ExprNode;
 ///
 /// Each `Numeric` impl carries a pair of associated constants —
 /// [`Numeric::SUM_CAST`] and [`Numeric::AVG_CAST`] — that name the
-/// Postgres type the aggregate result must be cast to so sqlx can
-/// decode it back into the Rust type the typed
+/// Postgres type the aggregate result must be cast to so it decodes
+/// back into the Rust type the typed
 /// [`super::aggregate::AggregateExpr<Out>`] surface promised.
 ///
 /// Why they exist: Postgres widens integer aggregates. `SUM(BIGINT)`
@@ -70,12 +70,12 @@ use crate::expr::node::ExprNode;
 /// `V::SUM_CAST` / `V::AVG_CAST` lookup, no per-type switch on the
 /// method side.
 pub trait Numeric: sealed::Sealed {
-    /// Postgres type to cast `SUM(col)` back to so sqlx decodes into
+    /// Postgres type to cast `SUM(col)` back to so the decoder returns
     /// `V` directly. Always a framework-baked `&'static str`
     /// (`"BIGINT"` for `i64`, `"REAL"` for `f32`, etc.) — never user
-    /// input, safe to `qb.push(..)` as a raw SQL token.
+    /// input, safe to push as a raw SQL token.
     const SUM_CAST: &'static str;
-    /// Postgres type to cast `AVG(col)` back to so sqlx decodes into
+    /// Postgres type to cast `AVG(col)` back to so the decoder returns
     /// `f64` directly. Always `"DOUBLE PRECISION"` for Phase 4's
     /// numeric set — `AVG` always returns `f64` at the typed surface.
     const AVG_CAST: &'static str;
@@ -105,14 +105,14 @@ mod sealed {
 // decode into `f64` uniformly, which matches the typed surface's
 // `Out = f64` promise on `avg()`.
 
-// Per-type cast target matches the Rust type `Out = V` promises: sqlx's
-// `i16` decode maps to Postgres `SMALLINT`, `i32` to `INTEGER`, `i64`
+// Per-type cast target matches the Rust type `Out = V` promises:
+// `i16` maps to Postgres `SMALLINT`, `i32` to `INTEGER`, `i64`
 // to `BIGINT`, `f32` to `REAL`, `f64` to `DOUBLE PRECISION`. Narrowing
 // casts from a wider Postgres type (e.g. `NUMERIC -> BIGINT`) raise a
 // `numeric_value_out_of_range` error if the sum genuinely overflows
 // the target, which is the correct behaviour — users aggregating values
 // that wouldn't fit back into `V` should declare a larger `V` on the
-// column or drop to raw sqlx. This is documented on `sum()` below.
+// column or use `ctx.raw_scalar`. This is documented on `sum()` below.
 impl Numeric for i16 {
     const SUM_CAST: &'static str = "SMALLINT";
     const AVG_CAST: &'static str = "DOUBLE PRECISION";

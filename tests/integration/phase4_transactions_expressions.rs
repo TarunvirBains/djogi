@@ -24,23 +24,21 @@
 //! `atomic()` takes a `for<'a> FnOnce(&'a mut DjogiContext) ->
 //! AtomicFuture<'a, R>` closure where `AtomicFuture<'a, R>` is a
 //! `Pin<Box<dyn Future<...> + Send + 'a>>`. This is the same pattern
-//! `sqlx::Connection::transaction` uses — it avoids the "async closure
+//! `tokio_postgres`-backed transactions use — it avoids the "async closure
 //! implementation not general enough" HRTB inference limitation today's
 //! compiler hits on bare `AsyncFnOnce` closures whose bodies reborrow
 //! from the closure argument.
 //!
 //! # Fixture strategy
 //!
-//! Each test provisions the HeeRanjId schema + the Phase 4 tables via
-//! `setup_phase4(&pool)`. `ALTER DATABASE ... SET heer.node_id = '1'`
-//! persists the node ID at the database level so every pool connection
-//! — including the one `pool.begin()` checks out inside `atomic()` —
-//! inherits it. Same rationale as `phase1_model::setup_posts`; see that
-//! helper's doc comment for the full explanation.
+//! Each test provisions the Phase 4 tables via `setup_phase4(&mut ctx)`.
+//! The `#[djogi_test]` bootstrap already installs HeeRanjID schema, seeds
+//! node 1, and sets `heer.node_id = '1'` at the database level so every
+//! pool connection — including the one `atomic()` checks out — inherits
+//! it without any per-connection SET calls.
 
 use djogi::prelude::*;
 use djogi::transaction::{atomic, retry_on_conflict};
-use sqlx::PgPool;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -84,7 +82,7 @@ pub struct Entry {
 // Events-enabled model for Phase 4 Task 6. `kind` is the payload-
 // visible column; `internal_notes` is excluded from the outbox payload
 // via `#[field(outbox = "ignore")]`. Kept separate from `Account` so
-// Tasks 1–5 assertions that count rows in `accounts_outbox` stay
+// Tasks 1-5 assertions that count rows in `accounts_outbox` stay
 // unaffected (non-events models write nothing there).
 #[model(table = "notifications", events)]
 #[derive(Debug, Clone, serde::Serialize)]
@@ -98,57 +96,15 @@ pub struct Notification {
 // Fixture helpers
 // ---------------------------------------------------------------------------
 
-async fn setup_phase4(pool: &PgPool) {
-    heeranjid_sqlx::install_schema(pool).await.unwrap();
-    heeranjid_sqlx::seed_default_node(pool).await.unwrap();
-
-    let db_name: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-
-    // Prime every connection the `sqlx::test` pool may hand out.
-    // `ALTER DATABASE ... SET heer.node_id` takes effect for **new**
-    // connections — existing pool connections opened during the
-    // migration / seed phase above do not re-read the setting until
-    // they reconnect. `atomic(&pool, ...)` calls `pool.begin()`,
-    // which can reuse one of those stale connections; the subsequent
-    // `generate_id()` then raises SQLSTATE P0001
-    // ("heer.node_id is not set for this session"). We fan out
-    // enough parallel acquisitions to cover the default pool size,
-    // run `set_heer_node_id(1)` on each, and drop the handles so the
-    // connections return to the pool with the setting baked in.
-    //
-    // `sqlx::test` provisions up to 10 connections by default; 12
-    // here covers the ceiling with two extra slots for slack.
-    let mut handles = Vec::new();
-    for _ in 0..12 {
-        let pool = pool.clone();
-        handles.push(tokio::spawn(async move {
-            let mut conn = pool.acquire().await.unwrap();
-            sqlx::query("SELECT set_heer_node_id(1)")
-                .execute(&mut *conn)
-                .await
-                .unwrap();
-        }));
-    }
-    for h in handles {
-        h.await.unwrap();
-    }
-
-    // Each `include_str!` below is a single-statement SQL file — the
-    // sqlx::migrate / sqlx::query execute path prepares each
-    // statement individually, so a file with multiple `;`-separated
-    // top-level statements raises SQLSTATE 42601 ("cannot insert
-    // multiple commands into a prepared statement"). The trigger-
-    // function definition and the trigger attachment sit in their
-    // own files (006 / 007) for that reason.
+/// Create the Phase 4 tables. The `#[djogi_test]` bootstrap already handles
+/// HeeRanjID schema installation, node seeding, and `heer.node_id` at the
+/// database level — no setup required here beyond DDL.
+///
+/// Each `include_str!` below is a single-statement SQL file. Postgres does
+/// not accept multiple `;`-separated statements in a single prepared query,
+/// so the trigger-function definition and trigger attachment sit in their
+/// own files (006 / 007).
+async fn setup_phase4(ctx: &mut djogi::DjogiContext) {
     const ACCOUNTS_DDL: &str = include_str!("migrations/phase4/001_accounts.sql");
     const LEDGERS_DDL: &str = include_str!("migrations/phase4/002_ledgers.sql");
     const ENTRIES_DDL: &str = include_str!("migrations/phase4/003_entries.sql");
@@ -160,32 +116,25 @@ async fn setup_phase4(pool: &PgPool) {
     const NOTIFICATIONS_REWRITE_TRIGGER_DDL: &str =
         include_str!("migrations/phase4/007_notifications_rewrite_trigger.sql");
 
-    sqlx::query(ACCOUNTS_DDL)
-        .execute(pool)
+    ctx.raw_execute(ACCOUNTS_DDL, &[])
         .await
         .expect("apply 001_accounts.sql");
-    sqlx::query(LEDGERS_DDL)
-        .execute(pool)
+    ctx.raw_execute(LEDGERS_DDL, &[])
         .await
         .expect("apply 002_ledgers.sql");
-    sqlx::query(ENTRIES_DDL)
-        .execute(pool)
+    ctx.raw_execute(ENTRIES_DDL, &[])
         .await
         .expect("apply 003_entries.sql");
-    sqlx::query(NOTIFICATIONS_DDL)
-        .execute(pool)
+    ctx.raw_execute(NOTIFICATIONS_DDL, &[])
         .await
         .expect("apply 004_notifications.sql");
-    sqlx::query(NOTIFICATIONS_OUTBOX_DDL)
-        .execute(pool)
+    ctx.raw_execute(NOTIFICATIONS_OUTBOX_DDL, &[])
         .await
         .expect("apply 005_notifications_outbox.sql");
-    sqlx::query(NOTIFICATIONS_REWRITE_FN_DDL)
-        .execute(pool)
+    ctx.raw_execute(NOTIFICATIONS_REWRITE_FN_DDL, &[])
         .await
         .expect("apply 006_notifications_rewrite_fn.sql");
-    sqlx::query(NOTIFICATIONS_REWRITE_TRIGGER_DDL)
-        .execute(pool)
+    ctx.raw_execute(NOTIFICATIONS_REWRITE_TRIGGER_DDL, &[])
         .await
         .expect("apply 007_notifications_rewrite_trigger.sql");
 }
@@ -204,9 +153,10 @@ fn entry_for_insert(memo: &str, ledger: &Ledger) -> Entry {
 // Task 1 integration tests — atomic() / savepoints / on_commit
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn atomic_commits_on_success(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn atomic_commits_on_success(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -224,14 +174,14 @@ async fn atomic_commits_on_success(pool: PgPool) {
     .await
     .expect("atomic should commit on Ok");
 
-    let mut verify_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    let count: i64 = Account::objects().count(&mut verify_ctx).await.unwrap();
+    let count: i64 = Account::objects().count(&mut ctx).await.unwrap();
     assert_eq!(count, 1, "committed row must be visible after the scope");
 }
 
-#[sqlx::test]
-async fn atomic_rolls_back_on_err(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn atomic_rolls_back_on_err(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     let res = atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -249,14 +199,14 @@ async fn atomic_rolls_back_on_err(pool: PgPool) {
     .await;
     assert!(res.is_err(), "closure returned Err must surface");
 
-    let mut verify_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    let count: i64 = Account::objects().count(&mut verify_ctx).await.unwrap();
+    let count: i64 = Account::objects().count(&mut ctx).await.unwrap();
     assert_eq!(count, 0, "rollback must leave no rows");
 }
 
-#[sqlx::test]
-async fn nested_atomic_uses_savepoints(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn nested_atomic_uses_savepoints(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |outer| {
         Box::pin(async move {
@@ -293,14 +243,14 @@ async fn nested_atomic_uses_savepoints(pool: PgPool) {
     .await
     .expect("outer atomic must still commit after nested rollback");
 
-    let mut verify_ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    let count: i64 = Account::objects().count(&mut verify_ctx).await.unwrap();
+    let count: i64 = Account::objects().count(&mut ctx).await.unwrap();
     assert_eq!(count, 1, "only the outer row survives the nested rollback");
 }
 
-#[sqlx::test]
-async fn on_commit_fires_after_outer_commit(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn on_commit_fires_after_outer_commit(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
     let flag = Arc::new(AtomicBool::new(false));
 
     {
@@ -332,9 +282,10 @@ async fn on_commit_fires_after_outer_commit(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn on_commit_does_not_fire_on_rollback(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn on_commit_does_not_fire_on_rollback(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
     let flag = Arc::new(AtomicBool::new(false));
 
     let _res = {
@@ -357,9 +308,10 @@ async fn on_commit_does_not_fire_on_rollback(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn savepoint_rollback_discards_inner_on_commit(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn savepoint_rollback_discards_inner_on_commit(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
     let count = Arc::new(AtomicUsize::new(0));
 
     {
@@ -398,9 +350,10 @@ async fn savepoint_rollback_discards_inner_on_commit(pool: PgPool) {
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }
 
-#[sqlx::test]
-async fn nested_atomic_on_commit_promotes_to_outer(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn nested_atomic_on_commit_promotes_to_outer(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
     let count = Arc::new(AtomicUsize::new(0));
 
     {
@@ -440,10 +393,9 @@ async fn nested_atomic_on_commit_promotes_to_outer(pool: PgPool) {
 // exercised in Task 7 (row locks).
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn retry_on_conflict_does_not_retry_on_success(pool: PgPool) {
-    setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn retry_on_conflict_does_not_retry_on_success(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
 
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
@@ -462,10 +414,9 @@ async fn retry_on_conflict_does_not_retry_on_success(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn retry_on_conflict_short_circuits_on_non_lock_error(pool: PgPool) {
-    setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn retry_on_conflict_short_circuits_on_non_lock_error(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
 
     let calls = Arc::new(AtomicUsize::new(0));
     let c = calls.clone();
@@ -489,10 +440,9 @@ async fn retry_on_conflict_short_circuits_on_non_lock_error(pool: PgPool) {
 // `updated_at` all surface on the receiver. Task 2 scope.
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn save_rehydrates_updated_at(pool: PgPool) {
-    setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn save_rehydrates_updated_at(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
 
     let mut account = Account::create(
         &mut ctx,
@@ -520,26 +470,25 @@ async fn save_rehydrates_updated_at(pool: PgPool) {
     assert_eq!(account.balance, 999);
 }
 
-#[sqlx::test]
-async fn save_reflects_trigger_modified_fields(pool: PgPool) {
-    setup_phase4(&pool).await;
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn save_reflects_trigger_modified_fields(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
 
     // BEFORE UPDATE trigger that bumps balance by 1 — verifies the
     // receiver sees the trigger-adjusted value after save.
-    sqlx::query(
+    ctx.raw_execute(
         "CREATE OR REPLACE FUNCTION accounts_trigger() RETURNS trigger AS $$ \
          BEGIN NEW.balance := NEW.balance + 1; RETURN NEW; END; \
          $$ LANGUAGE plpgsql;",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
-    sqlx::query(
+    ctx.raw_execute(
         "CREATE TRIGGER t_accounts BEFORE UPDATE ON accounts \
          FOR EACH ROW EXECUTE FUNCTION accounts_trigger();",
+        &[],
     )
-    .execute(&pool)
     .await
     .unwrap();
 
@@ -564,9 +513,10 @@ async fn save_reflects_trigger_modified_fields(pool: PgPool) {
 // Task 3b: expression-backed UPDATE assignments — `col = col + N`
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn bulk_update_arithmetic_expression(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn bulk_update_arithmetic_expression(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     // Seed two accounts; wrapping in `atomic()` keeps the connection's
     // `heer.node_id` GUC pinned across every pool-checkout during the
@@ -615,9 +565,10 @@ async fn bulk_update_arithmetic_expression(pool: PgPool) {
     .unwrap();
 }
 
-#[sqlx::test]
-async fn bulk_update_field_to_field_copy(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn bulk_update_field_to_field_copy(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -652,16 +603,17 @@ async fn bulk_update_field_to_field_copy(pool: PgPool) {
 // transaction-backed context.
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn prefetch_works_inside_atomic(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn prefetch_works_inside_atomic(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     // All writes + reads happen inside a single atomic scope. If the
     // prefetch loader still bailed on `ContextInner::Transaction`, this
     // test would fail at the `.fetch_all_prefetched(ctx)` call with a
-    // `Sqlx(Configuration(...))` error. The assertion on the resolved
-    // relation proves the loader ran over the transaction-backed
-    // context and stitched the parent row correctly.
+    // configuration error. The assertion on the resolved relation proves
+    // the loader ran over the transaction-backed context and stitched
+    // the parent row correctly.
     atomic(&pool, |ctx| {
         Box::pin(async move {
             let ledger = Ledger::create(
@@ -738,9 +690,10 @@ async fn prefetch_works_inside_atomic(pool: PgPool) {
 // transactional session — predictable and race-free.
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn aggregate_sum(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn aggregate_sum(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -767,9 +720,10 @@ async fn aggregate_sum(pool: PgPool) {
     .expect("aggregate sum scope must succeed");
 }
 
-#[sqlx::test]
-async fn aggregate_count_with_filter(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn aggregate_count_with_filter(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -807,9 +761,10 @@ async fn aggregate_count_with_filter(pool: PgPool) {
     .expect("aggregate count+filter scope must succeed");
 }
 
-#[sqlx::test]
-async fn annotate_single_aggregate(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn annotate_single_aggregate(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -872,13 +827,14 @@ async fn annotate_single_aggregate(pool: PgPool) {
     .expect("annotate single aggregate scope must succeed");
 }
 
-#[sqlx::test]
-async fn field_vs_field_filter(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn field_vs_field_filter(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     // Seed + query inside a single `atomic()` scope. The Phase 2
-    // integration pattern (`pool.begin()` + `SELECT set_heer_node_id(1)`)
-    // is what makes multi-INSERT fixtures robust against pool connections
+    // integration pattern used pool.begin() + SELECT set_heer_node_id(1)
+    // to make multi-INSERT fixtures robust against pool connections
     // that were open before `ALTER DATABASE ... SET heer.node_id = '1'`
     // took effect. `atomic()` threads the same kind of transactional
     // session through `DjogiContext::Transaction` so the expression-IR
@@ -961,9 +917,10 @@ async fn field_vs_field_filter(pool: PgPool) {
 // seeds + reads the same transactional session with no race window.
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn exists_correlated_subquery(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn exists_correlated_subquery(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1044,9 +1001,10 @@ async fn exists_correlated_subquery(pool: PgPool) {
     .expect("EXISTS correlated subquery scope must succeed");
 }
 
-#[sqlx::test]
-async fn case_when_update(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn case_when_update(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1108,9 +1066,10 @@ async fn case_when_update(pool: PgPool) {
     .expect("CASE-WHEN UPDATE scope must succeed");
 }
 
-#[sqlx::test]
-async fn scalar_subquery_in_filter(pool: PgPool) {
-    setup_phase4(&pool).await;
+#[djogi::djogi_test]
+async fn scalar_subquery_in_filter(mut ctx: djogi::DjogiContext) {
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1184,15 +1143,16 @@ async fn scalar_subquery_in_filter(pool: PgPool) {
 //
 // Every test in this block uses `Notification` (the events-enabled
 // model) — wiring `#[model(events)]` onto `Account` would affect every
-// Tasks 1–5 test that counts rows or inspects tables, so we use a
+// Tasks 1-5 test that counts rows or inspects tables, so we use a
 // dedicated model instead. See the `Notification` definition above for
 // the attribute shape.
 
-#[sqlx::test(migrations = false)]
-async fn outbox_row_written_on_create_in_atomic(pool: PgPool) {
+#[djogi::djogi_test]
+async fn outbox_row_written_on_create_in_atomic(mut ctx: djogi::DjogiContext) {
     // Baseline: one `create` inside `atomic()` produces exactly one
     // outbox row with the expected action and row_id.
-    setup_phase4(&pool).await;
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     let created = atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1210,17 +1170,21 @@ async fn outbox_row_written_on_create_in_atomic(pool: PgPool) {
     .await
     .expect("create inside atomic must succeed");
 
-    let outbox_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications_outbox")
-        .fetch_one(&pool)
+    let outbox_count: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM notifications_outbox", &[])
         .await
         .unwrap();
     assert_eq!(outbox_count, 1, "expected exactly one outbox row");
 
-    let (row_id, action): (i64, String) =
-        sqlx::query_as("SELECT row_id, action FROM notifications_outbox LIMIT 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let row = ctx
+        .__query_one_for_macros(
+            "SELECT row_id, action FROM notifications_outbox LIMIT 1",
+            &[],
+        )
+        .await
+        .unwrap();
+    let row_id: i64 = row.try_get("row_id").unwrap();
+    let action: String = row.try_get("action").unwrap();
     assert_eq!(
         row_id,
         created.id.as_i64(),
@@ -1232,13 +1196,14 @@ async fn outbox_row_written_on_create_in_atomic(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn outbox_rolled_back_on_err(pool: PgPool) {
+#[djogi::djogi_test]
+async fn outbox_rolled_back_on_err(mut ctx: djogi::DjogiContext) {
     // Returning `Err` from `atomic()` rolls the transaction back,
     // discarding both the primary row AND the outbox companion. This
     // is the core guarantee of the transactional-outbox pattern — the
     // outbox and the primary write share one atomic scope.
-    setup_phase4(&pool).await;
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     let result = atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1257,12 +1222,12 @@ async fn outbox_rolled_back_on_err(pool: PgPool) {
     .await;
     assert!(result.is_err(), "atomic() must propagate the forced error");
 
-    let primary: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
-        .fetch_one(&pool)
+    let primary: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM notifications", &[])
         .await
         .unwrap();
-    let outbox: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications_outbox")
-        .fetch_one(&pool)
+    let outbox: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM notifications_outbox", &[])
         .await
         .unwrap();
     assert_eq!(primary, 0, "primary row must be rolled back");
@@ -1272,12 +1237,13 @@ async fn outbox_rolled_back_on_err(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn outbox_payload_excludes_ignored_fields(pool: PgPool) {
+#[djogi::djogi_test]
+async fn outbox_payload_excludes_ignored_fields(mut ctx: djogi::DjogiContext) {
     // `#[field(outbox = "ignore")]` must strip the column from the
     // emitted JSONB payload. Framework-injected columns (id/created_at/
     // updated_at) are expected to remain — they carry no exclusion flag.
-    setup_phase4(&pool).await;
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1296,11 +1262,11 @@ async fn outbox_payload_excludes_ignored_fields(pool: PgPool) {
     .await
     .expect("create inside atomic must succeed");
 
-    let payload: serde_json::Value =
-        sqlx::query_scalar("SELECT payload FROM notifications_outbox LIMIT 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let row = ctx
+        .__query_one_for_macros("SELECT payload FROM notifications_outbox LIMIT 1", &[])
+        .await
+        .unwrap();
+    let payload: serde_json::Value = row.try_get("payload").unwrap();
     let obj = payload
         .as_object()
         .expect("payload must serialize as a JSON object");
@@ -1315,8 +1281,8 @@ async fn outbox_payload_excludes_ignored_fields(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
+#[djogi::djogi_test]
+async fn outbox_save_writes_refreshed_payload(mut ctx: djogi::DjogiContext) {
     // After `save()` rehydrates the receiver from `RETURNING *`, the
     // outbox payload must reflect DB-rewritten state — not the caller's
     // pre-save Rust value.
@@ -1330,7 +1296,8 @@ async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
     // observable from Postgres; the test asserts on it to close the
     // refresh-vs-pre-save ambiguity Codex flagged against the weaker
     // pre-fixup assertion.
-    setup_phase4(&pool).await;
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     let created = atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1349,8 +1316,7 @@ async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
     .expect("create must succeed");
 
     // Clear the `create` outbox row so we assert cleanly on `save`.
-    sqlx::query("DELETE FROM notifications_outbox")
-        .execute(&pool)
+    ctx.raw_execute("DELETE FROM notifications_outbox", &[])
         .await
         .unwrap();
 
@@ -1373,11 +1339,15 @@ async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
         "save receiver must reflect the BEFORE UPDATE trigger's rewrite"
     );
 
-    let (action, payload): (String, serde_json::Value) =
-        sqlx::query_as("SELECT action, payload FROM notifications_outbox LIMIT 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let row = ctx
+        .__query_one_for_macros(
+            "SELECT action, payload FROM notifications_outbox LIMIT 1",
+            &[],
+        )
+        .await
+        .unwrap();
+    let action: String = row.try_get("action").unwrap();
+    let payload: serde_json::Value = row.try_get("payload").unwrap();
     assert_eq!(
         action, "save",
         "save path must record 'save' in the outbox action column"
@@ -1391,12 +1361,13 @@ async fn outbox_save_writes_refreshed_payload(pool: PgPool) {
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn outbox_delete_captures_predelete_snapshot(pool: PgPool) {
+#[djogi::djogi_test]
+async fn outbox_delete_captures_predelete_snapshot(mut ctx: djogi::DjogiContext) {
     // `delete(self, ctx)` consumes `self`, but the outbox row must
     // carry the pre-delete payload — proving the emission happens
     // before `self` is dropped at function scope end.
-    setup_phase4(&pool).await;
+    setup_phase4(&mut ctx).await;
+    let pool = ctx.pool().unwrap().clone();
 
     let created = atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -1414,8 +1385,7 @@ async fn outbox_delete_captures_predelete_snapshot(pool: PgPool) {
     .await
     .expect("create must succeed");
 
-    sqlx::query("DELETE FROM notifications_outbox")
-        .execute(&pool)
+    ctx.raw_execute("DELETE FROM notifications_outbox", &[])
         .await
         .unwrap();
 
@@ -1428,11 +1398,15 @@ async fn outbox_delete_captures_predelete_snapshot(pool: PgPool) {
     .await
     .expect("delete must succeed");
 
-    let (action, payload): (String, serde_json::Value) =
-        sqlx::query_as("SELECT action, payload FROM notifications_outbox LIMIT 1")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let row = ctx
+        .__query_one_for_macros(
+            "SELECT action, payload FROM notifications_outbox LIMIT 1",
+            &[],
+        )
+        .await
+        .unwrap();
+    let action: String = row.try_get("action").unwrap();
+    let payload: serde_json::Value = row.try_get("payload").unwrap();
     assert_eq!(action, "delete");
     let obj = payload.as_object().unwrap();
     assert_eq!(
@@ -1441,8 +1415,8 @@ async fn outbox_delete_captures_predelete_snapshot(pool: PgPool) {
         "delete payload must be the pre-delete snapshot"
     );
 
-    let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notifications")
-        .fetch_one(&pool)
+    let remaining: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM notifications", &[])
         .await
         .unwrap();
     assert_eq!(

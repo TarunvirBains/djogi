@@ -133,7 +133,7 @@ pub(crate) enum ExprNode {
         /// returns `BIGINT`. The typed [`super::aggregate::AggregateExpr`]
         /// surface promises `Out = V` for `SUM` over `V: Numeric` and
         /// `Out = f64` for `AVG`, so the emitter narrows / casts back to
-        /// the Rust type sqlx can decode. The cast target is always a
+        /// the Rust type the decoder returns. The cast target is always a
         /// framework-baked `&'static str` from
         /// [`super::aggregate`]'s method bodies — never user input.
         cast_to: Option<&'static str>,
@@ -266,12 +266,12 @@ pub(crate) enum AggOp {
     Sum,
     /// `AVG(col)` — returns `f64`. Postgres widens integer averages to
     /// `numeric`, but we decode to `f64` for ergonomics; callers who
-    /// need `Decimal` precision drop to raw sqlx until a Phase 5
+    /// need `Decimal` precision use `ctx.raw_scalar` until a Phase 5
     /// `Decimal`-typed aggregate lands.
     Avg,
     /// `MIN(col)` — returns `V`. Requires the column type to be
     /// Postgres-orderable; the typed surface gates on
-    /// sqlx `Type + Decode` rather than Rust `Ord` because `f64`
+    /// `postgres_types::FromSql` rather than Rust `Ord` because `f64`
     /// satisfies the former but not the latter.
     Min,
     /// `MAX(col)` — returns `V`. Same ordering requirement as

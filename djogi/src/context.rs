@@ -8,29 +8,24 @@
 //! # Context variants
 //!
 //! A context is one of:
-//! - **Pool**: backed by a `sqlx::PgPool` — each operation auto-connects
-//! - **Transaction**: an active `sqlx::Transaction<'static, sqlx::Postgres>` — all
-//!   operations join the same logical transaction until `commit()` or `rollback()`
+//! - **Pool**: backed by a `DjogiPool` — each operation checks out a connection, runs
+//!   the query, and returns the connection to the pool.
+//! - **Transaction**: an active `PgConnection` with an open transaction — all
+//!   operations share the same logical transaction until `commit()` or `rollback()`
 //!   is called.
 //!
 //! # Execution dispatch pattern
 //!
-//! CRUD methods and QuerySet terminals that today take `&mut DjogiContext` dispatch
-//! to sqlx via an inline match on [`ContextInner`]. At the sqlx boundary inside every
-//! method, the chain looks like:
+//! CRUD methods and QuerySet terminals that today take `&mut DjogiContext` acquire a
+//! `PgConnection` from the pool (Pool path) or reuse the existing connection
+//! (Transaction path). The inline match on [`ContextInner`] is the dispatch
+//! mechanism:
 //!
 //! ```ignore
-//! let q = sqlx::query_as::<_, Self>(sql).bind(col_a).bind(col_b);
-//! let row = match ctx.inner_mut() {
-//!     ContextInner::Pool(pool) => q.fetch_one(&*pool).await?,
-//!     ContextInner::Transaction(tx) => q.fetch_one(&mut **tx).await?,
-//! };
+//! let rows = ctx.query_all(sql, params).await?;
 //! ```
 //!
-//! Two variants = two match arms = negligible overhead. The alternative — implementing
-//! `sqlx::Executor` for `&mut DjogiContext` — would require navigating sqlx's GAT-shaped
-//! `Executor<'a>` lifetime and isn't how sqlx expects downstream code to plug in. The
-//! inline match is explicit, compiles easily, and keeps the abstraction boundary thin.
+//! Two variants = two match arms = negligible overhead.
 //!
 //! # Savepoint depth and nesting
 //!
@@ -52,26 +47,26 @@
 //! Registered callbacks are consumed by exactly two paths:
 //!
 //! - [`DjogiContext::commit`] — the low-level tx-backed commit drains the
-//!   queue after `sqlx::Transaction::commit` succeeds, runs each callback in
+//!   queue after the underlying commit succeeds, runs each callback in
 //!   FIFO order, and logs any callback error via `tracing::error!` without
-//!   unwinding the caller. Used by tests and integration code that hand-manage
-//!   the transaction boundary.
+//!   unwinding the caller.
 //! - `atomic()` (Phase 4 Task 1) — once landed, the canonical entry point
 //!   for application code; wraps the same drain-after-commit semantics but
-//!   also handles nested savepoints. See the Phase 4 plan section on
-//!   `atomic()` for the full flow.
+//!   also handles nested savepoints.
 //!
 //! Callbacks registered on a pool-backed context with no `atomic()` scope
-//! are silently dropped when the context is dropped — the retrofit does not
-//! ship immediate-firing for the pool-backed path. Application code that
-//! needs post-operation side effects on a bare pool should enter `atomic()`
-//! (Phase 4 Task 1 onwards) or call `commit()` explicitly on a tx-backed
-//! context.
+//! are silently dropped when the context is dropped.
 
-use crate::DjogiError;
+use crate::pg::connection::PgConnection;
+use crate::pg::decode::{FromPgRow, try_get_scalar};
+use crate::pg::pool::DjogiPool;
+use crate::{DbError, DjogiError};
 use futures::FutureExt;
+use postgres_types::FromSql;
+use postgres_types::ToSql;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
+use tokio_postgres::Row;
 
 /// Type alias for an async callback that fires after commit.
 ///
@@ -102,49 +97,50 @@ pub struct DjogiContext {
 
 /// Internal enum selecting the active context variant.
 ///
-/// `#[doc(hidden)] pub` because `#[derive(Model)]`-generated CRUD bodies
-/// pattern-match on this enum to dispatch to sqlx, and the generated code
-/// compiles in user crates that only depend on `djogi`. Framework modules
-/// reach it via the crate-private [`DjogiContext::inner_mut`] accessor; user
-/// code should go through [`DjogiContext::pool`] / [`DjogiContext::tx`]
-/// instead — the `__` prefix and `#[doc(hidden)]` attribute are the social
-/// signal that this type carries no stability guarantee.
+/// `#[doc(hidden)] pub` because framework modules pattern-match on this
+/// enum to dispatch to the connection. User code should go through the
+/// execution helpers (`query_all`, `query_opt`, `query_one`, `execute`,
+/// `batch_execute`) rather than reaching into the inner directly. The
+/// `__` prefix and `#[doc(hidden)]` attribute are the social signal that
+/// this type carries no stability guarantee.
+// The `Transaction` variant holds a `PgConnection` (232 bytes, due to the
+// `deadpool_postgres::Object` within). Boxing it would add an extra
+// allocation per transaction — undesirable on the hot path. The size
+// difference is intentional and expected: `Pool` holds only a clone of the
+// pool handle (Arc<..>, 8 bytes); `Transaction` holds the full connection.
+#[allow(clippy::large_enum_variant)]
 #[doc(hidden)]
 pub enum ContextInner {
-    /// Pool-backed: auto-connects per operation.
-    Pool(sqlx::PgPool),
+    /// Pool-backed: acquires a connection per operation.
+    Pool(DjogiPool),
 
-    /// Transaction-backed: all operations share the same logical transaction.
+    /// Transaction-backed: all operations share the same connection + transaction.
     ///
-    /// **Lifetime note:** This uses `'static` because the context owns the
-    /// transaction and is typically held in a local or field for the duration
-    /// of a `atomic()` call. If future uses require shorter-lived transactions
-    /// (e.g., borrowed from outer scope), a redesign to `&mut Transaction<'_>`
-    /// or a PIN-based approach may be needed. Document any such requirements
-    /// as they arrive.
-    Transaction(sqlx::Transaction<'static, sqlx::Postgres>),
+    /// The `PgConnection` wraps a checked-out pool connection. When this
+    /// context is committed or rolled back, the connection is returned to the pool.
+    Transaction(PgConnection),
 }
 
 /// Public-but-hidden alias of [`ContextInner`] for macro-generated code.
 ///
-/// `#[derive(Model)]` emits CRUD bodies that pattern-match on the context's
-/// inner variant to dispatch to sqlx. Those bodies compile in the user's
-/// crate, which only has `djogi` as a dependency — so the enum has to be
-/// nameable via an absolute path `::djogi::context::__ContextInnerForMacros`.
-/// Hidden from docs and prefixed with `__` so the social signal is clear:
-/// this is framework-internal API, not part of the stable surface.
+/// Macro-emitted CRUD bodies that pattern-match on the context's inner
+/// variant to dispatch to the database now go through the execution
+/// helpers (`ctx.query_one`, `ctx.execute`, etc.) rather than reaching
+/// into this enum directly. This alias is kept for backward compatibility
+/// during the T2 transition; T5 will remove the pattern-match exposure.
 #[doc(hidden)]
 pub type __ContextInnerForMacros = ContextInner;
 
 impl DjogiContext {
-    /// Create a context backed by a `PgPool`.
+    /// Create a context backed by a `DjogiPool`.
     ///
     /// # Example
     /// ```ignore
+    /// let pool = DjogiPool::connect(url).await?;
     /// let mut ctx = DjogiContext::from_pool(pool);
     /// let user = User::create(&mut ctx, user).await?;
     /// ```
-    pub fn from_pool(pool: sqlx::PgPool) -> Self {
+    pub fn from_pool(pool: DjogiPool) -> Self {
         DjogiContext {
             inner: ContextInner::Pool(pool),
             savepoint_depth: 0,
@@ -152,16 +148,16 @@ impl DjogiContext {
         }
     }
 
-    /// Create a context backed by an active transaction.
+    /// Create a context backed by an active `PgConnection` (transaction).
     ///
     /// Typically called by `atomic()` (Phase 4 Task 1) or by test / integration
     /// code that manages its own transaction boundaries. Production code
-    /// should prefer [`atomic()`](Self::atomic) (once it lands) so on-commit
+    /// should prefer [`atomic()`](crate::transaction::atomic) so on-commit
     /// callbacks dispatch correctly; this constructor is the low-level escape
     /// hatch for callers who really do need to hand-manage a transaction.
-    pub fn from_transaction(tx: sqlx::Transaction<'static, sqlx::Postgres>) -> Self {
+    pub fn from_connection(conn: PgConnection) -> Self {
         DjogiContext {
-            inner: ContextInner::Transaction(tx),
+            inner: ContextInner::Transaction(conn),
             savepoint_depth: 0,
             on_commit: Vec::new(),
         }
@@ -192,37 +188,28 @@ impl DjogiContext {
     ///
     /// Returns `Some(&pool)` iff the context was created via `from_pool()`.
     /// Returns `None` if this is a transaction context.
-    ///
-    /// Use this for raw sqlx escape hatches that do not require mutation, or
-    /// for multi-query fan-out terminals that must hold a pool reference across
-    /// multiple sequential queries (e.g. `fetch_all_prefetched`).
-    pub fn pool(&self) -> Option<&sqlx::PgPool> {
+    pub fn pool(&self) -> Option<&DjogiPool> {
         match &self.inner {
             ContextInner::Pool(pool) => Some(pool),
             ContextInner::Transaction(_) => None,
         }
     }
 
-    /// Get a mutable reference to the inner transaction if this context is transaction-backed.
+    /// Get a mutable reference to the inner connection if this context is transaction-backed.
     ///
-    /// Returns `Some(&mut tx)` iff the context was created via `from_transaction()`.
+    /// Returns `Some(&mut conn)` iff the context was created via `from_connection()`.
     /// Returns `None` if this is a pool context.
-    ///
-    /// Use this for raw sqlx escape hatches that require mutation (e.g., custom
-    /// `sqlx::QueryBuilder` operations).
-    pub fn tx(&mut self) -> Option<&mut sqlx::Transaction<'static, sqlx::Postgres>> {
+    pub fn conn(&mut self) -> Option<&mut PgConnection> {
         match &mut self.inner {
             ContextInner::Pool(_) => None,
-            ContextInner::Transaction(tx) => Some(tx),
+            ContextInner::Transaction(conn) => Some(conn),
         }
     }
 
     /// Crate-private mutable accessor for the context's inner variant.
     ///
     /// Used by every CRUD / QuerySet terminal in the framework to pattern-match
-    /// on pool-vs-transaction at the sqlx boundary. Kept `pub(crate)` because
-    /// [`ContextInner`] itself is crate-private — downstream code routes through
-    /// the public [`pool`](Self::pool) / [`tx`](Self::tx) accessors instead.
+    /// on pool-vs-transaction at the database boundary.
     pub(crate) fn inner_mut(&mut self) -> &mut ContextInner {
         &mut self.inner
     }
@@ -232,58 +219,179 @@ impl DjogiContext {
     ///
     /// Not part of the stable API — prefixed with `__` and `#[doc(hidden)]`
     /// so the social signal is clear: downstream code should not call this
-    /// directly. Use [`pool`](Self::pool) / [`tx`](Self::tx) instead, or stay
-    /// inside `Model::*` / `QuerySet::*` calls which dispatch automatically.
+    /// directly.
     #[doc(hidden)]
     pub fn __inner_mut_for_macros(&mut self) -> &mut __ContextInnerForMacros {
         &mut self.inner
     }
 
+    // -------------------------------------------------------------------------
+    // Public-but-hidden execution helpers for macro-generated code.
+    //
+    // The `pub(crate)` helpers below are the framework-internal dispatch
+    // surface.  These `__` variants expose the same functionality for code
+    // generated by `#[model]`, which runs in user crates and therefore cannot
+    // access `pub(crate)` members.  Naming and `#[doc(hidden)]` signal that
+    // these carry no stability guarantee.
+    // -------------------------------------------------------------------------
+
+    /// Execute a query and return all rows. For use by macro-emitted code only.
+    #[doc(hidden)]
+    pub async fn __query_all_for_macros(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<Row>, DjogiError> {
+        self.query_all(sql, params).await
+    }
+
+    /// Execute a query and return the first row, if any. For use by macro-emitted code only.
+    #[doc(hidden)]
+    pub async fn __query_opt_for_macros(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Option<Row>, DjogiError> {
+        self.query_opt(sql, params).await
+    }
+
+    /// Execute a query and return exactly one row. For use by macro-emitted code only.
+    #[doc(hidden)]
+    pub async fn __query_one_for_macros(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Row, DjogiError> {
+        self.query_one(sql, params).await
+    }
+
+    /// Execute a DML statement. For use by macro-emitted code only.
+    #[doc(hidden)]
+    pub async fn __execute_for_macros(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<u64, DjogiError> {
+        self.execute(sql, params).await
+    }
+
+    // -------------------------------------------------------------------------
+    // Execution helpers — the new dispatch surface for query terminals.
+    // -------------------------------------------------------------------------
+
+    /// Execute a parameterised query and return all rows.
+    ///
+    /// On the pool path, acquires a connection for the duration of this call.
+    /// On the transaction path, reuses the existing connection.
+    pub(crate) async fn query_all(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<Row>, DjogiError> {
+        match &mut self.inner {
+            ContextInner::Pool(pool) => {
+                let mut conn = pool.get().await?;
+                conn.query(sql, params).await
+            }
+            ContextInner::Transaction(conn) => conn.query(sql, params).await,
+        }
+    }
+
+    /// Execute a parameterised query and return the first row, if any.
+    pub(crate) async fn query_opt(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Option<Row>, DjogiError> {
+        match &mut self.inner {
+            ContextInner::Pool(pool) => {
+                let mut conn = pool.get().await?;
+                conn.query_opt(sql, params).await
+            }
+            ContextInner::Transaction(conn) => conn.query_opt(sql, params).await,
+        }
+    }
+
+    /// Execute a parameterised query and return exactly one row.
+    ///
+    /// Returns an error if zero or more than one row is returned.
+    pub(crate) async fn query_one(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<Row, DjogiError> {
+        match &mut self.inner {
+            ContextInner::Pool(pool) => {
+                let mut conn = pool.get().await?;
+                conn.query_one(sql, params).await
+            }
+            ContextInner::Transaction(conn) => conn.query_one(sql, params).await,
+        }
+    }
+
+    /// Execute a parameterised DML statement and return the number of rows affected.
+    pub(crate) async fn execute(
+        &mut self,
+        sql: &str,
+        params: &[&(dyn ToSql + Sync)],
+    ) -> Result<u64, DjogiError> {
+        match &mut self.inner {
+            ContextInner::Pool(pool) => {
+                let mut conn = pool.get().await?;
+                conn.execute(sql, params).await
+            }
+            ContextInner::Transaction(conn) => conn.execute(sql, params).await,
+        }
+    }
+
+    /// Execute a simple (no-bind) SQL statement.
+    ///
+    /// Used for `BEGIN`, `COMMIT`, `ROLLBACK`, savepoint commands, and other
+    /// control statements that carry no user-supplied values.
+    #[allow(dead_code)] // Used by PgConnection directly in transaction.rs; may be wired up in T5.
+    pub(crate) async fn batch_execute(&mut self, sql: &str) -> Result<(), DjogiError> {
+        match &mut self.inner {
+            ContextInner::Pool(pool) => {
+                let mut conn = pool.get().await?;
+                conn.batch_execute(sql).await
+            }
+            ContextInner::Transaction(conn) => conn.batch_execute(sql).await,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Transaction lifecycle.
+    // -------------------------------------------------------------------------
+
     /// Commit the underlying transaction, consuming the context.
     ///
     /// Returns `Ok(())` if the context was transaction-backed and the commit
-    /// succeeded. Returns `Err(DjogiError::Sqlx(..))` if the commit failed or
+    /// succeeded. Returns `Err(DjogiError::Db(..))` if the commit failed or
     /// the context was pool-backed (pool contexts have no transaction to
     /// commit — calling `.commit()` on one is a caller error).
     ///
     /// # On-commit callbacks
     ///
-    /// After `sqlx::Transaction::commit` returns `Ok(())`, every callback
-    /// registered via [`on_commit`](Self::on_commit) fires in FIFO order.
-    /// Per Phase 4 v3 Q9, callback errors are logged via `tracing::error!`
-    /// but do NOT unwind the caller — a failing callback must not fail the
-    /// commit, and subsequent callbacks still fire.
+    /// After the commit returns `Ok(())`, every callback registered via
+    /// [`on_commit`](Self::on_commit) fires in FIFO order. Per Phase 4 v3 Q9,
+    /// callback errors are logged via `tracing::error!` but do NOT unwind the
+    /// caller — a failing callback must not fail the commit, and subsequent
+    /// callbacks still fire.
     ///
     /// If the underlying commit fails, the callbacks are dropped without
     /// running (the transaction did not commit, so post-commit side effects
     /// are inappropriate).
-    ///
-    /// Prefer `atomic()` (Phase 4 Task 1) for transaction management;
-    /// `commit()` is the low-level escape hatch for tests and integration
-    /// code that manage transaction boundaries by hand.
-    ///
-    /// # Panics
-    ///
-    /// On-commit callbacks are drained panic-safely: each callback future
-    /// is wrapped in `AssertUnwindSafe(..).catch_unwind()`. A panicking
-    /// callback is logged via `tracing::error!` and the drain continues
-    /// with the next callback. The panic does **not** propagate out of
-    /// `commit()`. This matches Phase 4 v3 Q9 on error semantics: a
-    /// failing callback — whether it panics or returns `Err` — must not
-    /// fail the commit, and subsequent callbacks still fire.
     pub async fn commit(self) -> Result<(), DjogiError> {
-        // Split the context so we can run the callbacks after consuming
-        // the underlying transaction.
         let DjogiContext {
             inner, on_commit, ..
         } = self;
 
         match inner {
-            ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
-                "DjogiContext::commit called on a pool-backed context".into(),
+            ContextInner::Pool(_) => Err(DjogiError::Db(DbError::other(
+                "DjogiContext::commit called on a pool-backed context",
             ))),
-            ContextInner::Transaction(tx) => {
-                tx.commit().await.map_err(DjogiError::from)?;
+            ContextInner::Transaction(mut conn) => {
+                conn.batch_execute("COMMIT").await?;
                 drain_on_commit(on_commit).await;
                 Ok(())
             }
@@ -293,7 +401,7 @@ impl DjogiContext {
     /// Roll back the underlying transaction, consuming the context.
     ///
     /// Returns `Ok(())` if the context was transaction-backed and the
-    /// rollback succeeded. Returns `Err(DjogiError::Sqlx(..))` if the rollback
+    /// rollback succeeded. Returns `Err(DjogiError::Db(..))` if the rollback
     /// failed or the context was pool-backed.
     ///
     /// # On-commit callbacks
@@ -308,11 +416,11 @@ impl DjogiContext {
         self.on_commit.clear();
 
         match self.inner {
-            ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
-                "DjogiContext::rollback called on a pool-backed context".into(),
+            ContextInner::Pool(_) => Err(DjogiError::Db(DbError::other(
+                "DjogiContext::rollback called on a pool-backed context",
             ))),
-            ContextInner::Transaction(tx) => {
-                tx.rollback().await.map_err(DjogiError::from)?;
+            ContextInner::Transaction(mut conn) => {
+                conn.batch_execute("ROLLBACK").await?;
                 Ok(())
             }
         }
@@ -324,19 +432,18 @@ impl DjogiContext {
     /// already-transaction-backed context (nested transactions will be
     /// modelled via savepoints in Phase 4 Task 1's `atomic()` wrapper).
     ///
-    /// This is a low-level helper used by tests and by the forthcoming
-    /// `atomic()` implementation; production code should reach for
-    /// `atomic()` once it lands so on-commit callbacks dispatch correctly.
+    /// This is a low-level helper used by tests and by the `atomic()`
+    /// implementation; production code should reach for `atomic()`.
     pub async fn begin(&self) -> Result<DjogiContext, DjogiError> {
         match &self.inner {
             ContextInner::Pool(pool) => {
-                let tx = pool.begin().await.map_err(DjogiError::from)?;
-                Ok(DjogiContext::from_transaction(tx))
+                let mut conn = pool.get().await?;
+                conn.batch_execute("BEGIN").await?;
+                Ok(DjogiContext::from_connection(conn))
             }
-            ContextInner::Transaction(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
+            ContextInner::Transaction(_) => Err(DjogiError::Db(DbError::other(
                 "DjogiContext::begin called on a transaction-backed context; \
-                 nested transactions require atomic() (Phase 4 Task 1)"
-                    .into(),
+                 nested transactions require atomic() (Phase 4 Task 1)",
             ))),
         }
     }
@@ -347,43 +454,6 @@ impl DjogiContext {
     /// Callback errors are logged via `tracing::error!` but do not fail the
     /// commit (per Phase 4 v3 Q9 resolution). Subsequent callbacks still
     /// fire even if an earlier callback fails.
-    ///
-    /// # Drain points
-    ///
-    /// Registered callbacks are consumed by:
-    ///
-    /// - [`commit()`](Self::commit) — drains the queue after the underlying
-    ///   `sqlx::Transaction::commit` succeeds (this IS implemented).
-    /// - `atomic()` (Phase 4 Task 1) — the canonical path once it lands.
-    ///
-    /// # Behaviour on pool-backed contexts
-    ///
-    /// When called on a pool-backed context outside any `atomic()` scope,
-    /// the callback is queued but will not fire until a subsequent
-    /// `atomic()` enters and commits. Calling `on_commit` on a pool-backed
-    /// context without entering `atomic()` means the callback is silently
-    /// dropped when the context is dropped — the retrofit does not ship
-    /// immediate-firing for the pool-backed path, and Phase 4 Task 1 owns
-    /// the eventual pool-backed dispatch semantics.
-    ///
-    /// # Behaviour on rollback
-    ///
-    /// Callbacks registered during a transaction that is rolled back via
-    /// [`rollback()`](Self::rollback) are discarded without firing — see
-    /// that method for the full rationale.
-    ///
-    /// # Panics
-    ///
-    /// Panics inside a registered callback are not caught by the framework;
-    /// see [`commit()`](Self::commit)'s `# Panics` section for behavior.
-    ///
-    /// # Example
-    /// ```ignore
-    /// ctx.on_commit(|| async {
-    ///     cache.invalidate_user(user_id).await?;
-    ///     Ok(())
-    /// });
-    /// ```
     pub fn on_commit<F, Fut>(&mut self, callback: F)
     where
         F: FnOnce() -> Fut + Send + 'static,
@@ -408,6 +478,96 @@ impl DjogiContext {
     }
 }
 
+impl DjogiContext {
+    /// Execute ad-hoc SQL and decode every returned row into `T`.
+    ///
+    /// Use this when Djogi's `QuerySet` surface is too restrictive for a
+    /// one-off projection or join but you still want Djogi-managed
+    /// connection / transaction dispatch and `DjogiError` mapping.
+    ///
+    /// `binds` are positional Postgres parameters for `$1`, `$2`, …
+    /// in `sql`, passed in the same order they appear in the statement.
+    /// If this method is called inside [`atomic()`](crate::transaction::atomic),
+    /// it reuses the active transaction / savepoint connection rather than
+    /// escaping to a separate pool checkout.
+    ///
+    /// `T: FromPgRow` means callers can pass either a `#[model]`-derived
+    /// struct or any hand-written row shape that implements
+    /// [`FromPgRow`](crate::FromPgRow).
+    pub async fn raw_query<T: FromPgRow>(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<T>, DjogiError> {
+        let rows = self.query_all(sql, binds).await?;
+        rows.iter().map(T::from_pg_row).collect()
+    }
+
+    /// Execute ad-hoc SQL expected to return exactly one row decoded as `T`.
+    ///
+    /// This is the single-row sibling of [`raw_query`](Self::raw_query):
+    /// use it for hand-written SELECTs where `QuerySet::get()` cannot
+    /// express the projection but the result shape still matches a
+    /// `FromPgRow` decoder.
+    ///
+    /// `binds` map positionally to `$1`, `$2`, … in `sql`. When called
+    /// inside [`atomic()`](crate::transaction::atomic), the query runs on
+    /// the active transaction / savepoint connection.
+    ///
+    /// `T` may be a `#[model]` type or a custom struct with a manual
+    /// [`FromPgRow`](crate::FromPgRow) impl for an ad-hoc row shape.
+    pub async fn raw_fetch_one<T: FromPgRow>(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<T, DjogiError> {
+        let row = self
+            .query_opt(sql, binds)
+            .await?
+            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
+        T::from_pg_row(&row)
+    }
+
+    /// Execute ad-hoc SQL expected to return exactly one scalar column.
+    ///
+    /// This is the escape hatch for statements such as
+    /// `SELECT COUNT(*) ...` or `SELECT EXISTS (...)`. The first column of
+    /// the single returned row is decoded as `T`.
+    ///
+    /// `binds` are positional Postgres parameters for `$1`, `$2`, …
+    /// in `sql`. Inside [`atomic()`](crate::transaction::atomic), this
+    /// method respects the active transaction / savepoint automatically.
+    pub async fn raw_scalar<T>(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<T, DjogiError>
+    where
+        T: for<'a> FromSql<'a> + Send + 'static,
+    {
+        let row = self
+            .query_opt(sql, binds)
+            .await?
+            .ok_or_else(|| DjogiError::not_found("<raw>"))?;
+        try_get_scalar(&row, 0)
+    }
+
+    /// Execute ad-hoc DML / DDL and return the affected-row count.
+    ///
+    /// Use this for `INSERT`, `UPDATE`, `DELETE`, or other statements
+    /// outside the typed `QuerySet` surface. `binds` map positionally to
+    /// `$1`, `$2`, … in `sql`, and calls inside
+    /// [`atomic()`](crate::transaction::atomic) reuse the active
+    /// transaction / savepoint connection.
+    pub async fn raw_execute(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<u64, DjogiError> {
+        self.execute(sql, binds).await
+    }
+}
+
 /// Drain a batch of on-commit callbacks panic-safely.
 ///
 /// Wraps each callback future in `AssertUnwindSafe(..).catch_unwind()`
@@ -415,12 +575,6 @@ impl DjogiContext {
 /// aborting the drain loop. Callback `Err` returns are likewise logged
 /// and ignored — per Phase 4 v3 Q9 a callback failure must not fail the
 /// commit, and every subsequent callback still fires.
-///
-/// `AssertUnwindSafe` is the conventional escape hatch at async
-/// boundaries: user-supplied closures rarely satisfy `UnwindSafe`, and
-/// the callback body owns state that lives for the callback's lifetime
-/// alone, so there is no cross-callback shared state the panic could
-/// corrupt. Consumed by [`DjogiContext::commit`] and by `atomic()`.
 pub(crate) async fn drain_on_commit(callbacks: Vec<OnCommitCallback>) {
     for cb in callbacks {
         let result = AssertUnwindSafe(cb()).catch_unwind().await;
@@ -431,10 +585,6 @@ pub(crate) async fn drain_on_commit(callbacks: Vec<OnCommitCallback>) {
                 "on_commit callback returned Err; continuing",
             ),
             Err(panic_payload) => {
-                // Try to extract a message for the log line; fall back
-                // to a generic description otherwise. The payload itself
-                // is dropped here so the drain loop continues — this is
-                // the whole point of `catch_unwind`.
                 let msg = panic_payload
                     .downcast_ref::<&'static str>()
                     .copied()
@@ -456,22 +606,6 @@ mod tests {
 
     #[test]
     fn savepoint_depth_starts_at_zero_and_increments() {
-        // Create a context using the constructor without needing a real pool.
-        // We'll test the structural properties of the context without network.
-        // This is intentionally minimal — the retrofit agent will add
-        // integration tests once the full transaction flow is implemented.
-
-        // Since we can't construct a real pool in a unit test without Tokio,
-        // we skip pool construction and test only the savepoint depth logic
-        // on an internal representation. For now, this validates the API shape.
-
-        // TODO(phase4-retrofit): Integration tests with real pool will live
-        // in tests/integration/ once atomic() is implemented in Task 1.
-
-        // Test that savepoint depth starts at zero by looking at the internal state.
-        // We create a context but can't access inner directly. The public API
-        // savepoint_depth() is the proper test.
-
         // NOTE: Can't create a DjogiContext without a real pool in a blocking context.
         // The pool tests will be covered in integration tests with #[tokio::test].
         // For now, we document the constraint in CLAUDE.md notes and verify

@@ -8,12 +8,17 @@
 //! [`AnnotatedQuerySet::fetch_all`] issues
 //!
 //! ```sql
-//! SELECT t.*, <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1, ...
+//! SELECT t.<c1>, t.<c2>, ..., <agg_0> AS __djogi_agg_0, <agg_1> AS __djogi_agg_1, ...
 //! FROM <table> AS t
 //! [WHERE ...]
 //! [ORDER BY ...]
 //! [LIMIT $n] [OFFSET $n]
 //! ```
+//!
+//! The `t.<c_N>` prefix is the canonical column list emitted by
+//! `FromPgRow::COLUMN_LIST`, one column per field in struct-field
+//! order. Using an explicit column list (rather than `t.*`) pins the
+//! wire shape so `FromPgRow::from_pg_row` can decode positionally.
 //!
 //! and decodes the result into `Vec<(T, Decoded)>` where `Decoded`
 //! is a single value for arity 1 and a tuple for arities 2..=4.
@@ -40,24 +45,30 @@
 //! cannot add their own impls — same seal pattern as
 //! [`crate::query::queryset::IntoDistinctColumns`].
 //!
-//! # Why name-based decode for `T`
+//! # Why ordinal-prefix decode for `T` + name-based decode for aggregates
 //!
-//! The main row contains both `T`'s columns (from `t.*`) and the
-//! aggregate columns (from `<agg> AS __djogi_agg_N`). `T: FromRow`
-//! looks up columns by name and ignores columns it doesn't know
-//! about, so the aggregate aliases don't interfere with the `T`
-//! decode. The aggregate tuple then reads each slot's value by
-//! the `__djogi_agg_N` alias directly from the same `PgRow`.
+//! The main row contains both `T`'s columns (emitted as
+//! `t.<c1>, t.<c2>, ...` in the canonical `FromPgRow::COLUMNS`
+//! order) and the aggregate columns (from `<agg> AS __djogi_agg_N`).
+//! `FromPgRow::from_pg_row` decodes positions `0..N_COLS` and its
+//! column-count assert is `>= N_COLS`, so the trailing aggregate
+//! columns do not interfere with the model decode. The aggregate
+//! tuple then reads each slot's value by the `__djogi_agg_N` alias
+//! directly from the same `Row` — name-based because the aliases
+//! are stable well-known strings that never clash with model
+//! columns.
 
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
-use crate::context::{ContextInner, DjogiContext};
+use crate::context::DjogiContext;
 use crate::expr::AggregateExpr;
 use crate::model::Model;
+use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::decode::FromPgRow;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_select_with_annotations, emit_aggregate_with_window_and_cast};
-use sqlx::{Postgres, QueryBuilder};
+use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -85,12 +96,12 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// Rust tuple type returned inside `Vec<(T, Decoded)>`.
     type Decoded;
 
-    /// Push the aggregate SELECT-list columns onto `qb`, each prefixed
+    /// Push the aggregate SELECT-list columns onto `acc`, each prefixed
     /// with `, ` and aliased as `__djogi_agg_{N}`.
     ///
     /// Indexing starts at 0; callers already pushed `SELECT t.*` so
     /// every push here begins with a comma.
-    fn push_columns<'a>(&self, qb: &mut QueryBuilder<'a, Postgres>);
+    fn push_columns(&self, acc: &mut SqlAccumulator);
 
     /// Decode the aggregate columns from `row` into [`Self::Decoded`].
     ///
@@ -99,7 +110,7 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// not used because `row.try_get` by name is more robust to
     /// column-ordering surprises (though the framework never reorders
     /// the SELECT list in practice).
-    fn decode_tuple(row: &sqlx::postgres::PgRow) -> Result<Self::Decoded, sqlx::Error>;
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error>;
 }
 
 // ── Arity 1: single AggregateExpr<V> ─────────────────────────────────
@@ -117,19 +128,18 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 impl<V> sealed::Sealed for AggregateExpr<V> {}
 impl<V> IntoAggregateTuple for AggregateExpr<V>
 where
-    V: for<'r> sqlx::Decode<'r, Postgres> + sqlx::Type<Postgres> + Send + Unpin + 'static,
+    V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     type Decoded = V;
 
-    fn push_columns<'a>(&self, qb: &mut QueryBuilder<'a, Postgres>) {
-        qb.push(", ");
-        emit_aggregate_with_window_and_cast(qb, &self.node);
-        qb.push(" AS __djogi_agg_0");
+    fn push_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql(", ");
+        emit_aggregate_with_window_and_cast(acc, &self.node);
+        acc.push_sql(" AS __djogi_agg_0");
     }
 
-    fn decode_tuple(row: &sqlx::postgres::PgRow) -> Result<Self::Decoded, sqlx::Error> {
-        use sqlx::Row;
-        row.try_get::<V, _>("__djogi_agg_0")
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        row.try_get::<_, V>("__djogi_agg_0")
     }
 }
 
@@ -152,8 +162,7 @@ macro_rules! impl_into_aggregate_tuple {
         impl<$($ty),+> IntoAggregateTuple for ( $(AggregateExpr<$ty>,)+ )
         where
             $(
-                $ty: for<'r> sqlx::Decode<'r, Postgres>
-                    + sqlx::Type<Postgres>
+                $ty: for<'a> postgres_types::FromSql<'a>
                     + Send
                     + Unpin
                     + 'static,
@@ -161,19 +170,18 @@ macro_rules! impl_into_aggregate_tuple {
         {
             type Decoded = ( $($ty,)+ );
 
-            fn push_columns<'a>(&self, qb: &mut QueryBuilder<'a, Postgres>) {
+            fn push_columns(&self, acc: &mut SqlAccumulator) {
                 $(
-                    qb.push(", ");
-                    emit_aggregate_with_window_and_cast(qb, &self.$slot.node);
-                    qb.push(concat!(" AS ", $alias));
+                    acc.push_sql(", ");
+                    emit_aggregate_with_window_and_cast(acc, &self.$slot.node);
+                    acc.push_sql(concat!(" AS ", $alias));
                 )+
             }
 
-            fn decode_tuple(row: &sqlx::postgres::PgRow) -> Result<Self::Decoded, sqlx::Error> {
-                use sqlx::Row;
+            fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
                 Ok((
                     $(
-                        row.try_get::<$ty, _>($alias)?,
+                        row.try_get::<_, $ty>($alias)?,
                     )+
                 ))
             }
@@ -226,14 +234,13 @@ pub struct AnnotatedQuerySet<T: Model, A: IntoAggregateTuple> {
 
 impl<T: Model, A: IntoAggregateTuple + Send> AnnotatedQuerySet<T, A>
 where
-    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> + Send + Unpin,
+    T: FromPgRow + Send + Unpin,
 {
     /// Execute the annotated query and collect every matching row into
     /// a `Vec<(T, A::Decoded)>`.
     ///
-    /// Dispatches through the same inline-match on [`ContextInner`]
-    /// every other terminal uses — annotated queries work inside an
-    /// `atomic()` scope.
+    /// Dispatches through the context's execution helpers — annotated
+    /// queries work inside an `atomic()` scope.
     pub fn fetch_all<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -251,26 +258,24 @@ where
                 return Ok(Vec::new());
             }
 
-            let mut qb = build_select_with_annotations(&qs, |qb| {
-                aggregates.push_columns(qb);
+            let acc = build_select_with_annotations(&qs, |acc| {
+                aggregates.push_columns(acc);
             });
-            let q = qb.build();
-            let rows: Vec<sqlx::postgres::PgRow> = match ctx.inner_mut() {
-                ContextInner::Pool(pool) => q.fetch_all(&*pool).await.map_err(DjogiError::from)?,
-                ContextInner::Transaction(tx) => {
-                    q.fetch_all(&mut **tx).await.map_err(DjogiError::from)?
-                }
-            };
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows = ctx.query_all(&sql, &params).await?;
 
-            // Name-based decode: `T::from_row` reads only the columns
+            // Name-based decode: `T::from_pg_row` reads only the columns
             // `T` knows about (skipping the `__djogi_agg_N` aliases);
             // `A::decode_tuple` reads each aggregate slot by its
             // well-known alias. No offset math needed.
             let mut out: Vec<(T, A::Decoded)> = Vec::with_capacity(rows.len());
-            for row in rows {
-                let model = <T as sqlx::FromRow<'_, sqlx::postgres::PgRow>>::from_row(&row)
-                    .map_err(DjogiError::from)?;
-                let agg = A::decode_tuple(&row).map_err(DjogiError::from)?;
+            for row in &rows {
+                let model = T::from_pg_row(row)?;
+                let agg = A::decode_tuple(row).map_err(DjogiError::from)?;
                 out.push((model, agg));
             }
             Ok(out)
@@ -383,18 +388,31 @@ mod tests {
         }
     }
 
+    // T3: SQL-text unit tests exercise `build_select_with_annotations`
+    // which now bounds on `FromPgRow` so it can enumerate the canonical
+    // column list instead of `t.*`. The stub claims a single column
+    // `id` — enough to check the emitter's `t.<col>` shape without
+    // pretending the fake model has a full schema.
+    impl FromPgRow for Acc {
+        const COLUMNS: &'static [&'static str] = &["id"];
+        const COLUMN_LIST: &'static str = "id";
+        fn from_pg_row(_row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError> {
+            unreachable!("SQL-text unit tests do not exercise row decode")
+        }
+    }
+
     #[test]
     fn annotate_arity_one_emits_expected_sql() {
         let qs: QuerySet<Acc> = QuerySet::new();
         let f: FieldRef<Acc, i64> = FieldRef::new("balance");
         let agg = f.sum();
-        let qb = build_select_with_annotations(&qs, |qb| {
-            agg.push_columns(qb);
+        let acc = build_select_with_annotations(&qs, |acc| {
+            agg.push_columns(acc);
         });
-        let sql = qb.sql();
+        let sql = acc.sql();
         assert!(
             sql.contains(
-                "SELECT t.*, (SUM(balance) OVER ())::BIGINT AS __djogi_agg_0 FROM accs AS t"
+                "SELECT t.id, (SUM(balance) OVER ())::BIGINT AS __djogi_agg_0 FROM accs AS t"
             ),
             "got: {sql}"
         );
@@ -406,10 +424,10 @@ mod tests {
         let f1: FieldRef<Acc, i64> = FieldRef::new("balance");
         let f2: FieldRef<Acc, i64> = FieldRef::new("balance");
         let tuple = (f1.sum(), f2.count());
-        let qb = build_select_with_annotations(&qs, |qb| {
-            tuple.push_columns(qb);
+        let acc = build_select_with_annotations(&qs, |acc| {
+            tuple.push_columns(acc);
         });
-        let sql = qb.sql();
+        let sql = acc.sql();
         assert!(
             sql.contains("(SUM(balance) OVER ())::BIGINT AS __djogi_agg_0"),
             "got: {sql}"
@@ -429,8 +447,8 @@ mod tests {
         let qs: QuerySet<Acc> = QuerySet::new();
         let f: FieldRef<Acc, i64> = FieldRef::new("balance");
         let agg = f.sum();
-        let qb = build_aggregate_select(&qs, &agg.node);
-        let sql = qb.sql();
+        let acc = build_aggregate_select(&qs, &agg.node);
+        let sql = acc.sql();
         assert_eq!(
             sql.trim(),
             "SELECT (SUM(balance))::BIGINT FROM accs",
@@ -447,8 +465,8 @@ mod tests {
         let agg = f_count
             .count()
             .filter(f_cond.as_expr().lt(Expr::literal(0i64)));
-        let qb = build_aggregate_select(&qs, &agg.node);
-        let sql = qb.sql();
+        let acc = build_aggregate_select(&qs, &agg.node);
+        let sql = acc.sql();
         assert!(
             sql.contains("COUNT(balance) FILTER (WHERE balance < $1)"),
             "got: {sql}"

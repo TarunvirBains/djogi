@@ -2,9 +2,9 @@
 //!
 //! This module is the single source of truth for identifier validation
 //! across every djogi SQL emitter. Any macro-emitted `&'static str` that
-//! eventually lands inside `sqlx::QueryBuilder::push` — a relation path's
-//! `source_column` / `target_table`, a `FieldRef`'s column name, a field
-//! descriptor's `name` — goes through [`assert_plain_ident`] first so
+//! eventually lands inside an `SqlAccumulator::push_sql` call — a relation
+//! path's `source_column` / `target_table`, a `FieldRef`'s column name, a
+//! field descriptor's `name` — goes through [`assert_plain_ident`] first so
 //! broken macro emissions and hostile downstream bypass attempts produce
 //! a framework-bug panic instead of malformed SQL.
 //!

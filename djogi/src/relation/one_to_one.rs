@@ -20,6 +20,8 @@
 
 use crate::model::Model;
 use crate::relation::foreign_key::{ForeignKey, ForeignKeyResolved};
+use bytes::BytesMut;
+use postgres_types::{FromSql, IsNull, ToSql, Type};
 
 /// Unique-constrained 1:1 relation field.
 ///
@@ -105,44 +107,54 @@ impl<T: Model> OneToOneField<T> {
 }
 
 // ---------------------------------------------------------------------------
-// sqlx integration — forward through the inner `ForeignKey<T>`.
+// postgres_types integration — primary codec.
+// Delegates through the inner `ForeignKey<T>` to `T::Pk`.
 // ---------------------------------------------------------------------------
 
-impl<T: Model> sqlx::Type<sqlx::Postgres> for OneToOneField<T>
+impl<T: Model> ToSql for OneToOneField<T>
 where
-    T::Pk: sqlx::Type<sqlx::Postgres>,
+    T::Pk: ToSql,
 {
-    fn type_info() -> <sqlx::Postgres as sqlx::Database>::TypeInfo {
-        <ForeignKey<T> as sqlx::Type<sqlx::Postgres>>::type_info()
-    }
-
-    fn compatible(ty: &<sqlx::Postgres as sqlx::Database>::TypeInfo) -> bool {
-        <ForeignKey<T> as sqlx::Type<sqlx::Postgres>>::compatible(ty)
-    }
-}
-
-impl<'q, T: Model> sqlx::Encode<'q, sqlx::Postgres> for OneToOneField<T>
-where
-    T::Pk: sqlx::Encode<'q, sqlx::Postgres>,
-{
-    fn encode_by_ref(
+    fn to_sql(
         &self,
-        buf: &mut <sqlx::Postgres as sqlx::Database>::ArgumentBuffer<'q>,
-    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        <ForeignKey<T> as sqlx::Encode<'q, sqlx::Postgres>>::encode_by_ref(&self.0, buf)
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        // Delegate through the inner ForeignKey<T>, which delegates to T::Pk::to_sql.
+        self.0.to_sql(ty, out)
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        <T::Pk as ToSql>::accepts(ty)
+    }
+
+    postgres_types::to_sql_checked!();
+}
+
+impl<'a, T: Model> FromSql<'a> for OneToOneField<T>
+where
+    T::Pk: FromSql<'a>,
+{
+    fn from_sql(
+        ty: &Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        // Decode T::Pk, then wrap in ForeignKey and then OneToOneField.
+        let pk = <T::Pk as FromSql<'a>>::from_sql(ty, raw)?;
+        Ok(OneToOneField::new(pk))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        <T::Pk as FromSql<'a>>::accepts(ty)
     }
 }
 
-impl<'r, T: Model> sqlx::Decode<'r, sqlx::Postgres> for OneToOneField<T>
-where
-    T::Pk: sqlx::Decode<'r, sqlx::Postgres>,
-{
-    fn decode(
-        value: <sqlx::Postgres as sqlx::Database>::ValueRef<'r>,
-    ) -> Result<Self, sqlx::error::BoxDynError> {
-        <ForeignKey<T> as sqlx::Decode<'r, sqlx::Postgres>>::decode(value).map(OneToOneField)
-    }
-}
+// Type encode/decode bridge impls that previously lived here existed solely
+// to support an earlier macro-emitted row-decode path. T3 replaced that
+// emission with `impl FromPgRow for T` (ordinal decode via
+// `postgres_types::FromSql`), so those bridges are dead code and have been
+// removed. `OneToOneField<T>` is now decoded entirely through
+// its `postgres_types::FromSql` impl above.
 
 // ---------------------------------------------------------------------------
 // Filter-API integration — forward to the wrapped `ForeignKey<T>`.

@@ -73,7 +73,7 @@
 //! hostile string returns from trait methods on legitimate models.
 //!
 //! **Mitigation:** any consumer that pushes `Self::this_fk()` /
-//! `Self::that_fk()` into [`sqlx::QueryBuilder`] MUST first run the value
+//! `Self::that_fk()` into a SQL accumulator MUST first run the value
 //! through [`crate::ident::assert_plain_ident`] (or the
 //! `crate::ident::debug_assert_ident!` macro for debug-only checks). This
 //! commit ships no SQL-emitting consumer of either method, so the contract
@@ -86,8 +86,8 @@
 //!
 //! - [`ForeignKey<T>`](crate::relation::ForeignKey) — the FK wrapper types
 //!   junction-model columns use; both FK columns on [`Through`] are
-//!   `ForeignKey<Source>` / `ForeignKey<Target>` and round-trip through
-//!   sqlx as the target PK.
+//!   `ForeignKey<Source>` / `ForeignKey<Target>` and decode the target PK
+//!   via `postgres_types::FromSql`.
 //! - [`QuerySet::filter`](crate::query::QuerySet::filter) — the typed
 //!   closure API hand-written / macro-generated `related()` bodies call
 //!   into.
@@ -211,7 +211,7 @@ where
     ///
     /// Takes `&'ctx mut DjogiContext`. The body re-borrows the context across
     /// the two sequential queries; `DjogiContext`'s inner variant is
-    /// pattern-matched at each sqlx boundary in the emitted code.
+    /// pattern-matched at each query dispatch boundary in the emitted code.
     fn related<'ctx>(
         &'ctx self,
         ctx: &'ctx mut crate::context::DjogiContext,

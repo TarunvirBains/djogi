@@ -144,7 +144,7 @@ impl<V: IntoFilterValue> Lookup<V> {
     /// `.contains` / `.starts_with` / `.ends_with` default. Case-sensitive
     /// substring matching is not currently exposed on [`Lookup`] —
     /// callers who need it reach for the closure API or the raw
-    /// `sqlx::QueryBuilder` escape hatch.
+    /// `ctx.raw_execute` / `ctx.raw_scalar` escape hatch.
     ///
     /// `Regex` maps to [`LookupOp::Regex`] — the case-sensitive POSIX
     /// operator (`~`). The closure API exposes `.iregex` for the

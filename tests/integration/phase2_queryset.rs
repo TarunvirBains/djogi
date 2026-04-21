@@ -1,20 +1,6 @@
 //! Phase 2 QuerySet integration tests.
-//!
-//! Task 5 covers the lazy-builder compile surface (see
-//! `objects_returns_empty_queryset` below). Task 6 adds the terminal-method
-//! exercises against live Postgres via `#[sqlx::test]` — `fetch_all`,
-//! `fetch_one` (NotFound / MultipleObjects), `first`, `count`, `exists`,
-//! and the `none()` short-circuit contract. Tasks 7–9 will grow this file
-//! with writes (`update`, `delete`) and programmatic filters.
-//!
-//! The `#[sqlx::test]` fixture takes a `PgPool` so running it requires a
-//! live Postgres (same pattern as the Phase 1 smoke tests). When no database
-//! is configured the test is skipped at fixture-wiring time — the part that
-//! matters for the Task 5 compile-only baseline is that the test file
-//! *compiles*.
 
 use djogi::prelude::*;
-use sqlx::PgPool;
 
 // Separate table name (`posts_p2`) so this integration test can share a DB
 // with `phase1_model.rs` without DDL collisions.
@@ -33,31 +19,11 @@ pub struct Post {
     pub score: Option<i32>,
 }
 
-/// Install HeeRanjId schema + seed node 1 + create `posts_p2`. Mirrors
-/// `phase1_model::setup_posts` intentionally — each integration test file
-/// owns its own setup so tests can be run in isolation. Factoring the
-/// helper across files would couple test fixtures in a way that obscures
-/// which test owns which DDL.
-async fn setup(pool: &PgPool) {
-    heeranjid_sqlx::install_schema(pool).await.unwrap();
-    heeranjid_sqlx::seed_default_node(pool).await.unwrap();
-
-    let db_name: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(pool)
-        .await
-        .unwrap();
-
-    sqlx::query(
+/// Install HeeRanjId schema + seed node 1 + create `posts_p2`. HeeRanjID
+/// schema, node seeding, and `heer.node_id` database-level setting are all
+/// handled by `#[djogi_test]`'s bootstrap — this only creates the table.
+async fn setup(ctx: &mut djogi::DjogiContext) {
+    ctx.raw_execute(
         "CREATE TABLE posts_p2 (
             id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
             created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
@@ -68,15 +34,17 @@ async fn setup(pool: &PgPool) {
             view_count  INTEGER     NOT NULL,
             score       INTEGER
         )",
+        &[],
     )
-    .execute(pool)
     .await
     .unwrap();
 }
 
-#[sqlx::test]
-async fn objects_returns_empty_queryset(pool: PgPool) {
-    setup(&pool).await;
+// ── Task 5: lazy builder compile surface ──────────────────────────────────
+
+#[djogi::djogi_test]
+async fn objects_returns_empty_queryset(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
 
     // `T::objects()` resolves and returns a lazy builder. No SQL has been
     // emitted or executed — Task 5 deliberately ships without terminal
@@ -114,20 +82,11 @@ async fn objects_returns_empty_queryset(pool: PgPool) {
 // exercises exactly one terminal on a filter/composition that surfaces a
 // distinct branch of the SQL emitter or terminal-method contract.
 
-/// Seed four deterministic posts. Wraps every INSERT in a single
-/// transaction so that `set_heer_node_id(1)` (required for `generate_id()`'s
-/// column default) lands on the SAME connection that runs the INSERT —
-/// `sqlx::test` provisions a multi-connection pool, so a bare
-/// `SELECT set_heer_node_id(1)` on `&pool` only sets one random connection's
-/// session variable and later INSERTs may hit a different connection. The
-/// same pattern is used by Phase 1 tests (see `raw_execute_runs_without_return`
-/// and friends in `phase1_model.rs`).
-async fn seed_posts(pool: &PgPool) {
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+/// Seed four deterministic posts. Uses `raw_execute` inside a transaction
+/// so `generate_id()` works on the same connection that already has
+/// heer.node_id set (inherits from ALTER DATABASE done by djogi_test bootstrap).
+async fn seed_posts(ctx: &mut djogi::DjogiContext) {
+    let mut tx = ctx.begin().await.unwrap();
     // `score` is a nullable companion column used by the NULLS-ordering
     // test; seeding it with a distinct value per row lets that test assert
     // a deterministic sort order once a fifth NULL-bearing row is added.
@@ -138,36 +97,31 @@ async fn seed_posts(pool: &PgPool) {
         ("gamma", false, 200, 30),
         ("delta", true, 25, 40),
     ] {
-        sqlx::query(
+        let title_s = title.to_string();
+        let body_s = "body".to_string();
+        tx.raw_execute(
             "INSERT INTO posts_p2 (title, body, published, view_count, score) \
              VALUES ($1, $2, $3, $4, $5)",
+            &[&title_s, &body_s, &published, &views, &score],
         )
-        .bind(title)
-        .bind("body")
-        .bind(published)
-        .bind(views)
-        .bind(score)
-        .execute(&mut *tx)
         .await
         .unwrap();
     }
     tx.commit().await.unwrap();
 }
 
-#[sqlx::test]
-async fn fetch_all_no_filter(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn fetch_all_no_filter(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let rows = Post::objects().fetch_all(&mut ctx).await.unwrap();
     assert_eq!(rows.len(), 4);
 }
 
-#[sqlx::test]
-async fn fetch_all_with_filter(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn fetch_all_with_filter(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let rows = Post::objects()
         .filter(|f| f.published().eq(true))
         .fetch_all(&mut ctx)
@@ -176,11 +130,10 @@ async fn fetch_all_with_filter(pool: PgPool) {
     assert_eq!(rows.len(), 3);
 }
 
-#[sqlx::test]
-async fn fetch_one_exact_match(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn fetch_one_exact_match(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let row = Post::objects()
         .filter(|f| f.title().eq("alpha".to_string()))
         .fetch_one(&mut ctx)
@@ -189,11 +142,10 @@ async fn fetch_one_exact_match(pool: PgPool) {
     assert_eq!(row.title, "alpha");
 }
 
-#[sqlx::test]
-async fn fetch_one_zero_rows_is_not_found(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn fetch_one_zero_rows_is_not_found(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let err = Post::objects()
         .filter(|f| f.title().eq("nonexistent".to_string()))
         .fetch_one(&mut ctx)
@@ -202,11 +154,10 @@ async fn fetch_one_zero_rows_is_not_found(pool: PgPool) {
     assert!(matches!(err, DjogiError::NotFound { .. }));
 }
 
-#[sqlx::test]
-async fn fetch_one_multiple_rows_is_multiple_objects(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn fetch_one_multiple_rows_is_multiple_objects(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let err = Post::objects()
         .filter(|f| f.published().eq(true))
         .fetch_one(&mut ctx)
@@ -215,11 +166,10 @@ async fn fetch_one_multiple_rows_is_multiple_objects(pool: PgPool) {
     assert!(matches!(err, DjogiError::MultipleObjects { .. }));
 }
 
-#[sqlx::test]
-async fn first_returns_some_or_none(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn first_returns_some_or_none(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let some = Post::objects()
         .filter(|f| f.published().eq(true))
         .first(&mut ctx)
@@ -235,11 +185,10 @@ async fn first_returns_some_or_none(pool: PgPool) {
     assert!(none.is_none());
 }
 
-#[sqlx::test]
-async fn count_returns_row_count(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn count_returns_row_count(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let n = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(n, 4);
     let n2 = Post::objects()
@@ -250,11 +199,10 @@ async fn count_returns_row_count(pool: PgPool) {
     assert_eq!(n2, 3);
 }
 
-#[sqlx::test]
-async fn exists_returns_bool(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn exists_returns_bool(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     assert!(
         Post::objects()
             .filter(|f| f.title().eq("alpha".to_string()))
@@ -271,11 +219,10 @@ async fn exists_returns_bool(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn none_short_circuits_every_terminal(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn none_short_circuits_every_terminal(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     // `fetch_all` -> Ok(vec![])
     let empty = Post::objects().none().fetch_all(&mut ctx).await.unwrap();
@@ -306,11 +253,10 @@ async fn none_short_circuits_every_terminal(pool: PgPool) {
     assert!(matches!(none_err, DjogiError::NotFound { .. }));
 }
 
-#[sqlx::test]
-async fn limit_offset_paginate(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn limit_offset_paginate(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let page1 = Post::objects()
         .order_by(|f| f.title().asc())
         .limit(2)
@@ -330,11 +276,10 @@ async fn limit_offset_paginate(pool: PgPool) {
     assert_ne!(page1[0].title, page2[0].title);
 }
 
-#[sqlx::test]
-async fn nested_and_or(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn nested_and_or(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
     let rows = Post::objects()
         .filter(|f| f.published().eq(true).and_with(f.view_count().gte(50i32)))
         .fetch_all(&mut ctx)
@@ -345,11 +290,10 @@ async fn nested_and_or(pool: PgPool) {
     assert_eq!(rows.len(), 2);
 }
 
-#[sqlx::test]
-async fn in_list_and_between(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn in_list_and_between(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let by_title = Post::objects()
         .filter(|f| {
@@ -371,20 +315,15 @@ async fn in_list_and_between(pool: PgPool) {
     assert_eq!(by_views.len(), 2);
 }
 
-#[sqlx::test]
-async fn filter_struct_matches_closure_results(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn filter_struct_matches_closure_results(mut ctx: djogi::DjogiContext) {
     // Task 8 parity check: `filter_struct` (programmatic) and `filter`
     // (closure) must produce structurally equivalent filters for the
-    // same set of lookups. Row-count equality is necessary but not
-    // sufficient — two different predicates can accidentally match the
-    // same number of rows and pass a count-only assertion. Asserting
-    // ID-set equality is the stronger check: the two paths must return
-    // the *same rows*, not merely the same count.
+    // same set of lookups.
     use std::collections::BTreeSet;
 
-    setup(&pool).await;
-    seed_posts(&pool).await;
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let closure_rows = Post::objects()
         .filter(|f| f.published().eq(true).and_with(f.view_count().gte(50i32)))
@@ -401,19 +340,12 @@ async fn filter_struct_matches_closure_results(pool: PgPool) {
         .await
         .unwrap();
 
-    // Row-count equality — kept alongside ID-set equality as a cheap
-    // guard that fires with a friendlier failure message if the two
-    // paths desync in cardinality (e.g. one dropping a WHERE clause).
     assert_eq!(
         closure_rows.len(),
         struct_rows.len(),
         "closure filter and struct filter must return the same row count"
     );
 
-    // ID-set equality — catches predicate-level divergence row-count
-    // alone would miss. BTreeSet<HeerId> gives stable ordering for the
-    // debug print on assertion failure, and HeerId's Ord impl is a
-    // simple i64 comparison so the set construction is O(n log n).
     let closure_ids: BTreeSet<_> = closure_rows.iter().map(|p| p.id).collect();
     let struct_ids: BTreeSet<_> = struct_rows.iter().map(|p| p.id).collect();
     assert_eq!(
@@ -421,22 +353,16 @@ async fn filter_struct_matches_closure_results(pool: PgPool) {
         "closure filter and struct filter must return the same row set"
     );
 
-    // Sanity-check the absolute count — `seed_posts` inserts 4 rows;
-    // alpha (published, 100 views) and beta (published, 50 views)
-    // match both predicates, gamma (unpublished) and delta (25 views)
-    // don't.
     assert_eq!(struct_rows.len(), 2);
 }
 
-#[sqlx::test]
-async fn filter_struct_empty_is_identity(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn filter_struct_empty_is_identity(mut ctx: djogi::DjogiContext) {
     // A filter with zero setters should not AND anything onto the
     // queryset — terminal fetch should see every row `seed_posts`
-    // inserted. This exercises the early-return branch in
-    // `QuerySet::filter_struct`.
-    setup(&pool).await;
-    seed_posts(&pool).await;
+    // inserted.
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let empty = PostFilter::new();
     let rows = Post::objects()
@@ -447,17 +373,11 @@ async fn filter_struct_empty_is_identity(pool: PgPool) {
     assert_eq!(rows.len(), 4);
 }
 
-#[sqlx::test]
-async fn filter_struct_single_clause_unwraps_to_leaf(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    // A single-clause filter should emit SQL equivalent to a bare leaf
-    // (no wrapping And). We can't inspect the emitted SQL from an
-    // integration test, but we can verify the single-clause case
-    // produces the same row count as a closure filter — the
-    // `clauses_into_condition` helper unwraps single-element lists for
-    // exactly this reason.
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn filter_struct_single_clause_unwraps_to_leaf(mut ctx: djogi::DjogiContext) {
+    // A single-clause filter should emit SQL equivalent to a bare leaf.
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let closure_rows = Post::objects()
         .filter(|f| f.published().eq(true))
@@ -474,21 +394,12 @@ async fn filter_struct_single_clause_unwraps_to_leaf(pool: PgPool) {
 }
 
 // ── Task 9: bulk update / delete ──────────────────────────────────────────
-//
-// Each test exercises one terminal — `update(...).execute(...)` or
-// `delete(...)` — on a seeded table, and asserts both the returned
-// row-count (sqlx `rows_affected()`) and the post-condition row-count via
-// a follow-up `.count()`. The `none()` short-circuit (TASK6:empty_contract)
-// is also verified: it must return `Ok(0)` without issuing any SQL.
 
-#[sqlx::test]
-async fn bulk_update_sets_values_and_returns_count(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn bulk_update_sets_values_and_returns_count(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
-    // Filter on `published = true` (3 seeded rows: alpha, beta, delta) and
-    // set `view_count = 999` on all of them.
     let n = Post::objects()
         .filter(|f| f.published().eq(true))
         .update(|f| f.view_count().set(999i32))
@@ -497,8 +408,6 @@ async fn bulk_update_sets_values_and_returns_count(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 3, "expected 3 published rows bumped");
 
-    // Re-query to confirm the SET landed. Every row with view_count = 999
-    // must also be one of the originally-published rows.
     let bumped = Post::objects()
         .filter(|f| f.view_count().eq(999i32))
         .count(&mut ctx)
@@ -507,16 +416,11 @@ async fn bulk_update_sets_values_and_returns_count(pool: PgPool) {
     assert_eq!(bumped, 3);
 }
 
-#[sqlx::test]
-async fn bulk_update_none_short_circuits(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn bulk_update_none_short_circuits(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
-    // `none()` short-circuit contract — `execute` returns `Ok(0)` without
-    // running any SQL. If the short-circuit is missing, this would clobber
-    // every row's `view_count` to 0 (no WHERE clause on the update). We
-    // assert the row-count is unchanged afterwards to verify no SQL ran.
     let n = Post::objects()
         .none()
         .update(|f| f.view_count().set(0i32))
@@ -525,11 +429,9 @@ async fn bulk_update_none_short_circuits(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0);
 
-    // Every seeded row remains — the short-circuit held.
     let unchanged = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(unchanged, 4);
 
-    // And no row was bumped to 0 view_count.
     let zeroed = Post::objects()
         .filter(|f| f.view_count().eq(0i32))
         .count(&mut ctx)
@@ -538,13 +440,11 @@ async fn bulk_update_none_short_circuits(pool: PgPool) {
     assert_eq!(zeroed, 0, "none().update() must not touch any row");
 }
 
-#[sqlx::test]
-async fn bulk_delete_removes_rows_and_returns_count(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+#[djogi::djogi_test]
+async fn bulk_delete_removes_rows_and_returns_count(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
-    // Delete every unpublished row (only `gamma` in the seed).
     let n = Post::objects()
         .filter(|f| f.published().eq(false))
         .delete(&mut ctx)
@@ -552,11 +452,9 @@ async fn bulk_delete_removes_rows_and_returns_count(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 1);
 
-    // Three published rows remain.
     let remaining = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(remaining, 3);
 
-    // And the deleted row is genuinely gone.
     let gamma_left = Post::objects()
         .filter(|f| f.title().eq("gamma".to_string()))
         .count(&mut ctx)
@@ -565,31 +463,22 @@ async fn bulk_delete_removes_rows_and_returns_count(pool: PgPool) {
     assert_eq!(gamma_left, 0);
 }
 
-#[sqlx::test]
-async fn bulk_update_stamps_updated_at(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn bulk_update_stamps_updated_at(mut ctx: djogi::DjogiContext) {
     // Contract: bulk update must always stamp `updated_at = now()`, even
-    // when the user did not set it themselves. Parity with single-row
-    // `save()`, which also bumps `updated_at` on every write.
-    //
-    // We can't compare `updated_at` to `created_at` from inside Djogi
-    // without reading back the row; instead we use Postgres to verify the
-    // relation directly. Some seed helpers insert in the same transaction
-    // as `now()` — `updated_at` and `created_at` can share the exact same
-    // timestamp when created via DEFAULT now(). So we first record a
-    // baseline count of rows where `updated_at = created_at` (should be
-    // all 4), run the update, then verify the updated rows have moved to
-    // `updated_at > created_at`.
-    setup(&pool).await;
-    seed_posts(&pool).await;
+    // when the user did not set it themselves.
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     // Every freshly-inserted row has updated_at = created_at (both default
     // to `now()` in the same INSERT).
-    let all_equal: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let all_equal: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at",
+            &[],
+        )
+        .await
+        .unwrap();
     assert_eq!(all_equal, 4);
 
     // Sleep a tick so `now()` advances past the insert time at the
@@ -606,45 +495,41 @@ async fn bulk_update_stamps_updated_at(pool: PgPool) {
     assert_eq!(n, 1);
 
     // The bumped row's `updated_at` now exceeds its `created_at`.
-    let bumped: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM posts_p2 WHERE title = 'alpha' AND updated_at > created_at",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let bumped: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM posts_p2 WHERE title = 'alpha' AND updated_at > created_at",
+            &[],
+        )
+        .await
+        .unwrap();
     assert_eq!(
         bumped, 1,
         "bulk update must stamp updated_at = now() on touched rows"
     );
 
     // Unaffected rows still have updated_at = created_at.
-    let untouched: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM posts_p2 WHERE title <> 'alpha' AND updated_at = created_at",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let untouched: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM posts_p2 WHERE title <> 'alpha' AND updated_at = created_at",
+            &[],
+        )
+        .await
+        .unwrap();
     assert_eq!(untouched, 3);
 }
 
-#[sqlx::test]
-async fn distinct_on_and_plain(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
-    // Add duplicate titles so DISTINCT ON has real work to do. Same
-    // transaction-wrap rationale as `seed_posts` — keeps
-    // `set_heer_node_id(1)` and the INSERT on the same pool connection.
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query(
+#[djogi::djogi_test]
+async fn distinct_on_and_plain(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
+    // Add duplicate titles so DISTINCT ON has real work to do. Use
+    // raw_execute inside a begin/commit block.
+    let mut tx = ctx.begin().await.unwrap();
+    tx.raw_execute(
         "INSERT INTO posts_p2 (title, body, published, view_count) \
          VALUES ('dup', 'x', true, 1), ('dup', 'y', true, 2)",
+        &[],
     )
-    .execute(&mut *tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();
@@ -663,24 +548,12 @@ async fn distinct_on_and_plain(pool: PgPool) {
         "distinct_on(title) should collapse duplicate titles"
     );
 
-    // DistinctMode::Plain — `SELECT DISTINCT *` over the whole row. Every
-    // seeded + duplicate row is distinct on at least one column (the
-    // HeerId PK guarantees this), so `.distinct().count()` returns the
-    // full row count. The assertion matters because before the Task 6
-    // fixup, `.distinct().count()` silently returned the non-distinct
-    // count — which happens to be the same value here, but for the wrong
-    // reason (the SQL was `SELECT COUNT(*) FROM posts_p2`, not a
-    // `COUNT(*) FROM (SELECT DISTINCT * FROM posts_p2)`). Pair this with
-    // the unit test `count_with_distinct_plain_wraps_subquery` which
-    // asserts on the emitted SQL shape directly.
     let plain_distinct_count = Post::objects().distinct().count(&mut ctx).await.unwrap();
     let base_count = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(
         plain_distinct_count, base_count,
         "PK makes every row unique — distinct count == base count"
     );
-    // And `.distinct().fetch_all()` still returns every row since each
-    // row is unique.
     let plain_rows = Post::objects()
         .distinct()
         .fetch_all(&mut ctx)
@@ -688,8 +561,6 @@ async fn distinct_on_and_plain(pool: PgPool) {
         .unwrap();
     assert_eq!(plain_rows.len() as i64, base_count);
 
-    // distinct_on + count: the subquery-wrap path. 'dup' collapses to 1,
-    // so the distinct-on count is strictly less than the base count.
     let distinct_on_count = Post::objects()
         .distinct_on(|f| f.title())
         .count(&mut ctx)
@@ -703,23 +574,12 @@ async fn distinct_on_and_plain(pool: PgPool) {
 }
 
 // ── Task 10: edge-case sweep ──────────────────────────────────────────────
-//
-// These tests pin the corner-case contracts the phase-level work already
-// depended on but never exercised end-to-end: empty IN / NOT IN lists, LIKE
-// escape of `%` and `_`, `exclude()` negation, multi-column `order_by`
-// stacking, `nulls_first` / `nulls_last` rendering, and
-// `filter(...).update(|_| vec![])` short-circuiting with a non-empty
-// queryset.
 
-/// `in_list(vec![])` must match zero rows. The SQL emitter short-circuits an
-/// empty `IN` list to literal `FALSE` (`djogi::query::sql::emit_leaf`) —
-/// asserting `.fetch_all().len() == 0` *and* `.count() == 0` anchors both
-/// terminal paths (row-returning vs scalar) against that branch.
-#[sqlx::test]
-async fn in_list_empty_returns_zero_rows(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+/// `in_list(vec![])` must match zero rows.
+#[djogi::djogi_test]
+async fn in_list_empty_returns_zero_rows(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let rows = Post::objects()
         .filter(|f| f.id().in_list(Vec::<HeerId>::new()))
@@ -736,14 +596,11 @@ async fn in_list_empty_returns_zero_rows(pool: PgPool) {
     assert_eq!(n, 0, "empty IN list count must be 0");
 }
 
-/// `not_in_list(vec![])` must match every row (complement of the IN empty
-/// case). The emitter short-circuits to literal `TRUE` — every seeded row
-/// survives.
-#[sqlx::test]
-async fn not_in_list_empty_returns_all_rows(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+/// `not_in_list(vec![])` must match every row.
+#[djogi::djogi_test]
+async fn not_in_list_empty_returns_all_rows(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let n = Post::objects()
         .filter(|f| f.id().not_in_list(Vec::<HeerId>::new()))
@@ -753,56 +610,29 @@ async fn not_in_list_empty_returns_all_rows(pool: PgPool) {
     assert_eq!(n, 4, "empty NOT IN list must match every row");
 }
 
-/// `contains(...)` must escape LIKE wildcards (`%`, `_`, `\`) in user input
-/// so that a search for `"50%"` matches the literal two-character sequence,
-/// not "50 followed by anything". If `escape_like` is wrong or missing,
-/// this test fails because `contains("50%")` would match any title
-/// starting with "50".
-///
-/// The test relies on **negative-control rows** to catch a subtle broken
-/// implementation. Without them, a broken `contains("50%")` emitting
-/// `LIKE '%50%%'` still matches zero rows in a table seeded only with
-/// `alpha/beta/gamma/delta/50% off_deal` — `%%` collapses to a wildcard
-/// but none of those titles start with "50". Adding `"50 off regular"`
-/// (no literal `%`) forces the escape logic to fire: a correctly-escaped
-/// `%50\%%` must exclude it, a buggy `%50%%` would include it. The
-/// `"xdeal"` row plays the same role for the `_` escape check.
-#[sqlx::test]
-async fn string_contains_escapes_percent_and_underscore(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+/// `contains(...)` must escape LIKE wildcards (`%`, `_`, `\`) in user input.
+#[djogi::djogi_test]
+async fn string_contains_escapes_percent_and_underscore(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     // Add the target row (contains both wildcard characters verbatim) plus
     // two negative-control rows that a broken escape would falsely match.
-    // Same transaction-wrap rationale as `seed_posts` — set_heer_node_id
-    // and the INSERTs must share a connection.
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query(
+    let mut tx = ctx.begin().await.unwrap();
+    tx.raw_execute(
         "INSERT INTO posts_p2 (title, body, published, view_count) VALUES \
          ('50% off_deal', 'b', true, 1), \
          ('50 off regular', 'b', true, 1), \
          ('xdeal', 'b', true, 1)",
+        &[],
     )
-    .execute(&mut *tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();
 
-    // Sanity: all three extra rows ARE in the table. This anchors the
-    // assertions below as exclusion-by-escape rather than
-    // absent-from-seed.
     let total = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(total, 7, "4 seeded + 3 extras must all be present");
 
-    // `%` escape — must match exactly `"50% off_deal"`. The negative
-    // control `"50 off regular"` would match a broken `%50%%` pattern
-    // (because `%%` collapses to a wildcard) but MUST NOT match the
-    // literal-escape `%50\%%`.
     let pct = Post::objects()
         .filter(|f| f.title().contains("50%"))
         .fetch_all(&mut ctx)
@@ -811,11 +641,6 @@ async fn string_contains_escapes_percent_and_underscore(pool: PgPool) {
     assert_eq!(pct.len(), 1, "contains('50%') must escape % literally");
     assert_eq!(pct[0].title, "50% off_deal");
 
-    // `_` escape — `_deal` in unescaped LIKE would match "ydeal", "xdeal",
-    // any single-char-prefix-plus-"deal"; escaped, it matches only the
-    // literal `_deal` substring. The `"xdeal"` control would slip through
-    // a broken implementation (single-char wildcard `_` matches `x`) but
-    // must be excluded by the literal-escape `%\_deal%`.
     let und = Post::objects()
         .filter(|f| f.title().contains("_deal"))
         .fetch_all(&mut ctx)
@@ -825,14 +650,11 @@ async fn string_contains_escapes_percent_and_underscore(pool: PgPool) {
     assert_eq!(und[0].title, "50% off_deal");
 }
 
-/// `.exclude(|f| ...)` must wrap the inner filter in SQL `NOT`. Seeded rows
-/// are 3 published + 1 unpublished; excluding `published = true` leaves
-/// exactly the one unpublished row.
-#[sqlx::test]
-async fn exclude_wraps_in_not(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+/// `.exclude(|f| ...)` must wrap the inner filter in SQL `NOT`.
+#[djogi::djogi_test]
+async fn exclude_wraps_in_not(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let n = Post::objects()
         .exclude(|f| f.published().eq(true))
@@ -845,22 +667,11 @@ async fn exclude_wraps_in_not(pool: PgPool) {
     );
 }
 
-/// Successive `.order_by(...)` calls **stack** (Django semantics), not
-/// last-wins. Asserting against the actual row order is the only check
-/// that distinguishes the two: if `order_by` replaced rather than
-/// appended, the first key (`published DESC`) would be dropped and rows
-/// would come back in pure `view_count ASC` order.
-///
-/// Seeded data sorted by `(published DESC, view_count ASC)`:
-///   alpha    (true, 100)  — no, that's not smallest-first among published
-///   Actually: published=true: delta(25), beta(50), alpha(100). Then
-///   published=false: gamma(200).
-/// So the expected title order is: delta, beta, alpha, gamma.
-#[sqlx::test]
-async fn order_by_stacks_across_multiple_calls(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+/// Successive `.order_by(...)` calls **stack** (Django semantics), not last-wins.
+#[djogi::djogi_test]
+async fn order_by_stacks_across_multiple_calls(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let rows = Post::objects()
         .order_by(|f| f.published().desc())
@@ -878,46 +689,24 @@ async fn order_by_stacks_across_multiple_calls(pool: PgPool) {
     );
 }
 
-/// `nulls_first()` / `nulls_last()` must render the corresponding SQL
-/// modifier through the **Djogi builder path** (not raw SQL). Exercises
-/// the modifier with a NULL-bearing row actually in the result set so
-/// that a broken emitter — dropping the `NULLS FIRST` / `NULLS LAST`
-/// token, swapping the two, or misordering against `ASC/DESC` — produces
-/// an observable row-position failure.
-///
-/// Uses the nullable `score` column (added to `Post` for exactly this
-/// test) rather than `view_count` so the NULL row survives sqlx FromRow
-/// decoding into `Post { score: Option<i32> }`. The four `seed_posts`
-/// rows carry non-null scores `10/20/30/40`; a fifth inserted here with
-/// `score = NULL` drives the positioning assertion.
-#[sqlx::test]
-async fn order_by_nulls_first_renders(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+/// `nulls_first()` / `nulls_last()` must render the corresponding SQL modifier.
+#[djogi::djogi_test]
+async fn order_by_nulls_first_renders(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
-    // Insert a fifth row with `score = NULL`. `seed_posts` gave each of
-    // the four existing rows a distinct non-null score (10/20/30/40), so
-    // `ASC` puts them in that order and the NULL row's position depends
-    // entirely on the `NULLS FIRST` / `NULLS LAST` modifier.
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query(
+    // Insert a fifth row with `score = NULL`.
+    let mut tx = ctx.begin().await.unwrap();
+    tx.raw_execute(
         "INSERT INTO posts_p2 (title, body, published, view_count, score) \
          VALUES ('nullrow', 'b', true, 0, NULL)",
+        &[],
     )
-    .execute(&mut *tx)
     .await
     .unwrap();
     tx.commit().await.unwrap();
 
-    // `NULLS FIRST` — the NULL-score row floats to the top of an ASC
-    // ordering (which, by Postgres default, would otherwise put NULLs
-    // last). The NULL row must be IN the result set — no `is_not_null()`
-    // filter — so the modifier has observable work to do.
+    // `NULLS FIRST` — the NULL-score row floats to the top of an ASC ordering.
     let first_rows = Post::objects()
         .order_by(|f| f.score().asc().nulls_first())
         .fetch_all(&mut ctx)
@@ -937,10 +726,7 @@ async fn order_by_nulls_first_renders(pool: PgPool) {
         "first row's score must be NULL — confirms we're sorting by the right column"
     );
 
-    // `NULLS LAST` — the NULL-score row sinks to the bottom of an ASC
-    // ordering. Separately verifiable from `NULLS FIRST` in case a buggy
-    // emitter always renders the same token regardless of which method
-    // was called.
+    // `NULLS LAST` — the NULL-score row sinks to the bottom of an ASC ordering.
     let last_rows = Post::objects()
         .order_by(|f| f.score().asc().nulls_last())
         .fetch_all(&mut ctx)
@@ -958,24 +744,11 @@ async fn order_by_nulls_first_renders(pool: PgPool) {
     );
 }
 
-/// `filter(...).update(|_| vec![])` must short-circuit to `Ok(0)` without
-/// issuing any SQL. Task 9 covered the `.none().update(...)` path; this
-/// closes the gap on the empty-assignments branch with a **non-empty**
-/// queryset — an `UPDATE ... SET , ... WHERE ...` with no SET list is a
-/// Postgres syntax error, so the short-circuit in `UpdateStmt::execute`
-/// is load-bearing.
-///
-/// Row-value assertions guard against a subtle regression where the
-/// short-circuit returns `Ok(0)` but the UPDATE still runs (e.g. an
-/// always-appended `updated_at = now()` emits a syntactically valid
-/// `SET updated_at = now()` clause and desyncs `rows_affected` from the
-/// actual effect). Verifying the per-row `view_count` values and
-/// `updated_at == created_at` catches both halves of that regression.
-#[sqlx::test]
-async fn bulk_update_empty_assignments_short_circuits(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup(&pool).await;
-    seed_posts(&pool).await;
+/// `filter(...).update(|_| vec![])` must short-circuit to `Ok(0)`.
+#[djogi::djogi_test]
+async fn bulk_update_empty_assignments_short_circuits(mut ctx: djogi::DjogiContext) {
+    setup(&mut ctx).await;
+    seed_posts(&mut ctx).await;
 
     let n = Post::objects()
         .filter(|f| f.published().eq(true))
@@ -985,17 +758,9 @@ async fn bulk_update_empty_assignments_short_circuits(pool: PgPool) {
         .unwrap();
     assert_eq!(n, 0, "empty assignment list must short-circuit to Ok(0)");
 
-    // Seed count unchanged — no SQL ran.
     let total = Post::objects().count(&mut ctx).await.unwrap();
     assert_eq!(total, 4, "empty-assignments update must not touch any row");
 
-    // Per-row value check — every seeded `view_count` must survive
-    // unchanged. `seed_posts` inserts alpha=100, beta=50, gamma=200,
-    // delta=25; sorted ascending that's (25, 50, 100, 200). A buggy
-    // short-circuit that still runs the UPDATE (e.g. always-append
-    // `updated_at = now()`) would leave values intact too, so this
-    // assertion is *necessary but not sufficient* — see the
-    // `updated_at == created_at` check below for the cross-check.
     let rows = Post::objects()
         .order_by(|f| f.view_count().asc())
         .fetch_all(&mut ctx)
@@ -1008,16 +773,13 @@ async fn bulk_update_empty_assignments_short_circuits(pool: PgPool) {
         "seeded view_count values must survive a short-circuited update"
     );
 
-    // `updated_at = created_at` for every row — confirms NO SQL ran.
-    // Fresh INSERTs have both timestamps bound to the statement's
-    // `now()`, so equality here means the row has not been touched
-    // since seed time. If the short-circuit let the UPDATE through,
-    // `updated_at = now()` would bump strictly past `created_at`.
-    let unstamped: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let unstamped: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*) FROM posts_p2 WHERE updated_at = created_at",
+            &[],
+        )
+        .await
+        .unwrap();
     assert_eq!(
         unstamped, 4,
         "updated_at must still equal created_at — no UPDATE fired"

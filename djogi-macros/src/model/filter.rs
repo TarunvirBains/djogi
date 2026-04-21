@@ -84,7 +84,7 @@
 //! the same compile-time footing as the closure API — passing the
 //! wrong value type to a setter (for example
 //! `PostFilter::new().view_count(Lookup::Eq("42"))` for an `i32`
-//! column) fails at the call site, not later at `sqlx::bind`.
+//! column) fails at the call site, not later at bind time.
 //!
 //! The `IntoFilterValue` bound is emitted on the **method generic
 //! `__V`**, not on the concrete `#field_ty`. Two consequences:
@@ -243,7 +243,7 @@ pub fn expand(
             // same as `stubs.rs` emits into `FieldRef<M, V>`.
             let ty = &field.ty;
             let doc = format!(
-                "Append a `{column}` lookup to the filter. Typed on the column's declared Rust type — passing the wrong value type fails at the call site with a type-mismatch error. For columns whose type does not implement `IntoFilterValue` (e.g. `Decimal` without the feature flag, `Vec<T>`, user newtypes), this setter is defined but unusable; calling it fails at the call site with a trait-bound error. Reach for the closure API (`QuerySet::filter(|f| …)`) or `sqlx::QueryBuilder` directly in those cases."
+                "Append a `{column}` lookup to the filter. Typed on the column's declared Rust type — passing the wrong value type fails at the call site with a type-mismatch error. For columns whose type does not implement `IntoFilterValue` (e.g. `Decimal` without the feature flag, `Vec<T>`, user newtypes), this setter is defined but unusable; calling it fails at the call site with a trait-bound error. Reach for the closure API (`QuerySet::filter(|f| …)`) or `ctx.raw_execute` / `ctx.raw_scalar` directly in those cases."
             );
             Some(quote! {
                 #[doc = #doc]

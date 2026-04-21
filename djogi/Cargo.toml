@@ -9,7 +9,6 @@ description = "Model-first web framework for Rust — web-framework-agnostic cor
 
 [dependencies]
 djogi-macros.workspace = true
-sqlx.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,7 +16,10 @@ time.workspace = true
 uuid.workspace = true
 rust_decimal.workspace = true
 heeranjid.workspace = true
-heeranjid-sqlx.workspace = true
+tokio-postgres.workspace = true
+postgres-types.workspace = true
+deadpool-postgres.workspace = true
+bytes.workspace = true
 inventory.workspace = true
 figment.workspace = true
 thiserror.workspace = true
@@ -26,9 +28,7 @@ futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-sqlx = { workspace = true, features = ["migrate"] }
 figment = { workspace = true, features = ["test"] }
-heeranjid-sqlx = { workspace = true }
 trybuild.workspace = true
 rust_decimal_macros.workspace = true
 
@@ -60,4 +60,29 @@ harness = true
 [[test]]
 name = "phase4_5_visages"
 path = "../tests/integration/phase4_5_visages.rs"
+harness = true
+
+[[test]]
+name = "djogi_test_smoke"
+path = "../tests/integration/djogi_test_smoke.rs"
+harness = true
+
+[[test]]
+name = "phase5_zero_from_pg_row"
+path = "../tests/integration/phase5_zero_from_pg_row.rs"
+harness = true
+
+[[test]]
+name = "phase5_zero_prefetch_non_bigint_pk"
+path = "../tests/integration/phase5_zero_prefetch_non_bigint_pk.rs"
+harness = true
+
+[[test]]
+name = "phase5_zero_from_joined_pg_row"
+path = "../tests/integration/phase5_zero_from_joined_pg_row.rs"
+harness = true
+
+[[test]]
+name = "phase5_zero_raw_in_atomic"
+path = "../tests/integration/phase5_zero_raw_in_atomic.rs"
 harness = true

@@ -3,7 +3,7 @@
 //! # What
 //!
 //! [`emit_expr`] walks an [`ExprNode`] tree and pushes the matching SQL
-//! tokens + bind parameters onto a [`sqlx::QueryBuilder<'_, Postgres>`].
+//! tokens + bind parameters onto a [`crate::pg::accumulator::SqlAccumulator`].
 //! The entry point is called exactly once per `Condition::Expr` variant
 //! by [`crate::query::sql::emit_condition`]; it recurses into itself for
 //! nested arithmetic / comparison sub-trees.
@@ -21,13 +21,13 @@
 //!
 //! # Column references vs bind parameters
 //!
-//! - [`ExprNode::Field { column }`] — `qb.push(*column)`. The column
+//! - [`ExprNode::Field { column }`] — `acc.push_sql(*column)`. The column
 //!   name is a `&'static str` validated at
 //!   [`crate::query::field::FieldRef::new`] construction time against
 //!   [`crate::ident::assert_plain_ident`]; no re-validation here.
 //! - [`ExprNode::Literal(v)`] — delegates to
 //!   [`crate::query::sql::push_filter_value`], which calls
-//!   `qb.push_bind(v)` for every scalar variant. All user-supplied
+//!   `acc.push_bind(v)` for every scalar variant. All user-supplied
 //!   values flow through bind parameters; no string interpolation of
 //!   user data.
 //!
@@ -52,10 +52,10 @@
 //! until Task 5.
 
 use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
-use sqlx::{Postgres, QueryBuilder};
+use crate::pg::accumulator::SqlAccumulator;
 
 /// Walk an [`ExprNode`] and push the corresponding SQL fragment onto
-/// `qb`. Leaves consume bind slots (via
+/// `acc`. Leaves consume bind slots (via
 /// [`crate::query::sql::push_filter_value`]); internal nodes push SQL
 /// operator tokens and recurse.
 ///
@@ -70,12 +70,12 @@ use sqlx::{Postgres, QueryBuilder};
 ///   the sealed trait + phantom-typed wrapper is the seal.
 /// - `ExprNode::Field { column }`'s column string is always a
 ///   validated identifier (see
-///   [`crate::query::field::FieldRef::new`]); safe to `qb.push(*column)`.
-pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
+///   [`crate::query::field::FieldRef::new`]); safe to `acc.push_sql(*column)`.
+pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
     match node {
         ExprNode::Field { column } => {
             // Bare column reference — validated at FieldRef construction.
-            qb.push(*column);
+            acc.push_sql(column);
         }
         ExprNode::Literal(v) => {
             // `push_filter_value` consumes the value, so clone it — the
@@ -86,23 +86,23 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
             // shapes never reach here because `ExprNode::Literal` only
             // carries scalar values from the `impl From<V> for Expr<V>`
             // bridges.
-            crate::query::sql::push_filter_value(qb, v.clone());
+            crate::query::sql::push_filter_value(acc, v.clone());
         }
         ExprNode::Add(lhs, rhs) => {
-            emit_arith(qb, lhs, " + ", rhs);
+            emit_arith(acc, lhs, " + ", rhs);
         }
         ExprNode::Sub(lhs, rhs) => {
-            emit_arith(qb, lhs, " - ", rhs);
+            emit_arith(acc, lhs, " - ", rhs);
         }
         ExprNode::Mul(lhs, rhs) => {
-            emit_arith(qb, lhs, " * ", rhs);
+            emit_arith(acc, lhs, " * ", rhs);
         }
         ExprNode::Div(lhs, rhs) => {
-            emit_arith(qb, lhs, " / ", rhs);
+            emit_arith(acc, lhs, " / ", rhs);
         }
         ExprNode::Cmp { op, lhs, rhs } => {
-            emit_expr(qb, lhs);
-            qb.push(match op {
+            emit_expr(acc, lhs);
+            acc.push_sql(match op {
                 CmpOp::Eq => " = ",
                 CmpOp::Neq => " <> ",
                 CmpOp::Gt => " > ",
@@ -110,7 +110,7 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
                 CmpOp::Lt => " < ",
                 CmpOp::Lte => " <= ",
             });
-            emit_expr(qb, rhs);
+            emit_expr(acc, rhs);
         }
         ExprNode::Aggregate {
             op,
@@ -137,28 +137,28 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
             // wrapper carries an inert placeholder for that variant,
             // never a real column reference.
             match op {
-                AggOp::Count => qb.push("COUNT("),
-                AggOp::CountStar => qb.push("COUNT("),
-                AggOp::Sum => qb.push("SUM("),
-                AggOp::Avg => qb.push("AVG("),
-                AggOp::Min => qb.push("MIN("),
-                AggOp::Max => qb.push("MAX("),
+                AggOp::Count => acc.push_sql("COUNT("),
+                AggOp::CountStar => acc.push_sql("COUNT("),
+                AggOp::Sum => acc.push_sql("SUM("),
+                AggOp::Avg => acc.push_sql("AVG("),
+                AggOp::Min => acc.push_sql("MIN("),
+                AggOp::Max => acc.push_sql("MAX("),
             };
             if matches!(op, AggOp::CountStar) {
-                qb.push("*");
+                acc.push_sql("*");
             } else {
-                emit_expr(qb, arg);
+                emit_expr(acc, arg);
             }
-            qb.push(")");
+            acc.push_sql(")");
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
             // aggregate ignores rows where `cond` is false. `filter`
             // is None on the bare call site; Some(cond) when
             // `AggregateExpr::filter(...)` was chained.
             if let Some(cond) = filter {
-                qb.push(" FILTER (WHERE ");
-                emit_expr(qb, cond);
-                qb.push(")");
+                acc.push_sql(" FILTER (WHERE ");
+                emit_expr(acc, cond);
+                acc.push_sql(")");
             }
         }
         ExprNode::Case { arms, otherwise } => {
@@ -172,17 +172,17 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
             // that a CASE with no matching arm must never silently
             // produce NULL against a column the user expected to be
             // non-null.
-            qb.push("CASE ");
+            acc.push_sql("CASE ");
             for (cond, val) in arms {
-                qb.push("WHEN ");
-                emit_expr(qb, cond);
-                qb.push(" THEN ");
-                emit_expr(qb, val);
-                qb.push(" ");
+                acc.push_sql("WHEN ");
+                emit_expr(acc, cond);
+                acc.push_sql(" THEN ");
+                emit_expr(acc, val);
+                acc.push_sql(" ");
             }
-            qb.push("ELSE ");
-            emit_expr(qb, otherwise);
-            qb.push(" END");
+            acc.push_sql("ELSE ");
+            emit_expr(acc, otherwise);
+            acc.push_sql(" END");
         }
         ExprNode::Exists(sub) => {
             // EXISTS (<subquery>) — subquery renders SELECT 1 because
@@ -191,9 +191,9 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
             // this reason; the [`super::subquery::Exists`] typed
             // constructor is the sole producer of this shape and always
             // sets `select_column = None`.
-            qb.push("EXISTS (");
-            emit_subquery(qb, sub);
-            qb.push(")");
+            acc.push_sql("EXISTS (");
+            emit_subquery(acc, sub);
+            acc.push_sql(")");
         }
         ExprNode::Subquery(sub) => {
             // Scalar subquery — must be wrapped in parens so it slots
@@ -201,9 +201,9 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
             // the outer expression. `emit_subquery` handles the
             // `SELECT <col> FROM ... WHERE ...` body; the outer parens
             // here are structural.
-            qb.push("(");
-            emit_subquery(qb, sub);
-            qb.push(")");
+            acc.push_sql("(");
+            emit_subquery(acc, sub);
+            acc.push_sql(")");
         }
         ExprNode::OuterRef { column } => {
             // Outer-scope column reference — emitted unqualified.
@@ -224,7 +224,7 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
             // helpers) — both run through
             // [`crate::ident::assert_plain_ident`] before the value
             // lands here. Safe to push as a raw SQL token.
-            qb.push(*column);
+            acc.push_sql(column);
         }
     }
 }
@@ -252,14 +252,14 @@ pub(crate) fn emit_expr(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
 /// clone the inner queryset's condition tree at construction time; that
 /// clone is cheap (the tree is shallow Vec<_> + enum variants) and the
 /// correlated-subquery build sites are a hot-path outlier, not the norm.
-fn emit_subquery(qb: &mut QueryBuilder<'_, Postgres>, node: &SubqueryNode) {
-    qb.push("SELECT ");
+fn emit_subquery(acc: &mut SqlAccumulator, node: &SubqueryNode) {
+    acc.push_sql("SELECT ");
     match &node.select_column {
         Some(col) => {
             // `col` is a `&'static str` from
             // [`crate::query::field::FieldRef::column`], validated at
             // `FieldRef::new` construction time. Safe to push raw.
-            qb.push(*col);
+            acc.push_sql(col);
         }
         None => {
             // EXISTS path — the constant 1 stands in for "some value"
@@ -267,15 +267,15 @@ fn emit_subquery(qb: &mut QueryBuilder<'_, Postgres>, node: &SubqueryNode) {
             // literal `1` rather than `*` avoids an unnecessary SELECT-
             // list expansion on the planner side and matches the
             // idiomatic Postgres form for EXISTS subqueries.
-            qb.push("1");
+            acc.push_sql("1");
         }
     }
-    qb.push(" FROM ");
+    acc.push_sql(" FROM ");
     // Table name is always `<T as Model>::table_name()` from the typed
     // surface — macro-baked, never user input.
-    qb.push(node.table);
+    acc.push_sql(node.table);
     if let Some(cond) = &node.where_clause {
-        qb.push(" WHERE ");
+        acc.push_sql(" WHERE ");
         // Clone: `emit_condition` consumes its `Condition` input by
         // value (payload strings / boxed values move into bind calls).
         // The subquery tree is referenced, not owned, because a single
@@ -290,7 +290,7 @@ fn emit_subquery(qb: &mut QueryBuilder<'_, Postgres>, node: &SubqueryNode) {
         // subquery's WHERE resolve to it unambiguously; qualified
         // emission waits for the broader `parent_table` threading
         // change flagged in `expr::sql`'s header comment.
-        crate::query::sql::emit_condition(qb, cond.clone(), None);
+        crate::query::sql::emit_condition(acc, cond.clone(), None);
     }
 }
 
@@ -308,25 +308,20 @@ fn emit_subquery(qb: &mut QueryBuilder<'_, Postgres>, node: &SubqueryNode) {
 /// aggregates) don't need wrapping — they're already single tokens or
 /// already self-parenthesised — so the wrap is gated on the sub-node's
 /// discriminant.
-fn emit_arith(
-    qb: &mut QueryBuilder<'_, Postgres>,
-    lhs: &ExprNode,
-    op: &'static str,
-    rhs: &ExprNode,
-) {
-    emit_wrapped_if_arith(qb, lhs);
-    qb.push(op);
-    emit_wrapped_if_arith(qb, rhs);
+fn emit_arith(acc: &mut SqlAccumulator, lhs: &ExprNode, op: &'static str, rhs: &ExprNode) {
+    emit_wrapped_if_arith(acc, lhs);
+    acc.push_sql(op);
+    emit_wrapped_if_arith(acc, rhs);
 }
 
-fn emit_wrapped_if_arith(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
+fn emit_wrapped_if_arith(acc: &mut SqlAccumulator, node: &ExprNode) {
     match node {
         ExprNode::Add(..) | ExprNode::Sub(..) | ExprNode::Mul(..) | ExprNode::Div(..) => {
-            qb.push("(");
-            emit_expr(qb, node);
-            qb.push(")");
+            acc.push_sql("(");
+            emit_expr(acc, node);
+            acc.push_sql(")");
         }
-        _ => emit_expr(qb, node),
+        _ => emit_expr(acc, node),
     }
 }
 
@@ -334,7 +329,7 @@ fn emit_wrapped_if_arith(qb: &mut QueryBuilder<'_, Postgres>, node: &ExprNode) {
 mod tests {
     //! Emitter unit tests — assert the generated SQL text for each
     //! `ExprNode` variant combination the public API can produce.
-    //! `QueryBuilder::sql()` exposes the text with bind placeholders as
+    //! `SqlAccumulator::sql()` exposes the text with bind placeholders as
     //! `$1`, `$2`, … so we can count the bind slots without actually
     //! running the query.
     //!
@@ -347,8 +342,8 @@ mod tests {
     use super::*;
     use crate::Expr;
     use crate::descriptor::ModelDescriptor;
+    use crate::pg::accumulator::SqlAccumulator;
     use crate::query::field::FieldRef;
-    use sqlx::QueryBuilder;
 
     // Inert local model — only `table_name` and the trait bounds
     // matter for unit tests that never run SQL. Mirrors the `Fake`
@@ -409,9 +404,9 @@ mod tests {
         // column reference for the field side.
         let f: FieldRef<Post, i32> = FieldRef::new("view_count");
         let expr = f.as_expr().eq(Expr::literal(100i32));
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        emit_expr(&mut qb, &expr.node);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
         assert!(sql.contains("view_count = $1"), "got: {sql}");
     }
 
@@ -423,9 +418,9 @@ mod tests {
         let a: FieldRef<Post, i64> = FieldRef::new("author_id");
         let b: FieldRef<Post, i64> = FieldRef::new("editor_id");
         let expr = a.as_expr().eq(b.as_expr());
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        emit_expr(&mut qb, &expr.node);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
         assert_eq!(sql.trim(), "author_id = editor_id");
         assert!(!sql.contains('$'), "no binds expected, got: {sql}");
     }
@@ -437,9 +432,9 @@ mod tests {
         // bare `+` operator token between the two operands.
         let f: FieldRef<Post, i32> = FieldRef::new("view_count");
         let expr = f.as_expr() + Expr::literal(1i32);
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        emit_expr(&mut qb, &expr.node);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
         assert!(sql.contains("view_count + $1"), "got: {sql}");
     }
 
@@ -454,9 +449,9 @@ mod tests {
         let b: FieldRef<Post, i32> = FieldRef::new("b");
         let c: FieldRef<Post, i32> = FieldRef::new("c");
         let expr = (a.as_expr() + b.as_expr()) * c.as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        emit_expr(&mut qb, &expr.node);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
         assert_eq!(sql.trim(), "(a + b) * c", "got: {sql}");
     }
 
@@ -470,9 +465,9 @@ mod tests {
         let b: FieldRef<Post, i32> = FieldRef::new("b");
         let c: FieldRef<Post, i32> = FieldRef::new("c");
         let expr = a.as_expr() + (b.as_expr() - c.as_expr());
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        emit_expr(&mut qb, &expr.node);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
         assert_eq!(sql.trim(), "a + (b - c)", "got: {sql}");
     }
 
@@ -490,9 +485,9 @@ mod tests {
         let b: FieldRef<Post, i32> = FieldRef::new("b");
         let c: FieldRef<Post, i32> = FieldRef::new("c");
         let expr = a.as_expr() + b.as_expr() + c.as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
-        emit_expr(&mut qb, &expr.node);
-        let sql = qb.sql();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
         assert_eq!(sql.trim(), "(a + b) + c", "got: {sql}");
     }
 }

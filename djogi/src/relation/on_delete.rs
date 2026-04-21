@@ -51,7 +51,7 @@ pub enum OnDelete {
     /// error to try to delete the parent while children remain. Emits
     /// `RESTRICT` DDL today; a future phase may add a
     /// `DjogiError::Protected` variant distinct from the generic
-    /// sqlx-surfaced FK violation. Keeps user code readable at the
+    /// Postgres FK violation. Keeps user code readable at the
     /// `#[field]` attribute without forcing them to learn a new SQL
     /// error path.
     Protect,

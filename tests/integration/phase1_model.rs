@@ -2,7 +2,6 @@
 
 use djogi::prelude::*;
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 
 // ---------------------------------------------------------------------------
 // Test models — HeerId (default PK)
@@ -21,37 +20,11 @@ pub struct Post {
 // DB setup helpers
 // ---------------------------------------------------------------------------
 
-/// Install HeeRanjId schema + seed node 1 + create the posts table.
-///
-/// Uses `ALTER DATABASE ... SET heer.node_id = '1'` to persist the node ID
-/// at the database level so every connection in the sqlx::test pool inherits
-/// it. A plain session-level `SELECT set_heer_node_id(1)` on `&pool` only
-/// lands on whichever connection the pool happens to hand out — subsequent
-/// pool-level queries may hit a different connection and fail with
-/// "heer.node_id is not set for this session". ALTER DATABASE is idempotent
-/// at the DB level and inherited by all subsequent connections.
-async fn setup_posts(pool: &PgPool) {
-    heeranjid_sqlx::install_schema(pool).await.unwrap();
-    heeranjid_sqlx::seed_default_node(pool).await.unwrap();
-
-    let db_name: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-    // Also SET the current session to cover any pool connection that was
-    // already open before the ALTER DATABASE took effect.
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(pool)
-        .await
-        .unwrap();
-
-    sqlx::query(
+/// Create the posts table. HeeRanjID schema, node seeding, and `heer.node_id`
+/// persistence at the database level are all handled by `#[djogi_test]`'s
+/// bootstrap before the test body runs — no manual setup required here.
+async fn setup_posts(ctx: &mut djogi::DjogiContext) {
+    ctx.raw_execute(
         "CREATE TABLE posts (
             id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
             created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
@@ -61,33 +34,38 @@ async fn setup_posts(pool: &PgPool) {
             published   BOOLEAN     NOT NULL,
             view_count  INTEGER     NOT NULL
         )",
+        &[],
     )
-    .execute(pool)
     .await
     .unwrap();
 }
 
 // ---------------------------------------------------------------------------
-// FromRow test (Task 5)
+// FromPgRow test (T3)
 // ---------------------------------------------------------------------------
+//
+// Phase 5-Zero T3 replaced the macro-emitted `sqlx::FromRow` impl with
+// `FromPgRow` (ordinal decode + debug-build column-name guard). This
+// test round-trips a row through `Post::create` so it exercises the
+// full path (INSERT + `RETURNING <COLUMN_LIST>` + positional decode)
+// that replaces the old `sqlx::query_as::<_, Post>` shape.
 
-#[sqlx::test]
-async fn from_row_deserializes_correctly(pool: PgPool) {
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn from_pg_row_deserializes_correctly(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
-    // Insert a row manually, then fetch it — tests FromRow in isolation
-    let row = sqlx::query_as::<_, Post>(
-        "INSERT INTO posts (title, body, published, view_count)
-         VALUES ($1, $2, $3, $4)
-         RETURNING *",
+    let row = Post::create(
+        &mut ctx,
+        Post {
+            title: "Hello World".into(),
+            body: "First post body".into(),
+            published: false,
+            view_count: 0,
+            ..Default::default()
+        },
     )
-    .bind("Hello World")
-    .bind("First post body")
-    .bind(false)
-    .bind(0i32)
-    .fetch_one(&pool)
     .await
-    .expect("INSERT + FromRow should succeed");
+    .expect("create should succeed via FromPgRow decode");
 
     assert_eq!(row.title, "Hello World");
     assert_eq!(row.body, "First post body");
@@ -100,10 +78,9 @@ async fn from_row_deserializes_correctly(pool: PgPool) {
 // CRUD tests (Task 7)
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn create_returns_full_row_with_generated_id(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn create_returns_full_row_with_generated_id(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     let post = Post::create(
         &mut ctx,
@@ -127,10 +104,9 @@ async fn create_returns_full_row_with_generated_id(pool: PgPool) {
     assert!(!post.published);
 }
 
-#[sqlx::test]
-async fn get_returns_correct_row(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn get_returns_correct_row(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     let created = Post::create(
         &mut ctx,
@@ -155,10 +131,9 @@ async fn get_returns_correct_row(pool: PgPool) {
     assert!(fetched.published);
 }
 
-#[sqlx::test]
-async fn get_returns_not_found_for_missing_id(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn get_returns_not_found_for_missing_id(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     let missing_id =
         ::heeranjid::HeerId::from_i64(999_999_999).expect("999_999_999 is a valid HeerId");
@@ -171,10 +146,9 @@ async fn get_returns_not_found_for_missing_id(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn save_updates_fields(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn save_updates_fields(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     let mut post = Post::create(
         &mut ctx,
@@ -201,10 +175,9 @@ async fn save_updates_fields(pool: PgPool) {
     assert_eq!(reloaded.body, "Original body");
 }
 
-#[sqlx::test]
-async fn delete_removes_row(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn delete_removes_row(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     let post = Post::create(
         &mut ctx,
@@ -230,10 +203,9 @@ async fn delete_removes_row(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn refresh_from_db_returns_current_state(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn refresh_from_db_returns_current_state(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     let post = Post::create(
         &mut ctx,
@@ -249,12 +221,13 @@ async fn refresh_from_db_returns_current_state(pool: PgPool) {
     .expect("create should succeed");
 
     // Simulate an out-of-band update (e.g. from another process).
-    sqlx::query("UPDATE posts SET title = $1 WHERE id = $2")
-        .bind("After Refresh")
-        .bind(post.id.as_i64())
-        .execute(&pool)
-        .await
-        .expect("out-of-band update should succeed");
+    let new_title = "After Refresh".to_string();
+    ctx.raw_execute(
+        "UPDATE posts SET title = $1 WHERE id = $2",
+        &[&new_title, &post.id],
+    )
+    .await
+    .expect("out-of-band update should succeed");
 
     // Our in-memory `post` is stale — refresh_from_db should return the new state.
     let refreshed = post
@@ -277,8 +250,8 @@ pub struct Tag {
     pub color: String,
 }
 
-async fn setup_tags(pool: &PgPool) {
-    sqlx::query(
+async fn setup_tags(ctx: &mut djogi::DjogiContext) {
+    ctx.raw_execute(
         "CREATE TABLE tags (
             id         SERIAL      PRIMARY KEY,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -286,16 +259,15 @@ async fn setup_tags(pool: &PgPool) {
             name       TEXT        NOT NULL,
             color      TEXT        NOT NULL
         )",
+        &[],
     )
-    .execute(pool)
     .await
     .unwrap();
 }
 
-#[sqlx::test]
-async fn serial_pk_create_and_get(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_tags(&pool).await;
+#[djogi::djogi_test]
+async fn serial_pk_create_and_get(mut ctx: djogi::DjogiContext) {
+    setup_tags(&mut ctx).await;
 
     let tag = Tag::create(
         &mut ctx,
@@ -328,27 +300,15 @@ pub struct Event {
     pub payload: String,
 }
 
-async fn setup_events(pool: &PgPool) {
-    heeranjid_sqlx::install_schema(pool).await.unwrap_or(());
-    heeranjid_sqlx::seed_default_node(pool).await.unwrap_or(());
+async fn setup_events(ctx: &mut djogi::DjogiContext) {
     // generate_ranjid() uses current_heer_ranj_node_id() — a SEPARATE session
-    // variable from heer.node_id. Persist at DB level so every pool
-    // connection inherits it (same rationale as setup_posts).
-    let db_name: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool)
+    // variable from heer.node_id. The #[djogi_test] bootstrap already handles
+    // heer.node_id at the database level; set heer.ranj_node_id for the
+    // current session connection so generate_ranjid() works on this context.
+    ctx.raw_execute("SELECT set_heer_ranj_node_id(1)", &[])
         .await
         .unwrap();
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.ranj_node_id = '1'"
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-    sqlx::query("SELECT set_heer_ranj_node_id(1)")
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query(
+    ctx.raw_execute(
         "CREATE TABLE events (
             id         UUID        PRIMARY KEY DEFAULT generate_ranjid(),
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -356,16 +316,15 @@ async fn setup_events(pool: &PgPool) {
             kind       TEXT        NOT NULL,
             payload    TEXT        NOT NULL
         )",
+        &[],
     )
-    .execute(pool)
     .await
     .unwrap();
 }
 
-#[sqlx::test]
-async fn ranjid_pk_create_and_get(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_events(&pool).await;
+#[djogi::djogi_test]
+async fn ranjid_pk_create_and_get(mut ctx: djogi::DjogiContext) {
+    setup_events(&mut ctx).await;
 
     let event = Event::create(
         &mut ctx,
@@ -391,16 +350,19 @@ async fn ranjid_pk_create_and_get(pool: PgPool) {
 // create_with_id + transaction tests (Task 9)
 // ---------------------------------------------------------------------------
 
-#[sqlx::test]
-async fn create_with_id_is_idempotent(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn create_with_id_is_idempotent(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     // Simulate form pre-generation: allocate ID before user submits.
-    // generate_heerid(executor, node_id) — node_id 1 is the seeded default.
-    let pre_generated_id = heeranjid_sqlx::generate_heerid(&pool, 1)
+    // Query generate_id() directly via the DjogiContext to get a heeranjid 0.2.x HeerId.
+    let id_row = ctx
+        .__query_one_for_macros("SELECT generate_id() AS id", &[])
         .await
-        .expect("generate_heerid should succeed");
+        .expect("generate_id() should succeed");
+    let pre_generated_id: ::djogi::HeerId =
+        ::djogi::HeerId::from_i64(id_row.try_get::<_, i64>("id").expect("id is i64"))
+            .expect("generate_id() returns a valid HeerId");
 
     let post = Post::create_with_id(
         &mut ctx,
@@ -446,9 +408,8 @@ async fn create_with_id_is_idempotent(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn crud_respects_transaction_boundary(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn crud_respects_transaction_boundary(mut ctx: djogi::DjogiContext) {
     // Proves BOTH directions of the transaction boundary:
     //   (a) commit path  — Post::create'd row IS visible after commit
     //   (b) rollback path — Post::create'd row is NOT visible after rollback
@@ -457,11 +418,10 @@ async fn crud_respects_transaction_boundary(pool: PgPool) {
     // uncommitted transaction's row wouldn't be visible to the pool's other
     // connections REGARDLESS of whether the txn rolled back or just dropped.
     // We need both branches to actually prove the boundary works.
-    setup_posts(&pool).await;
+    setup_posts(&mut ctx).await;
 
     // (a) commit — insert + save inside txn, commit, row must be visible
-    let tx_commit = pool.begin().await.unwrap();
-    let mut tx_commit_ctx = ::djogi::DjogiContext::from_transaction(tx_commit);
+    let mut tx_commit_ctx = ctx.begin().await.unwrap();
     let committed = Post::create(
         &mut tx_commit_ctx,
         Post {
@@ -482,8 +442,7 @@ async fn crud_respects_transaction_boundary(pool: PgPool) {
     assert_eq!(fetched.title, "Committed");
 
     // (b) rollback — insert + save inside txn, rollback, row must NOT be visible
-    let tx_rollback = pool.begin().await.unwrap();
-    let mut tx_rollback_ctx = ::djogi::DjogiContext::from_transaction(tx_rollback);
+    let mut tx_rollback_ctx = ctx.begin().await.unwrap();
     let mut rolled_back = Post::create(
         &mut tx_rollback_ctx,
         Post {
@@ -642,15 +601,8 @@ pub struct Product {
     pub description: Option<String>,
 }
 
-async fn setup_products(pool: &PgPool) {
-    heeranjid_sqlx::install_schema(pool).await.unwrap_or(());
-    heeranjid_sqlx::seed_default_node(pool).await.unwrap_or(());
-    // Same session-level node setup as setup_posts.
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query(
+async fn setup_products(ctx: &mut djogi::DjogiContext) {
+    ctx.raw_execute(
         "CREATE TABLE products (
             id           BIGINT      PRIMARY KEY DEFAULT generate_id(),
             created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -663,16 +615,15 @@ async fn setup_products(pool: &PgPool) {
             launch_date  DATE        NOT NULL,
             description  TEXT
         )",
+        &[],
     )
-    .execute(pool)
     .await
     .unwrap();
 }
 
-#[sqlx::test]
-async fn rich_field_types_roundtrip(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_products(&pool).await;
+#[djogi::djogi_test]
+async fn rich_field_types_roundtrip(mut ctx: djogi::DjogiContext) {
+    setup_products(&mut ctx).await;
 
     use rust_decimal_macros::dec;
 
@@ -724,13 +675,12 @@ async fn rich_field_types_roundtrip(pool: PgPool) {
 }
 
 // ==========================================================================
-// TASK 11 — djogi::raw escape-hatch API
+// TASK 11 — raw SQL escape hatch via `DjogiContext`
 // ==========================================================================
 
-#[sqlx::test]
-async fn raw_query_as_returns_typed_models(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn raw_query_as_returns_typed_models(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     Post::create(
         &mut ctx,
@@ -745,21 +695,19 @@ async fn raw_query_as_returns_typed_models(pool: PgPool) {
     .await
     .unwrap();
 
-    let results: Vec<Post> =
-        ::djogi::raw::query_as(&mut ctx, "SELECT * FROM posts WHERE published = $1", |q| {
-            q.bind(true)
-        })
+    let published = true;
+    let results: Vec<Post> = ctx
+        .raw_query("SELECT * FROM posts WHERE published = $1", &[&published])
         .await
-        .expect("raw query_as should succeed");
+        .expect("raw query should succeed");
 
     assert!(!results.is_empty(), "at least one published post expected");
     assert!(results.iter().all(|p| p.published));
 }
 
-#[sqlx::test]
-async fn raw_query_scalar_returns_count(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn raw_query_scalar_returns_count(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     Post::create(
         &mut ctx,
@@ -774,65 +722,54 @@ async fn raw_query_scalar_returns_count(pool: PgPool) {
     .await
     .unwrap();
 
-    let count: i64 = ::djogi::raw::query_scalar(&mut ctx, "SELECT COUNT(*) FROM posts", |q| q)
+    let count: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
         .await
         .expect("count scalar should succeed");
 
     assert!(count >= 1);
 }
 
-#[sqlx::test]
-async fn raw_execute_runs_without_return(pool: PgPool) {
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn raw_execute_runs_without_return(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
-    // sqlx::test provisions a multi-connection pool — `set_heer_node_id(1)`
-    // in setup_posts lands on one connection and doesn't propagate. Wrap the
-    // entire flow in a single transaction so SET + INSERT share one
-    // connection; committing persists the insert. (setup_posts itself will
-    // be fixed in task #18's post-publish cleanup.)
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(&mut *tx)
+    let mut tx_ctx = ctx.begin().await.unwrap();
+
+    let before: i64 = tx_ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
         .await
         .unwrap();
-    let mut tx_ctx = ::djogi::DjogiContext::from_transaction(tx);
 
-    // Pre-count, so the post-count assertion proves this INSERT specifically
-    // ran, not just that the table has some rows.
-    let before: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut tx_ctx, "SELECT COUNT(*) FROM posts", |q| q)
-            .await
-            .unwrap();
+    let title = "Raw Insert Title".to_string();
+    let body = "Raw Insert Body".to_string();
+    let published = false;
+    let view_count = 42i32;
+    let rows = tx_ctx
+        .raw_execute(
+            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+            &[&title, &body, &published, &view_count],
+        )
+        .await
+        .expect("raw execute should succeed");
+    assert_eq!(rows, 1, "raw insert should affect one row");
 
-    ::djogi::raw::execute(
-        &mut tx_ctx,
-        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-        |q| q.bind("Direct Insert").bind("body").bind(false).bind(0i32),
-    )
-    .await
-    .expect("raw execute should succeed");
-
-    let after: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut tx_ctx, "SELECT COUNT(*) FROM posts", |q| q)
-            .await
-            .unwrap();
+    let after: i64 = tx_ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
     assert_eq!(after, before + 1, "execute must insert exactly one row");
     tx_ctx.commit().await.unwrap();
 }
 
-#[sqlx::test]
-async fn raw_query_scalar_returns_not_found_for_empty_result(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    // query_scalar documents that zero rows => DjogiError::NotFound.
-    // Prove that contract with a WHERE clause that can't match.
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn raw_query_scalar_returns_not_found_for_empty_result(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
-    let result: Result<i64, ::djogi::DjogiError> = ::djogi::raw::query_scalar(
-        &mut ctx,
-        "SELECT view_count FROM posts WHERE id = $1",
-        |q| q.bind(-1i64), // HeerId column; -1 can't exist
-    )
-    .await;
+    let missing_id = -1i64;
+    let result: Result<i64, ::djogi::DjogiError> = ctx
+        .raw_scalar("SELECT view_count FROM posts WHERE id = $1", &[&missing_id])
+        .await;
 
     assert!(
         matches!(result, Err(::djogi::DjogiError::NotFound { .. })),
@@ -841,42 +778,42 @@ async fn raw_query_scalar_returns_not_found_for_empty_result(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn raw_works_inside_transaction(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_pool(pool.clone());
-    // The raw API's executor bound accepts &mut *Transaction (deref-reborrow
-    // to &mut PgConnection) in the same way the Model CRUD methods do.
-    // Prove both directions of the transaction boundary:
-    //   (a) commit — raw-execute'd row IS visible after commit
-    //   (b) rollback — raw-execute'd row is NOT visible after rollback
-    // This is stronger than Task 9's analogous test for the Model API
-    // (see Task 12 queued fix for that one's false-positive).
-    setup_posts(&pool).await;
+#[djogi::djogi_test]
+async fn raw_works_inside_transaction(mut ctx: djogi::DjogiContext) {
+    setup_posts(&mut ctx).await;
 
     // --- (a) commit path ---
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(&mut *tx)
+    let mut tx_ctx = ctx.begin().await.unwrap();
+    let before_commit: i64 = tx_ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
         .await
         .unwrap();
-    let mut tx_ctx = ::djogi::DjogiContext::from_transaction(tx);
-    let before_commit: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut tx_ctx, "SELECT COUNT(*) FROM posts", |q| q)
-            .await
-            .unwrap();
-    ::djogi::raw::execute(
-        &mut tx_ctx,
-        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-        |q| q.bind("Committed Raw").bind("body").bind(true).bind(5i32),
-    )
-    .await
-    .expect("raw execute inside committed txn should succeed");
+    let commit_title = "Committed Raw Insert".to_string();
+    let commit_body = "body".to_string();
+    let commit_published = true;
+    let commit_view_count = 1i32;
+    let committed_rows = tx_ctx
+        .raw_execute(
+            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+            &[
+                &commit_title,
+                &commit_body,
+                &commit_published,
+                &commit_view_count,
+            ],
+        )
+        .await
+        .expect("raw execute inside committed txn should succeed");
+    assert_eq!(
+        committed_rows, 1,
+        "commit-path raw insert must affect one row"
+    );
     tx_ctx.commit().await.unwrap();
 
-    let after_commit: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut ctx, "SELECT COUNT(*) FROM posts", |q| q)
-            .await
-            .unwrap();
+    let after_commit: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
     assert_eq!(
         after_commit,
         before_commit + 1,
@@ -884,30 +821,33 @@ async fn raw_works_inside_transaction(pool: PgPool) {
     );
 
     // --- (b) rollback path ---
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(&mut *tx)
+    let mut tx_ctx = ctx.begin().await.unwrap();
+    let rollback_title = "Rolled Back Raw Insert".to_string();
+    let rollback_body = "body".to_string();
+    let rollback_published = false;
+    let rollback_view_count = 2i32;
+    let rolled_back_rows = tx_ctx
+        .raw_execute(
+            "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
+            &[
+                &rollback_title,
+                &rollback_body,
+                &rollback_published,
+                &rollback_view_count,
+            ],
+        )
         .await
-        .unwrap();
-    let mut tx_ctx = ::djogi::DjogiContext::from_transaction(tx);
-    ::djogi::raw::execute(
-        &mut tx_ctx,
-        "INSERT INTO posts (title, body, published, view_count) VALUES ($1, $2, $3, $4)",
-        |q| {
-            q.bind("Rolled Back Raw")
-                .bind("body")
-                .bind(false)
-                .bind(0i32)
-        },
-    )
-    .await
-    .expect("raw execute inside rollback txn should succeed");
+        .expect("raw execute inside rollback txn should succeed");
+    assert_eq!(
+        rolled_back_rows, 1,
+        "rollback-path raw insert must affect one row before rollback"
+    );
     tx_ctx.rollback().await.unwrap();
 
-    let after_rollback: i64 =
-        ::djogi::raw::query_scalar::<i64, _>(&mut ctx, "SELECT COUNT(*) FROM posts", |q| q)
-            .await
-            .unwrap();
+    let after_rollback: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM posts", &[])
+        .await
+        .unwrap();
     assert_eq!(
         after_rollback, after_commit,
         "rolled-back raw insert must NOT be visible"

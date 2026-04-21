@@ -1,7 +1,7 @@
 // Verifies that a hand-written `impl ManyToMany<Target> for Source` with a
 // typed `related()` / `add_related()` / `remove_related()` body compiles
 // end-to-end against the Phase 4-retrofitted trait shape (`&mut DjogiContext`
-// in place of `E: sqlx::Executor`).
+// in place of generic executor).
 //
 // Pinned invariants (all compile-time):
 //

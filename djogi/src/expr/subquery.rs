@@ -67,7 +67,7 @@
 //! case. When both tables expose a same-named column (every Djogi model
 //! has `id`, `created_at`, `updated_at`, so this is real), the emission
 //! is ambiguous and Postgres raises `42702`. Workaround: correlate on
-//! tables whose bare column names do not collide, or drop to raw sqlx
+//! tables whose bare column names do not collide, or use `ctx.raw_execute`
 //! for explicitly-aliased correlations. The qualified form is deferred
 //! alongside the broader `parent_table` threading needed for
 //! `select_related + filter_expr` composition.
@@ -147,8 +147,8 @@ impl<T: Model, V> Subquery<T, V> {
     /// does not use them (a scalar subquery must return a single value;
     /// `ORDER BY ... LIMIT 1` would be the usual way to force that but
     /// is out of scope for Task 5). Callers who need a deterministic
-    /// scalar from a multi-row source should build a raw-sqlx subquery
-    /// via [`crate::raw`] until Phase 5 extends this surface.
+    /// scalar from a multi-row source should use `ctx.raw_scalar`
+    /// until Phase 5 extends this surface.
     pub fn new(qs: QuerySet<T>, column: FieldRef<T, V>) -> Self {
         Subquery {
             node: SubqueryNode {
@@ -230,8 +230,8 @@ impl Exists {
     /// existence of any matching row, so `ORDER BY` and `LIMIT` are
     /// vestigial — but it is worth knowing that `Exists::new(qs.limit(1))`
     /// does not constrain the planner's row search at all. Callers who
-    /// need row-bounded EXISTS semantics should drop to raw sqlx via
-    /// [`crate::raw`] until Phase 5 widens this surface.
+    /// need row-bounded EXISTS semantics should use `ctx.raw_execute`
+    /// until Phase 5 widens this surface.
     pub fn new<T: Model>(qs: QuerySet<T>) -> Self {
         Exists {
             node: SubqueryNode {
@@ -276,7 +276,7 @@ impl Exists {
 /// column reference "X" is ambiguous`. Workarounds:
 ///
 /// - Correlate on tables whose bare column names do not collide.
-/// - Drop to raw sqlx (via [`crate::raw`]) for explicitly-aliased
+/// - Use `ctx.raw_execute` / `ctx.raw_scalar` for explicitly-aliased
 ///   correlations.
 ///
 /// The qualified form (carrying an outer-table alias) is deferred
@@ -439,7 +439,7 @@ mod tests {
     use crate::Expr;
     use crate::descriptor::ModelDescriptor;
     use crate::expr::sql::emit_expr;
-    use sqlx::{Postgres, QueryBuilder};
+    use crate::pg::accumulator::SqlAccumulator;
 
     // Inert local model — only `table_name` matters for emission tests.
     struct Ledger;
@@ -547,7 +547,7 @@ mod tests {
         // construction.
         let qs: QuerySet<Entry> = QuerySet::new();
         let expr = Exists::new(qs).as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "EXISTS (SELECT 1 FROM entries)", "got: {sql}");
@@ -566,7 +566,7 @@ mod tests {
         let qs: QuerySet<Entry> =
             QuerySet::new().filter_expr(|_| inner_col.as_expr().eq(outer_ref.as_expr()));
         let expr = Exists::new(qs).as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         assert_eq!(
@@ -584,7 +584,7 @@ mod tests {
         let id_col: FieldRef<Entry, i64> = FieldRef::new("id");
         let qs: QuerySet<Entry> = QuerySet::new().filter(|_| memo.eq("opening".to_string()));
         let expr = Subquery::new(qs, id_col).as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         let sql = qb.sql();
         // One bind for the "opening" literal — assert structural shape
@@ -602,7 +602,7 @@ mod tests {
         // column name, no qualifier.
         let r: OuterRef<Ledger, i64> = OuterRef::new("id");
         let expr: Expr<i64> = r.as_expr();
-        let mut qb: QueryBuilder<'_, Postgres> = QueryBuilder::new("");
+        let mut qb = SqlAccumulator::new("");
         emit_expr(&mut qb, &expr.node);
         assert_eq!(qb.sql().trim(), "id", "got: {}", qb.sql());
     }

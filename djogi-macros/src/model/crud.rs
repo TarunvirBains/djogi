@@ -22,12 +22,11 @@
 //! }
 //! ```
 //!
-//! # Why `&mut DjogiContext` (not `impl sqlx::Executor`)
+//! # Why `&mut DjogiContext`
 //!
-//! Phase 4 v3's Q1 resolution flipped the API from "each method is generic over
-//! `sqlx::Executor`" to "each method takes `&mut DjogiContext`". The context
-//! carries either a pool or an active transaction and pattern-matches on the
-//! variant at each sqlx boundary in the generated body (via
+//! Phase 4 v3's Q1 resolution settled on "each method takes `&mut DjogiContext`".
+//! The context carries either a pool or an active transaction and pattern-matches
+//! on the variant at each query dispatch boundary in the generated body (via
 //! `::djogi::context::DjogiContext::inner_mut`). This unifies the call site —
 //! the same `Post::create(&mut ctx, post)` works whether `ctx` is pool-backed
 //! or inside an `atomic()` transaction scope.
@@ -50,10 +49,10 @@
 //! # Path routing through `::djogi::__private`
 //!
 //! Macro-generated code runs in the user's crate, which only has `djogi` as a
-//! direct dependency. Paths like `::sqlx::query_as` or `::inventory::iter`
-//! would fail with E0433 unless the user explicitly added those crates. To
-//! avoid that, all external crate references are routed through
-//! `::djogi::__private::sqlx`, `::djogi::__private::inventory`, and
+//! direct dependency. Direct paths like `::tokio_postgres::...` or
+//! `::inventory::iter` would fail with E0433 unless the user explicitly added
+//! those crates. To avoid that, all external crate references are routed through
+//! `::djogi::__private::pg`, `::djogi::__private::inventory`, and
 //! `::djogi::types`. This is the same convention established in Task 5
 //! (`from_row.rs`) and Task 6 (`descriptor.rs`).
 //!
@@ -85,7 +84,7 @@
 //! Models with `#[model(pk = "none")]` have no framework-injected `id` field
 //! and declare their own primary key (possibly composite). Phase 1 does NOT
 //! emit `impl Model for T` for these — the `Model` trait's `type Pk` requires
-//! `sqlx::Encode<'q, Postgres>`, which `()` does not implement, and choosing
+//! `postgres_types::ToSql`, which `()` does not implement, and choosing
 //! any other dummy type would misrepresent the model's actual key shape.
 //!
 //! Everything else (struct injection, `Default` impl, `FromRow`, descriptor
@@ -195,27 +194,65 @@ pub fn expand(
     let n_user = user_fields.len();
 
     // -------------------------------------------------------------------------
+    // Canonical column list — the comma-joined sequence of column names in
+    // struct-field order after injection. `id, created_at, updated_at,
+    // <user_fields>`. Matches `FromPgRow::COLUMN_LIST` emitted by
+    // `from_row.rs` byte-for-byte so the `SELECT {column_list}` and
+    // `RETURNING {column_list}` SQL below is decoded positionally by
+    // `FromPgRow::from_pg_row`.
+    //
+    // Replaces the historical `SELECT *` / `RETURNING *` spelling — that
+    // shape leaked DDL column order into the decode path and would
+    // mis-decode against migrations that happen to list user columns
+    // before framework columns (Phase 4's `accounts` fixture is the
+    // canonical example).
+    //
+    // Strips raw-identifier prefixes (`r#type` -> `type`) to match the
+    // convention already used in `stubs.rs` / `descriptor.rs` /
+    // `from_row.rs`.
+    // -------------------------------------------------------------------------
+    let framework_cols: [&str; 3] = ["id", "created_at", "updated_at"];
+    let user_col_names: Vec<String> = user_fields
+        .iter()
+        .map(|i| {
+            let raw = i.to_string();
+            raw.strip_prefix("r#").unwrap_or(&raw).to_string()
+        })
+        .collect();
+    let column_list: String = framework_cols
+        .iter()
+        .map(|s| (*s).to_string())
+        .chain(user_col_names.iter().cloned())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // -------------------------------------------------------------------------
     // `create` SQL: INSERT with user fields only; DB handles the framework
-    // columns via column defaults. RETURNING * brings back the full row.
+    // columns via column defaults. `RETURNING {column_list}` brings back the
+    // full row in canonical order for ordinal decode.
     //
     // For zero-user-field models we must use `DEFAULT VALUES` — empty parens
     // `()` are invalid SQL and `INSERT ... () VALUES ()` is rejected by
     // Postgres. `DEFAULT VALUES` is standard SQL and Postgres-supported.
     // -------------------------------------------------------------------------
     let insert_sql = if n_user == 0 {
-        format!("INSERT INTO {table} DEFAULT VALUES RETURNING *")
+        format!("INSERT INTO {table} DEFAULT VALUES RETURNING {column_list}")
     } else {
         let insert_columns: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
         let insert_col_list = insert_columns.join(", ");
         let insert_placeholders: Vec<String> = (1..=n_user).map(|i| format!("${i}")).collect();
         let insert_placeholder_list = insert_placeholders.join(", ");
         format!(
-            "INSERT INTO {table} ({insert_col_list}) VALUES ({insert_placeholder_list}) RETURNING *"
+            "INSERT INTO {table} ({insert_col_list}) VALUES ({insert_placeholder_list}) RETURNING {column_list}"
         )
     };
-    let create_binds: Vec<TokenStream> = user_fields
+    // Create params: one &(dyn ToSql + Sync) per user field, in order.
+    // Used to build the __params vec in the create body.
+    let create_param_entries: Vec<TokenStream> = user_fields
         .iter()
-        .map(|f| quote! { .bind(&value.#f) })
+        .map(|f| {
+            quote! { &value.#f as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        })
         .collect();
 
     // -------------------------------------------------------------------------
@@ -241,42 +278,57 @@ pub fn expand(
         .collect();
     let id_param = n_user + 1;
     let save_sql = if n_user == 0 {
-        format!("UPDATE {table} SET updated_at = now() WHERE id = ${id_param} RETURNING *")
+        format!(
+            "UPDATE {table} SET updated_at = now() WHERE id = ${id_param} RETURNING {column_list}"
+        )
     } else {
         format!(
-            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param} RETURNING *",
+            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param} RETURNING {column_list}",
             set_list = set_clauses.join(", "),
         )
     };
 
-    // save field binds — bind by reference to user fields on `&self`. No
-    // clone is required: the returned `impl Future + Send` captures `&self`'s
-    // lifetime via RPITIT elision, so the async block can borrow `self.#f`
-    // across `.await`. This means user field types don't have to implement
-    // `Clone` — only `sqlx::Encode`, which the trait's contract already implies.
-    let save_field_binds: Vec<TokenStream> = user_fields
+    // save field params — build &(dyn ToSql + Sync) entries for each user field.
+    // No clone required: RPITIT captures `&self`'s lifetime, so the async block
+    // can borrow `self.#f` across `.await`. Field types need `ToSql` which the
+    // trait's contract already implies.
+    let save_param_entries: Vec<TokenStream> = user_fields
         .iter()
-        .map(|f| quote! { .bind(&self.#f) })
+        .map(|f| {
+            quote! { &self.#f as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        })
         .collect();
 
-    // id bind for the save WHERE clause. Captured inline; HeerId needs
-    // `.as_i64()` to bind as `BIGINT`, others bind directly.
-    let save_id_bind = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
-        PkStrategy::RanjId => quote! { .bind(self.id) },
-        PkStrategy::Serial => quote! { .bind(self.id) },
+    // id entry for the save WHERE clause. HeerId: ToSql encodes as BIGINT via
+    // heeranjid 0.2's postgres_types impl; RanjId and i32 bind directly.
+    let save_id_param = match model_attrs.pk {
+        PkStrategy::HeerId => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::RanjId => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::Serial => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
         PkStrategy::None => unreachable!("handled by early return"),
     };
 
     // -------------------------------------------------------------------------
     // `get` SQL: SELECT * WHERE id = $1. `id` comes in as an owned Self::Pk.
     // -------------------------------------------------------------------------
-    let get_sql = format!("SELECT * FROM {table} WHERE id = $1");
+    let get_sql = format!("SELECT {column_list} FROM {table} WHERE id = $1");
 
-    let id_bind_for_get = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { .bind(id.as_i64()) },
-        PkStrategy::RanjId => quote! { .bind(id) },
-        PkStrategy::Serial => quote! { .bind(id) },
+    let id_param_for_get = match model_attrs.pk {
+        PkStrategy::HeerId => {
+            quote! { &id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::RanjId => {
+            quote! { &id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::Serial => {
+            quote! { &id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
         PkStrategy::None => unreachable!("handled by early return"),
     };
 
@@ -284,10 +336,16 @@ pub fn expand(
     // `refresh_from_db` — same query as get, but binds `&self.id` directly.
     // Like save, RPITIT captures `&self` so no pre-capture clone is needed.
     // -------------------------------------------------------------------------
-    let refresh_id_bind = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
-        PkStrategy::RanjId => quote! { .bind(self.id) },
-        PkStrategy::Serial => quote! { .bind(self.id) },
+    let refresh_id_param = match model_attrs.pk {
+        PkStrategy::HeerId => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::RanjId => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::Serial => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
         PkStrategy::None => unreachable!("handled by early return"),
     };
 
@@ -296,10 +354,16 @@ pub fn expand(
     // -------------------------------------------------------------------------
     let delete_sql = format!("DELETE FROM {table} WHERE id = $1");
 
-    let owned_pk_bind = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { .bind(self.id.as_i64()) },
-        PkStrategy::RanjId => quote! { .bind(self.id) },
-        PkStrategy::Serial => quote! { .bind(self.id) },
+    let owned_pk_param = match model_attrs.pk {
+        PkStrategy::HeerId => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::RanjId => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
+        PkStrategy::Serial => {
+            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        }
         PkStrategy::None => unreachable!("handled by early return"),
     };
 
@@ -319,27 +383,25 @@ pub fn expand(
     // -------------------------------------------------------------------------
     // Per-method async bodies.
     // -------------------------------------------------------------------------
-    // Every body pattern-matches on the context's inner variant at the sqlx
-    // boundary. The match arms feed the same `sqlx::query_as` / `sqlx::query`
-    // chain into either `fetch_*`(&*pool) or `fetch_*`(&mut **tx) — inline
-    // match is explicit, free of GAT gymnastics, and costs one pattern match
-    // per call. See djogi/src/context.rs for the full rationale.
+    // Every body calls the public-but-hidden execution helpers on `ctx`
+    // (`ctx.__query_opt_for_macros`, `ctx.__query_one_for_macros`, etc.) and
+    // decodes rows via `FromPgRow::from_pg_row`. These helpers are
+    // accessible from user crates (macro-generated code runs outside `djogi`)
+    // even though the underlying `pub(crate)` methods are not. See
+    // djogi/src/context.rs for the execution helper rationale.
     let get_body = quote! {
         async move {
-            let q = ::djogi::__private::sqlx::query_as::<
-                ::djogi::__private::sqlx::Postgres,
-                Self,
-            >(#get_sql)
-            #id_bind_for_get;
-            let result = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                    q.fetch_optional(&*__pool).await?
+            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                #id_param_for_get,
+            ];
+            match ctx.__query_opt_for_macros(#get_sql, __params).await? {
+                ::std::option::Option::Some(__row) => {
+                    <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
                 }
-                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                    q.fetch_optional(&mut **__tx).await?
+                ::std::option::Option::None => {
+                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
                 }
-            };
-            result.ok_or_else(|| ::djogi::DjogiError::not_found(#table))
+            }
         }
     };
 
@@ -394,34 +456,21 @@ pub fn expand(
                 // `ForeignKey::key()` returns the parent's Pk
                 // (HeerId for the supported case); `.as_i64()` binds
                 // to the companion table's `parent_id BIGINT`
-                // column. The match arms duplicate the query build
-                // to match the per-branch executor binding pattern
-                // used elsewhere in this file — the Pool/Transaction
-                // handles have different types, so the build cannot
-                // be hoisted out of the match.
+                // column. Uses the public-but-hidden ctx helper so
+                // macro-emitted code can dispatch through either Pool
+                // or Transaction variants without reaching into the
+                // crate-private ContextInner.
                 let __seq_parent_id: i64 = value.#parent_col_ident.key().as_i64();
-                let __seq_row: (i64,) =
-                    match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                            ::djogi::__private::sqlx::query_as::<
-                                ::djogi::__private::sqlx::Postgres,
-                                (i64,),
-                            >(#upsert_sql)
-                                .bind(__seq_parent_id)
-                                .fetch_one(&*__pool)
-                                .await?
-                        }
-                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                            ::djogi::__private::sqlx::query_as::<
-                                ::djogi::__private::sqlx::Postgres,
-                                (i64,),
-                            >(#upsert_sql)
-                                .bind(__seq_parent_id)
-                                .fetch_one(&mut **__tx)
-                                .await?
-                        }
-                    };
-                value.#seq_field_ident = __seq_row.0;
+                let __seq_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] =
+                    &[&__seq_parent_id];
+                let __seq_row = ctx.__query_one_for_macros(#upsert_sql, __seq_params).await?;
+                let __seq_val: i64 = ::djogi::__private::tokio_postgres::Row::try_get(
+                    &__seq_row,
+                    "last_seq",
+                ).map_err(|e| ::djogi::DjogiError::Decode(
+                    ::std::format!("sequence_within: failed to decode last_seq: {}", e)
+                ))?;
+                value.#seq_field_ident = __seq_val;
             };
             // `value` needs to be mutable so we can assign the
             // seq field.
@@ -434,19 +483,11 @@ pub fn expand(
         async move {
             #create_value_binding
             #sequence_upsert_preamble
-            let q = ::djogi::__private::sqlx::query_as::<
-                ::djogi::__private::sqlx::Postgres,
-                Self,
-            >(#insert_sql)
-            #(#create_binds)*;
-            let row = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                    q.fetch_one(&*__pool).await?
-                }
-                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                    q.fetch_one(&mut **__tx).await?
-                }
-            };
+            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                #(#create_param_entries,)*
+            ];
+            let __raw_row = ctx.__query_one_for_macros(#insert_sql, __params).await?;
+            let row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
             // Phase 4 Task 6 — outbox emission (no-op for non-events models).
             // Runs in the same ctx so a transactional caller gets the
             // outbox row committed/rolled back atomically with `row`.
@@ -457,20 +498,12 @@ pub fn expand(
 
     let save_body = quote! {
         async move {
-            let q = ::djogi::__private::sqlx::query_as::<
-                ::djogi::__private::sqlx::Postgres,
-                Self,
-            >(#save_sql)
-            #(#save_field_binds)*
-            #save_id_bind;
-            let row: Self = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                    q.fetch_one(&*__pool).await?
-                }
-                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                    q.fetch_one(&mut **__tx).await?
-                }
-            };
+            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                #(#save_param_entries,)*
+                #save_id_param,
+            ];
+            let __raw_row = ctx.__query_one_for_macros(#save_sql, __params).await?;
+            let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
             *self = row;
             // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
             // values (triggers, column defaults), so emission runs AFTER the
@@ -482,16 +515,10 @@ pub fn expand(
 
     let delete_body = quote! {
         async move {
-            let q = ::djogi::__private::sqlx::query(#delete_sql)
-            #owned_pk_bind;
-            match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                    q.execute(&*__pool).await?;
-                }
-                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                    q.execute(&mut **__tx).await?;
-                }
-            }
+            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                #owned_pk_param,
+            ];
+            ctx.__execute_for_macros(#delete_sql, __params).await?;
             // Phase 4 Task 6 — outbox carries the pre-delete snapshot
             // (reads `self` before it drops at function scope end).
             // No-op for non-events models.
@@ -502,20 +529,17 @@ pub fn expand(
 
     let refresh_body = quote! {
         async move {
-            let q = ::djogi::__private::sqlx::query_as::<
-                ::djogi::__private::sqlx::Postgres,
-                Self,
-            >(#get_sql)
-            #refresh_id_bind;
-            let result = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                    q.fetch_optional(&*__pool).await?
+            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                #refresh_id_param,
+            ];
+            match ctx.__query_opt_for_macros(#get_sql, __params).await? {
+                ::std::option::Option::Some(__row) => {
+                    <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__row)
                 }
-                ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                    q.fetch_optional(&mut **__tx).await?
+                ::std::option::Option::None => {
+                    ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
                 }
-            };
-            result.ok_or_else(|| ::djogi::DjogiError::not_found(#table))
+            }
         }
     };
 
@@ -542,7 +566,9 @@ pub fn expand(
     // -------------------------------------------------------------------------
     let create_with_id_impl = if matches!(model_attrs.pk, PkStrategy::HeerId) {
         let insert_with_id_sql = if n_user == 0 {
-            format!("INSERT INTO {table} (id) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING *")
+            format!(
+                "INSERT INTO {table} (id) VALUES ($1) ON CONFLICT (id) DO NOTHING RETURNING {column_list}"
+            )
         } else {
             let cols: Vec<String> = user_fields.iter().map(|i| i.to_string()).collect();
             let col_list = cols.join(", ");
@@ -550,7 +576,7 @@ pub fn expand(
             let vals: Vec<String> = (2..=n_user + 1).map(|n| format!("${n}")).collect();
             let val_list = vals.join(", ");
             format!(
-                "INSERT INTO {table} (id, {col_list}) VALUES ($1, {val_list}) ON CONFLICT (id) DO NOTHING RETURNING *"
+                "INSERT INTO {table} (id, {col_list}) VALUES ($1, {val_list}) ON CONFLICT (id) DO NOTHING RETURNING {column_list}"
             )
         };
 
@@ -576,26 +602,22 @@ pub fn expand(
                     id: ::djogi::types::HeerId,
                     value: Self,
                 ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
-                    let q = ::djogi::__private::sqlx::query_as::<
-                        ::djogi::__private::sqlx::Postgres,
-                        Self,
-                    >(#insert_with_id_sql)
-                        .bind(id.as_i64())
-                        #(#create_binds)*;
-                    let maybe_row = match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                            q.fetch_optional(&*__pool).await?
+                    let __id_i64: i64 = id.as_i64();
+                    let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                        &__id_i64,
+                        #(#create_param_entries,)*
+                    ];
+                    let __maybe_row = ctx.__query_opt_for_macros(#insert_with_id_sql, __params).await?;
+                    match __maybe_row {
+                        ::std::option::Option::Some(__raw) => {
+                            <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)
                         }
-                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                            q.fetch_optional(&mut **__tx).await?
+                        ::std::option::Option::None => {
+                            let mut v = value;
+                            v.id = id;
+                            ::std::result::Result::Ok(v)
                         }
-                    };
-
-                    ::std::result::Result::Ok(maybe_row.unwrap_or_else(|| {
-                        let mut v = value;
-                        v.id = id;
-                        v
-                    }))
+                    }
                 }
             }
         }
@@ -660,9 +682,10 @@ pub fn expand(
     let bulk_valid_columns_lit = bulk_valid_columns.iter().map(|s| quote! { #s });
 
     // Per-row bind tokens for bulk_create / bulk_upsert's VALUES tail.
-    // Emits a leading "(" then push_bind per user field with ", "
-    // separators, then a trailing ")". Uses a `__first` flag on the
-    // outer row loop for row-separator handling.
+    // Uses SqlAccumulator::push_bind for each field — emits a positional
+    // `$n` placeholder and stores the bind value by move (fields come from
+    // `rows.into_iter()` so each row is owned). Rows are comma-separated
+    // via push_sql(", ") between iterations.
     //
     // Zero-user-field branch never reaches this — n_user >= 1 gated by
     // the per-method body.
@@ -672,13 +695,13 @@ pub fn expand(
         let first_field = &user_fields[0];
         let rest_fields = &user_fields[1..];
         quote! {
-            __qb.push("(");
-            __qb.push_bind(&row.#first_field);
+            __acc.push_sql("(");
+            __acc.push_bind(row.#first_field);
             #(
-                __qb.push(", ");
-                __qb.push_bind(&row.#rest_fields);
+                __acc.push_sql(", ");
+                __acc.push_bind(row.#rest_fields);
             )*
-            __qb.push(")");
+            __acc.push_sql(")");
         }
     };
 
@@ -805,12 +828,13 @@ pub fn expand(
         }
     } else {
         let insert_prefix = format!("INSERT INTO {table} ({bulk_insert_col_list}) VALUES ");
+        let bulk_returning_suffix = format!(" RETURNING {column_list}");
         quote! {
             /// Bulk-insert every row in `rows` and return the rehydrated
             /// results.
             ///
             /// One `INSERT` round trip emitting
-            /// `INSERT INTO <table> (<user-cols>) VALUES (...), (...) RETURNING *`.
+            /// `INSERT INTO <table> (<user-cols>) VALUES (...), (...) RETURNING <column_list>`.
             /// Framework columns (`id`, `created_at`, `updated_at`) are
             /// populated by their column defaults and surface in the
             /// returned rows.
@@ -834,28 +858,23 @@ pub fn expand(
                 if rows.is_empty() {
                     return ::std::result::Result::Ok(::std::vec::Vec::new());
                 }
-                let mut __qb: ::djogi::__private::sqlx::QueryBuilder<
-                    '_,
-                    ::djogi::__private::sqlx::Postgres,
-                > = ::djogi::__private::sqlx::QueryBuilder::new(#insert_prefix);
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
                 {
                     let mut __first = true;
-                    for row in rows.iter() {
-                        if __first { __first = false; } else { __qb.push(", "); }
+                    for row in rows.into_iter() {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
                         #per_row_binds
                     }
                 }
-                __qb.push(" RETURNING *");
-                let __q = __qb.build_query_as::<Self>();
-                let created: ::std::vec::Vec<Self> =
-                    match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                            __q.fetch_all(&*__pool).await?
-                        }
-                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                            __q.fetch_all(&mut **__tx).await?
-                        }
-                    };
+                __acc.push_sql(#bulk_returning_suffix);
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                let created: ::std::vec::Vec<Self> = __raw_rows
+                    .iter()
+                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
                 #emit_outbox_bulk_create
                 ::std::result::Result::Ok(created)
             }
@@ -883,27 +902,31 @@ pub fn expand(
         }
     } else {
         let insert_prefix = format!("INSERT INTO {table} (id, {bulk_insert_col_list}) VALUES ");
-        let do_update_set_clause = format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING *");
+        let do_update_set_clause =
+            format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING {column_list}");
 
         // For bulk_upsert the id column is included up front so
         // callers can upsert with pre-allocated ids. Per-row bind tail
         // needs the id bind before the user-field binds.
+        // Uses SqlAccumulator::push_bind — emits `$n` placeholders and
+        // stores bind values by move (rows consumed via into_iter).
+        // HeerId needs `.as_i64()` to encode as BIGINT; RanjId and i32 bind as-is.
         let pk_bind_for_upsert = match model_attrs.pk {
-            PkStrategy::HeerId => quote! { __qb.push_bind(row.id.as_i64()); },
-            PkStrategy::RanjId => quote! { __qb.push_bind(row.id); },
-            PkStrategy::Serial => quote! { __qb.push_bind(row.id); },
+            PkStrategy::HeerId => quote! { __acc.push_bind(row.id.as_i64()); },
+            PkStrategy::RanjId => quote! { __acc.push_bind(row.id); },
+            PkStrategy::Serial => quote! { __acc.push_bind(row.id); },
             PkStrategy::None => unreachable!("handled by early return"),
         };
         let upsert_per_row_binds: TokenStream = {
             let all_fields_iter = user_fields.iter();
             quote! {
-                __qb.push("(");
+                __acc.push_sql("(");
                 #pk_bind_for_upsert
                 #(
-                    __qb.push(", ");
-                    __qb.push_bind(&row.#all_fields_iter);
+                    __acc.push_sql(", ");
+                    __acc.push_bind(row.#all_fields_iter);
                 )*
-                __qb.push(")");
+                __acc.push_sql(")");
             }
         };
 
@@ -914,8 +937,8 @@ pub fn expand(
             /// `conflict_cols` key, updates every user field plus
             /// `updated_at = now()` with the incoming values
             /// (`EXCLUDED.*`). Returns the rehydrated rows —
-            /// `RETURNING *` emits one row per input regardless of
-            /// whether it was inserted or updated.
+            /// `RETURNING <column_list>` emits one row per input
+            /// regardless of whether it was inserted or updated.
             ///
             /// `conflict_cols` must reference real columns of this
             /// model (framework or user). Unknown names return
@@ -961,37 +984,32 @@ pub fn expand(
                     }
                 }
 
-                let mut __qb: ::djogi::__private::sqlx::QueryBuilder<
-                    '_,
-                    ::djogi::__private::sqlx::Postgres,
-                > = ::djogi::__private::sqlx::QueryBuilder::new(#insert_prefix);
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
                 {
                     let mut __first = true;
-                    for row in rows.iter() {
-                        if __first { __first = false; } else { __qb.push(", "); }
+                    for row in rows.into_iter() {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
                         #upsert_per_row_binds
                     }
                 }
-                __qb.push(" ON CONFLICT (");
+                __acc.push_sql(" ON CONFLICT (");
                 {
                     let mut __first = true;
                     for col in conflict_cols {
-                        if __first { __first = false; } else { __qb.push(", "); }
-                        __qb.push(*col);
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        __acc.push_sql(*col);
                     }
                 }
-                __qb.push(")");
-                __qb.push(#do_update_set_clause);
-                let __q = __qb.build_query_as::<Self>();
-                let created: ::std::vec::Vec<Self> =
-                    match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                        ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                            __q.fetch_all(&*__pool).await?
-                        }
-                        ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                            __q.fetch_all(&mut **__tx).await?
-                        }
-                    };
+                __acc.push_sql(")");
+                __acc.push_sql(#do_update_set_clause);
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                let created: ::std::vec::Vec<Self> = __raw_rows
+                    .iter()
+                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
                 // Upsert outbox policy: emit a Save event per returned
                 // row — the caller does not tell us whether each row
                 // was inserted or updated, and "Save" is the
@@ -1035,10 +1053,11 @@ pub fn expand(
                 let ph_list = placeholders.join(", ");
                 format!(
                     "INSERT INTO {table} ({col_list}) VALUES ({ph_list}) \
-                     ON CONFLICT ({key_str}) DO NOTHING RETURNING *"
+                     ON CONFLICT ({key_str}) DO NOTHING RETURNING {column_list}"
                 )
             };
-            let select_by_key_sql = format!("SELECT * FROM {table} WHERE {key_str} = $1 LIMIT 1");
+            let select_by_key_sql =
+                format!("SELECT {column_list} FROM {table} WHERE {key_str} = $1 LIMIT 1");
 
             // The `create_or_find` outbox emission policy — fire the
             // Create event only when the insert actually inserted a
@@ -1064,7 +1083,7 @@ pub fn expand(
                 ///
                 /// Shape:
                 /// `INSERT INTO <table> (<user-cols>) VALUES ($1,...)
-                ///  ON CONFLICT (<key>) DO NOTHING RETURNING *`.
+                ///  ON CONFLICT (<key>) DO NOTHING RETURNING <column_list>`.
                 /// On empty RETURNING (the "key already existed"
                 /// branch) the method re-SELECTs the existing row by
                 /// `<key> = row.<key>` and returns `(existing, false)`.
@@ -1087,22 +1106,16 @@ pub fn expand(
                     ctx: &mut ::djogi::context::DjogiContext,
                     row: Self,
                 ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
-                    let q = ::djogi::__private::sqlx::query_as::<
-                        ::djogi::__private::sqlx::Postgres,
-                        Self,
-                    >(#insert_or_nothing_sql)
-                    #(.bind(&row.#user_fields))*;
-                    let maybe_inserted: ::std::option::Option<Self> =
-                        match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                            ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                                q.fetch_optional(&*__pool).await?
-                            }
-                            ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                                q.fetch_optional(&mut **__tx).await?
-                            }
-                        };
-                    match maybe_inserted {
-                        ::std::option::Option::Some(__row) => {
+                    let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                        #(&row.#user_fields as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),)*
+                    ];
+                    let __maybe_inserted = ctx.__query_opt_for_macros(
+                        #insert_or_nothing_sql,
+                        __insert_params,
+                    ).await?;
+                    match __maybe_inserted {
+                        ::std::option::Option::Some(__raw) => {
+                            let __row = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
                             #create_or_find_outbox
                             ::std::result::Result::Ok((__row, true))
                         }
@@ -1112,20 +1125,14 @@ pub fn expand(
                             // The key-field value comes from the
                             // caller's `row` input (unchanged across
                             // the insert attempt).
-                            let q = ::djogi::__private::sqlx::query_as::<
-                                ::djogi::__private::sqlx::Postgres,
-                                Self,
-                            >(#select_by_key_sql)
-                            .bind(&row.#key_ident);
-                            let existing: Self =
-                                match ::djogi::context::DjogiContext::__inner_mut_for_macros(ctx) {
-                                    ::djogi::context::__ContextInnerForMacros::Pool(__pool) => {
-                                        q.fetch_one(&*__pool).await?
-                                    }
-                                    ::djogi::context::__ContextInnerForMacros::Transaction(__tx) => {
-                                        q.fetch_one(&mut **__tx).await?
-                                    }
-                                };
+                            let __select_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
+                                &row.#key_ident as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),
+                            ];
+                            let __raw = ctx.__query_one_for_macros(
+                                #select_by_key_sql,
+                                __select_params,
+                            ).await?;
+                            let existing = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw)?;
                             ::std::result::Result::Ok((existing, false))
                         }
                     }

@@ -82,7 +82,7 @@ impl<M: Model, V> std::fmt::Debug for FieldRef<M, V> {
 impl<M: Model, V> FieldRef<M, V> {
     /// Construct a new `FieldRef`. Crate-private so downstream code
     /// cannot fabricate a ref whose `column` string smuggles SQL into
-    /// the `sqlx::QueryBuilder::push` sites in `query::sql`. The macro
+    /// the `SqlAccumulator::push_sql` sites in `query::sql`. The macro
     /// reaches this constructor through
     /// [`__macro_support::__make_field_ref`], which validates the
     /// column name against [`crate::ident::assert_plain_ident`]
@@ -148,7 +148,7 @@ impl<M: Model, V> FieldRef<M, V> {
 /// `FieldRef::new` was `pub` before this seal, which let a hostile
 /// downstream crate fabricate a `FieldRef` whose column string
 /// carried SQL metacharacters, and those strings flowed straight
-/// into `sqlx::QueryBuilder::push` inside `query::sql`'s
+/// into `SqlAccumulator::push_sql` inside `query::sql`'s
 /// `emit_leaf`, `DISTINCT ON`, `ORDER BY`, and `UPDATE … SET`
 /// emitters. Constructing a `FieldRef` now requires going through
 /// [`__make_field_ref`], which routes the column name through the
