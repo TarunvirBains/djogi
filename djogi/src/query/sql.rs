@@ -1519,7 +1519,7 @@ mod tests {
             relation_kind: None,
             on_delete: None,
             target_type_name: None,
-            projection_map: &[],
+            visage_map: &[],
         }],
         partition_by: None,
         has_outbox: false,

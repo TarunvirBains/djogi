@@ -76,12 +76,12 @@ pub fn expand(
                 sequence_within: None,
                 index_type: None,
                 // Framework columns carry no relation metadata — `id` is a
-                // PK, not an FK, and Phase 4.5's projection hookup lands
+                // PK, not an FK, and Phase 4.5's visage hookup lands
                 // per-user-field only.
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[
+                visage_map: &[
                     ("admin", "id"),
                     ("export", "id"),
                     ("public", "id"),
@@ -105,7 +105,7 @@ pub fn expand(
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[
+                visage_map: &[
                     ("admin", "id"),
                     ("export", "id"),
                     ("public", "id"),
@@ -129,7 +129,7 @@ pub fn expand(
                 relation_kind: None,
                 on_delete: None,
                 target_type_name: None,
-                projection_map: &[
+                visage_map: &[
                     ("admin", "id"),
                     ("export", "id"),
                     ("public", "id"),
@@ -156,7 +156,7 @@ pub fn expand(
             relation_kind: None,
             on_delete: None,
             target_type_name: None,
-            projection_map: &[
+            visage_map: &[
                 ("admin", "created_at"),
                 ("export", "created_at"),
                 ("public", "created_at"),
@@ -180,7 +180,7 @@ pub fn expand(
             relation_kind: None,
             on_delete: None,
             target_type_name: None,
-            projection_map: &[
+            visage_map: &[
                 ("admin", "updated_at"),
                 ("export", "updated_at"),
                 ("public", "updated_at"),
@@ -240,9 +240,9 @@ pub fn expand(
                 None => quote! { None },
             };
 
-            // Phase 4.5 — populate projection_map from the parsed
+            // Phase 4.5 — populate visage_map from the parsed
             // `#[field(expose(...))]` spec. Scalar scopes map to this
-            // column's name; relation scopes map to the peer projection
+            // column's name; relation scopes map to the peer visage
             // type name. Empty / suppressed specs emit `&[]`.
             let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
 
@@ -301,7 +301,7 @@ pub fn expand(
                     relation_kind: #relation_kind_tokens,
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
-                    projection_map: #projection_map_tokens,
+                    visage_map: #projection_map_tokens,
                 }
             }
         })
@@ -358,7 +358,7 @@ pub fn expand(
 
 /// Emit a `&'static [(&'static str, &'static str)]` literal from an
 /// `ExposeSpec`. Scalar scope entries map scope → column name; relation
-/// scope entries map scope → peer projection type name. Empty / suppressed
+/// scope entries map scope → peer visage type name. Empty / suppressed
 /// specs emit `&[]`.
 ///
 /// Entries are sorted by scope name so descriptor snapshots don't churn

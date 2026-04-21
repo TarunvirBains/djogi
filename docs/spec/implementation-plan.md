@@ -20,7 +20,7 @@
 Djogi should feel like a strong Rust data layer, not a framework that swallows the whole application. The roadmap should be implemented with the following constraints:
 
 - **Public API is type-first, not descriptor-first** — model authors primarily work with normal Rust types, wrappers, and derives; internal descriptor enums and metadata exist to drive SQL generation, migration diffing, and tooling
-- **Explicit over magical** — eager loading, transactions, lock behavior, projection boundaries, and escape hatches stay visible at the call site; avoid hidden I/O or implicit behavior shifts
+- **Explicit over magical** — eager loading, transactions, lock behavior, visage boundaries, and escape hatches stay visible at the call site; avoid hidden I/O or implicit behavior shifts
 - **Core stays narrow** — the `djogi` crate owns Postgres-native model/query/write/runtime primitives; web-framework integration, admin surfaces, shell conveniences, and app policy layers remain opt-in and clearly layered
 - **Feature flags are real boundaries** — optional surfaces should not leak heavyweight dependencies or framework assumptions into the core data path
 - **Context objects stay disciplined** — `DjogiContext` may carry execution state needed for correctness, but it must not become a catch-all service locator for unrelated framework concerns
@@ -284,22 +284,22 @@ Phase 4 is the main query/write power inflection point. It is where Djogi stops 
 
 ---
 
-## Phase 4.5: Projections & Shared Contracts
+## Phase 4.5: Visages & Shared Contracts
 
 **Goal:** Generate audience-specific transport-safe types from one model definition.
 
 This phase owns transport-safe contract generation. It does not replace Phase 4's query-time typed result shaping for aggregates, annotations, or other performance-sensitive query outputs.
 
-Projection generation should stay Rust-native: plain data structs, explicit conversions, and no hidden runtime dependency on SQLx, `DjogiContext`, or request-state machinery.
+Visage generation should stay Rust-native: plain data structs, explicit conversions, and no hidden runtime dependency on SQLx, `DjogiContext`, or request-state machinery.
 
-- [ ] Add field exposure metadata for named projection scopes
-- [ ] Generate projection structs such as public/self/admin/export views
-- [ ] Generate `From<&Model>` conversions into projections
-- [ ] Support nested relation projections without exposing raw persistence models
-- [ ] Validate projections at compile time when disallowed fields are referenced
-- [ ] Keep generated projection types free of SQLx/runtime dependencies so they can live in shared API/frontend crates
+- [ ] Add field exposure metadata for named visage scopes
+- [ ] Generate visage structs such as public/self/admin/export views
+- [ ] Generate `From<&Model>` conversions into visages
+- [ ] Support nested relation visages without exposing raw persistence models
+- [ ] Validate visages at compile time when disallowed fields are referenced
+- [ ] Keep generated visage types free of SQLx/runtime dependencies so they can live in shared API/frontend crates
 
-**Deliverable:** Models can derive transport-safe projections without handwritten DTO mapping layers.
+**Deliverable:** Models can derive transport-safe visages without handwritten DTO mapping layers.
 
 ---
 
@@ -377,21 +377,21 @@ This phase is also where Djogi should prefer typed value wrappers and closed int
 - [ ] `ts_rank` / `ts_rank_cd` as aggregate helpers for ranking result ordering
 - [ ] Dictionary choice surfaced in migration diffs (so dictionary changes show up as an alteration)
 
-### 5j: Projection Query Surface + Boundary Enforcement
+### 5j: Visage Query Surface + Boundary Enforcement
 
-Phase 4.5 shipped projections as output-shape types only: `{Model}Public` / `SelfView` / `Admin` / `Export` carry `impl TryFrom<&Model>` for conversion but have no query-side surface. Phase 5 §5j makes projections first-class query entities with compile-time scope enforcement, filling Phase 4.5's explicit M2M projection deferral in the process.
+Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfView` / `Admin` / `Export` carry `impl TryFrom<&Model>` for conversion but have no query-side surface. Phase 5 §5j makes visages first-class query entities with compile-time scope enforcement, filling Phase 4.5's explicit M2M visage deferral in the process.
 
-- [ ] Projection as query entry point: `PublicRegisteredOwner::filter(|o| o.display_name.eq("Ada")).fetch_all(&mut ctx).await?` — every projection type gets the full QuerySet surface (filter, order, limit, fetch terminals) that models already have
-- [ ] Per-projection generated field-accessor types: alongside `{Model}Fields`, each projection emits `{Projection}Fields` surfacing only the fields the projection exposes. Attempting to reference a non-exposed field in a closure is a compile error, not a runtime omission
-- [ ] Forward-FK boundary enforcement: relation fields in the projection's accessor type point to projection-scoped peer accessors. `PublicRegisteredOwner::filter(|o| o.address.city.eq("Toronto"))` compiles; `.address.street` does not compile when `AddressPublic` exposes only `.city`. Enforcement is compile-time via the type system — zero runtime cost
+- [ ] Visage as query entry point: `PublicRegisteredOwner::filter(|o| o.display_name.eq("Ada")).fetch_all(&mut ctx).await?` — every visage type gets the full QuerySet surface (filter, order, limit, fetch terminals) that models already have
+- [ ] Per-visage generated field-accessor types: alongside `{Model}Fields`, each visage emits `{Visage}Fields` surfacing only the fields the visage exposes. Attempting to reference a non-exposed field in a closure is a compile error, not a runtime omission
+- [ ] Forward-FK boundary enforcement: relation fields in the visage's accessor type point to visage-scoped peer accessors. `PublicRegisteredOwner::filter(|o| o.address.city.eq("Toronto"))` compiles; `.address.street` does not compile when `AddressPublic` exposes only `.city`. Enforcement is compile-time via the type system — zero runtime cost
 - [ ] Reverse-FK boundary enforcement: symmetrical. From `AddressPublic`, the reverse accessor to owners returns `QuerySet<PublicRegisteredOwner>` where the closure receiver is `PublicRegisteredOwnerFields`
-- [ ] M2M boundary enforcement: projection-scoped M2M accessor methods return projection-scoped QuerySets. Through-model fields can opt into their own projection via `#[field(expose(...))]` on through-model fields, producing e.g. `UserInterestPublic`. Through-model projections participate in the same boundary enforcement. Fills the Phase 4.5 deferral "M2M projections — projections nest only through `ForeignKey<T>` / `OneToOneField<T>`; M2M stitching is manual"
-- [ ] SELECT narrowing: projection-scoped QuerySets emit SELECT with only the projection's exposed columns, not the full model. This is the headline performance win — projections stop being only an output shape and start paying off at the query side
-- [ ] Mutation scope: projection-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a projection emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
-- [ ] Prefetch composition: an API for declaring a prefetch into a specific peer projection so chained traversals inherit the same boundary. Exact shape deferred to v2/v3 spec; leading candidates include a dedicated `prefetch_as::<PeerProjection>(model::relation)` terminal on the QuerySet and a generated `model::relation::as_public()`-style relation-path variant surfaced under each projection scope
+- [ ] M2M boundary enforcement: visage-scoped M2M accessor methods return visage-scoped QuerySets. Through-model fields can opt into their own visage via `#[field(expose(...))]` on through-model fields, producing e.g. `UserInterestPublic`. Through-model visages participate in the same boundary enforcement. Fills the Phase 4.5 deferral "M2M visages — visages nest only through `ForeignKey<T>` / `OneToOneField<T>`; M2M stitching is manual"
+- [ ] SELECT narrowing: visage-scoped QuerySets emit SELECT with only the visage's exposed columns, not the full model. This is the headline performance win — visages stop being only an output shape and start paying off at the query side
+- [ ] Mutation scope: visage-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a visage emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
+- [ ] Prefetch composition: an API for declaring a prefetch into a specific peer visage so chained traversals inherit the same boundary. Exact shape deferred to v2/v3 spec; leading candidates include a dedicated `prefetch_as::<PeerProjection>(model::relation)` terminal on the QuerySet and a generated `model::relation::as_public()`-style relation-path variant surfaced under each visage scope
 - [ ] Interaction with §8c: Phase 8c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`"
 
-**Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions, streaming terminals, full-text search, projection query surface with compile-time FK / reverse-FK / M2M boundary enforcement.
+**Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions, streaming terminals, full-text search, visage query surface with compile-time FK / reverse-FK / M2M boundary enforcement.
 
 ---
 
@@ -462,7 +462,7 @@ Protected-data support should extend the typed field story rather than replace i
 - [ ] Add field metadata for sensitivity, redaction scope, rationale, and lifecycle class
 - [ ] Add descriptor support for field codecs such as encrypted/tokenized/custom-serialized columns
 - [ ] Ensure CRUD generation and row decoding apply codecs consistently
-- [ ] Integrate protected-field metadata with generated projections and admin defaults
+- [ ] Integrate protected-field metadata with generated visages and admin defaults
 - [ ] Emit compile-time diagnostics when sensitive annotations are underspecified
 
 **Deliverable:** Djogi can express protected-field intent once and apply it consistently across generated surfaces.
@@ -538,7 +538,7 @@ Admin integration may be Axum-oriented in practice, but that coupling should liv
 
 The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is mainline and intended for CI gating by default. Tier 2 is experimental and best-effort — surfaced as warnings, never as `--deny` targets unless explicitly requested.
 
-**Data sources.** Call-site discovery comes from source AST via `syn`. Model metadata (FK topology, projection maps, field descriptors) comes from `target/djogi_models.json`, which is emitted by the existing `#[model]` + `build.rs` pipeline during a normal `cargo build`. The analyzer requires a successful build to run — the metadata file is the FK graph's authoritative source, not a guess inferred from AST.
+**Data sources.** Call-site discovery comes from source AST via `syn`. Model metadata (FK topology, visage maps, field descriptors) comes from `target/djogi_models.json`, which is emitted by the existing `#[model]` + `build.rs` pipeline during a normal `cargo build`. The analyzer requires a successful build to run — the metadata file is the FK graph's authoritative source, not a guess inferred from AST.
 
 - [ ] `cargo djogi analyze query` — walks every crate in the workspace, parses `.rs` files with `syn`, finds every QuerySet terminal (`.fetch_all`, `.fetch_one`, `.first`, `.exists`, `.count`, `.delete`, `.update`, `.stream`) and every `raw_query` / `execute_raw` call site
 
@@ -546,7 +546,7 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 
 - [ ] Loop-shape N+1 detector: flag any terminal whose AST ancestor chain includes a `for` / `while` / iterator `.map` / `.for_each` closure. Receiver-type resolution is best-effort; when the receiver is unambiguous (e.g., `User::filter().fetch_all()`), the suggestion message names the FK and points at the `.prefetch()` call that would replace it. When the receiver is generic or goes through a helper, the lint still fires but with a softer message
 - [ ] `.fetch()` vs `.prefetch()` misuse: when `.fetch()` appears inside an iterator over a parent collection whose FK is declared, point at `.prefetch()` + the exact `Related` accessor to use instead
-- [ ] Over-fetching detector: when a QuerySet hydrates a full `Model` and the same scope only reads a small, enumerable subset of fields on the result, suggest the matching projection type (declared via `#[model(expose(...))]`) or propose a new `expose` group. Conservative: only fires when the post-hydration field access is fully visible in the AST; silent otherwise
+- [ ] Over-fetching detector: when a QuerySet hydrates a full `Model` and the same scope only reads a small, enumerable subset of fields on the result, suggest the matching visage type (declared via `#[model(expose(...))]`) or propose a new `expose` group. Conservative: only fires when the post-hydration field access is fully visible in the AST; silent otherwise
 
 **Tier 2 — experimental, opt-in, best-effort graph-aware analysis:**
 
@@ -564,7 +564,7 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 When a multi-hop macro-query compiles to a plan that is significantly worse than a hand-written query, the escape hatch today is `ctx.raw_query::<T>(...)` — which fragments the codebase visually and decouples the site from descriptor-aware tooling (static analyzer, admin surface, observability labels). `djqry` keeps the hand-tuned SQL in its own file while surfacing it as a typed method on the relevant models, preserving the declarative call-site shape elsewhere and giving the override the same type-safety, tracing, and analyzer treatment as macro-generated queries.
 
 - [ ] `djqry/` directory at repo root holds `.sql` files; each file declares one override via frontmatter header comments
-- [ ] Frontmatter schema: `@name` (method name, snake_case), `@on` (comma-separated list of models and / or projections; `_global` for non-model-scoped overrides), `@returns` (Rust type implementing `FromPgRow`), `@binds` (positional bind types — `()` for none), `@replaces` (multi-line canonical macro-query the override optimizes — documentation plus drift-check source), `@signature` (fingerprint hash bumped on manual re-verification)
+- [ ] Frontmatter schema: `@name` (method name, snake_case), `@on` (comma-separated list of models and / or visages; `_global` for non-model-scoped overrides), `@returns` (Rust type implementing `FromPgRow`), `@binds` (positional bind types — `()` for none), `@replaces` (multi-line canonical macro-query the override optimizes — documentation plus drift-check source), `@signature` (fingerprint hash bumped on manual re-verification)
 - [ ] Build-time generation: a new stage in the existing `build.rs` pipeline (alongside `target/djogi_models.json` emission) parses every `.sql` file, validates frontmatter against descriptor metadata, and emits a generated `{Model}Djqry` zero-sized type per owner with one associated async function per override. Call site reads `VehicleDjqry::expired_registrations(&mut ctx).await?` — parallel to Phase 2's `{Model}Filter` and Phase 3's `{Model}Related` generated types, which is the established convention for per-model namespaced helpers. The `Djqry` suffix is distinctive, grep-able, and zero collision risk. For `@on: _global` overrides the parallel type is `GlobalDjqry`: `GlobalDjqry::fleet_stats(&mut ctx).await?`
 - [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §8c uses the `@on:` list to reason about which node-visits the override covers
 - [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
@@ -701,7 +701,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 | 2: Query Builder | Large | Full typed query API |
 | 3: Relations | Medium | FK, prefetch, select_related, M2M |
 | 4: Txn & Expressions | Large | Transactions, F-expressions, aggregation, bulk upsert |
-| 4.5: Projections | Medium | Shared transport-safe contracts derived from models |
+| 4.5: Visages | Medium | Shared transport-safe contracts derived from models |
 | **→ Strong option among Rust ORM alternatives for write-heavy Postgres services** | | **Phases 0-4 cover the blocking transaction, expression, and bulk-write substrate** |
 | 5: Postgres Native | Medium | Enums, arrays, JSONB, native aggregates, streaming terminals, full-text search |
 | 6: Migrations | Large | Full migration system including online / zero-downtime patterns |

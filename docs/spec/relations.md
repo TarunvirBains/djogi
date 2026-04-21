@@ -27,7 +27,7 @@ let owner = cars[0].owner_id.resolved();   // -> Option<&Owner>, free after pref
 ```
 No lazy loading. No surprise queries. The developer always knows when the DB is hit.
 
-Transport nesting: when a relation is surfaced through an [audience projection](./projections.md), it must point to a named projection of the related model (e.g. `#[field(expose(public = "UserSummary"))]` on `owner_id`), not at the raw persistence struct. Projection nesting and relation prefetch are independent — prefetch decides when the relation is loaded; the projection decides what shape it takes at a transport boundary.
+Transport nesting: when a relation is surfaced through an [audience visage](./visages.md), it must point to a named visage of the related model (e.g. `#[field(expose(public = "UserSummary"))]` on `owner_id`), not at the raw persistence struct. Visage nesting and relation prefetch are independent — prefetch decides when the relation is loaded; the visage decides what shape it takes at a transport boundary.
 
 ### 8.2 Many-to-Many — Explicit Through Models
 

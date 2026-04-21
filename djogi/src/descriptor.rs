@@ -219,13 +219,13 @@ pub struct FieldDescriptor {
     /// `ModelDescriptor::type_name` without re-deriving the identifier.
     pub target_type_name: Option<&'static str>,
 
-    /// Forward-declared projection-per-scope mapping. Phase 3 emits an
+    /// Forward-declared visage-per-scope mapping. Phase 3 emits an
     /// empty slice; Phase 4.5 extends `#[field(expose(scope = "column"))]`
     /// parsing to populate this without reshaping the descriptor. The
     /// slice shape is `&[(scope_name, emitted_column_alias)]` — the
-    /// projection emitter projects the column under the aliased name
+    /// visage emitter projects the column under the aliased name
     /// when the given scope is active.
-    pub projection_map: &'static [(&'static str, &'static str)],
+    pub visage_map: &'static [(&'static str, &'static str)],
 }
 
 /// Primary key strategy.
@@ -248,7 +248,7 @@ pub enum PkType {
 /// This is the single source of truth for every framework subsystem that
 /// reflects on schema: migrations (Phase 6), `djogi docs` (Phase 6), RLS
 /// generation (Phase 5), partitioning (Phase 7), the outbox system
-/// (Phase 5), projections (Phase 4.5 — `expose(...)` scope membership),
+/// (Phase 5), visages (Phase 4.5 — `expose(...)` scope membership),
 /// protected-data governance (Phase 6.5 — sensitivity, codecs, redaction),
 /// data-lifecycle planning (Phase 8.5), and distributed topology
 /// (Phase 10 — shard/residency/placement metadata). Extending this struct

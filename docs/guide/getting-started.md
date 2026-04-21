@@ -270,7 +270,7 @@ async fn reload(ctx: &mut DjogiContext, article: Article) -> djogi::Result<Artic
 ## 6. Raw SQL Escape Hatch
 
 For queries the Model trait doesn't cover — aggregates, joins, custom
-projections — use `djogi::raw::*`:
+visages — use `djogi::raw::*`:
 
 ```rust
 use djogi::prelude::*;
