@@ -31,11 +31,18 @@
 //! target rows paired with their originating parent PKs via a `LEFT JOIN`:
 //!
 //! ```sql
-//! SELECT p.id AS __djogi_parent_id, t.col_1, t.col_2, …, t.col_N
+//! SELECT t.col_1, t.col_2, …, t.col_N, p.id AS __djogi_parent_id
 //! FROM <parent_table> p
 //! LEFT JOIN <target_table> t ON t.id = p.<source_column>
 //! WHERE p.id IN ($1, $2, …, $N)
 //! ```
+//!
+//! Target columns come FIRST in `FromPgRow::COLUMN_LIST` order so
+//! [`FromPgRow::from_pg_row`](crate::pg::decode::FromPgRow::from_pg_row)
+//! can decode them positionally (ordinals `0..N_COLS`) without seeing
+//! the trailing `__djogi_parent_id` sentinel; the decoder's
+//! debug-build drift guard checks ordinals `0..N_COLS` exactly and
+//! ignores any trailing columns.
 //!
 //! `IN (...)` is preferred over `ANY($1)` so the loader does not have
 //! to require `Source::Pk: PgHasArrayType` — neither `HeerId` nor
@@ -59,8 +66,10 @@
 //!   result slot.
 //! - The aliased `__djogi_parent_id` gives the stitcher a way back to the
 //!   parent row irrespective of whether target columns were null. The
-//!   target columns come after, so a `FromRow` implementation for
-//!   `Target` that looks up columns by name still works.
+//!   target columns are emitted first so ordinal-decoding of
+//!   `Target` via `FromPgRow::from_pg_row` remains untouched; the
+//!   sentinel lands at the last position and is read by name
+//!   (`row.try_get("__djogi_parent_id")`).
 //! - Target rows are not deduplicated at the SQL layer — two parent rows
 //!   pointing at the same target produce two result rows, each carrying
 //!   the same target payload under its own parent PK. Stitching preserves
@@ -465,16 +474,25 @@ where
 
             // Probe the target's `id` column to distinguish a LEFT JOIN
             // miss (all target columns NULL) from a real target row.
-            // Decode as `Option<i64>` — NULL maps to `None`, which is
-            // the miss signal regardless of the actual `Target::Pk` type.
-            // tokio-postgres `try_get` signature: `try_get<T>(idx: I)`.
-            let target_is_null = row
-                .try_get::<_, Option<i64>>("id")
-                .map(|v| v.is_none())
-                // A missing `id` column would be a schema bug; err on
-                // the side of "no target" so the caller sees `None`
-                // rather than a cryptic decode error.
-                .unwrap_or(true);
+            // Decode as `Option<Target::Pk>` — NULL maps to `None` for
+            // every supported PK type (HeerId/BIGINT, RanjId/UUID,
+            // i32/SERIAL). An earlier spelling decoded as `Option<i64>`,
+            // which silently dropped every prefetched target on models
+            // with `pk = "ranjid"` (UUID cannot decode to `i64`) because
+            // the decode error was swallowed with `unwrap_or(true)`.
+            //
+            // The Model trait already bounds `Pk: FromSql<'a>`, so no
+            // extra bound is needed on the loader. Target columns live
+            // at ordinals `0..N_COLS` in the emitted SELECT and `id`
+            // is the first entry per `FromPgRow::COLUMNS`; either name
+            // (`"id"`) or ordinal (`0`) access works, and the name
+            // path is stable across future descriptor reshufflings.
+            //
+            // Decode errors propagate via `?` — a failure here is a
+            // genuine type mismatch or a corrupted row, neither of
+            // which should be silently treated as "target absent".
+            let target_pk_opt: Option<Target::Pk> = row.try_get("id").map_err(DjogiError::from)?;
+            let target_is_null = target_pk_opt.is_none();
 
             let slot = if target_is_null {
                 None
