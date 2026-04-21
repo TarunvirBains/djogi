@@ -14,6 +14,7 @@
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
+mod ident;
 mod many_to_many;
 mod model;
 mod reverse_relation;
