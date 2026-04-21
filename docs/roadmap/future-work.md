@@ -118,10 +118,10 @@ Related to 4.3 but narrower: how much overhead does `#[model]`-generated code ad
 
 Added 2026-04-21. Every Djogi primary key shape (HeerId, RanjId, Serial) is time-ordered and exposes creation sequence by design — great for indexing and sort-by-creation, but leaks information when used directly as the public identifier in URLs, API responses, or admin surfaces. Enumeration is trivial, creation-order is visible, and sequential IDs invite scraping. Cyphered display IDs give apps a short opaque token (`veh_7kJ9mQ3xN2p`) that reverses to the underlying PK at zero functional cost.
 
-**Surface.**
+**Surface.** Strictly per-model opt-in. The default is no cypher — models without the attribute display raw PKs everywhere (URLs, API responses, admin, audit). This matters because raw IDs are sometimes a feature, not a bug: blog posts, public documentation pages, lookup tables, and any surface where SEO or short human-readable URLs matter are better served by `/posts/12345` than `/posts/pst_xyz`. The attribute is the trigger, not a default-on — same pattern as `#[model(audit = true)]`, `#[model(fts = { ... })]`, `#[field(expose(public))]`.
 
 ```rust
-#[model(display_cypher = "veh")]
+#[model(display_cypher = "veh")]  // opt in — raw HeerId is the default otherwise
 pub struct Vehicle { /* ... */ }
 
 // Emitted by the macro:
