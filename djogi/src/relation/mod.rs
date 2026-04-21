@@ -62,7 +62,7 @@ pub use prefetch::PrefetchedRow;
 /// [`RelationPath`]'s constructor was `pub`: a downstream caller could
 /// previously fabricate a path whose identifier strings carried SQL
 /// metacharacters, and those strings flowed through
-/// [`sqlx::QueryBuilder::push`] in the prefetch / select_related emitters.
+/// `SqlAccumulator::push_sql` in the prefetch / select_related emitters.
 /// Constructing a path now requires going through
 /// [`__make_relation_path`](__macro_support::__make_relation_path), which
 /// delegates to [`crate::ident::assert_plain_ident`] — the shared validator

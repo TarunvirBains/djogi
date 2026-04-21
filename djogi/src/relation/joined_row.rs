@@ -62,7 +62,7 @@
 //! The post-fetch wrapper is returned as-is to user code — there is no
 //! terminal-free "join this and forget about prefetch" access path in
 //! Phase 3; callers consume the typed handle or reach for the raw
-//! `sqlx::QueryBuilder` escape hatch.
+//! `ctx.raw_execute` / `ctx.raw_scalar` escape hatch.
 
 use crate::model::Model;
 use crate::relation::path::RelationPath;

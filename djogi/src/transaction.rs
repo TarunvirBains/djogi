@@ -59,9 +59,6 @@ mod sealed {
     pub trait Sealed {}
     impl Sealed for &crate::pg::pool::DjogiPool {}
     impl Sealed for &mut crate::DjogiContext {}
-    // Bridge for the `#[sqlx::test]` integration test harness (T2–T9 shim).
-    // T10 removes this once every integration test migrates to `#[djogi_test]`.
-    impl Sealed for &sqlx::PgPool {}
 }
 
 /// Entry point for [`atomic()`].
@@ -234,36 +231,6 @@ impl IntoAtomicScope for &mut DjogiContext {
                 resume_unwind(panic_payload);
             }
         }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test harness bridge — `&sqlx::Pool<Postgres>` scope (T2–T9 shim).
-//
-// The `#[sqlx::test]` harness hands each test a `sqlx::PgPool`. All of the
-// Phase 1–4 integration tests call `atomic(&pool, ...)` with that pool.
-// This impl constructs a `DjogiPool` from the sqlx pool's connection URL
-// (via `DjogiContext::from_sqlx_pool_for_test`) and delegates to the
-// `&DjogiPool` impl.
-//
-// T10 removes this once every integration test migrates to `#[djogi_test]`.
-// ---------------------------------------------------------------------------
-
-impl IntoAtomicScope for &sqlx::PgPool {
-    async fn run_atomic<F, R>(self, closure: F) -> Result<R, DjogiError>
-    where
-        R: Send + 'static,
-        F: for<'a> FnOnce(&'a mut DjogiContext) -> AtomicFuture<'a, R> + Send,
-    {
-        // `from_sqlx_pool_for_test` is deprecated as a user-facing signal;
-        // this call site is the intended sole internal consumer through T9.
-        #[allow(deprecated)]
-        let ctx = DjogiContext::from_sqlx_pool_for_test(self.clone()).await?;
-        let pool = ctx
-            .pool()
-            .expect("from_sqlx_pool_for_test always creates a pool-backed context")
-            .clone();
-        (&pool).run_atomic(closure).await
     }
 }
 

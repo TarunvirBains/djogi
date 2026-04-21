@@ -158,26 +158,22 @@ pub fn many_to_many(input: TokenStream) -> TokenStream {
     many_to_many::expand(input.into()).into()
 }
 
-/// Per-test database lifecycle harness — the Djogi-native replacement for
-/// `#[sqlx::test]`.
+/// Per-test database lifecycle harness.
 ///
 /// Transforms an `async fn my_test(ctx: DjogiContext)` into a
 /// `#[tokio::test]`-runnable wrapper that:
 ///
 /// 1. Creates a fresh `djogi_test_<uuid>` Postgres database.
 /// 2. Installs the HeeRanjID schema and seeds the default node.
-/// 3. Constructs a `DjogiContext` from a pool pointed at the new database.
-/// 4. Passes the context to the test body.
-/// 5. Drops the database via an RAII guard when the body returns — whether
-///    normally or via panic.
+/// 3. Sets `heer.node_id = '1'` at the database level so all connections
+///    inherit the node ID without per-connection setup.
+/// 4. Constructs a `DjogiContext` from a deadpool-postgres pool.
+/// 5. Passes the context to the test body.
+/// 6. Drops the database when the body returns — whether normally or via panic.
 ///
-/// # New test harness — will replace `#[sqlx::test]` at T10 per Phase 5-Zero v3 plan RQ-10
-///
-/// Through T9, the runtime machinery inside `::djogi::testing::setup_test_db`
-/// uses sqlx to create the per-test pool. T10 rewrites those internals to
-/// tokio-postgres + deadpool-postgres and removes sqlx from dev-dependencies
-/// entirely. The attribute surface (`#[djogi_test]`) and the test body
-/// signature (`async fn name(ctx: DjogiContext)`) are stable from T1 onwards.
+/// The runtime machinery uses `tokio_postgres` directly (no sqlx) and calls
+/// `heeranjid::postgres_schema::install_schema` and `seed_default_node` from
+/// heeranjid 0.2.1.
 ///
 /// # Usage
 ///
@@ -202,7 +198,7 @@ pub fn many_to_many(input: TokenStream) -> TokenStream {
 ///
 /// - `DATABASE_URL` must be set to a Postgres connection URL pointing at a
 ///   cluster where the test runner has `CREATE DATABASE` / `DROP DATABASE`
-///   privileges. Same convention as `#[sqlx::test]`.
+///   privileges.
 /// - The annotated function must be `async` and have exactly one parameter
 ///   of type `DjogiContext` (or any name — the type check happens at
 ///   compile time of the test crate, not in the macro).

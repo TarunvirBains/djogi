@@ -396,8 +396,8 @@ impl<T: Model> QuerySet<T> {
     ///
     /// Takes `u64` at the API boundary so negative values are not
     /// representable — the builder can never be put into an invalid state.
-    /// Internally stored as `Option<i64>` to match sqlx's Postgres bind
-    /// type; the cast is guarded by a `debug_assert!` so any pathological
+    /// Internally stored as `Option<i64>` to match `tokio_postgres`'s BIGINT
+    /// bind type; the cast is guarded by a `debug_assert!` so any pathological
     /// `n > i64::MAX` case (impossible at query scale in practice) trips
     /// in debug builds.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]

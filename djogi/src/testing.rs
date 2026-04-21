@@ -10,13 +10,11 @@
 //! 5. Drop the database via `teardown_test_db` — called explicitly by the
 //!    macro-generated wrapper, both on normal return and after a caught panic.
 //!
-//! # Why sqlx here, through T9
+//! # Substrate
 //!
-//! Internals use sqlx machinery through Phase 5-Zero T9 per the v3 plan's
-//! RQ-1 resolution: swapping the test harness in lock-step with the runtime
-//! substrate swap would inflate T2's surface area. T10 rewrites these
-//! internals to tokio-postgres + deadpool-postgres and removes sqlx from
-//! dev-dependencies entirely.
+//! Internals use `tokio_postgres` directly (no sqlx) and call the
+//! `heeranjid::postgres_schema` helpers from heeranjid 0.2.1 for schema
+//! installation and node seeding.
 //!
 //! # Database name format
 //!
@@ -36,13 +34,14 @@
 //! # Usage
 //!
 //! This module is always compiled (it depends only on crates that are already
-//! in the djogi runtime dep-graph: sqlx, heeranjid-sqlx, uuid). Only call its
-//! functions from test code — the runtime overhead of importing this module in
-//! production is negligible, but its entry points are meaningless outside tests.
+//! in the djogi runtime dep-graph: tokio-postgres, heeranjid, uuid). Only call
+//! its functions from test code — the runtime overhead of importing this module
+//! in production is negligible, but its entry points are meaningless outside
+//! tests.
 
 use crate::pg::pool::DjogiPool;
 use crate::{DbError, DjogiContext, DjogiError};
-use sqlx::{Executor, PgPool};
+use tokio_postgres::NoTls;
 use uuid::Uuid;
 
 /// Cleanup token returned by `setup_test_db`.
@@ -52,14 +51,11 @@ use uuid::Uuid;
 /// cleanup is explicit and async so it runs cleanly inside the Tokio test
 /// runtime without hitting the `block_on`-from-async-context constraint.
 pub struct TestDbCleanup {
-    /// Pool pointed at the admin database, used to issue `DROP DATABASE`.
-    admin_pool: PgPool,
+    /// Admin database URL, used to reconnect for `DROP DATABASE`.
+    admin_url: String,
     /// The per-test database name — ASCII alphanumeric + underscore,
     /// always double-quoted in SQL.
     db_name: String,
-    /// Per-test sqlx pool. Closed before DROP DATABASE is issued so all
-    /// connections to the test database are released first.
-    test_pool_sqlx: PgPool,
 }
 
 /// Set up a fresh per-test database and return the cleanup token + context.
@@ -70,17 +66,19 @@ pub struct TestDbCleanup {
 /// # Steps
 ///
 /// 1. Read `DATABASE_URL` from the environment (same convention as sqlx::test).
-/// 2. Connect to the admin database via `DATABASE_URL`.
+/// 2. Connect to the admin database via `tokio_postgres`.
 /// 3. Generate a unique database name `djogi_test_<uuid-simple>`.
 /// 4. Issue `CREATE DATABASE "<name>"`.
-/// 5. Connect to the new database.
-/// 6. Install HeeRanjID schema + seed the default node.
-/// 7. Return `(TestDbCleanup, DjogiContext)`.
+/// 5. Connect to the new database via `tokio_postgres`.
+/// 6. Install HeeRanjID schema + seed the default node via
+///    `heeranjid::postgres_schema::install_schema` and `seed_default_node`.
+/// 7. Set `heer.node_id = '1'` at the database level so every new connection
+///    inherits it without a per-connection SET call.
+/// 8. Open a `DjogiPool` (deadpool-postgres) and return it as a `DjogiContext`.
 ///
 /// # Errors
 ///
-/// Returns `DjogiError::Db` on framework-generated setup errors and maps the
-/// temporary sqlx-based test-harness failures into message-only `DbError`s.
+/// Returns `DjogiError::Db` on all setup failures.
 pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
     // Read DATABASE_URL — same env var convention as #[sqlx::test].
     let database_url = std::env::var("DATABASE_URL").map_err(|_| {
@@ -90,9 +88,16 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
     })?;
 
     // Connect to the admin database to issue CREATE DATABASE.
-    let admin_pool = PgPool::connect(&database_url)
+    let (admin_client, admin_conn) = tokio_postgres::connect(&database_url, NoTls)
         .await
-        .map_err(sqlx_test_harness_error)?;
+        .map_err(|e| DjogiError::Db(DbError::other(format!("admin connect failed: {e}"))))?;
+
+    // Spawn the connection driver — must be running while admin_client is alive.
+    tokio::spawn(async move {
+        if let Err(e) = admin_conn.await {
+            eprintln!("[djogi_test] admin connection error: {e}");
+        }
+    });
 
     // Generate a unique database name: djogi_test_ + 32 hex chars (UUID v4,
     // simple format, no hyphens). Always fits in 63 bytes.
@@ -102,55 +107,68 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
     // CREATE DATABASE — double-quoted to handle any future non-alphanumeric
     // characters in the prefix (currently not possible, but defensive).
     let create_sql = format!("CREATE DATABASE \"{db_name}\"");
-    admin_pool
-        .execute(create_sql.as_str())
+    admin_client
+        .batch_execute(&create_sql)
         .await
-        .map_err(sqlx_test_harness_error)?;
+        .map_err(|e| DjogiError::Db(DbError::other(format!("CREATE DATABASE failed: {e}"))))?;
 
     // Build the per-test database URL by replacing the database component.
     let test_url = replace_db_in_url(&database_url, &db_name)?;
 
-    // Connect to the fresh database via sqlx (for heeranjid_sqlx setup).
-    let test_pool_sqlx = PgPool::connect(&test_url)
+    // Connect to the fresh database for HeeRanjID setup.
+    let (test_client, test_conn) = tokio_postgres::connect(&test_url, NoTls)
         .await
-        .map_err(sqlx_test_harness_error)?;
+        .map_err(|e| DjogiError::Db(DbError::other(format!("test DB connect failed: {e}"))))?;
 
-    // Install HeeRanjID schema (CREATE EXTENSION + functions) and seed node 1.
-    heeranjid_sqlx::install_schema(&test_pool_sqlx)
+    tokio::spawn(async move {
+        if let Err(e) = test_conn.await {
+            eprintln!("[djogi_test] test connection error: {e}");
+        }
+    });
+
+    // Install HeeRanjID schema (CREATE EXTENSION + functions) via heeranjid 0.2.1.
+    heeranjid::postgres_schema::install_schema(&test_client)
         .await
-        .map_err(sqlx_test_harness_error)?;
-    heeranjid_sqlx::seed_default_node(&test_pool_sqlx)
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "heeranjid install_schema failed: {e}"
+            )))
+        })?;
+
+    // Seed the default node (node_id = 1).
+    heeranjid::postgres_schema::seed_default_node(&test_client)
         .await
-        .map_err(sqlx_test_harness_error)?;
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "heeranjid seed_default_node failed: {e}"
+            )))
+        })?;
 
     // Set heer.node_id at the database level so every NEW connection inherits
-    // it. This must happen before we close the setup pool and open the app
-    // pool, so that all connections in the app pool see node_id = 1 without
-    // needing per-connection SET calls.
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
-    ))
-    .execute(&test_pool_sqlx)
-    .await
-    .map_err(sqlx_test_harness_error)?;
+    // it. This must happen before we open the app pool, so that all connections
+    // in the DjogiPool see node_id = 1 without needing per-connection SET calls.
+    admin_client
+        .batch_execute(&format!(
+            "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
+        ))
+        .await
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "ALTER DATABASE SET heer.node_id failed: {e}"
+            )))
+        })?;
 
-    // Close the sqlx setup pool so that the DjogiPool starts fresh — all
-    // new connections will inherit heer.node_id from the ALTER DATABASE above.
-    test_pool_sqlx.close().await;
+    // The setup client is dropped here — the connection driver task will finish.
+    // The DjogiPool opens fresh connections that will inherit heer.node_id.
+    drop(test_client);
 
     // Build the DjogiPool (tokio-postgres / deadpool) for the app context.
     let app_pool = DjogiPool::connect(&test_url).await?;
     let ctx = DjogiContext::from_pool(app_pool);
 
-    // Reconnect sqlx pool for the cleanup token (teardown needs it to DROP DATABASE).
-    let cleanup_pool_sqlx = PgPool::connect(&test_url)
-        .await
-        .map_err(sqlx_test_harness_error)?;
-
     let cleanup = TestDbCleanup {
-        admin_pool,
+        admin_url: database_url,
         db_name,
-        test_pool_sqlx: cleanup_pool_sqlx,
     };
 
     Ok((cleanup, ctx))
@@ -161,19 +179,28 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 /// Called by macro-generated code after the test body returns — whether
 /// normally or via a caught panic.
 pub async fn teardown_test_db(cleanup: TestDbCleanup) {
-    let TestDbCleanup {
-        admin_pool,
-        db_name,
-        test_pool_sqlx,
-    } = cleanup;
+    let TestDbCleanup { admin_url, db_name } = cleanup;
 
-    // Close the per-test pool first. This releases all connections to the test
-    // database so DROP DATABASE can succeed.
-    test_pool_sqlx.close().await;
+    // Reconnect to admin database to issue DROP DATABASE.
+    match tokio_postgres::connect(&admin_url, NoTls).await {
+        Err(e) => {
+            eprintln!(
+                "[djogi_test] WARNING: failed to connect to admin DB for teardown \
+                 (database \"{db_name}\" may need manual cleanup): {e}"
+            );
+        }
+        Ok((admin_client, admin_conn)) => {
+            tokio::spawn(async move {
+                if let Err(e) = admin_conn.await {
+                    eprintln!("[djogi_test] teardown connection error: {e}");
+                }
+            });
 
-    let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
-    if let Err(e) = admin_pool.execute(sql.as_str()).await {
-        eprintln!("[djogi_test] WARNING: failed to drop test database \"{db_name}\": {e}");
+            let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
+            if let Err(e) = admin_client.batch_execute(&sql).await {
+                eprintln!("[djogi_test] WARNING: failed to drop test database \"{db_name}\": {e}");
+            }
+        }
     }
 }
 
@@ -195,10 +222,6 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
     })?;
     let base = &url[..=last_slash]; // includes the trailing slash
     Ok(format!("{base}{new_db}"))
-}
-
-fn sqlx_test_harness_error(error: impl std::fmt::Display) -> DjogiError {
-    DjogiError::Db(DbError::other(error.to_string()))
 }
 
 #[cfg(test)]

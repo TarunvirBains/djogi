@@ -301,10 +301,10 @@ impl<T: Model> UpdateStmt<T> {
     /// [`QuerySet::count`] — the same call site works against a pool-
     /// backed context or a transaction-backed one post-Phase-4 retrofit.
     ///
-    /// Returns `u64` — the raw row-count sqlx surfaces from
-    /// [`sqlx::postgres::PgQueryResult::rows_affected`]. Postgres' UPDATE
-    /// rowcount is non-negative by definition, so there is no sign
-    /// conversion at the call site.
+    /// Returns `u64` — the row-count from `tokio_postgres`'s
+    /// `CommandTag::rows_affected()`. Postgres' UPDATE rowcount is
+    /// non-negative by definition, so there is no sign conversion at
+    /// the call site.
     pub fn execute<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -352,7 +352,7 @@ impl<T: Model> QuerySet<T> {
     ///
     /// The returned [`UpdateStmt`] is inert — the actual SQL runs when
     /// the caller invokes [`UpdateStmt::execute`] with a
-    /// `sqlx::Executor`. Splitting the builder from the terminal keeps
+    /// `&mut DjogiContext`. Splitting the builder from the terminal keeps
     /// the call-site shape symmetric with the read terminals
     /// (`fetch_all`, `count`, etc.) and lets callers log, inspect, or
     /// retry the pending statement without re-running the closure.

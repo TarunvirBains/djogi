@@ -5,10 +5,7 @@
 //! surface threads through the existing transaction dispatcher rather
 //! than escaping to a separate pool connection.
 
-#![allow(deprecated)]
-
 use djogi::prelude::*;
-use sqlx::PgPool;
 
 #[model(table = "t5_raw_atomic_posts")]
 #[derive(Debug, Clone)]
@@ -16,29 +13,7 @@ pub struct RawAtomicPost {
     pub title: String,
 }
 
-async fn setup_tables(pool: &PgPool, ctx: &mut djogi::DjogiContext) {
-    heeranjid_sqlx::install_schema(pool)
-        .await
-        .expect("install heeranjid schema");
-    heeranjid_sqlx::seed_default_node(pool)
-        .await
-        .expect("seed default node");
-
-    let db_name: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool)
-        .await
-        .expect("current_database()");
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
-    ))
-    .execute(pool)
-    .await
-    .expect("alter database set heer.node_id");
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(pool)
-        .await
-        .expect("set_heer_node_id(1)");
-
+async fn setup_tables(ctx: &mut djogi::DjogiContext) {
     ctx.__execute_for_macros(
         "CREATE TABLE IF NOT EXISTS t5_raw_atomic_posts (
             id         BIGINT      PRIMARY KEY DEFAULT generate_id(),
@@ -52,12 +27,11 @@ async fn setup_tables(pool: &PgPool, ctx: &mut djogi::DjogiContext) {
     .expect("create t5_raw_atomic_posts");
 }
 
-#[sqlx::test]
-async fn raw_methods_respect_atomic_transaction_scope(pool: PgPool) {
-    let mut setup_ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
-        .await
-        .expect("bridge sqlx pool to DjogiContext");
-    setup_tables(&pool, &mut setup_ctx).await;
+#[djogi::djogi_test]
+async fn raw_methods_respect_atomic_transaction_scope(mut ctx: djogi::DjogiContext) {
+    setup_tables(&mut ctx).await;
+
+    let pool = ctx.pool().unwrap().clone();
 
     let committed = atomic(&pool, |ctx| {
         Box::pin(async move {
@@ -92,10 +66,7 @@ async fn raw_methods_respect_atomic_transaction_scope(pool: PgPool) {
     .await
     .expect("commit path should succeed");
 
-    let mut outside_ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
-        .await
-        .expect("bridge sqlx pool to DjogiContext");
-    let after_commit: i64 = outside_ctx
+    let after_commit: i64 = ctx
         .raw_scalar("SELECT COUNT(*) FROM t5_raw_atomic_posts", &[])
         .await
         .expect("count after commit");
@@ -134,7 +105,7 @@ async fn raw_methods_respect_atomic_transaction_scope(pool: PgPool) {
         rollback_result
     );
 
-    let after_rollback: i64 = outside_ctx
+    let after_rollback: i64 = ctx
         .raw_scalar("SELECT COUNT(*) FROM t5_raw_atomic_posts", &[])
         .await
         .expect("count after rollback");

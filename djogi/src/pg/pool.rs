@@ -18,8 +18,8 @@
 //!
 //! `deadpool_postgres::Pool` is `Clone` (internally `Arc`-backed) and
 //! `Send + Sync`. `DjogiPool` inherits all three properties, which means it
-//! can be shared across tasks without wrapping in `Arc` — matching the
-//! `sqlx::PgPool` behaviour it replaces.
+//! can be shared across tasks without wrapping in `Arc` — a zero-cost clone
+//! bumps the internal reference count rather than copying the underlying pool.
 
 use crate::pg::connection::PgConnection;
 use crate::{DbError, DjogiError};

@@ -3,7 +3,7 @@
 // (with `#[doc(hidden)]`), which let any downstream crate build a path
 // whose `source_column` / `target_table` fields carried SQL-injection
 // payloads — those strings then flowed straight into the
-// `sqlx::QueryBuilder::push` calls inside the prefetch and select_related
+// `SqlAccumulator::push_sql` calls inside the prefetch and select_related
 // emitters. The seal closes that vector.
 //
 // This test pins the seal at the type system: downstream code must not

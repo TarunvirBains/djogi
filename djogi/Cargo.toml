@@ -9,7 +9,6 @@ description = "Model-first web framework for Rust — web-framework-agnostic cor
 
 [dependencies]
 djogi-macros.workspace = true
-sqlx.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,11 +16,6 @@ time.workspace = true
 uuid.workspace = true
 rust_decimal.workspace = true
 heeranjid.workspace = true
-# heeranjid-sqlx stays in runtime [dependencies] through T9 because `testing.rs`
-# (the `#[djogi_test]` harness) calls heeranjid_sqlx::install_schema and
-# heeranjid_sqlx::seed_default_node from the public library module (not gated by
-# cfg(test)). T10 rewrites the harness to tokio-postgres and removes this dep.
-heeranjid-sqlx.workspace = true
 tokio-postgres.workspace = true
 postgres-types.workspace = true
 deadpool-postgres.workspace = true
@@ -34,7 +28,6 @@ futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-sqlx = { workspace = true, features = ["migrate"] }
 figment = { workspace = true, features = ["test"] }
 trybuild.workspace = true
 rust_decimal_macros.workspace = true

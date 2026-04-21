@@ -19,15 +19,16 @@
 //!
 //! Each CRUD method takes `&mut DjogiContext` by mutable reference. The body
 //! pattern-matches on [`DjogiContext::inner_mut`](crate::DjogiContext) to dispatch
-//! at the sqlx boundary — pool-backed contexts hit `&PgPool`, transaction-backed
-//! ones hit `&mut *tx`. See `djogi::context` module docs for the full rationale.
+//! to the right query path — pool-backed contexts check out a connection,
+//! transaction-backed ones reuse the open transaction. See `djogi::context`
+//! module docs for the full rationale.
 //!
 //! ## Send bounds
 //!
 //! The returned `Future` types carry `+ Send` explicitly so callers can `.await`
 //! them across task boundaries. `&mut DjogiContext` is itself `Send` because
-//! `DjogiContext` only holds `Send` data (a `PgPool`, which is `Arc`-backed and
-//! `Send`, or a `Transaction<'static, Postgres>`, which sqlx declares `Send`).
+//! `DjogiContext` only holds `Send` data (a `DjogiPool`, which is `Arc`-backed
+//! and `Send`, or an open `tokio_postgres` transaction client, which is `Send`).
 //!
 //! ## Single-value `Pk`
 //!
@@ -50,7 +51,7 @@ use std::future::Future;
 /// that skips `#[derive(Model)]` fails to compile because the sealed
 /// supertrait is unsatisfied — so hostile downstream code cannot
 /// fabricate a `Model` whose `table_name()` or `descriptor().fields[].name`
-/// smuggles SQL into the emitter's `sqlx::QueryBuilder::push` sites
+/// smuggles SQL into the emitter's `SqlAccumulator::push_sql` sites
 /// (per Codex review on de42874). The module is `#[doc(hidden)] pub`
 /// because `djogi-macros` emits a cross-crate path through it; the
 /// `__` prefix plus the seal-marker doc comment are the social signal
@@ -70,7 +71,7 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// - `pk = "serial"` → `i32`
     /// - `pk = "ranjid"` → `RanjId` (heeranjid's UUIDv8 newtype)
     /// - `pk = "none"` → NO `impl Model`. `()` cannot satisfy the
-    ///   `sqlx::Encode<'q, Postgres>` bound below, and a dummy newtype
+    ///   `postgres_types::ToSql` bound below, and a dummy newtype
     ///   would misrepresent the model's actual key shape. pk=none models
     ///   still get struct injection, `FromRow`, and descriptor registration
     ///   — they just don't get CRUD methods. A future phase will introduce

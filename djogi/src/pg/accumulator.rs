@@ -2,8 +2,7 @@
 //!
 //! # What
 //!
-//! `SqlAccumulator` replaces `sqlx::QueryBuilder<'_, Postgres>` as the SQL
-//! construction layer inside Djogi. It accumulates:
+//! `SqlAccumulator` is the SQL construction layer inside Djogi. It accumulates:
 //!
 //! 1. An SQL string with `$1`, `$2`, ... placeholders for every bound value.
 //! 2. A `Vec<Box<dyn postgres_types::ToSql + Sync + Send>>` carrying the bound
@@ -12,12 +11,12 @@
 //! The caller calls `into_parts()` to get `(String, Vec<Box<dyn ToSql...>>)`,
 //! then executes the query via `tokio_postgres::Client::query` or similar.
 //!
-//! # Why not use `sqlx::QueryBuilder`
+//! # Design rationale
 //!
-//! `sqlx::QueryBuilder` binds values through `sqlx::Encode + sqlx::Type`, which
-//! are incompatible with `postgres_types::ToSql`. The substrate swap to
-//! tokio-postgres requires a matching bind-storage type. `SqlAccumulator` is the
-//! thin owned accumulator that bridges the two worlds.
+//! `postgres_types::ToSql` is the bind trait for tokio-postgres. `SqlAccumulator`
+//! stores bound values as `Box<dyn ToSql + Sync + Send>` so the caller can push
+//! heterogeneous types into one list without repeated dynamic dispatch at query
+//! execution time. The accumulator owns the values for the lifetime of the query.
 //!
 //! # Parameter counter
 //!
@@ -26,7 +25,7 @@
 //! The accumulator is always created fresh per top-level query, so the counter
 //! resets naturally. For nested subqueries that share the outer accumulator (e.g.
 //! `SubqueryNode` in `expr::sql`), the counter continues incrementing globally —
-//! matching the sqlx `QueryBuilder` behaviour.
+//! matching `tokio_postgres::Client::query`'s parameter semantics.
 //!
 //! # SQL injection guarantee
 //!

@@ -8,14 +8,12 @@
 //! 3. `DjogiContext` constructed from a pool pointed at the new DB.
 //! 4. `DROP DATABASE` on guard drop — runs even if the test panics.
 //!
-//! # Internals through T9
+//! # Internals
 //!
-//! This macro generates code that calls
-//! `::djogi::testing::setup_test_db()`, which internally rides on sqlx
-//! machinery as allowed by Phase 5-Zero plan RQ-1: keeping the sqlx dev-dep
-//! through T9 avoids inflating T1's surface area. T10 rewrites
-//! `::djogi::testing::setup_test_db` to tokio-postgres + deadpool and
-//! removes sqlx from dev-dependencies.
+//! This macro generates code that calls `::djogi::testing::setup_test_db()`,
+//! which uses `tokio_postgres` directly for bootstrap (no sqlx) and calls
+//! `heeranjid::postgres_schema::install_schema` + `seed_default_node` from
+//! heeranjid 0.2.1.
 //!
 //! # Usage
 //!
@@ -24,15 +22,16 @@
 //! use djogi::DjogiContext;
 //!
 //! #[djogi_test]
-//! async fn my_test(ctx: DjogiContext) {
+//! async fn my_test(mut ctx: DjogiContext) {
 //!     // ctx is a DjogiContext backed by a fresh, isolated per-test DB.
 //!     // HeeRanjID is installed and the default node is seeded.
 //!     // The database is dropped automatically when this function returns,
 //!     // whether it returns normally or panics.
-//!     let n: i64 = sqlx::query_scalar("SELECT 1::bigint")
-//!         .fetch_one(ctx.pool().unwrap())
+//!     let row = ctx
+//!         .__query_one_for_macros("SELECT 1::bigint AS val", &[])
 //!         .await
 //!         .unwrap();
+//!     let n: i64 = row.try_get("val").unwrap();
 //!     assert_eq!(n, 1);
 //! }
 //! ```

@@ -89,7 +89,7 @@
 //! # Path routing
 //!
 //! All emitted type references route through `::djogi::*` rather than
-//! reaching into `sqlx` / `heeranjid` / `time` / `uuid` directly. Macro
+//! reaching into `heeranjid` / `time` / `uuid` / `tokio_postgres` directly. Macro
 //! output compiles in the user's crate, which depends only on `djogi`;
 //! the re-exports in `djogi/src/lib.rs` and `djogi/src/prelude` mean a
 //! single dep is sufficient.
@@ -281,7 +281,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     //   returned future's lifetime. The context threads through to
     //   `QuerySet::fetch_all(ctx)` (or `.first(ctx)` for O2O) which
     //   pattern-matches on the inner pool / transaction variant at the
-    //   sqlx boundary — see the `djogi::context` module for the
+    //   query dispatch boundary — see the `djogi::context` module for the
     //   inline-match rationale.
     // * The `<Self as Model>::Pk` where-clause is dropped entirely.
     //   `Model::Pk` already carries `Clone + Send + Sync + 'static` on

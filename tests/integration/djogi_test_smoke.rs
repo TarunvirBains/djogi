@@ -1,10 +1,5 @@
 //! Smoke test for the `#[djogi_test]` proc-macro lifecycle.
 //!
-//! This is the ONLY adopter of `#[djogi_test]` through Phase 5-Zero T9.
-//! All other integration tests continue to use `#[sqlx::test]` per
-//! Phase 5-Zero plan RQ-10. T10 migrates every `#[sqlx::test]` call
-//! to `#[djogi_test]` and removes the sqlx dev-dependency.
-//!
 //! # What this proves
 //!
 //! The smoke test exercises the full lifecycle end-to-end:

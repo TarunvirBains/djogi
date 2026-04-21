@@ -55,7 +55,7 @@
 //! that way the `__djogi_parent_id` synthetic alias cannot collide with
 //! any real column on the target — if a user declared a column literally
 //! named `__djogi_parent_id`, `t.*` would return two `__djogi_parent_id`
-//! columns and `try_get` would pick one at the sqlx layer with no
+//! columns and `try_get` would pick one at the decode layer with no
 //! guarantee it is the parent PK. Explicit enumeration removes the
 //! conflict surface entirely; the synthetic alias is the only column
 //! under that name in the result set by construction.
@@ -253,9 +253,9 @@ impl<T: Model> PrefetchedRow<T> {
 /// The loader takes `&'a mut ContextInner` rather than a bare `&'a PgPool`
 /// so prefetch fan-out works over both pool-backed and
 /// transaction-backed [`DjogiContext`](crate::context::DjogiContext)
-/// variants. Inside the loader body, each sqlx call site matches on the
-/// context variant and binds either `&*pool` (pool path) or `&mut **tx`
-/// (transaction path). Without this generalisation, `.prefetch(...)`
+/// variants. Inside the loader body, each query dispatch site matches on the
+/// context variant to reach either the pool connection or the open transaction.
+/// Without this generalisation, `.prefetch(...)`
 /// inside an `atomic()` scope would fail with a
 /// `DjogiError::Db` configuration-style error — see Phase 4 Task 1 for
 /// the closure.

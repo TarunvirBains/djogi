@@ -8,10 +8,7 @@
 //! both descendant levels and asserts that the parent, middle, and leaf
 //! all decode correctly via `FromJoinedPgRow::from_joined_pg_row`.
 
-#![allow(deprecated)]
-
 use djogi::prelude::*;
-use sqlx::PgPool;
 
 #[model(table = "t4_chain_c")]
 #[derive(Debug, Clone)]
@@ -33,29 +30,7 @@ pub struct ChainA {
     pub chain_b_id: ForeignKey<ChainB>,
 }
 
-async fn setup_tables(pool: &PgPool, ctx: &mut djogi::DjogiContext) {
-    heeranjid_sqlx::install_schema(pool)
-        .await
-        .expect("install heeranjid schema");
-    heeranjid_sqlx::seed_default_node(pool)
-        .await
-        .expect("seed default node");
-
-    let db_name: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool)
-        .await
-        .expect("current_database()");
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
-    ))
-    .execute(pool)
-    .await
-    .expect("alter database set heer.node_id");
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(pool)
-        .await
-        .expect("set_heer_node_id(1)");
-
+async fn setup_tables(ctx: &mut djogi::DjogiContext) {
     ctx.__execute_for_macros(
         "CREATE TABLE IF NOT EXISTS t4_chain_c (
             id         BIGINT      PRIMARY KEY DEFAULT generate_id(),
@@ -115,12 +90,9 @@ fn chain_a_for_insert(label: &str, chain_b: &ChainB) -> ChainA {
     }
 }
 
-#[sqlx::test]
-async fn from_joined_pg_row_decodes_three_level_fk_chain(pool: PgPool) {
-    let mut ctx = ::djogi::DjogiContext::from_sqlx_pool_for_test(pool.clone())
-        .await
-        .expect("bridge sqlx pool to DjogiContext");
-    setup_tables(&pool, &mut ctx).await;
+#[djogi::djogi_test]
+async fn from_joined_pg_row_decodes_three_level_fk_chain(mut ctx: djogi::DjogiContext) {
+    setup_tables(&mut ctx).await;
 
     let c = ChainC::create(
         &mut ctx,

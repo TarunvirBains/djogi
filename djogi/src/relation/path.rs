@@ -33,7 +33,7 @@
 //! `pub` with `#[doc(hidden)]`: downstream code could previously fabricate a
 //! `RelationPath` whose `source_column` / `target_table` strings contained
 //! quotes, spaces, or SQL metacharacters, and those strings flowed straight
-//! into `sqlx::QueryBuilder::push` in the prefetch / select_related emitters.
+//! into `SqlAccumulator::push_sql` in the prefetch / select_related emitters.
 //! With the constructor `pub(crate)` and the macro helper routing both
 //! identifier args through [`crate::ident::assert_plain_ident`] (Postgres
 //! unquoted-identifier grammar plus reserved-keyword rejection), no value

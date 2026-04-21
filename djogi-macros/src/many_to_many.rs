@@ -433,7 +433,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // `Through::objects().fetch_all(ctx)`, then a loop of `Target::get(ctx,
     // ...)`); `ctx` re-borrow is automatic because each inner call takes
     // `&mut DjogiContext`. Under the hood every call pattern-matches on the
-    // context's inner variant at the sqlx boundary (see `djogi::context`).
+    // context's inner variant at the query dispatch boundary (see `djogi::context`).
     let trait_impl = quote! {
         #[automatically_derived]
         impl ::djogi::relation::ManyToMany<#target_type> for #source_type {

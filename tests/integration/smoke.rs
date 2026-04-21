@@ -5,28 +5,28 @@
 #![allow(clippy::result_large_err)]
 
 use djogi::config::DjogiConfig;
-use heeranjid_sqlx::{generate_heerid, install_schema, seed_default_node};
-use sqlx::PgPool;
 
-#[sqlx::test]
-async fn connects_to_postgres(pool: PgPool) {
-    let row: (i32,) = sqlx::query_as("SELECT 1")
-        .fetch_one(&pool)
+#[djogi::djogi_test]
+async fn connects_to_postgres(mut ctx: djogi::DjogiContext) {
+    let row = ctx
+        .__query_one_for_macros("SELECT 1::integer AS val", &[])
         .await
         .expect("failed to run SELECT 1");
-    assert_eq!(row.0, 1);
+    let val: i32 = row.try_get("val").expect("val column should be i32");
+    assert_eq!(val, 1);
 }
 
-#[sqlx::test]
-async fn postgres_version_is_18(pool: PgPool) {
-    let row: (String,) = sqlx::query_as("SELECT version()")
-        .fetch_one(&pool)
+#[djogi::djogi_test]
+async fn postgres_version_is_18(mut ctx: djogi::DjogiContext) {
+    let row = ctx
+        .__query_one_for_macros("SELECT version() AS v", &[])
         .await
         .expect("failed to get version");
+    let version: String = row.try_get("v").expect("v column should be text");
     assert!(
-        row.0.contains("PostgreSQL 18"),
+        version.contains("PostgreSQL 18"),
         "Expected PostgreSQL 18, got: {}",
-        row.0
+        version
     );
 }
 
@@ -59,22 +59,13 @@ fn database_url_env_overrides_toml() {
     });
 }
 
-#[sqlx::test]
-async fn heeranjid_generates_id(pool: PgPool) {
-    install_schema(&pool)
+#[djogi::djogi_test]
+async fn heeranjid_generates_id(mut ctx: djogi::DjogiContext) {
+    // HeeRanjID schema is already installed and node seeded by #[djogi_test] bootstrap.
+    let row = ctx
+        .__query_one_for_macros("SELECT generate_id() AS id", &[])
         .await
-        .expect("failed to install heeranjid schema");
-    seed_default_node(&pool)
-        .await
-        .expect("failed to seed default node");
-
-    let id = generate_heerid(&pool, 1)
-        .await
-        .expect("failed to generate heerid");
-
-    assert!(
-        id.as_i64() > 0,
-        "Expected positive HeerId, got: {}",
-        id.as_i64()
-    );
+        .expect("failed to call generate_id()");
+    let id: i64 = row.try_get("id").expect("id column should be i64");
+    assert!(id > 0, "Expected positive HeerId, got: {}", id);
 }

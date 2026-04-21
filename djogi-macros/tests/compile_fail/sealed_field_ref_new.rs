@@ -4,7 +4,7 @@
 // (with `#[doc(hidden)]`), which let any downstream crate build a ref
 // whose `column` string carried SQL-injection payloads or malformed
 // identifiers. Those strings then flowed straight into the
-// `sqlx::QueryBuilder::push` calls inside `djogi/src/query/sql.rs` —
+// `SqlAccumulator::push_sql` calls inside `djogi/src/query/sql.rs` —
 // via `emit_leaf`, `DISTINCT ON`, `ORDER BY`, and `UPDATE ... SET`.
 //
 // This test pins the seal at the type system: downstream code must not

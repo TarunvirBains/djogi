@@ -11,7 +11,6 @@ authors = ["Tarunvir Bains"]
 
 [workspace.dependencies]
 # Core
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls", "macros", "time", "uuid", "json", "rust_decimal"] }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -20,23 +19,21 @@ uuid = { version = "1", features = ["serde", "v4"] }
 rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
 rust_decimal_macros = "1"
 
-# New SQL substrate — tokio-postgres + postgres-types + deadpool-postgres.
-# These replace sqlx as the runtime executor; sqlx remains in dev-dependencies
-# for the existing #[sqlx::test] integration test harness through T9.
+# SQL substrate — tokio-postgres + postgres-types + deadpool-postgres.
+# These form the runtime executor: tokio-postgres for direct async Postgres
+# access, deadpool-postgres for connection pooling, postgres-types for
+# type-safe encode/decode.
 tokio-postgres = { version = "0.7", default-features = false, features = ["runtime", "with-time-0_3", "with-serde_json-1", "with-uuid-1"] }
 postgres-types = { version = "0.2", default-features = false, features = ["with-serde_json-1", "with-time-0_3", "with-uuid-1"] }
 deadpool-postgres = "0.14"
 bytes = "1"
 
-# HeeRanjId — bumped to 0.2 for tokio-postgres / postgres-types codec support.
-# The `postgres` feature enables `postgres_types::ToSql`/`FromSql` impls for
-# `HeerId` (BIGINT) and `RanjId` (UUID). heeranjid-sqlx stays only as a
-# dev-dependency for the #[sqlx::test] harness through T8.
-# Both features enabled: `postgres` for tokio-postgres ToSql/FromSql (T2+),
-# `sqlx` for the sqlx::Encode/Decode impls required by the sqlx::FromRow impl
-# emitted by #[model] (preserved through T9 for the #[sqlx::test] harness).
-heeranjid = { version = "0.2", features = ["postgres", "sqlx"] }
-heeranjid-sqlx = "0.1.2"
+# HeeRanjId — 0.2.1 adds `heeranjid::postgres_schema::install_schema` and
+# `seed_default_node` async helpers (gated on the `postgres` feature), plus
+# SQL constants (`INSTALL_SQL`, `SEED_SQL`, etc.). The `postgres` feature
+# enables `postgres_types::ToSql`/`FromSql` impls for `HeerId` (BIGINT) and
+# `RanjId` (UUID).
+heeranjid = { version = "0.2.1", features = ["postgres"] }
 
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }

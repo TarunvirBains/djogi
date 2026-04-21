@@ -22,12 +22,11 @@
 //! }
 //! ```
 //!
-//! # Why `&mut DjogiContext` (not `impl sqlx::Executor`)
+//! # Why `&mut DjogiContext`
 //!
-//! Phase 4 v3's Q1 resolution flipped the API from "each method is generic over
-//! `sqlx::Executor`" to "each method takes `&mut DjogiContext`". The context
-//! carries either a pool or an active transaction and pattern-matches on the
-//! variant at each sqlx boundary in the generated body (via
+//! Phase 4 v3's Q1 resolution settled on "each method takes `&mut DjogiContext`".
+//! The context carries either a pool or an active transaction and pattern-matches
+//! on the variant at each query dispatch boundary in the generated body (via
 //! `::djogi::context::DjogiContext::inner_mut`). This unifies the call site —
 //! the same `Post::create(&mut ctx, post)` works whether `ctx` is pool-backed
 //! or inside an `atomic()` transaction scope.
@@ -50,9 +49,9 @@
 //! # Path routing through `::djogi::__private`
 //!
 //! Macro-generated code runs in the user's crate, which only has `djogi` as a
-//! direct dependency. Paths like `::sqlx::query_as` or `::inventory::iter`
-//! would fail with E0433 unless the user explicitly added those crates. To
-//! avoid that, all external crate references are routed through
+//! direct dependency. Direct paths like `::tokio_postgres::...` or
+//! `::inventory::iter` would fail with E0433 unless the user explicitly added
+//! those crates. To avoid that, all external crate references are routed through
 //! `::djogi::__private::pg`, `::djogi::__private::inventory`, and
 //! `::djogi::types`. This is the same convention established in Task 5
 //! (`from_row.rs`) and Task 6 (`descriptor.rs`).
@@ -85,7 +84,7 @@
 //! Models with `#[model(pk = "none")]` have no framework-injected `id` field
 //! and declare their own primary key (possibly composite). Phase 1 does NOT
 //! emit `impl Model for T` for these — the `Model` trait's `type Pk` requires
-//! `sqlx::Encode<'q, Postgres>`, which `()` does not implement, and choosing
+//! `postgres_types::ToSql`, which `()` does not implement, and choosing
 //! any other dummy type would misrepresent the model's actual key shape.
 //!
 //! Everything else (struct injection, `Default` impl, `FromRow`, descriptor

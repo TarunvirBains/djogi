@@ -38,8 +38,8 @@
 //! # `Send + !Sync`
 //!
 //! `tokio_postgres::Client` (and therefore `deadpool_postgres::Object`) is `Send`
-//! but not `Sync`. `PgConnection` inherits these bounds. This matches the
-//! `sqlx::Transaction<'static, Postgres>` it replaces.
+//! but not `Sync`. `PgConnection` inherits these bounds — the same contract
+//! as other async Postgres wrappers that encapsulate a network connection.
 
 use crate::{DbError, DjogiError};
 use deadpool_postgres::Object;

@@ -32,8 +32,8 @@
 | Shell history | `.djogi_history` gitignored; `scripts/` committed and shareable |
 | Shell import/export | `.export`, `.import`, `.bookmark` — named Rhai scripts in `scripts/` |
 | Shell headless execution | `cargo djogi shell --run scripts/name.rhai` — runs script without entering REPL |
-| Query engine | Djogi-owned `ConditionBuilder` wrapping `sqlx::QueryBuilder` — no third-party query builder |
-| Raw SQLx escape hatch | Always available — `sqlx::QueryBuilder` directly accessible |
+| Query engine | Djogi-owned `SqlAccumulator` + `ConditionBuilder` — no third-party query builder |
+| Raw escape hatch | Always available — `ctx.raw_execute` / `ctx.raw_scalar` on `DjogiContext` |
 | CRUD log architecture | Separate `myapp_crud_logs` database; per-model mirror tables; async writes |
 | Event log architecture | Separate `myapp_event_logs` database; `tracing`-powered; severity-routed |
 | Log database lifecycle | `db reset` wipes app DB only; `--wipe-crud-logs` / `--wipe-all-logs` for log DBs |
