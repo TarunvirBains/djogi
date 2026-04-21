@@ -523,11 +523,11 @@ fn push_tail_qualified<T: Model>(
 
     if let Some(n) = qs.limit {
         acc.push_sql(" LIMIT ");
-        acc.push_bind(n as i64);
+        acc.push_bind(n);
     }
     if let Some(n) = qs.offset {
         acc.push_sql(" OFFSET ");
-        acc.push_bind(n as i64);
+        acc.push_bind(n);
     }
     // Row-lock tail — `FOR UPDATE [NOWAIT|SKIP LOCKED]` — is the last
     // thing Postgres accepts on a SELECT, after `LIMIT`/`OFFSET`.
@@ -559,7 +559,7 @@ pub(crate) fn build_select<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
                 if i > 0 {
                     acc.push_sql(", ");
                 }
-                acc.push_sql(*c);
+                acc.push_sql(c);
             }
             acc.push_sql(") * FROM ");
         }
@@ -636,7 +636,7 @@ pub(crate) fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator 
                 // `WHERE id = ...`.
                 acc.push_sql(T::table_name());
                 acc.push_sql(".");
-                acc.push_sql(*c);
+                acc.push_sql(c);
             }
             acc.push_sql(") ");
             acc.push_sql(&col_list);
@@ -673,7 +673,7 @@ pub(crate) fn emit_aggregate_with_cast(
             cast_to: Some(ty), ..
         } = agg
         {
-            acc.push_sql(*ty);
+            acc.push_sql(ty);
         }
     } else {
         crate::expr::sql::emit_expr(acc, agg);
@@ -837,7 +837,7 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
                 if i > 0 {
                     acc.push_sql(", ");
                 }
-                acc.push_sql(*c);
+                acc.push_sql(c);
             }
             acc.push_sql(") * FROM ");
             acc.push_sql(T::table_name());
@@ -847,7 +847,7 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
                 if i > 0 {
                     acc.push_sql(", ");
                 }
-                acc.push_sql(*c);
+                acc.push_sql(c);
             }
             // Append user ordering after the required prefix. Direction /
             // nulls qualifiers only apply to user-supplied columns; the

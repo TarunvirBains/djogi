@@ -52,9 +52,10 @@
 //! surface (Phase 4) rather than silently changing the default's
 //! semantics.
 //!
-//! # Phase 3 scope
+//! # T2 scope
 //!
-//! - Single-hop only — no chained `select_related(path_a.path_b)`.
+//! - Single-hop only — no chained `select_related(path_a.path_b)`. Multi-hop
+//!   decode lands in T4.
 //! - Multi-relation-per-queryset **is** supported (multiple
 //!   `.select_related(...)` calls accumulate into a `Vec<ErasedSelectRelated>`,
 //!   each producing its own aliased `LEFT JOIN`).

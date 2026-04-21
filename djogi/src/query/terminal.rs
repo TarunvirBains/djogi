@@ -128,7 +128,10 @@ where
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
             let rows = ctx.query_all(&sql, &params).await?;
-            let result: Vec<T> = rows.iter().map(|r| T::__from_pg_row(r)).collect();
+            let result: Vec<T> = rows
+                .iter()
+                .map(|r| T::__from_pg_row(r))
+                .collect::<Result<Vec<T>, _>>()?;
             Ok(result)
         }
     }
@@ -178,7 +181,7 @@ where
                         .into_iter()
                         .next()
                         .expect("rows.len() == 1 was just matched");
-                    Ok(T::__from_pg_row(&row))
+                    T::__from_pg_row(&row)
                 }
                 // `n` here is a sentinel: because we force `LIMIT 2`
                 // above, `n` is always exactly 2 on this branch — not the
@@ -257,7 +260,10 @@ where
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
             let pg_rows = ctx.query_all(&sql, &params).await?;
-            let rows: Vec<T> = pg_rows.iter().map(|r| T::__from_pg_row(r)).collect();
+            let rows: Vec<T> = pg_rows
+                .iter()
+                .map(|r| T::__from_pg_row(r))
+                .collect::<Result<Vec<T>, _>>()?;
 
             // Apply each prefetch loader. Empty main result -> no
             // loaders run (short-circuit inside `apply_prefetches`).
@@ -406,7 +412,7 @@ where
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
             let opt = ctx.query_opt(&sql, &params).await?;
-            Ok(opt.as_ref().map(|r| T::__from_pg_row(r)))
+            opt.as_ref().map(|r| T::__from_pg_row(r)).transpose()
         }
     }
 
@@ -589,7 +595,7 @@ where
             let pg_rows = ctx.query_all(&sql, &params).await?;
             let mut out: HashMap<T::Pk, T> = HashMap::with_capacity(pg_rows.len());
             for row in &pg_rows {
-                let item = T::__from_pg_row(row);
+                let item = T::__from_pg_row(row)?;
                 out.insert(item.pk_value().clone(), item);
             }
             Ok(out)

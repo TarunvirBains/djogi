@@ -75,7 +75,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
     match node {
         ExprNode::Field { column } => {
             // Bare column reference — validated at FieldRef construction.
-            acc.push_sql(*column);
+            acc.push_sql(column);
         }
         ExprNode::Literal(v) => {
             // `push_filter_value` consumes the value, so clone it — the
@@ -224,7 +224,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // helpers) — both run through
             // [`crate::ident::assert_plain_ident`] before the value
             // lands here. Safe to push as a raw SQL token.
-            acc.push_sql(*column);
+            acc.push_sql(column);
         }
     }
 }
@@ -259,7 +259,7 @@ fn emit_subquery(acc: &mut SqlAccumulator, node: &SubqueryNode) {
             // `col` is a `&'static str` from
             // [`crate::query::field::FieldRef::column`], validated at
             // `FieldRef::new` construction time. Safe to push raw.
-            acc.push_sql(*col);
+            acc.push_sql(col);
         }
         None => {
             // EXISTS path — the constant 1 stands in for "some value"

@@ -1,4 +1,8 @@
 //! Phase 1 integration tests. Uses throwaway test models — not framework types.
+// `from_sqlx_pool_for_test` is a deprecated T2–T9 bridge; every call site in this
+// file is an intended consumer. Suppress the lint rather than re-adding `#[allow]`
+// to each of the many call sites individually.
+#![allow(deprecated)]
 
 use djogi::prelude::*;
 use serde::{Deserialize, Serialize};

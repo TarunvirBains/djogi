@@ -62,8 +62,10 @@ pub fn expand(
         .collect();
 
     // T2 bridge: `__from_pg_row` — decodes via tokio-postgres `Row::try_get`.
-    // Same name-based convention as the sqlx path.  T3 replaces this with the
-    // public `FromPgRow` trait and removes `FromPgRowBridge` entirely.
+    // Returns `Result<Self, DjogiError>` so decode failures flow through the
+    // typed error path (Phase 4 contract) instead of aborting the task.
+    // T3 replaces this with the public `FromPgRow` trait and removes
+    // `FromPgRowBridge` entirely.
     let pg_field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -72,10 +74,9 @@ pub fn expand(
             let col_name = fname.to_string();
             quote! {
                 #fname: row.try_get(#col_name)
-                    .unwrap_or_else(|e| panic!(
-                        "FromPgRowBridge: failed to decode field '{}' from row: {}",
-                        #col_name, e
-                    ))
+                    .map_err(|e| ::djogi::DjogiError::Decode(
+                        ::std::format!("column `{}`: {}", #col_name, e)
+                    ))?
             }
         })
         .collect();
@@ -104,10 +105,12 @@ pub fn expand(
         impl #impl_generics ::djogi::__private::pg::FromPgRowBridge
         for #name #ty_generics #where_clause
         {
-            fn __from_pg_row(row: &::djogi::__private::tokio_postgres::Row) -> Self {
-                Self {
+            fn __from_pg_row(
+                row: &::djogi::__private::tokio_postgres::Row,
+            ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+                ::std::result::Result::Ok(Self {
                     #(#pg_field_assignments,)*
-                }
+                })
             }
         }
     }

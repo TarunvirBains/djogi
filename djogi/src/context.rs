@@ -62,9 +62,35 @@ use crate::pg::connection::PgConnection;
 use crate::pg::pool::DjogiPool;
 use futures::FutureExt;
 use postgres_types::ToSql;
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
+use std::sync::Mutex;
 use tokio_postgres::Row;
+
+// ---------------------------------------------------------------------------
+// Per-URL DjogiPool cache for `from_sqlx_pool_for_test`.
+//
+// `#[sqlx::test]` creates a fresh test database per test invocation and
+// passes the sqlx pool to each test. The T2–T9 bridge in
+// `from_sqlx_pool_for_test` constructs a `DjogiPool` from the test database
+// URL; without caching this creates one pool per `atomic()` call (O(N) pools
+// for N nested atomic() invocations in a test).
+//
+// The cache keyed by URL ensures that repeated calls with the same URL reuse
+// the existing pool. Test databases are isolated at the URL level so cross-test
+// interference cannot occur — each `#[sqlx::test]` run receives a unique
+// `djogi_test_<uuid>` database URL.
+//
+// T10 removes this cache along with `from_sqlx_pool_for_test` when every
+// integration test migrates to `#[djogi_test]`.
+// ---------------------------------------------------------------------------
+static SQLX_BRIDGE_POOL_CACHE: std::sync::OnceLock<Mutex<HashMap<String, DjogiPool>>> =
+    std::sync::OnceLock::new();
+
+fn sqlx_bridge_pool_cache() -> &'static Mutex<HashMap<String, DjogiPool>> {
+    SQLX_BRIDGE_POOL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Type alias for an async callback that fires after commit.
 ///
@@ -101,6 +127,12 @@ pub struct DjogiContext {
 /// `batch_execute`) rather than reaching into the inner directly. The
 /// `__` prefix and `#[doc(hidden)]` attribute are the social signal that
 /// this type carries no stability guarantee.
+// The `Transaction` variant holds a `PgConnection` (232 bytes, due to the
+// `deadpool_postgres::Object` within). Boxing it would add an extra
+// allocation per transaction — undesirable on the hot path. The size
+// difference is intentional and expected: `Pool` holds only a clone of the
+// pool handle (Arc<..>, 8 bytes); `Transaction` holds the full connection.
+#[allow(clippy::large_enum_variant)]
 #[doc(hidden)]
 pub enum ContextInner {
     /// Pool-backed: acquires a connection per operation.
@@ -157,22 +189,25 @@ impl DjogiContext {
 
     /// Bridge for the `#[sqlx::test]` integration test harness.
     ///
-    /// Accepts a `sqlx::PgPool`, extracts the connection URL, and builds
-    /// a `DjogiPool`. Present only in test / testing-feature builds.
+    /// Accepts a `sqlx::PgPool`, extracts the connection URL, and returns a
+    /// pool-backed `DjogiContext`. The resulting `DjogiPool` is cached in a
+    /// process-global map keyed by the full per-test database URL so that
+    /// repeated calls within the same test invocation (e.g. multiple `atomic()`
+    /// calls) reuse the same pool rather than creating a new one each time.
     ///
-    /// The bridge is intentionally cumbersome (URL extraction via sqlx
-    /// internals) because it is a temporary shim that T10 removes when the
-    /// test harness switches to `#[djogi_test]`. Do not use in production
-    /// code or in new tests — reach for `#[djogi_test]` instead.
+    /// Present only in test / testing-feature builds. This shim and its cache
+    /// are removed in T10 when every integration test migrates to `#[djogi_test]`.
+    /// Do not use in production code or in new tests — reach for `#[djogi_test]`
+    /// instead.
+    ///
+    /// # T2–T9 bridge — remove in T10
+    #[deprecated(note = "T2-T9 bridge only; remove in T10 when all tests use #[djogi_test]")]
     #[doc(hidden)]
     pub async fn from_sqlx_pool_for_test(pool: sqlx::PgPool) -> Result<Self, DjogiError> {
         // Extract the per-test database name from the sqlx pool's connect options,
         // then reconstruct the full connection URL by replacing the database
         // component in DATABASE_URL. This preserves credentials (password, SSL
         // settings) that `PgConnectOptions` does not expose via getters.
-        //
-        // This shim is intentionally cumbersome and is removed in T10 when the
-        // test harness switches to `#[djogi_test]`.
         let opts = pool.connect_options();
         let test_db = opts.get_database().unwrap_or("postgres");
 
@@ -197,7 +232,29 @@ impl DjogiContext {
         })?;
         let url = format!("{}/{}", &base_url[..last_slash], test_db);
 
+        // Return a context backed by the cached pool for this URL, creating the
+        // pool on first access. The cache prevents O(N) pool creations when
+        // `atomic()` calls `from_sqlx_pool_for_test` repeatedly with the same
+        // per-test database URL.
+        {
+            let cache = sqlx_bridge_pool_cache()
+                .lock()
+                .expect("pool cache poisoned");
+            if let Some(existing) = cache.get(&url) {
+                return Ok(Self::from_pool(existing.clone()));
+            }
+        }
+        // Not yet cached — build outside the lock to avoid holding it across
+        // the async pool creation call.
         let djogi_pool = DjogiPool::connect(&url).await?;
+        {
+            let mut cache = sqlx_bridge_pool_cache()
+                .lock()
+                .expect("pool cache poisoned");
+            // Another task may have raced to insert the same URL. Let the winner
+            // stand — both pools would work, but we only need one.
+            cache.entry(url).or_insert_with(|| djogi_pool.clone());
+        }
         Ok(Self::from_pool(djogi_pool))
     }
 

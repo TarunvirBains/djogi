@@ -37,10 +37,16 @@
 pub trait FromPgRowBridge: Sized {
     /// Decode `Self` from a `tokio_postgres::Row` by column name.
     ///
+    /// Returns `Err(DjogiError::Decode(...))` if any column is missing or its
+    /// wire type cannot be converted to the expected Rust type. This preserves
+    /// the Phase 4 contract that every CRUD failure flows through
+    /// [`DjogiError`](crate::DjogiError) rather than aborting the task via
+    /// `panic!`.
+    ///
     /// The column names match the struct field names by convention (snake_case),
     /// which is the same convention `build_select` / `build_select_joined` uses
     /// in the SQL emitter. An empty-prefix call decodes the bare unaliased
     /// columns; `select_related` prefixed decoding is handled by
     /// [`crate::relation::joined_row::FromJoinedRow`] instead.
-    fn __from_pg_row(row: &tokio_postgres::Row) -> Self;
+    fn __from_pg_row(row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError>;
 }

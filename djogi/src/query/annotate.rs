@@ -265,7 +265,7 @@ where
             // well-known alias. No offset math needed.
             let mut out: Vec<(T, A::Decoded)> = Vec::with_capacity(rows.len());
             for row in &rows {
-                let model = T::__from_pg_row(row);
+                let model = T::__from_pg_row(row)?;
                 let agg = A::decode_tuple(row).map_err(DjogiError::from)?;
                 out.push((model, agg));
             }

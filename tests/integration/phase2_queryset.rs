@@ -1,4 +1,7 @@
 //! Phase 2 QuerySet integration tests.
+// `from_sqlx_pool_for_test` is a deprecated T2–T9 bridge; suppress the lint
+// crate-wide so each call site doesn't need its own `#[allow(deprecated)]`.
+#![allow(deprecated)]
 //!
 //! Task 5 covers the lazy-builder compile surface (see
 //! `objects_returns_empty_queryset` below). Task 6 adds the terminal-method

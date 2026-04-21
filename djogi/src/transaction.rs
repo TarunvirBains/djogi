@@ -256,6 +256,9 @@ impl IntoAtomicScope for &sqlx::PgPool {
         R: Send + 'static,
         F: for<'a> FnOnce(&'a mut DjogiContext) -> AtomicFuture<'a, R> + Send,
     {
+        // `from_sqlx_pool_for_test` is deprecated as a user-facing signal;
+        // this call site is the intended sole internal consumer through T9.
+        #[allow(deprecated)]
         let ctx = DjogiContext::from_sqlx_pool_for_test(self.clone()).await?;
         let pool = ctx
             .pool()

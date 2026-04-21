@@ -361,9 +361,7 @@ pub fn expand(
             ];
             match ctx.__query_opt_for_macros(#get_sql, __params).await? {
                 ::std::option::Option::Some(__row) => {
-                    ::std::result::Result::Ok(
-                        <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__row)
-                    )
+                    <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__row)
                 }
                 ::std::option::Option::None => {
                     ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
@@ -434,9 +432,9 @@ pub fn expand(
                 let __seq_val: i64 = ::djogi::__private::tokio_postgres::Row::try_get(
                     &__seq_row,
                     "last_seq",
-                ).unwrap_or_else(|e| panic!(
-                    "sequence_within: failed to decode last_seq: {}", e
-                ));
+                ).map_err(|e| ::djogi::DjogiError::Decode(
+                    ::std::format!("sequence_within: failed to decode last_seq: {}", e)
+                ))?;
                 value.#seq_field_ident = __seq_val;
             };
             // `value` needs to be mutable so we can assign the
@@ -454,7 +452,7 @@ pub fn expand(
                 #(#create_param_entries,)*
             ];
             let __raw_row = ctx.__query_one_for_macros(#insert_sql, __params).await?;
-            let row = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw_row);
+            let row = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw_row)?;
             // Phase 4 Task 6 — outbox emission (no-op for non-events models).
             // Runs in the same ctx so a transactional caller gets the
             // outbox row committed/rolled back atomically with `row`.
@@ -470,7 +468,7 @@ pub fn expand(
                 #save_id_param,
             ];
             let __raw_row = ctx.__query_one_for_macros(#save_sql, __params).await?;
-            let row: Self = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw_row);
+            let row: Self = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw_row)?;
             *self = row;
             // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
             // values (triggers, column defaults), so emission runs AFTER the
@@ -501,9 +499,7 @@ pub fn expand(
             ];
             match ctx.__query_opt_for_macros(#get_sql, __params).await? {
                 ::std::option::Option::Some(__row) => {
-                    ::std::result::Result::Ok(
-                        <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__row)
-                    )
+                    <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__row)
                 }
                 ::std::option::Option::None => {
                     ::std::result::Result::Err(::djogi::DjogiError::not_found(#table))
@@ -575,16 +571,16 @@ pub fn expand(
                         #(#create_param_entries,)*
                     ];
                     let __maybe_row = ctx.__query_opt_for_macros(#insert_with_id_sql, __params).await?;
-                    ::std::result::Result::Ok(match __maybe_row {
+                    match __maybe_row {
                         ::std::option::Option::Some(__raw) => {
                             <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw)
                         }
                         ::std::option::Option::None => {
                             let mut v = value;
                             v.id = id;
-                            v
+                            ::std::result::Result::Ok(v)
                         }
-                    })
+                    }
                 }
             }
         }
@@ -840,7 +836,7 @@ pub fn expand(
                 let created: ::std::vec::Vec<Self> = __raw_rows
                     .iter()
                     .map(|r| <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(r))
-                    .collect();
+                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
                 #emit_outbox_bulk_create
                 ::std::result::Result::Ok(created)
             }
@@ -974,7 +970,7 @@ pub fn expand(
                 let created: ::std::vec::Vec<Self> = __raw_rows
                     .iter()
                     .map(|r| <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(r))
-                    .collect();
+                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
                 // Upsert outbox policy: emit a Save event per returned
                 // row — the caller does not tell us whether each row
                 // was inserted or updated, and "Save" is the
@@ -1079,7 +1075,7 @@ pub fn expand(
                     ).await?;
                     match __maybe_inserted {
                         ::std::option::Option::Some(__raw) => {
-                            let __row = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw);
+                            let __row = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw)?;
                             #create_or_find_outbox
                             ::std::result::Result::Ok((__row, true))
                         }
@@ -1096,7 +1092,7 @@ pub fn expand(
                                 #select_by_key_sql,
                                 __select_params,
                             ).await?;
-                            let existing = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw);
+                            let existing = <Self as ::djogi::__private::pg::FromPgRowBridge>::__from_pg_row(&__raw)?;
                             ::std::result::Result::Ok((existing, false))
                         }
                     }

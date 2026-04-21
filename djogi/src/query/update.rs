@@ -46,7 +46,7 @@
 //! IR tree into the same [`UpdateAssignment`] shape the literal `.set(v)`
 //! produces. For richer SQL the emitter cannot express (`NOW() - interval
 //! '1 day'`, `CASE WHEN ...` before Task 5 lands), the raw
-//! `sqlx::QueryBuilder` escape hatch in [`crate::raw`] is still there.
+//! `SqlAccumulator` escape hatch in [`crate::raw`] is still there.
 //!
 //! # `updated_at = now()` stamping
 //!

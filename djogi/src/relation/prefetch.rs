@@ -468,7 +468,7 @@ where
             } else {
                 // Decode via the T2 bridge method emitted alongside sqlx::FromRow.
                 // T3 will replace this with `Target: FromPgRow` trait impl.
-                Some(Target::__from_pg_row(&row))
+                Some(Target::__from_pg_row(&row)?)
             };
 
             parent_to_target.entry(parent_pk).or_insert(slot);

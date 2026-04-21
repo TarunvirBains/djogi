@@ -50,10 +50,10 @@ use thiserror::Error;
 ///
 /// T2 pre-renames the `DjogiError::IdGeneration` payload from
 /// `heeranjid_sqlx::GenerateError` to this local newtype, removing the runtime
-/// dependency on `heeranjid-sqlx`. The newtype wraps any `Box<dyn Error + Send
-/// + Sync>` so future callers can supply HeeRanjID 0.2's postgres-codec errors
-/// without this crate coupling to a specific error type. T6 decides the final
-/// variant name and payload shape.
+/// dependency on `heeranjid-sqlx`. The newtype wraps any boxed `Error + Send + Sync`
+/// so future callers can supply HeeRanjID 0.2's postgres-codec errors without this
+/// crate coupling to a specific error type. T6 decides the final variant name and
+/// payload shape.
 #[derive(Debug)]
 pub struct IdGenerationError(pub Box<dyn std::error::Error + Send + Sync>);
 
@@ -167,6 +167,23 @@ pub enum DjogiError {
         id: String,
         reason: &'static str,
     },
+
+    /// A column decode failure produced by `FromPgRowBridge::__from_pg_row`.
+    ///
+    /// Raised when `tokio_postgres::Row::try_get` returns an error for a
+    /// model field — for example, when a column is missing from the result
+    /// set or its wire type cannot be converted to the expected Rust type.
+    /// Preserves the Phase 4 contract: every CRUD failure flows through
+    /// `DjogiError` rather than aborting the task via `panic!`.
+    ///
+    /// The inner `String` carries the column name and the driver error so
+    /// the caller can identify which field failed without inspecting the
+    /// raw `tokio_postgres::Error`.
+    ///
+    /// T3 replaces this variant with a richer `DjogiError::Db` / `FromPgRow`
+    /// error shape once `FromPgRowBridge` is removed.
+    #[error("row decode error: {0}")]
+    Decode(String),
 
     /// A convenience method that consumes the descriptor's
     /// `idempotency_key` slot
@@ -304,6 +321,7 @@ impl DjogiError {
     /// | [`MultipleObjects`](Self::MultipleObjects) | terminal |
     /// | [`IdGeneration`](Self::IdGeneration) | terminal |
     /// | [`RelationUnloaded`](Self::RelationUnloaded) | terminal |
+    /// | [`Decode`](Self::Decode) | terminal |
     /// | [`Serde`](Self::Serde) | terminal |
     /// | [`Validation`](Self::Validation) | terminal |
     /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
@@ -369,6 +387,12 @@ pub(crate) fn is_lock_error(e: &sqlx::Error) -> bool {
 /// - `SqlState::LOCK_NOT_AVAILABLE` — `55P03`
 pub(crate) fn is_pg_lock_error(e: &tokio_postgres::Error) -> bool {
     use tokio_postgres::error::SqlState;
+    // `T_R_` is tokio-postgres's naming convention for SQLSTATE class 40
+    // ("transaction rollback") and class 55 ("object not in prerequisite state")
+    // codes that require transaction retry. Specifically:
+    //   `T_R_SERIALIZATION_FAILURE` = SQLSTATE 40001 (class 40 / T_R = transaction rollback)
+    //   `T_R_DEADLOCK_DETECTED`     = SQLSTATE 40P01 (class 40 / P01 = Postgres extension)
+    //   `LOCK_NOT_AVAILABLE`         = SQLSTATE 55P03 (class 55 / P03, no T_R_ prefix)
     e.as_db_error()
         .map(|db| {
             let code = db.code();
@@ -610,6 +634,10 @@ mod tests {
         assert!(DjogiError::relation_unloaded("M", "f").is_terminal());
         assert!(DjogiError::missing_idempotency_key("M").is_terminal());
         assert!(DjogiError::Validation("bad".into()).is_terminal());
+        assert!(
+            DjogiError::Decode("column `id`: type mismatch".into()).is_terminal(),
+            "Decode must be terminal — a type mismatch cannot be resolved by retrying"
+        );
         assert!(
             DjogiError::gone_aggregate("M", "42".into(), "deleted").is_terminal(),
             "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"

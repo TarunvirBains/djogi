@@ -1,4 +1,7 @@
 //! Phase 4 Task 1 integration tests: `atomic()` + savepoints + on_commit
+// `from_sqlx_pool_for_test` is a deprecated T2–T9 bridge; suppress the lint
+// crate-wide so each call site doesn't need its own `#[allow(deprecated)]`.
+#![allow(deprecated)]
 //! drain + transaction-backed prefetch against live Postgres.
 //!
 //! What this file pins:

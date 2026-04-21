@@ -4,19 +4,28 @@
 //! # What
 //!
 //! `PgConnection` wraps a `deadpool_postgres::Object` (a checked-out pool
-//! connection) and adds a per-connection `HashMap`-based statement cache keyed
-//! by SQL text.
+//! connection) and delegates statement caching to `deadpool_postgres`'s own
+//! built-in [`deadpool_postgres::StatementCache`] via
+//! [`deadpool_postgres::ClientWrapper::prepare_cached`].
 //!
 //! # Statement cache
 //!
-//! On each `prepare_cached(sql)` call, the accumulator-produced SQL text is used
-//! to prepare the statement if it has not been seen before. Subsequent calls with
-//! the same SQL string return a clone of the cached `tokio_postgres::Statement`
-//! without a round-trip to the server.
+//! `deadpool_postgres::ClientWrapper` owns a `StatementCache` that lives with
+//! the underlying connection — not with each checkout. When the same
+//! `ClientWrapper` is checked out a second time (after being returned to the
+//! pool), the populated cache is still there. When deadpool drops and recreates
+//! the connection due to a recycle failure (connection closed / I/O error), the
+//! old `ClientWrapper` and its `StatementCache` are discarded and a fresh one is
+//! allocated — exactly the invalidation semantics RQ-2 requires.
 //!
-//! Cache invalidation is not needed: deadpool recycles connections by dropping
-//! the `Object` and creating a new one. `PgConnection` is re-constructed from
-//! the new `Object`, and the `cache` field is initialized as an empty `HashMap`.
+//! `Object` implements `Deref<Target = ClientWrapper>`, so calling
+//! `self.obj.prepare_cached(sql)` goes through `ClientWrapper::prepare_cached`.
+//!
+//! # TODO(phase 5-one): bound cache size + LRU eviction
+//!
+//! The `StatementCache` is currently unbounded. Phase 5-One should cap it and
+//! apply LRU eviction to prevent memory growth on schemas with very many
+//! distinct query shapes.
 //!
 //! # Transaction handling
 //!
@@ -35,45 +44,42 @@
 use crate::DjogiError;
 use deadpool_postgres::Object;
 use postgres_types::ToSql;
-use std::collections::HashMap;
 use tokio_postgres::{Row, Statement};
 
 /// A checked-out Postgres connection from the pool, with a per-connection
 /// statement cache.
+///
+/// The cache is owned by the underlying `deadpool_postgres::ClientWrapper`, not
+/// by this checkout wrapper. The same `ClientWrapper` may be checked out
+/// multiple times; its `StatementCache` accumulates entries across all checkouts.
+/// When deadpool recycles the connection (e.g. I/O error, `is_closed()` true),
+/// the `ClientWrapper` is dropped and a new one created — clearing the cache
+/// automatically. See the module-level docs for the full cache lifecycle.
 pub struct PgConnection {
     /// The deadpool-managed connection object. Returned to the pool on drop.
     obj: Object,
-    /// Per-connection statement cache keyed by SQL text. Populated lazily
-    /// on the first `prepare_cached(sql)` call for each distinct SQL string.
-    cache: HashMap<String, Statement>,
 }
 
 impl PgConnection {
-    /// Wrap a `deadpool_postgres::Object` in a `PgConnection` with an empty cache.
+    /// Wrap a `deadpool_postgres::Object` in a `PgConnection`.
+    ///
+    /// No per-checkout cache is allocated — statement caching is delegated to
+    /// the `StatementCache` embedded in the underlying `ClientWrapper`.
     pub fn new(obj: Object) -> Self {
-        PgConnection {
-            obj,
-            cache: HashMap::new(),
-        }
+        PgConnection { obj }
     }
 
     /// Prepare `sql` if not already cached; return a clone of the statement.
     ///
-    /// The statement is stored in the per-connection `cache` so that repeated
-    /// queries with the same SQL string avoid a prepare round-trip. Cache entries
-    /// live for the connection's lifetime; the cache is dropped when the
-    /// `PgConnection` is dropped (which returns the `Object` to the deadpool pool).
+    /// Delegates to `deadpool_postgres::ClientWrapper::prepare_cached`, which
+    /// checks the connection-local `StatementCache` before issuing a prepare
+    /// round-trip. The cache entry lives for the lifetime of the underlying
+    /// connection, surviving across pool checkouts of the same `ClientWrapper`.
     pub async fn prepare_cached(&mut self, sql: &str) -> Result<Statement, DjogiError> {
-        if let Some(stmt) = self.cache.get(sql) {
-            return Ok(stmt.clone());
-        }
-        let stmt = self
-            .obj
-            .prepare(sql)
+        self.obj
+            .prepare_cached(sql)
             .await
-            .map_err(|e| DjogiError::Sqlx(sqlx::Error::Protocol(e.to_string())))?;
-        self.cache.insert(sql.to_owned(), stmt.clone());
-        Ok(stmt)
+            .map_err(|e| DjogiError::Sqlx(sqlx::Error::Protocol(e.to_string())))
     }
 
     /// Execute `sql` as a `SIMPLE QUERY` (no bind parameters). Used for

@@ -1,4 +1,7 @@
 //! Phase 3 Task 3 integration tests: `ForeignKey<T>` round-trip and
+// `from_sqlx_pool_for_test` is a deprecated T2–T9 bridge; suppress the lint
+// crate-wide so each call site doesn't need its own `#[allow(deprecated)]`.
+#![allow(deprecated)]
 //! explicit single-relation access (`.fetch()` / `.resolved()`) validated
 //! against live Postgres.
 //!
