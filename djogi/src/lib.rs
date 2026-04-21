@@ -52,6 +52,7 @@ pub mod projection;
 pub mod query;
 pub mod raw;
 pub mod relation;
+pub mod testing;
 pub mod transaction;
 pub mod types;
 
@@ -65,6 +66,7 @@ pub mod types;
 /// `time` themselves.
 #[doc(hidden)]
 pub mod __private {
+    pub use futures;
     pub use inventory;
     pub use serde;
     pub use sqlx;
@@ -86,6 +88,12 @@ pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
+// The `#[djogi_test]` attribute macro re-exported for convenience. The macro
+// itself is always available (proc macros have no runtime component); the
+// *runtime helper* it calls (`::djogi::testing::setup_test_db`) is gated on
+// `cfg(any(test, feature = "testing"))` so the generated code only compiles
+// in test or feature-enabled builds.
+pub use djogi_macros::djogi_test;
 pub use error::DjogiError;
 pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
 pub use projection::ProjectionError;
@@ -130,4 +138,8 @@ pub mod prelude {
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.
     pub use djogi_macros::model;
+    // Re-export the `#[djogi_test]` attribute macro for test functions.
+    // The macro generates code that calls `::djogi::testing::setup_test_db`;
+    // use only in test binaries.
+    pub use djogi_macros::djogi_test;
 }

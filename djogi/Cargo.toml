@@ -61,3 +61,8 @@ harness = true
 name = "phase4_5_projections"
 path = "../tests/integration/phase4_5_projections.rs"
 harness = true
+
+[[test]]
+name = "djogi_test_smoke"
+path = "../tests/integration/djogi_test_smoke.rs"
+harness = true
