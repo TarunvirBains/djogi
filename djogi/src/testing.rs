@@ -41,7 +41,7 @@
 //! production is negligible, but its entry points are meaningless outside tests.
 
 use crate::pg::pool::DjogiPool;
-use crate::{DjogiContext, DjogiError};
+use crate::{DbError, DjogiContext, DjogiError};
 use sqlx::{Executor, PgPool};
 use uuid::Uuid;
 
@@ -79,17 +79,20 @@ pub struct TestDbCleanup {
 ///
 /// # Errors
 ///
-/// Returns `DjogiError::Sqlx` on any database or connectivity failure.
+/// Returns `DjogiError::Db` on framework-generated setup errors and maps the
+/// temporary sqlx-based test-harness failures into message-only `DbError`s.
 pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
     // Read DATABASE_URL — same env var convention as #[sqlx::test].
     let database_url = std::env::var("DATABASE_URL").map_err(|_| {
-        DjogiError::Sqlx(sqlx::Error::Configuration(
-            "DATABASE_URL env var is not set; djogi_test requires it to connect to Postgres".into(),
+        DjogiError::Db(DbError::other(
+            "DATABASE_URL env var is not set; djogi_test requires it to connect to Postgres",
         ))
     })?;
 
     // Connect to the admin database to issue CREATE DATABASE.
-    let admin_pool = PgPool::connect(&database_url).await?;
+    let admin_pool = PgPool::connect(&database_url)
+        .await
+        .map_err(sqlx_test_harness_error)?;
 
     // Generate a unique database name: djogi_test_ + 32 hex chars (UUID v4,
     // simple format, no hyphens). Always fits in 63 bytes.
@@ -99,17 +102,26 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
     // CREATE DATABASE — double-quoted to handle any future non-alphanumeric
     // characters in the prefix (currently not possible, but defensive).
     let create_sql = format!("CREATE DATABASE \"{db_name}\"");
-    admin_pool.execute(create_sql.as_str()).await?;
+    admin_pool
+        .execute(create_sql.as_str())
+        .await
+        .map_err(sqlx_test_harness_error)?;
 
     // Build the per-test database URL by replacing the database component.
     let test_url = replace_db_in_url(&database_url, &db_name)?;
 
     // Connect to the fresh database via sqlx (for heeranjid_sqlx setup).
-    let test_pool_sqlx = PgPool::connect(&test_url).await?;
+    let test_pool_sqlx = PgPool::connect(&test_url)
+        .await
+        .map_err(sqlx_test_harness_error)?;
 
     // Install HeeRanjID schema (CREATE EXTENSION + functions) and seed node 1.
-    heeranjid_sqlx::install_schema(&test_pool_sqlx).await?;
-    heeranjid_sqlx::seed_default_node(&test_pool_sqlx).await?;
+    heeranjid_sqlx::install_schema(&test_pool_sqlx)
+        .await
+        .map_err(sqlx_test_harness_error)?;
+    heeranjid_sqlx::seed_default_node(&test_pool_sqlx)
+        .await
+        .map_err(sqlx_test_harness_error)?;
 
     // Set heer.node_id at the database level so every NEW connection inherits
     // it. This must happen before we close the setup pool and open the app
@@ -119,7 +131,8 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
         "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
     ))
     .execute(&test_pool_sqlx)
-    .await?;
+    .await
+    .map_err(sqlx_test_harness_error)?;
 
     // Close the sqlx setup pool so that the DjogiPool starts fresh — all
     // new connections will inherit heer.node_id from the ALTER DATABASE above.
@@ -130,7 +143,9 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
     let ctx = DjogiContext::from_pool(app_pool);
 
     // Reconnect sqlx pool for the cleanup token (teardown needs it to DROP DATABASE).
-    let cleanup_pool_sqlx = PgPool::connect(&test_url).await?;
+    let cleanup_pool_sqlx = PgPool::connect(&test_url)
+        .await
+        .map_err(sqlx_test_harness_error)?;
 
     let cleanup = TestDbCleanup {
         admin_pool,
@@ -174,12 +189,16 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
 /// Returns an error if the URL does not contain a `/` after the scheme.
 fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
     let last_slash = url.rfind('/').ok_or_else(|| {
-        DjogiError::Sqlx(sqlx::Error::Configuration(
-            "DATABASE_URL does not contain a database name component (no '/' found)".into(),
+        DjogiError::Db(DbError::other(
+            "DATABASE_URL does not contain a database name component (no '/' found)",
         ))
     })?;
     let base = &url[..=last_slash]; // includes the trailing slash
     Ok(format!("{base}{new_db}"))
+}
+
+fn sqlx_test_harness_error(error: impl std::fmt::Display) -> DjogiError {
+    DjogiError::Db(DbError::other(error.to_string()))
 }
 
 #[cfg(test)]

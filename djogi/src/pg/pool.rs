@@ -21,8 +21,8 @@
 //! can be shared across tasks without wrapping in `Arc` — matching the
 //! `sqlx::PgPool` behaviour it replaces.
 
-use crate::DjogiError;
 use crate::pg::connection::PgConnection;
+use crate::{DbError, DjogiError};
 use deadpool_postgres::{Config, ManagerConfig, PoolConfig, RecyclingMethod, Runtime};
 use tokio_postgres::NoTls;
 
@@ -55,9 +55,9 @@ impl DjogiPool {
         cfg.pool = Some(PoolConfig::new(5));
 
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls).map_err(|e| {
-            DjogiError::Sqlx(sqlx::Error::Configuration(
-                format!("DjogiPool::connect: pool creation failed: {e}").into(),
-            ))
+            DjogiError::Db(DbError::other(format!(
+                "DjogiPool::connect: pool creation failed: {e}"
+            )))
         })?;
 
         Ok(DjogiPool { inner: pool })
@@ -71,10 +71,10 @@ impl DjogiPool {
     /// (deadpool default: indefinitely — callers that need a timeout should
     /// set `cfg.pool.timeout` before constructing the pool).
     pub(crate) async fn get(&self) -> Result<PgConnection, DjogiError> {
-        let obj =
-            self.inner.get().await.map_err(|e| {
-                DjogiError::Sqlx(sqlx::Error::PoolClosed).context_msg_unreachable(e)
-            })?;
+        let obj = self.inner.get().await.map_err(|e| {
+            DjogiError::Db(DbError::other("deadpool-postgres pool is closed"))
+                .context_msg_unreachable(e)
+        })?;
         Ok(PgConnection::new(obj))
     }
 }
@@ -89,8 +89,8 @@ trait ContextMsgUnreachable {
 
 impl ContextMsgUnreachable for DjogiError {
     fn context_msg_unreachable(self, e: impl std::fmt::Display) -> Self {
-        // We cannot easily attach context to sqlx::Error variants after
-        // construction; log the pool error and return the Sqlx variant.
+        // `deadpool::PoolError` is not preserved in the public error surface;
+        // log it and return the user-facing Djogi wrapper.
         tracing::error!("DjogiPool::get failed: {e}");
         self
     }

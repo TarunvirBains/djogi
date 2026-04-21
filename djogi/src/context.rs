@@ -57,10 +57,10 @@
 //! Callbacks registered on a pool-backed context with no `atomic()` scope
 //! are silently dropped when the context is dropped.
 
-use crate::DjogiError;
 use crate::pg::connection::PgConnection;
 use crate::pg::decode::{FromPgRow, try_get_scalar};
 use crate::pg::pool::DjogiPool;
+use crate::{DbError, DjogiError};
 use futures::FutureExt;
 use postgres_types::FromSql;
 use postgres_types::ToSql;
@@ -218,18 +218,17 @@ impl DjogiContext {
         // reconstructed URL carries the same user/password/host/port as the
         // original env var but points at the per-test database.
         let base_url = std::env::var("DATABASE_URL").map_err(|_| {
-            DjogiError::Sqlx(sqlx::Error::Configuration(
+            DjogiError::Db(DbError::other(
                 "DATABASE_URL env var is not set; \
                  DjogiContext::from_sqlx_pool_for_test requires it to reconstruct \
-                 the per-test database URL with credentials"
-                    .into(),
+                 the per-test database URL with credentials",
             ))
         })?;
 
         // Replace the database-name component: everything after the last `/`.
         let last_slash = base_url.rfind('/').ok_or_else(|| {
-            DjogiError::Sqlx(sqlx::Error::Configuration(
-                "DATABASE_URL does not contain a database name component (no '/' found)".into(),
+            DjogiError::Db(DbError::other(
+                "DATABASE_URL does not contain a database name component (no '/' found)",
             ))
         })?;
         let url = format!("{}/{}", &base_url[..last_slash], test_db);
@@ -463,7 +462,7 @@ impl DjogiContext {
     /// Commit the underlying transaction, consuming the context.
     ///
     /// Returns `Ok(())` if the context was transaction-backed and the commit
-    /// succeeded. Returns `Err(DjogiError::Sqlx(..))` if the commit failed or
+    /// succeeded. Returns `Err(DjogiError::Db(..))` if the commit failed or
     /// the context was pool-backed (pool contexts have no transaction to
     /// commit — calling `.commit()` on one is a caller error).
     ///
@@ -484,8 +483,8 @@ impl DjogiContext {
         } = self;
 
         match inner {
-            ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
-                "DjogiContext::commit called on a pool-backed context".into(),
+            ContextInner::Pool(_) => Err(DjogiError::Db(DbError::other(
+                "DjogiContext::commit called on a pool-backed context",
             ))),
             ContextInner::Transaction(mut conn) => {
                 conn.batch_execute("COMMIT").await?;
@@ -498,7 +497,7 @@ impl DjogiContext {
     /// Roll back the underlying transaction, consuming the context.
     ///
     /// Returns `Ok(())` if the context was transaction-backed and the
-    /// rollback succeeded. Returns `Err(DjogiError::Sqlx(..))` if the rollback
+    /// rollback succeeded. Returns `Err(DjogiError::Db(..))` if the rollback
     /// failed or the context was pool-backed.
     ///
     /// # On-commit callbacks
@@ -513,8 +512,8 @@ impl DjogiContext {
         self.on_commit.clear();
 
         match self.inner {
-            ContextInner::Pool(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
-                "DjogiContext::rollback called on a pool-backed context".into(),
+            ContextInner::Pool(_) => Err(DjogiError::Db(DbError::other(
+                "DjogiContext::rollback called on a pool-backed context",
             ))),
             ContextInner::Transaction(mut conn) => {
                 conn.batch_execute("ROLLBACK").await?;
@@ -538,10 +537,9 @@ impl DjogiContext {
                 conn.batch_execute("BEGIN").await?;
                 Ok(DjogiContext::from_connection(conn))
             }
-            ContextInner::Transaction(_) => Err(DjogiError::Sqlx(sqlx::Error::Configuration(
+            ContextInner::Transaction(_) => Err(DjogiError::Db(DbError::other(
                 "DjogiContext::begin called on a transaction-backed context; \
-                 nested transactions require atomic() (Phase 4 Task 1)"
-                    .into(),
+                 nested transactions require atomic() (Phase 4 Task 1)",
             ))),
         }
     }

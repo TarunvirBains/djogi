@@ -120,7 +120,7 @@ pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, t
 // `cfg(any(test, feature = "testing"))` so the generated code only compiles
 // in test or feature-enabled builds.
 pub use djogi_macros::djogi_test;
-pub use error::DjogiError;
+pub use error::{DbError, DjogiError};
 pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
 pub use projection::ProjectionError;
 pub use query::{
@@ -138,7 +138,7 @@ pub mod prelude {
     pub use crate::descriptor::{
         FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
     };
-    pub use crate::error::DjogiError;
+    pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
     pub use crate::model::Model;
     pub use crate::pg::decode::{

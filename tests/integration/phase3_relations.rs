@@ -21,7 +21,7 @@
 //! 5. Nullable FKs round-trip `None`/`Some` cleanly through the
 //!    `Option<ForeignKey<T>>` branch.
 //! 6. Inserts with a non-existent FK value surface cleanly as a
-//!    `DjogiError::Sqlx` — proving the PG constraint violation
+//!    `DjogiError::Db` — proving the PG constraint violation
 //!    doesn't panic through the Djogi error machinery.
 //!
 //! # Fixture strategy (Q10 resolution in the Phase 3 plan)
@@ -365,7 +365,7 @@ async fn nullable_fk_fetch_loads_related_row(pool: PgPool) {
 
 /// Inserting a `Vehicle` with an `owner_id` that doesn't exist in
 /// `owners_p3` must surface the Postgres `foreign_key_violation` as a
-/// `DjogiError::Sqlx` — not panic, not swallow, not mangle. This
+/// `DjogiError::Db` — not panic, not swallow, not mangle. This
 /// anchors the contract that the relation wrapper is transparent to
 /// the usual error flow: the FK column is just a BIGINT with a REFERENCES
 /// constraint as far as the `INSERT` is concerned, so any existing
@@ -402,18 +402,17 @@ async fn fk_creation_sqlx_error_on_unknown_owner(pool: PgPool) {
     let _ = tx_ctx.rollback().await;
 
     let err = result.expect_err("insert with unknown owner_id must fail");
-    // After T2, tokio-postgres errors are wrapped as DjogiError::Sqlx(sqlx::Error::Protocol)
-    // with format "SQLSTATE:<code> <message>". We assert the SQLSTATE 23503
-    // (foreign_key_violation) appears in the wrapped message.
+    // FK violations now surface as `DjogiError::Db(DbError)`. We assert the
+    // SQLSTATE 23503 (`foreign_key_violation`) is preserved.
     match err {
-        DjogiError::Sqlx(ref db_err) => {
-            let msg = db_err.to_string();
+        DjogiError::Db(ref db_err) => {
+            let msg = db_err.message();
             assert!(
-                msg.contains("23503"),
-                "expected foreign_key_violation (SQLSTATE 23503) in error message, got: {msg}"
+                matches!(db_err.code(), Some(code) if code.code() == "23503"),
+                "expected foreign_key_violation (SQLSTATE 23503), got: {msg}"
             );
         }
-        other => panic!("expected DjogiError::Sqlx from FK violation, got: {other:?}"),
+        other => panic!("expected DjogiError::Db from FK violation, got: {other:?}"),
     }
 }
 
@@ -984,7 +983,7 @@ async fn select_related_compose_with_order_by_created_at(pool: PgPool) {
 // Phase 3 originally shipped pool-only support for the multi-query
 // fan-out terminals (`fetch_all_prefetched`, `fetch_all_joined`): the
 // loader signature carried `&PgPool`, so both terminals guarded at the
-// entry point and returned `sqlx::Error::Configuration` on a
+// entry point and returned a configuration-style database error on a
 // transaction-backed context. Phase 4 Task 1 widened the loader
 // signature to `&mut ContextInner`, so both paths now work inside an
 // `atomic()` scope and see the scope's uncommitted writes.

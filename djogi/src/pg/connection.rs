@@ -41,7 +41,7 @@
 //! but not `Sync`. `PgConnection` inherits these bounds. This matches the
 //! `sqlx::Transaction<'static, Postgres>` it replaces.
 
-use crate::DjogiError;
+use crate::{DbError, DjogiError};
 use deadpool_postgres::Object;
 use postgres_types::ToSql;
 use tokio_postgres::{Row, Statement};
@@ -79,7 +79,7 @@ impl PgConnection {
         self.obj
             .prepare_cached(sql)
             .await
-            .map_err(|e| DjogiError::Sqlx(sqlx::Error::Protocol(e.to_string())))
+            .map_err(|e| DjogiError::Db(DbError::other(e.to_string())))
     }
 
     /// Execute `sql` as a `SIMPLE QUERY` (no bind parameters). Used for
@@ -151,10 +151,9 @@ impl PgConnection {
 
 /// Convert a `tokio_postgres::Error` into a `DjogiError`.
 ///
-/// In T2 this maps to `DjogiError::Sqlx` (keeping the existing variant shape).
-/// T6 renames the variant to `DjogiError::Db`. The lock-conflict classification
-/// that previously lived in `error::is_lock_error` is ported to operate on
-/// `tokio_postgres::error::SqlState` in T2's `error.rs`.
+/// Routes through [`crate::error::map_pg_err`], which classifies retryable
+/// SQLSTATEs into `DjogiError::LockConflict` and everything else into
+/// `DjogiError::Db`.
 pub(crate) fn pg_err_to_djogi(e: tokio_postgres::Error) -> DjogiError {
     crate::error::map_pg_err(e)
 }

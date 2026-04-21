@@ -32,9 +32,9 @@
 //! on serialization / deadlock / `NOWAIT` failures. Pure retry — no
 //! backoff — per the Phase 4 Task 1 scope.
 
-use crate::DjogiError;
 use crate::context::{ContextInner, DjogiContext};
 use crate::pg::pool::DjogiPool;
+use crate::{DbError, DjogiError};
 use futures::FutureExt;
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, resume_unwind};
@@ -155,10 +155,9 @@ impl IntoAtomicScope for &mut DjogiContext {
         // tried to nest without an outer scope — surface that as a
         // configuration error pointing at the fix.
         if !matches!(self.inner_mut(), ContextInner::Transaction(_)) {
-            return Err(DjogiError::Sqlx(sqlx::Error::Configuration(
+            return Err(DjogiError::Db(DbError::other(
                 "atomic(&mut ctx, ...) requires a transaction-backed context; \
-                 wrap the outermost call in atomic(&pool, ...)"
-                    .into(),
+                 wrap the outermost call in atomic(&pool, ...)",
             )));
         }
 
@@ -376,10 +375,9 @@ impl DjogiContext {
                 }
                 None
             }
-            ContextInner::Pool(_) => Some(DjogiError::Sqlx(sqlx::Error::Configuration(
+            ContextInner::Pool(_) => Some(DjogiError::Db(DbError::other(
                 "run_rollback_to_release called on a pool-backed context; \
-                 this is a framework-invariant bug"
-                    .into(),
+                 this is a framework-invariant bug",
             ))),
         }
     }

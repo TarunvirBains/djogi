@@ -257,7 +257,8 @@ impl<T: Model> PrefetchedRow<T> {
 /// context variant and binds either `&*pool` (pool path) or `&mut **tx`
 /// (transaction path). Without this generalisation, `.prefetch(...)`
 /// inside an `atomic()` scope would fail with a
-/// `Sqlx::Configuration` error — see Phase 4 Task 1 for the closure.
+/// `DjogiError::Db` configuration-style error — see Phase 4 Task 1 for
+/// the closure.
 pub(crate) type PrefetchLoaderFn = for<'a> fn(
     exec: &'a mut ContextInner,
     parent_table: &'static str,
