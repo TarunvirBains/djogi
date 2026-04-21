@@ -114,4 +114,59 @@ Djogi should eventually publish criterion-based benchmarks on representative Pos
 
 Related to 4.3 but narrower: how much overhead does `#[model]`-generated code add over hand-written `tokio_postgres::Client::query`? The answer is probably "negligible in release builds" but needs measurement. Guide to add when the framework is stable: `docs/guide/performance.md` with headline numbers, criterion benchmarks in-repo, and explicit statement of what "fast" means.
 
+### 4.5 Cyphered display IDs (feature flag: `display-cypher`)
+
+Added 2026-04-21. Every Djogi primary key shape (HeerId, RanjId, Serial) is time-ordered and exposes creation sequence by design — great for indexing and sort-by-creation, but leaks information when used directly as the public identifier in URLs, API responses, or admin surfaces. Enumeration is trivial, creation-order is visible, and sequential IDs invite scraping. Cyphered display IDs give apps a short opaque token (`veh_7kJ9mQ3xN2p`) that reverses to the underlying PK at zero functional cost.
+
+**Surface.**
+
+```rust
+#[model(display_cypher = "veh")]
+pub struct Vehicle { /* ... */ }
+
+// Emitted by the macro:
+impl Vehicle {
+    pub fn display_id(&self) -> String;
+    pub fn from_display_id(s: &str) -> Result<HeerId, DisplayIdError>;
+}
+```
+
+All three PK types normalize to `u128` at the encode/decode boundary (HeerId zero-extended, RanjId direct, Serial zero-extended). The `u128` feeds the selected algorithm; the prefix is model-local. A compile-time registry maps prefixes back to model types so admin routing can resolve `/_admin/veh_xyz` to `Vehicle` without an ambiguous-prefix lookup pass.
+
+**Two algorithms, honest about their properties.**
+
+| | Sqids (default) | FPE / FF3-1 (opt-in) |
+|---|---|---|
+| Output length | Input-proportional, short | Same as input |
+| Deterministic | Yes | Yes |
+| Crypto-grade | **No — obfuscation** | **Yes — NIST SP 800-38G** |
+| Speed | ~500 ns / op | ~2–5 μs / op |
+| Use case | Hide creation order, prevent enumeration, routing hints | High-value IDs where an attacker collecting many samples must still learn nothing |
+
+No AES-GCM variant ships in the default menu — its non-deterministic ciphertext (IV per message) makes it unsuitable for display IDs used as stable routing keys. Users with a bespoke requirement can implement the `DisplayCypher` trait themselves and plug in any algorithm:
+
+```rust
+pub trait DisplayCypher: Send + Sync {
+    fn encode(&self, id: u128) -> String;
+    fn decode(&self, s: &str) -> Result<u128, DisplayIdError>;
+}
+```
+
+Model-level override: `#[model(display_cypher = "veh", algorithm = "fpe")]` or `cypher_impl = MyCustomCypher`.
+
+**Documentation contract.** The guide MUST state explicitly: "Sqids is obfuscation, not encryption. It prevents casual enumeration and hides creation order. It is NOT a security boundary against a determined attacker collecting many samples. For threat models that require cryptographic strength, opt in to FPE." Djogi does not pretend fast obfuscation is crypto. Users who need crypto strength know where to find it.
+
+**Key management.** `DJOGI_DISPLAY_CYPHER_KEY` env var = per-deployment key (default), consistent with the secrets-in-env-only rule. Per-model key rotation via `#[model(display_cypher = "veh", key_env = "PAYMENTS_DISPLAY_KEY")]`. Key rotation itself is an app-layer orchestration concern — Djogi ships the primitive, not the rotation workflow.
+
+**Integration points.**
+
+- `Actor::id_display` returns the cyphered form automatically for cyphered models — audit rows and admin surfaces show `veh_xyz`, not raw IDs.
+- Phase 4.5 projections — `#[field(expose(public))]` on `id` emits the cyphered string in serialized JSON.
+- Phase 8 admin routing — compile-time prefix registry lets `/_admin/veh_xyz` resolve to Vehicle without runtime guessing.
+- Prefix uniqueness checked at macro-expansion time; collision across models is a compile error.
+
+**What this is NOT.** Not a secret-storage primitive (that's Phase 7.5 protected-data metadata). Not a session-token system (out of scope). Not a URL-signing primitive for permissioned links (different concern entirely). Just an opaque reversible display form for PKs.
+
+**Phase placement.** Natural sibling of Phase 7.5 protected-data / field-codec work — both transform field values at boundaries. Could land as a Phase 7.5 sub-section or as a sibling Phase 7.6. Feature-flagged either way, so adopters opt in via `djogi = { features = ["display-cypher"] }`.
+
 ---
