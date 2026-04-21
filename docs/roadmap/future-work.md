@@ -73,6 +73,15 @@ Added to Phase 5 scope: `QuerySet::stream()` returning an `impl Stream<Item = Re
 
 Added to Phase 5 scope: `TsVector` / `TsQuery` types, `#[model(fts = { ... })]` generating `GENERATED ALWAYS AS` columns + GIN indexes, `@@` match predicates on QuerySet filter closures, `ts_rank` ordering helpers. A Postgres-first framework without first-class FTS is incomplete.
 
+### 3.6 Query debugging + analysis → Phase 8 (§8c) and Phase 9 (§9e)
+
+The inefficient-query debugging story (analog of Django Debug Toolbar, but with Rust-specific wins) is split across two phases because the two halves solve genuinely different problems:
+
+- **Static analysis — Phase 8 §8c.** `cargo djogi analyze query` walks the workspace AST (via `syn`), finds every QuerySet terminal and every `raw_query` / `execute_raw` call site, and flags: (1) N+1 shapes (terminal inside a loop), (2) **graph-aware repeat-node visits** — the descriptor registry is a directed graph of tables-as-nodes + FKs-as-edges, so the analyzer can track which `(model, filter_fingerprint)` pairs a scope has already reached and flag redundant re-fetches even when they come from unrelated call sites or overlapping prefetch chains, (3) over-fetching (model hydration where a projection would suffice), and (4) `.fetch()` where `.prefetch()` was meant. Pure static — no database connection required. Ships with `--format json` / `--format clippy` for editor and CI integration. This is a lint pass the Python Debug Toolbar cannot offer because Python lacks the type information; Rust + Djogi's declared FK topology make it high-signal and low-false-positive.
+- **Runtime debug drawer — Phase 9 §9e.** Bottom-drawer panel on `/_admin/` pages (and optionally every HTML response in dev mode, via a web-framework sub-feature flag) showing queries issued per request, durations, originating `tracing` spans, SQL text with inlined binds, click-to-EXPLAIN through a savepoint, and a semantic N+1 annotation driven by declared FK structure rather than pattern matching. API-only apps get the same data as an `X-Djogi-Queries` header + debug JSON endpoint.
+
+Layer 3 (production observability — distributed traces via OTel, slow-query callbacks, `metrics` histograms) is already in Phase 9 §9b/9c/9d. Together the three layers form the complete debug story: Phase 8c catches problems before request time, Phase 9e catches them in the dev loop, Phase 9b/9c/9d surface them in production.
+
 ---
 
 ## 4. Unscheduled roadmap items

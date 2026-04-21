@@ -513,7 +513,18 @@ These surfaces are intentionally downstream of the core ORM/runtime. They are us
 
 Admin integration may be Axum-oriented in practice, but that coupling should live in the feature-gated admin layer. Core model/query/runtime APIs should not require Axum types or assumptions.
 
-**Deliverable:** Working shell and admin panel.
+### 8c: Static Query Analyzer
+
+- [ ] `cargo djogi analyze query` — walks every crate in the workspace, parses `.rs` files with `syn`, finds every QuerySet terminal (`.fetch_all`, `.fetch_one`, `.first`, `.exists`, `.count`, `.delete`, `.update`, `.stream`) and every `raw_query` / `execute_raw` call site
+- [ ] N+1 detector: flag any terminal whose AST ancestor chain includes a `for` / `while` / iterator `.map` / `.for_each` — these are the shape of the classic N+1. Suggestion message names the FK and points at the `.prefetch()` call that would replace it
+- [ ] Graph-aware repeat-node detection: the descriptor registry is already a directed graph (tables as nodes, FKs as edges). Within a scope (function body, `async` block, `atomic()` closure), the analyzer tracks the set of `(model, filter_fingerprint)` pairs reached by terminals. Repeat visits to the same node — whether from independent call sites, through different FK traversals, or across prefetch chains that partially overlap — are flagged with a suggestion to hoist the fetch to an outer scope, fold the filters into a single `WHERE`, or cover both accesses with a unified `select_related` / `prefetch_related` chain. Goes beyond loop-shape N+1: catches the case where two unrelated code paths in the same request both fetch the same parent row
+- [ ] Over-fetching detector: when a QuerySet hydrates a full `Model` but the receiving scope only reads a known-small subset of fields, suggest the matching projection type (declared via `#[model(expose(...))]`) or a new `expose` group
+- [ ] `.fetch()` vs `.prefetch()` misuse: when `.fetch()` appears inside an iterator over a parent collection whose FK is declared, point at `.prefetch()` + the exact `Related` accessor to use instead
+- [ ] Output modes: `--format human` (colorized, grouped by file), `--format json` (machine-readable for editor integration), `--format clippy` (compatible with `cargo clippy --message-format json`)
+- [ ] Severity gating: `--deny <lint>` turns a warning into a non-zero exit code for CI
+- [ ] Scope: pure static analysis — does not require a database connection, does not run queries, does not load `target/djogi_models.json` beyond what's needed to resolve FK topology
+
+**Deliverable:** Working shell, admin panel, and `cargo djogi analyze query` lint pass.
 
 ---
 
@@ -564,6 +575,10 @@ Admin integration may be Axum-oriented in practice, but that coupling should liv
 
 - [ ] Phase 8's admin layer surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 9b/9c/9d are wired
 - [ ] Zero additional cost when the admin feature isn't enabled; the hooks stand alone
+- [ ] Per-request debug drawer (gated on `dev_mode = true` + `admin` feature flag): bottom panel on every `/_admin/` page showing queries issued during the request, per-query duration, originating `tracing` span, rows returned, and a SQL-text preview with binds inlined for readability
+- [ ] Click-to-EXPLAIN: each drawer row exposes an "Explain" action that runs `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` against a savepoint so production side effects aren't re-executed; the plan is rendered as a collapsible tree with per-node cost and row-count estimates
+- [ ] Semantic N+1 flag: because Djogi knows the FK topology at compile time, the drawer annotates any relation fetched more than K times within a single request span with the exact model + FK name and the `.prefetch()` call that would collapse it — no pattern-matching heuristics, the detection is driven by declared structure
+- [ ] Optional middleware hook (shipped under each web-framework sub-feature flag — `axum`, `warp`, etc.) that injects the drawer into any HTML response in dev mode, not just admin pages; API-only apps get the same data as a `X-Djogi-Queries` response header + a debug JSON endpoint
 
 ### 9f: Event Logging
 
