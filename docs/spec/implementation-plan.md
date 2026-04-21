@@ -424,6 +424,7 @@ This phase is also where Djogi should prefer typed value wrappers and closed int
 
 ### 6f: Online / Zero-Downtime Migration Patterns
 
+- [ ] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 6f phased-migration model") rather than a silent SQLSTATE from Postgres
 - [ ] Advisory-lock-based single-active-migration coordination (no two `cargo djogi migrate` invocations apply concurrently against the same database)
 - [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL)
 - [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]`
@@ -432,6 +433,7 @@ This phase is also where Djogi should prefer typed value wrappers and closed int
 - [ ] Constraint addition with `NOT VALID` + `VALIDATE` as separate steps
 - [ ] Backfill orchestration primitive: chunked `UPDATE ... WHERE pk BETWEEN $1 AND $2` with configurable chunk size, delay between chunks, progress reporting
 - [ ] Destructive-op detection: dropping a column, dropping a table, narrowing a type — gated behind `--allow-destructive` (already in 6a) with an additional "migration is not online" warning emitted at generation time
+- [ ] Backfill side-effect suppression: chunked `UPDATE` backfills run with outbox emission and audit writes suppressed by default. Migrations represent schema evolution, not domain events; firing outbox messages and audit rows for every historical row rewritten during a backfill is never the right default. Opt in per migration via an explicit `emit_side_effects = true` flag when the backfill genuinely is a business event
 
 **Deliverable:** Full migration system with drift detection, SQL generation, CLI, data migrations, online migration patterns.
 
@@ -515,14 +517,28 @@ Admin integration may be Axum-oriented in practice, but that coupling should liv
 
 ### 8c: Static Query Analyzer
 
+The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is mainline and intended for CI gating by default. Tier 2 is experimental and best-effort — surfaced as warnings, never as `--deny` targets unless explicitly requested.
+
+**Data sources.** Call-site discovery comes from source AST via `syn`. Model metadata (FK topology, projection maps, field descriptors) comes from `target/djogi_models.json`, which is emitted by the existing `#[model]` + `build.rs` pipeline during a normal `cargo build`. The analyzer requires a successful build to run — the metadata file is the FK graph's authoritative source, not a guess inferred from AST.
+
 - [ ] `cargo djogi analyze query` — walks every crate in the workspace, parses `.rs` files with `syn`, finds every QuerySet terminal (`.fetch_all`, `.fetch_one`, `.first`, `.exists`, `.count`, `.delete`, `.update`, `.stream`) and every `raw_query` / `execute_raw` call site
-- [ ] N+1 detector: flag any terminal whose AST ancestor chain includes a `for` / `while` / iterator `.map` / `.for_each` — these are the shape of the classic N+1. Suggestion message names the FK and points at the `.prefetch()` call that would replace it
-- [ ] Graph-aware repeat-node detection: the descriptor registry is already a directed graph (tables as nodes, FKs as edges). Within a scope (function body, `async` block, `atomic()` closure), the analyzer tracks the set of `(model, filter_fingerprint)` pairs reached by terminals. Repeat visits to the same node — whether from independent call sites, through different FK traversals, or across prefetch chains that partially overlap — are flagged with a suggestion to hoist the fetch to an outer scope, fold the filters into a single `WHERE`, or cover both accesses with a unified `select_related` / `prefetch_related` chain. Goes beyond loop-shape N+1: catches the case where two unrelated code paths in the same request both fetch the same parent row
-- [ ] Over-fetching detector: when a QuerySet hydrates a full `Model` but the receiving scope only reads a known-small subset of fields, suggest the matching projection type (declared via `#[model(expose(...))]`) or a new `expose` group
+
+**Tier 1 — mainline, high-signal, low-false-positive (syn + metadata file, no type resolution needed):**
+
+- [ ] Loop-shape N+1 detector: flag any terminal whose AST ancestor chain includes a `for` / `while` / iterator `.map` / `.for_each` closure. Receiver-type resolution is best-effort; when the receiver is unambiguous (e.g., `User::filter().fetch_all()`), the suggestion message names the FK and points at the `.prefetch()` call that would replace it. When the receiver is generic or goes through a helper, the lint still fires but with a softer message
 - [ ] `.fetch()` vs `.prefetch()` misuse: when `.fetch()` appears inside an iterator over a parent collection whose FK is declared, point at `.prefetch()` + the exact `Related` accessor to use instead
+- [ ] Over-fetching detector: when a QuerySet hydrates a full `Model` and the same scope only reads a small, enumerable subset of fields on the result, suggest the matching projection type (declared via `#[model(expose(...))]`) or propose a new `expose` group. Conservative: only fires when the post-hydration field access is fully visible in the AST; silent otherwise
+
+**Tier 2 — experimental, opt-in, best-effort graph-aware analysis:**
+
+- [ ] Graph-aware repeat-node detection: the descriptor registry's FK topology (from `target/djogi_models.json`) is a directed graph of tables-as-nodes and FKs-as-edges. Within a scope (function body, `async` block, `atomic()` closure), the analyzer attempts to track the set of `(model, filter_fingerprint)` pairs reached by terminals. Where receiver types resolve cleanly via `syn`, repeat visits to the same node — whether from independent call sites, through different FK traversals, or across prefetch chains that partially overlap — are flagged with a suggestion to hoist the fetch, fold the filters, or cover both accesses with a unified `select_related` / `prefetch_related` chain
+- [ ] Honest caveat: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection. When the analyzer cannot resolve a receiver, it silently skips rather than guessing. Coverage is documented as "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path — rustc/HIR or `rust-analyzer`-as-a-library — is named in the follow-up list but not a Phase 8c deliverable
+
+**Output + gating:**
+
 - [ ] Output modes: `--format human` (colorized, grouped by file), `--format json` (machine-readable for editor integration), `--format clippy` (compatible with `cargo clippy --message-format json`)
-- [ ] Severity gating: `--deny <lint>` turns a warning into a non-zero exit code for CI
-- [ ] Scope: pure static analysis — does not require a database connection, does not run queries, does not load `target/djogi_models.json` beyond what's needed to resolve FK topology
+- [ ] Severity gating: `--deny <lint>` turns a Tier 1 warning into a non-zero exit code for CI. Tier 2 lints default to warn-only; `--deny experimental` is an explicit opt-in for teams willing to accept Tier 2 false-positive risk
+- [ ] Scope: pure static analysis beyond what a `cargo build` already produces. No database connection, no query execution. The pre-existing `target/djogi_models.json` build artifact is the only runtime input
 
 **Deliverable:** Working shell, admin panel, and `cargo djogi analyze query` lint pass.
 
@@ -576,9 +592,10 @@ Admin integration may be Axum-oriented in practice, but that coupling should liv
 - [ ] Phase 8's admin layer surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 9b/9c/9d are wired
 - [ ] Zero additional cost when the admin feature isn't enabled; the hooks stand alone
 - [ ] Per-request debug drawer (gated on `dev_mode = true` + `admin` feature flag): bottom panel on every `/_admin/` page showing queries issued during the request, per-query duration, originating `tracing` span, rows returned, and a SQL-text preview with binds inlined for readability
-- [ ] Click-to-EXPLAIN: each drawer row exposes an "Explain" action that runs `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` against a savepoint so production side effects aren't re-executed; the plan is rendered as a collapsible tree with per-node cost and row-count estimates
+- [ ] Click-to-EXPLAIN: each drawer row exposes an "Explain" action that runs `EXPLAIN (FORMAT JSON)` by default — pure planner inspection, no execution, zero side effects regardless of statement kind. An explicit "Explain with Analyze" opt-in is available for SELECTs only; for INSERT/UPDATE/DELETE the `ANALYZE` variant is disabled in the UI with a visible note that `EXPLAIN ANALYZE` executes the statement and that non-transactional effects (`nextval` advancement, `LISTEN/NOTIFY`, deferred trigger side-channels) are not reclaimed by a wrapping savepoint. Plans render as a collapsible tree with per-node cost and row-count estimates
 - [ ] Semantic N+1 flag: because Djogi knows the FK topology at compile time, the drawer annotates any relation fetched more than K times within a single request span with the exact model + FK name and the `.prefetch()` call that would collapse it — no pattern-matching heuristics, the detection is driven by declared structure
-- [ ] Optional middleware hook (shipped under each web-framework sub-feature flag — `axum`, `warp`, etc.) that injects the drawer into any HTML response in dev mode, not just admin pages; API-only apps get the same data as a `X-Djogi-Queries` response header + a debug JSON endpoint
+- [ ] Dev-only scope: the drawer is feature-flagged out of release builds and has no staging/canary mode. Non-dev environments rely on §9b/9c/9d (tracing spans, slow-query callbacks, metrics) for query visibility. If a team wants drawer-like introspection in staging, that is a separate future item, not a Phase 9e deliverable
+- [ ] Optional middleware hook (shipped under each web-framework sub-feature flag — `axum`, `warp`, etc.) that injects the drawer into any HTML response in dev mode, not just admin pages. API-only apps get a compact `X-Djogi-Queries` response header — format like `count=12; slow=2; total_ms=47; debug=/_djogi/debug/last-request` — plus a debug JSON endpoint (dev-mode only) at `/_djogi/debug/last-request` returning the full per-query detail for the most recent request on this connection
 
 ### 9f: Event Logging
 
@@ -609,7 +626,7 @@ Admin integration may be Axum-oriented in practice, but that coupling should liv
 
 ### 9.5c: Vacuum / Maintenance Scheduling
 
-- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` in migration SQL
+- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 6's migration generation pipeline. Phase 9.5 provides the policy vocabulary + CLI/ops surface; Phase 6 owns the DDL emission and phased execution
 - [ ] `cargo djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
 - [ ] `cargo djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
 
