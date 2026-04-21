@@ -75,7 +75,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // 2. FromRow impl — Task 5 wires this up.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 2b. FromJoinedRow impl — Phase 3 Task 5. Sibling to `from_row` that
+    // 2b. FromJoinedPgRow impl — Phase 3 Task 5. Sibling to `from_row` that
     //     accepts a `prefix` parameter; used by `QuerySet::select_related`
     //     to decode both parent (empty prefix) and child
     //     (`"rel_{source_column}."`) from a single joined row. Emitted

@@ -1,4 +1,4 @@
-//! `JoinedRow<T>` — the post-`select_related` row wrapper + its decoder trait.
+//! `JoinedRow<T>` — the post-`select_related` row wrapper.
 //!
 //! # What
 //!
@@ -23,7 +23,7 @@
 //! (`fetch_all_prefetched` / `fetch_all_joined`) with distinct generic
 //! bounds — prefetch needs `T::Pk: Encode + Type + ...` for the
 //! follow-up `IN (...)` bind, whereas select_related needs `T:
-//! FromJoinedRow` for single-row decoding. Giving each path its own
+//! FromJoinedPgRow` for single-row decoding. Giving each path its own
 //! wrapper type keeps those bounds from leaking into the other
 //! terminal's signature and makes the one-query-vs-two-query split
 //! legible in the types: "I have a `JoinedRow<Vehicle>`" tells the
@@ -55,23 +55,6 @@
 //! distinguishes LEFT JOIN misses (all child columns NULL) from live
 //! child rows, matching the probe Task 4's prefetch loader established.
 //!
-//! # The `FromJoinedRow` trait — decoder contract
-//!
-//! Every `#[model]`-emitted struct implements
-//! [`FromJoinedRow`]. The implementation iterates the struct's fields
-//! and calls `row.try_get::<Type, _>(&format!("{prefix}{column}"))` for
-//! each, exactly mirroring the unprefixed lookups [`FromRow`] already
-//! performs. Parent decoding passes an empty prefix (`""`); child
-//! decoding passes `"rel_{source_column}."`. Both cases share one
-//! method, so the macro only emits one extra impl per model.
-//!
-//! `FromJoinedRow` is macro-emitted rather than blanket-implemented via
-//! `FromRow` because sqlx's `FromRow` reads columns by their bare name
-//! — there is no "prefix" knob to thread through, and intercepting
-//! every lookup with a newtype wrapper around `PgRow` would be both
-//! slower (indirection per column) and more invasive than the
-//! sibling impl the macro already emits for `FromRow`.
-//!
 //! # Where
 //!
 //! Consumed by [`crate::relation::select_related::apply_select_related`]
@@ -85,7 +68,6 @@ use crate::model::Model;
 use crate::relation::path::RelationPath;
 use std::any::Any;
 use std::collections::HashMap;
-use tokio_postgres::Row as PgRow;
 
 /// Post-`select_related` wrapper pairing a main-query row with joined
 /// relations.
@@ -116,7 +98,7 @@ use tokio_postgres::Row as PgRow;
 /// prefetch wrapper's contract.
 pub struct JoinedRow<T: Model> {
     /// The parent-query row, decoded via
-    /// [`FromJoinedRow::from_prefixed_row`] with an empty prefix.
+    /// [`FromJoinedPgRow::from_joined_pg_row`] with an empty prefix.
     /// Relation columns on this row remain in their raw (unresolved)
     /// shape — the `ForeignKey<T>` wrapper is just a PK newtype; the
     /// joined child lives in [`JoinedRow::relations`], not here.
@@ -185,56 +167,6 @@ impl<T: Model> JoinedRow<T> {
     ) -> &mut HashMap<&'static str, Box<dyn Any + Send + Sync>> {
         &mut self.relations
     }
-}
-
-/// Prefix-aware row decoder emitted per model by `#[model]`.
-///
-/// # Contract
-///
-/// For every field `name: Ty` on the struct (including the framework-
-/// injected `id` / `created_at` / `updated_at`), the generated impl
-/// decodes `row.try_get::<Ty>(&format!("{prefix}{name}"))`. Parent
-/// decoding passes `""`; child decoding passes `"rel_{source_column}."`
-/// — matching the alias shape [`crate::relation::select_related`]
-/// emits in its `SELECT` list.
-///
-/// # Row type: `tokio_postgres::Row`
-///
-/// T2 ports the row type from `sqlx::postgres::PgRow` to
-/// `tokio_postgres::Row`. The `tokio_postgres::Row::try_get::<T, _>(col)`
-/// method accepts a column name string and returns `Result<T, _>` — the
-/// same API shape the previous sqlx version used, just backed by
-/// tokio-postgres's `FromSql` trait rather than sqlx's `Decode` trait.
-/// T3 will formalize this into a named `FromPgRow` trait with proper
-/// encapsulation; for T2 the trait exists solely to bridge the
-/// `select_related` decode path.
-///
-/// # Why a bespoke trait (not a `FromRow` adapter)
-///
-/// sqlx's `FromRow` looks columns up by bare name — there is no hook to
-/// rename them at decode time. tokio-postgres does not have a `FromRow`
-/// analog at all; row access is always explicit via column name or index.
-/// This trait codifies the prefix-aware decode contract for the
-/// `select_related` path; T3 will clean it up into `FromPgRow`.
-///
-/// # Phase 3 scope
-///
-/// The trait signature is deliberately minimal — a single `prefix`
-/// parameter, one `try_get` per field, no hook for per-field codecs or
-/// computed columns. Future amendments that need joined decoding for
-/// expression columns (Phase 4) or projection aliases (Phase 4.5) can
-/// extend the trait with default-methods without breaking existing
-/// impls.
-pub trait FromJoinedRow: Sized {
-    /// Decode `Self` from `row`, reading each field under
-    /// `"{prefix}{field_name}"` via `row.try_get::<T>(name)`.
-    ///
-    /// An empty prefix (`""`) decodes the parent side of a
-    /// `select_related` join using bare column names (same columns
-    /// `FromPgRow::from_pg_row` would read). A non-empty prefix of the form
-    /// `"rel_{source_column}."` matches the aliased columns the
-    /// select_related SQL emitter produces for the child side.
-    fn from_prefixed_row(row: &PgRow, prefix: &str) -> Result<Self, tokio_postgres::Error>;
 }
 
 #[cfg(test)]

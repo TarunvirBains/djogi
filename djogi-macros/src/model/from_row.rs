@@ -142,7 +142,7 @@ pub fn expand(
                 // aliases, or `select_related` appending aliased joined
                 // columns) are allowed — the trailing columns are simply
                 // ignored by this decoder and fielded by their own decode
-                // paths (`AggregateTuple`, `FromJoinedRow`).
+                // paths (`AggregateTuple`, `FromJoinedPgRow`).
                 //
                 // Release builds skip the asserts entirely; the
                 // `try_get(i)` at each ordinal position still errors

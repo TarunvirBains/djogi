@@ -37,12 +37,16 @@
 //! ordinal decode stays a single `try_get(i)` call with no per-row
 //! overhead.
 //!
-//! Joined-row decode uses a different trait ([`FromJoinedRow`], T4)
+//! Joined-row decode uses a different trait ([`FromJoinedPgRow`], T4)
 //! because `select_related` adds aliased child columns whose
 //! ordinal positions depend on the runtime prefetch graph, not the
 //! canonical struct shape.
 //!
-//! [`FromJoinedRow`]: crate::relation::joined_row::FromJoinedRow
+//! [`FromJoinedPgRow`]: crate::pg::decode::FromJoinedPgRow
+
+use crate::DjogiError;
+use tokio_postgres::Row;
+use tokio_postgres::types::FromSql;
 
 /// Canonical row-decode trait for `#[model]`-annotated structs.
 ///
@@ -107,3 +111,73 @@ pub trait FromPgRow: Sized {
     /// guard.
     fn from_pg_row(row: &tokio_postgres::Row) -> Result<Self, crate::DjogiError>;
 }
+
+/// Prefix-aware joined-row decoder for `#[model]` structs.
+///
+/// # What
+///
+/// [`FromJoinedPgRow`] is the sibling of [`FromPgRow`] for row shapes
+/// where a model's columns are available under a caller-supplied
+/// prefix. `select_related` uses this for child aliases such as
+/// `"rel_owner_id.name"`, but the trait works for any projection that
+/// follows the same `"{prefix}{field_name}"` convention.
+///
+/// # How
+///
+/// The `#[model]` macro emits one impl per model. Passing `""`
+/// decodes the model from bare column names; passing a non-empty prefix
+/// decodes the same model from aliased columns in a joined row.
+pub trait FromJoinedPgRow: Sized {
+    /// Decode `Self` from `row`, reading each field from the
+    /// `"{prefix}{field_name}"` column.
+    fn from_joined_pg_row(row: &Row, prefix: &str) -> Result<Self, DjogiError>;
+}
+
+/// Decode one scalar value from a row by ordinal position.
+///
+/// Centralises the `tokio_postgres::Error -> DjogiError` conversion for
+/// scalar terminals and raw-row helpers.
+pub fn try_get_scalar<'a, T>(row: &'a Row, idx: usize) -> Result<T, DjogiError>
+where
+    T: FromSql<'a>,
+{
+    row.try_get(idx).map_err(DjogiError::from)
+}
+
+/// Positional tuple decoder for raw Postgres rows.
+///
+/// Implemented for tuple arities 1 through 8. Element `i` is decoded
+/// from column ordinal `i`.
+pub trait FromRowTuple<'a>: Sized {
+    /// Decode `Self` positionally from `row`.
+    fn from_row_tuple(row: &'a Row) -> Result<Self, DjogiError>;
+}
+
+/// Decode a tuple from a row via [`FromRowTuple`].
+pub fn try_get_tuple<'a, T: FromRowTuple<'a>>(row: &'a Row) -> Result<T, DjogiError> {
+    T::from_row_tuple(row)
+}
+
+macro_rules! impl_from_row_tuple {
+    ($($name:ident => $idx:tt),+ $(,)?) => {
+        impl<'a, $($name),+> FromRowTuple<'a> for ($($name,)+)
+        where
+            $($name: FromSql<'a>),+
+        {
+            fn from_row_tuple(row: &'a Row) -> Result<Self, DjogiError> {
+                Ok((
+                    $(try_get_scalar::<$name>(row, $idx)?,)+
+                ))
+            }
+        }
+    };
+}
+
+impl_from_row_tuple!(A => 0);
+impl_from_row_tuple!(A => 0, B => 1);
+impl_from_row_tuple!(A => 0, B => 1, C => 2);
+impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3);
+impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4);
+impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5);
+impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6);
+impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7);

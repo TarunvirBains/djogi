@@ -96,11 +96,12 @@ pub mod __private {
         /// Canonical row-decode trait (T3). Emitted by `#[model]` with
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
-        pub use crate::pg::decode::FromPgRow;
+        pub use crate::pg::decode::{
+            FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple,
+        };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
         pub use ::tokio_postgres::Statement;
-        // T4 will add: pub use crate::pg::decode::{try_get_scalar, try_get_tuple};
     }
 
     /// Reflexive type-equality witness. Implemented for every `T` as
@@ -120,7 +121,7 @@ pub use descriptor::{
     FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
 pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
-pub use pg::decode::FromPgRow;
+pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
 // *runtime helper* it calls (`::djogi::testing::setup_test_db`) is gated on
@@ -135,7 +136,7 @@ pub use query::{
     IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, UpdateAssignment, UpdateStmt,
 };
 pub use relation::{
-    ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete, OneToOneField,
+    ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
     OneToOneFieldResolved, PrefetchedRow,
 };
 pub use types::{Date, DateTime, HeerId, RanjId};
@@ -148,7 +149,9 @@ pub mod prelude {
     pub use crate::error::DjogiError;
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
     pub use crate::model::Model;
-    pub use crate::pg::decode::FromPgRow;
+    pub use crate::pg::decode::{
+        FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple,
+    };
     pub use crate::projection::ProjectionError;
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
@@ -165,8 +168,8 @@ pub mod prelude {
     // needs the unresolved wrapper, and any handler consuming a
     // prefetched row needs the resolved wrapper.
     pub use crate::relation::{
-        ForeignKey, ForeignKeyResolved, FromJoinedRow, JoinedRow, ManyToMany, OnDelete,
-        OneToOneField, OneToOneFieldResolved, PrefetchedRow,
+        ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
+        OneToOneFieldResolved, PrefetchedRow,
     };
     pub use crate::types::{Date, DateTime, HeerId, RanjId};
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`

@@ -83,3 +83,8 @@ harness = true
 name = "phase5_zero_prefetch_non_bigint_pk"
 path = "../tests/integration/phase5_zero_prefetch_non_bigint_pk.rs"
 harness = true
+
+[[test]]
+name = "phase5_zero_from_joined_pg_row"
+path = "../tests/integration/phase5_zero_from_joined_pg_row.rs"
+harness = true

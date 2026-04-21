@@ -21,13 +21,13 @@
 //!
 //! # Why aliased child columns (not `SELECT t.*`)
 //!
-//! sqlx's `FromRow` looks columns up by bare name — `try_get("id")`
+//! A prefix-aware decoder looks columns up by the exact alias name — `try_get("id")`
 //! finds the first column named `id`, which would be ambiguous the
 //! moment both parent and child tables contribute an `id`. Aliasing
 //! the child columns under `"rel_{source_column}.{col}"` — with a
 //! literal dot embedded in the alias — gives every column a unique
 //! name in the result set and lets the
-//! [`FromJoinedRow`](crate::relation::joined_row::FromJoinedRow)
+//! [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow)
 //! decoder use the `"{prefix}{column}"` shape without collision.
 //!
 //! The quoted-dot alias matches the table-qualified form Postgres would
@@ -67,7 +67,8 @@ use crate::DjogiError;
 use crate::context::ContextInner;
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::relation::joined_row::{FromJoinedRow, JoinedRow};
+use crate::pg::decode::FromJoinedPgRow;
+use crate::relation::joined_row::JoinedRow;
 use std::any::Any;
 use std::collections::HashMap;
 use tokio_postgres::Row as PgRow;
@@ -175,7 +176,7 @@ pub(crate) fn join_decoder<Child>(
     prefix: &str,
 ) -> Result<Option<Box<dyn Any + Send + Sync>>, DjogiError>
 where
-    Child: Model + FromJoinedRow + Send + Sync + 'static,
+    Child: Model + FromJoinedPgRow + Send + Sync + 'static,
 {
     // Build the id-alias lookup: "{prefix}id". Inlining `format!` here
     // is fine — the hot path is one call per (row, path), which is a
@@ -199,8 +200,7 @@ where
         return Ok(None);
     }
 
-    let child =
-        <Child as FromJoinedRow>::from_prefixed_row(row, prefix).map_err(DjogiError::from)?;
+    let child = <Child as FromJoinedPgRow>::from_joined_pg_row(row, prefix)?;
     Ok(Some(Box::new(child) as Box<dyn Any + Send + Sync>))
 }
 
@@ -246,7 +246,7 @@ pub(crate) fn push_joins<T: Model>(acc: &mut SqlAccumulator, paths: &[ErasedSele
 /// joined child's columns are aliased as `"rel_{source_column}.{col}"`
 /// — the embedded dot matches the shape Postgres uses internally for
 /// table-qualified projections and gives the
-/// [`FromJoinedRow`](crate::relation::joined_row::FromJoinedRow)
+/// [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow)
 /// decoder a stable, collision-free lookup key.
 ///
 /// The returned `String` is pushed onto the builder verbatim — no
@@ -297,15 +297,15 @@ pub(crate) fn select_columns<T: Model>(paths: &[ErasedSelectRelated]) -> String 
 /// [`JoinedRow::get`](crate::relation::JoinedRow::get) returns `None`
 /// for that path.
 ///
-/// `FromJoinedRow::from_prefixed_row(row, "")` decodes the parent
+/// `FromJoinedPgRow::from_joined_pg_row(row, "")` decodes the parent
 /// with the empty prefix — similar in spirit to what `FromPgRow::from_pg_row`
 /// reads for a bare-columns row, but reusing the same trait across
 /// both sides keeps the macro emission small (one extra impl per model).
-pub(crate) fn decode_joined_row<T: Model + FromJoinedRow>(
+pub(crate) fn decode_joined_row<T: Model + FromJoinedPgRow>(
     row: &PgRow,
     paths: &[ErasedSelectRelated],
 ) -> Result<JoinedRow<T>, DjogiError> {
-    let parent = <T as FromJoinedRow>::from_prefixed_row(row, "").map_err(DjogiError::from)?;
+    let parent = <T as FromJoinedPgRow>::from_joined_pg_row(row, "")?;
     let mut relations: HashMap<&'static str, Box<dyn Any + Send + Sync>> =
         HashMap::with_capacity(paths.len());
     for path in paths {
@@ -329,7 +329,7 @@ pub(crate) fn apply_select_related<T>(
     paths: &[ErasedSelectRelated],
 ) -> Result<Vec<JoinedRow<T>>, DjogiError>
 where
-    T: Model + FromJoinedRow,
+    T: Model + FromJoinedPgRow,
 {
     let mut out: Vec<JoinedRow<T>> = Vec::with_capacity(rows.len());
     for row in &rows {

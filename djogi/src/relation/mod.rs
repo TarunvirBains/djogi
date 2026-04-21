@@ -15,8 +15,8 @@
 //!   / select_related (Task 2).
 //! - `prefetch.rs` / `PrefetchedRow<T>` — post-prefetch wrapper + its
 //!   two-query stitching loader (Task 4).
-//! - `joined_row.rs` / `JoinedRow<T>` + `FromJoinedRow` — post-select_related
-//!   wrapper + prefix-aware row decoder (Task 5).
+//! - `joined_row.rs` / `JoinedRow<T>` — post-select_related wrapper
+//!   returned by `fetch_all_joined` (Task 5).
 //! - `select_related.rs` — single-hop LEFT JOIN SQL emission + joined-
 //!   row stitching glue (Task 5).
 //! - `many_to_many.rs` / `ManyToMany<Target>` trait + through-model
@@ -43,7 +43,7 @@ pub mod registry;
 pub mod select_related;
 
 pub use foreign_key::{ForeignKey, ForeignKeyResolved};
-pub use joined_row::{FromJoinedRow, JoinedRow};
+pub use joined_row::JoinedRow;
 pub use many_to_many::ManyToMany;
 pub use on_delete::OnDelete;
 pub use one_to_one::{OneToOneField, OneToOneFieldResolved};

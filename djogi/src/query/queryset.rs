@@ -55,10 +55,10 @@
 //! ```
 
 use crate::model::Model;
+use crate::pg::decode::FromJoinedPgRow;
 use crate::query::condition::Condition;
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
-use crate::relation::joined_row::FromJoinedRow;
 use crate::relation::path::RelationPath;
 use crate::relation::prefetch::{ErasedPrefetch, prefetch_loader};
 use crate::relation::select_related::{ErasedSelectRelated, child_descriptor, join_decoder};
@@ -601,7 +601,7 @@ impl<T: Model> QuerySet<T> {
     ///
     /// The `select_related` emitter aliases every child column in the
     /// `SELECT` list under a `rel_{source_column}.{col}` prefix. The
-    /// [`FromJoinedRow`](crate::relation::FromJoinedRow) bound on
+    /// [`FromJoinedPgRow`](crate::pg::decode::FromJoinedPgRow) bound on
     /// `Child` captures the decoder that reads those aliased columns
     /// back into a concrete `Child` instance — the macro-emitted
     /// sibling of `FromRow` that takes a prefix parameter. Without
@@ -637,7 +637,7 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn select_related<Child>(mut self, path: RelationPath<T, Child>) -> Self
     where
-        Child: Model + FromJoinedRow + Send + Sync + 'static,
+        Child: Model + FromJoinedPgRow + Send + Sync + 'static,
     {
         // Idempotent registration: if a select_related for this
         // source column is already registered, don't append a

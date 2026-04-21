@@ -74,10 +74,10 @@ use crate::DjogiError;
 use crate::context::{ContextInner, DjogiContext};
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
-use crate::pg::decode::FromPgRow;
+use crate::pg::decode::{FromJoinedPgRow, FromPgRow, try_get_scalar};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_count, build_exists, build_select, build_select_joined};
-use crate::relation::joined_row::{FromJoinedRow, JoinedRow};
+use crate::relation::joined_row::JoinedRow;
 use crate::relation::prefetch::{PrefetchedRow, apply_prefetches};
 use crate::relation::select_related::{apply_select_related, stitch_prefetches_into_joined};
 use postgres_types::ToSql;
@@ -331,7 +331,7 @@ where
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<Vec<JoinedRow<T>>, DjogiError>> + Send + 'ctx
     where
-        T: FromJoinedRow + 'ctx,
+        T: FromJoinedPgRow + 'ctx,
         T::Pk: Clone + Send + Sync + 'static,
     {
         async move {
@@ -355,7 +355,7 @@ where
             // shape as `build_select` minus the `*` shortcut. The
             // decoded rows come back as raw `tokio_postgres::Row`s so
             // both parent and (per registered path) child can be
-            // extracted via `FromJoinedRow::from_prefixed_row`.
+            // extracted via `FromJoinedPgRow::from_joined_pg_row`.
             let acc = build_select_joined(&self);
             let (sql, binds) = acc_into_sql_and_binds(acc);
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -632,7 +632,7 @@ impl<T: Model> QuerySet<T> {
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
             let row = ctx.query_one(&sql, &params).await?;
-            let n: i64 = row.try_get(0).map_err(DjogiError::from)?;
+            let n: i64 = try_get_scalar(&row, 0)?;
             Ok(n)
         }
     }
@@ -662,7 +662,7 @@ impl<T: Model> QuerySet<T> {
                 .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                 .collect();
             let row = ctx.query_one(&sql, &params).await?;
-            let b: bool = row.try_get(0).map_err(DjogiError::from)?;
+            let b: bool = try_get_scalar(&row, 0)?;
             Ok(b)
         }
     }
