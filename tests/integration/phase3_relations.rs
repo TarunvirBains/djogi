@@ -303,7 +303,7 @@ async fn nullable_fk_fetch_loads_related_row(mut ctx: djogi::DjogiContext) {
 /// constraint as far as the `INSERT` is concerned, so any existing
 /// error plumbing continues to work.
 #[djogi::djogi_test]
-async fn fk_creation_sqlx_error_on_unknown_owner(mut ctx: djogi::DjogiContext) {
+async fn fk_creation_db_error_on_unknown_owner(mut ctx: djogi::DjogiContext) {
     setup_phase3(&mut ctx).await;
 
     // Craft a HeerId that can't exist in `owners_p3` — we never seed
