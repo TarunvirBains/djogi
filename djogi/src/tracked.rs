@@ -19,12 +19,19 @@ impl<T> Tracked<T> {
         self.dirty
     }
 
-    // Consumed by Task 2's dirty-aware `save()` emission to reset the flag
-    // after `RETURNING *` rehydration. Not dead code even though Task 1
-    // has no runtime consumer — only the `mark_clean_resets` unit test
-    // below exercises it until Task 2 wires the macro side.
-    #[allow(dead_code)]
-    pub(crate) fn mark_clean(&mut self) {
+    /// Reset the dirty flag to `false`.
+    ///
+    /// Called by macro-emitted `save()` bodies after `RETURNING *` rehydration
+    /// to ensure every `Tracked<T>` field is clean once `save()` returns.
+    /// `from_pg_row` already constructs `Tracked::new(T)` with `dirty = false`,
+    /// so this is defensive — but required by the Task 2 contract so that future
+    /// in-place rehydration changes cannot silently break the invariant.
+    ///
+    /// `#[doc(hidden)]` — this is an implementation detail of the `#[model]`
+    /// macro, not intended for direct caller use. Visibility is `pub` only
+    /// because macro-emitted code runs in user crates outside `djogi`.
+    #[doc(hidden)]
+    pub fn mark_clean(&mut self) {
         self.dirty = false;
     }
 

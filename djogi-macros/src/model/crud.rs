@@ -191,6 +191,32 @@ pub fn expand(
         .cloned()
         .collect();
 
+    // Collect user field types in parallel with user_fields so we can identify
+    // which fields are Tracked<T>. The i-th entry in user_field_types corresponds
+    // to the i-th entry in user_fields.
+    let user_field_types: Vec<_> = struct_item
+        .fields
+        .iter()
+        .skip(n_framework)
+        .map(|f| f.ty.clone())
+        .collect();
+
+    // Returns true when a `syn::Type` is `Tracked<…>` (or any fully-qualified
+    // spelling: `djogi::Tracked<…>`, `::djogi::Tracked<…>`,
+    // `djogi::prelude::Tracked<…>`). Detection is by last-segment ident only —
+    // the same approach used for `ForeignKey` detection in `attrs.rs`.
+    // A user-defined type literally named `Tracked` would shadow this; that
+    // trade-off matches the existing ForeignKey convention and is acceptable.
+    let is_tracked = |ty: &syn::Type| -> bool {
+        let syn::Type::Path(syn::TypePath { path, .. }) = ty else {
+            return false;
+        };
+        path.segments
+            .last()
+            .map(|seg| seg.ident == "Tracked")
+            .unwrap_or(false)
+    };
+
     let n_user = user_fields.len();
 
     // -------------------------------------------------------------------------
@@ -256,63 +282,95 @@ pub fn expand(
         .collect();
 
     // -------------------------------------------------------------------------
-    // `save` SQL: UPDATE with user fields + SQL-side `updated_at = now()`,
-    // WHERE id = $M.
+    // `save` — dirty-aware SqlAccumulator-based SET emission (Task 2).
     //
-    // Parameters: $1..$n_user = user fields, $n_user+1 = id.
+    // The save() body now builds the SET list at runtime using SqlAccumulator
+    // so it can conditionally include or skip Tracked<T> fields depending on
+    // their `is_dirty()` flag. Non-Tracked fields are unconditional (always
+    // emitted).
+    //
+    // Two shapes are emitted per user field at macro-expansion time:
+    //
+    // 1. Tracked field — runtime-conditional:
+    //      if self.<field>.is_dirty() {
+    //          if __first { __first = false; } else { __acc.push_sql(", "); }
+    //          __acc.push_sql("<col> = ");
+    //          __acc.push_bind((*self.<field>).clone());
+    //      }
+    //
+    // 2. Non-Tracked field — always emitted (behavioral regression guard):
+    //      if __first { __first = false; } else { __acc.push_sql(", "); }
+    //      __acc.push_sql("<col> = ");
+    //      __acc.push_bind(self.<field>.clone());
+    //
+    // After the user-field loop:
+    //      if !__first { __acc.push_sql(", "); }   // comma if any user col emitted
+    //      __acc.push_sql("updated_at = now()");   // always present
+    //
+    // If ALL Tracked fields are clean AND there are no non-Tracked fields,
+    // the SQL is `UPDATE t SET updated_at = now() WHERE id = $1 RETURNING …`
+    // — no leading comma, valid Postgres.
     //
     // Using Postgres `now()` (not a client-side `OffsetDateTime::now_utc()`
-    // bound as a parameter) keeps the timestamp source consistent with the
-    // column's `DEFAULT now()` on INSERT: all writes use the same server
-    // clock, so `created_at <= updated_at` always holds even across clients
-    // with drifted clocks.
-    //
-    // Zero-user-field edge case: when n_user == 0 the UPDATE has no user
-    // SET clauses — emit only `SET updated_at = now()` to avoid the invalid
-    // `SET , updated_at = now()` (leading comma) SQL.
+    // bound) keeps the timestamp source consistent with the column's
+    // `DEFAULT now()` on INSERT: all writes use the same server clock, so
+    // `created_at <= updated_at` always holds across clients with drifted clocks.
     // -------------------------------------------------------------------------
-    let set_clauses: Vec<String> = user_fields
-        .iter()
-        .enumerate()
-        .map(|(i, f)| format!("{} = ${}", f, i + 1))
-        .collect();
-    let id_param = n_user + 1;
-    let save_sql = if n_user == 0 {
-        format!(
-            "UPDATE {table} SET updated_at = now() WHERE id = ${id_param} RETURNING {column_list}"
-        )
-    } else {
-        format!(
-            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param} RETURNING {column_list}",
-            set_list = set_clauses.join(", "),
-        )
-    };
 
-    // save field params — build &(dyn ToSql + Sync) entries for each user field.
-    // No clone required: RPITIT captures `&self`'s lifetime, so the async block
-    // can borrow `self.#f` across `.await`. Field types need `ToSql` which the
-    // trait's contract already implies.
-    let save_param_entries: Vec<TokenStream> = user_fields
+    // Build per-field token fragments for the runtime accumulator loop.
+    let save_set_fragments: Vec<TokenStream> = user_fields
         .iter()
-        .map(|f| {
-            quote! { &self.#f as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        .zip(user_field_types.iter())
+        .map(|(f, ty)| {
+            let col_name = f.to_string();
+            let col_str = col_name.strip_prefix("r#").unwrap_or(&col_name).to_string();
+            let col_eq = format!("{col_str} = ");
+            if is_tracked(ty) {
+                // Tracked<T>: emit only when dirty.
+                // Bind the inner T via `(*self.<f>).clone()` — Deref<Target=T>
+                // so the dereference gives `&T` and clone() gives `T`.
+                quote! {
+                    if self.#f.is_dirty() {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        __acc.push_sql(#col_eq);
+                        __acc.push_bind((*self.#f).clone());
+                    }
+                }
+            } else {
+                // Non-Tracked: unconditional — behavioral regression guard for
+                // models that do not opt into dirty tracking.
+                quote! {
+                    {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        __acc.push_sql(#col_eq);
+                        __acc.push_bind(self.#f.clone());
+                    }
+                }
+            }
         })
         .collect();
 
-    // id entry for the save WHERE clause. HeerId: ToSql encodes as BIGINT via
-    // heeranjid 0.2's postgres_types impl; RanjId and i32 bind directly.
-    let save_id_param = match model_attrs.pk {
-        PkStrategy::HeerId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::RanjId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::Serial => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::None => unreachable!("handled by early return"),
-    };
+    // After save() rehydrates self via RETURNING, walk every Tracked field
+    // and call mark_clean(). `Tracked::new(T)` already constructs with dirty=false
+    // so this is defensive — but required by the Task 2 contract so that future
+    // in-place rehydration changes cannot silently break the invariant.
+    let mark_clean_fragments: Vec<TokenStream> = user_fields
+        .iter()
+        .zip(user_field_types.iter())
+        .filter_map(|(f, ty)| {
+            if is_tracked(ty) {
+                Some(quote! { self.#f.mark_clean(); })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Static prefix for the save accumulator. We begin the SET clause body here.
+    // The save accumulator prefix. The WHERE + RETURNING suffix is appended
+    // dynamically in the save body once we know how many bind slots the SET
+    // list consumed (i.e., `__acc.bind_count() + 1` gives the id's `$n`).
+    let save_acc_prefix = format!("UPDATE {table} SET ");
 
     // -------------------------------------------------------------------------
     // `get` SQL: SELECT * WHERE id = $1. `id` comes in as an owned Self::Pk.
@@ -498,13 +556,40 @@ pub fn expand(
 
     let save_body = quote! {
         async move {
-            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                #(#save_param_entries,)*
-                #save_id_param,
-            ];
-            let __raw_row = ctx.__query_one_for_macros(#save_sql, __params).await?;
+            // Build the SET clause dynamically. Tracked<T> fields are only
+            // included when dirty; non-Tracked fields are always included.
+            // `__first` tracks whether we have emitted any SET assignment yet
+            // so comma insertion is correct regardless of which fields fire.
+            let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+            {
+                let mut __first = true;
+                #(#save_set_fragments)*
+                // `updated_at = now()` is always appended. If any user column
+                // was emitted above, we need a leading comma; otherwise it is
+                // the first (and only) assignment.
+                if !__first { __acc.push_sql(", "); }
+                __acc.push_sql("updated_at = now()");
+            }
+            // Append WHERE id = $<next> RETURNING <column_list>.
+            // Emit the WHERE prefix as raw SQL, then let push_bind append the
+            // `$n` placeholder and store the id value. RETURNING is appended
+            // as raw SQL AFTER the bind so it follows the positional slot.
+            __acc.push_sql(" WHERE id = ");
+            // Clone id so push_bind (requires 'static) can take ownership.
+            // HeerId, RanjId, and i32 (Serial) are all Clone + ToSql + Send + Sync + 'static.
+            let __id_val = self.id.clone();
+            __acc.push_bind(__id_val);
+            __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
+            let (__sql, __binds) = __acc.into_parts();
+            let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+            let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
             let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
             *self = row;
+            // After `*self = row`, walk every Tracked field and call mark_clean().
+            // `from_pg_row` uses `Tracked::new(T)` which already starts clean,
+            // so this is defensive — but required by the Task 2 contract.
+            #(#mark_clean_fragments)*
             // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
             // values (triggers, column defaults), so emission runs AFTER the
             // `*self = row` rehydration. No-op for non-events models.
