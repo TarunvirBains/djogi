@@ -51,6 +51,7 @@ pub mod pg;
 pub mod query;
 pub mod relation;
 pub mod testing;
+pub mod tracked;
 pub mod transaction;
 pub mod types;
 pub mod visage;
@@ -130,6 +131,7 @@ pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
     OneToOneFieldResolved, PrefetchedRow,
 };
+pub use tracked::Tracked;
 pub use types::{Date, DateTime, HeerId, RanjId};
 pub use visage::VisageError;
 
@@ -163,6 +165,7 @@ pub mod prelude {
         ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
         OneToOneFieldResolved, PrefetchedRow,
     };
+    pub use crate::tracked::Tracked;
     pub use crate::types::{Date, DateTime, HeerId, RanjId};
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.

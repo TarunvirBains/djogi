@@ -86,3 +86,8 @@ harness = true
 name = "phase5_zero_raw_in_atomic"
 path = "../tests/integration/phase5_zero_raw_in_atomic.rs"
 harness = true
+
+[[test]]
+name = "phase5_postgres_native"
+path = "../tests/integration/phase5_postgres_native.rs"
+harness = true
