@@ -1826,7 +1826,6 @@ pub struct TenantPost {
     pub title: String,
 }
 
-
 /// Bootstrap: create the tenant_post table and apply the RLS policy.
 ///
 /// Each DDL statement is issued as a separate `raw_execute` call because

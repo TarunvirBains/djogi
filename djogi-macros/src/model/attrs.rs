@@ -742,6 +742,7 @@ impl FieldAttrs {
             "expose",
             "rationale",
             "lazy",
+            "version", // Task 3 — optimistic lock version counter
         ];
         for attr in &field.attrs {
             if !attr.path().is_ident("field") {
