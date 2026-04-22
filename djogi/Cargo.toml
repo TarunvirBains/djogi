@@ -9,6 +9,7 @@ description = "Model-first web framework for Rust — web-framework-agnostic cor
 
 [dependencies]
 djogi-macros.workspace = true
+indexmap.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

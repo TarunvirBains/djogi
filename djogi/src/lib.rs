@@ -39,6 +39,7 @@
 //! canonical types (`DateTime`, `Date`, `HeerId`, `RanjId`), and the
 //! `DjogiError` enum — everything a model definition needs.
 
+pub mod array;
 pub mod config;
 pub mod context;
 pub mod descriptor;
@@ -46,6 +47,7 @@ pub mod enum_;
 pub mod error;
 pub mod expr;
 pub(crate) mod ident;
+pub mod jsonb;
 pub mod model;
 pub mod outbox;
 pub mod pg;
@@ -118,6 +120,7 @@ pub use descriptor::{
     PartitionSpec, PkType,
 };
 pub use djogi_macros::{DjogiEnum, many_to_many, reverse_one_to_many, reverse_one_to_one};
+pub use jsonb::{Jsonb, JsonbPathRef, UnknownField, UnknownFieldExt};
 pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
@@ -147,6 +150,7 @@ pub mod prelude {
     };
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+    pub use crate::jsonb::{Jsonb, JsonbPathRef, UnknownField, UnknownFieldExt};
     pub use crate::model::Model;
     pub use crate::pg::decode::{
         FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple,

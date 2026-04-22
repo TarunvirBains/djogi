@@ -182,6 +182,18 @@ pub(crate) enum ExprNode {
     /// (already validated at `FieldRef::new` construction time).
     Subquery(Box<SubqueryNode>),
 
+    /// `array_length(column, 1)` — number of elements in a 1-dimensional
+    /// Postgres array column.
+    ///
+    /// The dimension argument is hardcoded to `1`; Djogi arrays are always
+    /// 1-dimensional and multi-dimensional arrays are not a supported field
+    /// type. Produces an `Expr<i32>` at the typed-wrapper layer; the emitter
+    /// renders `array_length({column}, 1)`.
+    ///
+    /// The `column` string is a `&'static str` validated at
+    /// [`crate::query::field::FieldRef::new`] construction time.
+    ArrayLength { column: &'static str },
+
     /// Outer-scope column reference inside a correlated subquery.
     ///
     /// Emits the column name unqualified — Postgres resolves the name

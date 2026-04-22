@@ -13,7 +13,7 @@ authors = ["Tarunvir Bains"]
 # Core
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
@@ -23,8 +23,9 @@ rust_decimal_macros = "1"
 # These form the runtime executor: tokio-postgres for direct async Postgres
 # access, deadpool-postgres for connection pooling, postgres-types for
 # type-safe encode/decode.
-tokio-postgres = { version = "0.7", default-features = false, features = ["runtime", "with-time-0_3", "with-serde_json-1", "with-uuid-1"] }
-postgres-types = { version = "0.2", default-features = false, features = ["with-serde_json-1", "with-time-0_3", "with-uuid-1"] }
+tokio-postgres = { version = "0.7", default-features = false, features = ["runtime", "with-time-0_3", "with-serde_json-1", "with-uuid-1", "array-impls"] }
+postgres-types = { version = "0.2", default-features = false, features = ["with-serde_json-1", "with-time-0_3", "with-uuid-1", "array-impls"] }
+indexmap = { version = "2", features = ["serde"] }
 deadpool-postgres = "0.14"
 bytes = "1"
 

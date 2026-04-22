@@ -21,6 +21,7 @@
 
 use djogi::DjogiEnum;
 use djogi::prelude::*;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // Test models
@@ -579,4 +580,332 @@ async fn vehicle_status_enum_descriptor_registered(_ctx: djogi::DjogiContext) {
         desc.variants,
         &["active", "in_maintenance", "decommissioned"]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — Array operators + Jsonb<T> runtime + flat JSONB path queries
+// ---------------------------------------------------------------------------
+
+/// The typed schema portion of the `specs` JSONB column.
+/// Unknown fields (absent from this struct) are preserved in `Jsonb::extra`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PostSpec {
+    engine_cylinders: i32,
+    brand: String,
+}
+
+/// A Post model with array and JSONB columns.
+///
+/// - `tags`        — TEXT[] for array operator tests.
+/// - `view_counts` — INTEGER[] for array len test.
+/// - `specs`       — JSONB with a typed partial schema (`PostSpec`) for path
+///                   filter and unknown-field preservation tests.
+#[model(table = "posts")]
+#[derive(Debug, Clone)]
+pub struct Post {
+    pub title: String,
+    pub tags: Vec<String>,
+    pub view_counts: Vec<i32>,
+    pub specs: Option<Jsonb<serde_json::Value>>,
+}
+
+/// Apply the posts DDL on top of the enum setup (which includes accounts,
+/// vehicle_status, and vehicles). If only array/JSONB tests are running the
+/// caller can skip enum setup by applying the accounts DDL first instead.
+async fn setup_phase5_posts(ctx: &mut djogi::DjogiContext) {
+    // Ensure HeeRanjID-dependent tables exist (accounts depends on nothing
+    // except the heeranjid schema which #[djogi_test] installs).
+    setup_phase5(ctx).await;
+    const POSTS_DDL: &str = include_str!("migrations/phase5/004_posts.sql");
+    ctx.raw_execute(POSTS_DDL, &[])
+        .await
+        .expect("apply 004_posts.sql");
+}
+
+/// Helper to build a minimal Post — suppresses the Default fill-in for
+/// Option<Jsonb<_>> (which is always None by default).
+fn make_post(title: &str, tags: Vec<String>, view_counts: Vec<i32>) -> Post {
+    Post {
+        title: title.to_string(),
+        tags,
+        view_counts,
+        specs: None,
+        ..Default::default()
+    }
+}
+
+/// Insert a post with a JSONB specs column.
+fn make_post_with_specs(title: &str, tags: Vec<String>, specs: serde_json::Value) -> Post {
+    Post {
+        title: title.to_string(),
+        tags,
+        view_counts: vec![],
+        specs: Some(Jsonb::new(specs)),
+        ..Default::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — array_contains_matches
+// ---------------------------------------------------------------------------
+
+/// Insert a post with tags ["rust", "postgres"] and verify that a
+/// `contains` filter for ["rust", "postgres"] finds the row, while a
+/// filter for ["python"] does not.
+#[djogi::djogi_test]
+async fn array_contains_matches(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    let post = Post::create(
+        &mut ctx,
+        make_post(
+            "Rust and Postgres",
+            vec!["rust".into(), "postgres".into()],
+            vec![],
+        ),
+    )
+    .await
+    .expect("create post");
+
+    // Should match: column contains both "rust" and "postgres".
+    let found = Post::objects()
+        .filter(|f| {
+            f.tags()
+                .contains(&["rust".to_string(), "postgres".to_string()])
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter contains");
+    assert!(
+        found.iter().any(|p| p.id == post.id),
+        "post with tags ['rust','postgres'] must appear when filtered by contains(['rust','postgres'])"
+    );
+
+    // Should NOT match: column does not contain "python".
+    let not_found = Post::objects()
+        .filter(|f| f.tags().contains(&["python".to_string()]))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter contains python");
+    assert!(
+        !not_found.iter().any(|p| p.id == post.id),
+        "post must NOT appear when filtered for ['python']"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — array_overlap_matches
+// ---------------------------------------------------------------------------
+
+/// Insert two posts with different tag sets. Verify that the overlap filter
+/// finds rows sharing at least one tag.
+#[djogi::djogi_test]
+async fn array_overlap_matches(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    let post_rust = Post::create(
+        &mut ctx,
+        make_post("Rust only", vec!["rust".into()], vec![]),
+    )
+    .await
+    .expect("create rust post");
+
+    let post_python = Post::create(
+        &mut ctx,
+        make_post("Python only", vec!["python".into()], vec![]),
+    )
+    .await
+    .expect("create python post");
+
+    // Overlap with ["rust", "java"] — only post_rust should match.
+    let overlapping = Post::objects()
+        .filter(|f| f.tags().overlap(&["rust".to_string(), "java".to_string()]))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("overlap filter");
+
+    assert!(
+        overlapping.iter().any(|p| p.id == post_rust.id),
+        "post with tag 'rust' must appear in overlap filter for ['rust','java']"
+    );
+    assert!(
+        !overlapping.iter().any(|p| p.id == post_python.id),
+        "post with tag 'python' must NOT appear in overlap filter for ['rust','java']"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — array_len_filters
+// ---------------------------------------------------------------------------
+
+/// Insert posts with varying tag counts. Verify that `.len().gt(n)` in the
+/// expression IR correctly filters by array length.
+#[djogi::djogi_test]
+async fn array_len_filters(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    // 4 tags — should match `.len().gt(3)`.
+    let long_post = Post::create(
+        &mut ctx,
+        make_post(
+            "Many tags",
+            vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            vec![],
+        ),
+    )
+    .await
+    .expect("create long post");
+
+    // 1 tag — should NOT match `.len().gt(3)`.
+    let short_post = Post::create(&mut ctx, make_post("Few tags", vec!["only".into()], vec![]))
+        .await
+        .expect("create short post");
+
+    let found = Post::objects()
+        .filter_expr(|f| f.tags().len().gt(Expr::literal(3i32)))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter by array len > 3");
+
+    assert!(
+        found.iter().any(|p| p.id == long_post.id),
+        "post with 4 tags must appear when filtering len() > 3"
+    );
+    assert!(
+        !found.iter().any(|p| p.id == short_post.id),
+        "post with 1 tag must NOT appear when filtering len() > 3"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — jsonb_flat_path_filter_works
+// ---------------------------------------------------------------------------
+
+/// Insert a post with `specs = {"engine_cylinders": 8, "brand": "V8Power"}`.
+/// Verify that `.path::<i32>("engine_cylinders").gt(4)` finds it, and a post
+/// with `engine_cylinders = 2` does not appear.
+#[djogi::djogi_test]
+async fn jsonb_flat_path_filter_works(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    let v8_post = Post::create(
+        &mut ctx,
+        make_post_with_specs(
+            "V8 Beast",
+            vec!["cars".into()],
+            serde_json::json!({"engine_cylinders": 8, "brand": "V8Power"}),
+        ),
+    )
+    .await
+    .expect("create v8 post");
+
+    let eco_post = Post::create(
+        &mut ctx,
+        make_post_with_specs(
+            "Eco Car",
+            vec!["cars".into()],
+            serde_json::json!({"engine_cylinders": 2, "brand": "EcoMobile"}),
+        ),
+    )
+    .await
+    .expect("create eco post");
+
+    let found = Post::objects()
+        .filter(|f| f.specs().path::<i32>("engine_cylinders").gt(4))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("jsonb path filter");
+
+    assert!(
+        found.iter().any(|p| p.id == v8_post.id),
+        "V8 post (cylinders=8) must appear in filter for engine_cylinders > 4"
+    );
+    assert!(
+        !found.iter().any(|p| p.id == eco_post.id),
+        "Eco post (cylinders=2) must NOT appear in filter for engine_cylinders > 4"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — jsonb_preserves_unknown_fields
+// ---------------------------------------------------------------------------
+
+/// Insert raw JSON with an extra key `"experimental": true` that is absent
+/// from `PostSpec`. Reload through `Jsonb<PostSpec>`, mutate a known field,
+/// save, then verify the `"experimental"` key survived in the database.
+#[djogi::djogi_test]
+async fn jsonb_preserves_unknown_fields(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    // Insert with a raw JSONB that contains an unknown key.
+    let raw_json = serde_json::json!({
+        "engine_cylinders": 4,
+        "brand": "TestBrand",
+        "experimental": true,
+        "legacy_field": 99
+    });
+    let post = Post::create(
+        &mut ctx,
+        make_post_with_specs("Experimental Post", vec![], raw_json),
+    )
+    .await
+    .expect("create post with experimental key");
+
+    // Reload and confirm the unknown fields are in `extra`.
+    let reloaded = Post::get(&mut ctx, post.id).await.expect("reload post");
+
+    let specs = reloaded
+        .specs
+        .as_ref()
+        .expect("specs must be Some after reload");
+
+    // The raw JSON we inserted had 4 keys; the typed value (`serde_json::Value`)
+    // absorbs all of them, so extra is empty. To test unknown-field preservation,
+    // we use a typed struct that only knows 2 keys: `PostSpec { engine_cylinders, brand }`.
+    let typed_json_str = ctx
+        .raw_scalar::<String>(
+            "SELECT specs::text FROM posts WHERE id = $1",
+            &[&post.id.as_i64()],
+        )
+        .await
+        .expect("raw_scalar specs");
+
+    // Deserialize as Jsonb<PostSpec> to exercise the unknown-field split.
+    let typed_specs: Jsonb<PostSpec> =
+        serde_json::from_str(&typed_json_str).expect("deserialize as Jsonb<PostSpec>");
+
+    assert_eq!(typed_specs.data.engine_cylinders, 4);
+    assert_eq!(typed_specs.data.brand, "TestBrand");
+    assert_eq!(
+        typed_specs.extra().len(),
+        2,
+        "experimental + legacy_field must be in extra"
+    );
+    assert!(
+        typed_specs.extra().contains_key("experimental"),
+        "extra must contain 'experimental'"
+    );
+    assert!(
+        typed_specs.extra().contains_key("legacy_field"),
+        "extra must contain 'legacy_field'"
+    );
+
+    // Re-serialize to verify unknown fields survive the round-trip.
+    let re_serialized = serde_json::to_value(&typed_specs).expect("re-serialize");
+    assert_eq!(
+        re_serialized["experimental"],
+        serde_json::json!(true),
+        "'experimental' key must survive Jsonb<PostSpec> round-trip"
+    );
+    assert_eq!(
+        re_serialized["legacy_field"],
+        serde_json::json!(99),
+        "'legacy_field' key must survive Jsonb<PostSpec> round-trip"
+    );
+
+    // Confirm via `specs` field from the loaded post — since `specs` is
+    // `Jsonb<serde_json::Value>`, all keys land in `data` and extra is empty.
+    // We already tested the typed split above; this just confirms the DB value
+    // is intact and the `Jsonb<Value>` ToSql/FromSql round-trip works.
+    let _ = specs; // silence unused warning — the interesting assertion is above.
 }

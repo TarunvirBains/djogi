@@ -205,6 +205,13 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             emit_subquery(acc, sub);
             acc.push_sql(")");
         }
+        ExprNode::ArrayLength { column } => {
+            // array_length(column, 1) — dimension is always 1 (Djogi arrays
+            // are 1-dimensional; multi-dimensional arrays are not supported).
+            acc.push_sql("array_length(");
+            acc.push_sql(column);
+            acc.push_sql(", 1)");
+        }
         ExprNode::OuterRef { column } => {
             // Outer-scope column reference — emitted unqualified.
             // Postgres resolves the name against the enclosing query

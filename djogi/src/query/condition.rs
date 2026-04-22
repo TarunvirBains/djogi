@@ -42,6 +42,30 @@ pub enum Condition {
     /// to be a bare column), making the Phase 2 column-vs-literal
     /// leaf path the wrong abstraction for this emission.
     Expr(crate::expr::Expr<bool>),
+
+    /// `col @> $1` — array contains. The column must be a Postgres array type;
+    /// `values` is a bound array parameter holding the elements to test for.
+    ///
+    /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::contains`].
+    ArrayContains(crate::array::ArrayContainsLeaf),
+
+    /// `col <@ $1` — array contained by. Every element of `col` must also
+    /// appear in the argument array.
+    ///
+    /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::contained_by`].
+    ArrayContainedBy(crate::array::ArrayContainedByLeaf),
+
+    /// `col && $1` — array overlap. The column and argument share at least one
+    /// element.
+    ///
+    /// Produced by [`crate::query::field::FieldRef::<M, Vec<V>>::overlap`].
+    ArrayOverlap(crate::array::ArrayOverlapLeaf),
+
+    /// JSONB flat-path comparison — `(col->'a'->>'b')::cast op $1`.
+    ///
+    /// Produced by [`crate::jsonb::path::JsonbPathRef`] comparison methods.
+    /// The expression SQL is pre-rendered from validated identifiers.
+    JsonbPath(crate::jsonb::path::JsonbPathLeaf),
 }
 
 // Written out explicitly instead of `#[derive(Default)]` + `#[default]` on the
@@ -218,6 +242,22 @@ pub enum FilterValue {
     Pair(Box<FilterValue>, Box<FilterValue>),
     /// `NUMERIC` / `DECIMAL` column values (Phase 5).
     Decimal(rust_decimal::Decimal),
+
+    // ── Array variants (Phase 5 Task 5) ──────────────────────────────────
+    //
+    // Used exclusively by the array column operators (`@>`, `<@`, `&&`).
+    // Each variant binds a typed `Vec<V>` as a Postgres array parameter
+    // so tokio-postgres can encode it with the correct OID. Mixed-type
+    // arrays are not representable — the typed `FieldRef<M, Vec<V>>` API
+    // prevents construction.
+    /// `Vec<String>` array parameter (TEXT[]).
+    ArrayString(Vec<String>),
+    /// `Vec<i32>` array parameter (INT4[]).
+    ArrayI32(Vec<i32>),
+    /// `Vec<i64>` array parameter (INT8[]).
+    ArrayI64(Vec<i64>),
+    /// `Vec<bool>` array parameter (BOOL[]).
+    ArrayBool(Vec<bool>),
 }
 
 #[cfg(test)]
