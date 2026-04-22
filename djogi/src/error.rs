@@ -181,6 +181,14 @@ pub enum DjogiError {
     #[error("auth error: {0}")]
     Auth(#[from] crate::auth::AuthError),
 
+    /// Geo/spatial error from the `spatial` feature — coordinate validation
+    /// or EWKB codec failure. Wraps [`GeoError`](crate::geo::GeoError) so
+    /// spatial operations compose with `?` inside `atomic()`-managed
+    /// operations without explicit mapping.
+    #[cfg(feature = "spatial")]
+    #[error("geo error: {0}")]
+    Geo(#[from] crate::geo::GeoError),
+
     /// Raw database or driver error.
     #[error("database error: {0}")]
     Db(#[source] DbError),

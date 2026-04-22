@@ -49,6 +49,8 @@ pub mod error;
 pub mod expr;
 pub mod fts;
 pub mod fts_query;
+#[cfg(feature = "spatial")]
+pub mod geo;
 pub(crate) mod ident;
 pub mod jsonb;
 pub mod model;
@@ -204,4 +206,7 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
+    // Spatial primitive — gated behind the `spatial` feature flag.
+    #[cfg(feature = "spatial")]
+    pub use crate::geo::GeoPoint;
 }

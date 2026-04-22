@@ -30,6 +30,12 @@ outbox-kafka = ["outbox"]
 # outbox-nats — NATS publisher stub (via async-nats). Same deferral.
 outbox-nats = ["outbox"]
 
+# spatial — gates the GeoPoint primitive and the spatial query surface
+# (SpatialExpr, within_km, order_by_distance). Requires PostGIS installed
+# in the target Postgres database; no extra Rust dependencies are pulled in
+# today because the EWKB codec is implemented with stdlib byte primitives.
+spatial = []
+
 # testing — exposes djogi::testing::setup_test_db and related helpers in
 # non-test builds (e.g. for integration test harnesses that can't use
 # cfg(test)).
