@@ -19,6 +19,7 @@ pub mod visages;
 
 use attrs::ModelAttrs;
 use proc_macro2::TokenStream;
+use quote::format_ident;
 use syn::{Fields, ItemStruct, parse2};
 
 /// Called from `lib.rs`. Returns the full expanded token stream, or a
@@ -124,6 +125,27 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    (id / created_at / updated_at) default into every visage (Q13).
     let projections_ts = visages::expand(&struct_item, &model_attrs, &field_attrs);
 
+    // 10. Advisory warnings — Phase 5 Task 11.
+    //     Emit a `#[deprecated]` const for each field that carries
+    //     `outbox = "ignore"` without a matching `rationale = "..."`.
+    //     Stable Rust does not expose `proc_macro::Diagnostic` at warn
+    //     level; the idiomatic stable trick is emitting a deprecated const
+    //     and immediately referencing it so the compiler fires the
+    //     deprecated-use lint at the call site.
+    //
+    //     `lazy` and `partition_by` advisories are deferred here because
+    //     `lazy` has no struct field today and `partition_by` has no
+    //     attribute-level parsing. Adding parsers purely to support an
+    //     advisory warning would be cart-before-horse — those advisories
+    //     land when the attributes become functional features.
+    //     (Phase 5 Task 11 — see the Phase 5 implementation plan.)
+    let rationale_advisories = emit_rationale_advisories(
+        &struct_item,
+        // field_attrs was collected before inject::expand mutated
+        // struct_item, so indices align with user-declared fields.
+        &field_attrs,
+    );
+
     Ok(quote::quote! {
         #expanded
         #from_row
@@ -135,7 +157,104 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #related
         #outer
         #projections_ts
+        #rationale_advisories
     })
+}
+
+/// Emit advisory deprecation warnings for fields that carry behaviour-modifying
+/// attributes without a `rationale = "..."` annotation.
+///
+/// # Mechanism
+///
+/// Stable Rust does not expose `proc_macro::Diagnostic` at warn level. The
+/// idiomatic stable-Rust approach is emitting a `#[deprecated]` const that is
+/// immediately referenced via a second `const _: () = ...;` expression. The
+/// compiler fires the deprecated-use lint at the reference site, which surfaces
+/// as a warning in the user's build output without preventing compilation.
+///
+/// # Trigger today: `outbox = "ignore"` without `rationale`
+///
+/// When `#[field(outbox = "ignore")]` is present on a field but no
+/// `#[field(rationale = "...")]` accompanies it, an advisory warning fires.
+/// The message prompts the user to document why the field is excluded from the
+/// outbox payload (e.g. PII, derived data).
+///
+/// # Deferred triggers: `lazy`, `partition_by`
+///
+/// `lazy` is allowlisted in `VALID_FIELD_KEYS` today but has no struct field
+/// and no runtime behaviour. `partition_by` has no attribute-level parsing at
+/// all (only `ModelDescriptor::partition_by` exists, always `None`). Adding
+/// advisory-only parsers for those keys before the attributes become functional
+/// would be cart-before-horse — their advisories land in the same phase the
+/// attributes become real features. (Phase 5 Task 11 in the implementation
+/// plan.)
+///
+/// # Const naming
+///
+/// The emitted const name encodes both the struct name and the field name so
+/// the same advisory key can appear on multiple fields across multiple models
+/// in the same compilation unit without a const-naming collision. The name uses
+/// only ASCII alphanumerics and underscores, so it is always a valid Rust
+/// identifier — no byte-level escaping is needed beyond what `format_ident!`
+/// provides.
+fn emit_rationale_advisories(
+    struct_item: &ItemStruct,
+    field_attrs: &[attrs::FieldAttrs],
+) -> TokenStream {
+    let mut ts = TokenStream::new();
+    let struct_name = &struct_item.ident;
+
+    let Fields::Named(named) = &struct_item.fields else {
+        // Tuple / unit structs are rejected upstream; nothing to do here.
+        return ts;
+    };
+
+    // Only iterate user-declared fields. `field_attrs` was captured before
+    // `inject::expand` added framework columns, so indices stay aligned.
+    let user_field_count = named.named.len().saturating_sub(
+        // inject::expand prepends 3 framework fields (id, created_at,
+        // updated_at) after we snapshot field_attrs, so we need the
+        // original user count, which IS field_attrs.len().
+        0, // field_attrs.len() == user field count; no subtraction needed.
+    );
+    let _ = user_field_count; // suppress lint — we iterate field_attrs directly.
+
+    for fa in field_attrs {
+        // Only fire when `outbox = "ignore"` is present AND `rationale` is absent.
+        if fa.outbox.as_deref() != Some("ignore") || fa.rationale.is_some() {
+            continue;
+        }
+
+        // Recover the field identifier. `FieldAttrs::ident` is always
+        // `Some(_)` for named-field structs (darling's magic field populates
+        // it from `syn::Field::ident`); tuple structs are rejected upstream.
+        let Some(field_ident) = &fa.ident else {
+            continue;
+        };
+
+        // Build a unique, stable const name from struct + field.
+        // Shape: `__djogi_rationale_outbox_{StructName}_{field_name}`
+        // ASCII alphanumeric + underscore only — always a valid Rust ident.
+        let const_ident = format_ident!("__djogi_rationale_outbox_{}_{}", struct_name, field_ident);
+
+        let deprecation_msg = format!(
+            "field `{field_ident}` on `{struct_name}` uses \
+             `#[field(outbox = \"ignore\")]` without a `rationale`. \
+             Consider adding `#[field(outbox = \"ignore\", rationale = \"...\")]` \
+             to document why this field is excluded from the outbox payload \
+             (e.g. PII, derived data, ephemeral value)."
+        );
+
+        // Emit the deprecated const and an immediate reference so the lint fires.
+        ts.extend(quote::quote! {
+            #[deprecated(note = #deprecation_msg)]
+            #[allow(non_upper_case_globals)]
+            const #const_ident: () = ();
+            const _: () = #const_ident;
+        });
+    }
+
+    ts
 }
 
 /// Validate `#[field(version)]` annotations across all user fields.

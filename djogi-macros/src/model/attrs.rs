@@ -424,6 +424,19 @@ pub struct FieldAttrs {
     #[darling(default)]
     pub sequence_within: Option<String>,
 
+    /// `#[field(rationale = "...")]` — free-text justification for why this
+    /// field carries a behaviour-modifying attribute such as
+    /// `outbox = "ignore"`.
+    ///
+    /// No validation is applied to the string value — it exists purely as
+    /// in-source documentation that suppresses the advisory warning emitted
+    /// when `outbox = "ignore"` is present without an accompanying
+    /// `rationale`. Future attribute advisories (`lazy`, `partition_by`)
+    /// will key off the same field once those attributes become functional
+    /// features (deferred; see Task 11 in the Phase 5 plan).
+    #[darling(default)]
+    pub rationale: Option<String>,
+
     /// `#[field(expose(...))]` — per-attribute parsed specs. Darling
     /// accepts **multiple** `#[field(expose(...))]` attributes on the
     /// same field via `#[darling(multiple)]`; each one is parsed
