@@ -1806,3 +1806,319 @@ async fn jsonb_camel_create_and_typed_path_roundtrip(mut ctx: djogi::DjogiContex
         "on-disk JSON must NOT have 'engine_type' snake_case key"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 9 — TenantPost model
+// ---------------------------------------------------------------------------
+
+/// A model with `#[model(tenant_key = "org_id")]` used to exercise tenant
+/// isolation via Row Level Security. Table provisioned by
+/// `009_tenant_post.sql`, which applies the RLS policy by hand (Phase 7 has
+/// not landed to consume the side-channel `target/djogi_rls/` file yet).
+///
+/// Each row belongs to an org identified by `org_id`. The RLS policy
+/// enforces that a connection can only see rows whose `org_id` matches
+/// `current_setting('app.tenant_id')::bigint`.
+#[model(table = "tenant_post", tenant_key = "org_id")]
+#[derive(Debug, Clone)]
+pub struct TenantPost {
+    pub org_id: i64,
+    pub title: String,
+}
+
+
+/// Bootstrap: create the tenant_post table and apply the RLS policy.
+///
+/// Each DDL statement is issued as a separate `raw_execute` call because
+/// `raw_execute` uses the prepared-statement path (tokio-postgres
+/// `prepare_cached`) which does not support multi-statement SQL.
+///
+/// We also create a restricted role `djogi_rls_test_user` with SELECT/INSERT
+/// on the table. The RLS isolation test `SET LOCAL ROLE` to this user inside
+/// each `atomic()` scope so the RLS policy actually fires — superusers bypass
+/// RLS unless `FORCE ROW LEVEL SECURITY` is used, but FORCE only applies to
+/// the table owner, not to superusers. The restricted-role path is the
+/// realistic production model anyway (app connections run as a restricted
+/// service account, not as a superuser).
+async fn setup_tenant_post(ctx: &mut djogi::DjogiContext) {
+    ctx.raw_execute(
+        "CREATE TABLE IF NOT EXISTS tenant_post (
+             id          BIGINT PRIMARY KEY DEFAULT generate_id(),
+             created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+             updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+             org_id      BIGINT NOT NULL,
+             title       TEXT NOT NULL
+         )",
+        &[],
+    )
+    .await
+    .expect("create tenant_post table");
+
+    ctx.raw_execute("ALTER TABLE tenant_post ENABLE ROW LEVEL SECURITY", &[])
+        .await
+        .expect("enable RLS on tenant_post");
+
+    // FORCE ROW LEVEL SECURITY ensures the policy applies even to the
+    // table owner (non-superuser owner). For the superuser test connection we
+    // still need SET LOCAL ROLE to a restricted user below.
+    ctx.raw_execute("ALTER TABLE tenant_post FORCE ROW LEVEL SECURITY", &[])
+        .await
+        .expect("force RLS on tenant_post");
+
+    ctx.raw_execute(
+        "CREATE POLICY tenant_post_tenant_isolation ON tenant_post \
+         USING (org_id = current_setting('app.tenant_id', true)::bigint)",
+        &[],
+    )
+    .await
+    .expect("create RLS policy on tenant_post");
+
+    // Create a restricted service-account role for RLS testing.
+    //
+    // Postgres does NOT support `CREATE ROLE IF NOT EXISTS` — that is
+    // MySQL syntax. The idiomatic Postgres idiom is to check `pg_roles`
+    // first and only issue `CREATE ROLE` when the role is absent.
+    //
+    // `CREATE ROLE` is also unprepared DDL — it cannot go through
+    // `prepare_cached` (the `raw_execute` path). We use `raw_ddl` which
+    // sends the statement via the simple query protocol.
+    //
+    // Postgres roles are cluster-level (not per-database), so this role
+    // persists across `#[djogi_test]` drops. The existence check ensures
+    // idempotency across repeated test runs without requiring
+    // `DROP ROLE ... IF EXISTS` teardown.
+    let role_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'djogi_rls_test_user')",
+            &[],
+        )
+        .await
+        .expect("check djogi_rls_test_user existence");
+
+    if !role_exists {
+        ctx.raw_ddl("CREATE ROLE djogi_rls_test_user")
+            .await
+            .expect("create djogi_rls_test_user role");
+    }
+
+    // Grant table access to the restricted role.
+    ctx.raw_execute(
+        "GRANT SELECT, INSERT ON tenant_post TO djogi_rls_test_user",
+        &[],
+    )
+    .await
+    .expect("grant table access to djogi_rls_test_user");
+
+    // Grant USAGE on the public schema so the restricted role can see the table.
+    ctx.raw_execute("GRANT USAGE ON SCHEMA public TO djogi_rls_test_user", &[])
+        .await
+        .expect("grant public schema usage to djogi_rls_test_user");
+
+    // Grant execute on generate_id so INSERT with DEFAULT generate_id() works.
+    // heeranjid installs generate_id() in the public schema of each per-test
+    // database; grant execute on that public function.
+    ctx.raw_execute(
+        "GRANT EXECUTE ON FUNCTION generate_id() TO djogi_rls_test_user",
+        &[],
+    )
+    .await
+    .expect("grant execute on generate_id to djogi_rls_test_user");
+
+    // generate_id() internally reads and writes HeeRanjID support tables:
+    // - heer_nodes: SELECT (node configuration lookup)
+    // - heer_node_state: SELECT + INSERT (tracks per-node sequence counters;
+    //   generate_id() upserts into this table on every call)
+    // - heer_config: SELECT (global HeeRanjID configuration)
+    //
+    // The #[djogi_test] harness installs all four HeeRanjID tables in the
+    // public schema of each per-test database. The restricted role must have
+    // sufficient privileges on each for INSERT (DEFAULT generate_id()) to
+    // succeed without a permission error.
+    ctx.raw_execute("GRANT SELECT ON heer_nodes TO djogi_rls_test_user", &[])
+        .await
+        .expect("grant select on heer_nodes to djogi_rls_test_user");
+
+    ctx.raw_execute(
+        "GRANT SELECT, INSERT, UPDATE ON heer_node_state TO djogi_rls_test_user",
+        &[],
+    )
+    .await
+    .expect("grant select/insert/update on heer_node_state to djogi_rls_test_user");
+
+    ctx.raw_execute("GRANT SELECT ON heer_config TO djogi_rls_test_user", &[])
+        .await
+        .expect("grant select on heer_config to djogi_rls_test_user");
+}
+
+// ---------------------------------------------------------------------------
+// Task 9 — set_tenant activates RLS isolation
+// ---------------------------------------------------------------------------
+
+/// Verify that `set_tenant` inside `atomic()` activates RLS isolation.
+///
+/// Strategy:
+/// 1. Open an `atomic` scope as org 1000, insert a TenantPost with org_id=1000.
+/// 2. Open a separate `atomic` scope as org 2000, query TenantPost::objects().
+///    The result must be empty — RLS hides org 1000's row from org 2000.
+/// 3. Open a third `atomic` scope as org 1000 again. The inserted row must
+///    reappear — proving isolation is per-transaction, not permanent.
+///
+/// `SET LOCAL` (via `set_config(…, true)`) resets at commit/rollback, so
+/// consecutive `atomic()` scopes on the same pool never bleed tenant state
+/// across request boundaries.
+#[djogi::djogi_test]
+async fn set_tenant_rls_isolates_tenants(mut ctx: djogi::DjogiContext) {
+    setup_tenant_post(&mut ctx).await;
+
+    // Grab the underlying pool so we can open fresh atomic scopes.
+    let pool = ctx
+        .pool()
+        .expect("ctx must be pool-backed for this test")
+        .clone();
+
+    // ── Step 1: insert a row as org 1000 ────────────────────────────────────
+    // SET LOCAL ROLE switches to the restricted service-account role inside
+    // the transaction so the RLS policy fires. Superuser connections bypass
+    // RLS unconditionally; the restricted role is the realistic production model.
+    let post = djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            // Drop to the restricted role so RLS applies.
+            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
+                .await?;
+            tx.set_tenant("1000").await?;
+            assert!(
+                tx.tenant_set,
+                "tenant_set flag must be true after set_tenant"
+            );
+
+            let p = TenantPost::create(
+                tx,
+                TenantPost {
+                    org_id: 1000,
+                    title: "Org 1000 Post".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            Ok::<_, djogi::DjogiError>(p)
+        })
+    })
+    .await
+    .expect("create TenantPost as org 1000");
+
+    // ── Step 2: query as org 2000 — must see zero rows ────────────────────
+    let org_2000_posts = djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
+                .await?;
+            tx.set_tenant("2000").await?;
+            TenantPost::objects().fetch_all(tx).await
+        })
+    })
+    .await
+    .expect("fetch TenantPost as org 2000");
+
+    assert!(
+        org_2000_posts.is_empty(),
+        "org 2000 must see zero rows — RLS should hide org 1000's post; \
+         got {} rows",
+        org_2000_posts.len()
+    );
+
+    // ── Step 3: query as org 1000 again — must see the inserted row ────────
+    let org_1000_posts = djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
+                .await?;
+            tx.set_tenant("1000").await?;
+            TenantPost::objects().fetch_all(tx).await
+        })
+    })
+    .await
+    .expect("fetch TenantPost as org 1000");
+
+    assert_eq!(
+        org_1000_posts.len(),
+        1,
+        "org 1000 must see exactly 1 post after re-setting tenant"
+    );
+    assert_eq!(
+        org_1000_posts[0].id, post.id,
+        "the visible post must be the one inserted in step 1"
+    );
+    assert_eq!(org_1000_posts[0].org_id, 1000);
+    assert_eq!(org_1000_posts[0].title, "Org 1000 Post");
+}
+
+/// Verify that `DjogiContext::tenant_set` starts as `false` on a fresh context
+/// and is set to `true` after `set_tenant` is called.
+#[djogi::djogi_test]
+async fn tenant_set_flag_tracks_set_tenant_calls(mut ctx: djogi::DjogiContext) {
+    setup_tenant_post(&mut ctx).await;
+
+    let pool = ctx.pool().expect("pool-backed context").clone();
+
+    djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            assert!(
+                !tx.tenant_set,
+                "tenant_set must be false on a fresh transaction context"
+            );
+
+            tx.set_tenant("42").await?;
+
+            assert!(
+                tx.tenant_set,
+                "tenant_set must be true after set_tenant() returns Ok"
+            );
+
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .expect("tenant_set_flag test");
+}
+
+/// Verify that the `target/djogi_rls/tenant_post_rls.sql` side-channel file
+/// is emitted when the `TenantPost` model (declared in this file with
+/// `#[model(tenant_key = "org_id")]`) is compiled.
+///
+/// The file is written by `descriptor::expand` into `target/djogi_rls/`
+/// relative to the crate being compiled. `CARGO_MANIFEST_DIR` inside the
+/// proc macro points at the user crate being processed — for integration
+/// tests this is the `djogi` library crate whose `Cargo.toml` lives one
+/// level up from `tests/`.
+#[djogi::djogi_test]
+async fn tenant_post_rls_side_channel_file_exists(_ctx: djogi::DjogiContext) {
+    // The macro writes the file relative to CARGO_MANIFEST_DIR.
+    // For this integration test, the macro runs in the context of the `djogi`
+    // crate (because the `[[test]]` entry lives in djogi/Cargo.toml), so
+    // CARGO_MANIFEST_DIR = {worktree}/djogi.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+
+    // The proc macro writes to {CARGO_MANIFEST_DIR}/target/djogi_rls/.
+    // From within the djogi crate this resolves to
+    // {worktree}/djogi/target/djogi_rls/tenant_post_rls.sql.
+    // We also check the workspace-root target directory as a fallback.
+    let candidates = vec![
+        std::path::Path::new(&manifest_dir)
+            .join("target")
+            .join("djogi_rls")
+            .join("tenant_post_rls.sql"),
+        // Workspace root target/ — Cargo sometimes redirects OUT_DIR here.
+        std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("target")
+            .join("djogi_rls")
+            .join("tenant_post_rls.sql"),
+    ];
+
+    let found = candidates.iter().any(|p| p.exists());
+
+    assert!(
+        found,
+        "tenant_post_rls.sql must exist after compiling TenantPost; \
+         checked: {candidates:?}"
+    );
+}

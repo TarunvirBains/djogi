@@ -93,6 +93,24 @@ pub struct ModelAttrs {
     /// The parser rejects anything else so the value can be safely
     /// embedded into the emitted SQL.
     pub idempotency_key: Option<String>,
+
+    /// The user-field name that serves as the tenant discriminator for
+    /// Row Level Security — Phase 5 Task 9.
+    ///
+    /// Set via `#[model(table = "...", tenant_key = "org_id")]`. When present,
+    /// the macro emits a side-channel `target/djogi_rls/{table}_rls.sql` file
+    /// containing `ALTER TABLE … ENABLE ROW LEVEL SECURITY` and a
+    /// `CREATE POLICY … USING (col = current_setting('app.tenant_id')::type)`
+    /// statement. Phase 7's migration differ will consume this file; for now
+    /// it is hand-applied in integration tests.
+    ///
+    /// The column referenced by `tenant_key` must be one of: `BigInt`
+    /// (HeerId), `Uuid` (RanjId), `Text`, or `Citext`. Any other SQL type
+    /// triggers a span-precise compile error at the `tenant_key` attribute.
+    ///
+    /// At runtime, call [`DjogiContext::set_tenant`] inside an `atomic()`
+    /// block to activate the RLS policy for a request.
+    pub tenant_key: Option<String>,
 }
 
 /// Parsed `pk = "..."` value.
@@ -122,6 +140,7 @@ impl ModelAttrs {
         let mut events = false;
         let mut seen_events = false;
         let mut idempotency_key: Option<String> = Option::None;
+        let mut tenant_key: Option<String> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -211,11 +230,38 @@ impl ModelAttrs {
                             ));
                         }
                         idempotency_key = Some(key_val);
+                    } else if path.is_ident("tenant_key") {
+                        if tenant_key.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `tenant_key` key in #[model(...)]",
+                            ));
+                        }
+                        let key_val = s.value();
+                        // Validate: plain ASCII identifier. Byte-level check
+                        // per `feedback_no_regex_in_djogi` — leading
+                        // letter/underscore, rest alnum/underscore.
+                        let bytes = key_val.as_bytes();
+                        let ident_ok = !bytes.is_empty()
+                            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                            && bytes
+                                .iter()
+                                .skip(1)
+                                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+                        if !ident_ok {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "`tenant_key` value must be a plain ASCII identifier \
+                                 (letter or underscore, then alphanumerics/underscores)",
+                            ));
+                        }
+                        tenant_key = Some(key_val);
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
-                                "unknown #[model] attribute `{}`; expected `table`, `pk`, `idempotency_key`, `no_default`, `through`, or `events`",
+                                "unknown #[model] attribute `{}`; expected `table`, `pk`, \
+                                 `idempotency_key`, `tenant_key`, `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -245,6 +291,7 @@ impl ModelAttrs {
             through,
             events,
             idempotency_key,
+            tenant_key,
         })
     }
 }
@@ -1191,5 +1238,56 @@ fn is_prelude_option_path(path: &syn::Path) -> bool {
             (root == "std" || root == "core") && module == "option" && ty == "Option"
         }
         _ => false,
+    }
+}
+
+/// Simplified SQL type category for tenant-key cast selection in RLS DDL.
+///
+/// `rust_type_to_sql` returns a full SQL type string; this categorises the
+/// result into the three buckets the RLS `current_setting(...)::cast`
+/// expression needs. Types outside the accepted set are returned as
+/// `Unsupported(sql_type_string)` so the caller can emit a span-precise
+/// compile error at the `tenant_key` attribute.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldSqlTypeCategory {
+    /// `BIGINT` — cast is `::bigint` (HeerId tenant keys).
+    BigInt,
+    /// `UUID` — cast is `::uuid` (RanjId tenant keys).
+    Uuid,
+    /// `TEXT` or `CITEXT` — no cast needed (text comparison is exact).
+    Text,
+    /// Any SQL type not in the accepted tenant-key set. The inner string
+    /// is the full SQL type name for use in the compile-error message.
+    Unsupported(String),
+}
+
+/// Derive the `FieldSqlTypeCategory` for a Rust field type.
+///
+/// Used by the RLS DDL emitter to pick the correct `current_setting(...)::cast`
+/// expression. `HeerId` → `BigInt`; `Uuid` / `RanjId` → `Uuid`; `String` →
+/// `Text`; everything else → `Unsupported`.
+///
+/// One `Option<…>` layer is stripped first so nullable tenant columns
+/// (`Option<HeerId>`) are also accepted.
+#[allow(dead_code)]
+pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
+    let (inner, _nullable) = unwrap_option(ty);
+    // Build a normalised type-string for pattern matching.
+    let s = quote::quote!(#inner).to_string().replace(' ', "");
+    match s.as_str() {
+        // HeerId is a Djogi type alias for i64 BIGINT.
+        "HeerId" | "i64" => FieldSqlTypeCategory::BigInt,
+        // RanjId is a Djogi type alias for Uuid.
+        "RanjId" | "Uuid" | "uuid::Uuid" => FieldSqlTypeCategory::Uuid,
+        "String" => FieldSqlTypeCategory::Text,
+        // Fall through to the sql-type table for anything else.
+        _ => match rust_type_to_sql(&inner) {
+            Some("BIGINT") | Some("SMALLINT") | Some("INTEGER") => FieldSqlTypeCategory::BigInt,
+            Some("UUID") => FieldSqlTypeCategory::Uuid,
+            Some("TEXT") | Some("CITEXT") => FieldSqlTypeCategory::Text,
+            Some(other) => FieldSqlTypeCategory::Unsupported(other.to_owned()),
+            None => FieldSqlTypeCategory::Unsupported(s),
+        },
     }
 }

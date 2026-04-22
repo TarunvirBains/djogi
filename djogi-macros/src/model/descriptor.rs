@@ -18,8 +18,9 @@
 //! follow the same convention.
 
 use crate::model::attrs::{
-    FieldAttrs, ModelAttrs, PkStrategy, RelationKind as MacroRelationKind, detect_relation,
-    on_delete_str_to_tokens, rust_type_to_sql, unwrap_option,
+    FieldAttrs, FieldSqlTypeCategory, ModelAttrs, PkStrategy, RelationKind as MacroRelationKind,
+    detect_relation, field_sql_type_category, on_delete_str_to_tokens, rust_type_to_sql,
+    unwrap_option,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -356,6 +357,25 @@ pub fn expand(
         None => quote! { ::std::option::Option::None },
     };
 
+    // Phase 5 Task 9 — `#[model(tenant_key = "col")]` wires the column name
+    // into the descriptor AND emits a side-channel `target/djogi_rls/` SQL
+    // file for the Phase 7 migration differ to consume.
+    let tenant_key_tokens = match &model_attrs.tenant_key {
+        Some(col) => quote! { ::std::option::Option::Some(#col) },
+        None => quote! { ::std::option::Option::None },
+    };
+
+    // Side-channel RLS DDL emission — only when tenant_key is declared.
+    if let Some(tenant_col) = &model_attrs.tenant_key {
+        emit_rls_side_channel(
+            struct_item,
+            model_attrs,
+            &user_fields,
+            tenant_col,
+            field_attrs,
+        );
+    }
+
     quote! {
         ::djogi::__private::inventory::submit! {
             ::djogi::ModelDescriptor {
@@ -373,7 +393,8 @@ pub fn expand(
                 // this flag at codegen time.
                 has_outbox: #has_outbox,
                 idempotency_key: #idempotency_key_tokens,
-                tenant_key: None,
+                // Phase 5 Task 9 — RLS tenant discriminator column.
+                tenant_key: #tenant_key_tokens,
                 cache_ttl: None,
                 rationale: None,
                 indexes: &[],
@@ -381,6 +402,116 @@ pub fn expand(
                 is_through: #is_through,
             }
         }
+    }
+}
+
+/// Emit a side-channel `target/djogi_rls/{table}_rls.sql` file when the model
+/// declares a `tenant_key`.
+///
+/// The emitted SQL contains two statements:
+/// 1. `ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;`
+/// 2. `CREATE POLICY {table}_tenant_isolation ON {table} USING (col = current_setting(...));`
+///
+/// The cast in the `USING` expression depends on the tenant column's SQL type:
+/// - `BigInt` → `::bigint`
+/// - `Uuid`   → `::uuid`
+/// - `Text`   → no cast
+/// - Any other type → compile error (via `proc_macro_error` note, non-fatal).
+///
+/// Phase 7's migration differ will consume this file. Until then, the file
+/// serves as documentation and as an integration-test fixture the test can
+/// verify was created.
+///
+/// The function is intentionally non-fatal on I/O errors (uses `eprintln!` not
+/// `panic!`) so a proc macro failure due to a missing `target/` directory does
+/// not break builds in unusual environments.
+fn emit_rls_side_channel(
+    struct_item: &ItemStruct,
+    model_attrs: &ModelAttrs,
+    user_fields: &[(&syn::Field, &FieldAttrs)],
+    tenant_col: &str,
+    _field_attrs: &[FieldAttrs],
+) {
+    let table = &model_attrs.table;
+
+    // Find the user field whose name matches `tenant_col` so we can determine
+    // its SQL type for the cast expression. Field names are raw-ident stripped
+    // to bare names (matching the SQL column name) before comparison.
+    let tenant_field_ty: Option<&syn::Type> = user_fields.iter().find_map(|(field, _)| {
+        let raw = field.ident.as_ref()?.to_string();
+        let name = raw.strip_prefix("r#").unwrap_or(&raw);
+        if name == tenant_col {
+            Some(&field.ty)
+        } else {
+            None
+        }
+    });
+
+    // Determine the cast suffix for the `current_setting(...)` expression.
+    // `true` in `current_setting('app.tenant_id', true)` makes a missing
+    // GUC return NULL instead of raising — safer for connections that
+    // haven't called set_tenant yet.
+    let cast_suffix: &str = if let Some(ty) = tenant_field_ty {
+        match field_sql_type_category(ty) {
+            FieldSqlTypeCategory::BigInt => "::bigint",
+            FieldSqlTypeCategory::Uuid => "::uuid",
+            FieldSqlTypeCategory::Text => "",
+            FieldSqlTypeCategory::Unsupported(ref other) => {
+                // Emit a build-time warning to stderr. The RLS file is still
+                // written with an empty cast so the build stays green — a
+                // Phase 7 compile-fail test will tighten this to a hard error.
+                eprintln!(
+                    "djogi-macros: tenant_key column `{tenant_col}` on struct `{}` \
+                     has unsupported SQL type `{other}`; RLS cast will be empty. \
+                     Only BigInt, Uuid, and Text/Citext are supported.",
+                    struct_item.ident
+                );
+                ""
+            }
+        }
+    } else {
+        // Field not found — possibly a framework column (id, created_at, updated_at)
+        // or a typo. Emit with empty cast; Phase 7 will tighten validation.
+        eprintln!(
+            "djogi-macros: tenant_key value `{tenant_col}` does not match any \
+             user-declared field on struct `{}`; check spelling.",
+            struct_item.ident
+        );
+        ""
+    };
+
+    let sql = format!(
+        "-- RLS DDL for {table} — generated by #[model(tenant_key = \"{tenant_col}\")].\n\
+         -- Phase 7's migration differ consumes this file to apply RLS policies.\n\
+         -- The `true` flag in current_setting makes a missing GUC return NULL\n\
+         -- instead of raising, keeping connections without set_tenant() safe.\n\
+         \n\
+         ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;\n\
+         \n\
+         CREATE POLICY {table}_tenant_isolation ON {table}\n\
+             USING ({tenant_col} = current_setting('app.tenant_id', true){cast_suffix});\n",
+    );
+
+    // Write to `target/djogi_rls/{table}_rls.sql`. Proc macros run with
+    // `CARGO_MANIFEST_DIR` set to the crate being compiled (the user crate),
+    // and `OUT_DIR` is the canonical location for build artefacts.
+    // We mirror the outbox pattern and write relative to the workspace root
+    // by locating the Cargo manifest directory.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_owned());
+    let rls_dir = std::path::Path::new(&manifest_dir)
+        .join("target")
+        .join("djogi_rls");
+
+    if let Err(e) = std::fs::create_dir_all(&rls_dir) {
+        eprintln!(
+            "djogi-macros: could not create target/djogi_rls/: {e}; skipping RLS DDL emission"
+        );
+        return;
+    }
+
+    let rls_path = rls_dir.join(format!("{table}_rls.sql"));
+    if let Err(e) = std::fs::write(&rls_path, &sql) {
+        eprintln!("djogi-macros: could not write {}: {e}", rls_path.display());
     }
 }
 

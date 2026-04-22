@@ -93,6 +93,15 @@ pub struct DjogiContext {
     /// Each callback is a boxed async closure that returns `Result<(), DjogiError>`.
     /// Errors are logged but do not fail the commit (Q9 resolution).
     on_commit: Vec<OnCommitCallback>,
+
+    /// Whether [`set_tenant`](Self::set_tenant) has been called on this context.
+    ///
+    /// Set to `true` by `set_tenant`. Framework code can inspect this flag to
+    /// detect missing tenant setup before performing tenant-scoped queries. Note
+    /// that `SET LOCAL` (via `set_config`) is only meaningful inside an open
+    /// transaction — callers must wrap tenant-scoped operations in `atomic()` for
+    /// the GUC value to persist through the full query sequence.
+    pub tenant_set: bool,
 }
 
 /// Internal enum selecting the active context variant.
@@ -145,6 +154,7 @@ impl DjogiContext {
             inner: ContextInner::Pool(pool),
             savepoint_depth: 0,
             on_commit: Vec::new(),
+            tenant_set: false,
         }
     }
 
@@ -160,6 +170,7 @@ impl DjogiContext {
             inner: ContextInner::Transaction(conn),
             savepoint_depth: 0,
             on_commit: Vec::new(),
+            tenant_set: false,
         }
     }
 
@@ -565,6 +576,80 @@ impl DjogiContext {
         binds: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError> {
         self.execute(sql, binds).await
+    }
+
+    /// Execute a SQL statement via the **simple query protocol** (no bind
+    /// parameters, no server-side prepare).
+    ///
+    /// Use this for DDL statements that Postgres cannot prepare (`CREATE ROLE`,
+    /// `DROP DATABASE`, multi-statement scripts, etc.). Unlike
+    /// [`raw_execute`](Self::raw_execute), which routes through
+    /// `prepare_cached`, this method sends the statement directly via
+    /// `batch_execute` and accepts no bind parameters — the caller is
+    /// responsible for ensuring the SQL contains no user-supplied values that
+    /// need escaping.
+    ///
+    /// Returns `Ok(())` on success.
+    ///
+    /// # When to use
+    ///
+    /// - DDL that Postgres refuses to prepare (`CREATE ROLE`, `ALTER SYSTEM`,
+    ///   session-management statements that must run as simple queries).
+    /// - Tests and migrations that issue a single, trusted DDL string with no
+    ///   runtime values.
+    ///
+    /// For parameterised DML prefer [`raw_execute`](Self::raw_execute).
+    pub async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError> {
+        self.batch_execute(sql).await
+    }
+
+    /// Set the active tenant ID for this context by issuing
+    /// `set_config('app.tenant_id', $1, true)`.
+    ///
+    /// This activates Row Level Security policies that use
+    /// `current_setting('app.tenant_id')` as the tenant discriminator. After
+    /// this call returns `Ok`, `self.tenant_set` is `true` so caller code can
+    /// assert the precondition before performing tenant-scoped queries.
+    ///
+    /// # Important: use inside `atomic()`
+    ///
+    /// `set_config(…, true)` is the transactional form of `SET LOCAL` — the
+    /// GUC is scoped to the **current transaction** and resets when the
+    /// transaction commits or rolls back. On a pool-backed context without an
+    /// open transaction, the GUC change is immediately effective but only
+    /// lasts for the duration of the single statement, then the connection
+    /// returns to the pool with the GUC cleared.
+    ///
+    /// The correct production pattern is:
+    ///
+    /// ```ignore
+    /// atomic(&pool, |ctx| async move {
+    ///     ctx.set_tenant("42").await?;
+    ///     // All queries inside atomic() now see the tenant-scoped rows.
+    ///     let posts = TenantPost::objects().fetch_all(ctx).await?;
+    ///     Ok(posts)
+    /// }).await?
+    /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `tenant_id` — The tenant identifier as a string. For `BIGINT` tenant
+    ///   keys the RLS policy casts the GUC value to the appropriate type
+    ///   (e.g. `current_setting('app.tenant_id', true)::bigint`), so any
+    ///   string that Postgres can cast to the column type is valid here.
+    pub async fn set_tenant(&mut self, tenant_id: &str) -> Result<(), DjogiError> {
+        // `set_config(name, value, is_local)` is the function-form of
+        // `SET LOCAL` when `is_local = true`. Using a parameterised query via
+        // `$1` lets the driver handle quoting; embedding the value directly
+        // into SQL would require manual escaping and violates the no-interpolation
+        // policy on user-supplied data.
+        self.execute(
+            "SELECT set_config('app.tenant_id', $1, true)",
+            &[&tenant_id],
+        )
+        .await?;
+        self.tenant_set = true;
+        Ok(())
     }
 }
 
