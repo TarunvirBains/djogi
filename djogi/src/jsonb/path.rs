@@ -137,23 +137,53 @@ impl<M, V> JsonbPathRef<M, V> {
 }
 
 /// Returns the Postgres SQL type cast suffix for `V`, or `None` for `String`
-/// (text extraction already produces text — no cast needed).
+/// and `&str` (text extraction already produces text — no cast needed).
 ///
-/// The map is a sorted const slice; matching is exact case-insensitive
-/// lookup via `type_name::<V>()`. Only the types Djogi ships with are
-/// covered; unknown types default to no cast, which means the value is
-/// compared as text.
+/// Matching uses `std::any::type_name::<V>()`. Primitive types (`i16`,
+/// `i32`, `f32`, `bool`, …) return their short form. Types from external
+/// crates return fully-qualified paths (`time::Date`, `uuid::Uuid`,
+/// `rust_decimal::Decimal`). All known `IntoFilterValue` implementors are
+/// explicitly mapped; an unknown type falls through to `None` (compared
+/// as text).
+///
+/// Every `IntoFilterValue` implementor must appear in this table. If a
+/// new implementor is added to `query::field` without a corresponding
+/// cast arm here, JSONB path comparisons for that type will silently
+/// use text comparison on the Postgres side.
 pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
-    // Plain-English rule: known numeric / temporal types gain an explicit
-    // Postgres-side cast so comparisons work correctly. Strings need none.
+    // Plain-English rule: known numeric / temporal / UUID types gain an
+    // explicit Postgres-side cast so comparisons work correctly. Strings
+    // need none — text extraction already yields TEXT.
     match type_name {
-        "i16" | "i32" => Some("::int"),
-        "i64" => Some("::bigint"),
+        // Integer types — Postgres cast names match the SQL standard.
+        "i16" => Some("::int2"),
+        "i32" => Some("::int4"),
+        "i64" => Some("::int8"),
+        // Floating-point types.
         "f32" => Some("::float4"),
         "f64" => Some("::float8"),
-        "bool" => Some("::bool"),
+        // Boolean.
+        "bool" => Some("::boolean"),
+        // Temporal types — `type_name` returns the short crate::module path.
         "time::OffsetDateTime" | "OffsetDateTime" => Some("::timestamptz"),
-        _ => None, // String / &str / unknown — leave as text
+        "time::Date" | "Date" => Some("::date"),
+        // UUID — applies to both uuid::Uuid directly and djogi's RanjId,
+        // which is a newtype over uuid::Uuid with the same wire format.
+        "uuid::Uuid" | "Uuid" => Some("::uuid"),
+        // djogi::types::HeerId is a 64-bit integer on the wire.
+        // type_name returns the fully-qualified path as seen from inside djogi.
+        "djogi::types::HeerId" | "heeranjid::HeerId" => Some("::int8"),
+        // djogi::types::RanjId is a UUID on the wire.
+        "djogi::types::RanjId" | "heeranjid::RanjId" => Some("::uuid"),
+        // rust_decimal::Decimal — stored as NUMERIC in Postgres.
+        "rust_decimal::Decimal" | "Decimal" => Some("::numeric"),
+        // alloc::string::String / &str — text extraction already yields TEXT,
+        // no cast needed. Both spellings are listed defensively.
+        "alloc::string::String" | "String" | "&str" | "str" => None,
+        // Unknown type — fall back to no cast (text comparison). Callers
+        // who hit this branch for a type that genuinely needs a cast will
+        // observe wrong results; the correct fix is to add a new arm above.
+        _ => None,
     }
 }
 
@@ -169,6 +199,11 @@ pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
 /// The last segment always uses `->>'seg'` (text extraction); every prior
 /// segment uses `->'seg'` (object navigation). The entire expression is
 /// parenthesised before the cast is appended.
+///
+/// Production SQL emission now happens inside `emit_jsonb_path_leaf` in
+/// `query::sql` (which also handles `parent_table` qualification). This
+/// function is kept for unit-test assertions on the SQL shape.
+#[cfg(test)]
 pub(crate) fn build_path_sql(
     column: &'static str,
     path: &'static str,
@@ -199,18 +234,32 @@ pub(crate) fn build_path_sql(
 }
 
 /// Newtype condition variant for JSONB path comparisons. Stores the
-/// pre-built SQL expression fragment (which is already trusted — built only
-/// from validated identifiers) and the comparison operator + bound value.
+/// structural components of the path expression so the SQL emitter can
+/// qualify the column reference with a parent table name when rendering
+/// inside a `SELECT ... LEFT JOIN` context.
 ///
 /// Stored in [`Condition::JsonbPath`].
+///
+/// # Why structured, not pre-rendered
+///
+/// If the expression SQL (`(col->'a'->>'b')::int`) were pre-rendered at
+/// `JsonbPathRef` construction time (inside the filter closure), the
+/// column name would be bare — `col` not `parent.col`. Inside a joined
+/// query (`build_select_joined`) Postgres raises `42702 column reference
+/// "col" is ambiguous` when a bare column name also appears on the
+/// joined child. Storing the parts and rendering in the emitter lets
+/// `emit_jsonb_path_leaf` qualify the column consistently with every
+/// other `emit_leaf` arm.
 #[derive(Debug, Clone)]
 pub struct JsonbPathLeaf {
-    /// Pre-rendered SQL expression, e.g. `(col->'a'->>'b')::int`.
-    ///
-    /// Constructed only by `JsonbPathRef::build_leaf_condition`, which
-    /// validates each segment before building the string. The emitter
-    /// pushes this directly via `acc.push_sql`.
-    pub expr_sql: String,
+    /// JSONB column name — a `&'static str` validated by `JsonbPathRef::new`.
+    pub column: &'static str,
+    /// Dotted path string, e.g. `"engine.cylinders"`. Each segment was
+    /// validated by [`validate_dotted_path`] before storage.
+    pub path: &'static str,
+    /// Optional Postgres cast suffix, e.g. `"::int4"`. `None` for string
+    /// and other text-compatible types.
+    pub cast: Option<&'static str>,
     /// The comparison operator.
     pub op: crate::query::condition::LookupOp,
     /// The bound value.
@@ -222,12 +271,9 @@ pub struct JsonbPathLeaf {
 use crate::query::field::IntoFilterValue;
 
 impl<M: Model, V: IntoFilterValue + 'static> JsonbPathRef<M, V> {
-    /// Build the SQL expression string for this path reference, with the
-    /// appropriate type cast for `V`.
-    fn expr_sql(self) -> String {
-        let type_name = std::any::type_name::<V>();
-        let cast = sql_cast_for_type(type_name);
-        build_path_sql(self.column, self.path, cast)
+    /// Return the Postgres cast suffix for `V` based on `type_name::<V>()`.
+    fn cast_for_v() -> Option<&'static str> {
+        sql_cast_for_type(std::any::type_name::<V>())
     }
 
     fn leaf_condition(
@@ -236,7 +282,9 @@ impl<M: Model, V: IntoFilterValue + 'static> JsonbPathRef<M, V> {
         value: FilterValue,
     ) -> Condition {
         Condition::JsonbPath(JsonbPathLeaf {
-            expr_sql: self.expr_sql(),
+            column: self.column,
+            path: self.path,
+            cast: Self::cast_for_v(),
             op,
             value,
         })
@@ -392,23 +440,101 @@ mod tests {
         assert_eq!(sql, "(data->'a'->'b'->>'c')");
     }
 
+    // ── sql_cast_for_type — full matrix coverage ─────────────────────────
+    //
+    // Every IntoFilterValue implementor must appear in this table with the
+    // correct Postgres cast. These tests prove the table is complete and the
+    // cast strings are correct. type_name::<V>() returns the form used by the
+    // real call site; tests use the same string forms to be faithful.
+
+    #[test]
+    fn sql_cast_for_i16() {
+        assert_eq!(sql_cast_for_type("i16"), Some("::int2"));
+    }
+
     #[test]
     fn sql_cast_for_i32() {
-        assert_eq!(sql_cast_for_type("i32"), Some("::int"));
+        assert_eq!(sql_cast_for_type("i32"), Some("::int4"));
     }
 
     #[test]
     fn sql_cast_for_i64() {
-        assert_eq!(sql_cast_for_type("i64"), Some("::bigint"));
+        assert_eq!(sql_cast_for_type("i64"), Some("::int8"));
     }
 
     #[test]
-    fn sql_cast_for_string_is_none() {
-        assert_eq!(sql_cast_for_type("String"), None);
+    fn sql_cast_for_f32() {
+        assert_eq!(sql_cast_for_type("f32"), Some("::float4"));
+    }
+
+    #[test]
+    fn sql_cast_for_f64() {
+        assert_eq!(sql_cast_for_type("f64"), Some("::float8"));
     }
 
     #[test]
     fn sql_cast_for_bool() {
-        assert_eq!(sql_cast_for_type("bool"), Some("::bool"));
+        assert_eq!(sql_cast_for_type("bool"), Some("::boolean"));
+    }
+
+    #[test]
+    fn sql_cast_for_offset_datetime() {
+        assert_eq!(
+            sql_cast_for_type("time::OffsetDateTime"),
+            Some("::timestamptz")
+        );
+        assert_eq!(sql_cast_for_type("OffsetDateTime"), Some("::timestamptz"));
+    }
+
+    #[test]
+    fn sql_cast_for_date() {
+        assert_eq!(sql_cast_for_type("time::Date"), Some("::date"));
+        assert_eq!(sql_cast_for_type("Date"), Some("::date"));
+    }
+
+    #[test]
+    fn sql_cast_for_uuid() {
+        assert_eq!(sql_cast_for_type("uuid::Uuid"), Some("::uuid"));
+        assert_eq!(sql_cast_for_type("Uuid"), Some("::uuid"));
+    }
+
+    #[test]
+    fn sql_cast_for_heer_id() {
+        assert_eq!(sql_cast_for_type("djogi::types::HeerId"), Some("::int8"));
+        assert_eq!(sql_cast_for_type("heeranjid::HeerId"), Some("::int8"));
+    }
+
+    #[test]
+    fn sql_cast_for_ranj_id() {
+        assert_eq!(sql_cast_for_type("djogi::types::RanjId"), Some("::uuid"));
+        assert_eq!(sql_cast_for_type("heeranjid::RanjId"), Some("::uuid"));
+    }
+
+    #[test]
+    fn sql_cast_for_decimal() {
+        assert_eq!(
+            sql_cast_for_type("rust_decimal::Decimal"),
+            Some("::numeric")
+        );
+        assert_eq!(sql_cast_for_type("Decimal"), Some("::numeric"));
+    }
+
+    #[test]
+    fn sql_cast_for_string_is_none() {
+        // alloc::string::String is what type_name::<String>() returns in Rust.
+        assert_eq!(sql_cast_for_type("alloc::string::String"), None);
+        // Bare "String" also covered for robustness.
+        assert_eq!(sql_cast_for_type("String"), None);
+    }
+
+    #[test]
+    fn sql_cast_for_str_ref_is_none() {
+        assert_eq!(sql_cast_for_type("&str"), None);
+        assert_eq!(sql_cast_for_type("str"), None);
+    }
+
+    #[test]
+    fn sql_cast_for_unknown_is_none() {
+        assert_eq!(sql_cast_for_type("some::unknown::Type"), None);
     }
 }

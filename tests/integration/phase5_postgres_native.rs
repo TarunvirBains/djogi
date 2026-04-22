@@ -589,9 +589,9 @@ async fn vehicle_status_enum_descriptor_registered(_ctx: djogi::DjogiContext) {
 /// The typed schema portion of the `specs` JSONB column.
 /// Unknown fields (absent from this struct) are preserved in `Jsonb::extra`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-struct PostSpec {
-    engine_cylinders: i32,
-    brand: String,
+pub struct PostSpec {
+    pub engine_cylinders: i32,
+    pub brand: String,
 }
 
 /// A Post model with array and JSONB columns.
@@ -908,4 +908,230 @@ async fn jsonb_preserves_unknown_fields(mut ctx: djogi::DjogiContext) {
     // We already tested the typed split above; this just confirms the DB value
     // is intact and the `Jsonb<Value>` ToSql/FromSql round-trip works.
     let _ = specs; // silence unused warning — the interesting assertion is above.
+}
+
+// ---------------------------------------------------------------------------
+// Fix 3 — typed Jsonb<T> round-trip through create/save/get
+// ---------------------------------------------------------------------------
+//
+// The previous `jsonb_preserves_unknown_fields` test used manual
+// `serde_json::from_str` + `to_value` on a `Jsonb<PostSpec>` but never
+// called `post.save(&mut ctx)`. The postgres-types ToSql/FromSql impls for
+// `Jsonb<T>` were therefore untested at the model CRUD level.
+//
+// These tests use `TypedPost` (specs: Jsonb<PostSpec>) to exercise the
+// full create→reload→mutate→save→reload round-trip with unknown-key
+// preservation across two saves.
+
+/// A post model with a *typed* JSONB column — `specs: Jsonb<PostSpec>`.
+///
+/// This model is deliberately separate from `Post` (which uses
+/// `Jsonb<serde_json::Value>`) so changes to the Fix 3 tests do not
+/// disturb the existing Task 5 tests.
+#[model(table = "typed_posts")]
+#[derive(Debug, Clone)]
+pub struct TypedPost {
+    pub title: String,
+    pub specs: Option<Jsonb<PostSpec>>,
+}
+
+async fn setup_typed_posts(ctx: &mut djogi::DjogiContext) {
+    setup_phase5(ctx).await;
+    const TYPED_POSTS_DDL: &str = include_str!("migrations/phase5/005_typed_posts.sql");
+    ctx.raw_execute(TYPED_POSTS_DDL, &[])
+        .await
+        .expect("apply 005_typed_posts.sql");
+}
+
+/// Create a TypedPost whose `specs` JSON contains both known fields
+/// (`engine_cylinders`, `brand`) and unknown fields (`experimental`,
+/// `legacy_field`). Reload via `get()`, assert the typed data is correct and
+/// the extra keys are captured, then mutate `engine_cylinders`, `save()`,
+/// reload again, and verify the unknown keys survived both round-trips.
+///
+/// This test exercises:
+/// 1. `Jsonb<PostSpec>` ToSql impl (via `create()`).
+/// 2. `Jsonb<PostSpec>` FromSql impl (via RETURNING + `get()`).
+/// 3. Unknown-field preservation across create + save.
+/// 4. Typed data mutation persisting through `save()`.
+#[djogi::djogi_test]
+async fn typed_jsonb_round_trip_preserves_unknown_fields(mut ctx: djogi::DjogiContext) {
+    setup_typed_posts(&mut ctx).await;
+
+    // Deserialize from the full JSON string so the unknown fields (`experimental`,
+    // `legacy_field`) land in `extra`. Using `Jsonb::new(PostSpec {...})` would
+    // construct an empty `extra` map because `Jsonb::new` is the typed-only path.
+    let specs_with_extra: Jsonb<PostSpec> = serde_json::from_str(
+        r#"{"engine_cylinders":4,"brand":"TestBrand","experimental":true,"legacy_field":99}"#,
+    )
+    .expect("deserialize Jsonb<PostSpec> with extra keys");
+
+    // Create the post — ToSql must serialise both the typed data and extra fields.
+    let mut post = TypedPost::create(
+        &mut ctx,
+        TypedPost {
+            title: "Typed JSONB Test".to_string(),
+            specs: Some(specs_with_extra),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create typed post");
+
+    // RETURNING-based rehydration — FromSql must split known vs unknown keys.
+    {
+        let s = post
+            .specs
+            .as_ref()
+            .expect("specs after create must be Some");
+        assert_eq!(
+            s.data.engine_cylinders, 4,
+            "typed data cylinders after create"
+        );
+        assert_eq!(s.data.brand, "TestBrand", "typed data brand after create");
+        assert_eq!(s.extra().len(), 2, "two extra keys after create");
+        assert!(
+            s.extra().contains_key("experimental"),
+            "extra has 'experimental'"
+        );
+        assert!(
+            s.extra().contains_key("legacy_field"),
+            "extra has 'legacy_field'"
+        );
+    }
+
+    // Reload via get() — second FromSql path.
+    let reloaded = TypedPost::get(&mut ctx, post.id)
+        .await
+        .expect("get typed post");
+    {
+        let s = reloaded
+            .specs
+            .as_ref()
+            .expect("specs after get must be Some");
+        assert_eq!(s.data.engine_cylinders, 4);
+        assert_eq!(s.data.brand, "TestBrand");
+        assert_eq!(
+            s.extra().len(),
+            2,
+            "extra keys must survive get() round-trip"
+        );
+        assert!(s.extra().contains_key("experimental"));
+        assert!(s.extra().contains_key("legacy_field"));
+    }
+
+    // Mutate the typed data — bump cylinders from 4 to 8.
+    if let Some(s) = post.specs.as_mut() {
+        s.data.engine_cylinders = 8;
+    }
+
+    // save() — ToSql must serialise mutated typed data AND preserve extra keys.
+    post.save(&mut ctx).await.expect("save typed post");
+
+    // After save(), RETURNING rehydrates — assert mutated data + preserved extra.
+    {
+        let s = post.specs.as_ref().expect("specs after save must be Some");
+        assert_eq!(
+            s.data.engine_cylinders, 8,
+            "mutated cylinders must persist through save()"
+        );
+        assert_eq!(s.data.brand, "TestBrand", "brand must survive save()");
+        assert_eq!(s.extra().len(), 2, "extra keys must survive first save()");
+        assert!(
+            s.extra().contains_key("experimental"),
+            "'experimental' must survive first save()"
+        );
+        assert!(
+            s.extra().contains_key("legacy_field"),
+            "'legacy_field' must survive first save()"
+        );
+    }
+
+    // Final reload to prove DB has the right state (not just in-memory).
+    let final_reloaded = TypedPost::get(&mut ctx, post.id)
+        .await
+        .expect("final get typed post");
+    {
+        let s = final_reloaded
+            .specs
+            .as_ref()
+            .expect("specs after final get must be Some");
+        assert_eq!(
+            s.data.engine_cylinders, 8,
+            "DB must have cylinders=8 after save()"
+        );
+        assert_eq!(
+            s.extra().len(),
+            2,
+            "extra keys must survive second DB round-trip"
+        );
+        assert!(
+            s.extra().contains_key("experimental"),
+            "'experimental' survives second round-trip"
+        );
+        assert!(
+            s.extra().contains_key("legacy_field"),
+            "'legacy_field' survives second round-trip"
+        );
+    }
+}
+
+/// Verify that a JSONB path filter (`path::<i32>`) correctly applies the
+/// `::int4` cast so numeric comparisons work. This specifically targets
+/// the previously broken cast matrix: `i32` now maps to `::int4` instead
+/// of the missing mapping that caused silent text comparison.
+///
+/// Also verifies the correct cast for `i16` and `bool` while reusing the
+/// same table setup.
+#[djogi::djogi_test]
+async fn jsonb_path_cast_matrix_i32_filter_correct(mut ctx: djogi::DjogiContext) {
+    setup_typed_posts(&mut ctx).await;
+
+    // Insert two posts: one with cylinders=8, one with cylinders=2.
+    // The filter `engine_cylinders > 4` must match only the first.
+    let specs_8: Jsonb<PostSpec> =
+        serde_json::from_str(r#"{"engine_cylinders":8,"brand":"V8"}"#).expect("parse specs_8");
+
+    let specs_2: Jsonb<PostSpec> =
+        serde_json::from_str(r#"{"engine_cylinders":2,"brand":"Eco"}"#).expect("parse specs_2");
+
+    let post_8 = TypedPost::create(
+        &mut ctx,
+        TypedPost {
+            title: "V8 Engine".to_string(),
+            specs: Some(specs_8),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create v8 typed post");
+
+    let post_2 = TypedPost::create(
+        &mut ctx,
+        TypedPost {
+            title: "Eco Engine".to_string(),
+            specs: Some(specs_2),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create eco typed post");
+
+    // Filter: specs.engine_cylinders > 4 (requires ::int4 cast for correct
+    // numeric comparison — text comparison of "8" > "4" would also pass but
+    // "12" > "4" would fail as text while passing as integer).
+    let found = TypedPost::objects()
+        .filter(|f| f.specs().path::<i32>("engine_cylinders").gt(4))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("jsonb path i32 filter");
+
+    assert!(
+        found.iter().any(|p| p.id == post_8.id),
+        "post with cylinders=8 must appear when filtering engine_cylinders > 4"
+    );
+    assert!(
+        !found.iter().any(|p| p.id == post_2.id),
+        "post with cylinders=2 must NOT appear when filtering engine_cylinders > 4"
+    );
 }

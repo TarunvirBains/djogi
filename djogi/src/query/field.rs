@@ -351,6 +351,11 @@ impl IntoFilterValue for crate::RanjId {
         FilterValue::RanjId(self)
     }
 }
+impl IntoFilterValue for rust_decimal::Decimal {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Decimal(self)
+    }
+}
 
 // ── Generic lookup methods (any V: IntoFilterValue) ───────────────────────
 

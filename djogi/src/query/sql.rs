@@ -467,60 +467,107 @@ pub(crate) fn emit_condition(
         }
         // ── JSONB flat-path condition (Phase 5 Task 5) ───────────────────
         //
-        // The `expr_sql` field is pre-rendered from validated identifiers by
-        // `JsonbPathRef::new` — safe to push as raw SQL. The comparison
-        // operator and value follow the same leaf-emission patterns as the
-        // standard `emit_leaf` arms.
+        // `JsonbPathLeaf` stores the column + path + cast as structured
+        // parts so the emitter can qualify the column reference with the
+        // parent table name in joined-query contexts (same pattern as
+        // `emit_leaf`'s `push_col` helper). SQL is rendered here at
+        // emit time, never at condition-tree construction time.
         Condition::JsonbPath(leaf) => {
-            emit_jsonb_path_leaf(acc, leaf);
+            emit_jsonb_path_leaf(acc, leaf, parent_table);
         }
     }
 }
 
 /// Emit a [`crate::jsonb::path::JsonbPathLeaf`] — `(col->...'key')::cast op $n`.
 ///
-/// The `expr_sql` field is already a fully-formed SQL LHS expression built
-/// from validated identifiers. The RHS follows the same operator emission as
-/// [`emit_leaf`].
-fn emit_jsonb_path_leaf(acc: &mut SqlAccumulator, leaf: crate::jsonb::path::JsonbPathLeaf) {
+/// SQL is rendered at emit time from the structured `column`, `path`, and
+/// `cast` fields rather than from a pre-rendered string. This lets the
+/// emitter qualify the column with the parent table name when inside a
+/// joined query (same `{table}.{column}` prefix logic as [`emit_leaf`]).
+///
+/// When `parent_table` is `Some(table)`, the emitted expression is
+/// `(table.col->'a'->>'b')::cast` — the Postgres JSONB navigation
+/// operators apply to the `table.col` expression, so parenthesisation
+/// wraps the qualified column reference correctly.
+fn emit_jsonb_path_leaf(
+    acc: &mut SqlAccumulator,
+    leaf: crate::jsonb::path::JsonbPathLeaf,
+    parent_table: Option<&'static str>,
+) {
     use LookupOp::{Eq, Gt, Gte, In, IsNotNull, IsNull, Lt, Lte, Neq};
+
+    /// Build the LHS expression from structured parts — `(col->'a'->>'b')::cast`.
+    /// When `parent_table` is Some, the column reference is `{table}.{col}`.
+    fn build_lhs(
+        acc: &mut SqlAccumulator,
+        column: &'static str,
+        path: &'static str,
+        cast: Option<&'static str>,
+        parent_table: Option<&'static str>,
+    ) {
+        let segments: Vec<&str> = path.split('.').collect();
+        acc.push_sql("(");
+        if let Some(table) = parent_table {
+            acc.push_sql(table);
+            acc.push_sql(".");
+        }
+        acc.push_sql(column);
+        for (i, seg) in segments.iter().enumerate() {
+            if i == segments.len() - 1 {
+                // Last segment: text extraction operator.
+                acc.push_sql("->>'");
+                acc.push_sql(seg);
+                acc.push_sql("'");
+            } else {
+                // Intermediate segment: object navigation operator.
+                acc.push_sql("->'");
+                acc.push_sql(seg);
+                acc.push_sql("'");
+            }
+        }
+        acc.push_sql(")");
+        if let Some(c) = cast {
+            acc.push_sql(c);
+        }
+    }
+
     match leaf.op {
         Eq => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" = ");
             push_filter_value(acc, leaf.value);
         }
         Neq => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" <> ");
             push_filter_value(acc, leaf.value);
         }
         Gt => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" > ");
             push_filter_value(acc, leaf.value);
         }
         Gte => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" >= ");
             push_filter_value(acc, leaf.value);
         }
         Lt => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" < ");
             push_filter_value(acc, leaf.value);
         }
         Lte => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" <= ");
             push_filter_value(acc, leaf.value);
         }
         IsNull => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" IS NULL");
         }
         IsNotNull => {
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" IS NOT NULL");
         }
         In => {
@@ -532,7 +579,7 @@ fn emit_jsonb_path_leaf(acc: &mut SqlAccumulator, leaf: crate::jsonb::path::Json
                 acc.push_sql("FALSE");
                 return;
             }
-            acc.push_sql(&leaf.expr_sql);
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" IN (");
             for (i, v) in list.into_iter().enumerate() {
                 if i > 0 {
