@@ -49,6 +49,8 @@ pub mod error;
 pub mod expr;
 pub mod fts;
 pub mod fts_query;
+#[cfg(feature = "spatial")]
+pub mod geo;
 pub(crate) mod ident;
 pub mod jsonb;
 pub mod model;
@@ -129,9 +131,14 @@ pub use descriptor::{
     EnumDescriptor, FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor,
     PartitionSpec, PkType,
 };
+// Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
+// the symbol does not appear in default-feature builds or `cargo doc` output
+// when PostGIS support is not requested.
 pub use djogi_macros::{
     DjogiEnum, JsonbSchema, many_to_many, reverse_one_to_many, reverse_one_to_one,
 };
+#[cfg(feature = "spatial")]
+pub use geo::GeoPoint;
 pub use jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
 pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
@@ -204,4 +211,7 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
+    // Spatial primitive — gated behind the `spatial` feature flag.
+    #[cfg(feature = "spatial")]
+    pub use crate::geo::GeoPoint;
 }

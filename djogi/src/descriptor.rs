@@ -144,12 +144,185 @@ pub enum IndexType {
 /// composite / non-BTree indexes that the migration differ turns into
 /// `CREATE INDEX` statements. An empty slice — the Phase 1 default — means
 /// "only the implicit PK and per-field `#[field(index)]` indexes".
-#[derive(Debug, Clone)]
+///
+/// # Phase 6 migration-policy fields
+///
+/// Two fields were added in Phase 6 to carry DDL-emission intent directly in
+/// the descriptor rather than having Phase 7 reverse-engineer intent from
+/// type names:
+///
+/// - `requires_out_of_transaction` — when `true`, the migration emitter must
+///   run the index DDL outside any implicit transaction wrapper (i.e.
+///   `CREATE INDEX CONCURRENTLY`). GiST indexes on large tables typically
+///   need this. Non-spatial indexes default to `false`.
+///
+/// - `extension_dependency` — names a required Postgres extension (e.g.
+///   `"postgis"`) that must be present before the index DDL runs. The
+///   migration emitter inserts a `CREATE EXTENSION IF NOT EXISTS <ext>`
+///   guard before the index statement when this is `Some`. Non-spatial
+///   indexes default to `None`.
+///
+/// Use [`IndexSpec::simple`] to construct non-spatial indexes without listing
+/// these two fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSpec {
     pub name: &'static str,
     pub columns: &'static [&'static str],
     pub unique: bool,
     pub index_type: IndexType,
+    /// When `true`, the migration emitter must place this index DDL outside
+    /// any implicit transaction (e.g. `CREATE INDEX CONCURRENTLY`). Set to
+    /// `true` for GiST indexes on PostGIS `GEOGRAPHY` columns.
+    pub requires_out_of_transaction: bool,
+    /// Postgres extension name (e.g. `"postgis"`) that must be installed
+    /// before this index can be created. `None` for standard BTree / GIN / …
+    /// indexes that have no extension dependency.
+    pub extension_dependency: Option<&'static str>,
+}
+
+impl IndexSpec {
+    /// Backward-compatible constructor for non-spatial indexes.
+    ///
+    /// Defaults `requires_out_of_transaction = false` and
+    /// `extension_dependency = None` so call sites that predated Phase 6 can
+    /// remain on the 4-argument shape without listing the two new fields.
+    ///
+    /// This constructor is `const` so it can be used in `const` contexts and
+    /// in `&[IndexSpec::simple(...)]` literal arrays.
+    pub const fn simple(
+        name: &'static str,
+        columns: &'static [&'static str],
+        unique: bool,
+        index_type: IndexType,
+    ) -> Self {
+        Self {
+            name,
+            columns,
+            unique,
+            index_type,
+            requires_out_of_transaction: false,
+            extension_dependency: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PkType,
+        migration_shape::MigrationShape,
+    };
+
+    #[test]
+    fn simple_constructor_defaults_policy_fields_to_benign() {
+        let spec = IndexSpec::simple("idx", &["col"], false, IndexType::BTree);
+        assert!(
+            !spec.requires_out_of_transaction,
+            "simple() must default requires_out_of_transaction to false"
+        );
+        assert_eq!(
+            spec.extension_dependency, None,
+            "simple() must default extension_dependency to None"
+        );
+        // Spot-check that the positional fields were forwarded correctly.
+        assert_eq!(spec.name, "idx");
+        assert_eq!(spec.columns, &["col"]);
+        assert!(!spec.unique);
+        assert_eq!(spec.index_type, IndexType::BTree);
+    }
+
+    /// Construct a minimal `ModelDescriptor` by hand and verify that
+    /// `MigrationShape::from_descriptor` produces sensible column shapes for
+    /// the framework-injected fields plus one user field.
+    ///
+    /// Hand-constructing a `ModelDescriptor` is feasible here because all
+    /// fields are `&'static …` slices or options that can be satisfied with
+    /// `'static` literals.  This unit test keeps the helper covered even
+    /// without relying on `#[model]`-emitted data.
+    #[test]
+    fn migration_shape_from_minimal_descriptor() {
+        use super::super::relation::{OnDelete, RelationKind};
+
+        static FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                name: "id",
+                sql_type: FieldSqlType::BigInt,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            },
+            FieldDescriptor {
+                name: "label",
+                sql_type: FieldSqlType::Text,
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            },
+        ];
+
+        // Suppress unused-import warnings from the wildcard bring-in above —
+        // `OnDelete` and `RelationKind` are imported because the `use` block
+        // is required to satisfy the FieldDescriptor struct literal, even
+        // though neither variant is used in the literal values.
+        let _ = (OnDelete::Restrict, RelationKind::ForeignKey);
+
+        let desc = ModelDescriptor {
+            type_name: "Minimal",
+            table_name: "minimals",
+            pk_type: PkType::HeerId,
+            fields: FIELDS,
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: &[],
+            is_through: false,
+            fts: None,
+        };
+
+        let shape = MigrationShape::from_descriptor(&desc);
+
+        assert_eq!(shape.table_name, "minimals");
+        assert!(
+            shape.required_extensions.is_empty(),
+            "no Geography fields → no required extensions"
+        );
+        assert!(
+            shape.indexes.is_empty(),
+            "empty IndexSpec slice → no IndexShape entries"
+        );
+
+        // Two columns in descriptor order.
+        assert_eq!(shape.columns.len(), 2);
+        assert_eq!(shape.columns[0].name, "id");
+        assert_eq!(shape.columns[0].sql_type_text, "BIGINT");
+        assert!(shape.columns[0].not_null);
+        assert_eq!(shape.columns[1].name, "label");
+        assert_eq!(shape.columns[1].sql_type_text, "TEXT");
+        assert!(shape.columns[1].not_null);
+    }
 }
 
 /// Metadata for a single model field.
@@ -345,7 +518,239 @@ pub struct ModelDescriptor {
     pub fts: Option<FtsDescriptor>,
 }
 
+impl ModelDescriptor {
+    /// The primary key column name for this model.
+    ///
+    /// Returns `Some("id")` for the three standard PK types (`HeerId`,
+    /// `RanjId`, `Serial`) and `None` for `pk = "none"` models. `Composite`
+    /// PKs are uncommon; this method returns the first column in the composite
+    /// list on the assumption that it is the most natural tiebreak candidate.
+    ///
+    /// Used by [`crate::query::order::OrderExpr::spatial_distance_with_pk_tiebreak`]
+    /// to capture the PK column at `order_by_distance` construction time.
+    pub fn pk_column(&self) -> Option<&'static str> {
+        match &self.pk_type {
+            PkType::HeerId | PkType::RanjId | PkType::Serial => Some("id"),
+            PkType::None => None,
+            PkType::Composite(cols) => cols.first().copied(),
+        }
+    }
+
+    /// Derive the migration-SQL intent implied by this descriptor.
+    ///
+    /// Returns a [`migration_shape::MigrationShape`] that captures every
+    /// DDL decision the descriptor encodes — column SQL types, index DDL
+    /// (including `CONCURRENTLY` placement for out-of-transaction indexes),
+    /// and the set of Postgres extensions that must be present.
+    ///
+    /// This is a **contract helper**, not a runtime path.  Phase 7 will
+    /// subsume it by emitting the same shape's content as actual migration
+    /// SQL files.  Until then, contract tests assert against this structure
+    /// to prove the descriptor encodes enough information for a downstream
+    /// emitter to produce correct DDL without type-name inference.
+    ///
+    /// Visibility is `pub` so feature-gated integration tests can call it;
+    /// Phase 7 may narrow it back to `pub(crate)` once the emitter owns this
+    /// responsibility.
+    pub fn migration_shape(&self) -> migration_shape::MigrationShape {
+        migration_shape::MigrationShape::from_descriptor(self)
+    }
+}
+
 inventory::collect!(ModelDescriptor);
+
+/// Contract-validation helper that maps a [`ModelDescriptor`] to the DDL
+/// intent it implies.
+///
+/// # Why this module exists
+///
+/// Phase 7 will emit actual `.sql` migration files.  Before Phase 7 lands,
+/// this module proves the descriptor already encodes *all* information the
+/// emitter will need: column SQL types (including PostGIS `GEOGRAPHY`),
+/// per-index CONCURRENTLY placement, and required Postgres extensions.
+/// Contract tests assert against [`MigrationShape`] values constructed from
+/// macro-emitted `ModelDescriptor`s.
+///
+/// # Placement decision
+///
+/// The content is under 150 lines so it lives as an in-file submodule of
+/// `descriptor.rs` rather than a sibling `descriptor/migration_shape.rs`
+/// file.  This avoids a directory-split refactor and keeps the contract
+/// helper adjacent to the types it describes.
+pub mod migration_shape {
+    use std::collections::BTreeSet;
+
+    use super::{FieldSqlType, IndexType, ModelDescriptor};
+
+    // -----------------------------------------------------------------------
+    // Public types
+    // -----------------------------------------------------------------------
+
+    /// The migration-SQL intent implied by a [`ModelDescriptor`].
+    ///
+    /// T6 contract helper.  Phase 7 will subsume this by emitting the same
+    /// structure's contents as actual DDL files.  Until then,
+    /// `MigrationShape` is the typed proof that the descriptor encodes
+    /// enough information for a downstream emitter to produce correct
+    /// migration SQL without type-name inference.
+    #[derive(Debug, Clone)]
+    pub struct MigrationShape {
+        /// The Postgres table name (`ModelDescriptor::table_name`).
+        pub table_name: &'static str,
+        /// One entry per descriptor field, in descriptor order.
+        pub columns: Vec<ColumnShape>,
+        /// One entry per `IndexSpec` in `ModelDescriptor::indexes`.
+        pub indexes: Vec<IndexShape>,
+        /// Postgres extensions that must be installed before this table's
+        /// DDL runs.  Collected from:
+        /// - every `IndexSpec::extension_dependency` that is `Some`
+        /// - every field whose `sql_type` is `FieldSqlType::Geography`
+        ///   (even if no index exists — the column itself requires PostGIS)
+        pub required_extensions: BTreeSet<&'static str>,
+    }
+
+    /// DDL-relevant metadata for a single column.
+    #[derive(Debug, Clone)]
+    pub struct ColumnShape {
+        /// Column name from `FieldDescriptor::name`.
+        pub name: &'static str,
+        /// SQL type string produced by `FieldSqlType`'s `Display` impl.
+        ///
+        /// Case matches the `Display` impl exactly:
+        /// - Standard types are uppercased (`"TEXT"`, `"BIGINT"`, `"TIMESTAMPTZ"`).
+        /// - `Geography { srid }` is lowercase-prefixed:
+        ///   `"geography(Point, 4326)"`.
+        ///
+        /// The plan's prose example used `"GEOGRAPHY(Point, 4326)"` (uppercase
+        /// prefix) as an illustration.  The actual `Display` impl uses lowercase
+        /// `"geography(Point, 4326)"`.  Contract tests follow the Display impl —
+        /// keeping one canonical text path is more important than matching the
+        /// prose example's capitalisation.
+        pub sql_type_text: String,
+        /// `true` when `FieldDescriptor::nullable` is `false` (the column is
+        /// `NOT NULL` in SQL).
+        pub not_null: bool,
+    }
+
+    /// DDL-relevant metadata for a single index, plus the SQL the emitter
+    /// would produce.
+    #[derive(Debug, Clone)]
+    pub struct IndexShape {
+        /// Index name from `IndexSpec::name`.
+        pub name: &'static str,
+        /// Column list from `IndexSpec::columns`, converted to an owned `Vec`.
+        pub columns: Vec<&'static str>,
+        /// Whether the index is a `UNIQUE` constraint.
+        pub unique: bool,
+        /// Mirrors `IndexSpec::requires_out_of_transaction`.
+        /// When `true`, `sql_text` will contain `CONCURRENTLY`.
+        pub requires_out_of_transaction: bool,
+        /// Mirrors `IndexSpec::extension_dependency`.
+        pub extension_dependency: Option<&'static str>,
+        /// The `CREATE INDEX` statement the Phase 7 emitter would produce.
+        ///
+        /// Not executed in Phase 6 — this is the contract proof.
+        /// Index-type keyword is lowercase (`gist`, `gin`, `btree`, …).
+        pub sql_text: String,
+    }
+
+    // -----------------------------------------------------------------------
+    // Construction
+    // -----------------------------------------------------------------------
+
+    impl MigrationShape {
+        /// Walk a `ModelDescriptor` and produce the DDL intent it implies.
+        pub fn from_descriptor(desc: &ModelDescriptor) -> Self {
+            let table = desc.table_name;
+
+            // ── Columns ────────────────────────────────────────────────────
+            let columns: Vec<ColumnShape> = desc
+                .fields
+                .iter()
+                .map(|f| ColumnShape {
+                    name: f.name,
+                    sql_type_text: f.sql_type.to_string(),
+                    not_null: !f.nullable,
+                })
+                .collect();
+
+            // ── Required extensions from fields ────────────────────────────
+            let mut required_extensions: BTreeSet<&'static str> = BTreeSet::new();
+            for f in desc.fields {
+                if matches!(f.sql_type, FieldSqlType::Geography { .. }) {
+                    required_extensions.insert("postgis");
+                }
+            }
+
+            // ── Indexes ────────────────────────────────────────────────────
+            let indexes: Vec<IndexShape> = desc
+                .indexes
+                .iter()
+                .map(|spec| {
+                    // Collect extension dependencies from indexes too.
+                    if let Some(ext) = spec.extension_dependency {
+                        required_extensions.insert(ext);
+                    }
+
+                    let type_kw = index_type_keyword(spec.index_type);
+                    let cols_joined = spec.columns.join(",");
+
+                    let create_kw = if spec.unique {
+                        "CREATE UNIQUE INDEX"
+                    } else {
+                        "CREATE INDEX"
+                    };
+                    let concurrently = if spec.requires_out_of_transaction {
+                        " CONCURRENTLY"
+                    } else {
+                        ""
+                    };
+
+                    let sql_text = format!(
+                        "{create_kw}{concurrently} IF NOT EXISTS {name} ON {table} USING {type_kw}({cols_joined})",
+                        name = spec.name,
+                    );
+
+                    IndexShape {
+                        name: spec.name,
+                        columns: spec.columns.to_vec(),
+                        unique: spec.unique,
+                        requires_out_of_transaction: spec.requires_out_of_transaction,
+                        extension_dependency: spec.extension_dependency,
+                        sql_text,
+                    }
+                })
+                .collect();
+
+            MigrationShape {
+                table_name: table,
+                columns,
+                indexes,
+                required_extensions,
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    /// Map an `IndexType` to its lowercase Postgres keyword.
+    ///
+    /// No `Display` impl is added to `IndexType` itself because the index
+    /// keyword (`"gist"`) is a DDL-emission concern, not a general display
+    /// concern.  This helper is local to the migration-shape module.
+    fn index_type_keyword(t: IndexType) -> &'static str {
+        match t {
+            IndexType::BTree => "btree",
+            IndexType::Gist => "gist",
+            IndexType::Gin => "gin",
+            IndexType::Hash => "hash",
+            IndexType::Spgist => "spgist",
+            IndexType::Brin => "brin",
+        }
+    }
+}
 
 /// Full descriptor for a registered Postgres enum type — collected via `inventory::submit!`.
 ///
