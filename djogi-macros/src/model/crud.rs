@@ -1454,6 +1454,19 @@ pub fn expand(
     // `tracing::warn!` routes through `::djogi::__private::tracing::warn!` —
     // same convention as `inventory`, `postgres_types`, and `futures` in this
     // file.
+    //
+    // ## `bulk_update_insecurely` bound divergence vs `bulk_update`
+    //
+    // `bulk_update` is a plain `async fn` where the compiler infers Send / 'ctx
+    // on the captured closure. `bulk_update_insecurely` cannot use `async fn`
+    // because `#[track_caller]` does not reflect the user's call site across
+    // an `async fn` boundary — we must use the sync-wrapper + `impl Future +
+    // Send + 'ctx` shape. That return type forces `F: Send + 'ctx` on the
+    // captured closure. `A` is only the return type of `F` and never lives
+    // inside the captured future, so it stays unbounded — matching
+    // `bulk_update`'s shape for that parameter. The emitted rustdoc spells
+    // out this rationale so users who hit an unexpected bound error at the
+    // call site can see why the two methods diverge.
     // -------------------------------------------------------------------------
     let model_name_str = name.to_string();
     let insecurely_impl = if model_attrs.tenant_key.is_some() {
@@ -1882,10 +1895,13 @@ pub fn expand(
                 ///
                 /// # Type-parameter bounds
                 ///
-                /// The `F: Send + 'ctx` and `A: 'ctx` bounds are tighter than
-                /// [`bulk_update`]'s because the sync-wrapper + `#[track_caller]`
-                /// pattern requires `impl Future + Send + 'ctx` as the return type.
-                /// This in turn requires every captured value to satisfy those bounds.
+                /// The `F: Send + 'ctx` bound is tighter than [`bulk_update`]'s
+                /// because the sync-wrapper + `#[track_caller]` pattern requires
+                /// `impl Future + Send + 'ctx` as the return type, which in turn
+                /// requires every value captured into the future to satisfy it.
+                /// `A` is only the return type of `F` — it never lives inside the
+                /// future — so it keeps its unbounded shape.
+                ///
                 /// `bulk_update`'s `async fn` surface infers bounds implicitly — we
                 /// cannot use `async fn` here because `#[track_caller]` would not
                 /// reflect the user's call site.

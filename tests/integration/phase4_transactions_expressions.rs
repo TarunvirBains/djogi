@@ -88,7 +88,10 @@ pub struct Entry {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Notification {
     pub kind: String,
-    #[field(outbox = "ignore")]
+    #[field(
+        outbox = "ignore",
+        rationale = "internal operator commentary — should never leak to downstream consumers"
+    )]
     pub internal_notes: Option<String>,
 }
 

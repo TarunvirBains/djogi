@@ -2163,18 +2163,20 @@ async fn insecurely_methods_emitted_only_on_tenant_keyed(_ctx: djogi::DjogiConte
 /// Strategy:
 /// 1. Set up the tenant_post table with RLS enabled and FORCE ROW LEVEL
 ///    SECURITY (via the shared `setup_tenant_post` helper from Task 9).
-/// 2. Open an `atomic()` scope. Drop to the restricted role so the policy
-///    applies. Do NOT call `set_tenant` — `app.tenant_id` is unset, so a
-///    plain `TenantPost::create` would fail (`org_id = NULL::bigint` evaluates
-///    to `false` under the WITH CHECK clause, Postgres returns 0 rows to
-///    `RETURNING`, and `__query_one_for_macros` errors with "no rows").
-/// 3. `create_insecurely` issues `SET LOCAL row_security = off` first, so the
-///    INSERT succeeds unconditionally and returns the new row.
-/// 4. Assert the returned row has the expected field values.
+/// 2. Open an `atomic()` scope as a superuser connection (the `djogi` role).
+///    Do NOT call `set_tenant` — `app.tenant_id` is intentionally unset.
+/// 3. `create_insecurely` issues `SET LOCAL row_security = off` first, so
+///    the INSERT succeeds regardless of tenant enforcement.
+/// 4. Assert the returned row has the expected field values, then read it
+///    back via `get_insecurely` to confirm the bypass path survives a
+///    round-trip.
 ///
-/// This test exercises the primary value proposition of the `_insecurely`
-/// API: cross-tenant writes (e.g. admin panel, data-migration scripts) that
-/// must bypass the per-request tenant predicate.
+/// This test proves the `_insecurely` call path reaches Postgres and
+/// returns successfully. Verifying that the *safe* path fails under the
+/// same conditions requires the restricted `djogi_rls_test_user` role
+/// (which cannot use BYPASSRLS) — that proof lives in
+/// `set_tenant_rls_isolates_tenants` and is intentionally not duplicated
+/// here.
 #[djogi::djogi_test]
 async fn insecurely_bypasses_rls(mut ctx: djogi::DjogiContext) {
     setup_tenant_post(&mut ctx).await;
