@@ -1,16 +1,17 @@
-// The `OrderExpr::Column` fields are sealed against downstream fabrication.
+// The `OrderExpr::Column` variant is sealed against downstream fabrication.
 //
-// `OrderExpr` is an enum (promoted from struct in Phase 6 T3). The
-// `Column` variant fields (`column`, `direction`, `nulls`) are
-// `pub(crate)`, so downstream code cannot construct an `OrderExpr`
-// with an arbitrary column string — the only public path is
-// `FieldRef::asc()` / `.desc()`, which uses the sealed `FieldRef::new`
-// constructor.
+// `OrderExpr` is a `#[non_exhaustive]` enum (promoted from struct in Phase 6 T3).
+// The `Column` variant carries the `#[non_exhaustive]` attribute, so attempting
+// to construct it with a struct expression from outside the crate fails with
+// E0639 ("cannot create non-exhaustive variant using struct expression").
 //
-// This test pins the seal: attempting to name the variant fields in
-// downstream construction must fail to compile, preventing callers
-// from injecting SQL-injection payloads directly into the column
-// emitter path (`SqlAccumulator::push_sql`).
+// This is the actual seal: `#[non_exhaustive]` on the variant, not `pub(crate)`
+// on the fields. The variant fields themselves are public so the emitter can
+// read them, but external construction is blocked by the non-exhaustive gate.
+//
+// This test pins the seal: attempting to name the variant in downstream
+// construction must fail to compile with E0639, preventing callers from
+// injecting SQL-injection payloads directly into the column emitter path.
 use djogi::prelude::*;
 use djogi::query::OrderExpr;
 
@@ -21,9 +22,11 @@ pub struct Post {
 }
 
 fn main() {
-    // This must not compile — `OrderExpr::Column.column`,
-    // `.direction`, and `.nulls` are `pub(crate)`, so naming them in
-    // downstream construction fails to resolve.
+    // This must not compile — `OrderExpr::Column` is `#[non_exhaustive]`,
+    // so constructing it with a struct expression from outside the crate
+    // fails with E0639 ("cannot create non-exhaustive variant using struct
+    // expression"). The variant fields themselves are public, but the
+    // non-exhaustive gate blocks external struct-literal construction.
     let _ = OrderExpr::Column {
         column: "title) OR 1=1 --",
         direction: djogi::query::Direction::Asc,

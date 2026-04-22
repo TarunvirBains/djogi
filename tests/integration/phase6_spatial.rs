@@ -210,7 +210,7 @@ fn queryset_with_spatial_filter_and_ordering_composes_without_panic() {
 //
 // These tests require a live PostgreSQL 18 instance with the PostGIS 3.x
 // extension installable by the test role. `setup_phase6` provisions the
-// extension and the `places` table inline via `ctx.raw_ddl` / `ctx.raw_execute`
+// extension and the `places` table inline via `ctx.raw_ddl`
 // (idempotent — safe to call at the start of every test).
 //
 // ## Tests

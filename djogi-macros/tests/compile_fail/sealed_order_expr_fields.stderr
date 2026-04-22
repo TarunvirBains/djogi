@@ -1,10 +1,10 @@
 error[E0639]: cannot create non-exhaustive variant using struct expression
-  --> tests/compile_fail/sealed_order_expr_fields.rs:27:13
+  --> tests/compile_fail/sealed_order_expr_fields.rs:30:13
    |
-27 |       let _ = OrderExpr::Column {
+30 |       let _ = OrderExpr::Column {
    |  _____________^
-28 | |         column: "title) OR 1=1 --",
-29 | |         direction: djogi::query::Direction::Asc,
-30 | |         nulls: djogi::query::NullsOrder::Default,
-31 | |     };
+31 | |         column: "title) OR 1=1 --",
+32 | |         direction: djogi::query::Direction::Asc,
+33 | |         nulls: djogi::query::NullsOrder::Default,
+34 | |     };
    | |_____^

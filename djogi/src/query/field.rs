@@ -903,10 +903,13 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     #[must_use = "order expressions are inert until passed to `order_by`"]
     pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
         // Get the PK column from the descriptor. For all standard PK types
-        // (HeerId, RanjId, Serial) this is "id". For pk = "none" models,
-        // there is no natural PK tiebreak — fall back to the column itself,
-        // which at least makes the ordering deterministic among equidistant
-        // rows that share all other field values (unlikely but not impossible).
+        // (HeerId, RanjId, Serial) this is "id".
+        //
+        // The `unwrap_or(self.column())` fallback path is defensive-only and
+        // unreachable from the public API: `FieldRef<M, GeoPoint>` requires
+        // `M: Model`, and `#[model(pk = "none")]` models do not receive a
+        // `Model` impl from the macro (only `pk = "none"` with no ordering
+        // semantics), so they cannot reach the spatial query surface at all.
         let pk_column = M::descriptor().pk_column().unwrap_or(self.column());
         crate::query::order::OrderExpr::spatial_distance_with_pk_tiebreak(
             self.column(),
