@@ -110,7 +110,7 @@ async fn setup_tenant_posts(ctx: &mut djogi::DjogiContext) {
 
 /// When `ctx.auth()` carries a `tenant_id`, the first CRUD/QuerySet
 /// operation on a tenant-keyed model automatically calls
-/// `ctx.ensure_tenant_set(tenant_id)` — the caller does not need to call
+/// `ctx.__ensure_tenant_set_for_macros(tenant_id)` — the caller does not need to call
 /// `ctx.set_tenant(...)` explicitly.
 ///
 /// This test does NOT call `set_tenant` anywhere. It attaches an
@@ -278,4 +278,85 @@ async fn auto_set_tenant_no_warn_with_no_tenant_scope_opt_out(mut ctx: djogi::Dj
         !logs_since_contain(since, "auth attached but tenant_id is None"),
         "cross-tenant warn must be suppressed when set_no_tenant_scope() is called"
     );
+}
+
+/// Regression guard for the Task 10 stale-tenant bug surfaced by the Codex
+/// stop-gate review of `f393a87`: when auth changes inside one `atomic()`
+/// scope from `org_a` to `org_b`, the second CRUD must run under `org_b` —
+/// not leak through under the sticky `SET LOCAL app.tenant_id = 'org_a'`
+/// from the first set.
+///
+/// The fix tracks `applied_tenant_id: Option<String>` on `DjogiContext` and
+/// re-issues `SET LOCAL` whenever the auto-wiring requests a different tid.
+/// Before the fix, `ensure_tenant_set` short-circuited on a plain
+/// `tenant_set: bool`, causing silent cross-tenant reads.
+/// Regression guard for the Task 10 stale-tenant bug surfaced by the Codex
+/// stop-gate review of `f393a87`. Proves the `applied_tenant_id` field
+/// transitions correctly through three scenarios:
+///
+/// 1. First `set_tenant("org_a")` populates `applied_tenant_id`.
+/// 2. A second `set_tenant("org_b")` updates it to `"org_b"` — so any
+///    subsequent `ensure_tenant_set("org_a")` would detect the mismatch
+///    and re-issue SET LOCAL.
+/// 3. `ensure_tenant_set(tid)` is a no-op when `tid == applied_tenant_id`
+///    (same-tenant short-circuit preserved after the fix).
+/// 4. `ensure_tenant_set(tid)` re-issues when `tid != applied_tenant_id`
+///    (the actual bug fix).
+///
+/// Before the fix, `ensure_tenant_set` short-circuited on a plain
+/// `tenant_set: bool`, causing step 4 to silently no-op and leaving
+/// `SET LOCAL app.tenant_id = 'org_a'` in force even after auth had
+/// changed to `org_b` — a cross-tenant read bug.
+///
+/// This is a mechanism-level assertion rather than an end-to-end RLS
+/// filtering assertion. Phase 5's `set_tenant_rls_isolates_tenants`
+/// test (`tests/integration/phase5_postgres_native.rs`) covers the
+/// RLS filtering path via a restricted service-account role; the fix
+/// here is at the `DjogiContext` state level, and the per-field
+/// inspection test captures it with zero extra setup.
+#[djogi::djogi_test]
+async fn ensure_tenant_set_switches_on_tid_change(mut ctx: djogi::DjogiContext) {
+    let pool = ctx.pool().expect("pool-backed").clone();
+    djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            // (1) First set.
+            tx.set_tenant("org_a").await?;
+            assert_eq!(
+                tx.applied_tenant_id(),
+                Some("org_a"),
+                "applied_tenant_id must be Some(\"org_a\") after first set_tenant",
+            );
+
+            // (2) Switch tenants via set_tenant directly.
+            tx.set_tenant("org_b").await?;
+            assert_eq!(
+                tx.applied_tenant_id(),
+                Some("org_b"),
+                "applied_tenant_id must update to \"org_b\" after a second set_tenant",
+            );
+
+            // (3) Same-tenant ensure is a no-op (preserves the short-circuit).
+            tx.__ensure_tenant_set_for_macros("org_b").await?;
+            assert_eq!(
+                tx.applied_tenant_id(),
+                Some("org_b"),
+                "ensure_tenant_set with the same tid must no-op",
+            );
+
+            // (4) Different-tenant ensure re-issues (THE bug fix). Before
+            // the fix, a `tenant_set: bool` short-circuit would leave
+            // applied_tenant stuck on \"org_b\" here.
+            tx.__ensure_tenant_set_for_macros("org_c").await?;
+            assert_eq!(
+                tx.applied_tenant_id(),
+                Some("org_c"),
+                "ensure_tenant_set must re-issue SET LOCAL when tid differs \
+                 (Task 10 fixup — stale-tenant leak regression)",
+            );
+
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
 }

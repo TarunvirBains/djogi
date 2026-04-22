@@ -109,16 +109,24 @@ impl DjogiContext {
         self.tenant_scope_suppressed = true;
     }
 
-    /// Internal helper: ensure the `app.tenant_id` GUC is set for the
-    /// current context. No-op if [`Self::tenant_set`] is already true;
-    /// otherwise delegates to the existing [`Self::set_tenant`] (Phase 5
-    /// Task 9).
+    /// Internal helper: ensure the `app.tenant_id` GUC matches `tenant_id`
+    /// for the current context. No-op when the currently-applied tenant id
+    /// already equals `tenant_id`; otherwise delegates to
+    /// [`Self::set_tenant`] to re-issue `SET LOCAL` (Phase 5 Task 9).
     ///
     /// Invoked by the auto-tenant integration (Phase 5.5 Task 10) before
     /// every CRUD dispatch on a tenant-keyed model when
     /// `ctx.auth().and_then(|a| a.tenant_id.as_ref())` is `Some`.
+    ///
+    /// **Why the per-tenant comparison, not a plain `tenant_set` bool:**
+    /// `SET LOCAL app.tenant_id = 'org_a'` persists for the lifetime of the
+    /// open transaction. If auth changes inside one `atomic()` scope from
+    /// `org_a` to `org_b`, a bool short-circuit would leave queries running
+    /// under `org_a` — a silent cross-tenant read. Comparing against
+    /// `applied_tenant_id` forces a re-issue of `SET LOCAL` whenever the
+    /// requested tid differs. (Task 10 fixup — Codex stop-gate of `f393a87`.)
     pub(crate) async fn ensure_tenant_set(&mut self, tenant_id: &str) -> Result<(), DjogiError> {
-        if self.tenant_set {
+        if self.applied_tenant_id.as_deref() == Some(tenant_id) {
             return Ok(());
         }
         self.set_tenant(tenant_id).await?;

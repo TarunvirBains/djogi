@@ -117,6 +117,19 @@ pub struct DjogiContext {
     /// [`DjogiContext::with_no_tenant_scope`] / [`Self::set_no_tenant_scope`].
     /// Phase 5.5 Task 11 addition.
     pub(crate) tenant_scope_suppressed: bool,
+
+    /// The tenant id currently applied to this context via `set_tenant` /
+    /// `ensure_tenant_set`, or `None` if no `SET LOCAL app.tenant_id = ...`
+    /// has been issued on the current transaction. Used by
+    /// [`Self::ensure_tenant_set`] to detect stale tenant scope: when auth
+    /// changes inside an `atomic()` scope from `org_a` to `org_b`, the
+    /// transaction-scoped GUC from the earlier `set_tenant("org_a")` is
+    /// still in effect, so we re-issue `SET LOCAL` whenever the requested
+    /// tid differs from the applied one. A plain `tenant_set: bool` short-
+    /// circuit was insufficient because it let stale-tenant reads land
+    /// silently across tenant boundaries inside one transaction (Phase 5.5
+    /// Task 10 fixup — Codex stop-gate review of `f393a87`).
+    pub(crate) applied_tenant_id: Option<String>,
 }
 
 /// Internal enum selecting the active context variant.
@@ -172,6 +185,7 @@ impl DjogiContext {
             tenant_set: false,
             auth: None,
             tenant_scope_suppressed: false,
+            applied_tenant_id: None,
         }
     }
 
@@ -190,6 +204,7 @@ impl DjogiContext {
             tenant_set: false,
             auth: None,
             tenant_scope_suppressed: false,
+            applied_tenant_id: None,
         }
     }
 
@@ -763,7 +778,20 @@ impl DjogiContext {
         )
         .await?;
         self.tenant_set = true;
+        self.applied_tenant_id = Some(tenant_id.to_owned());
         Ok(())
+    }
+
+    /// Return the tenant id currently applied to this context via
+    /// [`Self::set_tenant`] / [`Self::ensure_tenant_set`], or `None` if
+    /// no `SET LOCAL app.tenant_id = ...` has been issued in the current
+    /// transaction.
+    ///
+    /// Primarily useful for introspection and regression tests. Production
+    /// code typically relies on the auto-wiring (Phase 5.5 Task 10) to keep
+    /// `app.tenant_id` aligned with `ctx.auth().tenant_id` automatically.
+    pub fn applied_tenant_id(&self) -> Option<&str> {
+        self.applied_tenant_id.as_deref()
     }
 }
 
