@@ -218,6 +218,10 @@ async fn stream_drop_closes_cursor(mut ctx: djogi::DjogiContext) {
             // Consume the remaining rows to trigger CLOSE.
             while stream.next().await.is_some() {}
 
+            // Drop the stream so its `&mut ctx` borrow is released before
+            // reusing ctx for the pg_cursors query below.
+            drop(stream);
+
             // At this point the stream issued CLOSE. Verify via pg_cursors.
             // pg_cursors is a system view listing open cursors in this session.
             let open_cursors: i64 = ctx

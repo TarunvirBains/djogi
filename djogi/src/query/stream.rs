@@ -17,17 +17,21 @@
 //! transaction surfaces [`DjogiError::StreamOutsideTransaction`] at
 //! construction time.
 //!
-//! # Implementation: async-stream crate
+//! # Implementation: `futures::stream::unfold`
 //!
-//! Manual `Stream` impls that hold async futures inline face a persistent
-//! borrow-checker conflict: `tokio::pin!`-ing a future that borrows
-//! `self.conn` makes it impossible to also mutate `self.exhausted`,
-//! `self.buffer`, etc. in the same `poll_next` body.
+//! Manual `Stream` impls that build a fresh `next_row()` future on each
+//! `poll_next` do not work: the future is discarded on `Poll::Pending`, so
+//! no progress accumulates between polls and `FETCH` round trips never
+//! complete. Storing the future inside the stream struct works, but the
+//! future borrows `driver.conn` mutably and cannot be expressed safely
+//! without pinning scaffolding.
 //!
-//! The solution adopted here is the `async_stream::stream!` macro, which
-//! desugars into a state-machine generator with no borrow conflicts. The
-//! resulting `impl Stream` is `Send` because the closure captures only
-//! `Send` values (`PgConnection` reference, `String`, `VecDeque`).
+//! Instead, both streams wrap `futures::stream::unfold` over the `CursorDriver`.
+//! `unfold` internally stores the driver and the async state-machine
+//! generated from the closure, drives it to completion across polls, and
+//! yields items as they become ready. The outer `ModelCursorStream` /
+//! `RawCursorStream` own a pinned-boxed stream and forward `poll_next`
+//! through it.
 //!
 //! # Transaction invariant
 //!
@@ -162,44 +166,35 @@ impl<'ctx> CursorDriver<'ctx> {
 /// `PgConnection` for its entire lifetime; the context cannot be used for
 /// other operations while the stream is alive.
 pub struct ModelCursorStream<'ctx, T> {
-    driver: CursorDriver<'ctx>,
-    _marker: std::marker::PhantomData<T>,
+    inner: Pin<Box<dyn Stream<Item = Result<T, DjogiError>> + Send + 'ctx>>,
 }
 
-impl<'ctx, T> ModelCursorStream<'ctx, T> {
+impl<'ctx, T: FromPgRow + Send + 'ctx> ModelCursorStream<'ctx, T> {
     fn new(cursor_name: String, conn: &'ctx mut PgConnection, fetch_size: u32) -> Self {
+        let driver = CursorDriver::new(cursor_name, conn, fetch_size);
+        let inner = futures::stream::unfold(driver, |mut driver| async move {
+            match driver.next_row().await {
+                Some(Ok(row)) => Some((T::from_pg_row(&row), driver)),
+                Some(Err(e)) => Some((Err(e), driver)),
+                None => None,
+            }
+        });
         ModelCursorStream {
-            driver: CursorDriver::new(cursor_name, conn, fetch_size),
-            _marker: std::marker::PhantomData,
+            inner: Box::pin(inner),
         }
     }
 }
 
-impl<'ctx, T: FromPgRow + Unpin + Send> Stream for ModelCursorStream<'ctx, T> {
+impl<'ctx, T> Stream for ModelCursorStream<'ctx, T> {
     type Item = Result<T, DjogiError>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let fut = self.driver.next_row();
-        tokio::pin!(fut);
-        match fut.poll(cx) {
-            std::task::Poll::Ready(Some(Ok(row))) => {
-                std::task::Poll::Ready(Some(T::from_pg_row(&row)))
-            }
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
+        self.inner.as_mut().poll_next(cx)
     }
 }
-
-// SAFETY: `PgConnection` is `Send` (wraps `deadpool_postgres::Object`
-// which is `Send + !Sync`). `CursorDriver` holds `String`, `VecDeque<Row>`,
-// and `&'ctx mut PgConnection` — all `Send`. `PhantomData<T>` does not
-// add any non-Send data.
-unsafe impl<'ctx, T: Send> Send for ModelCursorStream<'ctx, T> {}
 
 // ---------------------------------------------------------------------------
 // RawCursorStream — untyped, yields Result<Row, DjogiError>
@@ -214,13 +209,17 @@ unsafe impl<'ctx, T: Send> Send for ModelCursorStream<'ctx, T> {}
 ///
 /// Same lifecycle and transaction constraints as [`ModelCursorStream`].
 pub struct RawCursorStream<'ctx> {
-    driver: CursorDriver<'ctx>,
+    inner: Pin<Box<dyn Stream<Item = Result<Row, DjogiError>> + Send + 'ctx>>,
 }
 
 impl<'ctx> RawCursorStream<'ctx> {
     fn new(cursor_name: String, conn: &'ctx mut PgConnection, fetch_size: u32) -> Self {
+        let driver = CursorDriver::new(cursor_name, conn, fetch_size);
+        let inner = futures::stream::unfold(driver, |mut driver| async move {
+            driver.next_row().await.map(|result| (result, driver))
+        });
         RawCursorStream {
-            driver: CursorDriver::new(cursor_name, conn, fetch_size),
+            inner: Box::pin(inner),
         }
     }
 }
@@ -232,17 +231,9 @@ impl<'ctx> Stream for RawCursorStream<'ctx> {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let fut = self.driver.next_row();
-        tokio::pin!(fut);
-        match fut.poll(cx) {
-            std::task::Poll::Ready(v) => std::task::Poll::Ready(v),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
+        self.inner.as_mut().poll_next(cx)
     }
 }
-
-// SAFETY: same reasoning as `ModelCursorStream`.
-unsafe impl<'ctx> Send for RawCursorStream<'ctx> {}
 
 // ---------------------------------------------------------------------------
 // Construction helpers — called from terminal.rs and context.rs
@@ -258,7 +249,7 @@ unsafe impl<'ctx> Send for RawCursorStream<'ctx> {}
 ///
 /// - [`DjogiError::StreamOutsideTransaction`] — context is pool-backed.
 /// - [`DjogiError::Db`] — `DECLARE` statement failed.
-pub async fn build_model_stream<'ctx, T: FromPgRow + Unpin + Send>(
+pub async fn build_model_stream<'ctx, T: FromPgRow + Send + 'ctx>(
     ctx: &'ctx mut DjogiContext,
     sql: &str,
     params: &[&(dyn ToSql + Sync)],
