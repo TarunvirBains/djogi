@@ -43,6 +43,8 @@ use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{Data, DeriveInput, Expr, ExprLit, Fields, Lit, Meta, MetaNameValue};
 
+use crate::case::RenameAll;
+
 // ---------------------------------------------------------------------------
 // Attribute containers
 // ---------------------------------------------------------------------------
@@ -53,118 +55,6 @@ struct EnumAttrs {
     name: String,
     /// Case conversion for all variants. Defaults to `snake_case`.
     rename_all: RenameAll,
-}
-
-/// Supported `rename_all` values.
-#[derive(Clone, Copy, Debug, Default)]
-enum RenameAll {
-    #[default]
-    SnakeCase,
-    ScreamingSnakeCase,
-    Lowercase,
-    Uppercase,
-    PascalCase,
-    CamelCase,
-    KebabCase,
-}
-
-impl RenameAll {
-    fn from_str(s: &str, span: Span) -> syn::Result<Self> {
-        match s {
-            "snake_case" => Ok(RenameAll::SnakeCase),
-            "SCREAMING_SNAKE_CASE" => Ok(RenameAll::ScreamingSnakeCase),
-            "lowercase" => Ok(RenameAll::Lowercase),
-            "UPPERCASE" => Ok(RenameAll::Uppercase),
-            "PascalCase" => Ok(RenameAll::PascalCase),
-            "camelCase" => Ok(RenameAll::CamelCase),
-            "kebab-case" => Ok(RenameAll::KebabCase),
-            other => Err(syn::Error::new(
-                span,
-                format!(
-                    "unknown rename_all value `{other}`; expected one of: \
-                     snake_case, SCREAMING_SNAKE_CASE, lowercase, UPPERCASE, \
-                     PascalCase, camelCase, kebab-case"
-                ),
-            )),
-        }
-    }
-
-    /// Apply case conversion to a Rust PascalCase variant name.
-    ///
-    /// Input is always a valid Rust identifier (ASCII, starts with a letter or underscore).
-    /// Non-ASCII input has undefined behavior — documented as out-of-scope per
-    /// `feedback_no_regex_in_djogi`; only ASCII Rust identifiers are processed.
-    fn apply(self, name: &str) -> String {
-        match self {
-            RenameAll::SnakeCase => pascal_to_snake(name),
-            RenameAll::ScreamingSnakeCase => pascal_to_snake(name)
-                .bytes()
-                .map(|b| {
-                    if b == b'_' {
-                        b'_'
-                    } else {
-                        b.to_ascii_uppercase()
-                    }
-                })
-                .map(char::from)
-                .collect(),
-            RenameAll::Lowercase => name.to_ascii_lowercase(),
-            RenameAll::Uppercase => name.to_ascii_uppercase(),
-            RenameAll::PascalCase => name.to_owned(),
-            RenameAll::CamelCase => pascal_to_camel(name),
-            RenameAll::KebabCase => pascal_to_snake(name).replace('_', "-"),
-        }
-    }
-}
-
-/// Convert `PascalCase` → `snake_case`.
-///
-/// Inserts `_` before each uppercase letter that is either preceded by a
-/// lowercase letter (standard camel boundary, e.g. `fooBar` → `foo_bar`) or
-/// followed by a lowercase letter (trailing letter of an all-caps run that
-/// starts a new word, e.g. `XMLParser` → `xml_parser`, `HTTPSProxy` →
-/// `https_proxy`).
-///
-/// The leading letter of the identifier never gets a leading underscore
-/// regardless of what comes after it.
-///
-/// Pure byte-level — no regex, no regex notation. Handles only ASCII as
-/// documented in [`RenameAll`].
-fn pascal_to_snake(name: &str) -> String {
-    let bytes = name.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len() + 4);
-    for (i, &b) in bytes.iter().enumerate() {
-        if b.is_ascii_uppercase() && i > 0 {
-            let prev_is_lower = bytes[i - 1].is_ascii_lowercase();
-            let next_is_lower = i + 1 < bytes.len() && bytes[i + 1].is_ascii_lowercase();
-            // Boundary rule: preceded by lowercase (standard camel boundary)
-            // OR followed by lowercase (trailing cap of an all-caps run that
-            // starts a new word). Both branches insert exactly one `_`.
-            if prev_is_lower || next_is_lower {
-                out.push(b'_');
-            }
-        }
-        if b.is_ascii_uppercase() {
-            out.push(b.to_ascii_lowercase());
-        } else {
-            out.push(b);
-        }
-    }
-    String::from_utf8(out).expect("ASCII-only conversion cannot produce invalid UTF-8")
-}
-
-/// Convert `PascalCase` → `camelCase`.
-///
-/// Lowercase only the first byte; leave the rest unchanged.
-fn pascal_to_camel(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => {
-            let lower: String = c.to_lowercase().collect();
-            lower + chars.as_str()
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,7 +344,7 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
 
 #[cfg(test)]
 mod case_conversion_tests {
-    use super::pascal_to_snake;
+    use crate::case::pascal_to_snake;
 
     #[test]
     fn single_word() {

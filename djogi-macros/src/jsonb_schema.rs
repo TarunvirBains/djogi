@@ -45,12 +45,19 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Error, Fields, Lit, Meta, Type};
 
+use crate::case::RenameAll;
+
 /// Entry point called from `djogi-macros/src/lib.rs`.
 pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
     let input: DeriveInput = syn::parse2(input)?;
     let name = &input.ident;
     let path_name = format_ident!("{}Path", name);
     let vis = &input.vis;
+
+    // ── Inspect container-level serde attrs ───────────────────────────────────
+    // `#[serde(rename_all = "camelCase")]` on the struct sets the default JSON
+    // key for every field that lacks a field-level `#[serde(rename = "...")]`.
+    let container_rename_all: Option<RenameAll> = inspect_serde_container(&input.attrs);
 
     // ── Validate input ────────────────────────────────────────────────────────
 
@@ -97,7 +104,11 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
             let field_ident = field.ident.as_ref()?;
             let field_ty = &field.ty;
 
-            // Determine the JSON key — either the Rust ident or a serde rename.
+            // Determine the JSON key — priority order:
+            //  1. Field-level `#[serde(rename = "X")]` → use X.
+            //  2. Container-level `#[serde(rename_all = "...")]` →
+            //     apply case conversion to the snake_case field ident.
+            //  3. Default → use the field ident as-is.
             let json_key: String = match inspect_serde_field(field) {
                 SerdeFieldInfo::Flatten => {
                     // Emit a span-precise compile error at the flatten attribute.
@@ -115,7 +126,15 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
                     return None;
                 }
                 SerdeFieldInfo::Rename(n) => n,
-                SerdeFieldInfo::NoRename => field_ident.to_string(),
+                SerdeFieldInfo::NoRename => {
+                    let ident_str = field_ident.to_string();
+                    if let Some(rule) = container_rename_all {
+                        // Field idents are snake_case — use apply_to_field.
+                        rule.apply_to_field(&ident_str)
+                    } else {
+                        ident_str
+                    }
+                }
             };
             // json_key_str is a &str borrow of json_key for quote! interpolation.
             let json_key_str: &str = &json_key;
@@ -301,6 +320,52 @@ fn emit_empty_impl(
 // Serde attribute inspection
 // ---------------------------------------------------------------------------
 
+/// Walk the struct's container-level attributes and extract the `rename_all`
+/// rule from `#[serde(rename_all = "...")]`, if present.
+///
+/// Returns `None` if no serde `rename_all` is set. Unknown or unparseable
+/// rename_all values are silently ignored (consistent with how serde handles
+/// them at the user level — the Rust compiler will surface an error when
+/// serde itself processes the attribute).
+///
+/// Only the first valid `rename_all` value wins; duplicates are ignored.
+fn inspect_serde_container(attrs: &[syn::Attribute]) -> Option<RenameAll> {
+    for attr in attrs {
+        if !attr.path().is_ident("serde") {
+            continue;
+        }
+        if let Some(rule) = extract_serde_rename_all(attr) {
+            return Some(rule);
+        }
+    }
+    None
+}
+
+/// Extract the `RenameAll` rule from a `#[serde(rename_all = "...")]`
+/// container attribute.
+///
+/// Returns `None` if the attribute does not contain `rename_all` or the value
+/// is not one of the seven supported rule strings.
+fn extract_serde_rename_all(attr: &syn::Attribute) -> Option<RenameAll> {
+    let Meta::List(list) = &attr.meta else {
+        return None;
+    };
+    let nested = list
+        .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated)
+        .ok()?;
+    for item in &nested {
+        if let Meta::NameValue(nv) = item
+            && nv.path.is_ident("rename_all")
+            && let syn::Expr::Lit(expr_lit) = &nv.value
+            && let Lit::Str(s) = &expr_lit.lit
+        {
+            // Use span() from the string literal so errors point at the value.
+            return RenameAll::from_str(&s.value(), s.span()).ok();
+        }
+    }
+    None
+}
+
 /// Outcome of inspecting a field's `#[serde(...)]` attributes.
 enum SerdeFieldInfo {
     /// No serde rename — use the Rust field identifier as-is.
@@ -470,6 +535,73 @@ mod tests {
     }
 
     // ── serde attribute inspection ─────────────────────────────────────────
+
+    // ── container-level serde inspection ──────────────────────────────────────
+
+    #[test]
+    fn inspect_serde_container_no_attr_returns_none() {
+        let attrs: Vec<syn::Attribute> = vec![];
+        assert!(inspect_serde_container(&attrs).is_none());
+    }
+
+    #[test]
+    fn inspect_serde_container_rename_all_camel_case() {
+        // Simulate `#[serde(rename_all = "camelCase")]` on the struct.
+        let attr: syn::Attribute = syn::parse_quote! { #[serde(rename_all = "camelCase")] };
+        let attrs = vec![attr];
+        let rule = inspect_serde_container(&attrs);
+        assert!(
+            rule.is_some(),
+            "camelCase rename_all must be detected at container level"
+        );
+        // Verify the rule applies correctly to a snake_case field name.
+        let result = rule.unwrap().apply_to_field("engine_type");
+        assert_eq!(result, "engineType");
+    }
+
+    #[test]
+    fn inspect_serde_container_rename_all_kebab_case() {
+        let attr: syn::Attribute = syn::parse_quote! { #[serde(rename_all = "kebab-case")] };
+        let attrs = vec![attr];
+        let rule = inspect_serde_container(&attrs);
+        assert!(rule.is_some());
+        assert_eq!(rule.unwrap().apply_to_field("engine_type"), "engine-type");
+    }
+
+    #[test]
+    fn inspect_serde_container_rename_all_screaming_snake() {
+        let attr: syn::Attribute =
+            syn::parse_quote! { #[serde(rename_all = "SCREAMING_SNAKE_CASE")] };
+        let attrs = vec![attr];
+        let rule = inspect_serde_container(&attrs);
+        assert!(rule.is_some());
+        assert_eq!(rule.unwrap().apply_to_field("engine_type"), "ENGINE_TYPE");
+    }
+
+    #[test]
+    fn inspect_serde_container_unknown_value_ignored() {
+        // An unknown rename_all value is silently ignored (returns None).
+        let attr: syn::Attribute = syn::parse_quote! { #[serde(rename_all = "not_a_rule")] };
+        let attrs = vec![attr];
+        assert!(inspect_serde_container(&attrs).is_none());
+    }
+
+    #[test]
+    fn extract_serde_rename_all_returns_rule() {
+        let attr: syn::Attribute = syn::parse_quote! { #[serde(rename_all = "snake_case")] };
+        let rule = extract_serde_rename_all(&attr);
+        assert!(rule.is_some());
+        // snake_case on a snake_case field is a no-op.
+        assert_eq!(rule.unwrap().apply_to_field("engine_type"), "engine_type");
+    }
+
+    #[test]
+    fn extract_serde_rename_all_none_when_absent() {
+        let attr: syn::Attribute = syn::parse_quote! { #[serde(skip)] };
+        assert!(extract_serde_rename_all(&attr).is_none());
+    }
+
+    // ── field-level serde inspection ──────────────────────────────────────────
 
     #[test]
     fn inspect_serde_field_no_attr_returns_no_rename() {

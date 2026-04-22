@@ -222,9 +222,12 @@ pub(crate) enum ExprNode {
     /// native duration type). Microseconds are faithful to `Duration`'s
     /// full sub-millisecond precision.
     ///
-    /// The microsecond count is clamped to `i64` range at construction
-    /// time (via `time::Duration::whole_microseconds() as i64`); values
-    /// outside that range are Postgres `INTERVAL` overflows anyway.
+    /// The microsecond count is saturating-clamped to `i64` range at
+    /// construction time (via [`super::literal::saturating_micros`]);
+    /// Durations outside that range encode as `i64::MAX` or `i64::MIN`
+    /// (~±292,277 years) rather than wrapping silently. Those extremes are
+    /// already Postgres `INTERVAL` overflows, so saturation is the correct
+    /// sentinel value.
     ///
     /// This variant is produced only by the `impl From<time::Duration> for
     /// Expr<time::Duration>` bridge in [`super::literal`]. User code that

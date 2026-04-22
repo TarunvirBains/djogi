@@ -14,6 +14,7 @@
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
+mod case;
 mod djogi_enum;
 mod ident;
 mod jsonb_schema;

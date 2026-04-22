@@ -296,11 +296,12 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
         ExprNode::IntervalLiteral { microseconds } => {
             // INTERVAL '{N} microseconds' — the full precision of
             // `time::Duration` as a Postgres interval literal. The
-            // microsecond count was clamped to i64 at ExprNode
-            // construction time (see `expr::node` doc). The formatted
-            // string consists solely of a decimal integer and the ASCII
-            // keyword "microseconds" — no user-controlled text reaches
-            // this arm, so pushing raw SQL is safe.
+            // microsecond count was saturating-clamped to i64 at ExprNode
+            // construction time via `expr::literal::saturating_micros`
+            // (Durations outside ±292,277 years encode as i64::MAX/MIN).
+            // The formatted string consists solely of a decimal integer and
+            // the ASCII keyword "microseconds" — no user-controlled text
+            // reaches this arm, so pushing raw SQL is safe.
             let literal = format!("INTERVAL '{microseconds} microseconds'");
             acc.push_sql(&literal);
         }

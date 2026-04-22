@@ -1664,3 +1664,145 @@ async fn interval_arithmetic_composes_in_where(mut ctx: djogi::DjogiContext) {
         "recent post must pass strict filter (created_at + 30d > tomorrow)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Fix 2 — container-level serde(rename_all) honored by JsonbSchema typed path
+// ---------------------------------------------------------------------------
+
+/// A JSONB schema struct with container-level `#[serde(rename_all = "camelCase")]`.
+///
+/// The on-disk JSON representation uses camelCase keys (`engineType`, `weightKg`).
+/// The typed path accessors must route `engine_type` → `engineType` and
+/// `weight_kg` → `weightKg` to match the actual on-disk keys.
+///
+/// This struct must NOT be confused with the existing `PostSpec` (no rename_all)
+/// or `VehicleDeepSpecs` (also no rename_all). It lives in a dedicated
+/// `camel_posts` table provisioned by `008_camel_posts.sql`.
+#[derive(djogi::JsonbSchema, Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CamelSpec {
+    pub engine_type: i32,
+    pub weight_kg: f32,
+}
+
+/// Model backed by `camel_posts`.
+#[model(table = "camel_posts")]
+#[derive(Debug, Clone)]
+pub struct CamelPost {
+    pub spec: Option<Jsonb<CamelSpec>>,
+}
+
+async fn setup_camel_posts(ctx: &mut djogi::DjogiContext) {
+    setup_phase5(ctx).await;
+    const DDL: &str = include_str!("migrations/phase5/008_camel_posts.sql");
+    ctx.raw_execute(DDL, &[])
+        .await
+        .expect("apply 008_camel_posts.sql");
+}
+
+/// Verify that the typed path for a `camelCase` rename_all struct routes to
+/// the correct JSON keys.
+///
+/// Strategy:
+/// 1. Insert a row with raw JSONB `{"engineType": 6, "weightKg": 1200.0}`.
+/// 2. Filter via the typed path using `.engine_type().eq(6)`.
+/// 3. Assert the row is found — if the path erroneously routes to
+///    `engine_type` (the Rust ident, not the JSON key), Postgres returns
+///    an empty result because no key named `engine_type` exists.
+#[djogi::djogi_test]
+async fn jsonb_typed_path_honors_container_rename_all(mut ctx: djogi::DjogiContext) {
+    setup_camel_posts(&mut ctx).await;
+
+    // Insert raw JSONB with camelCase keys to prove the macro routes correctly.
+    ctx.raw_execute(
+        "INSERT INTO camel_posts (id, created_at, updated_at, spec) \
+         VALUES (generate_id(), now(), now(), $1::jsonb)",
+        &[&serde_json::json!({"engineType": 6, "weightKg": 1200.0})],
+    )
+    .await
+    .expect("insert raw camelCase post");
+
+    // The typed path `engine_type` must emit `engineType` (the camelCase wire
+    // key), not `engine_type` (the Rust ident). Without container rename_all
+    // support this filter returns zero rows.
+    let posts = CamelPost::objects()
+        .filter(|f| f.spec().typed().engine_type().eq(6))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter by engine_type via typed camelCase path");
+
+    assert_eq!(
+        posts.len(),
+        1,
+        "typed path engine_type must route to JSON key 'engineType' and find the inserted row"
+    );
+
+    // Also verify weightKg path routes correctly.
+    let heavy = CamelPost::objects()
+        .filter(|f| f.spec().typed().weight_kg().gt(1000.0_f32))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter by weight_kg via typed camelCase path");
+
+    assert_eq!(
+        heavy.len(),
+        1,
+        "typed path weight_kg must route to JSON key 'weightKg'"
+    );
+}
+
+/// Verify that inserting a `CamelPost` via `create()` serialises to camelCase
+/// keys on the wire, and that a subsequent typed-path filter finds the row.
+///
+/// This test exercises the full round-trip: serde serialisation (camelCase
+/// keys in the JSON) + typed path routing (Rust idents → camelCase keys in SQL).
+#[djogi::djogi_test]
+async fn jsonb_camel_create_and_typed_path_roundtrip(mut ctx: djogi::DjogiContext) {
+    setup_camel_posts(&mut ctx).await;
+
+    // Create a CamelPost using the ORM — serde encodes as camelCase on the wire.
+    let spec = CamelSpec {
+        engine_type: 8,
+        weight_kg: 2000.0,
+    };
+    CamelPost::create(
+        &mut ctx,
+        CamelPost {
+            spec: Some(Jsonb::new(spec)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create CamelPost");
+
+    // Verify via typed path — must find the created row.
+    let found = CamelPost::objects()
+        .filter(|f| f.spec().typed().engine_type().gt(4))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("filter after create");
+
+    assert_eq!(
+        found.len(),
+        1,
+        "CamelPost created via ORM must be findable via typed camelCase path"
+    );
+
+    // Verify the on-disk JSON uses camelCase keys (not snake_case).
+    let raw_spec = ctx
+        .raw_scalar::<serde_json::Value>(
+            "SELECT spec FROM camel_posts WHERE id = $1",
+            &[&found[0].id.as_i64()],
+        )
+        .await
+        .expect("raw_scalar spec");
+
+    assert!(
+        raw_spec.get("engineType").is_some(),
+        "on-disk JSON must use 'engineType' key (camelCase), not 'engine_type'"
+    );
+    assert!(
+        raw_spec.get("engine_type").is_none(),
+        "on-disk JSON must NOT have 'engine_type' snake_case key"
+    );
+}
