@@ -820,6 +820,102 @@ impl<M: Model, T> FieldRef<M, Option<Jsonb<T>>> {
     }
 }
 
+// ── Spatial operators on GeoPoint fields (Phase 6 `spatial` feature) ────────
+//
+// Gated on `#[cfg(feature = "spatial")]`. Available only on
+// `FieldRef<M, GeoPoint>`, so calling `.within_km(...)` on a non-spatial
+// column yields a helpful "no method named `within_km`" compile error — the
+// type system is the documentation, same as the existing String-only lookup
+// methods above.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
+    /// Filter rows where this geography column is within `km` kilometers of
+    /// `center`.
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)` where:
+    ///
+    /// - `$lon` and `$lat` are the longitude and latitude of `center` bound
+    ///   as parameters.
+    /// - `$r` is `km * 1000.0` (the radius in meters) bound as a parameter.
+    ///
+    /// The radius is converted from kilometers to meters internally so the bind
+    /// type matches `ST_DWithin`'s `GEOGRAPHY` distance-in-meters signature.
+    ///
+    /// All three values flow through `push_bind` — no string interpolation of
+    /// user-supplied data.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Place::objects()
+    ///     .filter(|p| p.location().within_km(
+    ///         GeoPoint::new(37.7749, -122.4194).unwrap(),
+    ///         50.0,  // km
+    ///     ))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within_km(self, center: crate::geo::GeoPoint, km: f64) -> Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::Within {
+                field_column: self.column(),
+                center,
+                radius_meters: km * 1000.0,
+            },
+        )))
+    }
+
+    /// Order rows by ascending distance from `center`, with the model's primary
+    /// key appended as a deterministic tiebreaker.
+    ///
+    /// # Why the tiebreak?
+    ///
+    /// Without the tiebreak, equidistant rows return in arbitrary Postgres order
+    /// — flaky tests and inconsistent pagination cursors. The primary-key
+    /// tiebreak is always appended unconditionally. Callers who chain additional
+    /// `.order_by(...)` calls get their keys appended after the tiebreak.
+    ///
+    /// # SQL emission
+    ///
+    /// Emits two comma-separated ORDER BY terms:
+    /// ```sql
+    /// ST_Distance(<col>, ST_Point($lon, $lat)::geography) ASC, id ASC
+    /// ```
+    ///
+    /// `$lon` and `$lat` are bound as parameters. The `id` column name is
+    /// the model's primary key — captured from `M::descriptor().pk_column()`
+    /// at call time.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Place::objects()
+    ///     .order_by(|p| p.location().order_by_distance(
+    ///         GeoPoint::new(37.7749, -122.4194).unwrap()
+    ///     ))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "order expressions are inert until passed to `order_by`"]
+    pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
+        // Get the PK column from the descriptor. For all standard PK types
+        // (HeerId, RanjId, Serial) this is "id". For pk = "none" models,
+        // there is no natural PK tiebreak — fall back to the column itself,
+        // which at least makes the ordering deterministic among equidistant
+        // rows that share all other field values (unlikely but not impossible).
+        let pk_column = M::descriptor().pk_column().unwrap_or(self.column());
+        crate::query::order::OrderExpr::spatial_distance_with_pk_tiebreak(
+            self.column(),
+            center,
+            pk_column,
+        )
+    }
+}
+
 // ── Fluent combinators on Condition ───────────────────────────────────────
 //
 // `Condition::and(a, b)` / `::or(a, b)` are the associative constructors in

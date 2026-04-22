@@ -73,6 +73,8 @@ pub mod case;
 pub(crate) mod compare;
 pub(crate) mod literal;
 pub(crate) mod node;
+#[cfg(feature = "spatial")]
+pub(crate) mod spatial;
 pub(crate) mod sql;
 pub mod subquery;
 

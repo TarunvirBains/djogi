@@ -363,6 +363,14 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             acc.push_bind(query_text.clone());
             acc.push_sql("))");
         }
+
+        // ── Spatial (Phase 6 `spatial` feature) ─────────────────────────────
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(s) => {
+            // Delegate entirely to `SpatialExpr::emit`, which handles all
+            // bind-parameter placement for PostGIS functions.
+            s.emit(acc);
+        }
     }
 }
 

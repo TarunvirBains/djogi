@@ -1,4 +1,7 @@
-//! Phase 6 Task 2 integration tests — descriptor population for GeoPoint fields.
+//! Phase 6 integration tests — descriptor population (T2) and query-surface
+//! IR shape (T3).
+//!
+//! ## T2: Descriptor population for GeoPoint fields
 //!
 //! Verifies that the `#[derive(Model)]` / `#[model]` macro pair correctly
 //! populates the `ModelDescriptor` when a model declares a `GeoPoint` field:
@@ -13,10 +16,16 @@
 //! 4. `non_spatial_model_has_empty_indexes` — a plain non-spatial model has no
 //!    entries in `ModelDescriptor::indexes` (regression guard).
 //!
-//! All tests here are DB-free — they read static descriptor data that the
-//! `inventory::submit!` call produces at startup. No `DjogiContext` or live
-//! Postgres connection is required for T2 coverage. Live-PostGIS CRUD tests
-//! are T4's scope.
+//! ## T3: Spatial query-surface IR shape
+//!
+//! Verifies the Condition / OrderExpr routing without a live database:
+//!
+//! 5. `within_km_returns_condition_expr` — `within_km` returns `Condition::Expr`
+//!    for IR uniformity with the Phase 4 expression substrate.
+//! 6. `order_by_distance_returns_order_expr` — `order_by_distance` returns an
+//!    `OrderExpr` that the `order_by` closure accepts.
+//!
+//! All T2 and T3 tests are DB-free. Live-PostGIS CRUD tests are T4's scope.
 
 use djogi::prelude::*;
 
@@ -127,4 +136,70 @@ fn non_spatial_model_has_empty_indexes() {
         "non-spatial model must not have any IndexSpec entries; found: {:?}",
         desc.indexes
     );
+}
+
+// ---------------------------------------------------------------------------
+// T3: Spatial query-surface IR shape (DB-free)
+// ---------------------------------------------------------------------------
+
+/// `FieldRef<Place, GeoPoint>::within_km(center, km)` must return
+/// `Condition::Expr` so the spatial predicate routes through the Phase 4
+/// expression substrate rather than introducing a parallel `Condition::Spatial`
+/// arm. IR uniformity means spatial predicates compose with `filter`,
+/// `filter_expr`, `And`/`Or`, and correlated subqueries without special-casing
+/// in the condition emitter.
+#[cfg(feature = "spatial")]
+#[test]
+fn within_km_returns_condition_expr() {
+    let center = djogi::GeoPoint::new(37.7749, -122.4194).unwrap();
+    // Capture the Condition via the filter closure — the idiomatic API surface.
+    // The queryset is lazy; no DB call happens here.
+    let mut captured: Option<djogi::query::condition::Condition> = None;
+    let _qs = Place::objects().filter(|p| {
+        let cond = p.location().within_km(center, 5.0);
+        captured = Some(cond.clone());
+        cond
+    });
+    let cond = captured.unwrap();
+    assert!(
+        matches!(cond, djogi::query::condition::Condition::Expr(_)),
+        "within_km must return Condition::Expr for IR uniformity; got {cond:?}"
+    );
+}
+
+/// `FieldRef<Place, GeoPoint>::order_by_distance(center)` must return an
+/// `OrderExpr` that the `QuerySet::order_by` closure accepts.
+///
+/// The exact SQL shape (`ST_Distance(...) ASC, id ASC`) is tested in
+/// `djogi/src/expr/spatial.rs` and `djogi/src/query/order.rs` unit tests.
+/// Here we verify the type-level routing: the closure return type is accepted
+/// by `order_by` without a `.clone()` or `vec![...]` wrapper.
+#[cfg(feature = "spatial")]
+#[test]
+fn order_by_distance_returns_order_expr() {
+    let center = djogi::GeoPoint::new(37.7749, -122.4194).unwrap();
+    // `order_by_distance` produces an `OrderExpr` accepted by `order_by`.
+    // The queryset is lazy; no DB call happens here.
+    let _qs = Place::objects().order_by(|p| p.location().order_by_distance(center));
+    // If this compiles and doesn't panic, the OrderExpr routing is correct.
+}
+
+/// A complete `QuerySet` with both `within_km` filter and `order_by_distance`
+/// ordering must compile and produce a queryset without panicking.
+///
+/// This is the IR composition smoke test: it exercises the full path from
+/// `FieldRef` method → `Condition::Expr(ExprNode::Spatial)` → `QuerySet`
+/// accumulation. SQL text assertion is T4's scope (requires a live PostGIS
+/// instance for the full SELECT round-trip); here we verify the IR composes
+/// without panics.
+#[cfg(feature = "spatial")]
+#[test]
+fn queryset_with_spatial_filter_and_ordering_composes_without_panic() {
+    let center = djogi::GeoPoint::new(37.7749, -122.4194).unwrap();
+    // Neither filter nor order_by execute SQL — they are lazy accumulators.
+    let _qs = Place::objects()
+        .filter(|p| p.location().within_km(center, 50.0))
+        .order_by(|p| p.location().order_by_distance(center));
+    // Reaching this line means both methods type-checked and the queryset
+    // accumulated the condition and ordering without panicking.
 }

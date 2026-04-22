@@ -37,7 +37,6 @@ use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
 use crate::pg::decode::FromPgRow;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
-use crate::query::order::{Direction, NullsOrder};
 use crate::query::queryset::{DistinctMode, QuerySet};
 
 /// Escape LIKE/ILIKE wildcards (`%`, `_`, `\\`) so user input is treated
@@ -678,31 +677,10 @@ fn push_tail_qualified<T: Model>(
             if i > 0 {
                 acc.push_sql(", ");
             }
-            // Qualify the column under the parent table when
-            // select_related is active — same rationale as `push_col`
-            // inside `emit_leaf`.
-            if let Some(table) = parent_table {
-                acc.push_sql(table);
-                acc.push_sql(".");
-            }
-            acc.push_sql(o.column);
-            match o.direction {
-                Direction::Asc => {
-                    acc.push_sql(" ASC");
-                }
-                Direction::Desc => {
-                    acc.push_sql(" DESC");
-                }
-            }
-            match o.nulls {
-                NullsOrder::First => {
-                    acc.push_sql(" NULLS FIRST");
-                }
-                NullsOrder::Last => {
-                    acc.push_sql(" NULLS LAST");
-                }
-                NullsOrder::Default => {}
-            }
+            // Delegate to OrderExpr::emit — it handles both Column and
+            // (when the spatial feature is on) SpatialDistance variants.
+            // The table_qualifier threads through for select_related joins.
+            o.emit(acc, parent_table);
         }
     }
 
@@ -1057,31 +1035,14 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
                 }
                 acc.push_sql(c);
             }
-            // Append user ordering after the required prefix. Direction /
-            // nulls qualifiers only apply to user-supplied columns; the
-            // prepended distinct columns use Postgres default ordering
-            // (ASC NULLS LAST for most types), which is fine because the
-            // outer COUNT does not care about row order.
+            // Append user ordering after the required prefix. Delegate to
+            // OrderExpr::emit so Column and SpatialDistance variants both
+            // render correctly. No parent_table qualifier — this is a
+            // single-table subquery; the DISTINCT ON count path never uses
+            // select_related joins.
             for o in qs.ordering.iter() {
                 acc.push_sql(", ");
-                acc.push_sql(o.column);
-                match o.direction {
-                    Direction::Asc => {
-                        acc.push_sql(" ASC");
-                    }
-                    Direction::Desc => {
-                        acc.push_sql(" DESC");
-                    }
-                }
-                match o.nulls {
-                    NullsOrder::First => {
-                        acc.push_sql(" NULLS FIRST");
-                    }
-                    NullsOrder::Last => {
-                        acc.push_sql(" NULLS LAST");
-                    }
-                    NullsOrder::Default => {}
-                }
+                o.emit(&mut acc, None);
             }
             acc.push_sql(") AS sub");
             acc
@@ -1431,11 +1392,12 @@ mod tests {
 
     #[test]
     fn order_by_asc_nulls_last_emits_expected_tokens() {
-        let qs: QuerySet<Fake> = QuerySet::new().order_by(|_| crate::query::order::OrderExpr {
-            column: "title",
-            direction: Direction::Asc,
-            nulls: NullsOrder::Last,
-        });
+        let qs: QuerySet<Fake> =
+            QuerySet::new().order_by(|_| crate::query::order::OrderExpr::Column {
+                column: "title",
+                direction: crate::query::order::Direction::Asc,
+                nulls: crate::query::order::NullsOrder::Last,
+            });
         let acc = build_select(&qs);
         let sql = acc.sql();
         assert!(sql.contains("ORDER BY title ASC NULLS LAST"), "got: {sql}");
@@ -1525,11 +1487,12 @@ mod tests {
         // When the user provides ORDER BY on top of DISTINCT ON, the user
         // ordering is appended after the required prefix. Duplicate columns
         // are harmless in Postgres.
-        let mut qs: QuerySet<Fake> = QuerySet::new().order_by(|_| crate::query::order::OrderExpr {
-            column: "view_count",
-            direction: Direction::Desc,
-            nulls: NullsOrder::Last,
-        });
+        let mut qs: QuerySet<Fake> =
+            QuerySet::new().order_by(|_| crate::query::order::OrderExpr::Column {
+                column: "view_count",
+                direction: crate::query::order::Direction::Desc,
+                nulls: crate::query::order::NullsOrder::Last,
+            });
         qs.distinct = DistinctMode::On(vec!["title"]);
         let acc = build_count(&qs);
         let sql = acc.sql();
@@ -1778,11 +1741,12 @@ mod tests {
         // `.order_by(|f| f.created_at.asc())` on a joined queryset must
         // emit `ORDER BY fakes.created_at ASC` so Postgres does not
         // raise 42702 when the child also contributes `created_at`.
-        let mut qs: QuerySet<Fake> = QuerySet::new().order_by(|_| crate::query::order::OrderExpr {
-            column: "created_at",
-            direction: Direction::Asc,
-            nulls: NullsOrder::Default,
-        });
+        let mut qs: QuerySet<Fake> =
+            QuerySet::new().order_by(|_| crate::query::order::OrderExpr::Column {
+                column: "created_at",
+                direction: crate::query::order::Direction::Asc,
+                nulls: crate::query::order::NullsOrder::Default,
+            });
         qs.select_related_paths.push(owner_path());
         let acc = build_select_joined(&qs);
         let sql = acc.sql();

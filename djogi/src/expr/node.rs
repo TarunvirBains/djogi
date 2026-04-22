@@ -293,6 +293,22 @@ pub(crate) enum ExprNode {
         /// `INTERVAL '{microseconds} microseconds'`.
         microseconds: i64,
     },
+
+    // ── Spatial expressions (Phase 6 `spatial` feature) ─────────────────────
+    /// A spatial predicate or expression, delegating to
+    /// [`super::spatial::SpatialExpr`] for SQL emission.
+    ///
+    /// Gated on `#[cfg(feature = "spatial")]` so builds without the feature
+    /// never see any PostGIS references. The variant is only ever constructed
+    /// by [`crate::query::field::FieldRef<M, GeoPoint>::within_km`] (produces
+    /// `SpatialExpr::Within`, typed as `Expr<bool>`) or captured inside
+    /// [`crate::query::order::OrderExpr::SpatialDistance`] (uses
+    /// `SpatialExpr::Distance`, typed as `Expr<f64>`).
+    ///
+    /// `SpatialExpr` is `Clone + Debug`, so this variant does not break the
+    /// enum's own `#[derive(Debug, Clone)]`.
+    #[cfg(feature = "spatial")]
+    Spatial(crate::expr::spatial::SpatialExpr),
 }
 
 /// Internal subquery payload — the untyped counterpart to the typed

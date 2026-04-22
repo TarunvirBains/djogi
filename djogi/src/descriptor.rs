@@ -345,6 +345,25 @@ pub struct ModelDescriptor {
     pub fts: Option<FtsDescriptor>,
 }
 
+impl ModelDescriptor {
+    /// The primary key column name for this model.
+    ///
+    /// Returns `Some("id")` for the three standard PK types (`HeerId`,
+    /// `RanjId`, `Serial`) and `None` for `pk = "none"` models. `Composite`
+    /// PKs are uncommon; this method returns the first column in the composite
+    /// list on the assumption that it is the most natural tiebreak candidate.
+    ///
+    /// Used by [`crate::query::order::OrderExpr::spatial_distance_with_pk_tiebreak`]
+    /// to capture the PK column at `order_by_distance` construction time.
+    pub fn pk_column(&self) -> Option<&'static str> {
+        match &self.pk_type {
+            PkType::HeerId | PkType::RanjId | PkType::Serial => Some("id"),
+            PkType::None => None,
+            PkType::Composite(cols) => cols.first().copied(),
+        }
+    }
+}
+
 inventory::collect!(ModelDescriptor);
 
 /// Full descriptor for a registered Postgres enum type — collected via `inventory::submit!`.
