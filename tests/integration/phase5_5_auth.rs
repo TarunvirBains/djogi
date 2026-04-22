@@ -5,6 +5,16 @@
 //!
 //! Later Phase 5.5 tasks extend this file (Task 4 password_hash_round_trips,
 //! Task 10 auto_set_tenant_from_auth, Task 11 with_auth_insecurely_emits_warn).
+//!
+//! # Tracing log assertions (Task 11)
+//!
+//! Tests that assert on warn-log output install a `tracing_test` global
+//! subscriber inline (via `tracing_test::internal`) rather than via the
+//! `#[traced_test]` attribute macro. The reason: `#[djogi_test]` moves the
+//! test body into an inner function, so any `logs_contain` local injected by
+//! `#[traced_test]` into the outer function would be out of scope inside the
+//! inner body. The inline pattern avoids the double-wrapping conflict while
+//! still capturing all `tracing` events emitted during the test.
 
 use djogi::auth::AuthContext;
 use djogi::prelude::*;
@@ -158,4 +168,114 @@ async fn auto_set_tenant_no_op_when_tenant_id_none(mut ctx: djogi::DjogiContext)
     })
     .await
     .unwrap();
+}
+
+// ── Task 11: warn-log emission tests ─────────────────────────────────────────
+
+/// Helper: ensure the `tracing_test` global subscriber is installed and return
+/// a closure that checks whether any log line emitted after this call contains
+/// the given substring.
+///
+/// `tracing_test::internal::INITIALIZED` is a `Once` — safe to call from
+/// multiple test threads; subsequent calls are no-ops. The global buffer
+/// (`tracing_test::internal::global_buf()`) is append-only across the test
+/// binary run, so we snapshot its current length before the action under test
+/// and check only lines appended after the snapshot.
+fn init_log_capture() -> usize {
+    tracing_test::internal::INITIALIZED.call_once(|| {
+        let buf = tracing_test::internal::global_buf();
+        let mock_writer = tracing_test::internal::MockWriter::new(buf);
+        let subscriber = tracing_test::internal::get_subscriber(mock_writer, "trace");
+        // `set_global_default` on the `Dispatch` type sets it as the global
+        // default dispatcher. This may silently no-op if already installed.
+        tracing::dispatcher::set_global_default(subscriber).unwrap_or(()); // ignore if a default is already set
+    });
+    // Return the byte length of the buffer before the action under test so
+    // `logs_since` can scope the search to new output only.
+    tracing_test::internal::global_buf().lock().unwrap().len()
+}
+
+/// Return `true` if any line appended to the global log buffer since byte
+/// offset `since` contains `needle`.
+fn logs_since_contain(since: usize, needle: &str) -> bool {
+    let buf = tracing_test::internal::global_buf().lock().unwrap();
+    let text = std::str::from_utf8(&buf[since..]).unwrap_or("");
+    text.lines().any(|line| line.contains(needle))
+}
+
+/// `with_auth_insecurely` must emit a warn-level log that includes the string
+/// "auth guard bypassed via with_auth_insecurely".
+#[djogi::djogi_test]
+async fn with_auth_insecurely_emits_warn(mut ctx: djogi::DjogiContext) {
+    let since = init_log_capture();
+    let auth = AuthContext::new(HeerId::from_i64(1).unwrap());
+    let _ctx = ctx.with_auth_insecurely(auth);
+    assert!(
+        logs_since_contain(since, "auth guard bypassed via with_auth_insecurely"),
+        "expected warn log from with_auth_insecurely"
+    );
+}
+
+/// `set_auth_insecurely` must emit a warn-level log that includes the string
+/// "auth guard bypassed via set_auth_insecurely".
+#[djogi::djogi_test]
+async fn set_auth_insecurely_emits_warn(mut ctx: djogi::DjogiContext) {
+    let since = init_log_capture();
+    let auth = AuthContext::new(HeerId::from_i64(1).unwrap());
+    ctx.set_auth_insecurely(auth);
+    assert!(
+        logs_since_contain(since, "auth guard bypassed via set_auth_insecurely"),
+        "expected warn log from set_auth_insecurely"
+    );
+}
+
+/// When auth is present but `tenant_id` is `None` on a tenant-keyed model,
+/// `auto_set_tenant` must emit a warn-level log containing "auth attached but
+/// tenant_id is None". The tenant_set flag must remain `false`.
+#[djogi::djogi_test]
+async fn auto_set_tenant_warns_when_tenant_id_missing_on_tenant_keyed_model(
+    mut ctx: djogi::DjogiContext,
+) {
+    setup_tenant_posts(&mut ctx).await;
+
+    let pool = ctx.pool().expect("test ctx must be pool-backed").clone();
+    let since = init_log_capture();
+    djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            // Auth with no tenant_id on a tenant-keyed model — warn must fire.
+            tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()));
+            let _ = TenantPost::objects().fetch_all(tx).await?;
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+    assert!(
+        logs_since_contain(since, "auth attached but tenant_id is None"),
+        "expected cross-tenant warn log when tenant_id is None"
+    );
+}
+
+/// When `ctx.set_no_tenant_scope()` is called, the cross-tenant warn must be
+/// suppressed even when auth is present and `tenant_id` is `None`.
+#[djogi::djogi_test]
+async fn auto_set_tenant_no_warn_with_no_tenant_scope_opt_out(mut ctx: djogi::DjogiContext) {
+    setup_tenant_posts(&mut ctx).await;
+
+    let pool = ctx.pool().expect("test ctx must be pool-backed").clone();
+    let since = init_log_capture();
+    djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()));
+            tx.set_no_tenant_scope();
+            let _ = TenantPost::objects().fetch_all(tx).await?;
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+    assert!(
+        !logs_since_contain(since, "auth attached but tenant_id is None"),
+        "cross-tenant warn must be suppressed when set_no_tenant_scope() is called"
+    );
 }

@@ -476,31 +476,56 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
-    // Auto-tenant wiring (Phase 5.5 Task 10).
+    // Auto-tenant wiring (Phase 5.5 Task 10 + Task 11).
     //
     // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
     // `tenant_id`, this snippet calls `ctx.__ensure_tenant_set_for_macros`
     // (the public shim over `ensure_tenant_set`) before any SQL runs.
     //
+    // Task 11 extends this: when `auth` is present but `tenant_id` is `None`,
+    // a `tracing::warn!` fires (the "silent cross-tenant leak" footgun) unless
+    // `ctx.__tenant_scope_suppressed_for_macros()` is `true`. Callers that
+    // deliberately want cross-tenant queries call `ctx.with_no_tenant_scope()`
+    // or `ctx.set_no_tenant_scope()` to suppress the warn.
+    //
     // Borrow split: `ctx.auth()` borrows `ctx` immutably; we clone the
     // `String` before the immutable borrow drops so `ctx.ensure_tenant_set`
-    // can take `&mut ctx` without a simultaneous immutable borrow.
-    //
-    // The fallback form `let __djogi_tid = ...; if let Some(t) = __djogi_tid`
-    // is used instead of nested `if let` + `.clone()` inline to keep the
-    // emitted code readable and avoid lifetime-conflict edge cases on older
-    // RPITIT shapes.
+    // can take `&mut ctx` without a simultaneous immutable borrow. The
+    // `__djogi_auth_present` bool also captures the `is_some()` result
+    // before the clone so no second borrow is needed in the `None` arm.
     //
     // Path routing: bare `Option` paths are spelled `::std::option::Option::*`
     // per the `feedback_macro_path_routing` convention; temp bindings are
     // prefixed `__djogi_` to avoid colliding with user-chosen field names.
+    //
+    // Tracing path: `::tracing::warn!` is used bare here. The `tracing` crate
+    // is a workspace dependency of `djogi` and is re-exported via
+    // `::djogi::__private::tracing`. Macro-emitted code in user crates cannot
+    // reach `::tracing` directly unless the user added it, but
+    // `::djogi::__private::tracing` is always present. Match the existing
+    // `_insecurely` warn pattern in `context_ext.rs` which uses bare
+    // `tracing::warn!` inside the `djogi` crate. The macro emits
+    // `::djogi::__private::tracing::warn!` to be safe across user crates.
     // -------------------------------------------------------------------------
     let auto_set_tenant = if model_attrs.tenant_key.is_some() {
+        let model_name_str = table.as_str();
         quote! {
+            let __djogi_auth_present: bool = ctx.auth().is_some();
             let __djogi_tid: ::std::option::Option<::std::string::String> =
                 ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
-            if let ::std::option::Option::Some(__djogi_tid_str) = __djogi_tid {
-                ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+            match __djogi_tid {
+                ::std::option::Option::Some(__djogi_tid_str) => {
+                    ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+                }
+                ::std::option::Option::None => {
+                    if __djogi_auth_present && !ctx.__tenant_scope_suppressed_for_macros() {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            "auth attached but tenant_id is None on a tenant-keyed model; \
+                             queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
+                        );
+                    }
+                }
             }
         }
     } else {

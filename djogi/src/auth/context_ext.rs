@@ -81,6 +81,34 @@ impl DjogiContext {
         self.auth = Some(auth);
     }
 
+    /// Explicitly opt out of the "cross-tenant context" warn emitted when
+    /// `auth.tenant_id.is_none()` on a tenant-keyed model.
+    ///
+    /// Consuming builder form — use on a freshly-constructed `DjogiContext`:
+    ///
+    /// ```ignore
+    /// let ctx = DjogiContext::from_pool(pool).with_no_tenant_scope();
+    /// ```
+    ///
+    /// For `atomic(&pool, |ctx| ...)` closures where the closure has
+    /// `&mut DjogiContext`, use [`Self::set_no_tenant_scope`] instead.
+    ///
+    /// Intended for admin / batch / migration flows that legitimately want
+    /// queries to span tenants without a `tenant_id` attached. A plain
+    /// `.with_auth(AuthContext::new(uid))` on a tenant-keyed model without
+    /// this opt-out will emit a `tracing::warn!` on every CRUD / terminal
+    /// call — that warn is by design: bypass is always searchable.
+    pub fn with_no_tenant_scope(mut self) -> Self {
+        self.tenant_scope_suppressed = true;
+        self
+    }
+
+    /// Mutating form of [`Self::with_no_tenant_scope`] for use inside
+    /// `atomic(&pool, |ctx| ...)` closures.
+    pub fn set_no_tenant_scope(&mut self) {
+        self.tenant_scope_suppressed = true;
+    }
+
     /// Internal helper: ensure the `app.tenant_id` GUC is set for the
     /// current context. No-op if [`Self::tenant_set`] is already true;
     /// otherwise delegates to the existing [`Self::set_tenant`] (Phase 5

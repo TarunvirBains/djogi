@@ -66,6 +66,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 figment = { workspace = true, features = ["test"] }
 trybuild.workspace = true
 rust_decimal_macros.workspace = true
+tracing-test = "0.2"
 
 [[bin]]
 name = "djogi-outbox-relay"

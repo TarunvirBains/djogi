@@ -116,10 +116,21 @@ fn acc_into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + S
 /// - `ctx.auth().tenant_id` is `None` (auth present but no tenant scope).
 /// - `ctx.tenant_set` is already `true` (`ensure_tenant_set` short-circuits).
 pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
-    if T::descriptor().tenant_key.is_some() {
-        let tid: Option<String> = ctx.auth().and_then(|a| a.tenant_id.clone());
-        if let Some(tid) = tid {
-            ctx.ensure_tenant_set(&tid).await?;
+    if T::descriptor().tenant_key.is_none() {
+        return Ok(());
+    }
+    let auth_present = ctx.auth().is_some();
+    let tid: Option<String> = ctx.auth().and_then(|a| a.tenant_id.clone());
+    match tid {
+        Some(tid) => ctx.ensure_tenant_set(&tid).await?,
+        None => {
+            if auth_present && !ctx.__tenant_scope_suppressed_for_macros() {
+                tracing::warn!(
+                    model = std::any::type_name::<T>(),
+                    "auth attached but tenant_id is None on a tenant-keyed model; \
+                     queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
+                );
+            }
         }
     }
     Ok(())

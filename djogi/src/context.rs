@@ -111,6 +111,12 @@ pub struct DjogiContext {
     /// `with_auth_insecurely`. CRUD operations and QuerySet terminals that
     /// require an authenticated caller check this field via [`Self::auth`].
     pub(crate) auth: Option<AuthContext>,
+
+    /// When `true`, suppresses the "cross-tenant context" warn that fires
+    /// when `auth.tenant_id.is_none()` on a tenant-keyed model. Set via
+    /// [`DjogiContext::with_no_tenant_scope`] / [`Self::set_no_tenant_scope`].
+    /// Phase 5.5 Task 11 addition.
+    pub(crate) tenant_scope_suppressed: bool,
 }
 
 /// Internal enum selecting the active context variant.
@@ -165,6 +171,7 @@ impl DjogiContext {
             on_commit: Vec::new(),
             tenant_set: false,
             auth: None,
+            tenant_scope_suppressed: false,
         }
     }
 
@@ -182,6 +189,7 @@ impl DjogiContext {
             on_commit: Vec::new(),
             tenant_set: false,
             auth: None,
+            tenant_scope_suppressed: false,
         }
     }
 
@@ -295,6 +303,14 @@ impl DjogiContext {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, DjogiError> {
         self.execute(sql, params).await
+    }
+
+    /// Public shim for macro-emitted code to read the tenant-scope
+    /// suppression flag without reaching into the private field. Do not
+    /// call from user code — no stability guarantee.
+    #[doc(hidden)]
+    pub fn __tenant_scope_suppressed_for_macros(&self) -> bool {
+        self.tenant_scope_suppressed
     }
 
     /// Ensure `app.tenant_id` is set on this context. No-op when already
