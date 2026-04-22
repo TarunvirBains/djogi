@@ -57,9 +57,11 @@ impl DjogiAuth for MySessionProvider {
     ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
         Box::pin(async move {
             // Look the token up in your sessions table and build AuthContext.
+            // `raw_query` returns Vec<T>; take the first row via `.into_iter().next()`
+            // and map the empty case to AuthError::InvalidToken.
             let mut ctx = djogi::DjogiContext::from_pool(self.pool.clone());
-            let row: Option<(HeerId, Option<String>, Vec<String>)> = ctx
-                .raw_query_opt(
+            let rows: Vec<(HeerId, Option<String>, Vec<String>)> = ctx
+                .raw_query(
                     "SELECT user_id, tenant_id, scopes FROM sessions \
                      WHERE token = $1 AND expires_at > now()",
                     &[&token],
@@ -67,7 +69,10 @@ impl DjogiAuth for MySessionProvider {
                 .await
                 .map_err(|e| AuthError::Provider(Box::new(e)))?;
 
-            let (user_id, tenant_id, scopes) = row.ok_or(AuthError::InvalidToken)?;
+            let (user_id, tenant_id, scopes) = rows
+                .into_iter()
+                .next()
+                .ok_or(AuthError::InvalidToken)?;
             let mut auth = AuthContext::new(user_id).with_scopes(scopes);
             if let Some(tid) = tenant_id {
                 auth = auth.with_tenant(tid);

@@ -62,12 +62,6 @@ impl DjogiContext {
         self.auth = Some(auth);
     }
 
-    /// Clear any attached [`AuthContext`] on this context. No-op if none
-    /// was set.
-    pub fn clear_auth(&mut self) {
-        self.auth = None;
-    }
-
     /// Mutating sibling of [`Self::with_auth_insecurely`]. Emits the same
     /// `tracing::warn!` with caller location. `#[track_caller]` reports
     /// the user's call site, not this wrapper.
