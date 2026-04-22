@@ -297,6 +297,21 @@ impl DjogiContext {
         self.execute(sql, params).await
     }
 
+    /// Ensure `app.tenant_id` is set on this context. No-op when already
+    /// set. For use by macro-emitted auto-tenant wiring only.
+    ///
+    /// Macro-emitted code runs in the user's crate and cannot reach
+    /// `pub(crate)` members. This thin `pub` shim routes through the
+    /// crate-internal [`Self::ensure_tenant_set`] that lives in
+    /// `auth/context_ext.rs`.
+    #[doc(hidden)]
+    pub async fn __ensure_tenant_set_for_macros(
+        &mut self,
+        tenant_id: &str,
+    ) -> Result<(), crate::DjogiError> {
+        self.ensure_tenant_set(tenant_id).await
+    }
+
     // -------------------------------------------------------------------------
     // Execution helpers — the new dispatch surface for query terminals.
     // -------------------------------------------------------------------------

@@ -99,6 +99,32 @@ fn acc_into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + S
     acc.into_parts()
 }
 
+// ── Auto-tenant helper (Phase 5.5 Task 10) ────────────────────────────────
+
+/// If `T` has a `tenant_key` and `ctx.auth()` carries a `tenant_id`, call
+/// `ctx.ensure_tenant_set(tenant_id)` so the `app.tenant_id` GUC is active
+/// before any SQL is issued.
+///
+/// This helper is shared by all QuerySet terminals. The borrow is structured
+/// to avoid overlapping borrows: `ctx.auth()` borrows `ctx` immutably;
+/// cloning the `String` drops that borrow before `ctx.ensure_tenant_set`
+/// takes `&mut ctx`.
+///
+/// No-ops when:
+/// - `T::descriptor().tenant_key` is `None` (model has no RLS column).
+/// - `ctx.auth()` returns `None` (no auth context attached).
+/// - `ctx.auth().tenant_id` is `None` (auth present but no tenant scope).
+/// - `ctx.tenant_set` is already `true` (`ensure_tenant_set` short-circuits).
+pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
+    if T::descriptor().tenant_key.is_some() {
+        let tid: Option<String> = ctx.auth().and_then(|a| a.tenant_id.clone());
+        if let Some(tid) = tid {
+            ctx.ensure_tenant_set(&tid).await?;
+        }
+    }
+    Ok(())
+}
+
 // ── Row-returning terminals (require `T: FromPgRow`) ────────────────────────
 
 impl<T: Model> QuerySet<T>
@@ -122,6 +148,7 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_select(&self);
             let (sql, binds) = acc_into_sql_and_binds(acc);
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -159,6 +186,7 @@ where
             if self.is_empty() {
                 return Err(DjogiError::not_found(T::table_name()));
             }
+            auto_set_tenant::<T>(ctx).await?;
             // Override the user's LIMIT (if any) with 2 so we can
             // distinguish the single-row success path from the
             // multiple-rows error path without a `COUNT(*)` round trip.
@@ -247,6 +275,7 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
 
             // Snapshot prefetch paths before we consume `self` in the
             // main-query build. The shared SQL emitter borrows the
@@ -342,6 +371,7 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
 
             // Snapshot prefetch + select_related paths before we build
             // the SQL — `build_select_joined` borrows the queryset
@@ -404,6 +434,7 @@ where
             if self.is_empty() {
                 return Ok(None);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let mut qs = self;
             qs.limit = Some(1);
             let acc = build_select(&qs);
@@ -571,6 +602,7 @@ where
             if self.is_empty() || ids.is_empty() {
                 return Ok(HashMap::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
             // Raw SELECT by PK list. We bypass `build_select` + the
             // filter chain because generic `QuerySet<T>` has no handle
             // on the `{Model}Fields::id` FieldRef — the field bag is a
@@ -626,6 +658,7 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(0);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_count(&self);
             let (sql, binds) = acc_into_sql_and_binds(acc);
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -656,6 +689,7 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(false);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_exists(&self);
             let (sql, binds) = acc_into_sql_and_binds(acc);
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -749,6 +783,7 @@ where
                 "stream fetch_size must be at least 1".to_owned(),
             ));
         }
+        auto_set_tenant::<T>(ctx).await?;
 
         // Short-circuit on structural-none: an empty QuerySet has no rows to
         // stream. The stream would immediately close the cursor after a zero-

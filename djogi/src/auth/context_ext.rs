@@ -46,6 +46,41 @@ impl DjogiContext {
         self
     }
 
+    /// Attach an [`AuthContext`] by mutation (does not consume `self`).
+    ///
+    /// Mirror of [`Self::with_auth`] for use inside
+    /// [`crate::transaction::atomic`] closures, which expose a
+    /// `&mut DjogiContext` rather than an owned context.
+    ///
+    /// ```ignore
+    /// djogi::transaction::atomic(&pool, |ctx| Box::pin(async move {
+    ///     ctx.set_auth(AuthContext::new(user_id).with_tenant("org_a"));
+    ///     TenantPost::objects().fetch_all(ctx).await
+    /// })).await
+    /// ```
+    pub fn set_auth(&mut self, auth: AuthContext) {
+        self.auth = Some(auth);
+    }
+
+    /// Clear any attached [`AuthContext`] on this context. No-op if none
+    /// was set.
+    pub fn clear_auth(&mut self) {
+        self.auth = None;
+    }
+
+    /// Mutating sibling of [`Self::with_auth_insecurely`]. Emits the same
+    /// `tracing::warn!` with caller location. `#[track_caller]` reports
+    /// the user's call site, not this wrapper.
+    #[track_caller]
+    pub fn set_auth_insecurely(&mut self, auth: AuthContext) {
+        tracing::warn!(
+            user_id = ?auth.user_id,
+            caller = %std::panic::Location::caller(),
+            "auth guard bypassed via set_auth_insecurely",
+        );
+        self.auth = Some(auth);
+    }
+
     /// Internal helper: ensure the `app.tenant_id` GUC is set for the
     /// current context. No-op if [`Self::tenant_set`] is already true;
     /// otherwise delegates to the existing [`Self::set_tenant`] (Phase 5
@@ -54,8 +89,6 @@ impl DjogiContext {
     /// Invoked by the auto-tenant integration (Phase 5.5 Task 10) before
     /// every CRUD dispatch on a tenant-keyed model when
     /// `ctx.auth().and_then(|a| a.tenant_id.as_ref())` is `Some`.
-    // Task 10 wires the call site; suppress the warning until then.
-    #[allow(dead_code)]
     pub(crate) async fn ensure_tenant_set(&mut self, tenant_id: &str) -> Result<(), DjogiError> {
         if self.tenant_set {
             return Ok(());

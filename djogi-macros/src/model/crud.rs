@@ -476,6 +476,38 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // Auto-tenant wiring (Phase 5.5 Task 10).
+    //
+    // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
+    // `tenant_id`, this snippet calls `ctx.__ensure_tenant_set_for_macros`
+    // (the public shim over `ensure_tenant_set`) before any SQL runs.
+    //
+    // Borrow split: `ctx.auth()` borrows `ctx` immutably; we clone the
+    // `String` before the immutable borrow drops so `ctx.ensure_tenant_set`
+    // can take `&mut ctx` without a simultaneous immutable borrow.
+    //
+    // The fallback form `let __djogi_tid = ...; if let Some(t) = __djogi_tid`
+    // is used instead of nested `if let` + `.clone()` inline to keep the
+    // emitted code readable and avoid lifetime-conflict edge cases on older
+    // RPITIT shapes.
+    //
+    // Path routing: bare `Option` paths are spelled `::std::option::Option::*`
+    // per the `feedback_macro_path_routing` convention; temp bindings are
+    // prefixed `__djogi_` to avoid colliding with user-chosen field names.
+    // -------------------------------------------------------------------------
+    let auto_set_tenant = if model_attrs.tenant_key.is_some() {
+        quote! {
+            let __djogi_tid: ::std::option::Option<::std::string::String> =
+                ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
+            if let ::std::option::Option::Some(__djogi_tid_str) = __djogi_tid {
+                ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // -------------------------------------------------------------------------
     // Per-method async bodies.
     // -------------------------------------------------------------------------
     // Every body calls the public-but-hidden execution helpers on `ctx`
@@ -486,6 +518,7 @@ pub fn expand(
     // djogi/src/context.rs for the execution helper rationale.
     let get_body = quote! {
         async move {
+            #auto_set_tenant
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #id_param_for_get,
             ];
@@ -576,6 +609,7 @@ pub fn expand(
 
     let create_body = quote! {
         async move {
+            #auto_set_tenant
             #create_value_binding
             #sequence_upsert_preamble
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
@@ -616,6 +650,7 @@ pub fn expand(
             format!("optimistic lock conflict: {ver_col} mismatch in table {table}");
         quote! {
             async move {
+                #auto_set_tenant
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // The version field is excluded from the dirty loop — it always
@@ -674,6 +709,7 @@ pub fn expand(
         // Shape A — no version field: existing behavior.
         quote! {
             async move {
+                #auto_set_tenant
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // `__first` tracks whether we have emitted any SET assignment yet
@@ -719,6 +755,7 @@ pub fn expand(
 
     let delete_body = quote! {
         async move {
+            #auto_set_tenant
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #owned_pk_param,
             ];
@@ -733,6 +770,7 @@ pub fn expand(
 
     let refresh_body = quote! {
         async move {
+            #auto_set_tenant
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #refresh_id_param,
             ];

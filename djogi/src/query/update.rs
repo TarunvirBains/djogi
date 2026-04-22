@@ -77,6 +77,7 @@ use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_delete, build_update};
+use crate::query::terminal::auto_set_tenant;
 use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -325,6 +326,7 @@ impl<T: Model> UpdateStmt<T> {
             if self.qs.is_empty() || self.assignments.is_empty() {
                 return Ok(0);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_update(&self.qs, &self.assignments);
             let (sql, binds) = acc.into_parts();
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -411,6 +413,7 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(0);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_delete(&self);
             let (sql, binds) = acc.into_parts();
             let params: Vec<&(dyn ToSql + Sync)> = binds
