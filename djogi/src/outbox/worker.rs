@@ -165,6 +165,11 @@ pub async fn claim_pending(
     // so Postgres can parse it at planning time without any bind-parameter type
     // ambiguity. The value comes from `whole_seconds()` on a validated
     // `time::Duration`, not from user input, so direct embedding is safe.
+    // `leased_until IS NULL OR leased_until <= now()` gates pending rows that
+    // are still inside a retry backoff window (see `mark_failed`). Freshly
+    // inserted rows have `leased_until = NULL` and claim immediately; rows that
+    // were re-queued after a retryable failure have a `leased_until` in the
+    // future that encodes their next-attempt time.
     let lease_secs = lease_duration.whole_seconds();
     let sql = format!(
         "UPDATE {outbox_table} \
@@ -172,6 +177,7 @@ pub async fn claim_pending(
          WHERE id IN ( \
             SELECT id FROM {outbox_table} \
             WHERE state = 'pending' \
+              AND (leased_until IS NULL OR leased_until <= now()) \
             ORDER BY created_at \
             LIMIT $1 \
             FOR UPDATE SKIP LOCKED \
@@ -293,10 +299,25 @@ pub async fn mark_failed(
     let transition_to_pending = retryable && current_retry < MAX_RETRY_COUNT;
 
     if transition_to_pending {
-        // Retryable and within budget: return to pending, increment counter.
+        // Retryable and within budget: return to pending, increment counter, and
+        // schedule the next attempt with exponential backoff.
+        //
+        // The backoff reuses `leased_until` as a "not claimable before" gate on
+        // pending rows (see `claim_pending`, which filters out pending rows whose
+        // `leased_until` is still in the future). This avoids a schema change.
+        //
+        // Delay = 2^new_retry seconds, capped at 1024 (≈17 min). Base-2 doubling
+        // starting at 2s for the first retry, 4s, 8s, … up to the cap at
+        // retry_count = 10. Poison-pill rows hit the retry budget before the cap
+        // becomes relevant in practice.
+        let new_retry = current_retry.saturating_add(1);
+        let shift = new_retry.clamp(0, 10) as u32;
+        let backoff_secs: i64 = (1i64 << shift).min(1024);
+
         let sql = format!(
             "UPDATE {outbox_table} \
-             SET state = 'pending', leased_until = NULL, retry_count = retry_count + 1, \
+             SET state = 'pending', retry_count = retry_count + 1, \
+                 leased_until = now() + make_interval(secs => {backoff_secs}), \
                  failed_reason = $2 \
              WHERE id = $1 AND state = 'processing'"
         );
@@ -318,9 +339,12 @@ pub async fn mark_failed(
 
 /// Reset stale `processing` rows back to `pending` so they can be reclaimed.
 ///
-/// A row is considered stale when its `leased_until` timestamp is in the past
-/// (i.e. the worker that claimed it failed to call `mark_published` or
-/// `mark_failed` within the lease window). This is the crash-recovery path.
+/// A row is considered stale when its `leased_until` timestamp is more than
+/// `stale_threshold` seconds in the past — i.e. the worker that claimed it
+/// failed to call `mark_published` or `mark_failed` within the lease window
+/// and the caller-supplied grace threshold has also elapsed. The grace window
+/// avoids racing healthy workers whose lease has only just expired. This is
+/// the crash-recovery path.
 ///
 /// Returns the number of rows that were moved back to `pending`.
 ///

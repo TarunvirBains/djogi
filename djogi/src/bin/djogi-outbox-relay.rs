@@ -84,17 +84,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let pool = DjogiPool::connect(&database_url).await?;
 
-    // One NotifyPublisher per channel. For this reference relay we use a single
-    // channel with the default prefix. Production relays may create one
-    // publisher per table by building the channel name as
-    // `format!("{channel_prefix}{table}")`.
-    //
-    // Wrapped in Arc so it can be shared across async closures in the loop
-    // without moving out of the binding on each iteration.
-    let publisher = std::sync::Arc::new(NotifyPublisher::new(
-        pool.clone(),
-        format!("{channel_prefix}events"),
-    ));
+    // One NotifyPublisher per outbox table so the NOTIFY channel encodes the
+    // source table in its name. Listeners can subscribe to `{channel_prefix}
+    // {table}` and receive only the rows from that outbox. This matches the
+    // Phase 5 plan's per-table routing intent.
+    let publishers: std::collections::HashMap<String, std::sync::Arc<NotifyPublisher>> =
+        outbox_tables
+            .iter()
+            .map(|t| {
+                let channel = format!("{channel_prefix}{t}");
+                let publisher = std::sync::Arc::new(NotifyPublisher::new(pool.clone(), channel));
+                (t.clone(), publisher)
+            })
+            .collect();
 
     // Lease: 5 minutes. Workers must call mark_published/mark_failed within
     // this window or recover_stale will reclaim the row.
@@ -110,8 +112,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         for table in &outbox_tables {
-            // Clone the Arc and String so the closure can capture owned values.
-            let publisher_arc = std::sync::Arc::clone(&publisher);
+            // Look up the per-table publisher and clone the Arc/String so the
+            // closure can capture owned values.
+            let publisher_arc = std::sync::Arc::clone(
+                publishers
+                    .get(table)
+                    .expect("publisher built for every configured table"),
+            );
             let table_owned = table.clone();
 
             // Claim + publish inside an atomic scope so the state transitions
@@ -133,9 +140,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Err(djogi::outbox::PublishError::Transient { message }) => {
                                 worker::mark_failed(ctx, &tbl, row_id, &message, true).await?;
                             }
+                            Err(djogi::outbox::PublishError::Permanent { message }) => {
+                                worker::mark_failed(ctx, &tbl, row_id, &message, false).await?;
+                            }
+                            // Provider errors have unknown transience. Per
+                            // `PublishError::Provider`'s rustdoc, the relay
+                            // treats them as transient by default so a pool
+                            // hiccup or connection drop does not terminally
+                            // fail the row. The retry budget
+                            // (`MAX_RETRY_COUNT`) is what bounds pathological
+                            // cases.
                             Err(e) => {
                                 let msg = e.to_string();
-                                worker::mark_failed(ctx, &tbl, row_id, &msg, false).await?;
+                                worker::mark_failed(ctx, &tbl, row_id, &msg, true).await?;
                             }
                         }
                     }

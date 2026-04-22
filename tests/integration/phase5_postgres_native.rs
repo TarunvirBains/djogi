@@ -2470,8 +2470,10 @@ mod outbox_worker_tests {
     // mark_failed_retryable_returns_to_pending
     // -------------------------------------------------------------------------
 
-    /// A retryable failure below the retry budget returns the row to 'pending'
-    /// and increments retry_count.
+    /// A retryable failure below the retry budget returns the row to 'pending',
+    /// increments retry_count, and schedules the next attempt with exponential
+    /// backoff. The row is not re-claimable until the backoff window elapses;
+    /// once it does, claim_pending picks it up again.
     #[djogi::djogi_test]
     async fn mark_failed_retryable_returns_to_pending(mut ctx: djogi::DjogiContext) {
         setup_worker_outbox(&mut ctx).await;
@@ -2507,11 +2509,37 @@ mod outbox_worker_tests {
             "retry_count must be 1 after first retryable failure"
         );
 
-        // The row must be re-claimable.
+        // Backoff: the row is 'pending' but claim_pending must NOT claim it
+        // yet because `leased_until` is in the future (first retry = 2 seconds
+        // from now).
+        let immediate_reclaim =
+            worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
+                .await
+                .expect("claim during backoff window");
+        assert_eq!(
+            immediate_reclaim.len(),
+            0,
+            "row must not be re-claimed while still inside its backoff window"
+        );
+
+        // Manually clear leased_until to simulate the backoff elapsing. The
+        // row now becomes re-claimable.
+        let row_id_raw = row.id.as_i64();
+        ctx.raw_execute(
+            "UPDATE worker_outbox SET leased_until = NULL WHERE id = $1",
+            &[&row_id_raw],
+        )
+        .await
+        .expect("clear leased_until to end backoff window");
+
         let re_claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
             .await
-            .expect("re-claim after retry");
-        assert_eq!(re_claimed.len(), 1, "retried row must be re-claimable");
+            .expect("re-claim after backoff elapsed");
+        assert_eq!(
+            re_claimed.len(),
+            1,
+            "row must be re-claimable once backoff window has elapsed"
+        );
     }
 
     // -------------------------------------------------------------------------

@@ -4,16 +4,18 @@
 //! over a regular database connection. It requires no external broker and is
 //! available whenever the `outbox` feature is enabled.
 //!
-//! # Design deviation from the plan
+//! # Channel routing
 //!
 //! The Phase 5 plan's `NotifyPublisher` snippet used `row.model_table` to build
-//! the channel name. `OutboxRow` does not carry a `model_table` field (the
-//! worker outbox is a generic table that serves multiple models). Rather than
-//! adding `model_table` to `OutboxRow` — which would require every outbox table
-//! to carry that column — `NotifyPublisher` instead accepts a fixed `channel`
-//! string at construction time. Callers that want per-model channels create one
-//! publisher per model. This keeps `OutboxRow` minimal and defers the model-
-//! routing concern to the relay binary rather than the framework.
+//! the channel name per-row. `OutboxRow` does not carry a `model_table` field
+//! (the worker outbox is a generic table and rows do not remember their source
+//! table beyond the outbox table name itself). Rather than adding that field
+//! to `OutboxRow`, `NotifyPublisher` accepts a fixed `channel` string at
+//! construction time and the reference relay binary builds one publisher per
+//! outbox table with `format!("{channel_prefix}{table}")` — keeping per-table
+//! NOTIFY routing while leaving `OutboxRow` minimal. Callers that need
+//! finer-grained routing (e.g. per-action channels) create additional
+//! publishers the same way.
 //!
 //! # Usage
 //!
