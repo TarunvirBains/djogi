@@ -20,8 +20,9 @@ as a Postgres TEXT/ENUM wire string) and an `inventory::submit!` of an
 - Default variant-to-string mapping is `snake_case`. You override the mapping
   at the enum level with `#[djogi_enum(rename_all = "...")]` or per variant
   with `#[djogi_enum_variant(name = "...")]`.
-- The Postgres type name defaults to the enum's `snake_case` Rust name. Override
-  it with `#[djogi_enum(name = "custom_type_name")]`.
+- **`#[djogi_enum(name = "...")]` is required.** There is no default Postgres
+  type name — omitting it is a compile error. Name the Postgres enum type
+  explicitly every time.
 - `FromSql` returns `EnumDecodeError` when the wire string does not match any
   known variant — no silent unknown-variant handling.
 - DDL (`CREATE TYPE ... AS ENUM (...)`) is not emitted by Phase 5. The
@@ -140,6 +141,7 @@ pub struct Event {
 }
 ```
 
-`EnumDecodeError` from a `DjogiEnum` field is surfaced as a `DjogiError::Db`
-wrapping the underlying decode error. You can match on the message or handle it
-with `is_transient()` (it is `false` — unknown enum variants are not transient).
+`EnumDecodeError` from a `DjogiEnum` field is surfaced as a `DjogiError::Decode`
+wrapping the underlying decode error message. You can match on it explicitly
+or handle it with `is_transient()` (it is `false` — unknown enum variants are
+not transient).

@@ -23,8 +23,9 @@ Phase 5 adds two query surfaces for filtering on JSONB subfields: a flat
 - Unknown keys (present in the JSON, absent from `T`) land in `Jsonb::extra`
   as `serde_json::Value` entries. They are never dropped.
 - `Jsonb::new(value)` constructs a fresh instance with an empty `extra` map.
-- Validation (if `T` derives `validator::Validate`) runs before any DB write.
-  Failure returns an error; nothing is written.
+- `ToSql` serializes `data` and `extra` directly with no built-in validation
+  hook. Call `serde_json::to_value` or `validator::Validate::validate` yourself
+  before `save()` if you want pre-write validation.
 - `FromSql` constructs `Jsonb<T>` from the wire bytes. `ToSql` merges `data`
   and `extra` before encoding.
 
@@ -88,8 +89,9 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
 `.path::<V>("dot.path")` accepts a dotted string at runtime and emits a `->` /
 `->>` chain with a cast to the SQL type for `V`. Each segment must be a plain
 ASCII identifier (letter or underscore first, then alphanumerics or underscores,
-at most 63 bytes). The path is validated at emission time; an invalid segment
-panics in debug mode and is silently skipped in release.
+at most 63 bytes). The path is validated at construction time and **panics in
+both debug and release** if any segment is invalid. Keep path strings as
+compile-time literals — do not interpolate user input into path strings.
 
 ```rust
 // Single-level
@@ -133,9 +135,9 @@ pub struct Vehicle {
     pub spec: Jsonb<VehicleSpec>,
 }
 
-// Typed path — compile-checked
+// Typed path — compile-checked. Call .typed() to enter the path tree.
 Vehicle::objects()
-    .filter(|f| f.spec().engine.cylinders.gt(4))
+    .filter(|f| f.spec().typed().engine.cylinders.gt(4))
     // WHERE (spec->'engine'->>'cylinders')::int > $1
 ```
 
@@ -211,5 +213,8 @@ let rows = ctx.raw_query::<User>(
 ).await?;
 ```
 
-`Jsonb::as_raw_json(&self)` returns `&serde_json::Value` (the merged object)
-for use as a bind parameter in raw queries without an extra serialization pass.
+To bind a `Jsonb<T>` value as a parameter in a raw query, serialize it yourself:
+`serde_json::to_value(&jsonb.data)` gives the typed portion; `jsonb.extra` is
+public and holds the unknown fields as a `serde_json::Value` map. `Jsonb<T>`
+implements `ToSql` directly, so passing `&jsonb` as a bind argument also works
+wherever a `JSONB` parameter is expected.

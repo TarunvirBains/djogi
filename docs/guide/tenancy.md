@@ -103,18 +103,29 @@ Use them for admin tooling, cross-tenant analytics, or migration scripts that
 must see all rows:
 
 ```rust
-// Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
-let all_posts = Post::objects_insecurely().fetch_all(&mut ctx).await?;
+// The bypass only takes effect inside atomic(). objects_insecurely() returns
+// a lazy QuerySet; the actual SET LOCAL row_security = off fires only when a
+// terminal method (fetch_all, fetch_one, etc.) runs inside a transaction.
+// Call ctx.raw_execute("SET LOCAL row_security = off", &[]).await? before
+// the terminal method if you need to confirm the bypass is active.
+djogi::transaction::atomic(pool, |ctx| async move {
+    // Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
+    let all_posts = Post::objects_insecurely().fetch_all(ctx).await?;
+    Ok(all_posts)
+}).await?;
 
-// Single-row bypass:
-let post = Post::get_insecurely(&mut ctx, post_id).await?;
+// Single-row bypass (same rule — must be inside atomic()):
+djogi::transaction::atomic(pool, |ctx| async move {
+    let post = Post::get_insecurely(ctx, post_id).await?;
+    Ok(post)
+}).await?;
 ```
 
-Every `_insecurely` call emits a `tracing::warn!` with the model name, method
-name, and caller location. This makes audit scanning straightforward:
+Every `_insecurely` terminal call emits a `tracing::warn!` with the model name,
+method name, and caller location. This makes audit scanning straightforward:
 
 ```text
-grep '_insecurely\b' src/
+grep -r _insecurely src/
 ```
 
 All results are intentional bypasses; accidental use is visible in both the

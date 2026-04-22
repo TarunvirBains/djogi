@@ -57,15 +57,19 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
         email: Tracked::new("alice@example.com".to_string()),
     }).await?;
 
-    // First save: email has not changed since load — no UPDATE is emitted.
+    // First save: email has not changed since load — it is clean, so it is
+    // OMITTED from the SET list. But username is a plain String, so it is
+    // ALWAYS written. The emitted SQL is:
+    //   UPDATE users SET username = $1, updated_at = now() WHERE id = $2
     user.save(&mut ctx).await?;
 
     // Mutating through DerefMut marks email dirty.
     *user.email = "alice@new.example.com".to_string();
     assert!(user.email.is_dirty());
 
-    // Second save: emits UPDATE users SET email = $1, updated_at = now() WHERE id = $2.
-    // username is a plain String — always included. email is dirty — included.
+    // Second save: email is now dirty, so it joins username in the SET list.
+    // Emits: UPDATE users SET username = $1, email = $2, updated_at = now() WHERE id = $3
+    // username is a plain String — always included. email is Tracked and dirty — included.
     user.save(&mut ctx).await?;
 
     // After save(), email is clean again.

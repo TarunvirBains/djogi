@@ -68,7 +68,7 @@ async fn transfer(pool: &DjogiPool, account_id: HeerId, amount: i64) -> Result<(
         Ok(()) => {
             // Won the race — revision is now 5 in the DB.
         }
-        Err(DjogiError::LockConflict) => {
+        Err(DjogiError::LockConflict(_)) => {
             // Lost the race — re-read the latest state and retry.
             let fresh = Account::get(&mut ctx_a, account_id).await?;
             // Re-apply the mutation and save again.
@@ -96,7 +96,8 @@ match:
 ```rust
 use djogi::transaction::retry_on_conflict;
 
-retry_on_conflict(&pool, 3, |ctx| async move {
+// ctx is a DjogiContext — obtained from DjogiContext::from_pool or inside atomic().
+retry_on_conflict(&mut ctx, 3, |ctx| async move {
     let mut account = Account::get(ctx, account_id).await?;
     account.balance += amount;
     account.save(ctx).await?;
@@ -104,9 +105,10 @@ retry_on_conflict(&pool, 3, |ctx| async move {
 }).await?;
 ```
 
-`retry_on_conflict` retries the entire closure on `LockConflict`; it re-reads
-the fresh row on each attempt naturally because the closure re-executes from the
-top.
+`retry_on_conflict` takes a mutable `DjogiContext` by `&mut`, an attempt count,
+and an async closure that receives `&mut DjogiContext`. It retries the entire
+closure on any transient lock error (`LockConflict`); the fresh row is re-read
+on each attempt naturally because the closure re-executes from the top.
 
 ### Coupling with `Tracked<T>` for dirty-aware concurrent writes
 
@@ -133,7 +135,7 @@ often better to surface the conflict and ask the user to reconcile:
 ```rust
 match profile.save(&mut ctx).await {
     Ok(()) => redirect_to_profile(),
-    Err(DjogiError::LockConflict) => show_conflict_error("Someone else edited this profile — please review and resubmit."),
+    Err(DjogiError::LockConflict(_)) => show_conflict_error("Someone else edited this profile — please review and resubmit."),
     Err(e) => return Err(e),
 }
 ```

@@ -22,14 +22,14 @@ one-dimensional.
 | `.contains(values)` | `col @> $1` | Column array contains every element in `values` |
 | `.contained_by(values)` | `col <@ $1` | Every element of the column array is in `values` |
 | `.overlap(values)` | `col && $1` | Column array and `values` share at least one element |
-| `.len()` | `array_length(col, 1)` | Number of elements; returns a `LenRef` that accepts integer comparisons |
+| `.len()` | `array_length(col, 1)` | Number of elements; returns an `Expr<i32>` for integer comparisons |
 
-`values` in `contains`, `contained_by`, and `overlap` accepts any
-`IntoIterator<Item = V>` where `V` matches the column's element type. The
-argument is bound as a Postgres array parameter.
+`values` in `contains`, `contained_by`, and `overlap` takes a **slice reference**
+`&[V]` where `V` matches the column's element type. The argument is bound as a
+Postgres array parameter.
 
-`len()` is used as a left-hand side: `f.tags().len().gt(3)` emits
-`array_length(tags, 1) > 3`.
+`len()` returns `Expr<i32>` and is used as a left-hand side: `f.tags().len().gt(3_i32)`
+emits `array_length(tags, 1) > $1`.
 
 ---
 
@@ -51,27 +51,27 @@ async fn example(pool: &DjogiPool) -> Result<(), DjogiError> {
 
     // Find articles tagged with both "rust" AND "postgres".
     let both = Article::objects()
-        .filter(|f| f.tags().contains(vec!["rust".to_string(), "postgres".to_string()]))
+        .filter(|f| f.tags().contains(&["rust".to_string(), "postgres".to_string()]))
         .fetch_all(&mut ctx).await?;
     // WHERE tags @> ARRAY[$1, $2]
 
     // Find articles whose tag set is fully within an allowed list.
-    let allowed = vec!["rust".to_string(), "async".to_string(), "postgres".to_string()];
+    let allowed = ["rust".to_string(), "async".to_string(), "postgres".to_string()];
     let contained = Article::objects()
-        .filter(|f| f.tags().contained_by(allowed.clone()))
+        .filter(|f| f.tags().contained_by(&allowed))
         .fetch_all(&mut ctx).await?;
     // WHERE tags <@ ARRAY[$1, $2, $3]
 
     // Find articles that share at least one reviewer with a given set.
-    let known_ids = vec![7_i64, 12, 99];
+    let known_ids = [7_i64, 12, 99];
     let overlapping = Article::objects()
-        .filter(|f| f.reviewer_ids().overlap(known_ids.clone()))
+        .filter(|f| f.reviewer_ids().overlap(&known_ids))
         .fetch_all(&mut ctx).await?;
     // WHERE reviewer_ids && ARRAY[$1, $2, $3]
 
     // Find articles with more than three tags.
     let long_tagged = Article::objects()
-        .filter(|f| f.tags().len().gt(3_i64))
+        .filter(|f| f.tags().len().gt(3_i32))
         .fetch_all(&mut ctx).await?;
     // WHERE array_length(tags, 1) > $1
 
@@ -107,8 +107,8 @@ standard `and_with` / `or_with` combinators:
 ```rust
 Article::objects()
     .filter(|f| {
-        f.tags().contains(vec!["rust".to_string()])
-            .and_with(f.tags().len().gte(2_i64))
+        f.tags().contains(&["rust".to_string()])
+            .and_with(f.tags().len().gte(2_i32))
     })
     .fetch_all(&mut ctx).await?;
 // WHERE (tags @> ARRAY[$1]) AND (array_length(tags, 1) >= $2)
