@@ -2,7 +2,7 @@
 
 # Djogi Guides
 
-Documents describing the shipped framework surface (Phases 1 through 5).
+Documents describing the shipped framework surface (Phases 1 through 5.5).
 For planned features that don't ship yet, see
 [the roadmap](../roadmap/index.md).
 
@@ -21,5 +21,7 @@ For planned features that don't ship yet, see
 | [Enums](./enums.md) | `#[derive(DjogiEnum)]`, Postgres codec, `rename_all`, per-variant overrides |
 | [JSONB Fields](./jsonb.md) | `Jsonb<T>`, unknown-field preservation, flat path querying, `#[derive(JsonbSchema)]` typed paths |
 | [Array Fields](./arrays.md) | `Vec<V>` columns, `contains` / `contained_by` / `overlap` / `len`, GIN index intent |
+| [Full-Text Search](./fts.md) | `#[model(fts = "...")]`, generated `tsvector`, `QuerySet::search` terminals |
 | [Tenancy](./tenancy.md) | `#[model(tenant_key)]`, RLS policy emission, `set_tenant`, `_insecurely()` bypass |
+| [Authentication](./auth.md) | `DjogiAuth` trait, `AuthContext`, `PasswordHash`, auto-`set_tenant`, `with_no_tenant_scope` |
 | [Agent Guide](./agent-guide.md) | For AI coding agents — reading Djogi code, golden path, common mistakes |
