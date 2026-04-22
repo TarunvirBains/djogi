@@ -39,9 +39,14 @@ bypasses) is available now.
   same context.
 - `set_tenant` marks an internal flag on the context. Framework code can inspect
   this flag; future phases may use it for RLS-active checks.
-- `_insecurely()` suffix methods are generated only on tenant-keyed models. They
-  bypass RLS via `SET LOCAL row_security = off` and emit a `tracing::warn!`
-  on every call.
+- `_insecurely()` suffix methods are generated only on tenant-keyed models and
+  emit a `tracing::warn!` on every call. The async variants (`get_insecurely`,
+  `create_insecurely`, `save_insecurely`, `delete_insecurely`,
+  `bulk_*_insecurely`) bypass RLS by issuing `SET LOCAL row_security = off`
+  themselves before running their query. `objects_insecurely()` is the
+  exception: it is synchronous with no ctx, so it cannot issue `SET LOCAL` —
+  the caller must issue the bypass on the ctx before the terminal method (see
+  the `objects_insecurely` pattern below).
 
 ---
 

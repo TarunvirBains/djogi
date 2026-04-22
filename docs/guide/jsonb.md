@@ -115,7 +115,7 @@ For schemas you query repeatedly, derive `JsonbSchema` on the inner type to get
 a compile-checked path tree:
 
 ```rust
-use djogi_macros::JsonbSchema;
+use djogi::prelude::*;
 
 #[derive(JsonbSchema, Serialize, Deserialize)]
 pub struct EngineSpec {

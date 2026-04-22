@@ -136,20 +136,20 @@ car.save(&mut ctx).await?;
 Error paths use dot-notation through the full nesting depth so the developer knows exactly where the failure is.
 ### 6.7 Subfield Query Filters
 
-The proc macro generates typed filter accessors for all known fields at every nesting level, using Postgres's JSONB path operators.
+The proc macro generates typed filter accessors for all known fields at every nesting level, using Postgres's JSONB path operators. Accessors are method-style — `.engine().horsepower()` rather than `.engine.horsepower` — so the derive can honour `#[serde(rename)]` and visibility settings on the schema struct. Enter the typed path tree via `.typed()` on the outer `JsonbPathRef` returned by the model's `Fields` accessor.
 ```rust
 // Known field at root level
 Vehicle::objects()
-    .filter(|f| f.engine.horsepower.gte(300))
+    .filter(|f| f.engine().typed().horsepower().gte(300))
     // WHERE (engine->>'horsepower')::integer >= 300
 
-// Known field in nested schema
+// Known field in a nested plain-struct schema (EngineSpec has a `turbo: TurboSpec`)
 Vehicle::objects()
-    .filter(|f| f.engine.turbo.boost_psi.gte(15.0))
+    .filter(|f| f.engine().typed().turbo().boost_psi().gte(15.0))
     // WHERE (engine->'turbo'->>'boost_psi')::float >= 15.0
 
 Vehicle::objects()
-    .filter(|f| f.engine.turbo.manufacturer.eq("Garrett"))
+    .filter(|f| f.engine().typed().turbo().manufacturer().eq("Garrett"))
     // WHERE engine->'turbo'->>'manufacturer' = 'Garrett'
 ```
 Unknown fields cannot be used in typed filter closures — they are not known at compile time. Raw SQL via `.raw_filter()` is the escape hatch for querying unknown fields.
