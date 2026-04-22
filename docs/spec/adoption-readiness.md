@@ -29,7 +29,9 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | `Jsonb<T>` with unknown-field preservation | 5 | Both flat `.path::<V>("...")` and typed `#[derive(JsonbSchema)]`; keeps JSON-heavy query paths typed and native |
 | Multi-tenancy (RLS + `set_tenant`) | 5 | `#[model(tenant_key)]` + `ctx.set_tenant` |
 | `_insecurely()` bypass surface | 5 | Searchable + observable via `tracing::warn!` |
-| Outbox worker + publishers | 5 | Phase 5 v3 Task 11.5 — NOTIFY default; Redis / Kafka / NATS feature-gated |
+| Outbox worker + publishers | 5 | Phase 5 v3 Task 11.5 — NOTIFY default; Redis / Kafka / NATS feature-gated; exponential backoff on retryable failures |
+| Cursor-backed streaming terminals | 5 | `QuerySet::stream` / `DjogiContext::raw_stream` over Postgres named cursors; transaction-scoped |
+| Full-text search | 5 | `#[model(fts = { source, dictionary })]` + `TsVector` / `TsQuery`; GIN index emitted for the tsvector column |
 | Authentication + session management | 5.5 | `DjogiAuth` + `EnvAuth` + `SessionStore` |
 | Password hashing (Argon2) | 5.5 | `PasswordHash` (feature `auth-argon2`) |
 | Axum integration | 5.5 | `FromRequestParts` (feature `auth-axum`) |
