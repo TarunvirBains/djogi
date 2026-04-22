@@ -102,22 +102,29 @@ Tenant-keyed models gain `_insecurely`-suffixed variants of every CRUD method.
 Use them for admin tooling, cross-tenant analytics, or migration scripts that
 must see all rows:
 
-```rust
-// The bypass only takes effect inside atomic(). objects_insecurely() returns
-// a lazy QuerySet; the actual SET LOCAL row_security = off fires only when a
-// terminal method (fetch_all, fetch_one, etc.) runs inside a transaction.
-// Call ctx.raw_execute("SET LOCAL row_security = off", &[]).await? before
-// the terminal method if you need to confirm the bypass is active.
-djogi::transaction::atomic(pool, |ctx| async move {
-    // Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
-    let all_posts = Post::objects_insecurely().fetch_all(ctx).await?;
-    Ok(all_posts)
-}).await?;
+The async `_insecurely` methods (`get_insecurely`, `create_insecurely`,
+`save_insecurely`, `delete_insecurely`, `bulk_*_insecurely`) issue
+`SET LOCAL row_security = off` themselves, so they deliver the bypass as long
+as the ctx is inside an `atomic()` scope (`SET LOCAL` outside a transaction
+silently no-ops). `objects_insecurely()` is different: it is a synchronous
+method with no ctx, so it cannot issue `SET LOCAL` — it only logs the warn
+and hands back `Model::objects()`. To bypass RLS on a queryset fetch, the
+caller has to issue the `SET LOCAL` on the ctx before the terminal method.
 
-// Single-row bypass (same rule — must be inside atomic()):
+```rust
+// Async method — bypass is internal; just wrap the call in atomic():
 djogi::transaction::atomic(pool, |ctx| async move {
     let post = Post::get_insecurely(ctx, post_id).await?;
     Ok(post)
+}).await?;
+
+// Lazy queryset — caller issues SET LOCAL before the terminal method:
+djogi::transaction::atomic(pool, |ctx| async move {
+    // Emits: tracing::warn!(model = "Post", method = "objects_insecurely", ...)
+    let qs = Post::objects_insecurely();
+    ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+    let all_posts = qs.fetch_all(ctx).await?;
+    Ok(all_posts)
 }).await?;
 ```
 

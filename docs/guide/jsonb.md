@@ -135,15 +135,20 @@ pub struct Vehicle {
     pub spec: Jsonb<VehicleSpec>,
 }
 
-// Typed path — compile-checked. Call .typed() to enter the path tree.
+// Typed path — compile-checked. Call .typed() to enter the path tree,
+// then drill down with method calls (not field access).
 Vehicle::objects()
-    .filter(|f| f.spec().typed().engine.cylinders.gt(4))
+    .filter(|f| f.spec().typed().engine().cylinders().gt(4))
     // WHERE (spec->'engine'->>'cylinders')::int > $1
 ```
 
-The derive generates a `{T}Path<M>` struct. Nested struct fields return the
-nested schema's own path struct. Scalar fields return `JsonbPathRef<M, V>`
-with the full comparison surface. Both shapes emit identical SQL.
+The derive generates a `{T}Path<M>` struct with one method per field.
+Nested struct fields return the nested schema's own path type; scalar
+fields return `JsonbPathRef<M, V>` with the full comparison surface.
+Both shapes emit identical SQL. The method-call style (`engine()`,
+`cylinders()`) matches how `Fields` accessors work elsewhere in the API
+and lets the derive emit visibility-aware accessors rather than raw
+public fields.
 
 **Rule of thumb:** use the flat path for one-off escapes or while a schema is
 still being designed. Switch to `#[derive(JsonbSchema)]` once the schema
@@ -213,8 +218,11 @@ let rows = ctx.raw_query::<User>(
 ).await?;
 ```
 
-To bind a `Jsonb<T>` value as a parameter in a raw query, serialize it yourself:
-`serde_json::to_value(&jsonb.data)` gives the typed portion; `jsonb.extra` is
-public and holds the unknown fields as a `serde_json::Value` map. `Jsonb<T>`
-implements `ToSql` directly, so passing `&jsonb` as a bind argument also works
-wherever a `JSONB` parameter is expected.
+To bind a `Jsonb<T>` value as a parameter in a raw query, the simplest path is
+to pass `&jsonb` directly — `Jsonb<T>` implements `ToSql` against `JSONB` and
+round-trips the merged (typed + unknown) payload without extra code. If you
+only need the typed portion, `serde_json::to_value(&jsonb.data)` is public
+because `data` is a public field; the unknown-field map lives in a
+crate-private `extra` field and is not accessible from user code. Use
+`Jsonb<T>`'s `ToSql` or a fresh struct you control rather than reaching for
+`extra` directly.
