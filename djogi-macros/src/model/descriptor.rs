@@ -395,9 +395,9 @@ pub fn expand(
     // is emitted as a single `static` initialiser; all nested `&[...]` slices
     // are literal arrays with `'static` lifetimes.
     //
-    // `requires_out_of_transaction` and `extension_dependency` are T5 fields
-    // that do not yet exist on `IndexSpec`. T2 constructs with the current
-    // 4-field shape; T5 extends the struct and updates this emission site.
+    // `requires_out_of_transaction` and `extension_dependency` are the
+    // T5-added `IndexSpec` fields that carry GiST-on-PostGIS migration
+    // policy forward to Phase 7 without relying on type-name inference.
     let geopoint_index_specs: Vec<TokenStream> = user_fields
         .iter()
         .filter(|(field, _fa)| is_geopoint_type(&field.ty))
