@@ -1,0 +1,6 @@
+error: #[field(version)] must be i32 or i64 (got my_mod::i32); accepted spellings: bare `i32`/`i64`, `std::primitive::i32`/`i64`, `core::primitive::i32`/`i64`
+  --> tests/compile_fail/version_field_alias_path.rs:20:5
+   |
+20 | /     #[field(version)]
+21 | |     pub revision: my_mod::i32,
+   | |_____________________________^
