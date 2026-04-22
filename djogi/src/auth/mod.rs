@@ -5,11 +5,17 @@
 //! this module with the `DjogiAuth` trait and `AuthError` enum; Task 4 adds
 //! the `PasswordHash` typed field.
 //!
-//! See `docs/superpowers/plans/2026-04-19-phase5-5-auth-v3.md` for the full
-//! Phase 5.5 design.
+//! # Module layout
+//!
+//! - [`AuthContext`] — value-typed auth state attached to a `DjogiContext`.
+//! - [`DjogiAuth`] — core authentication trait; implement to plug in a
+//!   custom provider.
+//! - [`AuthError`] — authentication and authorization failure modes.
 
 use heeranjid::HeerId;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 
 /// Value-typed auth context attached to a [`crate::DjogiContext`] via
 /// [`crate::DjogiContext::with_auth`].
@@ -60,4 +66,95 @@ impl AuthContext {
     }
 }
 
+pub mod error;
+pub use error::AuthError;
+
 mod context_ext;
+
+/// Core authentication trait for Djogi.
+///
+/// `authenticate` resolves an opaque bearer token into an [`AuthContext`].
+/// `verify` authorizes a specific action against a resolved context — the
+/// default impl is authenticate-only semantics; override for real
+/// authorization.
+///
+/// # Pluggability
+///
+/// The trait is **not sealed**. Third-party providers are first-class: any
+/// crate can `impl DjogiAuth` for its own type. There is no `__sealed`
+/// module or blanket-impl gate. The `action: &dyn Any` on [`verify`] lets
+/// apps pass typed `Action` enums without adding a generic parameter to the
+/// trait — a generic would break object safety and prevent using
+/// `Arc<dyn DjogiAuth>` as a runtime-swappable provider.
+///
+/// # Object safety
+///
+/// `DjogiAuth` is object-safe. The only non-trivial requirement is that both
+/// methods return `Pin<Box<dyn Future<...> + Send>>` rather than `impl Future`
+/// — the boxing is the cost of object safety.
+///
+/// # Example
+///
+/// ```ignore
+/// struct MyProvider;
+///
+/// impl djogi::auth::DjogiAuth for MyProvider {
+///     fn authenticate<'a>(
+///         &'a self,
+///         token: &'a str,
+///     ) -> std::pin::Pin<Box<dyn std::future::Future<
+///         Output = Result<djogi::auth::AuthContext, djogi::auth::AuthError>,
+///     > + Send + 'a>> {
+///         let _ = token;
+///         Box::pin(async { Err(djogi::auth::AuthError::InvalidToken) })
+///     }
+/// }
+///
+/// // Object-safe: usable as a trait object.
+/// let _provider: std::sync::Arc<dyn djogi::auth::DjogiAuth> =
+///     std::sync::Arc::new(MyProvider);
+/// ```
+///
+/// [`verify`]: DjogiAuth::verify
+pub trait DjogiAuth: Send + Sync + 'static {
+    /// Resolve a bearer token (opaque to the trait) into an [`AuthContext`].
+    ///
+    /// The token format is entirely up to the provider — it may be a JWT, an
+    /// opaque session token, an API key, or any other credential type. The
+    /// framework passes it through without inspection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError::InvalidToken`] when the token cannot be resolved
+    /// to a known session. Returns [`AuthError::ExpiredSession`] for a valid
+    /// token that has passed its expiry. Returns [`AuthError::Provider`] for
+    /// provider-internal failures (network errors, key-fetch failures, etc.).
+    fn authenticate<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>>;
+
+    /// Authorize a specific action against a resolved [`AuthContext`].
+    ///
+    /// The default implementation returns `Ok(())` — authenticate-only
+    /// semantics. Override this method to add real authorization logic.
+    ///
+    /// `action: &dyn Any` accepts typed `Action` enums from the app. The
+    /// implementation downcasts via `action.downcast_ref::<MyAction>()` to
+    /// recover the concrete type. Using `Any` here avoids a generic type
+    /// parameter on the trait, which would break object safety.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AuthError::Denied`] when the action is not permitted.
+    /// Returns [`AuthError::MissingAuth`] when the context carries
+    /// insufficient information to evaluate the action.
+    fn verify<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        action: &'a dyn std::any::Any,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
+        let _ = (ctx, action);
+        Box::pin(async { Ok(()) })
+    }
+}

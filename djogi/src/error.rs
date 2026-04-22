@@ -165,6 +165,22 @@ impl IdGenerationError {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DjogiError {
+    /// Authentication or authorization failure bubbled up through the auth
+    /// substrate. Wraps [`AuthError`](crate::auth::AuthError) so
+    /// [`DjogiAuth::authenticate`](crate::auth::DjogiAuth::authenticate) and
+    /// [`DjogiAuth::verify`](crate::auth::DjogiAuth::verify) failures flow
+    /// through `?` inside `atomic()`-managed operations without explicit
+    /// mapping.
+    ///
+    /// # Transitivity
+    ///
+    /// Because `AuthError` is `#[non_exhaustive]`, this variant also inherits
+    /// that forward-compatibility contract at the `DjogiError` level: a
+    /// `match` on `DjogiError::Auth(e)` that then matches on `e` must still
+    /// include a wildcard arm for `AuthError`.
+    #[error("auth error: {0}")]
+    Auth(#[from] crate::auth::AuthError),
+
     /// Raw database or driver error.
     #[error("database error: {0}")]
     Db(#[source] DbError),
