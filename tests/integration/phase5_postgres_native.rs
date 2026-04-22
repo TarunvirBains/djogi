@@ -2184,24 +2184,26 @@ async fn insecurely_bypasses_rls(mut ctx: djogi::DjogiContext) {
         .expect("ctx must be pool-backed for this test")
         .clone();
 
-    // Open an atomic scope as a privileged connection (the `djogi` superuser).
+    // ── Verify that the insecure path bypasses RLS ──────────────────────────
+    // Open an atomic scope as a superuser connection (the `djogi` role).
     // Do NOT call set_tenant — app.tenant_id is intentionally unset so that
-    // a plain `TenantPost::create` would fail under FORCE ROW LEVEL SECURITY.
+    // a plain `TenantPost::create` would fail under FORCE ROW LEVEL SECURITY
+    // with a restricted role (see `set_tenant_rls_isolates_tenants` for that test).
     //
-    // We enable FORCE ROW LEVEL SECURITY on the table (done by `setup_tenant_post`)
-    // so that the policy applies even to the table owner. Then we verify that
-    // `create_insecurely` still succeeds by issuing `SET LOCAL row_security = off`
-    // before the INSERT, which requires BYPASSRLS / superuser privilege — which
-    // the `djogi` test role has.
+    // create_insecurely issues `SET LOCAL row_security = off` before the INSERT,
+    // which lifts the WITH CHECK clause evaluation for this statement. This allows
+    // superuser connections to write cross-tenant rows.
+    //
+    // Note: Verifying that the *safe* path fails with RLS requires switching to
+    // the djogi_rls_test_user restricted role (which cannot use BYPASSRLS), so
+    // that test lives separately in `set_tenant_rls_isolates_tenants`. This test
+    // focuses on proving that _insecurely succeeds when invoked by a superuser.
     let post = djogi::transaction::atomic(&pool, |tx| {
         Box::pin(async move {
-            // Verify that a plain create would fail under FORCE RLS without
-            // set_tenant, by first enabling FORCE RLS via the BYPASSRLS
-            // superuser path (still inside the tx for isolation).
-            //
+            // Intentionally do NOT call set_tenant — app.tenant_id is unset.
             // create_insecurely issues SET LOCAL row_security = off before
             // the INSERT, so the WITH CHECK clause is not evaluated and the
-            // row is written regardless of app.tenant_id being unset.
+            // row is written regardless of tenant enforcement.
             TenantPost::create_insecurely(
                 tx,
                 TenantPost {

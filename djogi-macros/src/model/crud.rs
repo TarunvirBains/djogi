@@ -1474,6 +1474,8 @@ pub fn expand(
                 /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
                 /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
                 /// on a pool-backed context the call still executes but RLS remains active.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn bulk_create_insecurely(
                     _ctx: &mut ::djogi::context::DjogiContext,
@@ -1510,6 +1512,8 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn bulk_create_insecurely<'ctx>(
                     ctx: &'ctx mut ::djogi::context::DjogiContext,
@@ -1560,6 +1564,10 @@ pub fn expand(
                 /// See [`bulk_create_insecurely`] for the rationale.
                 ///
                 /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
+                /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
+                /// on a pool-backed context the call still executes but RLS remains active.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[doc(hidden)]
                 #[track_caller]
                 pub fn bulk_upsert_insecurely(
@@ -1622,6 +1630,8 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn bulk_upsert_insecurely<'ctx>(
                     ctx: &'ctx mut ::djogi::context::DjogiContext,
@@ -1705,6 +1715,8 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call to aid audit trails.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn get_insecurely<'ctx>(
                     ctx: &'ctx mut ::djogi::context::DjogiContext,
@@ -1738,6 +1750,8 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn create_insecurely<'ctx>(
                     ctx: &'ctx mut ::djogi::context::DjogiContext,
@@ -1770,6 +1784,8 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn save_insecurely<'ctx>(
                     &'ctx mut self,
@@ -1801,6 +1817,8 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn delete_insecurely<'ctx>(
                     self,
@@ -1835,6 +1853,8 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted synchronously when the queryset is constructed.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
                 #[track_caller]
                 pub fn objects_insecurely() -> ::djogi::query::QuerySet<Self> {
                     ::djogi::__private::tracing::warn!(
@@ -1857,6 +1877,18 @@ pub fn expand(
                 ///
                 /// A `tracing::warn!` with `model`, `method`, and `caller` fields
                 /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                ///
+                /// # Type-parameter bounds
+                ///
+                /// The `F: Send + 'ctx` and `A: 'ctx` bounds are tighter than
+                /// [`bulk_update`]'s because the sync-wrapper + `#[track_caller]`
+                /// pattern requires `impl Future + Send + 'ctx` as the return type.
+                /// This in turn requires every captured value to satisfy those bounds.
+                /// `bulk_update`'s `async fn` surface infers bounds implicitly — we
+                /// cannot use `async fn` here because `#[track_caller]` would not
+                /// reflect the user's call site.
                 #[track_caller]
                 pub fn bulk_update_insecurely<'ctx, F, A>(
                     ctx: &'ctx mut ::djogi::context::DjogiContext,
