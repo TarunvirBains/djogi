@@ -2237,3 +2237,577 @@ async fn insecurely_bypasses_rls(mut ctx: djogi::DjogiContext) {
     assert_eq!(fetched.id, post.id);
     assert_eq!(fetched.org_id, 9999);
 }
+
+// ---------------------------------------------------------------------------
+// Task 11.5 — outbox worker primitives
+// ---------------------------------------------------------------------------
+//
+// These tests exercise claim_pending, mark_published, mark_failed,
+// recover_stale, and NotifyPublisher. All tests use the `worker_outbox`
+// table provisioned by 010_outbox_worker_schema.sql.
+
+#[cfg(feature = "outbox")]
+mod outbox_worker_tests {
+    use djogi::outbox::publisher::Publisher;
+    use djogi::outbox::publishers::NotifyPublisher;
+    use djogi::outbox::worker;
+    use djogi::pg::pool::DjogiPool;
+    use time::Duration;
+
+    const OUTBOX_TABLE: &str = "worker_outbox";
+
+    async fn setup_worker_outbox(ctx: &mut djogi::DjogiContext) {
+        const DDL: &str = include_str!("migrations/phase5/010_outbox_worker_schema.sql");
+        // Use raw_ddl (batch_execute / simple query protocol) for multi-
+        // statement DDL. raw_execute routes through prepare_cached, which
+        // rejects scripts with more than one statement.
+        ctx.raw_ddl(DDL)
+            .await
+            .expect("apply 010_outbox_worker_schema.sql");
+    }
+
+    /// Insert rows directly with a chosen state for test seeding.
+    async fn seed_row(ctx: &mut djogi::DjogiContext, row_id: i64, action: &str, state: &str) {
+        let payload = serde_json::json!({"row_id": row_id});
+        let sql = format!(
+            "INSERT INTO {OUTBOX_TABLE} (row_id, action, payload, state) \
+             VALUES ($1, $2, $3, $4)"
+        );
+        ctx.raw_execute(&sql, &[&row_id, &action, &payload, &state])
+            .await
+            .expect("seed_row");
+    }
+
+    /// Fetch the state of a row by its outbox primary key.
+    async fn fetch_state(ctx: &mut djogi::DjogiContext, id: djogi::HeerId) -> String {
+        ctx.raw_scalar::<String>(
+            &format!("SELECT state FROM {OUTBOX_TABLE} WHERE id = $1"),
+            &[&id.as_i64()],
+        )
+        .await
+        .expect("fetch_state")
+    }
+
+    /// Fetch retry_count for a row.
+    async fn fetch_retry_count(ctx: &mut djogi::DjogiContext, id: djogi::HeerId) -> i32 {
+        ctx.raw_scalar::<i32>(
+            &format!("SELECT retry_count FROM {OUTBOX_TABLE} WHERE id = $1"),
+            &[&id.as_i64()],
+        )
+        .await
+        .expect("fetch_retry_count")
+    }
+
+    // -------------------------------------------------------------------------
+    // claim_pending_returns_only_pending_rows
+    // -------------------------------------------------------------------------
+
+    /// Seed 3 pending + 2 processing rows. claim_pending(batch_size=10) must
+    /// return exactly 3 rows, all of which were in state 'pending'.
+    #[djogi::djogi_test]
+    async fn claim_pending_returns_only_pending_rows(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+
+        // Seed 3 pending rows.
+        seed_row(&mut ctx, 1, "create", "pending").await;
+        seed_row(&mut ctx, 2, "save", "pending").await;
+        seed_row(&mut ctx, 3, "delete", "pending").await;
+
+        // Seed 2 processing rows — claim_pending must skip these.
+        seed_row(&mut ctx, 4, "create", "processing").await;
+        seed_row(&mut ctx, 5, "create", "processing").await;
+
+        let claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 10, Duration::minutes(5))
+            .await
+            .expect("claim_pending");
+
+        assert_eq!(
+            claimed.len(),
+            3,
+            "exactly 3 pending rows should be claimed; got {claimed:?}"
+        );
+
+        // All returned rows should have row_ids 1, 2, or 3 (the pending ones).
+        let claimed_row_ids: std::collections::HashSet<i64> =
+            claimed.iter().map(|r| r.row_id).collect();
+        assert!(
+            claimed_row_ids.contains(&1),
+            "row_id 1 must be in claimed batch"
+        );
+        assert!(
+            claimed_row_ids.contains(&2),
+            "row_id 2 must be in claimed batch"
+        );
+        assert!(
+            claimed_row_ids.contains(&3),
+            "row_id 3 must be in claimed batch"
+        );
+
+        // After claim, all 3 must be in 'processing' state in the DB.
+        for row in &claimed {
+            let state = fetch_state(&mut ctx, row.id).await;
+            assert_eq!(
+                state, "processing",
+                "claimed row must be in 'processing' state after claim_pending"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // claim_pending_batch_size_respected
+    // -------------------------------------------------------------------------
+
+    /// Seed 5 pending rows; claim with batch_size=2. Only 2 rows are returned.
+    #[djogi::djogi_test]
+    async fn claim_pending_batch_size_respected(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+
+        for i in 1..=5i64 {
+            seed_row(&mut ctx, i, "create", "pending").await;
+        }
+
+        let claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 2, Duration::minutes(5))
+            .await
+            .expect("claim_pending batch_size=2");
+
+        assert_eq!(
+            claimed.len(),
+            2,
+            "claim_pending with batch_size=2 must return at most 2 rows"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // claim_pending_skips_locked_rows
+    // -------------------------------------------------------------------------
+
+    /// Two concurrent claim_pending calls on the same table must return
+    /// disjoint sets. We simulate this by running two sequential claims after
+    /// each other — since the first claim transitions rows to 'processing',
+    /// the second claim must skip them and return different rows.
+    ///
+    /// Note: SKIP LOCKED is most impactful in a truly concurrent scenario (two
+    /// connections claiming in parallel). The sequential simulation here
+    /// verifies the state-machine invariant (processing rows are not re-claimed)
+    /// which is the observable outcome of SKIP LOCKED from a single-connection
+    /// perspective.
+    #[djogi::djogi_test]
+    async fn claim_pending_skips_locked_rows(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+
+        // Seed 4 rows.
+        for i in 1..=4i64 {
+            seed_row(&mut ctx, i, "create", "pending").await;
+        }
+
+        // First claim: grab 2 rows.
+        let first_batch = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 2, Duration::minutes(5))
+            .await
+            .expect("first claim_pending");
+        assert_eq!(first_batch.len(), 2);
+
+        // Second claim: must return the other 2, not the already-claimed rows.
+        let second_batch = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 2, Duration::minutes(5))
+            .await
+            .expect("second claim_pending");
+        assert_eq!(second_batch.len(), 2);
+
+        // The two batches must be disjoint.
+        let first_ids: std::collections::HashSet<djogi::HeerId> =
+            first_batch.iter().map(|r| r.id).collect();
+        let second_ids: std::collections::HashSet<djogi::HeerId> =
+            second_batch.iter().map(|r| r.id).collect();
+        assert!(
+            first_ids.is_disjoint(&second_ids),
+            "two sequential claim_pending calls must return disjoint rows"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // mark_published_transitions_to_published
+    // -------------------------------------------------------------------------
+
+    #[djogi::djogi_test]
+    async fn mark_published_transitions_to_published(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+        seed_row(&mut ctx, 42, "create", "pending").await;
+
+        // Claim the row.
+        let claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
+            .await
+            .expect("claim");
+        assert_eq!(claimed.len(), 1);
+
+        let row = &claimed[0];
+        assert_eq!(
+            fetch_state(&mut ctx, row.id).await,
+            "processing",
+            "row must be processing after claim"
+        );
+
+        // Mark published.
+        worker::mark_published(&mut ctx, OUTBOX_TABLE, row.id)
+            .await
+            .expect("mark_published");
+
+        assert_eq!(
+            fetch_state(&mut ctx, row.id).await,
+            "published",
+            "row must be in terminal 'published' state after mark_published"
+        );
+
+        // Published row must NOT be re-claimable.
+        let re_claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 10, Duration::minutes(5))
+            .await
+            .expect("re-claim after published");
+        assert!(
+            re_claimed.is_empty(),
+            "published row must not be re-claimable"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // mark_failed_retryable_returns_to_pending
+    // -------------------------------------------------------------------------
+
+    /// A retryable failure below the retry budget returns the row to 'pending'
+    /// and increments retry_count.
+    #[djogi::djogi_test]
+    async fn mark_failed_retryable_returns_to_pending(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+        seed_row(&mut ctx, 99, "create", "pending").await;
+
+        let claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
+            .await
+            .expect("claim");
+        let row = &claimed[0];
+
+        // Mark failed with retryable=true. retry_count starts at 0 < MAX (10).
+        worker::mark_failed(
+            &mut ctx,
+            OUTBOX_TABLE,
+            row.id,
+            "transient connection timeout",
+            true,
+        )
+        .await
+        .expect("mark_failed retryable");
+
+        // Row must be back to 'pending'.
+        assert_eq!(
+            fetch_state(&mut ctx, row.id).await,
+            "pending",
+            "retryable failed row must return to 'pending' state"
+        );
+
+        // retry_count must be incremented.
+        assert_eq!(
+            fetch_retry_count(&mut ctx, row.id).await,
+            1,
+            "retry_count must be 1 after first retryable failure"
+        );
+
+        // The row must be re-claimable.
+        let re_claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
+            .await
+            .expect("re-claim after retry");
+        assert_eq!(re_claimed.len(), 1, "retried row must be re-claimable");
+    }
+
+    // -------------------------------------------------------------------------
+    // mark_failed_permanent_stays_terminal
+    // -------------------------------------------------------------------------
+
+    /// A non-retryable failure terminally transitions the row to 'failed'.
+    #[djogi::djogi_test]
+    async fn mark_failed_permanent_stays_terminal(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+        seed_row(&mut ctx, 77, "save", "pending").await;
+
+        let claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
+            .await
+            .expect("claim");
+        let row = &claimed[0];
+
+        // Mark failed with retryable=false.
+        worker::mark_failed(
+            &mut ctx,
+            OUTBOX_TABLE,
+            row.id,
+            "schema validation failed — permanent",
+            false,
+        )
+        .await
+        .expect("mark_failed permanent");
+
+        // Row must be in terminal 'failed' state.
+        assert_eq!(
+            fetch_state(&mut ctx, row.id).await,
+            "failed",
+            "non-retryable row must be in terminal 'failed' state"
+        );
+
+        // Failed row must NOT be re-claimable.
+        let re_claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 10, Duration::minutes(5))
+            .await
+            .expect("re-claim after permanent failure");
+        assert!(
+            re_claimed.is_empty(),
+            "permanently failed row must not be re-claimable"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // mark_failed_budget_exhausted_stays_terminal
+    // -------------------------------------------------------------------------
+
+    /// A retryable failure that has already hit MAX_RETRY_COUNT must also
+    /// transition to terminal 'failed' rather than returning to 'pending'.
+    #[djogi::djogi_test]
+    async fn mark_failed_budget_exhausted_stays_terminal(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+
+        // Insert a row that already has retry_count = MAX_RETRY_COUNT.
+        let max = worker::MAX_RETRY_COUNT;
+        let sql = format!(
+            "INSERT INTO {OUTBOX_TABLE} (row_id, action, payload, state, retry_count) \
+             VALUES ($1, 'create', '{{}}', 'pending', {max})"
+        );
+        ctx.raw_execute(&sql, &[&55i64])
+            .await
+            .expect("seed row at max retry_count");
+
+        let claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
+            .await
+            .expect("claim");
+        let row = &claimed[0];
+
+        // Even though retryable=true, budget is exhausted — must go to 'failed'.
+        worker::mark_failed(
+            &mut ctx,
+            OUTBOX_TABLE,
+            row.id,
+            "transient but budget exhausted",
+            true,
+        )
+        .await
+        .expect("mark_failed at budget");
+
+        assert_eq!(
+            fetch_state(&mut ctx, row.id).await,
+            "failed",
+            "row at retry budget must transition to terminal 'failed' even if retryable=true"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // recover_stale_moves_expired_leases_back_to_pending
+    // -------------------------------------------------------------------------
+
+    /// A 'processing' row whose `leased_until` is in the past must be moved
+    /// back to 'pending' by recover_stale.
+    #[djogi::djogi_test]
+    async fn recover_stale_moves_expired_leases_back_to_pending(mut ctx: djogi::DjogiContext) {
+        setup_worker_outbox(&mut ctx).await;
+
+        // Insert a 'processing' row with leased_until in the distant past.
+        let sql = format!(
+            "INSERT INTO {OUTBOX_TABLE} (row_id, action, payload, state, leased_until) \
+             VALUES ($1, 'create', '{{}}', 'processing', now() - interval '1 hour')"
+        );
+        ctx.raw_execute(&sql, &[&111i64])
+            .await
+            .expect("seed stale processing row");
+
+        // Insert a 'processing' row with leased_until in the future — must NOT be recovered.
+        let sql2 = format!(
+            "INSERT INTO {OUTBOX_TABLE} (row_id, action, payload, state, leased_until) \
+             VALUES ($1, 'create', '{{}}', 'processing', now() + interval '1 hour')"
+        );
+        ctx.raw_execute(&sql2, &[&222i64])
+            .await
+            .expect("seed active processing row");
+
+        // recover_stale with a 10-minute threshold. The stale row has lease
+        // 1 hour old (> 10 minutes), the active row has 1 hour in the future.
+        let recovered = worker::recover_stale(&mut ctx, OUTBOX_TABLE, Duration::minutes(10))
+            .await
+            .expect("recover_stale");
+
+        assert_eq!(
+            recovered, 1,
+            "exactly 1 stale row should be recovered; got {recovered}"
+        );
+
+        // The stale row must now be 'pending'.
+        let stale_state = ctx
+            .raw_scalar::<String>(
+                &format!("SELECT state FROM {OUTBOX_TABLE} WHERE row_id = 111"),
+                &[],
+            )
+            .await
+            .expect("fetch stale row state");
+        assert_eq!(
+            stale_state, "pending",
+            "stale row must be returned to 'pending'"
+        );
+
+        // The active row must remain 'processing'.
+        let active_state = ctx
+            .raw_scalar::<String>(
+                &format!("SELECT state FROM {OUTBOX_TABLE} WHERE row_id = 222"),
+                &[],
+            )
+            .await
+            .expect("fetch active row state");
+        assert_eq!(
+            active_state, "processing",
+            "row with future lease must remain 'processing'"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // notify_publisher_emits_pg_notify
+    // -------------------------------------------------------------------------
+
+    /// Seed a pending row, claim it, then publish via NotifyPublisher. A
+    /// separate LISTEN connection spawned before the publish must receive the
+    /// notification.
+    ///
+    /// In tokio-postgres 0.7, `AsyncMessage::Notification` is delivered through
+    /// the `Connection` future's internal poll loop. We drive the connection in
+    /// a task that forwards notifications through a `tokio::sync::mpsc` channel
+    /// so the test body can await them with a timeout.
+    ///
+    /// The publisher uses a pool-backed context (autocommit per statement) so
+    /// `pg_notify` fires immediately — no explicit COMMIT needed.
+    ///
+    /// # URL derivation
+    ///
+    /// The `#[djogi_test]` harness creates a fresh `djogi_test_<uuid>` database
+    /// for every test. It gives us a `DjogiContext` backed by a pool connected
+    /// to that per-test DB, but does not update the `DATABASE_URL` env var. We
+    /// derive the per-test URL by querying `current_database()` and splicing that
+    /// name into the admin `DATABASE_URL` (replacing its trailing path component).
+    #[djogi::djogi_test]
+    async fn notify_publisher_emits_pg_notify(mut ctx: djogi::DjogiContext) {
+        use tokio_postgres::{AsyncMessage, NoTls};
+
+        setup_worker_outbox(&mut ctx).await;
+
+        // Derive the per-test database URL from DATABASE_URL + current_database().
+        let admin_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for NOTIFY test");
+        let current_db: String = ctx
+            .raw_scalar::<String>("SELECT current_database()", &[])
+            .await
+            .expect("SELECT current_database()");
+
+        // Replace the database component of the URL. DATABASE_URL may look like:
+        //   postgres://user:pass@host:port/dbname
+        //   postgres://user:pass@host/dbname   (no port)
+        // We find the last '/' and replace everything after it.
+        let test_url = {
+            if let Some(slash_pos) = admin_url.rfind('/') {
+                format!("{}/{}", &admin_url[..slash_pos], current_db)
+            } else {
+                // Unlikely: URL has no slash after the host. Fall back to admin URL.
+                admin_url.clone()
+            }
+        };
+
+        // ---- LISTEN connection (raw tokio_postgres) ----
+        let (listen_client, mut listen_conn) = tokio_postgres::connect(&test_url, NoTls)
+            .await
+            .expect("connect listen_client");
+
+        // Channel to forward notifications to the test body.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tokio_postgres::Notification>();
+
+        // Drive the connection. Capture AsyncMessage::Notification and forward
+        // them to the test body via the mpsc sender.
+        tokio::spawn(async move {
+            loop {
+                // `poll_fn` wraps the Connection's poll_message into a Future so
+                // we can await it. Returns None when the connection is closed.
+                let msg = futures::future::poll_fn(|cx| listen_conn.poll_message(cx)).await;
+                match msg {
+                    None => break, // connection closed
+                    Some(Ok(AsyncMessage::Notification(n))) => {
+                        let _ = tx.send(n);
+                    }
+                    Some(Ok(_)) => {} // notice or other async message — ignore
+                    Some(Err(_)) => break,
+                }
+            }
+        });
+
+        // Register the listener before publishing so we don't miss the notification.
+        let channel = "test_outbox_notify";
+        listen_client
+            .execute(&format!("LISTEN {channel}"), &[])
+            .await
+            .expect("LISTEN");
+
+        // ---- Seed + claim + publish ----
+        seed_row(&mut ctx, 7, "create", "pending").await;
+
+        // Build a DjogiPool from the per-test URL for the publisher.
+        let pool = DjogiPool::connect(&test_url)
+            .await
+            .expect("build pool for NotifyPublisher");
+
+        let publisher = NotifyPublisher::new(pool.clone(), channel.to_string());
+
+        let claimed = worker::claim_pending(&mut ctx, OUTBOX_TABLE, 1, Duration::minutes(5))
+            .await
+            .expect("claim");
+        assert_eq!(claimed.len(), 1);
+
+        // Publish — NotifyPublisher issues SELECT pg_notify($1, $2) outside any
+        // transaction (pool-backed context), so the notification fires immediately.
+        publisher
+            .publish(&claimed[0])
+            .await
+            .expect("publish via NotifyPublisher");
+
+        // ---- Assert the NOTIFY arrived ----
+        let notification = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("NOTIFY must arrive within 5 seconds")
+            .expect("notification channel must not be closed before receiving");
+
+        assert_eq!(notification.channel(), channel, "NOTIFY channel must match");
+
+        // The payload is the JSON string of `claimed[0].payload`.
+        let expected_payload = claimed[0].payload.to_string();
+        assert_eq!(
+            notification.payload(),
+            expected_payload,
+            "NOTIFY payload must be the JSON-stringified outbox row payload"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // invalid_table_name_rejected
+    // -------------------------------------------------------------------------
+
+    /// A table name with a dot (schema.table) must be rejected before any SQL
+    /// is issued. This tests the identifier validation gate in all worker
+    /// primitives.
+    #[djogi::djogi_test]
+    async fn invalid_table_name_rejected(mut ctx: djogi::DjogiContext) {
+        let result = worker::claim_pending(&mut ctx, "schema.table", 1, Duration::minutes(5)).await;
+        assert!(
+            result.is_err(),
+            "table name with dot must be rejected by validate_table_ident"
+        );
+
+        let result2 =
+            worker::mark_published(&mut ctx, "1bad", djogi::HeerId::from_i64(1).unwrap()).await;
+        assert!(
+            result2.is_err(),
+            "table name starting with digit must be rejected"
+        );
+    }
+}

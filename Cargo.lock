@@ -420,6 +420,7 @@ checksum = "aeda16ab4059c5fd2a83f2b9c9e9c981327b18aa8e3b313f7e6563799d4f093e"
 name = "djogi"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "deadpool-postgres",
  "djogi-macros",
