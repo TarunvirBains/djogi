@@ -37,6 +37,7 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 ## Planning
 
 - [Implementation Plan](./implementation-plan.md) — phased build sequence targeting production readiness without ORM-induced performance regressions
+- [Adoption Readiness](./adoption-readiness.md) — per-pattern map of the earliest phase at which each production-app use case is safe to depend on
 - [ORM Gap Analysis](./orm-gap-analysis.md) — Django 6.0 deep dive, functional gaps, and where Djogi can do better
 
 ## Background
