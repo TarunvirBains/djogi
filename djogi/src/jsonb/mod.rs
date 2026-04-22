@@ -40,9 +40,11 @@
 //! the known key set.
 
 pub mod path;
+pub mod schema;
 pub mod unknown;
 
 pub use path::JsonbPathRef;
+pub use schema::JsonbSchema;
 pub use unknown::{UnknownField, UnknownFieldError, UnknownFieldExt};
 
 use bytes::BytesMut;
@@ -86,6 +88,20 @@ pub struct Jsonb<T> {
     /// Unknown keys — keys present in the database object but absent from
     /// `T`'s schema. Preserved verbatim across every `save()`.
     pub(crate) extra: IndexMap<String, UnknownField>,
+}
+
+impl<T: Default> Default for Jsonb<T> {
+    /// Construct a `Jsonb<T>` with `T::default()` and an empty `extra` map.
+    ///
+    /// Required so that model structs containing `Jsonb<T>` can derive
+    /// `Default` (the `#[model]` macro emits a `Default` impl for the
+    /// whole struct, which propagates to every field).
+    fn default() -> Self {
+        Jsonb {
+            data: T::default(),
+            extra: IndexMap::new(),
+        }
+    }
 }
 
 impl<T> Jsonb<T> {

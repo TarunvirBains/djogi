@@ -757,6 +757,36 @@ impl<M: Model, T> FieldRef<M, Jsonb<T>> {
     pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
         crate::jsonb::JsonbPathRef::new(self.column, dotted)
     }
+
+    /// Enter the compile-time typed path tree for this JSONB column.
+    ///
+    /// Returns `T::Path<M>` — the derive-generated tree that provides one
+    /// method per field of `T`. Scalar fields return a
+    /// [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef) ready for
+    /// comparison; nested fields return the nested type's `Path<M>`.
+    ///
+    /// `T` must implement [`JsonbSchema`](crate::jsonb::JsonbSchema) (done
+    /// by adding `#[derive(JsonbSchema)]` to the schema struct). If `T`
+    /// does not implement `JsonbSchema` the compiler reports a trait-bound
+    /// error at the `#[derive(Model)]` site.
+    ///
+    /// The flat [`path`](Self::path) escape hatch remains available when you
+    /// need dynamic paths or types outside the cast-matrix allowlist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Vehicle::objects()
+    ///     .filter(|f| f.specs().typed().engine.cylinders.gt(4))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
+    pub fn typed(self) -> T::Path<M>
+    where
+        T: crate::jsonb::JsonbSchema,
+    {
+        T::root_path::<M>(self.column)
+    }
 }
 
 /// `path()` is also available on nullable JSONB columns (`Option<Jsonb<T>>`).
@@ -774,6 +804,19 @@ impl<M: Model, T> FieldRef<M, Option<Jsonb<T>>> {
     #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
     pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
         crate::jsonb::JsonbPathRef::new(self.column, dotted)
+    }
+
+    /// Enter the compile-time typed path tree for this nullable JSONB column.
+    ///
+    /// Rows where the column IS NULL are excluded by comparisons (SQL NULL
+    /// semantics). Otherwise identical to the non-nullable variant —
+    /// see [`FieldRef<M, Jsonb<T>>::typed`].
+    #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
+    pub fn typed(self) -> T::Path<M>
+    where
+        T: crate::jsonb::JsonbSchema,
+    {
+        T::root_path::<M>(self.column)
     }
 }
 

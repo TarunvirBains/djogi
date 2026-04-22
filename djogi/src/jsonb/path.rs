@@ -123,6 +123,26 @@ impl<M, V> JsonbPathRef<M, V> {
         }
     }
 
+    /// Construct a `JsonbPathRef` from macro-generated code in user crates.
+    ///
+    /// Exposed for `#[derive(JsonbSchema)]` output. Validates the path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any segment of `path` violates the plain-identifier rules
+    /// (same rules as [`validate_dotted_path`]). The `#[derive(JsonbSchema)]`
+    /// macro only emits field name literals as segments, so this is a
+    /// safety net rather than a normal code path.
+    #[doc(hidden)]
+    pub fn __from_macro(column: &'static str, path: &'static str) -> Self {
+        validate_dotted_path(path);
+        JsonbPathRef {
+            column,
+            path,
+            _phantom: PhantomData,
+        }
+    }
+
     /// The column name, for SQL emission.
     #[doc(hidden)]
     pub fn column(self) -> &'static str {

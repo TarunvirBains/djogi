@@ -459,6 +459,7 @@ dependencies = [
  "djogi",
  "proc-macro2",
  "quote",
+ "serde",
  "syn 2.0.117",
  "trybuild",
 ]

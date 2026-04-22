@@ -16,6 +16,7 @@
 
 mod djogi_enum;
 mod ident;
+mod jsonb_schema;
 mod many_to_many;
 mod model;
 mod reverse_relation;
@@ -182,6 +183,56 @@ pub fn many_to_many(input: TokenStream) -> TokenStream {
 #[proc_macro_derive(DjogiEnum, attributes(djogi_enum, djogi_enum_variant))]
 pub fn derive_djogi_enum(input: TokenStream) -> TokenStream {
     djogi_enum::expand(input.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
+
+/// Derive the typed JSONB deep-path API for a schema struct.
+///
+/// Applying this derive to a named struct causes the macro to emit a
+/// `{T}Path<M>` struct with one method per field. Scalar fields (from the
+/// cast-matrix allowlist: `i16`, `i32`, `i64`, `f32`, `f64`, `bool`,
+/// `String`, `time::OffsetDateTime`, `time::Date`, `uuid::Uuid`,
+/// `rust_decimal::Decimal`, `serde_json::Value`, `HeerId`, `RanjId`) return
+/// a [`JsonbPathRef<M, FieldType>`](djogi::jsonb::JsonbPathRef) ready for
+/// comparison. All other field types are assumed to implement `JsonbSchema`
+/// and their method returns the nested type's `Path<M>` with the path
+/// accumulator extended.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use djogi::JsonbSchema;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(JsonbSchema, Serialize, Deserialize, Default)]
+/// pub struct EngineSpecs {
+///     pub cylinders: i32,
+///     pub displacement_cc: f32,
+/// }
+///
+/// #[derive(JsonbSchema, Serialize, Deserialize, Default)]
+/// pub struct VehicleSpecs {
+///     pub engine: EngineSpecs,
+///     pub weight_kg: f32,
+/// }
+/// ```
+///
+/// Then in a filter closure:
+///
+/// ```rust,ignore
+/// Vehicle::objects()
+///     .filter(|f| f.specs().typed().engine.cylinders.gt(4))
+///     .fetch_all(&mut ctx).await?
+/// ```
+///
+/// # Compile errors
+///
+/// - Non-struct (enum, union) → "can only be applied to named structs".
+/// - Tuple struct → "requires a named struct — tuple structs are not supported".
+#[proc_macro_derive(JsonbSchema)]
+pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
+    jsonb_schema::expand(input.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

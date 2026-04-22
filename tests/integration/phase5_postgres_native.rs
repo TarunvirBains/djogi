@@ -1135,3 +1135,226 @@ async fn jsonb_path_cast_matrix_i32_filter_correct(mut ctx: djogi::DjogiContext)
         "post with cylinders=2 must NOT appear when filtering engine_cylinders > 4"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 6 — #[derive(JsonbSchema)] typed deep-path JSONB queries
+// ---------------------------------------------------------------------------
+//
+// These tests use `VehicleDeep` (to avoid name collision with the Task 4
+// `Vehicle` model) with two levels of nested JsonbSchema structs:
+//
+//   VehicleDeepSpecs          ← depth 0 (root)
+//     engine: EngineDeepSpecs ← depth 1 (nested)
+//       cylinders: i32        ← depth 2 leaf
+//       turbo: bool           ← depth 2 leaf
+//     weight_kg: f32          ← depth 1 leaf
+//     brand: String           ← depth 1 leaf
+//
+// The flat escape-hatch path (`.path::<i32>("engine.cylinders")`) and the
+// typed path (`.typed().engine().cylinders()`) must emit the same SQL and
+// return the same rows.
+
+/// Innermost schema for the engine portion of a vehicle spec.
+#[derive(djogi::JsonbSchema, Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+pub struct EngineDeepSpecs {
+    pub cylinders: i32,
+    pub turbo: bool,
+    pub displacement_cc: f32,
+}
+
+/// Top-level schema for the `specs` JSONB column of `VehicleDeep`.
+#[derive(djogi::JsonbSchema, Serialize, Deserialize, Default, Debug, Clone, PartialEq)]
+pub struct VehicleDeepSpecs {
+    pub engine: EngineDeepSpecs,
+    pub weight_kg: f32,
+    pub brand: String,
+}
+
+/// Vehicle model whose `specs` column is a nested JSONB schema.
+///
+/// Table provisioned by `006_vehicles_deep.sql`.
+#[model(table = "vehicles_deep")]
+#[derive(Debug, Clone)]
+pub struct VehicleDeep {
+    pub name: String,
+    pub specs: Option<Jsonb<VehicleDeepSpecs>>,
+}
+
+/// Apply the vehicles_deep table DDL.
+async fn setup_vehicles_deep(ctx: &mut djogi::DjogiContext) {
+    setup_phase5(ctx).await;
+    const DDL: &str = include_str!("migrations/phase5/006_vehicles_deep.sql");
+    ctx.raw_execute(DDL, &[])
+        .await
+        .expect("apply 006_vehicles_deep.sql");
+}
+
+/// Helper: create a VehicleDeep with the given spec JSON, inserting it via
+/// `VehicleDeep::create`. Returns the created row (with DB-assigned id).
+async fn make_vehicle_deep(
+    ctx: &mut djogi::DjogiContext,
+    name: &str,
+    cylinders: i32,
+    turbo: bool,
+    weight_kg: f32,
+    brand: &str,
+) -> VehicleDeep {
+    let specs = VehicleDeepSpecs {
+        engine: EngineDeepSpecs {
+            cylinders,
+            turbo,
+            displacement_cc: 2000.0,
+        },
+        weight_kg,
+        brand: brand.to_string(),
+    };
+    VehicleDeep::create(
+        ctx,
+        VehicleDeep {
+            name: name.to_string(),
+            specs: Some(Jsonb::new(specs)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create VehicleDeep")
+}
+
+// ── Depth-2 filter via typed path ─────────────────────────────────────────────
+
+/// Filter at depth 2 via the typed path: `specs.engine.cylinders > 4`.
+///
+/// The typed path `.specs().typed().engine().cylinders().gt(4)` must emit:
+///
+/// ```sql
+/// (specs->'engine'->>'cylinders')::int4 > $1
+/// ```
+///
+/// This is identical to the flat escape hatch
+/// `.specs().path::<i32>("engine.cylinders").gt(4)`.
+#[djogi::djogi_test]
+async fn typed_jsonb_depth2_filter_cylinders(mut ctx: djogi::DjogiContext) {
+    setup_vehicles_deep(&mut ctx).await;
+
+    let v8 = make_vehicle_deep(&mut ctx, "V8 Beast", 8, false, 1800.0, "BrandA").await;
+    let eco = make_vehicle_deep(&mut ctx, "Eco Car", 3, false, 1200.0, "BrandB").await;
+
+    // Typed deep path: specs->engine->cylinders > 4.
+    let found = VehicleDeep::objects()
+        .filter(|f| f.specs().typed().engine().cylinders().gt(4))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("typed depth-2 filter");
+
+    assert!(
+        found.iter().any(|v| v.id == v8.id),
+        "V8 (cylinders=8) must appear in cylinders > 4 filter"
+    );
+    assert!(
+        !found.iter().any(|v| v.id == eco.id),
+        "Eco (cylinders=3) must NOT appear in cylinders > 4 filter"
+    );
+}
+
+/// Verify typed depth-2 filter and flat escape-hatch filter return the same rows.
+///
+/// Both expressions should emit `(specs->'engine'->>'cylinders')::int4 > $1`.
+/// Running both on the same DB state and asserting equal result sets proves
+/// the typed path is not emitting a different SQL expression than the flat one.
+#[djogi::djogi_test]
+async fn typed_path_matches_flat_path_same_sql(mut ctx: djogi::DjogiContext) {
+    setup_vehicles_deep(&mut ctx).await;
+
+    let v8 = make_vehicle_deep(&mut ctx, "Turbo V8", 8, true, 1900.0, "SportsCo").await;
+    let inline4 = make_vehicle_deep(&mut ctx, "Inline 4", 4, false, 1400.0, "EcoCo").await;
+    let v6 = make_vehicle_deep(&mut ctx, "V6 Touring", 6, false, 1600.0, "TourCo").await;
+
+    // Typed path filter: cylinders > 4.
+    let typed_results = VehicleDeep::objects()
+        .filter(|f| f.specs().typed().engine().cylinders().gt(4))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("typed path filter");
+
+    // Flat escape-hatch filter: same predicate, same threshold.
+    let flat_results = VehicleDeep::objects()
+        .filter(|f| f.specs().path::<i32>("engine.cylinders").gt(4))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("flat path filter");
+
+    // Both result sets must contain the same IDs.
+    let mut typed_ids: Vec<djogi::types::HeerId> = typed_results.iter().map(|v| v.id).collect();
+    let mut flat_ids: Vec<djogi::types::HeerId> = flat_results.iter().map(|v| v.id).collect();
+    typed_ids.sort_unstable();
+    flat_ids.sort_unstable();
+
+    assert_eq!(
+        typed_ids, flat_ids,
+        "typed path and flat escape-hatch must return identical rows for cylinders > 4"
+    );
+
+    // Spot-check: V8 (8 cyl) and V6 (6 cyl) must appear; inline4 (4 cyl) must not.
+    assert!(typed_ids.contains(&v8.id), "V8 must appear");
+    assert!(typed_ids.contains(&v6.id), "V6 must appear");
+    assert!(
+        !typed_ids.contains(&inline4.id),
+        "Inline4 (=4) must NOT appear"
+    );
+}
+
+// ── Depth-1 filter via typed path ─────────────────────────────────────────────
+
+/// Filter at depth 1 via the typed path: `specs.weight_kg > 1500`.
+///
+/// Emits: `(specs->>'weight_kg')::float4 > $1`
+#[djogi::djogi_test]
+async fn typed_jsonb_depth1_filter_weight(mut ctx: djogi::DjogiContext) {
+    setup_vehicles_deep(&mut ctx).await;
+
+    let heavy = make_vehicle_deep(&mut ctx, "Heavy Truck", 8, false, 2500.0, "TruckCo").await;
+    let light = make_vehicle_deep(&mut ctx, "Light Sedan", 4, false, 1100.0, "SedanCo").await;
+
+    let heavy_found = VehicleDeep::objects()
+        .filter(|f| f.specs().typed().weight_kg().gt(1500.0_f32))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("depth-1 weight_kg filter");
+
+    assert!(
+        heavy_found.iter().any(|v| v.id == heavy.id),
+        "Heavy truck (2500kg) must appear in weight_kg > 1500 filter"
+    );
+    assert!(
+        !heavy_found.iter().any(|v| v.id == light.id),
+        "Light sedan (1100kg) must NOT appear in weight_kg > 1500 filter"
+    );
+}
+
+// ── Boolean filter via typed path ─────────────────────────────────────────────
+
+/// Filter by boolean field at depth 2: `specs.engine.turbo == true`.
+///
+/// Emits: `(specs->'engine'->>'turbo')::boolean = $1`
+#[djogi::djogi_test]
+async fn typed_jsonb_depth2_filter_bool(mut ctx: djogi::DjogiContext) {
+    setup_vehicles_deep(&mut ctx).await;
+
+    let turbo = make_vehicle_deep(&mut ctx, "Turbo Sports", 4, true, 1500.0, "TurboCo").await;
+    let no_turbo = make_vehicle_deep(&mut ctx, "NA Engine", 4, false, 1500.0, "NACo").await;
+
+    let turbo_found = VehicleDeep::objects()
+        .filter(|f| f.specs().typed().engine().turbo().eq(true))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("depth-2 turbo bool filter");
+
+    assert!(
+        turbo_found.iter().any(|v| v.id == turbo.id),
+        "Turbo vehicle must appear when filtering engine.turbo = true"
+    );
+    assert!(
+        !turbo_found.iter().any(|v| v.id == no_turbo.id),
+        "Non-turbo vehicle must NOT appear when filtering engine.turbo = true"
+    );
+}
