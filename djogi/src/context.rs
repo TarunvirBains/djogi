@@ -132,6 +132,20 @@ pub struct DjogiContext {
     pub(crate) applied_tenant_id: Option<String>,
 }
 
+/// Snapshot of the auth-related mutable state on a [`DjogiContext`],
+/// taken before entering a nested `atomic()` savepoint and restored on
+/// rollback so the in-memory trackers stay in sync with Postgres's
+/// actual GUC state after a savepoint rollback reverts the inner
+/// `SET LOCAL`. Phase 5.5 phase-boundary fixup (Codex stop-gate review
+/// of the full `phase-5-5-auth` branch).
+#[doc(hidden)]
+pub struct AuthStateSnapshot {
+    pub(crate) auth: Option<AuthContext>,
+    pub(crate) applied_tenant_id: Option<String>,
+    pub(crate) tenant_set: bool,
+    pub(crate) tenant_scope_suppressed: bool,
+}
+
 /// Internal enum selecting the active context variant.
 ///
 /// `#[doc(hidden)] pub` because framework modules pattern-match on this
@@ -341,6 +355,31 @@ impl DjogiContext {
         tenant_id: &str,
     ) -> Result<(), crate::DjogiError> {
         self.ensure_tenant_set(tenant_id).await
+    }
+
+    /// Snapshot the auth-related mutable state (`auth`, `applied_tenant_id`,
+    /// `tenant_set`, `tenant_scope_suppressed`) so a nested `atomic()`
+    /// savepoint can restore these fields on rollback to stay in sync
+    /// with Postgres after the inner `SET LOCAL` is reverted.
+    pub(crate) fn snapshot_auth_state(&self) -> AuthStateSnapshot {
+        AuthStateSnapshot {
+            auth: self.auth.clone(),
+            applied_tenant_id: self.applied_tenant_id.clone(),
+            tenant_set: self.tenant_set,
+            tenant_scope_suppressed: self.tenant_scope_suppressed,
+        }
+    }
+
+    /// Restore auth-related state captured by
+    /// [`Self::snapshot_auth_state`]. Called by the nested `atomic()`
+    /// path on rollback paths (closure returned Err, or panicked) so
+    /// the in-memory trackers reflect the post-rollback GUC state that
+    /// Postgres presents.
+    pub(crate) fn restore_auth_state(&mut self, snapshot: AuthStateSnapshot) {
+        self.auth = snapshot.auth;
+        self.applied_tenant_id = snapshot.applied_tenant_id;
+        self.tenant_set = snapshot.tenant_set;
+        self.tenant_scope_suppressed = snapshot.tenant_scope_suppressed;
     }
 
     // -------------------------------------------------------------------------
@@ -779,6 +818,28 @@ impl DjogiContext {
         .await?;
         self.tenant_set = true;
         self.applied_tenant_id = Some(tenant_id.to_owned());
+        Ok(())
+    }
+
+    /// Clear the `app.tenant_id` GUC for the current transaction by
+    /// issuing `SELECT set_config('app.tenant_id', '', true)`, then reset
+    /// the in-memory `applied_tenant_id` / `tenant_set` trackers.
+    ///
+    /// Used by the auto-tenant integration (Phase 5.5 Task 10) when auth
+    /// is swapped from an identity carrying `tenant_id = Some(...)` to one
+    /// that has no tenant scope (`tenant_id = None`): without this reset,
+    /// the earlier `SET LOCAL` would remain in effect for the rest of the
+    /// transaction and subsequent tenant-keyed queries would silently
+    /// leak across tenants. Issues an empty-string value which the `=`
+    /// predicate in `current_setting('app.tenant_id', true)`-based RLS
+    /// policies treats as unmatched, and which fails the `::bigint` cast
+    /// on numeric tenant_key columns — the net effect is "no rows
+    /// visible" rather than "rows under the old tenant visible".
+    pub async fn clear_tenant(&mut self) -> Result<(), DjogiError> {
+        self.execute("SELECT set_config('app.tenant_id', $1, true)", &[&""])
+            .await?;
+        self.tenant_set = false;
+        self.applied_tenant_id = None;
         Ok(())
     }
 

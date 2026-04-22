@@ -110,21 +110,46 @@ fn acc_into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + S
 /// cloning the `String` drops that borrow before `ctx.ensure_tenant_set`
 /// takes `&mut ctx`.
 ///
-/// No-ops when:
-/// - `T::descriptor().tenant_key` is `None` (model has no RLS column).
-/// - `ctx.auth()` returns `None` (no auth context attached).
-/// - `ctx.auth().tenant_id` is `None` (auth present but no tenant scope).
-/// - `ctx.tenant_set` is already `true` (`ensure_tenant_set` short-circuits).
+/// Behavior by case:
+///
+/// - `T::descriptor().tenant_key` is `None` → no-op (model has no RLS column).
+/// - `ctx.auth()` is `None` → no-op (no auth context attached; pre-auth
+///   or non-tenant code path).
+/// - `ctx.auth().tenant_id` is `Some(tid)` → delegates to
+///   `ctx.ensure_tenant_set(tid)` which re-issues `SET LOCAL` when the
+///   requested tid differs from the currently-applied one.
+/// - `ctx.auth().tenant_id` is `None` AND a previous tid is still applied
+///   → clears the `app.tenant_id` GUC via `ctx.clear_tenant()`. Without
+///   this reset, a `set_auth(auth_with_tenant)` followed by
+///   `set_auth(auth_without_tenant)` inside one transaction would leave
+///   the earlier tenant's `SET LOCAL` active silently — a cross-tenant
+///   leak. A `tracing::warn!` is also emitted (unless
+///   `ctx.with_no_tenant_scope()` was called) so the caller sees the
+///   transition.
 pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
     if T::descriptor().tenant_key.is_none() {
         return Ok(());
     }
-    let auth_present = ctx.auth().is_some();
+    // No auth attached → hands-off. Users driving `set_tenant` manually
+    // (explicit Phase 5 tenancy flow, admin tooling, test harnesses) must
+    // not have their explicit GUC state clobbered by the auto-wiring.
+    if ctx.auth().is_none() {
+        return Ok(());
+    }
     let tid: Option<String> = ctx.auth().and_then(|a| a.tenant_id.clone());
     match tid {
         Some(tid) => ctx.ensure_tenant_set(&tid).await?,
         None => {
-            if auth_present && !ctx.__tenant_scope_suppressed_for_macros() {
+            // Auth IS attached but carries no tenant_id. If an earlier
+            // auth-driven ensure_tenant_set applied a tid, reset it so
+            // subsequent queries don't run under the stale GUC — this is
+            // the Phase 5.5 phase-boundary fix for the
+            // "set_auth(auth_with_tenant) → set_auth(auth_without_tenant)
+            // leaves old SET LOCAL active" bug class.
+            if ctx.applied_tenant_id().is_some() {
+                ctx.clear_tenant().await?;
+            }
+            if !ctx.__tenant_scope_suppressed_for_macros() {
                 tracing::warn!(
                     model = std::any::type_name::<T>(),
                     "auth attached but tenant_id is None on a tenant-keyed model; \

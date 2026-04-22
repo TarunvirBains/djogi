@@ -360,3 +360,168 @@ async fn ensure_tenant_set_switches_on_tid_change(mut ctx: djogi::DjogiContext) 
     .await
     .unwrap();
 }
+
+// ── Phase-boundary fixups (2026-04-22 Codex stop-gate of phase-5-5-auth) ──
+
+/// Regression guard for **Blocker 2** from the Codex phase-boundary review
+/// of the full `phase-5-5-auth` branch.
+///
+/// Scenario: auth carrying `tenant_id = Some("org_a")` is swapped mid-
+/// transaction for auth with `tenant_id = None` (or, equivalently, the
+/// user calls `set_auth(auth_without_tenant)`). Before the fix, the
+/// previously-applied `SET LOCAL app.tenant_id = 'org_a'` stayed in force
+/// and subsequent tenant-keyed queries silently leaked across tenants.
+///
+/// After the fix, the auto-tenant wiring calls `ctx.clear_tenant()` in the
+/// `None` arm when `applied_tenant_id.is_some()`, issuing
+/// `SELECT set_config('app.tenant_id', '', true)` and resetting the
+/// in-memory tracker. This test observes `applied_tenant_id()` transitions
+/// through `None → Some("org_a") → None` to verify the clear fires.
+#[djogi::djogi_test]
+async fn auto_set_tenant_clears_applied_tid_when_auth_loses_tenant(mut ctx: djogi::DjogiContext) {
+    setup_tenant_posts(&mut ctx).await;
+
+    let pool = ctx.pool().expect("pool-backed").clone();
+    djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            // (1) Auth with tenant → first fetch applies `org_a`.
+            tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+            let _ = TenantPost::objects().fetch_all(tx).await?;
+            assert_eq!(tx.applied_tenant_id(), Some("org_a"));
+
+            // (2) Swap to auth without tenant → next fetch must CLEAR
+            // `applied_tenant_id` (and issue SET LOCAL to reset the GUC).
+            // Opt into the no-tenant-scope suppress flag to keep the
+            // warn path quiet for this targeted assertion.
+            tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()));
+            tx.set_no_tenant_scope();
+            let _ = TenantPost::objects().fetch_all(tx).await?;
+            assert_eq!(
+                tx.applied_tenant_id(),
+                None,
+                "applied_tenant_id must be cleared when auth loses tenant_id \
+                 on a tenant-keyed model",
+            );
+            assert!(
+                !tx.tenant_set,
+                "tenant_set must be false after clear_tenant reset",
+            );
+
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
+/// Regression guard for **Blocker 3** from the Codex phase-boundary review.
+///
+/// `bulk_create` builds `INSERT ... RETURNING ...` SQL directly and executes
+/// via `ctx.__query_all_for_macros` — before the fix, the macro did NOT
+/// prepend the `auto_set_tenant` snippet, so auth-bound bulk inserts on a
+/// tenant-keyed model hit RLS-backed tables without establishing the
+/// `app.tenant_id` GUC.
+///
+/// After the fix, the macro emission for `bulk_create` (and `bulk_upsert`)
+/// prepends the snippet just like `get` / `create` / `save` / `delete` /
+/// `refresh` do. This test verifies `applied_tenant_id()` gets set when
+/// a tenant-bound auth context runs `bulk_create`.
+#[djogi::djogi_test]
+async fn bulk_create_auto_sets_tenant_from_auth(mut ctx: djogi::DjogiContext) {
+    setup_tenant_posts(&mut ctx).await;
+
+    let pool = ctx.pool().expect("pool-backed").clone();
+    djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+            // Bulk-insert one row under org_a. Before the fix the bulk
+            // path would execute with no SET LOCAL, so applied_tenant_id
+            // would stay None.
+            let _ = TenantPost::bulk_create(
+                tx,
+                vec![TenantPost {
+                    org_id: "org_a".to_string(),
+                    title: "bulk-one".to_string(),
+                    ..Default::default()
+                }],
+            )
+            .await?;
+            assert_eq!(
+                tx.applied_tenant_id(),
+                Some("org_a"),
+                "bulk_create on a tenant-keyed model must auto-set tenant \
+                 when auth.tenant_id is Some",
+            );
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
+/// Regression guard for **Blocker 1** from the Codex phase-boundary review.
+///
+/// A nested `atomic()` savepoint that sets a different tenant (or changes
+/// `auth` state) and then rolls back must leave the outer scope's
+/// auth-related trackers pristine. Before the fix, the nested path shared
+/// `&mut DjogiContext` with the closure and snapshotted only the
+/// `on_commit` queue — so an inner `set_tenant("org_b")` would leave
+/// `self.applied_tenant_id = Some("org_b")` after `ROLLBACK TO SAVEPOINT`
+/// reverted the inner `SET LOCAL`, breaking the `ensure_tenant_set`
+/// re-issue contract on subsequent outer-scope queries.
+///
+/// The fix snapshots `auth` / `applied_tenant_id` / `tenant_set` /
+/// `tenant_scope_suppressed` at entry and restores them on Err + panic
+/// paths in `djogi/src/transaction.rs`'s nested impl.
+#[djogi::djogi_test]
+async fn nested_atomic_rollback_restores_auth_state(mut ctx: djogi::DjogiContext) {
+    let pool = ctx.pool().expect("pool-backed").clone();
+    djogi::transaction::atomic(&pool, |outer| {
+        Box::pin(async move {
+            // Outer scope: set tenant to org_a.
+            outer.set_tenant("org_a").await?;
+            assert_eq!(outer.applied_tenant_id(), Some("org_a"));
+
+            // Nested scope that changes tenant then returns Err to trigger
+            // ROLLBACK TO SAVEPOINT. The outer scope should see
+            // applied_tenant_id restored to Some("org_a") after the inner
+            // scope returns.
+            let nested_res: Result<(), djogi::DjogiError> =
+                djogi::transaction::atomic(&mut *outer, |inner| {
+                    Box::pin(async move {
+                        inner.set_tenant("org_b").await?;
+                        assert_eq!(inner.applied_tenant_id(), Some("org_b"));
+                        // Force a rollback by returning an error. Use a
+                        // Validation error so it's classified as non-
+                        // transient (no retry).
+                        Err::<(), _>(djogi::DjogiError::Validation(
+                            "intentional rollback".to_string(),
+                        ))
+                    })
+                })
+                .await;
+
+            assert!(nested_res.is_err(), "inner atomic must have rolled back");
+
+            // After ROLLBACK TO SAVEPOINT the Postgres GUC reverted to
+            // 'org_a'. applied_tenant_id must match — otherwise a follow-
+            // up `ensure_tenant_set("org_a")` would short-circuit on the
+            // stale `Some("org_b")` tracker while the real GUC is 'org_a'.
+            // That's the exact bug Codex flagged; the snapshot/restore
+            // dance in transaction.rs is what keeps the invariant.
+            assert_eq!(
+                outer.applied_tenant_id(),
+                Some("org_a"),
+                "nested atomic rollback must restore outer applied_tenant_id",
+            );
+            assert!(
+                outer.tenant_set,
+                "nested atomic rollback must restore outer tenant_set",
+            );
+
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+}

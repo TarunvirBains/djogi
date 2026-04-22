@@ -182,12 +182,27 @@ impl IntoAtomicScope for &mut DjogiContext {
         // entering the closure so we can truncate on rollback.
         let callbacks_before = self.on_commit_queue_len();
 
+        // Snapshot auth-related state (auth, applied_tenant_id, tenant_set,
+        // tenant_scope_suppressed) so savepoint rollback restores the
+        // in-memory trackers to match the post-rollback GUC state.
+        // Without this, an inner scope that does set_auth(org_b) and
+        // triggers set_tenant("org_b") would leave self.applied_tenant_id
+        // = Some("org_b") after ROLLBACK TO SAVEPOINT reverted the GUC
+        // to the outer value — the next tenant-keyed query in the outer
+        // scope would then short-circuit (matching applied_tenant_id)
+        // and silently run under the wrong tenant. Phase 5.5 phase-
+        // boundary fixup (Codex stop-gate review).
+        let auth_snapshot = self.snapshot_auth_state();
+
         let inner_result = AssertUnwindSafe(closure(self)).catch_unwind().await;
 
         match inner_result {
             Ok(Ok(value)) => {
                 // Success — RELEASE SAVEPOINT. Inner callbacks stay on
-                // the parent queue (promoted).
+                // the parent queue (promoted). Inner auth-state mutations
+                // also stay in effect: the caller's atomic scope is now
+                // the parent and the inner's choices (e.g., set_auth) are
+                // the continuing context.
                 let release_sql = format!("RELEASE SAVEPOINT {savepoint_name}");
                 let release_res = match self.inner_mut() {
                     ContextInner::Transaction(conn) => conn.batch_execute(&release_sql).await,
@@ -200,8 +215,10 @@ impl IntoAtomicScope for &mut DjogiContext {
             Ok(Err(err)) => {
                 // Closure returned Err — ROLLBACK TO SAVEPOINT then
                 // RELEASE. Discard inner callbacks by truncating the
-                // parent queue back to its pre-closure length.
+                // parent queue back to its pre-closure length, and
+                // restore auth state so it matches the reverted GUC.
                 self.truncate_on_commit_queue(callbacks_before);
+                self.restore_auth_state(auth_snapshot);
                 let rb_sql = format!("ROLLBACK TO SAVEPOINT {savepoint_name}");
                 let rel_sql = format!("RELEASE SAVEPOINT {savepoint_name}");
                 if let Some(rb_err) = self.run_rollback_to_release(&rb_sql, &rel_sql).await {
@@ -216,8 +233,11 @@ impl IntoAtomicScope for &mut DjogiContext {
             }
             Err(panic_payload) => {
                 // Closure panicked — same rollback-then-resume as the
-                // pool impl, scoped to the savepoint.
+                // pool impl, scoped to the savepoint. Restore auth state
+                // before resuming so the parent scope (if it catches
+                // the unwind) sees consistent ctx state.
                 self.truncate_on_commit_queue(callbacks_before);
+                self.restore_auth_state(auth_snapshot);
                 let rb_sql = format!("ROLLBACK TO SAVEPOINT {savepoint_name}");
                 let rel_sql = format!("RELEASE SAVEPOINT {savepoint_name}");
                 if let Some(rb_err) = self.run_rollback_to_release(&rb_sql, &rel_sql).await {

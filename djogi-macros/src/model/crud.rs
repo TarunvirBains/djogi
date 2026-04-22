@@ -510,20 +510,34 @@ pub fn expand(
     let auto_set_tenant = if model_attrs.tenant_key.is_some() {
         let model_name_str = table.as_str();
         quote! {
-            let __djogi_auth_present: bool = ctx.auth().is_some();
-            let __djogi_tid: ::std::option::Option<::std::string::String> =
-                ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
-            match __djogi_tid {
-                ::std::option::Option::Some(__djogi_tid_str) => {
-                    ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
-                }
-                ::std::option::Option::None => {
-                    if __djogi_auth_present && !ctx.__tenant_scope_suppressed_for_macros() {
-                        ::djogi::__private::tracing::warn!(
-                            model = #model_name_str,
-                            "auth attached but tenant_id is None on a tenant-keyed model; \
-                             queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
-                        );
+            // No auth attached → hands-off. The explicit-`set_tenant`
+            // flow (Phase 5 tenancy pattern, admin tooling, test
+            // harnesses) must not have its GUC clobbered by the auto-
+            // wiring. Only auth-bound contexts participate.
+            if ctx.auth().is_some() {
+                let __djogi_tid: ::std::option::Option<::std::string::String> =
+                    ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
+                match __djogi_tid {
+                    ::std::option::Option::Some(__djogi_tid_str) => {
+                        ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+                    }
+                    ::std::option::Option::None => {
+                        // Auth present but carries no tenant_id. Clear any
+                        // previously auth-applied tenant scope so
+                        // subsequent queries don't leak under the stale
+                        // GUC (Phase 5.5 phase-boundary fixup — see
+                        // djogi/src/query/terminal.rs auto_set_tenant for
+                        // the full rationale).
+                        if ctx.applied_tenant_id().is_some() {
+                            ctx.clear_tenant().await?;
+                        }
+                        if !ctx.__tenant_scope_suppressed_for_macros() {
+                            ::djogi::__private::tracing::warn!(
+                                model = #model_name_str,
+                                "auth attached but tenant_id is None on a tenant-keyed model; \
+                                 queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
+                            );
+                        }
                     }
                 }
             }
@@ -1125,6 +1139,7 @@ pub fn expand(
                 if rows.is_empty() {
                     return ::std::result::Result::Ok(::std::vec::Vec::new());
                 }
+                #auto_set_tenant
                 let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
                 {
                     let mut __first = true;
@@ -1235,6 +1250,7 @@ pub fn expand(
                         "bulk_upsert requires at least one conflict column".to_string()
                     ));
                 }
+                #auto_set_tenant
                 // Validate every conflict column against the macro-
                 // emitted allow-list of real columns. Rejects typos
                 // and closes the arbitrary-string SQL-injection path.
