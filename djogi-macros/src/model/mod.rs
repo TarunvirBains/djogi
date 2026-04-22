@@ -146,15 +146,23 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 /// 1. At most one field per model may carry `#[field(version)]`.
 ///    A second occurrence produces a span-precise compile error at the
 ///    second field.
-/// 2. The annotated field's type must be exactly `i32` or `i64`
-///    (last path segment only — resilient to `std::primitive::i32`
-///    spellings, though unlikely in practice). Any other type — including
-///    `Option<i32>` (last segment `Option`) — is rejected with a
-///    span-carrying error at the annotated field.
+/// 2. The annotated field's type must be exactly `i32` or `i64`. Accepted
+///    spellings:
+///     - bare `i32` / `i64` (single-segment path);
+///     - `std::primitive::i32` / `std::primitive::i64`;
+///     - `core::primitive::i32` / `core::primitive::i64`.
 ///
-/// Detection by last-segment ident matches the `ForeignKey` detection
-/// pattern in `attrs.rs`: it is resilient to fully-qualified type spellings
-/// and consistent with the rest of the macro's type inspection.
+///    Any other multi-segment path — including user-defined module aliases
+///    like `my_mod::i32` — is rejected at macro-expansion time so a
+///    misleadingly named type alias cannot silently satisfy the contract.
+///    `Option<i32>` (last segment `Option`) is likewise rejected.
+///
+/// Type resolution is unavailable at macro-expansion time. The validator
+/// therefore accepts a small, explicit allowlist of qualified primitive
+/// spellings plus the bare form. A user who writes `type i32 = String;`
+/// in scope of the annotated field can still fool the check; this is the
+/// inherent ceiling of syntactic detection and matches the limitation of
+/// every other macro in the ecosystem that inspects field types.
 fn validate_version_fields(
     struct_item: &ItemStruct,
     field_attrs: &[attrs::FieldAttrs],
@@ -179,13 +187,14 @@ fn validate_version_fields(
             ));
         }
 
-        // Type check — last path segment must be `i32` or `i64`.
-        // `Option<i32>` has last segment `Option` — correctly rejected.
-        let is_valid_type = if let syn::Type::Path(syn::TypePath { path, .. }) = &field.ty {
-            path.segments
-                .last()
-                .map(|seg| seg.ident == "i32" || seg.ident == "i64")
-                .unwrap_or(false)
+        // Type check — accept bare `i32`/`i64` or explicit qualified
+        // spellings via `std::primitive` / `core::primitive`.
+        // Other multi-segment paths (including `my_mod::i32`) are rejected.
+        let is_valid_type = if let syn::Type::Path(syn::TypePath {
+            path, qself: None, ..
+        }) = &field.ty
+        {
+            is_version_primitive_path(path)
         } else {
             false
         };
@@ -197,7 +206,8 @@ fn validate_version_fields(
                 field,
                 format!(
                     "#[field(version)] must be i32 or i64 (got {type_str}); \
-                     wrap types and Option<_> are not supported as version fields"
+                     accepted spellings: bare `i32`/`i64`, \
+                     `std::primitive::i32`/`i64`, `core::primitive::i32`/`i64`"
                 ),
             ));
         }
@@ -206,6 +216,45 @@ fn validate_version_fields(
     }
 
     Ok(())
+}
+
+/// Returns `true` when `path` is one of the accepted version-field type
+/// spellings. Accepts only:
+/// - single-segment `i32` / `i64`
+/// - `std::primitive::i32` / `std::primitive::i64`
+/// - `core::primitive::i32` / `core::primitive::i64`
+///
+/// Every other shape returns `false`, including `my_mod::i32` and other
+/// user-module paths that happen to end in `i32` / `i64`.
+fn is_version_primitive_path(path: &syn::Path) -> bool {
+    // Reject absolute paths that start with `::` unless the allowlist shape
+    // below applies (handled uniformly via segment count + idents).
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|seg| seg.ident.to_string())
+        .collect();
+
+    // Reject any segment that carries angle-bracketed or parenthesized args
+    // (e.g. a typo like `i32<()>`). Version fields must be exactly the
+    // bare primitive type.
+    if path
+        .segments
+        .iter()
+        .any(|seg| !matches!(seg.arguments, syn::PathArguments::None))
+    {
+        return false;
+    }
+
+    match segments.len() {
+        1 => segments[0] == "i32" || segments[0] == "i64",
+        3 => {
+            (segments[0] == "std" || segments[0] == "core")
+                && segments[1] == "primitive"
+                && (segments[2] == "i32" || segments[2] == "i64")
+        }
+        _ => false,
+    }
 }
 
 /// `#[model(..., through)]` marks a many-to-many junction model and must

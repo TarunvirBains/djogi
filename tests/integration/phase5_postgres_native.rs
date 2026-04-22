@@ -19,6 +19,7 @@
 //! installs HeeRanjID, seeds node 1, and sets `heer.node_id = '1'` at
 //! the database level before each test body runs.
 
+use djogi::DjogiEnum;
 use djogi::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -382,6 +383,34 @@ async fn optimistic_lock_stale_version_returns_conflict(mut ctx: djogi::DjogiCon
     );
 }
 
+// ---------------------------------------------------------------------------
+// Task 4 — #[derive(DjogiEnum)] + EnumDescriptor
+// ---------------------------------------------------------------------------
+
+/// Postgres enum type that mirrors the `vehicle_status` SQL enum provisioned by
+/// `002_vehicle_status_enum.sql`. The `Retired` variant uses a per-variant name
+/// override (`"decommissioned"`) to verify the override path on the wire.
+#[derive(DjogiEnum, Clone, Copy, PartialEq, Eq, Debug)]
+#[djogi_enum(name = "vehicle_status", rename_all = "snake_case")]
+pub enum VehicleStatus {
+    Active,
+    InMaintenance,
+    #[djogi_enum_variant(name = "decommissioned")]
+    Retired,
+}
+
+/// Model that holds a `VehicleStatus` column. Table provisioned by
+/// `003_vehicles.sql`.
+///
+/// `no_default` is required because `VehicleStatus` does not implement
+/// `Default` — there is no sensible sentinel value for a status enum.
+/// Callers must always provide an explicit `status` value.
+#[model(table = "vehicles", no_default)]
+#[derive(Debug, Clone)]
+pub struct Vehicle {
+    pub status: VehicleStatus,
+}
+
 /// Prove that Tracked<Option<_>> fields decode NULL correctly from the DB.
 ///
 /// The FromSql impl must override from_sql_null to delegate to the inner
@@ -414,4 +443,140 @@ async fn tracked_option_round_trips_null(mut ctx: djogi::DjogiContext) {
     let reloaded = Account::get(&mut ctx, created.id).await.expect("get");
     assert_eq!(*reloaded.note, None, "NULL column decoded as None");
     assert!(!reloaded.note.is_dirty(), "reloaded NULL Tracked is clean");
+}
+
+// ---------------------------------------------------------------------------
+// Task 4 — enum setup helper
+// ---------------------------------------------------------------------------
+
+/// Construct a `Vehicle` with the given `status` and zeroed framework fields.
+///
+/// `Vehicle` uses `no_default` (enum fields have no natural sentinel), so callers
+/// cannot use `..Vehicle::default()`. This factory fills the framework-injected
+/// fields with sentinel values acceptable to the model macro — the DB overwrites
+/// them via `RETURNING` on `create()`.
+fn make_vehicle(status: VehicleStatus) -> Vehicle {
+    Vehicle {
+        id: djogi::types::__heerid_default(),
+        created_at: djogi::DateTime::UNIX_EPOCH,
+        updated_at: djogi::DateTime::UNIX_EPOCH,
+        status,
+    }
+}
+
+/// Apply the vehicle_status enum DDL and vehicles table on top of the accounts
+/// setup. The accounts migration (001) must run first because the HeeRanjID
+/// functions are installed by `#[djogi_test]` before any DDL in the test
+/// body — the enum type can be created in any order relative to accounts.
+async fn setup_phase5_enum(ctx: &mut djogi::DjogiContext) {
+    setup_phase5(ctx).await;
+    const ENUM_DDL: &str = include_str!("migrations/phase5/002_vehicle_status_enum.sql");
+    ctx.raw_execute(ENUM_DDL, &[])
+        .await
+        .expect("apply 002_vehicle_status_enum.sql");
+    const VEHICLES_DDL: &str = include_str!("migrations/phase5/003_vehicles.sql");
+    ctx.raw_execute(VEHICLES_DDL, &[])
+        .await
+        .expect("apply 003_vehicles.sql");
+}
+
+// ---------------------------------------------------------------------------
+// Task 4 — integration tests
+// ---------------------------------------------------------------------------
+
+/// Create a Vehicle with `VehicleStatus::Retired`, reload via get(), and verify:
+///
+/// 1. The round-tripped value is `VehicleStatus::Retired`.
+/// 2. The raw wire string in the DB column is `"decommissioned"` (the per-variant
+///    name override), not `"retired"` (which `rename_all = snake_case` would produce).
+#[djogi::djogi_test]
+async fn vehicle_status_enum_round_trips(mut ctx: djogi::DjogiContext) {
+    setup_phase5_enum(&mut ctx).await;
+
+    let created = Vehicle::create(&mut ctx, make_vehicle(VehicleStatus::Retired))
+        .await
+        .expect("create vehicle");
+
+    assert_eq!(
+        created.status,
+        VehicleStatus::Retired,
+        "status from RETURNING must be VehicleStatus::Retired"
+    );
+
+    // Reload via get() — second decode path.
+    let reloaded = Vehicle::get(&mut ctx, created.id)
+        .await
+        .expect("get vehicle");
+    assert_eq!(
+        reloaded.status,
+        VehicleStatus::Retired,
+        "status from SELECT must be VehicleStatus::Retired"
+    );
+
+    // Assert the wire value in the DB is literally "decommissioned".
+    let wire: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM vehicles WHERE id = $1",
+            &[&created.id.as_i64()],
+        )
+        .await
+        .expect("raw_scalar for status wire value");
+    assert_eq!(
+        wire, "decommissioned",
+        "wire string for VehicleStatus::Retired must be 'decommissioned'"
+    );
+}
+
+/// Verify that all three VehicleStatus variants round-trip correctly.
+#[djogi::djogi_test]
+async fn vehicle_status_all_variants_round_trip(mut ctx: djogi::DjogiContext) {
+    setup_phase5_enum(&mut ctx).await;
+
+    // Create one vehicle per variant, reload each, and assert the value matches.
+    for (status, expected_wire) in [
+        (VehicleStatus::Active, "active"),
+        (VehicleStatus::InMaintenance, "in_maintenance"),
+        (VehicleStatus::Retired, "decommissioned"),
+    ] {
+        let created = Vehicle::create(&mut ctx, make_vehicle(status))
+            .await
+            .expect("create vehicle");
+
+        assert_eq!(
+            created.status, status,
+            "RETURNING round-trip failed for {expected_wire}"
+        );
+
+        let reloaded = Vehicle::get(&mut ctx, created.id)
+            .await
+            .expect("get vehicle");
+        assert_eq!(
+            reloaded.status, status,
+            "SELECT round-trip failed for {expected_wire}"
+        );
+
+        let wire: String = ctx
+            .raw_scalar(
+                "SELECT status::text FROM vehicles WHERE id = $1",
+                &[&created.id.as_i64()],
+            )
+            .await
+            .expect("raw_scalar");
+        assert_eq!(wire, expected_wire, "wire value mismatch for {status:?}");
+    }
+}
+
+/// Verify that the EnumDescriptor for VehicleStatus is registered in the
+/// inventory and carries the expected metadata.
+#[djogi::djogi_test]
+async fn vehicle_status_enum_descriptor_registered(_ctx: djogi::DjogiContext) {
+    let desc = inventory::iter::<djogi::descriptor::EnumDescriptor>()
+        .find(|d| d.postgres_type == "vehicle_status")
+        .expect("EnumDescriptor for vehicle_status must be in inventory");
+
+    assert_eq!(desc.type_name, "VehicleStatus");
+    assert_eq!(
+        desc.variants,
+        &["active", "in_maintenance", "decommissioned"]
+    );
 }

@@ -322,3 +322,32 @@ pub struct ModelDescriptor {
 }
 
 inventory::collect!(ModelDescriptor);
+
+/// Full descriptor for a registered Postgres enum type — collected via `inventory::submit!`.
+///
+/// `#[derive(DjogiEnum)]` emits one `inventory::submit!(EnumDescriptor { ... })` per enum.
+/// The Phase 7 migration differ consumes these via `inventory::iter::<EnumDescriptor>()` to
+/// emit `CREATE TYPE <postgres_type> AS ENUM (...)` DDL statements.
+///
+/// # Layout
+///
+/// - `type_name` — Rust type name as a string (`"VehicleStatus"`). Used by the migration
+///   differ and `djogi docs` to identify the origin type.
+/// - `postgres_type` — Postgres type name from `#[djogi_enum(name = "...")]`
+///   (`"vehicle_status"`). This is the value passed to `CREATE TYPE ... AS ENUM`.
+/// - `variants` — mapped string labels in declaration order. These are the wire values that
+///   appear in the Postgres `ENUM` definition and in every serialized row.
+///
+/// Phase 7 owns DDL emission; Phase 5 only supplies the descriptor so the collector is
+/// populated and ready for migration consumers.
+#[derive(Debug)]
+pub struct EnumDescriptor {
+    /// Rust type name — e.g. `"VehicleStatus"`.
+    pub type_name: &'static str,
+    /// Postgres enum type name — e.g. `"vehicle_status"`.
+    pub postgres_type: &'static str,
+    /// Mapped variant strings in declaration order — e.g. `&["active", "in_maintenance", "decommissioned"]`.
+    pub variants: &'static [&'static str],
+}
+
+inventory::collect!(EnumDescriptor);

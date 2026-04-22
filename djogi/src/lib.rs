@@ -42,6 +42,7 @@
 pub mod config;
 pub mod context;
 pub mod descriptor;
+pub mod enum_;
 pub mod error;
 pub mod expr;
 pub(crate) mod ident;
@@ -83,6 +84,8 @@ pub mod __private {
     /// keeps the macro output decoupled from the exact crate versions and
     /// allows Djogi to add wrapper types without changing the macro-emitted
     /// call sites. See `feedback_macro_path_routing.md` for the rationale.
+    pub use bytes;
+
     pub mod pg {
         pub use crate::pg::accumulator::SqlAccumulator;
         pub use crate::pg::connection::PgConnection;
@@ -111,9 +114,10 @@ pub mod __private {
 
 pub use context::DjogiContext;
 pub use descriptor::{
-    FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    EnumDescriptor, FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor,
+    PartitionSpec, PkType,
 };
-pub use djogi_macros::{many_to_many, reverse_one_to_many, reverse_one_to_one};
+pub use djogi_macros::{DjogiEnum, many_to_many, reverse_one_to_many, reverse_one_to_one};
 pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
@@ -138,7 +142,8 @@ pub use visage::VisageError;
 pub mod prelude {
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
-        FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PartitionSpec, PkType,
+        EnumDescriptor, FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor,
+        PartitionSpec, PkType,
     };
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
@@ -174,4 +179,6 @@ pub mod prelude {
     // The macro generates code that calls `::djogi::testing::setup_test_db`;
     // use only in test binaries.
     pub use djogi_macros::djogi_test;
+    // Re-export the `#[derive(DjogiEnum)]` derive macro.
+    pub use djogi_macros::DjogiEnum;
 }

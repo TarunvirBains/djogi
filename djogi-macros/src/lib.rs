@@ -14,6 +14,7 @@
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
+mod djogi_enum;
 mod ident;
 mod many_to_many;
 mod model;
@@ -156,6 +157,33 @@ pub fn reverse_one_to_one(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn many_to_many(input: TokenStream) -> TokenStream {
     many_to_many::expand(input.into()).into()
+}
+
+/// Derive typed Postgres enum support.
+///
+/// Emits `postgres_types::ToSql` + `FromSql` impls that encode/decode the enum
+/// as its mapped Postgres string label, plus an `inventory::submit!` of an
+/// `EnumDescriptor` for the Phase 7 migration differ.
+///
+/// ```rust,ignore
+/// use djogi::prelude::*;
+///
+/// #[derive(DjogiEnum, Clone, Copy, PartialEq, Eq, Debug)]
+/// #[djogi_enum(name = "vehicle_status", rename_all = "snake_case")]
+/// pub enum VehicleStatus {
+///     Active,
+///     InMaintenance,
+///     #[djogi_enum_variant(name = "decommissioned")]
+///     Retired,
+/// }
+/// ```
+///
+/// See the `djogi_enum` module for the full expansion contract.
+#[proc_macro_derive(DjogiEnum, attributes(djogi_enum, djogi_enum_variant))]
+pub fn derive_djogi_enum(input: TokenStream) -> TokenStream {
+    djogi_enum::expand(input.into())
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
 }
 
 /// Per-test database lifecycle harness.
