@@ -324,6 +324,22 @@ pub struct FieldAttrs {
     /// the literal against the accepted set.
     #[darling(default)]
     pub outbox: Option<String>,
+    /// `#[field(version)]` — marks this field as the optimistic-lock
+    /// version counter. Exactly one field per model may carry this
+    /// attribute, and its type must be `i32` or `i64`. On every
+    /// `save()` call the macro emits `{col} = {col} + 1` in the SET
+    /// list and `AND {col} = $n` in the WHERE clause, binding the
+    /// current in-memory value. When Postgres returns zero rows
+    /// (another writer already bumped the version) `save()` returns
+    /// `Err(DjogiError::LockConflict(_))` rather than silently
+    /// succeeding with a no-op.
+    ///
+    /// Only bare `i32` / `i64` are accepted — `Option<i32>` and all
+    /// other types are rejected at macro-expansion time with a
+    /// span-precise compile error.
+    #[darling(default)]
+    pub version: bool,
+
     /// `#[field(sequence_within = "parent_fk_column")]` — assigns this
     /// column a monotonically-increasing sequence scoped to the
     /// parent-FK column named in the attribute value. Phase 4 Task

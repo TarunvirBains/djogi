@@ -42,6 +42,8 @@ pub struct Account {
     pub name: Tracked<String>,
     pub balance: i64,
     pub note: Tracked<Option<String>>,
+    #[field(version)]
+    pub revision: i32,
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +276,111 @@ async fn save_rehydration_marks_tracked_fields_clean(mut ctx: djogi::DjogiContex
 // ---------------------------------------------------------------------------
 // Task 1 (extended) — Tracked<Option<_>> NULL round-trip
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Task 3 — optimistic locking via #[field(version)]
+// ---------------------------------------------------------------------------
+
+/// After Account::create, the DB inserts revision=0 (column DEFAULT 0).
+/// After one account.save(), revision must be 1 (version counter bumped
+/// by the `revision = revision + 1` SET fragment in the emitted UPDATE).
+#[djogi::djogi_test]
+async fn optimistic_lock_create_starts_at_zero_save_increments_to_one(
+    mut ctx: djogi::DjogiContext,
+) {
+    setup_phase5(&mut ctx).await;
+
+    let mut account = Account::create(
+        &mut ctx,
+        Account {
+            name: Tracked::new("alice".to_string()),
+            balance: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create account");
+
+    // INSERT uses DEFAULT 0 — the DB populates revision and RETURNING brings
+    // it back. In-memory revision must reflect the DB value.
+    assert_eq!(
+        account.revision, 0,
+        "revision must be 0 after create (DEFAULT 0)"
+    );
+
+    // First save: SET includes `revision = revision + 1`, so DB transitions
+    // 0 → 1. RETURNING rehydrates self, so in-memory revision becomes 1.
+    account.save(&mut ctx).await.expect("first save");
+    assert_eq!(account.revision, 1, "revision must be 1 after first save");
+}
+
+/// Save twice in a row on the same handle — revision increments 0 → 1 → 2.
+/// Proves the version predicate passes when versions are in sync.
+#[djogi::djogi_test]
+async fn optimistic_lock_success_increments_each_save(mut ctx: djogi::DjogiContext) {
+    setup_phase5(&mut ctx).await;
+
+    let mut account = Account::create(
+        &mut ctx,
+        Account {
+            name: Tracked::new("bob".to_string()),
+            balance: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create account");
+
+    assert_eq!(account.revision, 0);
+
+    account.save(&mut ctx).await.expect("first save");
+    assert_eq!(account.revision, 1, "revision must be 1 after first save");
+
+    account.save(&mut ctx).await.expect("second save");
+    assert_eq!(account.revision, 2, "revision must be 2 after second save");
+}
+
+/// Clone the account to simulate two concurrent handles. When clone A saves
+/// first (bumping DB revision to 1), clone B still holds revision=0 in
+/// memory. B's save() must return Err(DjogiError::LockConflict(_)) because
+/// the WHERE clause `revision = 0` no longer matches the DB row.
+#[djogi::djogi_test]
+async fn optimistic_lock_stale_version_returns_conflict(mut ctx: djogi::DjogiContext) {
+    setup_phase5(&mut ctx).await;
+
+    let account = Account::create(
+        &mut ctx,
+        Account {
+            name: Tracked::new("carol".to_string()),
+            balance: 0,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create account");
+
+    assert_eq!(account.revision, 0);
+
+    // Clone A — will win the race.
+    let mut clone_a = account.clone();
+    // Clone B — will lose the race.
+    let mut clone_b = account.clone();
+
+    // Clone A saves first, bumping DB revision 0 → 1.
+    clone_a
+        .save(&mut ctx)
+        .await
+        .expect("clone_a save must succeed");
+    assert_eq!(clone_a.revision, 1);
+
+    // Clone B still holds revision=0. Its save must detect the version
+    // mismatch and return LockConflict.
+    let result = clone_b.save(&mut ctx).await;
+    assert!(
+        matches!(result, Err(djogi::DjogiError::LockConflict(_))),
+        "stale save must return DjogiError::LockConflict; got: {result:?}"
+    );
+}
 
 /// Prove that Tracked<Option<_>> fields decode NULL correctly from the DB.
 ///

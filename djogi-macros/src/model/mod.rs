@@ -41,6 +41,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .collect::<syn::Result<_>>()?;
 
     validate_through_model_shape(&struct_item, &model_attrs)?;
+    validate_version_fields(&struct_item, &field_attrs)?;
 
     // Field names become unquoted SQL column names in the emitted
     // `COLUMN_LIST` — reject any that would break `SELECT` /
@@ -135,6 +136,76 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #outer
         #projections_ts
     })
+}
+
+/// Validate `#[field(version)]` annotations across all user fields.
+///
+/// Rules enforced here (after `FieldAttrs::parse` accepts the bare `version`
+/// flag permissively):
+///
+/// 1. At most one field per model may carry `#[field(version)]`.
+///    A second occurrence produces a span-precise compile error at the
+///    second field.
+/// 2. The annotated field's type must be exactly `i32` or `i64`
+///    (last path segment only — resilient to `std::primitive::i32`
+///    spellings, though unlikely in practice). Any other type — including
+///    `Option<i32>` (last segment `Option`) — is rejected with a
+///    span-carrying error at the annotated field.
+///
+/// Detection by last-segment ident matches the `ForeignKey` detection
+/// pattern in `attrs.rs`: it is resilient to fully-qualified type spellings
+/// and consistent with the rest of the macro's type inspection.
+fn validate_version_fields(
+    struct_item: &ItemStruct,
+    field_attrs: &[attrs::FieldAttrs],
+) -> syn::Result<()> {
+    let mut first_version_idx: Option<usize> = None;
+
+    for (i, (field, fa)) in struct_item
+        .fields
+        .iter()
+        .zip(field_attrs.iter())
+        .enumerate()
+    {
+        if !fa.version {
+            continue;
+        }
+
+        // Duplicate check — if we already saw a version field, reject this one.
+        if first_version_idx.is_some() {
+            return Err(syn::Error::new_spanned(
+                field,
+                "duplicate #[field(version)]: at most one version field is allowed per model",
+            ));
+        }
+
+        // Type check — last path segment must be `i32` or `i64`.
+        // `Option<i32>` has last segment `Option` — correctly rejected.
+        let is_valid_type = if let syn::Type::Path(syn::TypePath { path, .. }) = &field.ty {
+            path.segments
+                .last()
+                .map(|seg| seg.ident == "i32" || seg.ident == "i64")
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if !is_valid_type {
+            let ty = &field.ty;
+            let type_str = quote::quote!(#ty).to_string().replace(' ', "");
+            return Err(syn::Error::new_spanned(
+                field,
+                format!(
+                    "#[field(version)] must be i32 or i64 (got {type_str}); \
+                     wrap types and Option<_> are not supported as version fields"
+                ),
+            ));
+        }
+
+        first_version_idx = Some(i);
+    }
+
+    Ok(())
 }
 
 /// `#[model(..., through)]` marks a many-to-many junction model and must

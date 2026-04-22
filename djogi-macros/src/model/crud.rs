@@ -317,11 +317,48 @@ pub fn expand(
     // `created_at <= updated_at` always holds across clients with drifted clocks.
     // -------------------------------------------------------------------------
 
+    // -------------------------------------------------------------------------
+    // Task 3 — version field detection for optimistic locking.
+    //
+    // Find the single `#[field(version)]`-annotated user field (validated
+    // to exist at most once, with type i32 or i64, by `mod.rs`'s
+    // `validate_version_fields`). When present:
+    //
+    // - SET: append `{col} = {col} + 1` (unconditional, after user cols).
+    //   The version field is EXCLUDED from the dirty-aware user-field loop
+    //   below — it always gets its special `col + 1` fragment regardless of
+    //   dirty state.
+    // - WHERE: append `AND {col} = $n` binding the current in-memory value.
+    //   This is the optimistic-lock predicate: if another writer bumped the
+    //   version, the WHERE won't match and Postgres returns 0 rows.
+    // - Zero rows → `DjogiError::LockConflict`.
+    //
+    // When absent (no version field): current behavior (no change).
+    // -------------------------------------------------------------------------
+    let version_field_info: Option<(syn::Ident, String)> =
+        field_attrs.iter().enumerate().find_map(|(i, fa)| {
+            if fa.version {
+                let f = &user_fields[i];
+                let col_name = f.to_string();
+                let col_str = col_name.strip_prefix("r#").unwrap_or(&col_name).to_string();
+                Some((f.clone(), col_str))
+            } else {
+                None
+            }
+        });
+
     // Build per-field token fragments for the runtime accumulator loop.
+    // Version field is excluded here — it gets its own special SET fragment.
     let save_set_fragments: Vec<TokenStream> = user_fields
         .iter()
         .zip(user_field_types.iter())
-        .map(|(f, ty)| {
+        .zip(field_attrs.iter())
+        .filter_map(|((f, ty), fa)| {
+            // Version field has its own SET emission: `col = col + 1`.
+            // Exclude it from the dirty-aware user-field loop.
+            if fa.version {
+                return None;
+            }
             let col_name = f.to_string();
             let col_str = col_name.strip_prefix("r#").unwrap_or(&col_name).to_string();
             let col_eq = format!("{col_str} = ");
@@ -329,23 +366,23 @@ pub fn expand(
                 // Tracked<T>: emit only when dirty.
                 // Bind the inner T via `(*self.<f>).clone()` — Deref<Target=T>
                 // so the dereference gives `&T` and clone() gives `T`.
-                quote! {
+                Some(quote! {
                     if self.#f.is_dirty() {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
                         __acc.push_sql(#col_eq);
                         __acc.push_bind((*self.#f).clone());
                     }
-                }
+                })
             } else {
                 // Non-Tracked: unconditional — behavioral regression guard for
                 // models that do not opt into dirty tracking.
-                quote! {
+                Some(quote! {
                     {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
                         __acc.push_sql(#col_eq);
                         __acc.push_bind(self.#f.clone());
                     }
-                }
+                })
             }
         })
         .collect();
@@ -554,47 +591,129 @@ pub fn expand(
         }
     };
 
-    let save_body = quote! {
-        async move {
-            // Build the SET clause dynamically. Tracked<T> fields are only
-            // included when dirty; non-Tracked fields are always included.
-            // `__first` tracks whether we have emitted any SET assignment yet
-            // so comma insertion is correct regardless of which fields fire.
-            let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
-            {
-                let mut __first = true;
-                #(#save_set_fragments)*
-                // `updated_at = now()` is always appended. If any user column
-                // was emitted above, we need a leading comma; otherwise it is
-                // the first (and only) assignment.
-                if !__first { __acc.push_sql(", "); }
-                __acc.push_sql("updated_at = now()");
+    // -------------------------------------------------------------------------
+    // Task 3 — version-aware save body fragments.
+    //
+    // Two shapes depending on whether a version field exists:
+    //
+    // A. No version field (current behavior, preserved): after user-field
+    //    fragments, append `updated_at = now()` and WHERE `id = $n`.
+    //    Use `__query_one_for_macros` (errors on zero rows).
+    //
+    // B. Version field present: append `updated_at = now(), {ver_col} = {ver_col} + 1`
+    //    and WHERE `id = $n AND {ver_col} = $m` binding the current in-memory
+    //    version. Use `__query_opt_for_macros` and map `None` →
+    //    `DjogiError::LockConflict`. `DjogiError::LockConflict` wraps a
+    //    `DbError::other(...)` message-only error — no Postgres SQLSTATE
+    //    comes from a zero-row UPDATE (Postgres returns 0 rows without an
+    //    error code when the WHERE clause matches nothing).
+    // -------------------------------------------------------------------------
+    let save_body = if let Some((ver_ident, ver_col)) = &version_field_info {
+        // Shape B — version-aware save.
+        let ver_set = format!(", {ver_col} = {ver_col} + 1");
+        let ver_where = format!(" AND {ver_col} = ");
+        let ver_conflict_msg =
+            format!("optimistic lock conflict: {ver_col} mismatch in table {table}");
+        quote! {
+            async move {
+                // Build the SET clause dynamically. Tracked<T> fields are only
+                // included when dirty; non-Tracked fields are always included.
+                // The version field is excluded from the dirty loop — it always
+                // gets `{ver_col} = {ver_col} + 1` appended after updated_at.
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+                {
+                    let mut __first = true;
+                    #(#save_set_fragments)*
+                    // `updated_at = now()` always present. Comma if any user col fired.
+                    if !__first { __acc.push_sql(", "); }
+                    __acc.push_sql("updated_at = now()");
+                    // Version counter — always incremented, not dirty-gated.
+                    __acc.push_sql(#ver_set);
+                }
+                // WHERE id = $n AND {ver_col} = $m
+                __acc.push_sql(" WHERE id = ");
+                let __id_val = self.id.clone();
+                __acc.push_bind(__id_val);
+                // Bind current in-memory version for the optimistic-lock predicate.
+                // If DB version != in-memory version, Postgres returns 0 rows.
+                __acc.push_sql(#ver_where);
+                let __ver_val = self.#ver_ident.clone();
+                __acc.push_bind(__ver_val);
+                __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                // Use query_opt: a zero-row UPDATE is not a driver error — Postgres
+                // returns no rows silently when the WHERE predicate matches nothing.
+                // We map None → LockConflict so the caller can branch on it.
+                match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+                    ::std::option::Option::Some(__raw_row) => {
+                        let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
+                        *self = row;
+                        // After `*self = row`, mark every Tracked field clean.
+                        // from_pg_row already constructs Tracked::new (dirty=false),
+                        // but the explicit walk is required by the Task 2 contract.
+                        #(#mark_clean_fragments)*
+                        // Phase 4 Task 6 — outbox after DB-refreshed rehydration.
+                        #emit_outbox_save
+                        ::std::result::Result::Ok(())
+                    }
+                    ::std::option::Option::None => {
+                        // Zero rows updated — DB version has moved ahead of our
+                        // in-memory version. Signal optimistic lock conflict.
+                        ::std::result::Result::Err(
+                            ::djogi::DjogiError::LockConflict(
+                                ::djogi::DbError::other(#ver_conflict_msg)
+                            )
+                        )
+                    }
+                }
             }
-            // Append WHERE id = $<next> RETURNING <column_list>.
-            // Emit the WHERE prefix as raw SQL, then let push_bind append the
-            // `$n` placeholder and store the id value. RETURNING is appended
-            // as raw SQL AFTER the bind so it follows the positional slot.
-            __acc.push_sql(" WHERE id = ");
-            // Clone id so push_bind (requires 'static) can take ownership.
-            // HeerId, RanjId, and i32 (Serial) are all Clone + ToSql + Send + Sync + 'static.
-            let __id_val = self.id.clone();
-            __acc.push_bind(__id_val);
-            __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
-            let (__sql, __binds) = __acc.into_parts();
-            let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
-                __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
-            let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
-            let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
-            *self = row;
-            // After `*self = row`, walk every Tracked field and call mark_clean().
-            // `from_pg_row` uses `Tracked::new(T)` which already starts clean,
-            // so this is defensive — but required by the Task 2 contract.
-            #(#mark_clean_fragments)*
-            // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
-            // values (triggers, column defaults), so emission runs AFTER the
-            // `*self = row` rehydration. No-op for non-events models.
-            #emit_outbox_save
-            ::std::result::Result::Ok(())
+        }
+    } else {
+        // Shape A — no version field: existing behavior.
+        quote! {
+            async move {
+                // Build the SET clause dynamically. Tracked<T> fields are only
+                // included when dirty; non-Tracked fields are always included.
+                // `__first` tracks whether we have emitted any SET assignment yet
+                // so comma insertion is correct regardless of which fields fire.
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+                {
+                    let mut __first = true;
+                    #(#save_set_fragments)*
+                    // `updated_at = now()` is always appended. If any user column
+                    // was emitted above, we need a leading comma; otherwise it is
+                    // the first (and only) assignment.
+                    if !__first { __acc.push_sql(", "); }
+                    __acc.push_sql("updated_at = now()");
+                }
+                // Append WHERE id = $<next> RETURNING <column_list>.
+                // Emit the WHERE prefix as raw SQL, then let push_bind append the
+                // `$n` placeholder and store the id value. RETURNING is appended
+                // as raw SQL AFTER the bind so it follows the positional slot.
+                __acc.push_sql(" WHERE id = ");
+                // Clone id so push_bind (requires 'static) can take ownership.
+                // HeerId, RanjId, and i32 (Serial) are all Clone + ToSql + Send + Sync + 'static.
+                let __id_val = self.id.clone();
+                __acc.push_bind(__id_val);
+                __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
+                let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
+                *self = row;
+                // After `*self = row`, walk every Tracked field and call mark_clean().
+                // `from_pg_row` uses `Tracked::new(T)` which already starts clean,
+                // so this is defensive — but required by the Task 2 contract.
+                #(#mark_clean_fragments)*
+                // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
+                // values (triggers, column defaults), so emission runs AFTER the
+                // `*self = row` rehydration. No-op for non-events models.
+                #emit_outbox_save
+                ::std::result::Result::Ok(())
+            }
         }
     };
 
