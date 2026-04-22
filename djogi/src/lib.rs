@@ -131,9 +131,14 @@ pub use descriptor::{
     EnumDescriptor, FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor,
     PartitionSpec, PkType,
 };
+// Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
+// the symbol does not appear in default-feature builds or `cargo doc` output
+// when PostGIS support is not requested.
 pub use djogi_macros::{
     DjogiEnum, JsonbSchema, many_to_many, reverse_one_to_many, reverse_one_to_one,
 };
+#[cfg(feature = "spatial")]
+pub use geo::GeoPoint;
 pub use jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
 pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro

@@ -1,0 +1,13 @@
+error[E0432]: unresolved import `djogi::geo`
+  --> tests/compile_fail/phase6_spatial_feature_off.rs:10:12
+   |
+10 | use djogi::geo::GeoPoint;
+   |            ^^^ could not find `geo` in `djogi`
+   |
+note: found an item that was configured out
+  --> $WORKSPACE/djogi/src/lib.rs
+   |
+   | #[cfg(feature = "spatial")]
+   |       ------------------- the item is gated behind the `spatial` feature
+   | pub mod geo;
+   |         ^^^

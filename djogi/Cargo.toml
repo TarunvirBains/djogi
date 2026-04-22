@@ -153,3 +153,8 @@ harness = true
 name = "phase5_5_auth"
 path = "../tests/integration/phase5_5_auth.rs"
 harness = true
+
+[[test]]
+name = "phase6_spatial"
+path = "../tests/integration/phase6_spatial.rs"
+harness = true

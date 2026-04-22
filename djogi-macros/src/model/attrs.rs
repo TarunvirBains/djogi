@@ -1221,6 +1221,15 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "Vec<i32>" => Some("INTEGER[]"),
         "Vec<i64>" => Some("BIGINT[]"),
         "Vec<bool>" => Some("BOOLEAN[]"),
+        // Spatial — GeoPoint maps to GEOGRAPHY(Point, 4326). The `spatial`
+        // feature flag lives on the `djogi` runtime crate, not here; the
+        // macro recognises the type name unconditionally so it can emit the
+        // correct descriptor regardless of feature state. If the user has
+        // the spatial feature off, the compile error comes from "unresolved
+        // type GeoPoint" at the struct definition, not from the macro.
+        "GeoPoint" | "geo::GeoPoint" | "djogi::geo::GeoPoint" | "djogi::GeoPoint" => {
+            Some("GEOGRAPHY(Point, 4326)")
+        }
         // Option<T> is handled at call site — strip and recurse via unwrap_option
         _ if s.starts_with("Option<") => None,
         _ => None,

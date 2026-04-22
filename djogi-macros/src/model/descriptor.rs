@@ -380,6 +380,53 @@ pub fn expand(
         );
     }
 
+    // ── Phase 6 Task 2: implicit GiST indexes for GeoPoint fields ────────────
+    //
+    // For every user field whose Rust type is `GeoPoint` (or a path ending in
+    // `GeoPoint`), emit one `IndexSpec` entry with:
+    //   - name:       "<table>_<column>_gix"
+    //   - columns:    &["<column>"]
+    //   - unique:     false
+    //   - index_type: IndexType::Gist
+    //
+    // The names are baked in as `'static str` string literals — they are
+    // compile-time constants derived from the model attrs and field names.
+    // No `Box::leak` is needed because the entire `inventory::submit!` block
+    // is emitted as a single `static` initialiser; all nested `&[...]` slices
+    // are literal arrays with `'static` lifetimes.
+    //
+    // `requires_out_of_transaction` and `extension_dependency` are T5 fields
+    // that do not yet exist on `IndexSpec`. T2 constructs with the current
+    // 4-field shape; T5 extends the struct and updates this emission site.
+    let geopoint_index_specs: Vec<TokenStream> = user_fields
+        .iter()
+        .filter(|(field, _fa)| is_geopoint_type(&field.ty))
+        .map(|(field, _fa)| {
+            let raw_name = field.ident.as_ref().unwrap().to_string();
+            let col = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            // Index name convention: "<table>_<column>_gix"
+            let index_name = format!("{table_name}_{col}_gix");
+            let col_str = col.as_str();
+            quote! {
+                ::djogi::descriptor::IndexSpec {
+                    name: #index_name,
+                    columns: &[#col_str],
+                    unique: false,
+                    index_type: ::djogi::descriptor::IndexType::Gist,
+                }
+            }
+        })
+        .collect();
+
+    // Emit the indexes slice. If there are no GeoPoint fields, the slice is
+    // empty (`&[]`) — identical to the Phase 1 default. If there are one or
+    // more GeoPoint fields, emit a `&[IndexSpec { … }, …]` literal.
+    let indexes_tokens = if geopoint_index_specs.is_empty() {
+        quote! { &[] }
+    } else {
+        quote! { &[ #(#geopoint_index_specs,)* ] }
+    };
+
     quote! {
         ::djogi::__private::inventory::submit! {
             ::djogi::ModelDescriptor {
@@ -401,7 +448,9 @@ pub fn expand(
                 tenant_key: #tenant_key_tokens,
                 cache_ttl: None,
                 rationale: None,
-                indexes: &[],
+                // Phase 6 Task 2 — implicit GiST IndexSpec for every GeoPoint
+                // field. Non-spatial models keep the empty slice default.
+                indexes: #indexes_tokens,
                 // Task 6 (phase3-relations): `#[model(table = "...", through)]`
                 is_through: #is_through,
                 // Phase 5 Task 14 — Full-Text Search.
@@ -566,6 +615,13 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "INTEGER[]" => quote! { ::djogi::FieldSqlType::IntegerArray },
         "BIGINT[]" => quote! { ::djogi::FieldSqlType::BigIntArray },
         "BOOLEAN[]" => quote! { ::djogi::FieldSqlType::BoolArray },
+        // Spatial — GeoPoint fields are mapped to GEOGRAPHY(Point, 4326) in
+        // rust_type_to_sql. Emit the typed Geography variant so downstream
+        // consumers (migration differ, djogi docs, admin UI) never need to
+        // parse a Custom("...") string to discover the SRID.
+        "GEOGRAPHY(Point, 4326)" => {
+            quote! { ::djogi::FieldSqlType::Geography { srid: 4326u32 } }
+        }
         other => {
             let s = other.to_string();
             quote! { ::djogi::FieldSqlType::Custom(#s) }
@@ -587,9 +643,39 @@ fn is_jsonb_type(ty: &syn::Type) -> bool {
         .unwrap_or(false)
 }
 
+/// Detect if a field type is `GeoPoint` by checking the last-segment ident.
+///
+/// Returns `true` if the type path ends in `GeoPoint`, after stripping `Option`.
+/// Uses last-segment path matching so all of the following are accepted:
+/// - bare `GeoPoint`
+/// - `djogi::GeoPoint`
+/// - `geo::GeoPoint`
+/// - `djogi::geo::GeoPoint`
+/// - `Option<GeoPoint>` and the above qualified forms under `Option`
+///
+/// The `spatial` feature flag lives on the `djogi` runtime crate, not on
+/// `djogi-macros`. The macro recognises the type name unconditionally so
+/// it emits the correct descriptor regardless of feature state. If the
+/// user omits the `spatial` feature, the compile error surfaces at the
+/// struct definition as "unresolved type `GeoPoint`", not here.
+fn is_geopoint_type(ty: &syn::Type) -> bool {
+    let (inner, _) = unwrap_option(ty);
+    let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
+        return false;
+    };
+    path.segments
+        .last()
+        .map(|seg| seg.ident == "GeoPoint")
+        .unwrap_or(false)
+}
+
 /// Detect if a field type is `Geography` by checking the last-segment ident.
 /// Returns `true` if the type path ends in `Geography`, after stripping `Option`.
 /// Uses last-segment path matching to accept bare `Geography<T>`, `djogi::Geography<T>`, etc.
+///
+/// This helper is retained for the `#[field(index)]` auto-index default so that
+/// any user who annotates a field typed as a raw `Geography<…>` wrapper (not
+/// the canonical `GeoPoint`) also gets a GiST index by default.
 fn is_geography_type(ty: &syn::Type) -> bool {
     let (inner, _) = unwrap_option(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
@@ -604,12 +690,12 @@ fn is_geography_type(ty: &syn::Type) -> bool {
 /// Compute the default `IndexType` for a field when `#[field(index)]` is
 /// present without an explicit method.
 /// - `Jsonb<T>` → `IndexType::Gin`
-/// - `Geography` → `IndexType::Gist`
+/// - `GeoPoint` or `Geography<…>` → `IndexType::Gist`
 /// - Everything else → `IndexType::BTree`
 fn default_index_type(ty: &syn::Type) -> TokenStream {
     if is_jsonb_type(ty) {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gin) }
-    } else if is_geography_type(ty) {
+    } else if is_geopoint_type(ty) || is_geography_type(ty) {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) }
     } else {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) }
@@ -717,5 +803,56 @@ mod tests {
     fn test_is_geography_type_jsonb_false() {
         let ty = syn::parse_str::<syn::Type>("Jsonb<String>").unwrap();
         assert!(!is_geography_type(&ty));
+    }
+
+    // ── is_geopoint_type ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_geopoint_type_bare() {
+        let ty = syn::parse_str::<syn::Type>("GeoPoint").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geopoint_type_djogi_qualified() {
+        let ty = syn::parse_str::<syn::Type>("djogi::GeoPoint").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geopoint_type_geo_qualified() {
+        let ty = syn::parse_str::<syn::Type>("geo::GeoPoint").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geopoint_type_full_path() {
+        let ty = syn::parse_str::<syn::Type>("djogi::geo::GeoPoint").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geopoint_type_option_bare() {
+        let ty = syn::parse_str::<syn::Type>("Option<GeoPoint>").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geopoint_type_option_qualified() {
+        let ty = syn::parse_str::<syn::Type>("Option<djogi::GeoPoint>").unwrap();
+        assert!(is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geopoint_type_string_false() {
+        let ty = syn::parse_str::<syn::Type>("String").unwrap();
+        assert!(!is_geopoint_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geopoint_type_geography_false() {
+        // `Geography<Point>` is a different type from `GeoPoint`.
+        let ty = syn::parse_str::<syn::Type>("Geography<Point>").unwrap();
+        assert!(!is_geopoint_type(&ty));
     }
 }
