@@ -119,9 +119,14 @@ impl RenameAll {
 
 /// Convert `PascalCase` → `snake_case`.
 ///
-/// Inserts `_` before each uppercase letter that follows a lowercase letter or
-/// another uppercase letter that is itself followed by a lowercase letter
-/// (`XMLParser` → `xml_parser`, `HTTPSProxy` → `https_proxy`).
+/// Inserts `_` before each uppercase letter that is either preceded by a
+/// lowercase letter (standard camel boundary, e.g. `fooBar` → `foo_bar`) or
+/// followed by a lowercase letter (trailing letter of an all-caps run that
+/// starts a new word, e.g. `XMLParser` → `xml_parser`, `HTTPSProxy` →
+/// `https_proxy`).
+///
+/// The leading letter of the identifier never gets a leading underscore
+/// regardless of what comes after it.
 ///
 /// Pure byte-level — no regex, no regex notation. Handles only ASCII as
 /// documented in [`RenameAll`].
@@ -129,16 +134,17 @@ fn pascal_to_snake(name: &str) -> String {
     let bytes = name.as_bytes();
     let mut out = Vec::with_capacity(bytes.len() + 4);
     for (i, &b) in bytes.iter().enumerate() {
-        if b.is_ascii_uppercase() {
-            // Insert `_` before this uppercase if:
-            // - Not the first character AND
-            // - Either the previous char was lowercase, OR the next char (if any) is lowercase
-            //   (catches the trailing letter of an all-caps run like `HTTPSProxy`).
-            let prev_is_lower = i > 0 && bytes[i - 1].is_ascii_lowercase();
+        if b.is_ascii_uppercase() && i > 0 {
+            let prev_is_lower = bytes[i - 1].is_ascii_lowercase();
             let next_is_lower = i + 1 < bytes.len() && bytes[i + 1].is_ascii_lowercase();
-            if i > 0 && (prev_is_lower || (next_is_lower && !bytes[i - 1].is_ascii_uppercase())) {
+            // Boundary rule: preceded by lowercase (standard camel boundary)
+            // OR followed by lowercase (trailing cap of an all-caps run that
+            // starts a new word). Both branches insert exactly one `_`.
+            if prev_is_lower || next_is_lower {
                 out.push(b'_');
             }
+        }
+        if b.is_ascii_uppercase() {
             out.push(b.to_ascii_lowercase());
         } else {
             out.push(b);
@@ -444,4 +450,63 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     };
 
     Ok(expanded)
+}
+
+#[cfg(test)]
+mod case_conversion_tests {
+    use super::pascal_to_snake;
+
+    #[test]
+    fn single_word() {
+        assert_eq!(pascal_to_snake("Active"), "active");
+    }
+
+    #[test]
+    fn standard_camel_boundary() {
+        assert_eq!(pascal_to_snake("InMaintenance"), "in_maintenance");
+        assert_eq!(pascal_to_snake("MyVariantName"), "my_variant_name");
+    }
+
+    #[test]
+    fn leading_acronym_before_word() {
+        // The trailing cap of the acronym (`L` in XML → the following `P`
+        // starts a new word) must get an underscore.
+        assert_eq!(pascal_to_snake("XMLParser"), "xml_parser");
+        assert_eq!(pascal_to_snake("HTTPSProxy"), "https_proxy");
+    }
+
+    #[test]
+    fn all_caps_identifier() {
+        // No lowercase letter appears anywhere, so no underscores are inserted.
+        assert_eq!(pascal_to_snake("ABC"), "abc");
+        assert_eq!(pascal_to_snake("AB"), "ab");
+        assert_eq!(pascal_to_snake("A"), "a");
+    }
+
+    #[test]
+    fn trailing_acronym() {
+        // `ParserXML` — boundary is at X (prev=r lowercase → underscore).
+        // Subsequent M and L are part of the trailing all-caps run with no
+        // following lowercase, so no further underscores get inserted.
+        assert_eq!(pascal_to_snake("ParserXML"), "parser_xml");
+    }
+
+    #[test]
+    fn lowercase_start_word() {
+        // Already lowercase — no change to the first letter, standard boundaries apply.
+        assert_eq!(pascal_to_snake("myField"), "my_field");
+    }
+
+    #[test]
+    fn empty() {
+        assert_eq!(pascal_to_snake(""), "");
+    }
+
+    #[test]
+    fn mixed_acronym_and_word() {
+        // `IOError` — I at i=0 (no underscore), O at i=1 (prev=I upper,
+        // next=E upper → no underscore), E at i=2 (prev=O upper, next=r
+        // lower → INSERT underscore).
+        assert_eq!(pascal_to_snake("IOError"), "io_error");
+    }
 }
