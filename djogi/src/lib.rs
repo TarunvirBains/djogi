@@ -46,6 +46,8 @@ pub mod descriptor;
 pub mod enum_;
 pub mod error;
 pub mod expr;
+pub mod fts;
+pub mod fts_query;
 pub(crate) mod ident;
 pub mod jsonb;
 pub mod model;
@@ -139,9 +141,12 @@ pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, t
 pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
 pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+pub use fts::{FtsDescriptor, TsQuery, TsVector};
+pub use fts_query::FtsFieldRef;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
-    IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, UpdateAssignment, UpdateStmt,
+    IntoFilterValue, Lookup, ModelCursorStream, ModelFilter, OrderExpr, QuerySet, RawCursorStream,
+    UpdateAssignment, UpdateStmt,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -159,6 +164,8 @@ pub mod prelude {
     };
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+    pub use crate::fts::{FtsDescriptor, TsQuery, TsVector};
+    pub use crate::fts_query::FtsFieldRef;
     pub use crate::jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
     pub use crate::model::Model;
     pub use crate::pg::decode::{

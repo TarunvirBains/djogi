@@ -18,6 +18,20 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue, Token};
 
+/// Parsed `#[model(fts(source = "...", dictionary = "..."))]` sub-attribute.
+///
+/// Both fields are required. `source` is a comma-separated list of column
+/// names (e.g. `"title, body"`); `dictionary` is a Postgres text-search
+/// configuration name (e.g. `"english"`). Both are validated byte-level at
+/// parse time per `feedback_no_regex_in_djogi`.
+#[derive(Debug, Clone)]
+pub struct FtsSpec {
+    /// Comma-separated source column names, e.g. `"title, body"`.
+    pub source: String,
+    /// Postgres text-search configuration name, e.g. `"english"`.
+    pub dictionary: String,
+}
+
 /// Options extracted from `#[model(table = "...", pk = "...")]`.
 // Fields are read by Tasks 4–9 (inject, crud, descriptor, stubs). The
 // dead-code lint fires now because those callers are stubs — suppress it.
@@ -111,6 +125,19 @@ pub struct ModelAttrs {
     /// At runtime, call [`DjogiContext::set_tenant`] inside an `atomic()`
     /// block to activate the RLS policy for a request.
     pub tenant_key: Option<String>,
+
+    /// Full-text search specification — Phase 5 Task 14.
+    ///
+    /// Set via `#[model(fts(source = "col1, col2", dictionary = "english"))]`.
+    /// When present, the macro emits an `FtsDescriptor` into the
+    /// `ModelDescriptor` and the `{Model}Fields` struct gains a `search()`
+    /// accessor that returns a typed `FtsFieldRef` for building
+    /// `@@` / `ts_rank` predicates.
+    ///
+    /// Both `source` and `dictionary` are required; omitting either is a
+    /// compile error. Both values are validated byte-level at parse time
+    /// per `feedback_no_regex_in_djogi`.
+    pub fts: Option<FtsSpec>,
 }
 
 /// Parsed `pk = "..."` value.
@@ -141,6 +168,7 @@ impl ModelAttrs {
         let mut seen_events = false;
         let mut idempotency_key: Option<String> = Option::None;
         let mut tenant_key: Option<String> = Option::None;
+        let mut fts: Option<FtsSpec> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -261,11 +289,22 @@ impl ModelAttrs {
                             path,
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
-                                 `idempotency_key`, `tenant_key`, `no_default`, `through`, or `events`",
+                                 `idempotency_key`, `tenant_key`, `fts`, `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
                     }
+                }
+                // `fts(source = "...", dictionary = "...")` — paren-delimited
+                // sub-attribute parsed as a Meta::List.
+                Meta::List(list) if list.path.is_ident("fts") => {
+                    if fts.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            &list.path,
+                            "duplicate `fts` key in #[model(...)]",
+                        ));
+                    }
+                    fts = Some(FtsSpec::parse_from_list(list)?);
                 }
                 other => {
                     return Err(syn::Error::new_spanned(
@@ -292,6 +331,7 @@ impl ModelAttrs {
             events,
             idempotency_key,
             tenant_key,
+            fts,
         })
     }
 }
@@ -307,6 +347,167 @@ impl PkStrategy {
                 "unknown pk strategy `{other}`; expected one of: heerid, ranjid, serial, none"
             )),
         }
+    }
+}
+
+impl FtsSpec {
+    /// Parse `{ source = "col1, col2", dictionary = "english" }` from a
+    /// `Meta::List` (the `{ ... }` token stream inside `fts = { ... }`).
+    ///
+    /// Both `source` and `dictionary` are required. Values are validated
+    /// byte-level per `feedback_no_regex_in_djogi` — no regex engine.
+    fn parse_from_list(list: &syn::MetaList) -> syn::Result<Self> {
+        let inner_metas = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+
+        let mut source: Option<String> = Option::None;
+        let mut dictionary: Option<String> = Option::None;
+
+        for meta in &inner_metas {
+            match meta {
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value:
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }),
+                    ..
+                }) => {
+                    if path.is_ident("source") {
+                        if source.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `source` in fts { ... }",
+                            ));
+                        }
+                        let val = s.value();
+                        // Validate each column name in the comma-separated list.
+                        // Byte-level checks per `feedback_no_regex_in_djogi`.
+                        for col_raw in val.split(',') {
+                            let col = col_raw.trim();
+                            let bytes = col.as_bytes();
+                            if bytes.is_empty() {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    "source column name must not be empty",
+                                ));
+                            }
+                            if bytes.len() > 63 {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    format!(
+                                        "source column `{col}` exceeds 63 bytes \
+                                         (Postgres identifier length cap)"
+                                    ),
+                                ));
+                            }
+                            if !bytes[0].is_ascii_alphabetic() && bytes[0] != b'_' {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    format!(
+                                        "source column `{col}` must start with an ASCII \
+                                         letter or underscore"
+                                    ),
+                                ));
+                            }
+                            for b in bytes.iter().skip(1) {
+                                if !b.is_ascii_alphanumeric() && *b != b'_' {
+                                    return Err(syn::Error::new_spanned(
+                                        s,
+                                        format!(
+                                            "source column `{col}` contains invalid character \
+                                             `{}`; only ASCII letters, digits, and underscores \
+                                             are allowed",
+                                            *b as char
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        source = Some(val);
+                    } else if path.is_ident("dictionary") {
+                        if dictionary.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `dictionary` in fts { ... }",
+                            ));
+                        }
+                        let val = s.value();
+                        // Validate dictionary name: ASCII identifier, max 63 bytes.
+                        // Byte-level checks per `feedback_no_regex_in_djogi`.
+                        // Rule: letter or underscore start, alphanumerics or
+                        // underscores after, up to 63 bytes.
+                        let bytes = val.as_bytes();
+                        if bytes.is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "dictionary name must not be empty",
+                            ));
+                        }
+                        if bytes.len() > 63 {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                format!(
+                                    "dictionary name `{val}` exceeds 63 bytes \
+                                     (Postgres identifier length cap)"
+                                ),
+                            ));
+                        }
+                        if !bytes[0].is_ascii_alphabetic() && bytes[0] != b'_' {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                format!(
+                                    "dictionary name `{val}` must start with an ASCII \
+                                     letter or underscore"
+                                ),
+                            ));
+                        }
+                        for b in bytes.iter().skip(1) {
+                            if !b.is_ascii_alphanumeric() && *b != b'_' {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    format!(
+                                        "dictionary name `{val}` contains invalid character \
+                                         `{}`; only ASCII letters, digits, and underscores \
+                                         are allowed",
+                                        *b as char
+                                    ),
+                                ));
+                            }
+                        }
+                        dictionary = Some(val);
+                    } else {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!(
+                                "unknown key `{}` in fts {{ ... }}; expected `source` or `dictionary`",
+                                path.get_ident().map(|i| i.to_string()).unwrap_or_default()
+                            ),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "expected `source = \"...\"` or `dictionary = \"...\"` in fts { ... }",
+                    ));
+                }
+            }
+        }
+
+        let source = source.ok_or_else(|| {
+            syn::Error::new_spanned(
+                list,
+                "fts { ... } requires `source = \"col1, col2\"` — list of column names to index",
+            )
+        })?;
+        let dictionary = dictionary.ok_or_else(|| {
+            syn::Error::new_spanned(
+                list,
+                "fts { ... } requires `dictionary = \"english\"` — Postgres text-search config name",
+            )
+        })?;
+
+        Ok(FtsSpec { source, dictionary })
     }
 }
 

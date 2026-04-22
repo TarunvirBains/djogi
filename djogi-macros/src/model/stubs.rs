@@ -132,6 +132,37 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         }
     };
 
+    // Phase 5 Task 14 — emit `search()` accessor when the model has an FTS spec.
+    // The accessor returns `::djogi::fts_query::FtsFieldRef<#name>` with the
+    // tsvector column name ("search") and dictionary baked in as `&'static str`s.
+    let fts_accessor_impl: TokenStream = if let Some(fts) = &model_attrs.fts {
+        let dictionary = &fts.dictionary;
+        quote! {
+            impl #fields_name {
+                /// Typed handle for the full-text search column.
+                ///
+                /// Returns an [`FtsFieldRef`](::djogi::fts_query::FtsFieldRef) that
+                /// exposes `.matches(q)` and `.rank(q)` for building `@@` and
+                /// `ts_rank` predicates in filter closures and order expressions.
+                ///
+                /// The tsvector column is a `GENERATED ALWAYS AS` computed column —
+                /// Postgres maintains it automatically on every INSERT / UPDATE, so
+                /// application code never writes to it directly.
+                ///
+                /// [`FtsFieldRef`]: ::djogi::fts_query::FtsFieldRef
+                #[inline]
+                pub fn search(&self) -> ::djogi::fts_query::FtsFieldRef<#name> {
+                    ::djogi::fts_query::__macro_support::__make_fts_ref::<#name>(
+                        "search",
+                        #dictionary,
+                    )
+                }
+            }
+        }
+    } else {
+        TokenStream::new()
+    };
+
     quote! {
         /// Typed field accessors for QuerySet filter closures.
         ///
@@ -147,5 +178,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         pub struct #fields_name;
 
         #accessor_impl
+
+        #fts_accessor_impl
     }
 }

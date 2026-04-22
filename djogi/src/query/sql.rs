@@ -1729,6 +1729,7 @@ mod tests {
         rationale: None,
         indexes: &[],
         is_through: false,
+        fts: None,
     };
 
     fn owners_join_descriptor() -> &'static ModelDescriptor {

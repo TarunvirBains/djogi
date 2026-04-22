@@ -214,6 +214,59 @@ pub(crate) enum ExprNode {
         column: &'static str,
     },
 
+    /// `<col> @@ to_tsquery('<dictionary>', $n)` — full-text search match.
+    ///
+    /// Produced by `FtsFieldRef::matches(query)`. The column name is the
+    /// GENERATED ALWAYS AS tsvector column (typically `"search"`). The
+    /// dictionary name is embedded into the SQL as a literal token (e.g.
+    /// `to_tsquery('english', $1)`) because it is a Postgres configuration
+    /// name, not a user value — it came from `#[model(fts = { dictionary = "..."
+    /// })]` and was validated at macro parse time. The query text is bound
+    /// as a parameter.
+    ///
+    /// The emitter renders: `<column> @@ to_tsquery('<dictionary>', $n)`
+    TsMatch {
+        /// The tsvector column name (e.g. `"search"`). Validated at
+        /// construction via `assert_plain_ident`; safe to push as raw SQL.
+        column: &'static str,
+        /// Postgres text-search config name (e.g. `"english"`). Validated
+        /// at macro parse time; embedded literally into the SQL.
+        dictionary: &'static str,
+        /// The tsquery text bound as a parameter (e.g. `"planet & earth"`).
+        query_text: String,
+    },
+
+    /// `ts_rank(<col>, to_tsquery('<dictionary>', $n))` — relevance score.
+    ///
+    /// Produced by `FtsFieldRef::rank(query)`. Returns an `f32` scalar
+    /// that Postgres computes per-row as the document's relevance against
+    /// the query. Useful in `ORDER BY ... DESC` to surface the most
+    /// relevant results first.
+    ///
+    /// The emitter renders: `ts_rank(<column>, to_tsquery('<dictionary>', $n))`
+    TsRank {
+        /// The tsvector column name. Validated at construction.
+        column: &'static str,
+        /// Dictionary name embedded literally. Validated at macro parse time.
+        dictionary: &'static str,
+        /// The tsquery text bound as a parameter.
+        query_text: String,
+    },
+
+    /// `ts_rank_cd(<col>, to_tsquery('<dictionary>', $n))` — cover-density rank.
+    ///
+    /// Like `TsRank` but uses the cover-density ranking algorithm, which
+    /// weighs proximity of matching terms more heavily. Useful when term
+    /// position within the document matters.
+    TsRankCd {
+        /// The tsvector column name.
+        column: &'static str,
+        /// Dictionary name.
+        dictionary: &'static str,
+        /// The tsquery text bound as a parameter.
+        query_text: String,
+    },
+
     /// A Postgres `INTERVAL` literal derived from a `time::Duration`.
     ///
     /// Emitted as the raw SQL token `INTERVAL '{microseconds} microseconds'` —

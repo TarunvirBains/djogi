@@ -337,6 +337,7 @@ mod tests {
             rationale: None,
             indexes: &[],
             is_through: false,
+            fts: None,
         }
     }
 

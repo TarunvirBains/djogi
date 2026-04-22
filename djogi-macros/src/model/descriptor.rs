@@ -18,9 +18,9 @@
 //! follow the same convention.
 
 use crate::model::attrs::{
-    FieldAttrs, FieldSqlTypeCategory, ModelAttrs, PkStrategy, RelationKind as MacroRelationKind,
-    detect_relation, field_sql_type_category, on_delete_str_to_tokens, rust_type_to_sql,
-    unwrap_option,
+    FieldAttrs, FieldSqlTypeCategory, FtsSpec, ModelAttrs, PkStrategy,
+    RelationKind as MacroRelationKind, detect_relation, field_sql_type_category,
+    on_delete_str_to_tokens, rust_type_to_sql, unwrap_option,
 };
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -348,6 +348,10 @@ pub fn expand(
 
     let is_through = model_attrs.through;
     let has_outbox = model_attrs.events;
+
+    // Phase 5 Task 14 — emit FtsDescriptor tokens when `#[model(fts = ...)]`
+    // is set. Both `source` and `dictionary` are `&'static str` literals.
+    let fts_tokens = fts_descriptor_tokens(&model_attrs.fts);
     // Phase 4 Task 7.5 — `#[model(idempotency_key = "column")]` emits the
     // column name into the descriptor so runtime consumers
     // (`create_or_find`, `bulk_upsert_by_descriptor`) can discover the
@@ -400,6 +404,8 @@ pub fn expand(
                 indexes: &[],
                 // Task 6 (phase3-relations): `#[model(table = "...", through)]`
                 is_through: #is_through,
+                // Phase 5 Task 14 — Full-Text Search.
+                fts: #fts_tokens,
             }
         }
     }
@@ -607,6 +613,33 @@ fn default_index_type(ty: &syn::Type) -> TokenStream {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) }
     } else {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) }
+    }
+}
+
+/// Emit the `fts: Option<FtsDescriptor>` token stream for the
+/// `inventory::submit!` block.
+///
+/// When `spec` is `None`, emits `::std::option::Option::None`. When `Some`,
+/// emits `::std::option::Option::Some(::djogi::descriptor::FtsDescriptor { ... })`.
+/// The `source` and `dictionary` strings become `&'static str` literals baked
+/// into the descriptor at compile time — they are constant data, not runtime
+/// allocations.
+fn fts_descriptor_tokens(spec: &Option<FtsSpec>) -> TokenStream {
+    match spec {
+        None => quote! { ::std::option::Option::None },
+        Some(s) => {
+            let source = &s.source;
+            let dictionary = &s.dictionary;
+            quote! {
+                ::std::option::Option::Some(::djogi::descriptor::FtsDescriptor {
+                    // Default generated column name. Phase 8 will add a
+                    // `column = "..."` override; until then it is always "search".
+                    column: "search",
+                    source: #source,
+                    dictionary: #dictionary,
+                })
+            }
+        }
     }
 }
 

@@ -314,6 +314,20 @@ pub enum DjogiError {
     /// [`is_lock_error`] keeps the variant boundary tight.
     #[error("lock conflict: {0}")]
     LockConflict(#[source] DbError),
+
+    /// `QuerySet::stream` or `DjogiContext::raw_stream` was called on a
+    /// pool-backed context (i.e. outside an `atomic()` scope).
+    ///
+    /// Postgres named cursors are transaction-local — they require an open
+    /// transaction to exist. Calling `stream` on a pool-backed context is a
+    /// caller error that is detected at stream construction time, not at the
+    /// first `poll_next`. This makes the error surface immediate and
+    /// actionable rather than deferred to the first row consume.
+    ///
+    /// Fix: wrap the stream consumer in `atomic(&pool, |ctx| async move { … })`
+    /// so `ctx` is transaction-backed when `stream` is called.
+    #[error("QuerySet::stream requires an active transaction — wrap the call in atomic()")]
+    StreamOutsideTransaction,
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -399,6 +413,7 @@ impl DjogiError {
     /// | [`Validation`](Self::Validation) | terminal |
     /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
     /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
+    /// | [`StreamOutsideTransaction`](Self::StreamOutsideTransaction) | terminal |
     ///
     /// The Db row reflects the existing `is_lock_error`
     /// classifier: Postgres SQLSTATEs `40001` (serialization

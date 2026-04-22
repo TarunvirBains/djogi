@@ -60,6 +60,7 @@
 use crate::pg::connection::PgConnection;
 use crate::pg::decode::{FromPgRow, try_get_scalar};
 use crate::pg::pool::DjogiPool;
+use crate::query::stream::{DEFAULT_FETCH_SIZE, RawCursorStream, build_raw_stream};
 use crate::{DbError, DjogiError};
 use futures::FutureExt;
 use postgres_types::FromSql;
@@ -601,6 +602,78 @@ impl DjogiContext {
     /// For parameterised DML prefer [`raw_execute`](Self::raw_execute).
     pub async fn raw_ddl(&mut self, sql: &str) -> Result<(), DjogiError> {
         self.batch_execute(sql).await
+    }
+
+    /// Stream rows from an ad-hoc SQL query using a Postgres named cursor.
+    ///
+    /// Returns a [`RawCursorStream`] that yields
+    /// `Result<tokio_postgres::Row, DjogiError>`. The caller decodes each row
+    /// using `Row::get` or a custom `FromPgRow` impl.
+    ///
+    /// `sql` may be any `SELECT` statement. `binds` are positional Postgres
+    /// parameters for `$1`, `$2`, … in the same order they appear in `sql`.
+    ///
+    /// # Transaction requirement
+    ///
+    /// Named Postgres cursors are transaction-local. This method requires
+    /// `self` to be backed by an active transaction (i.e. called inside an
+    /// [`atomic()`](crate::transaction::atomic) scope). Calling it on a
+    /// pool-backed context returns
+    /// `Err(DjogiError::StreamOutsideTransaction)` immediately.
+    ///
+    /// # Fetch size
+    ///
+    /// Default is `1000` rows per `FETCH` round trip. Use
+    /// [`raw_stream_with_fetch_size`](Self::raw_stream_with_fetch_size) to
+    /// override.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use futures::StreamExt;
+    ///
+    /// atomic(&pool, |ctx| Box::pin(async move {
+    ///     let mut stream = ctx.raw_stream(
+    ///         "SELECT id, title FROM posts WHERE published = $1",
+    ///         &[&true],
+    ///     ).await?;
+    ///
+    ///     while let Some(row) = stream.next().await {
+    ///         let row = row?;
+    ///         let id: i64 = row.get("id");
+    ///         let title: String = row.get("title");
+    ///         // …
+    ///     }
+    ///     Ok(())
+    /// })).await?;
+    /// ```
+    pub async fn raw_stream<'ctx>(
+        &'ctx mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<RawCursorStream<'ctx>, DjogiError> {
+        build_raw_stream(self, sql, binds, DEFAULT_FETCH_SIZE).await
+    }
+
+    /// Stream rows from an ad-hoc SQL query with a custom fetch size.
+    ///
+    /// Like [`raw_stream`](Self::raw_stream) but lets the caller choose the
+    /// number of rows retrieved per `FETCH` round trip. `fetch_size` must be
+    /// at least `1`; passing `0` returns `Err(DjogiError::Validation)`.
+    ///
+    /// Same transaction invariant as [`raw_stream`](Self::raw_stream).
+    pub async fn raw_stream_with_fetch_size<'ctx>(
+        &'ctx mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+        fetch_size: u32,
+    ) -> Result<RawCursorStream<'ctx>, DjogiError> {
+        if fetch_size == 0 {
+            return Err(DjogiError::Validation(
+                "raw_stream fetch_size must be at least 1".to_owned(),
+            ));
+        }
+        build_raw_stream(self, sql, binds, fetch_size).await
     }
 
     /// Set the active tenant ID for this context by issuing

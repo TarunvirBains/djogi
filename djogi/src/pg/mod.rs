@@ -14,5 +14,6 @@
 
 pub mod accumulator;
 pub mod connection;
+pub mod cursor;
 pub mod decode;
 pub mod pool;

@@ -305,6 +305,64 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             let literal = format!("INTERVAL '{microseconds} microseconds'");
             acc.push_sql(&literal);
         }
+
+        ExprNode::TsMatch {
+            column,
+            dictionary,
+            query_text,
+        } => {
+            // `<col> @@ to_tsquery('<dictionary>', $n)`
+            //
+            // `column` is a `&'static str` validated at FtsFieldRef
+            // construction via `assert_plain_ident`; safe to push as raw SQL.
+            // `dictionary` is a Postgres identifier validated at macro parse
+            // time via byte-level checks; embedded literally (single-quoted)
+            // as `to_tsquery('<dictionary>', ...)`.
+            // `query_text` is user-supplied and therefore ALWAYS bound as a
+            // parameter — never interpolated into the SQL string.
+            acc.push_sql(column);
+            acc.push_sql(" @@ to_tsquery('");
+            acc.push_sql(dictionary);
+            acc.push_sql("', ");
+            acc.push_bind(query_text.clone());
+            acc.push_sql(")");
+        }
+
+        ExprNode::TsRank {
+            column,
+            dictionary,
+            query_text,
+        } => {
+            // `ts_rank(<col>, to_tsquery('<dictionary>', $n))`
+            //
+            // The `ts_rank` function scores each document against the query;
+            // higher score = more relevant. Bind the query text as a parameter.
+            acc.push_sql("ts_rank(");
+            acc.push_sql(column);
+            acc.push_sql(", to_tsquery('");
+            acc.push_sql(dictionary);
+            acc.push_sql("', ");
+            acc.push_bind(query_text.clone());
+            acc.push_sql("))");
+        }
+
+        ExprNode::TsRankCd {
+            column,
+            dictionary,
+            query_text,
+        } => {
+            // `ts_rank_cd(<col>, to_tsquery('<dictionary>', $n))`
+            //
+            // Cover-density ranking — weighs term proximity more heavily
+            // than the standard `ts_rank`. Same bind-parameter pattern.
+            acc.push_sql("ts_rank_cd(");
+            acc.push_sql(column);
+            acc.push_sql(", to_tsquery('");
+            acc.push_sql(dictionary);
+            acc.push_sql("', ");
+            acc.push_bind(query_text.clone());
+            acc.push_sql("))");
+        }
     }
 }
 
