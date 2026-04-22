@@ -230,7 +230,7 @@ pub fn expand(
             let sql_type_str = rust_type_to_sql(&inner_ty).unwrap_or("TEXT");
             let sql_type = sql_str_to_tokens(sql_type_str);
             let unique = fa.unique;
-            let indexed = fa.index;
+            let indexed = fa.index || fa.index_method.is_some();
             let max_length = match fa.max_length {
                 Some(n) => quote! { Some(#n) },
                 None => quote! { None },
@@ -238,6 +238,34 @@ pub fn expand(
             let renamed_from = match &fa.renamed_from {
                 Some(s) => quote! { Some(#s) },
                 None => quote! { None },
+            };
+
+            // Phase 5 — `#[field(index)]` or `#[field(index = "method")]`.
+            // Three cases:
+            // 1. fa.index = true, index_method = None → bare `#[field(index)]`, apply auto-default
+            // 2. fa.index_method = Some(method) → explicit method (may or may not have bare index)
+            // 3. Neither → no index
+            let index_type_tokens = if let Some(method) = &fa.index_method {
+                // Explicit method string. The method was already validated
+                // in FieldAttrs::parse, so this should not fail. Re-parse to
+                // get the token stream for emission.
+                // In theory we could cache the tokens in FieldAttrs, but the
+                // two-pass pattern (validate in attrs, emit in descriptor)
+                // mirrors on_delete and keeps spans recoverable if needed.
+                match method.as_str() {
+                    "btree" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) },
+                    "gin" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gin) },
+                    "gist" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) },
+                    "brin" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Brin) },
+                    "hash" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Hash) },
+                    "spgist" => quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Spgist) },
+                    _ => quote! { ::std::option::Option::None }, // Unreachable — already validated.
+                }
+            } else if fa.index {
+                // Bare `#[field(index)]` — apply auto-default.
+                default_index_type(&field.ty)
+            } else {
+                quote! { ::std::option::Option::None }
             };
 
             // Phase 4.5 — populate visage_map from the parsed
@@ -295,7 +323,7 @@ pub fn expand(
                     // flagged here from the JSONB payload.
                     outbox_exclude: #outbox_exclude,
                     sequence_within: #sequence_within_tokens,
-                    index_type: None,
+                    index_type: #index_type_tokens,
                     // Phase 3 Task 2 — relation metadata emitted only for FK/O2O
                     // columns. Non-relation columns keep `None`/`&[]`.
                     relation_kind: #relation_kind_tokens,
@@ -405,5 +433,37 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
             let s = other.to_string();
             quote! { ::djogi::FieldSqlType::Custom(#s) }
         }
+    }
+}
+
+/// Detect if a field type is `Jsonb<T>` by checking the last-segment ident.
+/// Returns `true` if the type path ends in `Jsonb`, after stripping `Option`.
+fn is_jsonb_type(ty: &syn::Type) -> bool {
+    let (inner, _) = unwrap_option(ty);
+    let s = quote::quote!(#inner).to_string().replace(' ', "");
+    // Match patterns like `Jsonb<...>` where Jsonb is the outermost generic or ident.
+    s.starts_with("Jsonb<") || s == "Jsonb"
+}
+
+/// Detect if a field type is `Geography` by checking the last-segment ident.
+/// Returns `true` if the type path ends in `Geography`, after stripping `Option`.
+fn is_geography_type(ty: &syn::Type) -> bool {
+    let (inner, _) = unwrap_option(ty);
+    let s = quote::quote!(#inner).to_string().replace(' ', "");
+    s.starts_with("Geography<") || s == "Geography"
+}
+
+/// Compute the default `IndexType` for a field when `#[field(index)]` is
+/// present without an explicit method.
+/// - `Jsonb<T>` → `IndexType::Gin`
+/// - `Geography` → `IndexType::Gist`
+/// - Everything else → `IndexType::BTree`
+fn default_index_type(ty: &syn::Type) -> TokenStream {
+    if is_jsonb_type(ty) {
+        quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gin) }
+    } else if is_geography_type(ty) {
+        quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) }
+    } else {
+        quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) }
     }
 }

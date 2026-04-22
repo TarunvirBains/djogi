@@ -276,7 +276,7 @@ impl PkStrategy {
 // granularity so new fields don't spuriously re-trip the lint.
 #[allow(dead_code)]
 #[derive(Debug, FromField)]
-#[darling(attributes(field))]
+#[darling(attributes(field), allow_unknown_fields)]
 pub struct FieldAttrs {
     /// The struct field's identifier.
     ///
@@ -296,9 +296,18 @@ pub struct FieldAttrs {
     /// `#[field(unique)]` — emits a `UNIQUE` constraint in migrations.
     #[darling(default)]
     pub unique: bool,
-    /// `#[field(index)]` — emits a `CREATE INDEX` in migrations.
-    #[darling(default)]
+    /// `#[field(index)]` or `#[field(index = "method")]`.
+    /// Set entirely via raw attribute parsing in [`FieldAttrs::parse`], not via darling.
+    /// - `false` if no index attribute
+    /// - `true` if bare `#[field(index)]`
+    /// - explicit methods are stored separately in index_method
+    #[darling(skip)]
     pub index: bool,
+    /// `#[field(index = "btree"|"gin"|"gist"|"brin"|"hash"|"spgist")]` — explicit index method.
+    /// Set via raw attribute parsing in [`FieldAttrs::parse`], not via darling.
+    /// Only Some if an explicit method string was provided; bare `#[field(index)]` leaves this None.
+    #[darling(skip)]
+    pub index_method: Option<String>,
     /// `#[field(max_length = N)]` — caps `TEXT` columns at `VARCHAR(N)`.
     #[darling(default)]
     pub max_length: Option<u32>,
@@ -619,6 +628,90 @@ impl FieldAttrs {
         let mut attrs =
             <Self as darling::FromField>::from_field(field).map_err(syn::Error::from)?;
 
+        // Phase 5 — manually parse index from raw attributes.
+        // Support both bare `#[field(index)]` and `#[field(index = "method")]`.
+        // We do this entirely outside of darling to have fine-grained control over both forms.
+        attrs.index = false;
+        attrs.index_method = None;
+        for attr in &field.attrs {
+            if !attr.path().is_ident("field") {
+                continue;
+            }
+            let Ok(inner) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            else {
+                // If the attr doesn't parse as a comma-separated Meta list,
+                // darling has already emitted a better diagnostic; skip.
+                continue;
+            };
+            for nested in &inner {
+                match nested {
+                    // Bare `#[field(index)]` form — Meta::Path.
+                    Meta::Path(path) if path.is_ident("index") => {
+                        attrs.index = true;
+                    }
+                    // `#[field(index = "method")]` form — Meta::NameValue with string literal.
+                    Meta::NameValue(MetaNameValue {
+                        path,
+                        value:
+                            Expr::Lit(ExprLit {
+                                lit: lit @ Lit::Str(lit_str),
+                                ..
+                            }),
+                        ..
+                    }) if path.is_ident("index") => {
+                        attrs.index = true; // Also set the bare flag for indexed=true
+                        let method = lit_str.value();
+                        let span = lit.span();
+                        // Validate the method string.
+                        parse_index_method(&method, span)?;
+                        attrs.index_method = Some(method);
+                        break; // Only one index per field.
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Validate that all field attribute keys are known.
+        // Since we use `allow_unknown_fields`, darling won't reject them,
+        // so we must validate manually to reject invalid keys.
+        const VALID_FIELD_KEYS: &[&str] = &[
+            "ident",
+            "ty", // Auto-populated by darling
+            "unique",
+            "index",
+            "max_length",
+            "renamed_from",
+            "on_delete",
+            "outbox",
+            "sequence_within",
+            "expose",
+            "rationale",
+            "lazy",
+        ];
+        for attr in &field.attrs {
+            if !attr.path().is_ident("field") {
+                continue;
+            }
+            let Ok(inner) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            else {
+                continue;
+            };
+            for nested in &inner {
+                let key = match nested {
+                    Meta::Path(path) => path.get_ident().map(|i| i.to_string()),
+                    Meta::NameValue(nv) => nv.path.get_ident().map(|i| i.to_string()),
+                    _ => None,
+                };
+                if let Some(key) = key.as_ref().filter(|k| !VALID_FIELD_KEYS.contains(&k.as_str())) {
+                    return Err(syn::Error::new_spanned(
+                        nested,
+                        format!("unknown field attribute: `{key}`"),
+                    ));
+                }
+            }
+        }
+
         if let Some(on_delete) = &attrs.on_delete {
             let valid = [
                 "cascade",
@@ -763,6 +856,24 @@ impl FieldAttrs {
 
         attrs.expose = expose;
         Ok(attrs)
+    }
+}
+
+/// Parse an index method string to validate it against known `IndexType` methods.
+///
+/// Valid methods: `btree`, `gin`, `gist`, `brin`, `hash`, `spgist`.
+/// Returns an error with a clean message listing all valid methods if the
+/// string does not match. The returned error's span points to the offending
+/// literal, not the whole field. Returns `Ok(())` if the method is valid.
+fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    match s {
+        "btree" | "gin" | "gist" | "brin" | "hash" | "spgist" => Ok(()),
+        other => Err(syn::Error::new(
+            span,
+            format!(
+                "unknown index method: '{other}'; expected one of btree, gin, gist, brin, hash, spgist"
+            ),
+        )),
     }
 }
 
