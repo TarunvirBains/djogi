@@ -213,6 +213,30 @@ pub(crate) enum ExprNode {
         /// [`crate::ident::assert_plain_ident`]; safe to push directly.
         column: &'static str,
     },
+
+    /// A Postgres `INTERVAL` literal derived from a `time::Duration`.
+    ///
+    /// Emitted as the raw SQL token `INTERVAL '{microseconds} microseconds'` —
+    /// no bind parameter is used because `tokio-postgres` / `postgres-types`
+    /// does not ship a `ToSql` impl for `time::Duration` (the `time` crate's
+    /// native duration type). Microseconds are faithful to `Duration`'s
+    /// full sub-millisecond precision.
+    ///
+    /// The microsecond count is clamped to `i64` range at construction
+    /// time (via `time::Duration::whole_microseconds() as i64`); values
+    /// outside that range are Postgres `INTERVAL` overflows anyway.
+    ///
+    /// This variant is produced only by the `impl From<time::Duration> for
+    /// Expr<time::Duration>` bridge in [`super::literal`]. User code that
+    /// arrives here via `Expr::literal(duration)` has already gone through
+    /// the typed `From` impl — no raw `ExprNode::IntervalLiteral {..}`
+    /// construction from outside the crate is possible.
+    IntervalLiteral {
+        /// Microseconds — the full precision of `time::Duration` expressed
+        /// as a `BIGINT`-compatible count, emitted as
+        /// `INTERVAL '{microseconds} microseconds'`.
+        microseconds: i64,
+    },
 }
 
 /// Internal subquery payload — the untyped counterpart to the typed
@@ -261,7 +285,7 @@ pub(crate) struct SubqueryNode {
 /// renders `COUNT(*)` specially for [`AggOp::CountStar`] so the bare `*`
 /// never flows through the identifier-validation / column-qualification
 /// paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AggOp {
     /// `COUNT(col)` — returns `i64`. Counts non-null values of the
     /// argument column.
@@ -289,6 +313,43 @@ pub(crate) enum AggOp {
     /// `MAX(col)` — returns `V`. Same ordering requirement as
     /// [`AggOp::Min`].
     Max,
+    /// `ARRAY_AGG(col)` — collects non-null values into a Postgres array.
+    ///
+    /// Returns `Vec<V>` at the Rust level. The typed builder on
+    /// [`super::aggregate::FieldRef`] pins `Out = Vec<V>` so the
+    /// annotate decode path calls `row.try_get::<_, Vec<V>>(alias)`.
+    /// postgres-types decodes Postgres arrays into `Vec<V>` when `V`
+    /// implements `FromSql` — all scalar column types Djogi ships already
+    /// satisfy that bound.
+    ArrayAgg,
+    /// `JSONB_AGG(col)` — aggregates rows into a JSON array, returned as
+    /// `serde_json::Value`.
+    ///
+    /// Uses `JSONB_AGG` rather than `JSON_AGG` because Djogi standardises
+    /// on JSONB for all JSON storage and wire formats (see `docs/spec/decisions.md`).
+    JsonAgg,
+    /// `STRING_AGG(col, sep)` — concatenates non-null string values with a
+    /// separator.
+    ///
+    /// The separator is stored inline in the variant so the emitter can
+    /// push it as a bind parameter without a separate `ExprNode`. Carrying
+    /// the separator directly on the variant rather than as a second
+    /// `ExprNode` child of `Aggregate { arg, .. }` keeps the existing
+    /// `Aggregate` layout unchanged — no other variant needs a second
+    /// operand.
+    ///
+    /// The separator is user-supplied at `.string_agg("sep")` call time
+    /// and bound via `acc.push_bind(sep.to_string())` to avoid any risk
+    /// of SQL injection from a runtime-computed separator string.
+    StringAgg(String),
+    /// `BOOL_AND(col)` — true if every non-null value in the column is
+    /// true. Requires a boolean column; the typed builder gates on
+    /// `V: Into<bool>`.
+    BoolAnd,
+    /// `BOOL_OR(col)` — true if at least one non-null value in the
+    /// column is true. Requires a boolean column; the typed builder gates
+    /// on `V: Into<bool>`.
+    BoolOr,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

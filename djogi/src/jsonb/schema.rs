@@ -9,7 +9,7 @@
 //! - Scalar fields (from the cast-matrix allowlist: `i16`, `i32`, `i64`,
 //!   `f32`, `f64`, `bool`, `String`, `time::OffsetDateTime`, etc.) return a
 //!   [`JsonbPathRef<M, FieldType>`](crate::jsonb::JsonbPathRef) that carries
-//!   the accumulated JSONB path and exposes `eq` / `gt` / `lt` / … comparisons.
+//!   the accumulated JSONB path and exposes `eq` / `gt` / `lt` / ... comparisons.
 //!
 //! - Nested fields whose types also implement `JsonbSchema` return the nested
 //!   type's `Path<M>`, extending the path accumulator by one segment.
@@ -74,51 +74,44 @@ use crate::model::Model;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-/// Marker trait for structs that participate in the typed JSONB deep-path API.
-///
-/// Implementing this trait (via `#[derive(JsonbSchema)]`) causes the proc macro
-/// to emit a `{T}Path<M>` struct providing one method per field. Scalar fields
-/// (from the cast-matrix allowlist) return a
-/// [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef) ready for comparison;
-/// nested fields return the nested type's `Path<M>` with the path accumulator
-/// extended by one segment.
-///
-/// # Implementing manually
-///
-/// Manual implementation is possible but strongly discouraged — the derive
-/// handles path-accumulator bookkeeping correctly. If you implement manually,
-/// the `Path<M>` type must accept `(base_column: &'static str,
-/// base_path: &'static [&'static str])` and propagate those through every
-/// nested accessor.
-///
-/// # The `Path` associated type
-///
-/// `type Path<M: Model>` is generic over the model so that `JsonbPathRef<M, V>`
-/// nodes carry the model marker — mismatching a `VehicleSpecsPath<Post>` with
-/// a `Vehicle`-targeted `QuerySet` is a compile error, not a runtime bug.
-/// Global interner for typed JSONB path strings.
-///
-/// Typed path construction (`{T}Path<M>` methods) must produce
-/// `JsonbPathRef<M, V>` which carries a `&'static str` for the dotted path.
-/// Since the set of unique paths in a compiled binary is bounded (one per
-/// leaf field per schema type), leaking each unique dotted string once is
-/// acceptable — the total allocation is proportional to the number of
-/// distinct path queries in the program, not the number of rows.
-///
-/// The interner is a `Mutex<HashMap>` rather than a thread-local because
-/// `JsonbPathRef` must be `Send` (it escapes the filter closure into the
-/// async executor). A thread-local would give a different reference for the
-/// same path string on each thread, which would be incorrect for
-/// multi-threaded use.
-///
-/// # Performance
-///
-/// The lock is taken once per unique `(column, path_segments)` combination
-/// at filter-build time. Identical paths on subsequent calls are served by
-/// the interner without allocation (they hit the HashMap entry and return the
-/// already-leaked `&'static str`). For single-threaded access (the overwhelm-
-/// ingly common case for filter closures), the lock is always uncontended.
+// ── String path interner ─────────────────────────────────────────────────────
+//
+// Typed path construction (`{T}Path<M>` methods) must produce
+// `JsonbPathRef<M, V>` which carries a `&'static str` for the dotted path.
+// Since the set of unique paths in a compiled binary is bounded (one per
+// leaf field per schema type), leaking each unique dotted string once is
+// acceptable — the total allocation is proportional to the number of
+// distinct path queries in the program, not the number of rows.
+//
+// The interner is a `Mutex<HashMap>` rather than a thread-local because
+// `JsonbPathRef` must be `Send` (it escapes the filter closure into the
+// async executor). A thread-local would give a different reference for the
+// same path string on each thread, which would be incorrect for
+// multi-threaded use.
+//
+// # Performance
+//
+// The lock is taken once per unique `(column, path_segments)` combination
+// at filter-build time. Identical paths on subsequent calls are served by
+// the interner without allocation (they hit the HashMap entry and return the
+// already-leaked `&'static str`). For single-threaded access (the overwhelm-
+// ingly common case for filter closures), the lock is always uncontended.
 static PATH_INTERNER: Mutex<Option<HashMap<String, &'static str>>> = Mutex::new(None);
+
+// ── Segment-slice interner ────────────────────────────────────────────────────
+//
+// The `__new_from_slice` method on derived `{T}Path<M>` types needs a
+// `&'static [&'static str]` slice of path segments. Without interning,
+// every call to a nested accessor would `Box::leak` a fresh slice, producing
+// unbounded allocation growth proportional to query volume rather than
+// schema shape — a memory leak in long-running web servers.
+//
+// `intern_path_slice` caches slices keyed by their content (as a
+// `Vec<&'static str>`), so the same path traversal reuses the identical
+// slice on every call. Growth is bounded by unique paths, same as
+// `PATH_INTERNER` above.
+static PATH_SLICE_INTERNER: Mutex<Option<HashMap<Vec<&'static str>, &'static [&'static str]>>> =
+    Mutex::new(None);
 
 /// Intern a dotted JSONB path string.
 ///
@@ -154,6 +147,73 @@ pub fn intern_path(segments: &[&'static str]) -> &'static str {
     leaked
 }
 
+/// Intern a `&'static [&'static str]` segment slice.
+///
+/// Returns the previously-interned slice for the given segment sequence, or
+/// leaks a new `Box<[&'static str]>` on first encounter and caches it.
+///
+/// # Why this is needed
+///
+/// `{T}Path<M>::__new` carries a `&'static [&'static str]` base_path. Without
+/// interning, every call to a nested accessor would `Box::leak` a fresh slice,
+/// producing unbounded allocation growth proportional to query-build volume.
+/// With interning, the slice is allocated once per unique segment sequence,
+/// bounding growth by the number of distinct JSONB paths in the program.
+///
+/// # Panics
+///
+/// Panics if the interner mutex is poisoned.
+///
+/// # Pointer stability
+///
+/// Two calls with equal segment sequences return the same `&'static` pointer —
+/// pointer equality can be used in tests to confirm caching is active.
+#[doc(hidden)]
+pub fn intern_path_slice(segments: &[&'static str]) -> &'static [&'static str] {
+    let key: Vec<&'static str> = segments.to_vec();
+    let mut guard = PATH_SLICE_INTERNER
+        .lock()
+        .expect("djogi: PATH_SLICE_INTERNER mutex poisoned");
+    let map = guard.get_or_insert_with(HashMap::new);
+    if let Some(&existing) = map.get(&key) {
+        return existing;
+    }
+    let leaked: &'static [&'static str] = Box::leak(key.clone().into_boxed_slice());
+    map.insert(key, leaked);
+    leaked
+}
+
+/// Marker trait for structs that participate in the typed JSONB deep-path API.
+///
+/// Implementing this trait (via `#[derive(JsonbSchema)]`) causes the proc macro
+/// to emit a `{T}Path<M>` struct providing one method per field. Scalar fields
+/// (from the cast-matrix allowlist) return a
+/// [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef) ready for comparison;
+/// nested fields return the nested type's `Path<M>` with the path accumulator
+/// extended by one segment.
+///
+/// # Implementing manually
+///
+/// Manual implementation is possible but strongly discouraged — the derive
+/// handles path-accumulator bookkeeping correctly. If you implement manually,
+/// the `Path<M>` type must accept `(base_column: &'static str,
+/// base_path: &'static [&'static str])` and propagate those through every
+/// nested accessor.
+///
+/// # The `Path` associated type
+///
+/// `type Path<M: Model>` is generic over the model so that `JsonbPathRef<M, V>`
+/// nodes carry the model marker — mismatching a `VehicleSpecsPath<Post>` with
+/// a `Vehicle`-targeted `QuerySet` is a compile error, not a runtime bug.
+///
+/// # Bounded-leak guarantee
+///
+/// All interning (both string paths via [`intern_path`] and segment slices via
+/// [`intern_path_slice`]) is bounded by the product of (distinct JSONB schema
+/// types x field counts x nesting depth) across the compiled program — typically
+/// hundreds of entries for a real app. Every unique path is leaked at most once,
+/// so memory growth reaches zero at steady state once every unique path has been
+/// observed for the first time.
 pub trait JsonbSchema {
     /// The typed path tree emitted by `#[derive(JsonbSchema)]`.
     ///
@@ -170,16 +230,76 @@ pub trait JsonbSchema {
     /// base path down.
     fn root_path<M: Model>(base_column: &'static str) -> Self::Path<M>;
 
-    /// Internal: construct a nested path node already positioned at the
-    /// dotted path `base_path_str` within column `base_column`.
+    /// Internal: construct a nested path node from a pre-interned segment slice.
     ///
     /// This method is an implementation detail of the `#[derive(JsonbSchema)]`
-    /// macro expansion. It is `#[doc(hidden)]` and not intended for direct
-    /// use. The derive macro emits calls to this from parent node accessor
-    /// methods to position the child at the correct sub-path.
+    /// macro expansion. It is `#[doc(hidden)]` and not intended for direct use.
+    ///
+    /// The derive macro emits calls to this from parent node accessor methods.
+    /// The `base_path` slice must be a pointer returned by
+    /// [`intern_path_slice`] — it is `&'static` and bounded by unique paths,
+    /// never allocated more than once per unique segment sequence.
     #[doc(hidden)]
-    fn __nested_path<M: Model>(
+    fn __new_from_slice<M: Model>(
         base_column: &'static str,
-        base_path_str: &'static str,
+        base_path: &'static [&'static str],
     ) -> Self::Path<M>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── intern_path_slice — pointer-equality caching ─────────────────────
+
+    #[test]
+    fn intern_path_slice_same_input_returns_same_pointer() {
+        let a = intern_path_slice(&["engine", "cylinders"]);
+        let b = intern_path_slice(&["engine", "cylinders"]);
+        // Pointer equality proves the second call hit the cache and did NOT
+        // allocate a second Box::leak'd slice — the BLOCKER memory-leak fix
+        // is confirmed by this assertion.
+        assert!(
+            std::ptr::eq(a, b),
+            "Expected intern_path_slice to return the same &'static pointer on repeated \
+             calls, but got two distinct allocations. This means Fix 1 (path-slice \
+             interning) is broken."
+        );
+    }
+
+    #[test]
+    fn intern_path_slice_different_inputs_return_different_pointers() {
+        let a = intern_path_slice(&["engine", "displacement_cc"]);
+        let b = intern_path_slice(&["engine", "turbo"]);
+        // Different paths must produce different slices.
+        assert!(
+            !std::ptr::eq(a, b),
+            "Different segment sequences must produce different slices"
+        );
+    }
+
+    #[test]
+    fn intern_path_slice_single_segment() {
+        let a = intern_path_slice(&["weight_kg"]);
+        let b = intern_path_slice(&["weight_kg"]);
+        assert!(std::ptr::eq(a, b));
+    }
+
+    #[test]
+    fn intern_path_slice_empty_segments() {
+        let a = intern_path_slice(&[]);
+        let b = intern_path_slice(&[]);
+        assert!(std::ptr::eq(a, b));
+    }
+
+    // ── intern_path — existing string interner (regression) ──────────────
+
+    #[test]
+    fn intern_path_same_input_returns_same_pointer() {
+        let a = intern_path(&["engine", "cylinders"]);
+        let b = intern_path(&["engine", "cylinders"]);
+        // ptr::eq on &str compares the pointer + length. Same static string
+        // has same address.
+        assert_eq!(a.as_ptr(), b.as_ptr());
+    }
 }

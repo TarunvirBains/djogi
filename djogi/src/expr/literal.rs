@@ -129,3 +129,26 @@ impl From<RanjId> for Expr<RanjId> {
         Self::from_literal(FilterValue::RanjId(v))
     }
 }
+
+// `time::Duration` maps to `ExprNode::IntervalLiteral` rather than
+// `FilterValue::*` because `tokio-postgres` / `postgres-types` does not ship
+// a `ToSql` impl for `time::Duration`. Instead of adding a bind parameter,
+// the emitter renders the duration as a raw SQL token —
+// `INTERVAL '{microseconds} microseconds'` — so the value is embedded
+// directly in the query text.
+//
+// `Expr::literal(time::Duration::days(30))` produces an `Expr<time::Duration>`
+// whose node is `ExprNode::IntervalLiteral { microseconds: 2592000000000 }`.
+// This expression composes with `Expr<time::OffsetDateTime>` arithmetic via the
+// heterogeneous `Add<Expr<Duration>> for Expr<OffsetDateTime>` impl in
+// `expr::arithmetic`.
+impl From<time::Duration> for crate::expr::Expr<time::Duration> {
+    fn from(d: time::Duration) -> Self {
+        use crate::expr::node::ExprNode;
+        // `whole_microseconds()` returns i128; cast to i64 — any duration
+        // outside the i64 microsecond range (~292 thousand years) is a
+        // Postgres INTERVAL overflow anyway.
+        let microseconds = d.whole_microseconds() as i64;
+        crate::expr::Expr::from_node(ExprNode::IntervalLiteral { microseconds })
+    }
+}

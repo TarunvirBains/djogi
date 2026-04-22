@@ -607,6 +607,9 @@ pub struct Post {
     pub tags: Vec<String>,
     pub view_counts: Vec<i32>,
     pub specs: Option<Jsonb<serde_json::Value>>,
+    /// Added by Task 7 migration (007_posts_task7.sql). Defaults to FALSE in
+    /// the DB; used by `bool_and` / `bool_or` aggregate integration tests.
+    pub published: bool,
 }
 
 /// Apply the posts DDL on top of the enum setup (which includes accounts,
@@ -620,6 +623,11 @@ async fn setup_phase5_posts(ctx: &mut djogi::DjogiContext) {
     ctx.raw_execute(POSTS_DDL, &[])
         .await
         .expect("apply 004_posts.sql");
+    // Task 7 migration: adds `published BOOLEAN` column to posts.
+    const TASK7_DDL: &str = include_str!("migrations/phase5/007_posts_task7.sql");
+    ctx.raw_execute(TASK7_DDL, &[])
+        .await
+        .expect("apply 007_posts_task7.sql");
 }
 
 /// Helper to build a minimal Post — suppresses the Default fill-in for
@@ -630,6 +638,19 @@ fn make_post(title: &str, tags: Vec<String>, view_counts: Vec<i32>) -> Post {
         tags,
         view_counts,
         specs: None,
+        published: false,
+        ..Default::default()
+    }
+}
+
+/// Helper to build a Post with an explicit `published` flag.
+fn make_post_published(title: &str, published: bool) -> Post {
+    Post {
+        title: title.to_string(),
+        tags: vec![],
+        view_counts: vec![],
+        specs: None,
+        published,
         ..Default::default()
     }
 }
@@ -641,6 +662,7 @@ fn make_post_with_specs(title: &str, tags: Vec<String>, specs: serde_json::Value
         tags,
         view_counts: vec![],
         specs: Some(Jsonb::new(specs)),
+        published: false,
         ..Default::default()
     }
 }
@@ -1356,5 +1378,289 @@ async fn typed_jsonb_depth2_filter_bool(mut ctx: djogi::DjogiContext) {
     assert!(
         !turbo_found.iter().any(|v| v.id == no_turbo.id),
         "Non-turbo vehicle must NOT appear when filtering engine.turbo = true"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 7 — Native aggregates: ArrayAgg / JsonAgg / StringAgg / BoolAnd / BoolOr
+//           + Interval Numeric (datetime + duration arithmetic in filters)
+// ---------------------------------------------------------------------------
+
+/// `ARRAY_AGG(title)` over a table of three posts returns a `Vec<String>`
+/// containing all three title strings.
+///
+/// Strategy: insert three posts with distinct titles, run an `annotate`
+/// with `array_agg` over the title column, fetch all rows. The aggregate
+/// uses `OVER ()` (window form inside `annotate`) so all rows contribute to
+/// the same aggregate result on every returned row. Assert the aggregate
+/// on the first row contains all three titles.
+#[djogi::djogi_test]
+async fn array_agg_collects_values(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    Post::create(&mut ctx, make_post("Alpha", vec![], vec![]))
+        .await
+        .expect("create p1");
+    Post::create(&mut ctx, make_post("Beta", vec![], vec![]))
+        .await
+        .expect("create p2");
+    Post::create(&mut ctx, make_post("Gamma", vec![], vec![]))
+        .await
+        .expect("create p3");
+
+    // `annotate` + `array_agg` on the title column — window form means
+    // every row gets the full array (all 3 titles). Fetch all rows and
+    // check the aggregate value from the first row.
+    let rows = Post::objects()
+        .annotate(|f| f.title().array_agg())
+        .fetch_all(&mut ctx)
+        .await
+        .expect("annotate array_agg");
+
+    assert!(!rows.is_empty(), "expected at least one annotated row");
+    // All rows have the same window-aggregate value; check the first.
+    let (_post, titles) = &rows[0];
+    assert!(
+        titles.contains(&"Alpha".to_string()),
+        "array_agg must include 'Alpha'; got: {titles:?}"
+    );
+    assert!(
+        titles.contains(&"Beta".to_string()),
+        "array_agg must include 'Beta'; got: {titles:?}"
+    );
+    assert!(
+        titles.contains(&"Gamma".to_string()),
+        "array_agg must include 'Gamma'; got: {titles:?}"
+    );
+}
+
+/// `STRING_AGG(title, ', ')` over two posts returns a joined `String`
+/// with the separator between the titles.
+///
+/// Strategy: insert two posts. Fetch all rows with `annotate`. The window
+/// form means every row's aggregate covers the entire table — check the
+/// aggregate value from the first row.
+#[djogi::djogi_test]
+async fn string_agg_joins_with_separator(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    Post::create(&mut ctx, make_post("Aardvark", vec![], vec![]))
+        .await
+        .expect("create p1");
+    Post::create(&mut ctx, make_post("Buffalo", vec![], vec![]))
+        .await
+        .expect("create p2");
+
+    // Fetch all rows — window aggregate covers all two rows.
+    let rows = Post::objects()
+        .annotate(|f| f.title().string_agg(", "))
+        .fetch_all(&mut ctx)
+        .await
+        .expect("annotate string_agg");
+
+    assert!(!rows.is_empty(), "expected at least one annotated row");
+    let (_post, joined) = &rows[0];
+    // The separator `", "` must appear somewhere in the joined result,
+    // and both titles must appear. We do not assert order since Postgres
+    // does not guarantee aggregate ordering without ORDER BY inside the
+    // aggregate (that is a future extension).
+    assert!(
+        joined.contains("Aardvark"),
+        "joined string must contain 'Aardvark'; got: {joined:?}"
+    );
+    assert!(
+        joined.contains("Buffalo"),
+        "joined string must contain 'Buffalo'; got: {joined:?}"
+    );
+    assert!(
+        joined.contains(", "),
+        "separator ', ' must appear in joined string; got: {joined:?}"
+    );
+}
+
+/// `JSONB_AGG(title)` returns a `serde_json::Value::Array` containing
+/// one element per row.
+///
+/// Strategy: insert two posts, annotate over all rows (window form),
+/// assert the first row's aggregate is an array containing both titles.
+#[djogi::djogi_test]
+async fn json_agg_collects_as_jsonb(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    Post::create(&mut ctx, make_post("JsonOne", vec![], vec![]))
+        .await
+        .expect("create p1");
+    Post::create(&mut ctx, make_post("JsonTwo", vec![], vec![]))
+        .await
+        .expect("create p2");
+
+    let rows = Post::objects()
+        .annotate(|f| f.title().json_agg())
+        .fetch_all(&mut ctx)
+        .await
+        .expect("annotate json_agg");
+
+    assert!(!rows.is_empty(), "expected at least one annotated row");
+    let (_post, agg_val) = &rows[0];
+    let arr = agg_val
+        .as_array()
+        .expect("JSONB_AGG result must be a JSON array");
+    let titles: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+    assert!(
+        titles.contains(&"JsonOne"),
+        "json_agg must include 'JsonOne'; got: {titles:?}"
+    );
+    assert!(
+        titles.contains(&"JsonTwo"),
+        "json_agg must include 'JsonTwo'; got: {titles:?}"
+    );
+}
+
+/// `BOOL_AND(published)` returns `true` when every row in the aggregate
+/// has `published = true`.
+///
+/// Strategy: insert 3 published posts. The window-form aggregate sees all
+/// three rows and returns true.
+#[djogi::djogi_test]
+async fn bool_and_is_true_when_all_rows_true(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    let p1 = Post::create(&mut ctx, make_post_published("Published A", true))
+        .await
+        .expect("create published p1");
+    let p2 = Post::create(&mut ctx, make_post_published("Published B", true))
+        .await
+        .expect("create published p2");
+    let p3 = Post::create(&mut ctx, make_post_published("Published C", true))
+        .await
+        .expect("create published p3");
+
+    let rows = Post::objects()
+        .filter(|f| f.id().eq(p1.id))
+        .annotate(|f| f.published().bool_and())
+        .fetch_all(&mut ctx)
+        .await
+        .expect("annotate bool_and all true");
+
+    assert_eq!(rows.len(), 1, "expected exactly one annotated row");
+    let (_post, result) = &rows[0];
+    assert!(
+        *result,
+        "BOOL_AND must be true when all rows are published=true"
+    );
+    drop((p2, p3));
+}
+
+/// `BOOL_OR(published)` returns `true` when at least one row in the
+/// aggregate has `published = true`, even when others are `false`.
+///
+/// Strategy: insert one published post and one draft post. The window-form
+/// BOOL_OR sees both rows (over the whole table) and must return true.
+#[djogi::djogi_test]
+async fn bool_or_is_true_when_any_row_true(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    let p1 = Post::create(&mut ctx, make_post_published("Published", true))
+        .await
+        .expect("create published post");
+    let p2 = Post::create(&mut ctx, make_post_published("Draft", false))
+        .await
+        .expect("create draft post");
+
+    // Annotate on the published row — the window aggregate covers all rows
+    // (both published=true and published=false). BOOL_OR must return true
+    // because at least one row is true.
+    let rows = Post::objects()
+        .filter(|f| f.id().eq(p1.id))
+        .annotate(|f| f.published().bool_or())
+        .fetch_all(&mut ctx)
+        .await
+        .expect("annotate bool_or");
+
+    assert_eq!(rows.len(), 1, "expected exactly one annotated row");
+    let (_post, result) = &rows[0];
+    assert!(
+        *result,
+        "BOOL_OR must be true when at least one row has published=true"
+    );
+    drop(p2);
+}
+
+/// `f.created_at + Expr::literal(time::Duration::days(30))` composes in a
+/// WHERE predicate — the SQL emitter renders it as
+/// `created_at + INTERVAL '...' > $1`.
+///
+/// Strategy: insert a post with `created_at = 60 days ago` and a post with
+/// `created_at = now()`. The filter `f.created_at + 30 days > (60 days ago)`
+/// should match both rows (both are "> 60 days ago + 30 days = 30 days ago").
+/// The filter `f.created_at + 30 days > now()` should match only the recent
+/// post (whose `created_at + 30 days` is in the future).
+#[djogi::djogi_test]
+async fn interval_arithmetic_composes_in_where(mut ctx: djogi::DjogiContext) {
+    setup_phase5_posts(&mut ctx).await;
+
+    let recent = Post::create(&mut ctx, make_post("Recent", vec![], vec![]))
+        .await
+        .expect("create recent post");
+
+    // Insert an old post by directly setting created_at via a raw update.
+    let old = Post::create(&mut ctx, make_post("Old", vec![], vec![]))
+        .await
+        .expect("create old post");
+
+    // Move `old` post's created_at to 60 days in the past.
+    ctx.raw_execute(
+        "UPDATE posts SET created_at = now() - INTERVAL '60 days' WHERE id = $1",
+        &[&old.id.as_i64()],
+    )
+    .await
+    .expect("backdate old post");
+
+    // Filter: `created_at + INTERVAL '30 days' > now() - INTERVAL '40 days'`
+    //
+    // old post:    (now() - 60d) + 30d = now() - 30d  >  now() - 40d  → TRUE
+    // recent post: now() + 30d                         >  now() - 40d  → TRUE
+    // Both rows pass this loose filter — verifies the interval expression
+    // composes correctly and reaches Postgres without a syntax error.
+    let forty_days_ago = time::OffsetDateTime::now_utc() - time::Duration::days(40);
+    let loose_found = Post::objects()
+        .filter_expr(|f| {
+            (f.created_at().as_expr() + Expr::literal(time::Duration::days(30)))
+                .gt(Expr::literal(forty_days_ago))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("interval arithmetic filter (loose)");
+
+    assert!(
+        loose_found.iter().any(|p| p.id == old.id),
+        "old post (backdated -60d, +30d = -30d) must pass loose filter (> -40d)"
+    );
+    assert!(
+        loose_found.iter().any(|p| p.id == recent.id),
+        "recent post must pass loose filter (created_at + 30d >> -40d)"
+    );
+
+    // Filter: `created_at + INTERVAL '30 days' > now() + INTERVAL '1 day'`
+    //
+    // old post:    (now() - 60d) + 30d = now() - 30d  >  now() + 1d   → FALSE
+    // recent post: now() + 30d                         >  now() + 1d   → TRUE
+    let tomorrow = time::OffsetDateTime::now_utc() + time::Duration::days(1);
+    let strict_found = Post::objects()
+        .filter_expr(|f| {
+            (f.created_at().as_expr() + Expr::literal(time::Duration::days(30)))
+                .gt(Expr::literal(tomorrow))
+        })
+        .fetch_all(&mut ctx)
+        .await
+        .expect("interval arithmetic filter (strict)");
+
+    assert!(
+        !strict_found.iter().any(|p| p.id == old.id),
+        "old post must NOT pass strict filter (created_at + 30d < tomorrow)"
+    );
+    assert!(
+        strict_found.iter().any(|p| p.id == recent.id),
+        "recent post must pass strict filter (created_at + 30d > tomorrow)"
     );
 }

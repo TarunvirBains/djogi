@@ -44,6 +44,7 @@
 
 use crate::expr::Expr;
 use crate::expr::node::ExprNode;
+use time::{Duration, OffsetDateTime};
 
 /// Sealed marker trait — only Djogi-blessed numeric types implement
 /// this. Phase 4 ships integer + float; Phase 5 extends with `Decimal`;
@@ -90,6 +91,7 @@ mod sealed {
     impl Sealed for i64 {}
     impl Sealed for f32 {}
     impl Sealed for f64 {}
+    impl Sealed for time::Duration {}
 }
 
 // Per-type cast targets. Integer sums widen in Postgres
@@ -134,6 +136,24 @@ impl Numeric for f64 {
     const AVG_CAST: &'static str = "DOUBLE PRECISION";
 }
 
+// `time::Duration` is the Rust-side representation of a Postgres `INTERVAL`.
+// Adding it to `Numeric` lets `Expr<Duration> + Expr<Duration>` (interval +
+// interval), `Expr<Duration> * Expr<i64>` (when mixed-type Mul lands), and
+// most importantly `Expr<Duration>` to act as the RHS in the heterogeneous
+// `Expr<OffsetDateTime> + Expr<Duration>` impl below.
+//
+// SUM_CAST / AVG_CAST: Postgres `SUM(INTERVAL)` returns `INTERVAL` (no
+// widening), and `AVG(INTERVAL)` returns `INTERVAL`. The cast targets match
+// the Postgres names for INTERVAL to satisfy the trait contract, but they are
+// only used by the aggregate terminal's `emit_aggregate_with_cast` path, which
+// is rarely exercised for INTERVAL columns. Any caller who needs precision
+// INTERVAL aggregation should use `ctx.raw_scalar` until a typed aggregate
+// path lands.
+impl Numeric for time::Duration {
+    const SUM_CAST: &'static str = "INTERVAL";
+    const AVG_CAST: &'static str = "INTERVAL";
+}
+
 // The operator impls are one-per-op because `std::ops::Add` /
 // `::Sub` / `::Mul` / `::Div` are separate traits. A macro would hide
 // the boilerplate but also the place where a future reviewer would
@@ -169,5 +189,35 @@ impl<T: Numeric> std::ops::Div for Expr<T> {
 
     fn div(self, rhs: Self) -> Self::Output {
         Expr::from_node(ExprNode::Div(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+// ── Heterogeneous datetime + interval arithmetic ───────────────────────────
+//
+// `Expr<OffsetDateTime> + Expr<Duration>` → `Expr<OffsetDateTime>`.
+//
+// Postgres supports `TIMESTAMPTZ + INTERVAL` natively, producing a
+// `TIMESTAMPTZ` result. The typed `Add` impl above only covers
+// `Expr<T> + Expr<T>` where `T: Numeric` (same-type addition). The
+// DateTime + Interval combination is fundamentally heterogeneous: the two
+// operands have different types. A dedicated impl here keeps the
+// crate-private `Add` seal intact — downstream crates cannot add new
+// numeric types — while still covering the idiomatic date-arithmetic shape.
+//
+// `Expr<OffsetDateTime> - Expr<Duration>` is the corresponding subtraction.
+
+impl std::ops::Add<Expr<Duration>> for Expr<OffsetDateTime> {
+    type Output = Expr<OffsetDateTime>;
+
+    fn add(self, rhs: Expr<Duration>) -> Self::Output {
+        Expr::from_node(ExprNode::Add(Box::new(self.node), Box::new(rhs.node)))
+    }
+}
+
+impl std::ops::Sub<Expr<Duration>> for Expr<OffsetDateTime> {
+    type Output = Expr<OffsetDateTime>;
+
+    fn sub(self, rhs: Expr<Duration>) -> Self::Output {
+        Expr::from_node(ExprNode::Sub(Box::new(self.node), Box::new(rhs.node)))
     }
 }
