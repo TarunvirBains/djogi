@@ -499,3 +499,120 @@ fn non_spatial_indexes_default_benignly() {
         desc.indexes
     );
 }
+
+// ---------------------------------------------------------------------------
+// T6: MigrationShape contract-validation (DB-free)
+// ---------------------------------------------------------------------------
+//
+// These four tests prove that `ModelDescriptor` encodes enough information
+// for a Phase 7 migration emitter to produce correct DDL without type-name
+// inference.  They drive `ModelDescriptor::migration_shape()` — a helper
+// that walks the descriptor and produces a `MigrationShape` capturing:
+//
+//  - column SQL types (as strings matching `FieldSqlType`'s Display impl)
+//  - index DDL (including `CONCURRENTLY` for out-of-transaction indexes)
+//  - the set of Postgres extensions the table's DDL requires
+//
+// No `.sql` files are emitted in Phase 6; Phase 7 will subsume this helper
+// by emitting `MigrationShape`'s content as actual migration SQL files.
+
+/// The `Place` descriptor must declare `"postgis"` as a required extension
+/// because the `location` field is a `GEOGRAPHY` column.  Even without a
+/// spatial index, the column itself requires the PostGIS extension.
+#[cfg(feature = "spatial")]
+#[test]
+fn places_migration_shape_requires_postgis_extension() {
+    let shape = Place::descriptor().migration_shape();
+    assert!(
+        shape.required_extensions.contains("postgis"),
+        "Place descriptor must list \"postgis\" in required_extensions; \
+         got {:?}",
+        shape.required_extensions
+    );
+}
+
+/// The `location` column in `MigrationShape` must carry the Geography SQL
+/// type text and be marked `not_null`.
+///
+/// `sql_type_text` matches the `FieldSqlType::Display` impl exactly:
+/// `"geography(Point, 4326)"` with a lowercase `geography` prefix.  The
+/// plan's prose example used uppercase `"GEOGRAPHY"` as an illustration but
+/// the Display impl is the canonical source; tests follow the impl.
+#[cfg(feature = "spatial")]
+#[test]
+fn places_migration_shape_column_is_geography_point_4326() {
+    let shape = Place::descriptor().migration_shape();
+    let col = shape
+        .columns
+        .iter()
+        .find(|c| c.name == "location")
+        .expect("location column must be present in MigrationShape");
+
+    // Case matches FieldSqlType::Display — lowercase "geography(Point, 4326)".
+    assert_eq!(
+        col.sql_type_text, "geography(Point, 4326)",
+        "location column sql_type_text must match FieldSqlType::Display output"
+    );
+    assert!(
+        col.not_null,
+        "location column must be NOT NULL (nullable = false on GeoPoint field)"
+    );
+}
+
+/// The spatial GiST index on `Place.location` must be marked
+/// `requires_out_of_transaction = true` and the emitted `sql_text` must
+/// contain both `CONCURRENTLY` and `USING gist` (lowercase, matching the
+/// `index_type_keyword` helper inside `migration_shape`).
+#[cfg(feature = "spatial")]
+#[test]
+fn places_migration_shape_splits_gist_index_out_of_transaction() {
+    let shape = Place::descriptor().migration_shape();
+    let gix = shape
+        .indexes
+        .iter()
+        .find(|i| i.columns == vec!["location"])
+        .expect("GiST index on location must be present in MigrationShape");
+
+    assert!(
+        gix.requires_out_of_transaction,
+        "spatial GiST index must have requires_out_of_transaction = true"
+    );
+
+    // `index_type_keyword` emits lowercase keywords; assert on lowercase "gist".
+    // The contract test documents this choice so Phase 7 knows the canonical case.
+    assert!(
+        gix.sql_text.contains("USING gist"),
+        "sql_text must contain \"USING gist\" (lowercase); got: {}",
+        gix.sql_text
+    );
+    assert!(
+        gix.sql_text.contains("CONCURRENTLY"),
+        "sql_text must contain \"CONCURRENTLY\" for out-of-transaction index; got: {}",
+        gix.sql_text
+    );
+}
+
+/// A non-spatial model's `MigrationShape` must declare no required extensions
+/// and no indexes with out-of-transaction or extension-dependency flags.
+#[test]
+fn non_spatial_model_migration_shape_has_no_extensions() {
+    let shape = NonSpatialItem::descriptor().migration_shape();
+    assert!(
+        shape.required_extensions.is_empty(),
+        "non-spatial model must have an empty required_extensions set; \
+         got {:?}",
+        shape.required_extensions
+    );
+    for idx in &shape.indexes {
+        assert!(
+            !idx.requires_out_of_transaction,
+            "non-spatial index '{}' must not require out-of-transaction DDL",
+            idx.name
+        );
+        assert_eq!(
+            idx.extension_dependency, None,
+            "non-spatial index '{}' must not declare an extension dependency",
+            idx.name
+        );
+    }
+}
