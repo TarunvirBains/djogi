@@ -10,6 +10,7 @@
 - `schema_snapshot.json` is the source of truth for the differ — updated only on successful `cargo djogi migrate`
 - Up and down files always generated as a pair
 - The `migrations/` folder is a git submodule — managed by the pipeline, invisible to the developer day-to-day
+- Composite unique constraints and composite indexes are part of the migration surface; composite primary keys are not part of the `0.1.0` contract
 
 ### 10.2 Build-Time Drift Detection and Generation
 
@@ -90,6 +91,17 @@ Down migration generation rules:
 | `DROP INDEX` | `CREATE INDEX` | |
 | `ALTER COLUMN` | `ALTER COLUMN` reverse | ⚠ Warn if lossy |
 | `ADD FOREIGN KEY` | `DROP FOREIGN KEY` | |
+
+Composite-key boundary for `0.1.0`:
+
+- supported:
+  - composite unique constraints
+  - composite unique indexes
+  - composite non-unique indexes
+- not supported as a first-class ORM/migration contract:
+  - composite primary keys
+
+For supported composite unique/index cases, Djogi must preserve declared column order in both diffs and generated SQL.
 
 ### 10.5 Migrations Git Submodule
 

@@ -95,6 +95,7 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 - [ ] Generate `ModelDescriptor` and register via `inventory::submit!`
 - [ ] Minimal Phase 1 slice: support the default HeerId primary key path first
 - [ ] Defer `#[model(pk = "serial")]`, `#[model(pk = "ranjid")]`, `#[model(pk = "none")]`, and composite keys until the default path is stable
+  - [ ] For `0.1.0`, interpret this as: composite **primary** keys remain deferred, while composite **unique constraints/indexes** are expected to ship through the migration/index metadata path
 
 ### 1b: Field Types
 
@@ -228,6 +229,8 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 - [ ] `#[model(through)]` attribute on junction table models
 - [ ] `impl ManyToMany<Target> for Source` with `type Through` and `RELATION` const
 - [ ] Generated convenience methods: `.groups()`, `.add_to_group()`, `.remove_from_group()`
+
+**Roadmap guidance on key shape:** For `0.1.0`, the intended through-model pattern is a surrogate single-column PK plus a composite unique constraint on the two relation columns. That delivers the production-critical properties for most M2M tables — pair uniqueness and efficient indexed lookups — without forcing composite primary-key complexity through CRUD, relations, admin, migrations, and live migration orchestration. A composite primary key can make sense later for a truly pure junction table that will never be referenced independently, but it is not the default roadmap direction.
 
 **Deliverable:** FK with all cascade options, prefetch + select_related, M2M through models.
 
@@ -389,24 +392,59 @@ Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfVie
 - [ ] SELECT narrowing: visage-scoped QuerySets emit SELECT with only the visage's exposed columns, not the full model. This is the headline performance win — visages stop being only an output shape and start paying off at the query side
 - [ ] Mutation scope: visage-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a visage emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
 - [ ] Prefetch composition: an API for declaring a prefetch into a specific peer visage so chained traversals inherit the same boundary. Exact shape deferred to v2/v3 spec; leading candidates include a dedicated `prefetch_as::<PeerProjection>(model::relation)` terminal on the QuerySet and a generated `model::relation::as_public()`-style relation-path variant surfaced under each visage scope
-- [ ] Interaction with §8c: Phase 8c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`"
+- [ ] Interaction with §9c: Phase 9c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`"
 
 **Deliverable:** Postgres enums, explicit string field primitives, arrays, typed JSONB, native aggregates, indexes, database functions, streaming terminals, full-text search, visage query surface with compile-time FK / reverse-FK / M2M boundary enforcement.
 
 ---
 
-## Phase 6: Migration System
+## Phase 5.5: Auth Substrate *(shipped)*
+
+**Goal:** Framework-owned auth primitives that pair with Phase 5's tenant-key RLS and Phase 4's transaction substrate.
+
+Shipped 2026-04-22 as squash `dfdfc7d` (PR #10). Ships `DjogiAuth` trait + `AuthContext` + `AuthError` + `PasswordHash` (feature `auth-argon2`) + automatic `set_tenant` with `applied_tenant_id` tracking + nested-atomic snapshot/restore + `_insecurely()` escape-hatch warnings. Session stores, token providers, and per-framework HTTP extractors (Axum, etc.) are deferred to a future adapter phase.
+
+**Deliverable:** Every query inside an authenticated context automatically scopes to the correct tenant; password hashing is strongly-typed; `_insecurely()` only compiles where explicitly allowed.
+
+---
+
+## Phase 6: Spatial *(shipped)*
+
+**Goal:** First-class typed spatial surface — `GeoPoint` runtime, PostGIS-backed radius/ordering predicates, automatic GiST index metadata, migration-emission contract for Phase 7.
+
+Shipped 2026-04-22 as squash `b9e9860` (PR #11). Ships the `spatial` feature flag within the `djogi` crate — never a separate `djogi-spatial` crate per the locked one-crate rule. Surface: `GeoPoint { lat, lon }` with constructor validation + Haversine distance + WKT `Display`; manual 25-byte EWKB codec for `GEOGRAPHY(Point, 4326)`; `within_km(center, km)` / `order_by_distance(center)` with deterministic PK tiebreak; `OrderExpr` promoted to `#[non_exhaustive]` enum; `IndexSpec` extended with `requires_out_of_transaction` + `extension_dependency` migration-policy fields; `MigrationShape` contract helper that Phase 7's differ consumes. Zero new runtime dependencies beyond what Phase 6 integrated explicitly.
+
+**Deliverable:** Model authors store `GeoPoint` fields, write radius filters against them, and order by distance — all type-safe, all feature-gated, all ready for Phase 7 migration emission to consume without further descriptor work.
+
+---
+
+## Phase 6.5: Spatial Polish
+
+**Goal:** Broaden the spatial surface from point-only, SRID-4326-only, radius-plus-ordering-only into a fuller geometry + predicate vocabulary so that v0.1.0's spatial story lands on crates.io as a genuine differentiator rather than a point solution.
+
+**Speculative polish** — no concrete adoption pressure drives any specific deferral; the forcing function is v0.1.0 crates.io differentiation. Everything in scope is additive, feature-gated, and weighted toward ease-of-adoption. A v1 thin draft of the phase plan has been prepared; v2 (user preliminary) and v3 (Claude synthesis) to follow per the plan convention before dispatch. **SRID 4326 stays locked — matching Phase 6**; arbitrary-SRID generalization is roadmap work (see `docs/roadmap/future-work.md` §4.6), explicitly kept out of 6.5 to avoid the ergonomic tax of const-generic SRIDs on the 95% of users who only need WGS84.
+
+- [ ] Non-point geometries as first-class field types: `LineString`, `Polygon`, `MultiPoint`, `MultiPolygon` — each backed by `GEOGRAPHY(<Type>, 4326)` with an auto-emitted GiST index. `Polygon::closed(&[...])` auto-closes the ring; `Polygon::with_holes(outer, holes)` is the power-user path
+- [ ] Additional spatial predicates: `contains`, `intersects`, `touches`, plus a shape-based `within(geometry)` distinct from Phase 6's radius-based `within_km` — extend `SpatialExpr` with corresponding variants; SQL routes to `ST_Contains` / `ST_Intersects` / `ST_Touches` / `ST_Within`
+- [ ] Explicit bounding-box prefilter predicate `bounded_by(min_lat, min_lon, max_lat, max_lon)` emitting GiST-indexed `&&` overlap operator; applies to any geography column regardless of subtype. KNN auto-prefilter (auto-emit `ST_DWithin` when `.order_by_distance` is chained with a radius) deferred pending benchmarking
+- [ ] `#[djogi_test(extensions = ["postgis"])]` attribute argument that auto-provisions Postgres extensions at per-test DB creation time — removes Phase 6's per-test `ctx.raw_ddl("CREATE EXTENSION ...")` pattern
+
+**Deliverable:** Djogi's spatial surface covers polygon containment, line adjacency, multi-geometry containment, and bounding-box prefiltering — enough to power real-world geospatial query patterns (delivery zones, coverage regions, territory-based access) without dropping to `ctx.raw_sql`. Construction APIs bias toward "obvious correct default" with power-user escape hatches.
+
+---
+
+## Phase 7: Migration System
 
 **Goal:** Build-time drift detection, SQL generation, apply/rollback.
 
-### 6a: Schema Differ
+### 7a: Schema Differ
 
 - [ ] `ModelDescriptor` comparison: detect added/removed/altered fields, tables, indexes
 - [ ] `#[field(renamed_from = "old")]` for rename detection
 - [ ] `#[model(renamed_from = "old_table")]` for table rename detection
 - [ ] Destructive operation gating with `--allow-destructive`
 
-### 6b: SQL Generation
+### 7b: SQL Generation
 
 - [ ] Generate up/down SQL pairs from `SchemaDelta`
 - [ ] `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE ADD/DROP/ALTER COLUMN`
@@ -415,13 +453,13 @@ Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfVie
 - [ ] `ADD CONSTRAINT` / `DROP CONSTRAINT` (with `NOT VALID` + `VALIDATE` support)
 - [ ] Foreign key constraints with cascade options
 
-### 6c: Build-Time Integration
+### 7c: Build-Time Integration
 
 - [ ] `build.rs` reads `target/djogi_models.json` and diffs against `schema_snapshot.json`
 - [ ] Emits compiler warning (not error) when drift detected
 - [ ] Writes migration SQL files to `migrations/`
 
-### 6d: CLI
+### 7d: CLI
 
 - [ ] `cargo djogi migrate` — apply pending, update snapshot
 - [ ] `cargo djogi migrate rollback` — roll back last migration
@@ -431,14 +469,14 @@ Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfVie
 - [ ] `cargo djogi db reset` — drop + recreate + migrate (dev only, triple-gated)
 - [ ] `cargo djogi db seed` — run `seeds.rhai`
 
-### 6e: Data Migrations
+### 7e: Data Migrations
 
 - [ ] Support raw SQL data migrations (hand-written `.sql` files in `migrations/`)
 - [ ] Support Rhai script data migrations (`.rhai` files using shell model API)
 
-### 6f: Online / Zero-Downtime Migration Patterns
+### 7f: Online / Zero-Downtime Migration Patterns
 
-- [ ] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 6f phased-migration model") rather than a silent SQLSTATE from Postgres
+- [ ] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 7f phased-migration model") rather than a silent SQLSTATE from Postgres
 - [ ] Advisory-lock-based single-active-migration coordination (no two `cargo djogi migrate` invocations apply concurrently against the same database)
 - [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL)
 - [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]`
@@ -446,14 +484,14 @@ Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfVie
 - [ ] Safe NOT NULL addition: `ADD COLUMN ... DEFAULT value` (Postgres 11+ makes this fast-path without table rewrite) plus a `VALIDATE` pass for pre-existing-table columns
 - [ ] Constraint addition with `NOT VALID` + `VALIDATE` as separate steps
 - [ ] Backfill orchestration primitive: chunked `UPDATE ... WHERE pk BETWEEN $1 AND $2` with configurable chunk size, delay between chunks, progress reporting
-- [ ] Destructive-op detection: dropping a column, dropping a table, narrowing a type — gated behind `--allow-destructive` (already in 6a) with an additional "migration is not online" warning emitted at generation time
+- [ ] Destructive-op detection: dropping a column, dropping a table, narrowing a type — gated behind `--allow-destructive` (already in 7a) with an additional "migration is not online" warning emitted at generation time
 - [ ] Backfill side-effect suppression: chunked `UPDATE` backfills run with outbox emission and audit writes suppressed by default. Migrations represent schema evolution, not domain events; firing outbox messages and audit rows for every historical row rewritten during a backfill is never the right default. Opt in per migration via an explicit `emit_side_effects = true` flag when the backfill genuinely is a business event
 
 **Deliverable:** Full migration system with drift detection, SQL generation, CLI, data migrations, online migration patterns.
 
 ---
 
-## Phase 6.5: Protected Data Metadata & Field Codecs
+## Phase 7.5: Protected Data Metadata & Field Codecs
 
 **Goal:** Add descriptor-level protected-field semantics and storage transforms.
 
@@ -469,31 +507,31 @@ Protected-data support should extend the typed field story rather than replace i
 
 ---
 
-## Phase 7: Model Hooks, Composition & Proxy
+## Phase 8: Model Hooks, Composition & Proxy
 
 **Goal:** Lifecycle hooks, abstract model composition, proxy models.
 
-### 7a: Trait-Based Model Hooks
+### 8a: Trait-Based Model Hooks
 
 - [ ] `impl ModelHooks for T` with `before_create`, `after_create`, `before_save`, `after_save`, `before_delete`, `after_delete`
 - [ ] Hooks receive `&mut self` (before) or `&self` (after) + connection reference
 - [ ] Optional — models without `impl ModelHooks` have zero hook overhead
 
-### 7b: Abstract Model Composition
+### 8b: Abstract Model Composition
 
 - [ ] `#[derive(Auditable)]` — injects `created_at`, `updated_at` (already exists) + `created_by: Option<String>`
 - [ ] `#[derive(SoftDeletable)]` — injects `deleted_at: Option<OffsetDateTime>`, adds default filter excluding deleted
 - [ ] Custom field group macros: developers can define their own derive macros that inject fields
 - [ ] Constraint/index name interpolation: `%(model)s_%(field)s_unique`
 
-### 7c: Proxy Models
+### 8c: Proxy Models
 
 - [ ] `#[model(proxy_for = "Vehicle")]` — shares parent table, different Rust type
 - [ ] Custom default ordering on proxy
 - [ ] Custom default filter on proxy (e.g., `WHERE active = true`)
 - [ ] Different `ModelHooks` on proxy vs parent
 
-### 7d: Computed Queryable Properties
+### 8d: Computed Queryable Properties
 
 - [ ] `#[computed(sql = "base_price * (1.0 + tax_rate)")]` — Rust getter + SQL expression
 - [ ] Usable in `.filter()`, `.order_by()`, `.annotate()` — the macro wires both sides
@@ -503,13 +541,13 @@ Protected-data support should extend the typed field story rather than replace i
 
 ---
 
-## Phase 8: Shell & Admin
+## Phase 9: Shell & Admin
 
 **Goal:** Interactive Rhai REPL and auto-generated admin panel.
 
 These surfaces are intentionally downstream of the core ORM/runtime. They are useful operational tools, but they must remain feature-gated adapters over the model/query layer rather than redefining the core identity of the crate.
 
-### 8a: Shell (Rhai REPL)
+### 9a: Shell (Rhai REPL)
 
 - [ ] `cargo djogi shell` — launches REPL with all models loaded
 - [ ] Synchronous API via `block_on()` — no `.await` in shell
@@ -517,13 +555,13 @@ These surfaces are intentionally downstream of the core ORM/runtime. They are us
 - [ ] Error handling: one-liner + full traceback to `.djogi_shell_errors/`
 - [ ] `.export` / `.import` / `.bookmark` for session scripts
 - [ ] `cargo djogi shell --run script.rhai` for headless execution
-- [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§8d). Workflow: *test → optimize → compile → deploy*. Shell commands:
+- [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§9d). Workflow: *test → optimize → compile → deploy*. Shell commands:
   - `djqry.export(<last_query>, "<name>")` — writes `djqry/<name>.sql` with frontmatter pre-populated from the last executed macro-query: `@name` set, `@on` inferred from the query's target models, `@replaces` captured verbatim, `@signature` computed, `@returns` inferred from the QuerySet's declared return type, `@binds` inferred from the filter closures, and the macro-generated SQL placed in the body as the starting point the author can optimize against
   - `djqry.import("<name>")` — loads an existing `djqry/<name>.sql`, parses its frontmatter + SQL, binds the override into the shell session as a callable, and runs it alongside the macro-query form for side-by-side comparison (row count, first-row diff, timing)
   - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `cargo djogi djqry verify`
   - `djqry.sign("<name>")` — re-computes the fingerprint from the current `@replaces` and updates `@signature`, asserting the author has re-verified. Prompts for confirmation before overwriting
 
-### 8b: Admin Panel (HTMX + Askama)
+### 9b: Admin Panel (HTMX + Askama)
 
 - [ ] Auto-generate list view from `ModelDescriptor` with pagination, sorting, search
 - [ ] Auto-generate CRUD forms from field metadata
@@ -534,7 +572,7 @@ These surfaces are intentionally downstream of the core ORM/runtime. They are us
 
 Admin integration may be Axum-oriented in practice, but that coupling should live in the feature-gated admin layer. Core model/query/runtime APIs should not require Axum types or assumptions.
 
-### 8c: Static Query Analyzer
+### 9c: Static Query Analyzer
 
 The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is mainline and intended for CI gating by default. Tier 2 is experimental and best-effort — surfaced as warnings, never as `--deny` targets unless explicitly requested.
 
@@ -551,7 +589,7 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 **Tier 2 — experimental, opt-in, best-effort graph-aware analysis:**
 
 - [ ] Graph-aware repeat-node detection: the descriptor registry's FK topology (from `target/djogi_models.json`) is a directed graph of tables-as-nodes and FKs-as-edges. Within a scope (function body, `async` block, `atomic()` closure), the analyzer attempts to track the set of `(model, filter_fingerprint)` pairs reached by terminals. Where receiver types resolve cleanly via `syn`, repeat visits to the same node — whether from independent call sites, through different FK traversals, or across prefetch chains that partially overlap — are flagged with a suggestion to hoist the fetch, fold the filters, or cover both accesses with a unified `select_related` / `prefetch_related` chain
-- [ ] Honest caveat: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection. When the analyzer cannot resolve a receiver, it silently skips rather than guessing. Coverage is documented as "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path — rustc/HIR or `rust-analyzer`-as-a-library — is named in the follow-up list but not a Phase 8c deliverable
+- [ ] Honest caveat: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection. When the analyzer cannot resolve a receiver, it silently skips rather than guessing. Coverage is documented as "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path — rustc/HIR or `rust-analyzer`-as-a-library — is named in the follow-up list but not a Phase 9c deliverable
 
 **Output + gating:**
 
@@ -559,26 +597,26 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 - [ ] Severity gating: `--deny <lint>` turns a Tier 1 warning into a non-zero exit code for CI. Tier 2 lints default to warn-only; `--deny experimental` is an explicit opt-in for teams willing to accept Tier 2 false-positive risk
 - [ ] Scope: pure static analysis beyond what a `cargo build` already produces. No database connection, no query execution. The pre-existing `target/djogi_models.json` build artifact is the only runtime input
 
-### 8d: `djqry` SQL Override Registry
+### 9d: `djqry` SQL Override Registry
 
 When a multi-hop macro-query compiles to a plan that is significantly worse than a hand-written query, the escape hatch today is `ctx.raw_query::<T>(...)` — which fragments the codebase visually and decouples the site from descriptor-aware tooling (static analyzer, admin surface, observability labels). `djqry` keeps the hand-tuned SQL in its own file while surfacing it as a typed method on the relevant models, preserving the declarative call-site shape elsewhere and giving the override the same type-safety, tracing, and analyzer treatment as macro-generated queries.
 
 - [ ] `djqry/` directory at repo root holds `.sql` files; each file declares one override via frontmatter header comments
 - [ ] Frontmatter schema: `@name` (method name, snake_case), `@on` (comma-separated list of models and / or visages; `_global` for non-model-scoped overrides), `@returns` (Rust type implementing `FromPgRow`), `@binds` (positional bind types — `()` for none), `@replaces` (multi-line canonical macro-query the override optimizes — documentation plus drift-check source), `@signature` (fingerprint hash bumped on manual re-verification)
 - [ ] Build-time generation: a new stage in the existing `build.rs` pipeline (alongside `target/djogi_models.json` emission) parses every `.sql` file, validates frontmatter against descriptor metadata, and emits a generated `{Model}Djqry` zero-sized type per owner with one associated async function per override. Call site reads `VehicleDjqry::expired_registrations(&mut ctx).await?` — parallel to Phase 2's `{Model}Filter` and Phase 3's `{Model}Related` generated types, which is the established convention for per-model namespaced helpers. The `Djqry` suffix is distinctive, grep-able, and zero collision risk. For `@on: _global` overrides the parallel type is `GlobalDjqry`: `GlobalDjqry::fleet_stats(&mut ctx).await?`
-- [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §8c uses the `@on:` list to reason about which node-visits the override covers
+- [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9c uses the `@on:` list to reason about which node-visits the override covers
 - [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
 - [ ] Drift detection — opt-in: `cargo djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
-- [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 9b / 9e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
+- [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 10b / 10e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
 - [ ] Error modes flagged at build time: missing required frontmatter field, unknown `@on` owner, `@returns` type missing `FromPgRow`, `@binds` arity mismatch with `$N` placeholder count in SQL, reserved-name collision with framework-generated methods, `@signature` mismatch
 - [ ] Scope limits: v1 is read-only (SELECT-shaped overrides). `UPDATE` / `DELETE` / `INSERT` overrides deferred until a concrete use case surfaces — raw `ctx.execute_raw` remains available in the interim
-- [ ] Authoring loop lives in the shell (§8a): `djqry.export`, `djqry.import`, `djqry.diff`, `djqry.sign` close the *test → optimize → compile → deploy* cycle inside the REPL. Authoring a new override never requires leaving the shell to hand-craft frontmatter — `export` captures the canonical macro-query, infers `@returns` / `@binds` from the QuerySet's declared types, computes the initial `@signature`, and seeds the SQL body with the macro-generated query as the baseline for optimization
+- [ ] Authoring loop lives in the shell (§9a): `djqry.export`, `djqry.import`, `djqry.diff`, `djqry.sign` close the *test → optimize → compile → deploy* cycle inside the REPL. Authoring a new override never requires leaving the shell to hand-craft frontmatter — `export` captures the canonical macro-query, infers `@returns` / `@binds` from the QuerySet's declared types, computes the initial `@signature`, and seeds the SQL body with the macro-generated query as the baseline for optimization
 
 **Deliverable:** Working shell, admin panel, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop.
 
 ---
 
-## Phase 8.5: Data Lifecycle & Governance
+## Phase 9.5: Data Lifecycle & Governance
 
 **Goal:** Turn lifecycle metadata into reviewable operator workflows.
 
@@ -592,11 +630,11 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 9: CRUD Logging & Observability
+## Phase 10: CRUD Logging & Observability
 
 **Goal:** Automated audit trail plus concrete observability hooks (tracing, metrics, slow-query callbacks) that apps can integrate with standard Rust observability crates.
 
-### 9a: Audit Trail
+### 10a: Audit Trail
 
 - [ ] Three-database architecture: app, crud_logs, event_logs (pools already defined in Phase 0/1)
 - [ ] Profile-first logging config: `light`, `balanced`, `strict_audit`; advanced per-sink overrides only as escape hatches
@@ -607,42 +645,42 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Surface sink health and degraded mode clearly in metrics / CLI / tracing output
 - [ ] Document and enforce that strict audit means rejecting app writes when required CRUD audit cannot be satisfied, not cross-database atomic commit
 
-### 9b: Tracing Integration
+### 10b: Tracing Integration
 
 - [ ] Emit a `tracing::Span` per query with fields: `sql_text` (truncated, no bind values), `duration_ms`, `rows_affected`, `pool_wait_ms`, `model_name` (when derivable)
 - [ ] Span attachment to surrounding `atomic()` scope's span (so transactions appear as parent spans over their queries)
 - [ ] Opt-out per model via `#[model(trace = false)]` for hot-path tables
 
-### 9c: Slow-Query Callbacks
+### 10c: Slow-Query Callbacks
 
 - [ ] `djogi::observe::register_slow_query_handler(threshold: Duration, handler: impl Fn(&QueryTelemetry))`
 - [ ] `QueryTelemetry` carries: sql, duration, row count, backend pid, lock wait time, which connection pool
 - [ ] Guaranteed called after query completion (success or error); handler runs on the query task's executor
 
-### 9d: Metrics Emission
+### 10d: Metrics Emission
 
 - [ ] `metrics` crate integration: histograms for query duration, counters for rows affected, gauges for pool utilization + idle vs active connections
 - [ ] Per-model breakdown labels (opt-in via `#[model(metrics = true)]`)
 - [ ] Pool-level metrics per the three-pool architecture
 
-### 9e: Admin-UI Observability Views
+### 10e: Admin-UI Observability Views
 
-- [ ] Phase 8's admin layer surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 9b/9c/9d are wired
+- [ ] Phase 9's admin layer surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 10b/10c/10d are wired
 - [ ] Zero additional cost when the admin feature isn't enabled; the hooks stand alone
 - [ ] Per-request debug drawer (gated on `dev_mode = true` + `admin` feature flag): bottom panel on every `/_admin/` page showing queries issued during the request, per-query duration, originating `tracing` span, rows returned, and a SQL-text preview with binds inlined for readability
 - [ ] Click-to-EXPLAIN: each drawer row exposes an "Explain" action that runs `EXPLAIN (FORMAT JSON)` by default — pure planner inspection, no execution, zero side effects regardless of statement kind. An explicit "Explain with Analyze" opt-in is available for SELECTs only; for INSERT/UPDATE/DELETE the `ANALYZE` variant is disabled in the UI with a visible note that `EXPLAIN ANALYZE` executes the statement and that non-transactional effects (`nextval` advancement, `LISTEN/NOTIFY`, deferred trigger side-channels) are not reclaimed by a wrapping savepoint. Plans render as a collapsible tree with per-node cost and row-count estimates
 - [ ] Semantic N+1 flag: because Djogi knows the FK topology at compile time, the drawer annotates any relation fetched more than K times within a single request span with the exact model + FK name and the `.prefetch()` call that would collapse it — no pattern-matching heuristics, the detection is driven by declared structure
-- [ ] Dev-only scope: the drawer is feature-flagged out of release builds and has no staging/canary mode. Non-dev environments rely on §9b/9c/9d (tracing spans, slow-query callbacks, metrics) for query visibility. If a team wants drawer-like introspection in staging, that is a separate future item, not a Phase 9e deliverable
+- [ ] Dev-only scope: the drawer is feature-flagged out of release builds and has no staging/canary mode. Non-dev environments rely on §10b/10c/10d (tracing spans, slow-query callbacks, metrics) for query visibility. If a team wants drawer-like introspection in staging, that is a separate future item, not a Phase 10e deliverable
 - [ ] Optional middleware hook (shipped under each web-framework sub-feature flag — `axum`, `warp`, etc.) that injects the drawer into any HTML response in dev mode, not just admin pages. API-only apps get per-request correlation via a stable request ID — the middleware generates an ID per request and the response carries it in a compact `X-Djogi-Queries` header of the form `id=<token>; count=12; slow=2; total_ms=47`. Full per-query detail is retrieved (dev-mode only) by calling `GET /_djogi/debug/request/<id>`, which looks up the trace in a bounded in-memory ring buffer keyed by ID. This is correlation-safe under HTTP/1.1 keep-alive, HTTP/2 multiplexing, client-side connection pooling, and multi-instance deployments where "most recent on this connection" would be ambiguous or racy. Ring buffer size is configurable with a sensible default (128 entries, oldest-evicted); entries carry the full query list, per-query durations, binds, and the originating tracing span ID
 
-### 9f: Event Logging
+### 10f: Event Logging
 
 - [ ] Event logging via `tracing` subscriber layer writing to the event log database
 - [ ] Schema for events: timestamp, level, target, fields, parent span id
 - [ ] Retention policy opt-in (delete events older than N days)
 - [ ] Keep event logging best-effort in built-in profiles; expose dropped-event counters and sink-failure warnings
 
-### 9g: Log-Database Operations
+### 10g: Log-Database Operations
 
 - [ ] Unified operator workflow for app / CRUD-log / event-log migrations with explicit per-database labeling
 - [ ] `db reset` remains app-first; touching logging databases requires explicit flags
@@ -652,7 +690,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 9.5: Operational Tooling
+## Phase 10.5: Operational Tooling
 
 **Goal:** Turnkey solution for the boring-but-critical operational work every Postgres app needs — backups, vacuums, maintenance schedules, disaster recovery drills. Without this, teams hand-roll it inconsistently and find out in production it was wrong.
 
@@ -671,7 +709,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ### 9.5c: Vacuum / Maintenance Scheduling
 
-- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 6's migration generation pipeline. Phase 9.5 provides the policy vocabulary + CLI/ops surface; Phase 6 owns the DDL emission and phased execution
+- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 7's migration generation pipeline. Phase 10.5 provides the policy vocabulary + CLI/ops surface; Phase 7 owns the DDL emission and phased execution
 - [ ] `cargo djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
 - [ ] `cargo djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
 
@@ -689,7 +727,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 10: Distributed Topology & Residency
+## Phase 11: Distributed Topology & Residency
 
 **Goal:** Add descriptor-aware support for replicas, residency constraints, and topology-sensitive migration safety.
 
@@ -715,13 +753,16 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 | 4.5: Visages | Medium | Shared transport-safe contracts derived from models |
 | **→ Strong option among Rust ORM alternatives for write-heavy Postgres services** | | **Phases 0-4 cover the blocking transaction, expression, and bulk-write substrate** |
 | 5: Postgres Native | Medium | Enums, arrays, JSONB, native aggregates, streaming terminals, full-text search |
-| 6: Migrations | Large | Full migration system including online / zero-downtime patterns |
-| 6.5: Protected Data | Medium | Sensitive-field metadata and codecs |
-| 7: Hooks & Composition | Medium | Lifecycle hooks, abstract models, proxy, computed properties |
-| 8: Shell & Admin | Medium | Interactive tools |
-| 8.5: Lifecycle | Medium | Governance and lifecycle planning (depends on 6.5) |
-| 9: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
-| 9.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
-| 10: Topology | Large | Residency, replica semantics, distributed guardrails |
+| 5.5: Auth Substrate *(shipped)* | Medium | `DjogiAuth` trait, `AuthContext`, password hashing, auto-tenant scoping |
+| 6: Spatial *(shipped)* | Medium | `GeoPoint`, PostGIS-backed radius/order-by-distance, GiST index metadata |
+| 6.5: Spatial Polish | Medium | Non-point geometries, more predicates, bbox prefilter, test extensions arg |
+| 7: Migrations | Large | Full migration system including online / zero-downtime patterns |
+| 7.5: Protected Data | Medium | Sensitive-field metadata and codecs |
+| 8: Hooks & Composition | Medium | Lifecycle hooks, abstract models, proxy, computed properties |
+| 9: Shell & Admin | Medium | Interactive tools |
+| 9.5: Lifecycle | Medium | Governance and lifecycle planning (depends on 7.5) |
+| 10: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
+| 10.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
+| 11: Topology | Large | Residency, replica semantics, distributed guardrails |
 
-**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–10 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.
+**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–11 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.

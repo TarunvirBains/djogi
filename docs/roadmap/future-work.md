@@ -45,7 +45,7 @@ The result is sqlx-style compile-time safety for hand-written SQL that Djogi's Q
 - Users who want sqlx-style validation for their hand-written SQL today can add `sqlx` to their own Cargo.toml alongside Djogi — two pools against the same DB, independent of framework boundaries. A Djogi-bundled feature flag isn't needed for users to get this capability.
 - Building the macro is non-trivial (SQL parser that understands Postgres-flavor SQL well enough to resolve column references + type-check expression trees against `FieldDescriptor` metadata).
 
-**When it'd ship.** After Phase 8 (CLI + admin + migration system) ships, as a standalone ergonomics improvement. No external dependency forces its scheduling; it waits until there's demonstrated demand from users hitting the limits of `raw_query`'s type-inference.
+**When it'd ship.** After Phase 9 (CLI + admin + migration system) ships, as a standalone ergonomics improvement. No external dependency forces its scheduling; it waits until there's demonstrated demand from users hitting the limits of `raw_query`'s type-inference.
 
 ---
 
@@ -53,17 +53,17 @@ The result is sqlx-style compile-time safety for hand-written SQL that Djogi's Q
 
 During Phase 5-Zero planning the framework's long-term positioning was stress-tested. The gaps below were named; `docs/spec/implementation-plan.md` has been amended accordingly. Listed here so the planning history stays discoverable.
 
-### 3.1 Online / zero-downtime migrations → Phase 6
+### 3.1 Online / zero-downtime migrations → Phase 7
 
-`docs/spec/implementation-plan.md` §6f now covers advisory-lock-based single-active-migration coordination, lock-timeout on DDL, two-phase column rename, two-phase type widening, safe NOT NULL addition, `NOT VALID` + `VALIDATE` constraint addition, chunked backfill orchestration, and destructive-op gating. Goal: Djogi-generated migrations are safe against live production traffic by default, not just "works on a fresh dev DB."
+`docs/spec/implementation-plan.md` §7f now covers advisory-lock-based single-active-migration coordination, lock-timeout on DDL, two-phase column rename, two-phase type widening, safe NOT NULL addition, `NOT VALID` + `VALIDATE` constraint addition, chunked backfill orchestration, and destructive-op gating. Goal: Djogi-generated migrations are safe against live production traffic by default, not just "works on a fresh dev DB."
 
-### 3.2 Observability hooks → Phase 9
+### 3.2 Observability hooks → Phase 10
 
-`docs/spec/implementation-plan.md` §9 was expanded from a three-line "audit trail + event logging" entry into five concrete sub-sections: tracing spans per query (9b), slow-query callback registration (9c), `metrics` crate integration with per-model breakdown (9d), admin-UI observability surfaces that consume those hooks (9e), and event logging (9f). The audit-trail primitives (9a) are unchanged.
+`docs/spec/implementation-plan.md` §10 was expanded from a three-line "audit trail + event logging" entry into five concrete sub-sections: tracing spans per query (10b), slow-query callback registration (10c), `metrics` crate integration with per-model breakdown (10d), admin-UI observability surfaces that consume those hooks (10e), and event logging (10f). The audit-trail primitives (10a) are unchanged.
 
-### 3.3 Operational tooling → new Phase 9.5
+### 3.3 Operational tooling → new Phase 10.5
 
-`docs/spec/implementation-plan.md` now has a Phase 9.5 "Operational Tooling" covering scheduled backups, point-in-time recovery setup, per-model autovacuum tuning, on-demand vacuum, `cargo djogi ops doctor` health checks, and operator runbooks. Goal: turnkey operational story so teams don't hand-roll pg_dump cron jobs inconsistently.
+`docs/spec/implementation-plan.md` now has a Phase 10.5 "Operational Tooling" covering scheduled backups, point-in-time recovery setup, per-model autovacuum tuning, on-demand vacuum, `cargo djogi ops doctor` health checks, and operator runbooks. Goal: turnkey operational story so teams don't hand-roll pg_dump cron jobs inconsistently.
 
 ### 3.4 Streaming / cursor terminals → Phase 5 (§5h)
 
@@ -73,24 +73,24 @@ Added to Phase 5 scope: `QuerySet::stream()` returning an `impl Stream<Item = Re
 
 Added to Phase 5 scope: `TsVector` / `TsQuery` types, `#[model(fts = { ... })]` generating `GENERATED ALWAYS AS` columns + GIN indexes, `@@` match predicates on QuerySet filter closures, `ts_rank` ordering helpers. A Postgres-first framework without first-class FTS is incomplete.
 
-### 3.6 Query debugging + analysis → Phase 8 (§8c) and Phase 9 (§9e)
+### 3.6 Query debugging + analysis → Phase 9 (§9c) and Phase 10 (§10e)
 
 The inefficient-query debugging story is split across two phases because the two halves solve genuinely different problems:
 
-- **Static analysis — Phase 8 §8c.** `cargo djogi analyze query` walks the workspace AST (via `syn`) for call-site discovery and consumes `target/djogi_models.json` (already emitted by `#[model]` + `build.rs`) for FK topology. It ships in two tiers. **Tier 1 (mainline, CI-gating-ready):** loop-shape N+1 detection, `.fetch()` vs `.prefetch()` misuse, and over-fetching detection. Conservative, silent when it cannot resolve the receiver cleanly. **Tier 2 (experimental, warn-only):** graph-aware repeat-node detection — within a scope, track `(model, filter_fingerprint)` pairs reached by terminals and flag redundant re-fetches across unrelated call sites or overlapping prefetch chains. Tier 2 is honest about its ceiling: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection; coverage is "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path to rustc/HIR or `rust-analyzer`-as-a-library is named as a follow-up, not a Phase 8c deliverable. Both tiers are pure static — no database connection required — and ship with `--format json` / `--format clippy` for editor and CI integration.
-- **Runtime debug drawer — Phase 9 §9e.** Bottom-drawer panel on `/_admin/` pages (and optionally every HTML response in dev mode, via a web-framework sub-feature flag) showing queries issued per request, durations, originating `tracing` spans, and SQL text with inlined binds. Click-to-EXPLAIN defaults to plain `EXPLAIN` (no `ANALYZE`) for zero-side-effect inspection; `EXPLAIN ANALYZE` is an explicit opt-in available for SELECTs only and disabled for mutating statements with a visible note about non-transactional side effects (`nextval` advancement, `LISTEN/NOTIFY`, deferred triggers) not being reclaimed by savepoint rollback. Semantic N+1 annotation driven by declared FK structure rather than pattern matching. API-only apps get per-request correlation via a stable server-generated request ID carried in an `X-Djogi-Queries` header (`id=<token>; count=...; slow=...; total_ms=...`), with full per-query detail retrievable from a dev-mode `GET /_djogi/debug/request/<id>` endpoint backed by a bounded in-memory ring buffer. This avoids the connection-state trap — keep-alive, HTTP/2 multiplexing, client pooling, and multi-instance deployments all make "most recent on this connection" ambiguous, so correlation is explicit. The drawer is dev-only — feature-flagged out of release builds with no staging/canary mode.
+- **Static analysis — Phase 9 §9c.** `cargo djogi analyze query` walks the workspace AST (via `syn`) for call-site discovery and consumes `target/djogi_models.json` (already emitted by `#[model]` + `build.rs`) for FK topology. It ships in two tiers. **Tier 1 (mainline, CI-gating-ready):** loop-shape N+1 detection, `.fetch()` vs `.prefetch()` misuse, and over-fetching detection. Conservative, silent when it cannot resolve the receiver cleanly. **Tier 2 (experimental, warn-only):** graph-aware repeat-node detection — within a scope, track `(model, filter_fingerprint)` pairs reached by terminals and flag redundant re-fetches across unrelated call sites or overlapping prefetch chains. Tier 2 is honest about its ceiling: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection; coverage is "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path to rustc/HIR or `rust-analyzer`-as-a-library is named as a follow-up, not a Phase 9c deliverable. Both tiers are pure static — no database connection required — and ship with `--format json` / `--format clippy` for editor and CI integration.
+- **Runtime debug drawer — Phase 10 §10e.** Bottom-drawer panel on `/_admin/` pages (and optionally every HTML response in dev mode, via a web-framework sub-feature flag) showing queries issued per request, durations, originating `tracing` spans, and SQL text with inlined binds. Click-to-EXPLAIN defaults to plain `EXPLAIN` (no `ANALYZE`) for zero-side-effect inspection; `EXPLAIN ANALYZE` is an explicit opt-in available for SELECTs only and disabled for mutating statements with a visible note about non-transactional side effects (`nextval` advancement, `LISTEN/NOTIFY`, deferred triggers) not being reclaimed by savepoint rollback. Semantic N+1 annotation driven by declared FK structure rather than pattern matching. API-only apps get per-request correlation via a stable server-generated request ID carried in an `X-Djogi-Queries` header (`id=<token>; count=...; slow=...; total_ms=...`), with full per-query detail retrievable from a dev-mode `GET /_djogi/debug/request/<id>` endpoint backed by a bounded in-memory ring buffer. This avoids the connection-state trap — keep-alive, HTTP/2 multiplexing, client pooling, and multi-instance deployments all make "most recent on this connection" ambiguous, so correlation is explicit. The drawer is dev-only — feature-flagged out of release builds with no staging/canary mode.
 
-Layer 3 (production observability — distributed traces, slow-query callbacks, `metrics` histograms) lives in Phase 9 §9b/9c/9d. Together the three layers form the complete debug story: Phase 8c catches problems before request time in CI, Phase 9e catches them in the local dev loop, Phase 9b/9c/9d surface them in staging + production. There is no hybrid "drawer in staging" surface — non-dev environments use §9b/9c/9d only.
+Layer 3 (production observability — distributed traces, slow-query callbacks, `metrics` histograms) lives in Phase 10 §10b/10c/10d. Together the three layers form the complete debug story: Phase 9c catches problems before request time in CI, Phase 10e catches them in the local dev loop, Phase 10b/10c/10d surface them in staging + production. There is no hybrid "drawer in staging" surface — non-dev environments use §10b/10c/10d only.
 
 ### 3.7 Visage query surface + FK / M2M boundary enforcement → Phase 5 (§5j)
 
 Added 2026-04-21 during a brainstorming session. Phase 4.5 shipped visages as output-shape types only; Phase 5 §5j makes them first-class query entities: `PublicRegisteredOwner::filter(...)` returns `Vec<PublicRegisteredOwner>` with SELECT narrowed to the visage's exposed columns. Compile-time enforcement via generated per-visage `{Visage}Fields` accessor types — out-of-scope field access (`o.address.street` when `AddressPublic` exposes only `.city`) does not compile. Forward-FK, reverse-FK, and M2M (including through-model visage attribution) all participate in the same boundary. Fills the Phase 4.5 explicit deferral "M2M visages — visages nest only through `ForeignKey<T>` / `OneToOneField<T>`; M2M stitching is manual."
 
-### 3.8 `djqry` SQL override registry → Phase 8 (§8d), authoring in shell (§8a)
+### 3.8 `djqry` SQL override registry → Phase 9 (§9d), authoring in shell (§9a)
 
 Added 2026-04-21 during the same brainstorming session. `djqry/` directory holds hand-tuned SQL files with frontmatter declaring owner(s), return type, binds, and the canonical macro-query the override optimizes. Build pipeline emits a per-owner generated `{Model}Djqry` type (parallel to Phase 2's `{Model}Filter` and Phase 3's `{Model}Related`) with one associated async function per override: `VehicleDjqry::expired_registrations(&mut ctx).await?`. Preserves the declarative call-site shape elsewhere while routing the expensive query through hand-written SQL. Build-time fingerprint drift check mandatory; opt-in `cargo djogi djqry verify` runs both paths against a live database and diffs results (CI gate). Every override dispatch fires a tracing event so observability surfaces distinguish hand-tuned queries from macro-generated ones. Read-only in v1; mutations deferred. `@on:` accepts visage types too, composing with §5j; `@on: _global` overrides surface on a generated `GlobalDjqry` type.
 
-The shell is the authoring surface: `djqry.export(<last_query>, "<name>")` captures the canonical macro-query, infers return/bind types, computes the initial signature, and seeds the SQL body. `djqry.import` + `djqry.diff` + `djqry.sign` close the *test → optimize → compile → deploy* loop inside the REPL. The §8a shell commands make authoring overrides a first-class workflow rather than a text-editor-and-hope exercise.
+The shell is the authoring surface: `djqry.export(<last_query>, "<name>")` captures the canonical macro-query, infers return/bind types, computes the initial signature, and seeds the SQL body. `djqry.import` + `djqry.diff` + `djqry.sign` close the *test → optimize → compile → deploy* loop inside the REPL. The §9a shell commands make authoring overrides a first-class workflow rather than a text-editor-and-hope exercise.
 
 ---
 
@@ -104,7 +104,7 @@ Floor locked at Postgres 18. No support for older versions. Rationale (user-stat
 
 ### 4.2 Multi-tenancy beyond `TenantScoped<T>`
 
-`docs/roadmap/security.md` names `TenantScoped<T>` as a planned primitive. Real SaaS deployments use one of three patterns: shared-schema-with-tenant-id (row-level), schema-per-tenant (DDL-per-tenant), database-per-tenant (pool-per-tenant). `TenantScoped<T>` implicitly targets the first. The other two need distinct descriptor and connection-routing primitives — arguably a Phase 10 extension since they interact with topology. Leaving unscheduled pending concrete user demand.
+`docs/roadmap/security.md` names `TenantScoped<T>` as a planned primitive. Real SaaS deployments use one of three patterns: shared-schema-with-tenant-id (row-level), schema-per-tenant (DDL-per-tenant), database-per-tenant (pool-per-tenant). `TenantScoped<T>` implicitly targets the first. The other two need distinct descriptor and connection-routing primitives — arguably a Phase 11 extension since they interact with topology. Leaving unscheduled pending concrete user demand.
 
 ### 4.3 Comparative benchmarks
 
@@ -162,11 +162,47 @@ Model-level override: `#[model(display_cypher = "veh", algorithm = "fpe")]` or `
 
 - `Actor::id_display` returns the cyphered form automatically for cyphered models — audit rows and admin surfaces show `veh_xyz`, not raw IDs.
 - Phase 4.5 visages — `#[field(expose(public))]` on `id` emits the cyphered string in serialized JSON.
-- Phase 8 admin routing — compile-time prefix registry lets `/_admin/veh_xyz` resolve to Vehicle without runtime guessing.
+- Phase 9 admin routing — compile-time prefix registry lets `/_admin/veh_xyz` resolve to Vehicle without runtime guessing.
 - Prefix uniqueness checked at macro-expansion time; collision across models is a compile error.
 
 **What this is NOT.** Not a secret-storage primitive (that's Phase 7.5 protected-data metadata). Not a session-token system (out of scope). Not a URL-signing primitive for permissioned links (different concern entirely). Just an opaque reversible display form for PKs.
 
 **Phase placement.** Natural sibling of Phase 7.5 protected-data / field-codec work — both transform field values at boundaries. Could land as a Phase 7.5 sub-section or as a sibling Phase 7.6. Feature-flagged either way, so adopters opt in via `djogi = { features = ["display-cypher"] }`.
+
+### 4.6 Arbitrary SRIDs for spatial geometries
+
+Added 2026-04-22 during Phase 6.5 scope-narrowing. Phase 6 locked `GeoPoint` at SRID 4326 (WGS84) for deliberate reasons — spherical math via `GEOGRAPHY(Point, 4326)` is the only correct choice for real-world proximity queries against unprojected coordinates. Phase 6.5's first-cut v1 draft generalized to `GeoPoint<const SRID: u32 = 4326>` to serve projected-coordinate applications (state plane, UTM, national grids like Lambert-93 for France, British National Grid, etc.). The self-critique pass rejected inclusion in 6.5: const-generic SRIDs technically work but ergonomically noisy — `GeoPoint<4326>` vs `GeoPoint<3857>` in every signature, a `type GeoPoint = GeoPoint<4326>` alias that creates "alias-or-struct?" confusion, and a multiplied test matrix (every predicate × every SRID). 95% of users will only ever see SRID 4326; making the other 5% pay in code clarity and the framework in maintenance is the wrong trade for v0.1.0.
+
+**When to schedule.** When a concrete user application surfaces a non-WGS84 requirement. Candidates: an app shipping surveying data in a national projected grid, a cartography tool manipulating projected shapes for rendering, a legacy-data ingestion use case where source data is already in a specific SRID and re-projection loses precision.
+
+**Design intent (preserved from v1 pre-critique).**
+
+```rust
+pub struct GeoPoint<const SRID: u32 = 4326> { pub lat: f64, pub lon: f64 }
+pub struct LineString<const SRID: u32 = 4326> { pub points: Vec<GeoPoint<SRID>> }
+pub struct Polygon<const SRID: u32 = 4326> { pub outer: Vec<GeoPoint<SRID>>, pub holes: Vec<Vec<GeoPoint<SRID>>> }
+// ... same generalization across all geometry types
+
+#[model]
+pub struct SurveyPoint {
+    pub location: GeoPoint<2154>,  // Lambert-93 (France)
+}
+```
+
+EWKB codec reads the SRID from the wire and errors if it doesn't match the const parameter. `FieldSqlType::Geography { srid }` already carries the SRID; no new descriptor metadata needed. `accepts(ty)` stays `ty.name() == "geography"` — PostGIS stores geography regardless of SRID; the SRID is embedded in the EWKB payload, not in the Postgres type name.
+
+**Open design questions that need resolution before scheduling.**
+
+1. **Field-name ergonomics under projected SRIDs:** `lat`/`lon` are semantically wrong in projected space (they're `y`/`x`). Candidate answers: (a) accept the misnomer, document it; (b) add `y()` / `x()` accessor methods that delegate to `lat` / `lon`; (c) rename struct fields and provide `lat()` / `lon()` as accessors. Option (b) is least disruptive; (c) is most correct.
+2. **Backward-compat alias:** `type GeoPoint = GeoPoint<4326>` preserves every Phase 6 call site. IDE tooling showing "both" is the trade-off. Acceptable for pre-1.0; revisit if adoption matures.
+3. **SRID validation:** should the macro reject `GeoPoint<0>` or `GeoPoint<1>` (invalid SRIDs) at compile time? Requires a sorted const-slice of well-known SRIDs in the macro crate. Can be added incrementally.
+4. **Cross-SRID operation errors:** what happens if a user tries `point_4326.distance_to(point_3857)`? Should this be a compile error (strict typing, best) or a runtime error? Compile-error via differing type parameters is the obvious answer.
+5. **Migration path for existing data:** adopters already on Phase 6's bare `GeoPoint` transition to `GeoPoint<4326>` via the type alias — no code changes required. Migrations differ must not flag the type change as drift (the SQL type `GEOGRAPHY(Point, 4326)` is identical).
+
+**Paired feature (also deferred): `ST_Transform` CRS transformations.** Once arbitrary SRIDs ship, the natural next question is "can I reproject a Lambert-93 point to WGS84 in a query?" `ST_Transform` is the PostGIS answer. Design work happens in the same future slice — arbitrary SRIDs without transformation is incomplete. If 4.6 is ever scheduled, it includes `.transform_to::<NEW_SRID>()` on geometry fields.
+
+**Feature flag.** Would ship within the existing `spatial` feature flag — same one-crate discipline as Phase 6 and 6.5.
+
+**Out of scope even when scheduled.** GEOMETRY (planar) columns alongside GEOGRAPHY (geodetic) — the `GEOGRAPHY` lock is separate from the SRID lock and stays. Custom/user-defined SRIDs registered via `spatial_ref_sys` manipulation — outside framework scope; users can still use any SRID PostGIS supports, they just go through raw SQL.
 
 ---

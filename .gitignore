@@ -33,7 +33,5 @@ docs/codex-blank-response-debugging.md
 .worktrees/
 worktrees/
 
-#symlinks
-kindnudge-reference
-HeeRanjID-reference
-django-reference
+# Research / cross-repo symlinks (local-only)
+*-reference

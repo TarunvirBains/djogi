@@ -16,7 +16,7 @@ The `ReadMe.MD` is the project overview. The full specification lives in `docs/s
 djogi/                  ← this repo — the framework implementation
   djogi/                ← framework library crate
   djogi-macros/         ← proc macro crate (separate crate — required by Rust)
-  djogi-cli/            ← cargo djogi binary
+  djogi-cli/            ← djogi binary
   djogi-shell/          ← Rhai engine + model bindings
 
 ../HeeRanjID/           ← sibling workspace — the HeeRanjId ID system
@@ -56,9 +56,9 @@ cargo clippy --all-targets --all-features
 cargo fmt --all
 
 # CLI (once djogi-cli is implemented)
-cargo djogi migrate
-cargo djogi shell
-cargo djogi db reset --seed
+djogi migrate
+djogi shell
+djogi db reset --seed
 ```
 
 After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
@@ -71,7 +71,7 @@ After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets
 |---|---|
 | `djogi` | Public API: `prelude`, `Model` trait, `QuerySet`, `ForeignKey`, `Jsonb<T>`, `ManyToMany`, app registration |
 | `djogi-macros` | `#[derive(Model)]` proc macro — field injection, trait impls, `ModelDescriptor` emission via `inventory` |
-| `djogi-cli` | `cargo djogi` subcommands via `clap` |
+| `djogi-cli` | `djogi` (standalone) and `cargo djogi` (alias) subcommands via `clap` |
 | `djogi-shell` | Rhai REPL, model bindings, transaction control |
 
 ### What Djogi Owns vs Delegates
@@ -109,7 +109,7 @@ For queries beyond `QuerySet`, raw `sqlx::QueryBuilder` is always available as a
 - Diffs against `migrations/schema_snapshot.json`
 - Generates migration SQL pairs if drift detected; emits compiler warning (not error)
 
-`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful `cargo djogi migrate`.
+`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful `djogi migrate`.
 
 ### Three-Database Architecture
 
@@ -118,7 +118,7 @@ At startup, Djogi maintains three connection pools:
 - `crud_log_url` — structural CRUD audit (per-model `_logs` mirror tables in a separate DB)
 - `event_log_url` — request/crash/debug events via `tracing`
 
-Logging databases are isolated from the app DB so they survive `cargo djogi db reset`.
+Logging databases are isolated from the app DB so they survive `djogi db reset`.
 
 ### Primary Keys — HeeRanjId
 
