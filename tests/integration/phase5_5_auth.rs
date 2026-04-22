@@ -478,19 +478,35 @@ async fn nested_atomic_rollback_restores_auth_state(mut ctx: djogi::DjogiContext
     let pool = ctx.pool().expect("pool-backed").clone();
     djogi::transaction::atomic(&pool, |outer| {
         Box::pin(async move {
-            // Outer scope: set tenant to org_a.
+            // Outer scope: set tenant to org_a AND attach an outer AuthContext
+            // so we can verify auth restoration as well as tenant state
+            // restoration (Codex re-review noted B1 tested only tenant, not
+            // auth — expand the scenario to prove both pieces of the
+            // snapshot/restore contract).
             outer.set_tenant("org_a").await?;
+            outer.set_auth(AuthContext::new(HeerId::from_i64(42).unwrap()).with_tenant("org_a"));
             assert_eq!(outer.applied_tenant_id(), Some("org_a"));
+            assert_eq!(
+                outer.auth().map(|a| a.user_id),
+                Some(HeerId::from_i64(42).unwrap())
+            );
 
-            // Nested scope that changes tenant then returns Err to trigger
-            // ROLLBACK TO SAVEPOINT. The outer scope should see
-            // applied_tenant_id restored to Some("org_a") after the inner
-            // scope returns.
+            // Nested scope that changes tenant AND replaces auth with a
+            // different user, then returns Err to trigger ROLLBACK TO
+            // SAVEPOINT. The outer scope should see both applied_tenant_id
+            // AND auth restored to their pre-nested values.
             let nested_res: Result<(), djogi::DjogiError> =
                 djogi::transaction::atomic(&mut *outer, |inner| {
                     Box::pin(async move {
                         inner.set_tenant("org_b").await?;
+                        inner.set_auth(
+                            AuthContext::new(HeerId::from_i64(99).unwrap()).with_tenant("org_b"),
+                        );
                         assert_eq!(inner.applied_tenant_id(), Some("org_b"));
+                        assert_eq!(
+                            inner.auth().map(|a| a.user_id),
+                            Some(HeerId::from_i64(99).unwrap()),
+                        );
                         // Force a rollback by returning an error. Use a
                         // Validation error so it's classified as non-
                         // transient (no retry).
@@ -518,7 +534,60 @@ async fn nested_atomic_rollback_restores_auth_state(mut ctx: djogi::DjogiContext
                 outer.tenant_set,
                 "nested atomic rollback must restore outer tenant_set",
             );
+            assert_eq!(
+                outer.auth().map(|a| a.user_id),
+                Some(HeerId::from_i64(42).unwrap()),
+                "nested atomic rollback must restore outer auth (user_id)",
+            );
+            assert_eq!(
+                outer.auth().and_then(|a| a.tenant_id.clone()),
+                Some("org_a".to_string()),
+                "nested atomic rollback must restore outer auth.tenant_id",
+            );
 
+            Ok::<_, djogi::DjogiError>(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
+/// Additional coverage for **Blocker 3** surfaced in the Codex re-review of
+/// `3083c3b`: `create_with_id` also builds SQL directly and must carry the
+/// `#auto_set_tenant` snippet. Mirror of
+/// `bulk_create_auto_sets_tenant_from_auth` for the single-row
+/// pre-allocated-id path. `create_with_id` is emitted for every HeerId-PK
+/// model (TenantPost qualifies by default).
+#[djogi::djogi_test]
+async fn create_with_id_auto_sets_tenant_from_auth(mut ctx: djogi::DjogiContext) {
+    setup_tenant_posts(&mut ctx).await;
+
+    let pool = ctx.pool().expect("pool-backed").clone();
+    djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            tx.set_auth(AuthContext::new(HeerId::from_i64(1).unwrap()).with_tenant("org_a"));
+            // Pre-allocate an id and use create_with_id. Before the fix,
+            // this path emitted SQL with no auth→tenant hookup and would
+            // leave applied_tenant_id == None for auth-bound callers.
+            // Deterministic id is fine — #[djogi_test] gives each test a
+            // fresh DB so there's no collision with other tests.
+            let preallocated = HeerId::from_i64(987654321).unwrap();
+            let _ = TenantPost::create_with_id(
+                tx,
+                preallocated,
+                TenantPost {
+                    org_id: "org_a".to_string(),
+                    title: "create-with-id-one".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+            assert_eq!(
+                tx.applied_tenant_id(),
+                Some("org_a"),
+                "create_with_id on a tenant-keyed model must auto-set tenant \
+                 when auth.tenant_id is Some",
+            );
             Ok::<_, djogi::DjogiError>(())
         })
     })

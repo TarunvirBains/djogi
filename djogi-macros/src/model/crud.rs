@@ -883,6 +883,7 @@ pub fn expand(
                     id: ::djogi::types::HeerId,
                     value: Self,
                 ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+                    #auto_set_tenant
                     let __id_i64: i64 = id.as_i64();
                     let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                         &__id_i64,
@@ -1389,6 +1390,7 @@ pub fn expand(
                     ctx: &mut ::djogi::context::DjogiContext,
                     row: Self,
                 ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
+                    #auto_set_tenant
                     let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                         #(&row.#user_fields as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),)*
                     ];
