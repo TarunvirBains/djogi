@@ -437,3 +437,65 @@ async fn order_by_distance_is_deterministic(mut ctx: djogi::DjogiContext) {
         first_ids[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// T5: IndexSpec migration-policy fields (DB-free descriptor inspection)
+// ---------------------------------------------------------------------------
+
+/// The macro-emitted GiST index for `Place.location` must set
+/// `requires_out_of_transaction = true` and `extension_dependency =
+/// Some("postgis")` so Phase 7's migration emitter can correctly place the
+/// DDL outside an implicit transaction wrapper and guard with a
+/// `CREATE EXTENSION IF NOT EXISTS postgis` preamble.
+#[cfg(feature = "spatial")]
+#[test]
+fn places_gix_requires_out_of_transaction() {
+    let desc = Place::descriptor();
+    let gix = desc
+        .indexes
+        .iter()
+        .find(|idx| idx.columns == ["location"])
+        .expect("GiST index for `location` must be present in Place::descriptor().indexes");
+
+    assert!(
+        gix.requires_out_of_transaction,
+        "spatial GiST index must have requires_out_of_transaction = true; \
+         Phase 7 uses this flag to emit CREATE INDEX CONCURRENTLY outside a transaction"
+    );
+    assert_eq!(
+        gix.extension_dependency,
+        Some("postgis"),
+        "spatial GiST index must declare extension_dependency = Some(\"postgis\"); \
+         got {:?}",
+        gix.extension_dependency
+    );
+}
+
+/// Non-spatial indexes must not require out-of-transaction DDL or declare
+/// extension dependencies. Verified against `NonSpatialItem`, which has no
+/// GeoPoint fields and therefore an empty indexes slice. An empty slice is
+/// vacuously free of any policy flags — this test guards against a regression
+/// where the macro accidentally emits migration-policy fields on plain models.
+#[test]
+fn non_spatial_indexes_default_benignly() {
+    let desc = NonSpatialItem::descriptor();
+    // Every index (zero, in this case) must be benign.
+    for idx in desc.indexes {
+        assert!(
+            !idx.requires_out_of_transaction,
+            "non-spatial index '{}' must not require out-of-transaction DDL",
+            idx.name
+        );
+        assert_eq!(
+            idx.extension_dependency, None,
+            "non-spatial index '{}' must not declare an extension dependency",
+            idx.name
+        );
+    }
+    // Explicit: the slice is empty — no indexes means zero policy entries.
+    assert!(
+        desc.indexes.is_empty(),
+        "NonSpatialItem must have no IndexSpec entries; found: {:?}",
+        desc.indexes
+    );
+}

@@ -413,6 +413,8 @@ pub fn expand(
                     columns: &[#col_str],
                     unique: false,
                     index_type: ::djogi::descriptor::IndexType::Gist,
+                    requires_out_of_transaction: true,
+                    extension_dependency: ::std::option::Option::Some("postgis"),
                 }
             }
         })

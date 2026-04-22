@@ -144,12 +144,89 @@ pub enum IndexType {
 /// composite / non-BTree indexes that the migration differ turns into
 /// `CREATE INDEX` statements. An empty slice — the Phase 1 default — means
 /// "only the implicit PK and per-field `#[field(index)]` indexes".
-#[derive(Debug, Clone)]
+///
+/// # Phase 6 migration-policy fields
+///
+/// Two fields were added in Phase 6 to carry DDL-emission intent directly in
+/// the descriptor rather than having Phase 7 reverse-engineer intent from
+/// type names:
+///
+/// - `requires_out_of_transaction` — when `true`, the migration emitter must
+///   run the index DDL outside any implicit transaction wrapper (i.e.
+///   `CREATE INDEX CONCURRENTLY`). GiST indexes on large tables typically
+///   need this. Non-spatial indexes default to `false`.
+///
+/// - `extension_dependency` — names a required Postgres extension (e.g.
+///   `"postgis"`) that must be present before the index DDL runs. The
+///   migration emitter inserts a `CREATE EXTENSION IF NOT EXISTS <ext>`
+///   guard before the index statement when this is `Some`. Non-spatial
+///   indexes default to `None`.
+///
+/// Use [`IndexSpec::simple`] to construct non-spatial indexes without listing
+/// these two fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSpec {
     pub name: &'static str,
     pub columns: &'static [&'static str],
     pub unique: bool,
     pub index_type: IndexType,
+    /// When `true`, the migration emitter must place this index DDL outside
+    /// any implicit transaction (e.g. `CREATE INDEX CONCURRENTLY`). Set to
+    /// `true` for GiST indexes on PostGIS `GEOGRAPHY` columns.
+    pub requires_out_of_transaction: bool,
+    /// Postgres extension name (e.g. `"postgis"`) that must be installed
+    /// before this index can be created. `None` for standard BTree / GIN / …
+    /// indexes that have no extension dependency.
+    pub extension_dependency: Option<&'static str>,
+}
+
+impl IndexSpec {
+    /// Backward-compatible constructor for non-spatial indexes.
+    ///
+    /// Defaults `requires_out_of_transaction = false` and
+    /// `extension_dependency = None` so call sites that predated Phase 6 can
+    /// remain on the 4-argument shape without listing the two new fields.
+    ///
+    /// This constructor is `const` so it can be used in `const` contexts and
+    /// in `&[IndexSpec::simple(...)]` literal arrays.
+    pub const fn simple(
+        name: &'static str,
+        columns: &'static [&'static str],
+        unique: bool,
+        index_type: IndexType,
+    ) -> Self {
+        Self {
+            name,
+            columns,
+            unique,
+            index_type,
+            requires_out_of_transaction: false,
+            extension_dependency: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{IndexSpec, IndexType};
+
+    #[test]
+    fn simple_constructor_defaults_policy_fields_to_benign() {
+        let spec = IndexSpec::simple("idx", &["col"], false, IndexType::BTree);
+        assert!(
+            !spec.requires_out_of_transaction,
+            "simple() must default requires_out_of_transaction to false"
+        );
+        assert_eq!(
+            spec.extension_dependency, None,
+            "simple() must default extension_dependency to None"
+        );
+        // Spot-check that the positional fields were forwarded correctly.
+        assert_eq!(spec.name, "idx");
+        assert_eq!(spec.columns, &["col"]);
+        assert!(!spec.unique);
+        assert_eq!(spec.index_type, IndexType::BTree);
+    }
 }
 
 /// Metadata for a single model field.
