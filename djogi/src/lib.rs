@@ -112,6 +112,13 @@ pub mod __private {
     /// guarantee.
     pub trait SameAs<T: ?Sized> {}
     impl<T: ?Sized> SameAs<T> for T {}
+
+    /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
+    ///
+    /// Routing through `::djogi::__private::tracing` keeps user crates from
+    /// needing `tracing` as a direct dependency — the same path-routing
+    /// convention used for `inventory`, `postgres_types`, and `futures`.
+    pub use tracing;
 }
 
 pub use context::DjogiContext;

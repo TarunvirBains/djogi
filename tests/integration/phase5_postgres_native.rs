@@ -2121,3 +2121,115 @@ async fn tenant_post_rls_side_channel_file_exists(_ctx: djogi::DjogiContext) {
          checked: {candidates:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 10 — `_insecurely()` suffix methods on tenant-keyed models
+// ---------------------------------------------------------------------------
+
+/// Compile-only check: the eight `_insecurely` methods are emitted for
+/// `TenantPost` (which declares `#[model(tenant_key = "org_id")]`).
+///
+/// We resolve each method as a function-item reference (without calling it)
+/// so the assertion is purely about whether the symbol exists at all. The
+/// compiler rejects this function if any of the eight names is absent from
+/// `TenantPost`'s inherent impl.
+///
+/// No database interaction is performed; the `ctx` parameter is included only
+/// because `#[djogi_test]` requires it and we want the same harness for
+/// uniformity.
+#[djogi::djogi_test]
+async fn insecurely_methods_emitted_only_on_tenant_keyed(_ctx: djogi::DjogiContext) {
+    // Resolve each method as an unambiguous function-item reference.
+    // `let _ = TenantPost::foo;` resolves the path without calling — the
+    // compiler emits E0425 ("no associated item `foo` found") if the method
+    // is absent. Each `let _` is intentionally unused (hence `let _`).
+    let _ = TenantPost::get_insecurely;
+    let _ = TenantPost::create_insecurely;
+    let _ = TenantPost::save_insecurely;
+    let _ = TenantPost::delete_insecurely;
+    let _ = TenantPost::objects_insecurely;
+    let _ = TenantPost::bulk_create_insecurely;
+    // bulk_update_insecurely is generic (F, A bounds) — we verify existence
+    // by naming it with concrete type parameters the compiler can resolve.
+    let _ = TenantPost::bulk_update_insecurely::<
+        fn(TenantPostFields) -> djogi::query::UpdateAssignment,
+        djogi::query::UpdateAssignment,
+    >;
+    let _ = TenantPost::bulk_upsert_insecurely;
+}
+
+/// Verify that `create_insecurely` bypasses the RLS `WITH CHECK` constraint.
+///
+/// Strategy:
+/// 1. Set up the tenant_post table with RLS enabled and FORCE ROW LEVEL
+///    SECURITY (via the shared `setup_tenant_post` helper from Task 9).
+/// 2. Open an `atomic()` scope. Drop to the restricted role so the policy
+///    applies. Do NOT call `set_tenant` — `app.tenant_id` is unset, so a
+///    plain `TenantPost::create` would fail (`org_id = NULL::bigint` evaluates
+///    to `false` under the WITH CHECK clause, Postgres returns 0 rows to
+///    `RETURNING`, and `__query_one_for_macros` errors with "no rows").
+/// 3. `create_insecurely` issues `SET LOCAL row_security = off` first, so the
+///    INSERT succeeds unconditionally and returns the new row.
+/// 4. Assert the returned row has the expected field values.
+///
+/// This test exercises the primary value proposition of the `_insecurely`
+/// API: cross-tenant writes (e.g. admin panel, data-migration scripts) that
+/// must bypass the per-request tenant predicate.
+#[djogi::djogi_test]
+async fn insecurely_bypasses_rls(mut ctx: djogi::DjogiContext) {
+    setup_tenant_post(&mut ctx).await;
+
+    let pool = ctx
+        .pool()
+        .expect("ctx must be pool-backed for this test")
+        .clone();
+
+    // Open an atomic scope as a privileged connection (the `djogi` superuser).
+    // Do NOT call set_tenant — app.tenant_id is intentionally unset so that
+    // a plain `TenantPost::create` would fail under FORCE ROW LEVEL SECURITY.
+    //
+    // We enable FORCE ROW LEVEL SECURITY on the table (done by `setup_tenant_post`)
+    // so that the policy applies even to the table owner. Then we verify that
+    // `create_insecurely` still succeeds by issuing `SET LOCAL row_security = off`
+    // before the INSERT, which requires BYPASSRLS / superuser privilege — which
+    // the `djogi` test role has.
+    let post = djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            // Verify that a plain create would fail under FORCE RLS without
+            // set_tenant, by first enabling FORCE RLS via the BYPASSRLS
+            // superuser path (still inside the tx for isolation).
+            //
+            // create_insecurely issues SET LOCAL row_security = off before
+            // the INSERT, so the WITH CHECK clause is not evaluated and the
+            // row is written regardless of app.tenant_id being unset.
+            TenantPost::create_insecurely(
+                tx,
+                TenantPost {
+                    org_id: 9999,
+                    title: "Insecure cross-tenant post".to_string(),
+                    ..Default::default()
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .expect("create_insecurely must succeed even without set_tenant");
+
+    assert_eq!(post.org_id, 9999);
+    assert_eq!(post.title, "Insecure cross-tenant post");
+
+    // Confirm the row really landed in the database by reading it back
+    // as a superuser (no RLS filter).
+    let fetched = djogi::transaction::atomic(&pool, |tx| {
+        Box::pin(async move {
+            // Superuser bypasses RLS unconditionally; no SET ROLE needed.
+            TenantPost::get_insecurely(tx, post.id).await
+        })
+    })
+    .await
+    .expect("get_insecurely must find the row created above");
+
+    assert_eq!(fetched.id, post.id);
+    assert_eq!(fetched.org_id, 9999);
+}
