@@ -99,6 +99,68 @@ fn acc_into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + S
     acc.into_parts()
 }
 
+// ── Auto-tenant helper (Phase 5.5 Task 10) ────────────────────────────────
+
+/// If `T` has a `tenant_key` and `ctx.auth()` carries a `tenant_id`, call
+/// `ctx.ensure_tenant_set(tenant_id)` so the `app.tenant_id` GUC is active
+/// before any SQL is issued.
+///
+/// This helper is shared by all QuerySet terminals. The borrow is structured
+/// to avoid overlapping borrows: `ctx.auth()` borrows `ctx` immutably;
+/// cloning the `String` drops that borrow before `ctx.ensure_tenant_set`
+/// takes `&mut ctx`.
+///
+/// Behavior by case:
+///
+/// - `T::descriptor().tenant_key` is `None` → no-op (model has no RLS column).
+/// - `ctx.auth()` is `None` → no-op (no auth context attached; pre-auth
+///   or non-tenant code path).
+/// - `ctx.auth().tenant_id` is `Some(tid)` → delegates to
+///   `ctx.ensure_tenant_set(tid)` which re-issues `SET LOCAL` when the
+///   requested tid differs from the currently-applied one.
+/// - `ctx.auth().tenant_id` is `None` AND a previous tid is still applied
+///   → clears the `app.tenant_id` GUC via `ctx.clear_tenant()`. Without
+///   this reset, a `set_auth(auth_with_tenant)` followed by
+///   `set_auth(auth_without_tenant)` inside one transaction would leave
+///   the earlier tenant's `SET LOCAL` active silently — a cross-tenant
+///   leak. A `tracing::warn!` is also emitted (unless
+///   `ctx.with_no_tenant_scope()` was called) so the caller sees the
+///   transition.
+pub(crate) async fn auto_set_tenant<T: Model>(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
+    if T::descriptor().tenant_key.is_none() {
+        return Ok(());
+    }
+    // No auth attached → hands-off. Users driving `set_tenant` manually
+    // (explicit Phase 5 tenancy flow, admin tooling, test harnesses) must
+    // not have their explicit GUC state clobbered by the auto-wiring.
+    if ctx.auth().is_none() {
+        return Ok(());
+    }
+    let tid: Option<String> = ctx.auth().and_then(|a| a.tenant_id.clone());
+    match tid {
+        Some(tid) => ctx.ensure_tenant_set(&tid).await?,
+        None => {
+            // Auth IS attached but carries no tenant_id. If an earlier
+            // auth-driven ensure_tenant_set applied a tid, reset it so
+            // subsequent queries don't run under the stale GUC — this is
+            // the Phase 5.5 phase-boundary fix for the
+            // "set_auth(auth_with_tenant) → set_auth(auth_without_tenant)
+            // leaves old SET LOCAL active" bug class.
+            if ctx.applied_tenant_id().is_some() {
+                ctx.clear_tenant().await?;
+            }
+            if !ctx.__tenant_scope_suppressed_for_macros() {
+                tracing::warn!(
+                    model = std::any::type_name::<T>(),
+                    "auth attached but tenant_id is None on a tenant-keyed model; \
+                     queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Row-returning terminals (require `T: FromPgRow`) ────────────────────────
 
 impl<T: Model> QuerySet<T>
@@ -122,6 +184,7 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_select(&self);
             let (sql, binds) = acc_into_sql_and_binds(acc);
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -159,6 +222,7 @@ where
             if self.is_empty() {
                 return Err(DjogiError::not_found(T::table_name()));
             }
+            auto_set_tenant::<T>(ctx).await?;
             // Override the user's LIMIT (if any) with 2 so we can
             // distinguish the single-row success path from the
             // multiple-rows error path without a `COUNT(*)` round trip.
@@ -247,6 +311,7 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
 
             // Snapshot prefetch paths before we consume `self` in the
             // main-query build. The shared SQL emitter borrows the
@@ -342,6 +407,7 @@ where
             if self.is_empty() {
                 return Ok(Vec::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
 
             // Snapshot prefetch + select_related paths before we build
             // the SQL — `build_select_joined` borrows the queryset
@@ -404,6 +470,7 @@ where
             if self.is_empty() {
                 return Ok(None);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let mut qs = self;
             qs.limit = Some(1);
             let acc = build_select(&qs);
@@ -571,6 +638,7 @@ where
             if self.is_empty() || ids.is_empty() {
                 return Ok(HashMap::new());
             }
+            auto_set_tenant::<T>(ctx).await?;
             // Raw SELECT by PK list. We bypass `build_select` + the
             // filter chain because generic `QuerySet<T>` has no handle
             // on the `{Model}Fields::id` FieldRef — the field bag is a
@@ -626,6 +694,7 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(0);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_count(&self);
             let (sql, binds) = acc_into_sql_and_binds(acc);
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -656,6 +725,7 @@ impl<T: Model> QuerySet<T> {
             if self.is_empty() {
                 return Ok(false);
             }
+            auto_set_tenant::<T>(ctx).await?;
             let acc = build_exists(&self);
             let (sql, binds) = acc_into_sql_and_binds(acc);
             let params: Vec<&(dyn ToSql + Sync)> = binds
@@ -749,6 +819,7 @@ where
                 "stream fetch_size must be at least 1".to_owned(),
             ));
         }
+        auto_set_tenant::<T>(ctx).await?;
 
         // Short-circuit on structural-none: an empty QuerySet has no rows to
         // stream. The stream would immediately close the cursor after a zero-

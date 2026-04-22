@@ -476,6 +476,77 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // Auto-tenant wiring (Phase 5.5 Task 10 + Task 11).
+    //
+    // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
+    // `tenant_id`, this snippet calls `ctx.__ensure_tenant_set_for_macros`
+    // (the public shim over `ensure_tenant_set`) before any SQL runs.
+    //
+    // Task 11 extends this: when `auth` is present but `tenant_id` is `None`,
+    // a `tracing::warn!` fires (the "silent cross-tenant leak" footgun) unless
+    // `ctx.__tenant_scope_suppressed_for_macros()` is `true`. Callers that
+    // deliberately want cross-tenant queries call `ctx.with_no_tenant_scope()`
+    // or `ctx.set_no_tenant_scope()` to suppress the warn.
+    //
+    // Borrow split: `ctx.auth()` borrows `ctx` immutably; we clone the
+    // `String` before the immutable borrow drops so `ctx.ensure_tenant_set`
+    // can take `&mut ctx` without a simultaneous immutable borrow. The
+    // `__djogi_auth_present` bool also captures the `is_some()` result
+    // before the clone so no second borrow is needed in the `None` arm.
+    //
+    // Path routing: bare `Option` paths are spelled `::std::option::Option::*`
+    // per the `feedback_macro_path_routing` convention; temp bindings are
+    // prefixed `__djogi_` to avoid colliding with user-chosen field names.
+    //
+    // Tracing path: `::tracing::warn!` is used bare here. The `tracing` crate
+    // is a workspace dependency of `djogi` and is re-exported via
+    // `::djogi::__private::tracing`. Macro-emitted code in user crates cannot
+    // reach `::tracing` directly unless the user added it, but
+    // `::djogi::__private::tracing` is always present. Match the existing
+    // `_insecurely` warn pattern in `context_ext.rs` which uses bare
+    // `tracing::warn!` inside the `djogi` crate. The macro emits
+    // `::djogi::__private::tracing::warn!` to be safe across user crates.
+    // -------------------------------------------------------------------------
+    let auto_set_tenant = if model_attrs.tenant_key.is_some() {
+        let model_name_str = table.as_str();
+        quote! {
+            // No auth attached → hands-off. The explicit-`set_tenant`
+            // flow (Phase 5 tenancy pattern, admin tooling, test
+            // harnesses) must not have its GUC clobbered by the auto-
+            // wiring. Only auth-bound contexts participate.
+            if ctx.auth().is_some() {
+                let __djogi_tid: ::std::option::Option<::std::string::String> =
+                    ctx.auth().and_then(|__djogi_auth| __djogi_auth.tenant_id.clone());
+                match __djogi_tid {
+                    ::std::option::Option::Some(__djogi_tid_str) => {
+                        ctx.__ensure_tenant_set_for_macros(&__djogi_tid_str).await?;
+                    }
+                    ::std::option::Option::None => {
+                        // Auth present but carries no tenant_id. Clear any
+                        // previously auth-applied tenant scope so
+                        // subsequent queries don't leak under the stale
+                        // GUC (Phase 5.5 phase-boundary fixup — see
+                        // djogi/src/query/terminal.rs auto_set_tenant for
+                        // the full rationale).
+                        if ctx.applied_tenant_id().is_some() {
+                            ctx.clear_tenant().await?;
+                        }
+                        if !ctx.__tenant_scope_suppressed_for_macros() {
+                            ::djogi::__private::tracing::warn!(
+                                model = #model_name_str,
+                                "auth attached but tenant_id is None on a tenant-keyed model; \
+                                 queries will span tenants — call ctx.with_no_tenant_scope() to suppress",
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // -------------------------------------------------------------------------
     // Per-method async bodies.
     // -------------------------------------------------------------------------
     // Every body calls the public-but-hidden execution helpers on `ctx`
@@ -486,6 +557,7 @@ pub fn expand(
     // djogi/src/context.rs for the execution helper rationale.
     let get_body = quote! {
         async move {
+            #auto_set_tenant
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #id_param_for_get,
             ];
@@ -576,6 +648,7 @@ pub fn expand(
 
     let create_body = quote! {
         async move {
+            #auto_set_tenant
             #create_value_binding
             #sequence_upsert_preamble
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
@@ -616,6 +689,7 @@ pub fn expand(
             format!("optimistic lock conflict: {ver_col} mismatch in table {table}");
         quote! {
             async move {
+                #auto_set_tenant
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // The version field is excluded from the dirty loop — it always
@@ -674,6 +748,7 @@ pub fn expand(
         // Shape A — no version field: existing behavior.
         quote! {
             async move {
+                #auto_set_tenant
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // `__first` tracks whether we have emitted any SET assignment yet
@@ -719,6 +794,7 @@ pub fn expand(
 
     let delete_body = quote! {
         async move {
+            #auto_set_tenant
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #owned_pk_param,
             ];
@@ -733,6 +809,7 @@ pub fn expand(
 
     let refresh_body = quote! {
         async move {
+            #auto_set_tenant
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #refresh_id_param,
             ];
@@ -806,6 +883,7 @@ pub fn expand(
                     id: ::djogi::types::HeerId,
                     value: Self,
                 ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+                    #auto_set_tenant
                     let __id_i64: i64 = id.as_i64();
                     let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                         &__id_i64,
@@ -1062,6 +1140,7 @@ pub fn expand(
                 if rows.is_empty() {
                     return ::std::result::Result::Ok(::std::vec::Vec::new());
                 }
+                #auto_set_tenant
                 let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix);
                 {
                     let mut __first = true;
@@ -1172,6 +1251,7 @@ pub fn expand(
                         "bulk_upsert requires at least one conflict column".to_string()
                     ));
                 }
+                #auto_set_tenant
                 // Validate every conflict column against the macro-
                 // emitted allow-list of real columns. Rejects typos
                 // and closes the arbitrary-string SQL-injection path.
@@ -1310,6 +1390,7 @@ pub fn expand(
                     ctx: &mut ::djogi::context::DjogiContext,
                     row: Self,
                 ) -> ::std::result::Result<(Self, bool), ::djogi::DjogiError> {
+                    #auto_set_tenant
                     let __insert_params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                         #(&row.#user_fields as &(dyn ::djogi::__private::postgres_types::ToSql + Sync),)*
                     ];
