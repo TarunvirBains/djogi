@@ -438,19 +438,30 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
 
 /// Detect if a field type is `Jsonb<T>` by checking the last-segment ident.
 /// Returns `true` if the type path ends in `Jsonb`, after stripping `Option`.
+/// Uses last-segment path matching to accept bare `Jsonb<T>`, `djogi::Jsonb<T>`, etc.
 fn is_jsonb_type(ty: &syn::Type) -> bool {
     let (inner, _) = unwrap_option(ty);
-    let s = quote::quote!(#inner).to_string().replace(' ', "");
-    // Match patterns like `Jsonb<...>` where Jsonb is the outermost generic or ident.
-    s.starts_with("Jsonb<") || s == "Jsonb"
+    let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
+        return false;
+    };
+    path.segments
+        .last()
+        .map(|seg| seg.ident == "Jsonb")
+        .unwrap_or(false)
 }
 
 /// Detect if a field type is `Geography` by checking the last-segment ident.
 /// Returns `true` if the type path ends in `Geography`, after stripping `Option`.
+/// Uses last-segment path matching to accept bare `Geography<T>`, `djogi::Geography<T>`, etc.
 fn is_geography_type(ty: &syn::Type) -> bool {
     let (inner, _) = unwrap_option(ty);
-    let s = quote::quote!(#inner).to_string().replace(' ', "");
-    s.starts_with("Geography<") || s == "Geography"
+    let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
+        return false;
+    };
+    path.segments
+        .last()
+        .map(|seg| seg.ident == "Geography")
+        .unwrap_or(false)
 }
 
 /// Compute the default `IndexType` for a field when `#[field(index)]` is
@@ -465,5 +476,82 @@ fn default_index_type(ty: &syn::Type) -> TokenStream {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) }
     } else {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_jsonb_type_bare() {
+        let ty = syn::parse_str::<syn::Type>("Jsonb<String>").unwrap();
+        assert!(is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_qualified() {
+        let ty = syn::parse_str::<syn::Type>("djogi::Jsonb<String>").unwrap();
+        assert!(is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_option() {
+        let ty = syn::parse_str::<syn::Type>("Option<Jsonb<String>>").unwrap();
+        assert!(is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_option_qualified() {
+        let ty = syn::parse_str::<syn::Type>("Option<djogi::Jsonb<String>>").unwrap();
+        assert!(is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_string_false() {
+        let ty = syn::parse_str::<syn::Type>("String").unwrap();
+        assert!(!is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_jsonb_type_vec_false() {
+        let ty = syn::parse_str::<syn::Type>("Vec<String>").unwrap();
+        assert!(!is_jsonb_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_type_bare() {
+        let ty = syn::parse_str::<syn::Type>("Geography<Point>").unwrap();
+        assert!(is_geography_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_type_qualified() {
+        let ty = syn::parse_str::<syn::Type>("djogi::Geography<Point>").unwrap();
+        assert!(is_geography_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_type_option() {
+        let ty = syn::parse_str::<syn::Type>("Option<Geography<Point>>").unwrap();
+        assert!(is_geography_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_type_option_qualified() {
+        let ty = syn::parse_str::<syn::Type>("Option<djogi::Geography<Point>>").unwrap();
+        assert!(is_geography_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_type_string_false() {
+        let ty = syn::parse_str::<syn::Type>("String").unwrap();
+        assert!(!is_geography_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_type_jsonb_false() {
+        let ty = syn::parse_str::<syn::Type>("Jsonb<String>").unwrap();
+        assert!(!is_geography_type(&ty));
     }
 }

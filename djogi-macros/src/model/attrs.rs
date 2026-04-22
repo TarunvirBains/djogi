@@ -667,6 +667,13 @@ impl FieldAttrs {
                         attrs.index_method = Some(method);
                         break; // Only one index per field.
                     }
+                    // Reject non-string values for `#[field(index = X)]`.
+                    Meta::NameValue(mnv) if mnv.path.is_ident("index") => {
+                        return Err(syn::Error::new_spanned(
+                            &mnv.value,
+                            "`#[field(index)]` takes an optional string method (e.g. `index = \"gin\"`) or no value",
+                        ));
+                    }
                     _ => {}
                 }
             }
@@ -703,7 +710,10 @@ impl FieldAttrs {
                     Meta::NameValue(nv) => nv.path.get_ident().map(|i| i.to_string()),
                     _ => None,
                 };
-                if let Some(key) = key.as_ref().filter(|k| !VALID_FIELD_KEYS.contains(&k.as_str())) {
+                if let Some(key) = key
+                    .as_ref()
+                    .filter(|k| !VALID_FIELD_KEYS.contains(&k.as_str()))
+                {
                     return Err(syn::Error::new_spanned(
                         nested,
                         format!("unknown field attribute: `{key}`"),

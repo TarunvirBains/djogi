@@ -1,5 +1,10 @@
 use djogi::prelude::*;
 
+// Note: the is_jsonb_type and is_geography_type last-segment detection is
+// fully covered by unit tests in djogi-macros/src/model/descriptor.rs:tests,
+// which verify bare Jsonb<T>, qualified djogi::Jsonb<T>, and Option<Jsonb<T>> forms.
+// These simple test cases demonstrate the explicit method and bare-form behavior.
+
 // Test all valid index methods
 #[model(table = "test_btree")]
 #[derive(Debug, Clone)]
@@ -44,15 +49,6 @@ pub struct WithSpgist {
 }
 
 // Test bare #[field(index)] with auto-defaults
-
-// Jsonb field with bare index → defaults to Gin
-// Note: Using String instead of full Jsonb<T> type to avoid serde_json dependency in test
-#[model(table = "test_bare_jsonb")]
-#[derive(Debug, Clone)]
-pub struct BareJsonb {
-    #[field(index)]
-    pub metadata: String,  // In real use, would be Jsonb<T>
-}
 
 // String field with bare index → defaults to BTree
 #[model(table = "test_bare_string")]
