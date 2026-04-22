@@ -40,6 +40,7 @@
 //! `DjogiError` enum — everything a model definition needs.
 
 pub mod array;
+pub mod auth;
 pub mod config;
 pub mod context;
 pub mod descriptor;

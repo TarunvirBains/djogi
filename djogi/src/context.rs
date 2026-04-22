@@ -57,6 +57,7 @@
 //! Callbacks registered on a pool-backed context with no `atomic()` scope
 //! are silently dropped when the context is dropped.
 
+use crate::auth::AuthContext;
 use crate::pg::connection::PgConnection;
 use crate::pg::decode::{FromPgRow, try_get_scalar};
 use crate::pg::pool::DjogiPool;
@@ -103,6 +104,13 @@ pub struct DjogiContext {
     /// transaction — callers must wrap tenant-scoped operations in `atomic()` for
     /// the GUC value to persist through the full query sequence.
     pub tenant_set: bool,
+
+    /// Optional auth context attached via [`Self::with_auth`] (Phase 5.5 Task 1).
+    ///
+    /// `None` until the caller explicitly calls `with_auth` or
+    /// `with_auth_insecurely`. CRUD operations and QuerySet terminals that
+    /// require an authenticated caller check this field via [`Self::auth`].
+    pub(crate) auth: Option<AuthContext>,
 }
 
 /// Internal enum selecting the active context variant.
@@ -156,6 +164,7 @@ impl DjogiContext {
             savepoint_depth: 0,
             on_commit: Vec::new(),
             tenant_set: false,
+            auth: None,
         }
     }
 
@@ -172,6 +181,7 @@ impl DjogiContext {
             savepoint_depth: 0,
             on_commit: Vec::new(),
             tenant_set: false,
+            auth: None,
         }
     }
 

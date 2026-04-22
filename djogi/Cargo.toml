@@ -131,3 +131,8 @@ harness = true
 name = "phase5_fts"
 path = "../tests/integration/phase5_fts.rs"
 harness = true
+
+[[test]]
+name = "phase5_5_auth"
+path = "../tests/integration/phase5_5_auth.rs"
+harness = true
