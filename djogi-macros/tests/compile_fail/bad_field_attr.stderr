@@ -1,5 +1,5 @@
-error: Unknown field: `nonexistent_attr`
+error: unknown field attribute: `nonexistent_attr`
   --> tests/compile_fail/bad_field_attr.rs:10:13
    |
 10 |     #[field(nonexistent_attr = 42)]
-   |             ^^^^^^^^^^^^^^^^
+   |             ^^^^^^^^^^^^^^^^^^^^^

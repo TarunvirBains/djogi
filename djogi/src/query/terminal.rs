@@ -77,6 +77,7 @@ use crate::pg::accumulator::SqlAccumulator;
 use crate::pg::decode::{FromJoinedPgRow, FromPgRow, try_get_scalar};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_count, build_exists, build_select, build_select_joined};
+use crate::query::stream::{DEFAULT_FETCH_SIZE, ModelCursorStream, build_model_stream};
 use crate::relation::joined_row::JoinedRow;
 use crate::relation::prefetch::{PrefetchedRow, apply_prefetches};
 use crate::relation::select_related::{apply_select_related, stitch_prefetches_into_joined};
@@ -665,5 +666,104 @@ impl<T: Model> QuerySet<T> {
             let b: bool = try_get_scalar(&row, 0)?;
             Ok(b)
         }
+    }
+}
+
+// ── Streaming terminal (requires `T: FromPgRow + Unpin + Send`) ─────────────
+
+impl<T: Model> QuerySet<T>
+where
+    T: FromPgRow + Unpin + Send,
+{
+    /// Stream rows from the database using a Postgres named cursor.
+    ///
+    /// Returns `impl Stream<Item = Result<T, DjogiError>>` where rows are
+    /// decoded one at a time as they arrive. The stream back-pressures
+    /// naturally — no rows are held beyond one `fetch_size` batch.
+    ///
+    /// # Transaction requirement
+    ///
+    /// Named Postgres cursors are transaction-local. This terminal requires
+    /// `ctx` to be backed by an active transaction (i.e. called inside an
+    /// [`atomic()`](crate::transaction::atomic) scope). Calling `stream` on a
+    /// pool-backed context returns
+    /// `Err(DjogiError::StreamOutsideTransaction)` immediately — the error
+    /// surfaces at construction time, not on the first `poll_next`.
+    ///
+    /// # Fetch size
+    ///
+    /// Default is `1000` rows per `FETCH` round trip. Use
+    /// [`stream_with_fetch_size`](Self::stream_with_fetch_size) to override.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use futures::StreamExt;
+    ///
+    /// atomic(&pool, |ctx| Box::pin(async move {
+    ///     let mut stream = Post::objects()
+    ///         .filter(|f| f.published.eq(true))
+    ///         .stream(ctx)
+    ///         .await?;
+    ///
+    ///     while let Some(result) = stream.next().await {
+    ///         let post = result?;
+    ///         // process post …
+    ///     }
+    ///     Ok(())
+    /// })).await?;
+    /// ```
+    pub async fn stream<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> Result<ModelCursorStream<'ctx, T>, DjogiError>
+    where
+        T: 'ctx,
+    {
+        self.stream_with_fetch_size(ctx, DEFAULT_FETCH_SIZE).await
+    }
+
+    /// Stream rows using a Postgres named cursor with a custom fetch size.
+    ///
+    /// Like [`stream`](Self::stream) but lets the caller override the number
+    /// of rows retrieved per `FETCH` round trip. Smaller values (e.g. `100`)
+    /// reduce per-batch memory pressure; larger values (e.g. `10_000`) reduce
+    /// round-trip overhead for high-throughput exports.
+    ///
+    /// `fetch_size` must be at least `1`. Passing `0` returns
+    /// `Err(DjogiError::Validation)` immediately.
+    ///
+    /// # Transaction requirement
+    ///
+    /// Same as [`stream`](Self::stream) — `ctx` must be transaction-backed.
+    pub async fn stream_with_fetch_size<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+        fetch_size: u32,
+    ) -> Result<ModelCursorStream<'ctx, T>, DjogiError>
+    where
+        T: 'ctx,
+    {
+        if fetch_size == 0 {
+            return Err(DjogiError::Validation(
+                "stream fetch_size must be at least 1".to_owned(),
+            ));
+        }
+
+        // Short-circuit on structural-none: an empty QuerySet has no rows to
+        // stream. The stream would immediately close the cursor after a zero-
+        // row DECLARE+FETCH; skip the round trip by returning a no-op stream.
+        // Note: we cannot early-return an `impl Stream` here because Rust
+        // requires a concrete return type. We build a real cursor stream but
+        // let the standard cursor exhaustion path terminate it after one
+        // FETCH that returns 0 rows. This is simpler and more correct than
+        // a special empty-stream type.
+        let acc = build_select(&self);
+        let (sql, binds) = acc_into_sql_and_binds(acc);
+        let params: Vec<&(dyn ToSql + Sync)> = binds
+            .iter()
+            .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+            .collect();
+        build_model_stream(ctx, &sql, &params, fetch_size).await
     }
 }

@@ -1,0 +1,5 @@
+error: unknown index method: 'btre'; expected one of btree, gin, gist, brin, hash, spgist
+ --> tests/compile_fail/unknown_index_method.rs:6:21
+  |
+6 |     #[field(index = "btre")]  // typo
+  |                     ^^^^^^

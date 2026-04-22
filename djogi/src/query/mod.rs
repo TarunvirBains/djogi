@@ -31,6 +31,7 @@ pub(crate) mod lock;
 pub mod order;
 pub mod queryset;
 pub mod sql;
+pub mod stream;
 pub mod terminal;
 pub mod update;
 
@@ -41,6 +42,7 @@ pub use field::{FieldRef, IntoFilterValue};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
+pub use stream::{ModelCursorStream, RawCursorStream};
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
 
 /// Raw Condition-AST surface — not peer public API with `Condition`.

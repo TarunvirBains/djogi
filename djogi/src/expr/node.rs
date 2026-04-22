@@ -182,6 +182,18 @@ pub(crate) enum ExprNode {
     /// (already validated at `FieldRef::new` construction time).
     Subquery(Box<SubqueryNode>),
 
+    /// `array_length(column, 1)` — number of elements in a 1-dimensional
+    /// Postgres array column.
+    ///
+    /// The dimension argument is hardcoded to `1`; Djogi arrays are always
+    /// 1-dimensional and multi-dimensional arrays are not a supported field
+    /// type. Produces an `Expr<i32>` at the typed-wrapper layer; the emitter
+    /// renders `array_length({column}, 1)`.
+    ///
+    /// The `column` string is a `&'static str` validated at
+    /// [`crate::query::field::FieldRef::new`] construction time.
+    ArrayLength { column: &'static str },
+
     /// Outer-scope column reference inside a correlated subquery.
     ///
     /// Emits the column name unqualified — Postgres resolves the name
@@ -200,6 +212,86 @@ pub(crate) enum ExprNode {
         /// construction time via
         /// [`crate::ident::assert_plain_ident`]; safe to push directly.
         column: &'static str,
+    },
+
+    /// `<col> @@ to_tsquery('<dictionary>', $n)` — full-text search match.
+    ///
+    /// Produced by `FtsFieldRef::matches(query)`. The column name is the
+    /// GENERATED ALWAYS AS tsvector column (typically `"search"`). The
+    /// dictionary name is embedded into the SQL as a literal token (e.g.
+    /// `to_tsquery('english', $1)`) because it is a Postgres configuration
+    /// name, not a user value — it came from `#[model(fts = { dictionary = "..."
+    /// })]` and was validated at macro parse time. The query text is bound
+    /// as a parameter.
+    ///
+    /// The emitter renders: `<column> @@ to_tsquery('<dictionary>', $n)`
+    TsMatch {
+        /// The tsvector column name (e.g. `"search"`). Validated at
+        /// construction via `assert_plain_ident`; safe to push as raw SQL.
+        column: &'static str,
+        /// Postgres text-search config name (e.g. `"english"`). Validated
+        /// at macro parse time; embedded literally into the SQL.
+        dictionary: &'static str,
+        /// The tsquery text bound as a parameter (e.g. `"planet & earth"`).
+        query_text: String,
+    },
+
+    /// `ts_rank(<col>, to_tsquery('<dictionary>', $n))` — relevance score.
+    ///
+    /// Produced by `FtsFieldRef::rank(query)`. Returns an `f32` scalar
+    /// that Postgres computes per-row as the document's relevance against
+    /// the query. Useful in `ORDER BY ... DESC` to surface the most
+    /// relevant results first.
+    ///
+    /// The emitter renders: `ts_rank(<column>, to_tsquery('<dictionary>', $n))`
+    TsRank {
+        /// The tsvector column name. Validated at construction.
+        column: &'static str,
+        /// Dictionary name embedded literally. Validated at macro parse time.
+        dictionary: &'static str,
+        /// The tsquery text bound as a parameter.
+        query_text: String,
+    },
+
+    /// `ts_rank_cd(<col>, to_tsquery('<dictionary>', $n))` — cover-density rank.
+    ///
+    /// Like `TsRank` but uses the cover-density ranking algorithm, which
+    /// weighs proximity of matching terms more heavily. Useful when term
+    /// position within the document matters.
+    TsRankCd {
+        /// The tsvector column name.
+        column: &'static str,
+        /// Dictionary name.
+        dictionary: &'static str,
+        /// The tsquery text bound as a parameter.
+        query_text: String,
+    },
+
+    /// A Postgres `INTERVAL` literal derived from a `time::Duration`.
+    ///
+    /// Emitted as the raw SQL token `INTERVAL '{microseconds} microseconds'` —
+    /// no bind parameter is used because `tokio-postgres` / `postgres-types`
+    /// does not ship a `ToSql` impl for `time::Duration` (the `time` crate's
+    /// native duration type). Microseconds are faithful to `Duration`'s
+    /// full sub-millisecond precision.
+    ///
+    /// The microsecond count is saturating-clamped to `i64` range at
+    /// construction time (via [`super::literal::saturating_micros`]);
+    /// Durations outside that range encode as `i64::MAX` or `i64::MIN`
+    /// (~±292,277 years) rather than wrapping silently. Those extremes are
+    /// already Postgres `INTERVAL` overflows, so saturation is the correct
+    /// sentinel value.
+    ///
+    /// This variant is produced only by the `impl From<time::Duration> for
+    /// Expr<time::Duration>` bridge in [`super::literal`]. User code that
+    /// arrives here via `Expr::literal(duration)` has already gone through
+    /// the typed `From` impl — no raw `ExprNode::IntervalLiteral {..}`
+    /// construction from outside the crate is possible.
+    IntervalLiteral {
+        /// Microseconds — the full precision of `time::Duration` expressed
+        /// as a `BIGINT`-compatible count, emitted as
+        /// `INTERVAL '{microseconds} microseconds'`.
+        microseconds: i64,
     },
 }
 
@@ -249,7 +341,7 @@ pub(crate) struct SubqueryNode {
 /// renders `COUNT(*)` specially for [`AggOp::CountStar`] so the bare `*`
 /// never flows through the identifier-validation / column-qualification
 /// paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AggOp {
     /// `COUNT(col)` — returns `i64`. Counts non-null values of the
     /// argument column.
@@ -277,6 +369,43 @@ pub(crate) enum AggOp {
     /// `MAX(col)` — returns `V`. Same ordering requirement as
     /// [`AggOp::Min`].
     Max,
+    /// `ARRAY_AGG(col)` — collects non-null values into a Postgres array.
+    ///
+    /// Returns `Vec<V>` at the Rust level. The typed builder on
+    /// [`super::aggregate::FieldRef`] pins `Out = Vec<V>` so the
+    /// annotate decode path calls `row.try_get::<_, Vec<V>>(alias)`.
+    /// postgres-types decodes Postgres arrays into `Vec<V>` when `V`
+    /// implements `FromSql` — all scalar column types Djogi ships already
+    /// satisfy that bound.
+    ArrayAgg,
+    /// `JSONB_AGG(col)` — aggregates rows into a JSON array, returned as
+    /// `serde_json::Value`.
+    ///
+    /// Uses `JSONB_AGG` rather than `JSON_AGG` because Djogi standardises
+    /// on JSONB for all JSON storage and wire formats (see `docs/spec/decisions.md`).
+    JsonAgg,
+    /// `STRING_AGG(col, sep)` — concatenates non-null string values with a
+    /// separator.
+    ///
+    /// The separator is stored inline in the variant so the emitter can
+    /// push it as a bind parameter without a separate `ExprNode`. Carrying
+    /// the separator directly on the variant rather than as a second
+    /// `ExprNode` child of `Aggregate { arg, .. }` keeps the existing
+    /// `Aggregate` layout unchanged — no other variant needs a second
+    /// operand.
+    ///
+    /// The separator is user-supplied at `.string_agg("sep")` call time
+    /// and bound via `acc.push_bind(sep.to_string())` to avoid any risk
+    /// of SQL injection from a runtime-computed separator string.
+    StringAgg(String),
+    /// `BOOL_AND(col)` — true if every non-null value in the column is
+    /// true. Requires a boolean column; the typed builder gates on
+    /// `V: Into<bool>`.
+    BoolAnd,
+    /// `BOOL_OR(col)` — true if at least one non-null value in the
+    /// column is true. Requires a boolean column; the typed builder gates
+    /// on `V: Into<bool>`.
+    BoolOr,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

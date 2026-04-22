@@ -29,6 +29,10 @@
 // them here keeps the single-source-of-truth story consistent and avoids
 // forcing every consumer to import from two paths.
 pub use crate::relation::{OnDelete, RelationKind};
+// Re-export of FTS descriptor — keeps the single-import story consistent for
+// Phase 6's migration differ, which reads both relation and FTS metadata from
+// the descriptor module path.
+pub use crate::fts::FtsDescriptor;
 
 /// SQL type a model field maps to.
 ///
@@ -319,6 +323,55 @@ pub struct ModelDescriptor {
     ///
     /// `#[derive(Model)]` without `through` sets this to `false`.
     pub is_through: bool,
+
+    // ── Full-Text Search (Phase 5 Task 14) ──────────────────────────────────
+    /// Full-text search configuration when `#[model(fts = { source = "...",
+    /// dictionary = "..." })]` is set.
+    ///
+    /// `None` for every model that does not declare an FTS column (the
+    /// default). `Some(spec)` means a `GENERATED ALWAYS AS` tsvector column
+    /// is expected in the schema and a GIN index should accompany it.
+    ///
+    /// # Phase 6 migration differ — important note
+    ///
+    /// **Changing `FtsDescriptor.dictionary` is a column-type alteration.**
+    /// The generated column expression embeds the dictionary name literally:
+    /// `to_tsvector('<dictionary>', <source>)`. Altering the dictionary
+    /// requires dropping and re-creating the generated column — the migration
+    /// differ must treat this field the same way it treats a `FieldSqlType`
+    /// change (drop + add, not an in-place ALTER). Differ authors: compare
+    /// `old_desc.fts` with `new_desc.fts` using `PartialEq` — any difference
+    /// in `column`, `source`, or `dictionary` requires a column reconstruction.
+    pub fts: Option<FtsDescriptor>,
 }
 
 inventory::collect!(ModelDescriptor);
+
+/// Full descriptor for a registered Postgres enum type — collected via `inventory::submit!`.
+///
+/// `#[derive(DjogiEnum)]` emits one `inventory::submit!(EnumDescriptor { ... })` per enum.
+/// The Phase 7 migration differ consumes these via `inventory::iter::<EnumDescriptor>()` to
+/// emit `CREATE TYPE <postgres_type> AS ENUM (...)` DDL statements.
+///
+/// # Layout
+///
+/// - `type_name` — Rust type name as a string (`"VehicleStatus"`). Used by the migration
+///   differ and `djogi docs` to identify the origin type.
+/// - `postgres_type` — Postgres type name from `#[djogi_enum(name = "...")]`
+///   (`"vehicle_status"`). This is the value passed to `CREATE TYPE ... AS ENUM`.
+/// - `variants` — mapped string labels in declaration order. These are the wire values that
+///   appear in the Postgres `ENUM` definition and in every serialized row.
+///
+/// Phase 7 owns DDL emission; Phase 5 only supplies the descriptor so the collector is
+/// populated and ready for migration consumers.
+#[derive(Debug)]
+pub struct EnumDescriptor {
+    /// Rust type name — e.g. `"VehicleStatus"`.
+    pub type_name: &'static str,
+    /// Postgres enum type name — e.g. `"vehicle_status"`.
+    pub postgres_type: &'static str,
+    /// Mapped variant strings in declaration order — e.g. `&["active", "in_maintenance", "decommissioned"]`.
+    pub variants: &'static [&'static str],
+}
+
+inventory::collect!(EnumDescriptor);

@@ -191,6 +191,32 @@ pub fn expand(
         .cloned()
         .collect();
 
+    // Collect user field types in parallel with user_fields so we can identify
+    // which fields are Tracked<T>. The i-th entry in user_field_types corresponds
+    // to the i-th entry in user_fields.
+    let user_field_types: Vec<_> = struct_item
+        .fields
+        .iter()
+        .skip(n_framework)
+        .map(|f| f.ty.clone())
+        .collect();
+
+    // Returns true when a `syn::Type` is `Tracked<…>` (or any fully-qualified
+    // spelling: `djogi::Tracked<…>`, `::djogi::Tracked<…>`,
+    // `djogi::prelude::Tracked<…>`). Detection is by last-segment ident only —
+    // the same approach used for `ForeignKey` detection in `attrs.rs`.
+    // A user-defined type literally named `Tracked` would shadow this; that
+    // trade-off matches the existing ForeignKey convention and is acceptable.
+    let is_tracked = |ty: &syn::Type| -> bool {
+        let syn::Type::Path(syn::TypePath { path, .. }) = ty else {
+            return false;
+        };
+        path.segments
+            .last()
+            .map(|seg| seg.ident == "Tracked")
+            .unwrap_or(false)
+    };
+
     let n_user = user_fields.len();
 
     // -------------------------------------------------------------------------
@@ -256,63 +282,132 @@ pub fn expand(
         .collect();
 
     // -------------------------------------------------------------------------
-    // `save` SQL: UPDATE with user fields + SQL-side `updated_at = now()`,
-    // WHERE id = $M.
+    // `save` — dirty-aware SqlAccumulator-based SET emission (Task 2).
     //
-    // Parameters: $1..$n_user = user fields, $n_user+1 = id.
+    // The save() body now builds the SET list at runtime using SqlAccumulator
+    // so it can conditionally include or skip Tracked<T> fields depending on
+    // their `is_dirty()` flag. Non-Tracked fields are unconditional (always
+    // emitted).
+    //
+    // Two shapes are emitted per user field at macro-expansion time:
+    //
+    // 1. Tracked field — runtime-conditional:
+    //      if self.<field>.is_dirty() {
+    //          if __first { __first = false; } else { __acc.push_sql(", "); }
+    //          __acc.push_sql("<col> = ");
+    //          __acc.push_bind((*self.<field>).clone());
+    //      }
+    //
+    // 2. Non-Tracked field — always emitted (behavioral regression guard):
+    //      if __first { __first = false; } else { __acc.push_sql(", "); }
+    //      __acc.push_sql("<col> = ");
+    //      __acc.push_bind(self.<field>.clone());
+    //
+    // After the user-field loop:
+    //      if !__first { __acc.push_sql(", "); }   // comma if any user col emitted
+    //      __acc.push_sql("updated_at = now()");   // always present
+    //
+    // If ALL Tracked fields are clean AND there are no non-Tracked fields,
+    // the SQL is `UPDATE t SET updated_at = now() WHERE id = $1 RETURNING …`
+    // — no leading comma, valid Postgres.
     //
     // Using Postgres `now()` (not a client-side `OffsetDateTime::now_utc()`
-    // bound as a parameter) keeps the timestamp source consistent with the
-    // column's `DEFAULT now()` on INSERT: all writes use the same server
-    // clock, so `created_at <= updated_at` always holds even across clients
-    // with drifted clocks.
-    //
-    // Zero-user-field edge case: when n_user == 0 the UPDATE has no user
-    // SET clauses — emit only `SET updated_at = now()` to avoid the invalid
-    // `SET , updated_at = now()` (leading comma) SQL.
+    // bound) keeps the timestamp source consistent with the column's
+    // `DEFAULT now()` on INSERT: all writes use the same server clock, so
+    // `created_at <= updated_at` always holds across clients with drifted clocks.
     // -------------------------------------------------------------------------
-    let set_clauses: Vec<String> = user_fields
-        .iter()
-        .enumerate()
-        .map(|(i, f)| format!("{} = ${}", f, i + 1))
-        .collect();
-    let id_param = n_user + 1;
-    let save_sql = if n_user == 0 {
-        format!(
-            "UPDATE {table} SET updated_at = now() WHERE id = ${id_param} RETURNING {column_list}"
-        )
-    } else {
-        format!(
-            "UPDATE {table} SET {set_list}, updated_at = now() WHERE id = ${id_param} RETURNING {column_list}",
-            set_list = set_clauses.join(", "),
-        )
-    };
 
-    // save field params — build &(dyn ToSql + Sync) entries for each user field.
-    // No clone required: RPITIT captures `&self`'s lifetime, so the async block
-    // can borrow `self.#f` across `.await`. Field types need `ToSql` which the
-    // trait's contract already implies.
-    let save_param_entries: Vec<TokenStream> = user_fields
+    // -------------------------------------------------------------------------
+    // Task 3 — version field detection for optimistic locking.
+    //
+    // Find the single `#[field(version)]`-annotated user field (validated
+    // to exist at most once, with type i32 or i64, by `mod.rs`'s
+    // `validate_version_fields`). When present:
+    //
+    // - SET: append `{col} = {col} + 1` (unconditional, after user cols).
+    //   The version field is EXCLUDED from the dirty-aware user-field loop
+    //   below — it always gets its special `col + 1` fragment regardless of
+    //   dirty state.
+    // - WHERE: append `AND {col} = $n` binding the current in-memory value.
+    //   This is the optimistic-lock predicate: if another writer bumped the
+    //   version, the WHERE won't match and Postgres returns 0 rows.
+    // - Zero rows → `DjogiError::LockConflict`.
+    //
+    // When absent (no version field): current behavior (no change).
+    // -------------------------------------------------------------------------
+    let version_field_info: Option<(syn::Ident, String)> =
+        field_attrs.iter().enumerate().find_map(|(i, fa)| {
+            if fa.version {
+                let f = &user_fields[i];
+                let col_name = f.to_string();
+                let col_str = col_name.strip_prefix("r#").unwrap_or(&col_name).to_string();
+                Some((f.clone(), col_str))
+            } else {
+                None
+            }
+        });
+
+    // Build per-field token fragments for the runtime accumulator loop.
+    // Version field is excluded here — it gets its own special SET fragment.
+    let save_set_fragments: Vec<TokenStream> = user_fields
         .iter()
-        .map(|f| {
-            quote! { &self.#f as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
+        .zip(user_field_types.iter())
+        .zip(field_attrs.iter())
+        .filter_map(|((f, ty), fa)| {
+            // Version field has its own SET emission: `col = col + 1`.
+            // Exclude it from the dirty-aware user-field loop.
+            if fa.version {
+                return None;
+            }
+            let col_name = f.to_string();
+            let col_str = col_name.strip_prefix("r#").unwrap_or(&col_name).to_string();
+            let col_eq = format!("{col_str} = ");
+            if is_tracked(ty) {
+                // Tracked<T>: emit only when dirty.
+                // Bind the inner T via `(*self.<f>).clone()` — Deref<Target=T>
+                // so the dereference gives `&T` and clone() gives `T`.
+                Some(quote! {
+                    if self.#f.is_dirty() {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        __acc.push_sql(#col_eq);
+                        __acc.push_bind((*self.#f).clone());
+                    }
+                })
+            } else {
+                // Non-Tracked: unconditional — behavioral regression guard for
+                // models that do not opt into dirty tracking.
+                Some(quote! {
+                    {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        __acc.push_sql(#col_eq);
+                        __acc.push_bind(self.#f.clone());
+                    }
+                })
+            }
         })
         .collect();
 
-    // id entry for the save WHERE clause. HeerId: ToSql encodes as BIGINT via
-    // heeranjid 0.2's postgres_types impl; RanjId and i32 bind directly.
-    let save_id_param = match model_attrs.pk {
-        PkStrategy::HeerId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::RanjId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::Serial => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::None => unreachable!("handled by early return"),
-    };
+    // After save() rehydrates self via RETURNING, walk every Tracked field
+    // and call mark_clean(). `Tracked::new(T)` already constructs with dirty=false
+    // so this is defensive — but required by the Task 2 contract so that future
+    // in-place rehydration changes cannot silently break the invariant.
+    let mark_clean_fragments: Vec<TokenStream> = user_fields
+        .iter()
+        .zip(user_field_types.iter())
+        .filter_map(|(f, ty)| {
+            if is_tracked(ty) {
+                Some(quote! { self.#f.mark_clean(); })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Static prefix for the save accumulator. We begin the SET clause body here.
+    // The save accumulator prefix. The WHERE + RETURNING suffix is appended
+    // dynamically in the save body once we know how many bind slots the SET
+    // list consumed (i.e., `__acc.bind_count() + 1` gives the id's `$n`).
+    let save_acc_prefix = format!("UPDATE {table} SET ");
 
     // -------------------------------------------------------------------------
     // `get` SQL: SELECT * WHERE id = $1. `id` comes in as an owned Self::Pk.
@@ -496,20 +591,129 @@ pub fn expand(
         }
     };
 
-    let save_body = quote! {
-        async move {
-            let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
-                #(#save_param_entries,)*
-                #save_id_param,
-            ];
-            let __raw_row = ctx.__query_one_for_macros(#save_sql, __params).await?;
-            let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
-            *self = row;
-            // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
-            // values (triggers, column defaults), so emission runs AFTER the
-            // `*self = row` rehydration. No-op for non-events models.
-            #emit_outbox_save
-            ::std::result::Result::Ok(())
+    // -------------------------------------------------------------------------
+    // Task 3 — version-aware save body fragments.
+    //
+    // Two shapes depending on whether a version field exists:
+    //
+    // A. No version field (current behavior, preserved): after user-field
+    //    fragments, append `updated_at = now()` and WHERE `id = $n`.
+    //    Use `__query_one_for_macros` (errors on zero rows).
+    //
+    // B. Version field present: append `updated_at = now(), {ver_col} = {ver_col} + 1`
+    //    and WHERE `id = $n AND {ver_col} = $m` binding the current in-memory
+    //    version. Use `__query_opt_for_macros` and map `None` →
+    //    `DjogiError::LockConflict`. `DjogiError::LockConflict` wraps a
+    //    `DbError::other(...)` message-only error — no Postgres SQLSTATE
+    //    comes from a zero-row UPDATE (Postgres returns 0 rows without an
+    //    error code when the WHERE clause matches nothing).
+    // -------------------------------------------------------------------------
+    let save_body = if let Some((ver_ident, ver_col)) = &version_field_info {
+        // Shape B — version-aware save.
+        let ver_set = format!(", {ver_col} = {ver_col} + 1");
+        let ver_where = format!(" AND {ver_col} = ");
+        let ver_conflict_msg =
+            format!("optimistic lock conflict: {ver_col} mismatch in table {table}");
+        quote! {
+            async move {
+                // Build the SET clause dynamically. Tracked<T> fields are only
+                // included when dirty; non-Tracked fields are always included.
+                // The version field is excluded from the dirty loop — it always
+                // gets `{ver_col} = {ver_col} + 1` appended after updated_at.
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+                {
+                    let mut __first = true;
+                    #(#save_set_fragments)*
+                    // `updated_at = now()` always present. Comma if any user col fired.
+                    if !__first { __acc.push_sql(", "); }
+                    __acc.push_sql("updated_at = now()");
+                    // Version counter — always incremented, not dirty-gated.
+                    __acc.push_sql(#ver_set);
+                }
+                // WHERE id = $n AND {ver_col} = $m
+                __acc.push_sql(" WHERE id = ");
+                let __id_val = self.id.clone();
+                __acc.push_bind(__id_val);
+                // Bind current in-memory version for the optimistic-lock predicate.
+                // If DB version != in-memory version, Postgres returns 0 rows.
+                __acc.push_sql(#ver_where);
+                let __ver_val = self.#ver_ident.clone();
+                __acc.push_bind(__ver_val);
+                __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                // Use query_opt: a zero-row UPDATE is not a driver error — Postgres
+                // returns no rows silently when the WHERE predicate matches nothing.
+                // We map None → LockConflict so the caller can branch on it.
+                match ctx.__query_opt_for_macros(&__sql, &__params).await? {
+                    ::std::option::Option::Some(__raw_row) => {
+                        let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
+                        *self = row;
+                        // After `*self = row`, mark every Tracked field clean.
+                        // from_pg_row already constructs Tracked::new (dirty=false),
+                        // but the explicit walk is required by the Task 2 contract.
+                        #(#mark_clean_fragments)*
+                        // Phase 4 Task 6 — outbox after DB-refreshed rehydration.
+                        #emit_outbox_save
+                        ::std::result::Result::Ok(())
+                    }
+                    ::std::option::Option::None => {
+                        // Zero rows updated — DB version has moved ahead of our
+                        // in-memory version. Signal optimistic lock conflict.
+                        ::std::result::Result::Err(
+                            ::djogi::DjogiError::LockConflict(
+                                ::djogi::DbError::other(#ver_conflict_msg)
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    } else {
+        // Shape A — no version field: existing behavior.
+        quote! {
+            async move {
+                // Build the SET clause dynamically. Tracked<T> fields are only
+                // included when dirty; non-Tracked fields are always included.
+                // `__first` tracks whether we have emitted any SET assignment yet
+                // so comma insertion is correct regardless of which fields fire.
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#save_acc_prefix);
+                {
+                    let mut __first = true;
+                    #(#save_set_fragments)*
+                    // `updated_at = now()` is always appended. If any user column
+                    // was emitted above, we need a leading comma; otherwise it is
+                    // the first (and only) assignment.
+                    if !__first { __acc.push_sql(", "); }
+                    __acc.push_sql("updated_at = now()");
+                }
+                // Append WHERE id = $<next> RETURNING <column_list>.
+                // Emit the WHERE prefix as raw SQL, then let push_bind append the
+                // `$n` placeholder and store the id value. RETURNING is appended
+                // as raw SQL AFTER the bind so it follows the positional slot.
+                __acc.push_sql(" WHERE id = ");
+                // Clone id so push_bind (requires 'static) can take ownership.
+                // HeerId, RanjId, and i32 (Serial) are all Clone + ToSql + Send + Sync + 'static.
+                let __id_val = self.id.clone();
+                __acc.push_bind(__id_val);
+                __acc.push_sql(::std::concat!(" RETURNING ", #column_list));
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                let __raw_row = ctx.__query_one_for_macros(&__sql, &__params).await?;
+                let row: Self = <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(&__raw_row)?;
+                *self = row;
+                // After `*self = row`, walk every Tracked field and call mark_clean().
+                // `from_pg_row` uses `Tracked::new(T)` which already starts clean,
+                // so this is defensive — but required by the Task 2 contract.
+                #(#mark_clean_fragments)*
+                // Phase 4 Task 6 — outbox payload must reflect the DB-refreshed
+                // values (triggers, column defaults), so emission runs AFTER the
+                // `*self = row` rehydration. No-op for non-events models.
+                #emit_outbox_save
+                ::std::result::Result::Ok(())
+            }
         }
     };
 
@@ -1203,12 +1407,547 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // Phase 5 Task 10 — `_insecurely()` suffix methods.
+    //
+    // Emitted ONLY when `#[model(tenant_key = "...")]` is declared. For every
+    // other model this block is empty — no inherent methods, no associated
+    // items, no compile-time surface at all.
+    //
+    // ## Bypass mechanism
+    //
+    // RLS is enforced at the Postgres level via a `CREATE POLICY ... USING`
+    // expression that checks `col = current_setting('app.tenant_id', true)::T`.
+    // Issuing `SET LOCAL row_security = off` inside a transaction disables that
+    // check for the duration of the transaction. Outside `atomic()` `SET LOCAL`
+    // silently no-ops (Postgres emits a WARNING but accepts the statement), so
+    // the bypass only takes effect when the caller wraps the call in `atomic()`.
+    //
+    // ## `#[track_caller]` + caller capture
+    //
+    // For async methods we use the "sync wrapper returns impl Future" pattern:
+    //
+    //   #[track_caller]
+    //   pub fn method_insecurely(...) -> impl Future<...> {
+    //       let __caller = ::std::panic::Location::caller();
+    //       async move {
+    //           ::djogi::__private::tracing::warn!(..., caller = %__caller, ...);
+    //           ...
+    //       }
+    //   }
+    //
+    // `Location::caller()` is resolved in the sync preamble so it reflects the
+    // user's call site, not an internal async-block location. The outer `fn`
+    // carries `#[track_caller]` so Rust traces through it during resolution.
+    //
+    // ## `objects_insecurely` (sync)
+    //
+    // Returns `Self::objects()` — an unexecuted lazy QuerySet. The bypass
+    // (`SET LOCAL row_security = off`) cannot be issued here because there is no
+    // context at queryset-construction time; it fires later when a terminal
+    // method (`.fetch_all(ctx)`, etc.) runs. The caller must issue
+    // `ctx.raw_execute("SET LOCAL row_security = off", &[]).await?` inside an
+    // `atomic()` scope before calling the terminal method. This limitation is
+    // documented in the method's rustdoc.
+    //
+    // ## Path routing
+    //
+    // `tracing::warn!` routes through `::djogi::__private::tracing::warn!` —
+    // same convention as `inventory`, `postgres_types`, and `futures` in this
+    // file.
+    //
+    // ## `bulk_update_insecurely` bound divergence vs `bulk_update`
+    //
+    // `bulk_update` is a plain `async fn` where the compiler infers Send / 'ctx
+    // on the captured closure. `bulk_update_insecurely` cannot use `async fn`
+    // because `#[track_caller]` does not reflect the user's call site across
+    // an `async fn` boundary — we must use the sync-wrapper + `impl Future +
+    // Send + 'ctx` shape. That return type forces `F: Send + 'ctx` on the
+    // captured closure. `A` is only the return type of `F` and never lives
+    // inside the captured future, so it stays unbounded — matching
+    // `bulk_update`'s shape for that parameter. The emitted rustdoc spells
+    // out this rationale so users who hit an unexpected bound error at the
+    // call site can see why the two methods diverge.
+    // -------------------------------------------------------------------------
+    let model_name_str = name.to_string();
+    let insecurely_impl = if model_attrs.tenant_key.is_some() {
+        // Bulk insert prefix / returning suffix reuse the values already computed.
+        let insecure_bulk_insert_prefix =
+            format!("INSERT INTO {table} ({bulk_insert_col_list}) VALUES ");
+        let insecure_bulk_returning_suffix = format!(" RETURNING {column_list}");
+
+        // --- bulk_create_insecurely (n_user == 0: error; n_user > 0: real body) ---
+        let bulk_create_insecurely_body = if n_user == 0 {
+            quote! {
+                /// Not supported for zero-user-field models.
+                ///
+                /// A zero-user-field table has no non-framework columns — emitting
+                /// `INSERT INTO t () VALUES ()` is invalid SQL. Use
+                /// [`create_insecurely`] row-by-row instead.
+                ///
+                /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
+                /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
+                /// on a pool-backed context the call still executes but RLS remains active.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn bulk_create_insecurely(
+                    _ctx: &mut ::djogi::context::DjogiContext,
+                    _rows: ::std::vec::Vec<Self>,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+                > + ::std::marker::Send {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "bulk_create_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                            "bulk_create_insecurely requires at least one non-framework column".to_string()
+                        ))
+                    }
+                }
+            }
+        } else {
+            quote! {
+                /// Bulk-insert rows, bypassing the RLS tenant predicate.
+                ///
+                /// One `INSERT` round trip; framework columns are populated
+                /// by column defaults. The RLS bypass is issued via
+                /// `SET LOCAL row_security = off` before the insert.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the statement still executes but RLS remains active
+                /// because `SET LOCAL` is a no-op outside a transaction.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn bulk_create_insecurely<'ctx>(
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                    rows: ::std::vec::Vec<Self>,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "bulk_create_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        if rows.is_empty() {
+                            return ::std::result::Result::Ok(::std::vec::Vec::new());
+                        }
+                        let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insecure_bulk_insert_prefix);
+                        {
+                            let mut __first = true;
+                            for row in rows.into_iter() {
+                                if __first { __first = false; } else { __acc.push_sql(", "); }
+                                #per_row_binds
+                            }
+                        }
+                        __acc.push_sql(#insecure_bulk_returning_suffix);
+                        let (__sql, __binds) = __acc.into_parts();
+                        let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                            __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                        let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                        let created: ::std::vec::Vec<Self> = __raw_rows
+                            .iter()
+                            .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+                            .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+                        ::std::result::Result::Ok(created)
+                    }
+                }
+            }
+        };
+
+        // --- bulk_upsert_insecurely (n_user == 0: error; n_user > 0: real body) ---
+        let bulk_upsert_insecurely_body = if n_user == 0 {
+            quote! {
+                /// Not supported for zero-user-field models.
+                ///
+                /// See [`bulk_create_insecurely`] for the rationale.
+                ///
+                /// The `_insecurely` suffix means RLS tenant isolation is bypassed.
+                /// Bypass only takes effect inside [`atomic()`](::djogi::transaction::atomic);
+                /// on a pool-backed context the call still executes but RLS remains active.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[doc(hidden)]
+                #[track_caller]
+                pub fn bulk_upsert_insecurely(
+                    _ctx: &mut ::djogi::context::DjogiContext,
+                    _rows: ::std::vec::Vec<Self>,
+                    _conflict_cols: &[&'static str],
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+                > + ::std::marker::Send {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "bulk_upsert_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                            "bulk_upsert_insecurely requires at least one non-framework column".to_string()
+                        ))
+                    }
+                }
+            }
+        } else {
+            let insecure_upsert_prefix =
+                format!("INSERT INTO {table} (id, {bulk_insert_col_list}) VALUES ");
+            let insecure_do_update =
+                format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING {column_list}");
+            let insecure_valid_cols_lit = bulk_valid_columns.iter().map(|s| quote! { #s });
+
+            // Per-row binds for the upsert path (same as `upsert_per_row_binds`).
+            let insecure_upsert_per_row_binds: TokenStream = {
+                let pk_bind = match model_attrs.pk {
+                    PkStrategy::HeerId => quote! { __acc.push_bind(row.id.as_i64()); },
+                    PkStrategy::RanjId => quote! { __acc.push_bind(row.id); },
+                    PkStrategy::Serial => quote! { __acc.push_bind(row.id); },
+                    PkStrategy::None => unreachable!("handled by early return"),
+                };
+                let uf = user_fields.iter();
+                quote! {
+                    __acc.push_sql("(");
+                    #pk_bind
+                    #(
+                        __acc.push_sql(", ");
+                        __acc.push_bind(row.#uf);
+                    )*
+                    __acc.push_sql(")");
+                }
+            };
+
+            quote! {
+                /// Bulk-upsert rows, bypassing the RLS tenant predicate.
+                ///
+                /// Identical to [`bulk_upsert`] but issues
+                /// `SET LOCAL row_security = off` before the statement.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the statement still executes but RLS remains active.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn bulk_upsert_insecurely<'ctx>(
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                    rows: ::std::vec::Vec<Self>,
+                    conflict_cols: &'ctx [&'static str],
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "bulk_upsert_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        if rows.is_empty() {
+                            return ::std::result::Result::Ok(::std::vec::Vec::new());
+                        }
+                        if conflict_cols.is_empty() {
+                            return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                                "bulk_upsert_insecurely requires at least one conflict column".to_string()
+                            ));
+                        }
+                        const __VALID_COLS: &[&str] = &[ #(#insecure_valid_cols_lit),* ];
+                        for col in conflict_cols {
+                            if !__VALID_COLS.contains(col) {
+                                return ::std::result::Result::Err(::djogi::DjogiError::Validation(
+                                    ::std::format!(
+                                        "unknown conflict column '{}' for table {}",
+                                        col,
+                                        #table,
+                                    )
+                                ));
+                            }
+                        }
+                        let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insecure_upsert_prefix);
+                        {
+                            let mut __first = true;
+                            for row in rows.into_iter() {
+                                if __first { __first = false; } else { __acc.push_sql(", "); }
+                                #insecure_upsert_per_row_binds
+                            }
+                        }
+                        __acc.push_sql(" ON CONFLICT (");
+                        {
+                            let mut __first = true;
+                            for col in conflict_cols {
+                                if __first { __first = false; } else { __acc.push_sql(", "); }
+                                __acc.push_sql(*col);
+                            }
+                        }
+                        __acc.push_sql(")");
+                        __acc.push_sql(#insecure_do_update);
+                        let (__sql, __binds) = __acc.into_parts();
+                        let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                            __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                        let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                        let created: ::std::vec::Vec<Self> = __raw_rows
+                            .iter()
+                            .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+                            .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+                        ::std::result::Result::Ok(created)
+                    }
+                }
+            }
+        };
+
+        quote! {
+            impl #impl_generics #name #ty_generics #where_clause {
+                /// Fetch a single row by primary key, bypassing the RLS tenant predicate.
+                ///
+                /// Issues `SET LOCAL row_security = off` before the SELECT to
+                /// lift the per-row policy for this statement.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the call still executes but RLS remains active because
+                /// `SET LOCAL` is a no-op outside a transaction.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call to aid audit trails.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn get_insecurely<'ctx>(
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                    id: <Self as ::djogi::model::Model>::Pk,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "get_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        <Self as ::djogi::model::Model>::get(ctx, id).await
+                    }
+                }
+
+                /// Insert a new row, bypassing the RLS `WITH CHECK` tenant predicate.
+                ///
+                /// Issues `SET LOCAL row_security = off` before the INSERT so the
+                /// `WITH CHECK` clause on the policy is not evaluated — the row is
+                /// written regardless of whether its tenant-key field matches
+                /// `app.tenant_id`.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the call still executes but RLS remains active.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn create_insecurely<'ctx>(
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                    value: Self,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<Self, ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "create_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        <Self as ::djogi::model::Model>::create(ctx, value).await
+                    }
+                }
+
+                /// Save (UPDATE) this row, bypassing the RLS tenant predicate.
+                ///
+                /// Issues `SET LOCAL row_security = off` before the UPDATE so both
+                /// the `USING` (row visibility) and `WITH CHECK` (write restriction)
+                /// clauses are lifted for this statement.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the call still executes but RLS remains active.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn save_insecurely<'ctx>(
+                    &'ctx mut self,
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<(), ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "save_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        <Self as ::djogi::model::Model>::save(self, ctx).await
+                    }
+                }
+
+                /// Delete this row, bypassing the RLS tenant predicate.
+                ///
+                /// Issues `SET LOCAL row_security = off` before the DELETE so the
+                /// `USING` clause on the policy is lifted for this statement.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the call still executes but RLS remains active.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn delete_insecurely<'ctx>(
+                    self,
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<(), ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "delete_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        <Self as ::djogi::model::Model>::delete(self, ctx).await
+                    }
+                }
+
+                /// Return a lazy `QuerySet<Self>` without any tenant predicate.
+                ///
+                /// This method itself is synchronous — it just constructs the
+                /// queryset; no SQL is issued until a terminal method (`.fetch_all`,
+                /// `.fetch_one`, etc.) is called.
+                ///
+                /// **The `SET LOCAL row_security = off` bypass cannot be issued
+                /// here** because there is no `DjogiContext` at queryset-construction
+                /// time. To bypass RLS on the fetch, the caller must issue
+                /// `ctx.raw_execute("SET LOCAL row_security = off", &[]).await?`
+                /// inside an `atomic()` scope _before_ calling the terminal method.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted synchronously when the queryset is constructed.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                #[track_caller]
+                pub fn objects_insecurely() -> ::djogi::query::QuerySet<Self> {
+                    ::djogi::__private::tracing::warn!(
+                        model = #model_name_str,
+                        method = "objects_insecurely",
+                        caller = %::std::panic::Location::caller(),
+                        "insecure method bypasses tenant scope",
+                    );
+                    <Self as ::djogi::model::Model>::objects()
+                }
+
+                /// Bulk-update rows by primary key, bypassing the RLS tenant predicate.
+                ///
+                /// Issues `SET LOCAL row_security = off` before the UPDATE so the
+                /// policy's `USING` clause does not filter the target rows.
+                ///
+                /// **Bypass only takes effect inside
+                /// [`atomic()`](::djogi::transaction::atomic).** On a pool-backed
+                /// context the call still executes but RLS remains active.
+                ///
+                /// A `tracing::warn!` with `model`, `method`, and `caller` fields
+                /// is emitted on every call.
+                ///
+                /// **Audit**: every bypass call site is grep-able via `_insecurely`.
+                ///
+                /// # Type-parameter bounds
+                ///
+                /// The `F: Send + 'ctx` bound is tighter than [`bulk_update`]'s
+                /// because the sync-wrapper + `#[track_caller]` pattern requires
+                /// `impl Future + Send + 'ctx` as the return type, which in turn
+                /// requires every value captured into the future to satisfy it.
+                /// `A` is only the return type of `F` — it never lives inside the
+                /// future — so it keeps its unbounded shape.
+                ///
+                /// `bulk_update`'s `async fn` surface infers bounds implicitly — we
+                /// cannot use `async fn` here because `#[track_caller]` would not
+                /// reflect the user's call site.
+                #[track_caller]
+                pub fn bulk_update_insecurely<'ctx, F, A>(
+                    ctx: &'ctx mut ::djogi::context::DjogiContext,
+                    ids: ::std::vec::Vec<<Self as ::djogi::model::Model>::Pk>,
+                    closure: F,
+                ) -> impl ::std::future::Future<
+                    Output = ::std::result::Result<u64, ::djogi::DjogiError>,
+                > + ::std::marker::Send + 'ctx
+                where
+                    F: ::std::ops::FnOnce(<Self as ::djogi::model::Model>::Fields) -> A
+                        + ::std::marker::Send + 'ctx,
+                    A: ::djogi::query::IntoAssignments,
+                {
+                    let __caller = ::std::panic::Location::caller();
+                    async move {
+                        ::djogi::__private::tracing::warn!(
+                            model = #model_name_str,
+                            method = "bulk_update_insecurely",
+                            caller = %__caller,
+                            "insecure method bypasses tenant scope",
+                        );
+                        ctx.raw_execute("SET LOCAL row_security = off", &[]).await?;
+                        Self::bulk_update(ctx, ids, closure).await
+                    }
+                }
+
+                #bulk_create_insecurely_body
+
+                #bulk_upsert_insecurely_body
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // -------------------------------------------------------------------------
     // Assemble the full impl block.
     // -------------------------------------------------------------------------
     quote! {
         #sequence_compile_err
         #create_with_id_impl
         #bulk_methods_impl
+        #insecurely_impl
 
         // Satisfy the `Model: __sealed::Sealed` supertrait. The sealed
         // module is `#[doc(hidden)] pub`, so downstream hand-rolled

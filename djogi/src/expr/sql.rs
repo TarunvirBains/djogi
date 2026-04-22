@@ -137,24 +137,84 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // wrapper carries an inert placeholder for that variant,
             // never a real column reference.
             match op {
-                AggOp::Count => acc.push_sql("COUNT("),
-                AggOp::CountStar => acc.push_sql("COUNT("),
-                AggOp::Sum => acc.push_sql("SUM("),
-                AggOp::Avg => acc.push_sql("AVG("),
-                AggOp::Min => acc.push_sql("MIN("),
-                AggOp::Max => acc.push_sql("MAX("),
-            };
-            if matches!(op, AggOp::CountStar) {
-                acc.push_sql("*");
-            } else {
-                emit_expr(acc, arg);
+                AggOp::Count => {
+                    acc.push_sql("COUNT(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::CountStar => {
+                    acc.push_sql("COUNT(*)");
+                }
+                AggOp::Sum => {
+                    acc.push_sql("SUM(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::Avg => {
+                    acc.push_sql("AVG(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::Min => {
+                    acc.push_sql("MIN(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::Max => {
+                    acc.push_sql("MAX(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::ArrayAgg => {
+                    // ARRAY_AGG(col) — collects non-null values into a
+                    // Postgres array. Decoded as Vec<V> at the Rust level.
+                    acc.push_sql("ARRAY_AGG(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::JsonAgg => {
+                    // JSONB_AGG(col) — Djogi standardises on JSONB for all
+                    // JSON wire and storage formats, so JSON_AGG is never
+                    // emitted. See docs/spec/decisions.md.
+                    acc.push_sql("JSONB_AGG(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::StringAgg(sep) => {
+                    // STRING_AGG(col, $sep) — separator is bound as a
+                    // parameter to guard against injection from a
+                    // runtime-computed separator string. The clone is
+                    // required because `sep` is `&String` (borrowed from
+                    // the ExprNode) and `push_bind` takes owned values.
+                    acc.push_sql("STRING_AGG(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(", ");
+                    acc.push_bind(sep.clone());
+                    acc.push_sql(")");
+                }
+                AggOp::BoolAnd => {
+                    // BOOL_AND(col) — true if every non-null value is true.
+                    acc.push_sql("BOOL_AND(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
+                AggOp::BoolOr => {
+                    // BOOL_OR(col) — true if at least one non-null value is
+                    // true.
+                    acc.push_sql("BOOL_OR(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(")");
+                }
             }
-            acc.push_sql(")");
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
             // aggregate ignores rows where `cond` is false. `filter`
             // is None on the bare call site; Some(cond) when
             // `AggregateExpr::filter(...)` was chained.
+            //
+            // Note: STRING_AGG with FILTER is valid Postgres syntax and
+            // works here because the FILTER clause attaches to the whole
+            // aggregate function expression after the closing paren.
             if let Some(cond) = filter {
                 acc.push_sql(" FILTER (WHERE ");
                 emit_expr(acc, cond);
@@ -205,6 +265,13 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             emit_subquery(acc, sub);
             acc.push_sql(")");
         }
+        ExprNode::ArrayLength { column } => {
+            // array_length(column, 1) — dimension is always 1 (Djogi arrays
+            // are 1-dimensional; multi-dimensional arrays are not supported).
+            acc.push_sql("array_length(");
+            acc.push_sql(column);
+            acc.push_sql(", 1)");
+        }
         ExprNode::OuterRef { column } => {
             // Outer-scope column reference — emitted unqualified.
             // Postgres resolves the name against the enclosing query
@@ -225,6 +292,76 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // [`crate::ident::assert_plain_ident`] before the value
             // lands here. Safe to push as a raw SQL token.
             acc.push_sql(column);
+        }
+        ExprNode::IntervalLiteral { microseconds } => {
+            // INTERVAL '{N} microseconds' — the full precision of
+            // `time::Duration` as a Postgres interval literal. The
+            // microsecond count was saturating-clamped to i64 at ExprNode
+            // construction time via `expr::literal::saturating_micros`
+            // (Durations outside ±292,277 years encode as i64::MAX/MIN).
+            // The formatted string consists solely of a decimal integer and
+            // the ASCII keyword "microseconds" — no user-controlled text
+            // reaches this arm, so pushing raw SQL is safe.
+            let literal = format!("INTERVAL '{microseconds} microseconds'");
+            acc.push_sql(&literal);
+        }
+
+        ExprNode::TsMatch {
+            column,
+            dictionary,
+            query_text,
+        } => {
+            // `<col> @@ to_tsquery('<dictionary>', $n)`
+            //
+            // `column` is a `&'static str` validated at FtsFieldRef
+            // construction via `assert_plain_ident`; safe to push as raw SQL.
+            // `dictionary` is a Postgres identifier validated at macro parse
+            // time via byte-level checks; embedded literally (single-quoted)
+            // as `to_tsquery('<dictionary>', ...)`.
+            // `query_text` is user-supplied and therefore ALWAYS bound as a
+            // parameter — never interpolated into the SQL string.
+            acc.push_sql(column);
+            acc.push_sql(" @@ to_tsquery('");
+            acc.push_sql(dictionary);
+            acc.push_sql("', ");
+            acc.push_bind(query_text.clone());
+            acc.push_sql(")");
+        }
+
+        ExprNode::TsRank {
+            column,
+            dictionary,
+            query_text,
+        } => {
+            // `ts_rank(<col>, to_tsquery('<dictionary>', $n))`
+            //
+            // The `ts_rank` function scores each document against the query;
+            // higher score = more relevant. Bind the query text as a parameter.
+            acc.push_sql("ts_rank(");
+            acc.push_sql(column);
+            acc.push_sql(", to_tsquery('");
+            acc.push_sql(dictionary);
+            acc.push_sql("', ");
+            acc.push_bind(query_text.clone());
+            acc.push_sql("))");
+        }
+
+        ExprNode::TsRankCd {
+            column,
+            dictionary,
+            query_text,
+        } => {
+            // `ts_rank_cd(<col>, to_tsquery('<dictionary>', $n))`
+            //
+            // Cover-density ranking — weighs term proximity more heavily
+            // than the standard `ts_rank`. Same bind-parameter pattern.
+            acc.push_sql("ts_rank_cd(");
+            acc.push_sql(column);
+            acc.push_sql(", to_tsquery('");
+            acc.push_sql(dictionary);
+            acc.push_sql("', ");
+            acc.push_bind(query_text.clone());
+            acc.push_sql("))");
         }
     }
 }

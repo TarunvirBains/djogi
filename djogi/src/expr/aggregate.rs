@@ -323,6 +323,146 @@ where
     }
 }
 
+// ── ARRAY_AGG / JSON_AGG ───────────────────────────────────────────────────
+//
+// Available on every `FieldRef<M, V>` regardless of `V` — Postgres can
+// ARRAY_AGG / JSONB_AGG any column type. The return type:
+// - `array_agg()` → `AggregateExpr<Vec<V>>`: the annotate decode path calls
+//   `row.try_get::<_, Vec<V>>(alias)`, which postgres-types handles via its
+//   built-in array decoding when `V: FromSql`.
+// - `json_agg()` → `AggregateExpr<serde_json::Value>`: JSONB_AGG always
+//   produces a JSON array; decoding into `serde_json::Value` covers every
+//   element type without requiring `V`-specific codec knowledge.
+
+impl<M: Model, V> FieldRef<M, V> {
+    /// `ARRAY_AGG(column)` — collects non-null column values into a Postgres
+    /// array, returned as `Vec<V>` at the Rust level.
+    ///
+    /// postgres-types decodes a Postgres array column into `Vec<V>` when `V`
+    /// implements `FromSql`; all scalar column types Djogi ships satisfy that
+    /// bound. If `V` does not implement `FromSql`, the failure is a runtime
+    /// decode error at fetch time, not a compile error here, because
+    /// `FieldRef` is constructed at macro-expansion time with a type the
+    /// framework knows is decodable.
+    ///
+    /// The aggregate emits `ARRAY_AGG(column)` without any narrowing cast.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn array_agg(self) -> AggregateExpr<Vec<V>> {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op: AggOp::ArrayAgg,
+            arg: Box::new(ExprNode::Field {
+                column: self.column(),
+            }),
+            filter: None,
+            cast_to: None,
+        })
+    }
+
+    /// `JSONB_AGG(column)` — aggregates column values into a JSON array,
+    /// returned as `serde_json::Value`.
+    ///
+    /// Djogi standardises on JSONB for all JSON storage and wire formats
+    /// (see `docs/spec/decisions.md`), so `JSONB_AGG` is emitted rather
+    /// than `JSON_AGG`. The returned `serde_json::Value` is always a
+    /// `Value::Array` wrapping the per-row column values; callers can
+    /// pattern-match or call `.as_array()` to iterate.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn json_agg(self) -> AggregateExpr<serde_json::Value> {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op: AggOp::JsonAgg,
+            arg: Box::new(ExprNode::Field {
+                column: self.column(),
+            }),
+            filter: None,
+            cast_to: None,
+        })
+    }
+}
+
+// ── STRING_AGG ──────────────────────────────────────────────────────────────
+//
+// Gated on `V = String` — string concatenation is only meaningful on TEXT
+// columns. The separator is user-supplied at call time and bound as a
+// parameter (never interpolated into the SQL string) to guard against
+// injection from a runtime-computed separator value.
+
+impl<M: Model> FieldRef<M, String> {
+    /// `STRING_AGG(column, sep)` — concatenates non-null string values with
+    /// a separator, returned as `String`.
+    ///
+    /// The separator is bound as a positional parameter (`$N`) rather than
+    /// interpolated directly into the SQL string, which means even a separator
+    /// that contains SQL metacharacters is handled safely by the Postgres wire
+    /// protocol.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Post::objects()
+    ///     .annotate(|f| f.title().string_agg(", "))
+    ///     .fetch_all(&mut ctx).await?
+    /// // → Vec<(Post, String)>  where the String is "Post A, Post B, ..."
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn string_agg(self, sep: impl Into<String>) -> AggregateExpr<String> {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op: AggOp::StringAgg(sep.into()),
+            arg: Box::new(ExprNode::Field {
+                column: self.column(),
+            }),
+            filter: None,
+            cast_to: None,
+        })
+    }
+}
+
+// ── BOOL_AND / BOOL_OR ──────────────────────────────────────────────────────
+//
+// Gated on `V = bool` — boolean aggregates are only meaningful on BOOLEAN
+// columns. Postgres emits NULL for an empty set; the typed surface returns
+// `bool` which will be a runtime decode error on an empty grouping. Callers
+// that need NULL-safe semantics wrap `Out` in `Option<bool>` themselves at
+// the call site by using `ctx.raw_scalar` until a typed `Option<V>` decode
+// path lands.
+
+impl<M: Model> FieldRef<M, bool> {
+    /// `BOOL_AND(column)` — returns `true` if every non-null value in the
+    /// column is `true`, `false` if any non-null value is `false`.
+    ///
+    /// Returns `NULL` (decoded as a runtime error on the non-`Option` return
+    /// type) when the grouping has no rows. Callers operating on potentially
+    /// empty groups should use `ctx.raw_scalar` with `COALESCE(BOOL_AND(...),
+    /// true)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bool_and(self) -> AggregateExpr<bool> {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op: AggOp::BoolAnd,
+            arg: Box::new(ExprNode::Field {
+                column: self.column(),
+            }),
+            filter: None,
+            cast_to: None,
+        })
+    }
+
+    /// `BOOL_OR(column)` — returns `true` if at least one non-null value in
+    /// the column is `true`, `false` if all non-null values are `false`.
+    ///
+    /// Same NULL behaviour as [`FieldRef::bool_and`] — empty groups produce
+    /// NULL which decodes as a runtime error on the non-`Option` surface.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bool_or(self) -> AggregateExpr<bool> {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op: AggOp::BoolOr,
+            arg: Box::new(ExprNode::Field {
+                column: self.column(),
+            }),
+            filter: None,
+            cast_to: None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Emitter unit tests — each aggregate variant produces the
@@ -486,5 +626,56 @@ mod tests {
             !sql.contains("amount < "),
             "first filter should be gone: {sql}"
         );
+    }
+
+    #[test]
+    fn emit_array_agg() {
+        let f: FieldRef<Txn, String> = FieldRef::new("tag");
+        let agg = f.array_agg();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &agg.node);
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "ARRAY_AGG(tag)", "got: {sql}");
+    }
+
+    #[test]
+    fn emit_json_agg() {
+        let f: FieldRef<Txn, String> = FieldRef::new("tag");
+        let agg = f.json_agg();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &agg.node);
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "JSONB_AGG(tag)", "got: {sql}");
+    }
+
+    #[test]
+    fn emit_string_agg_binds_separator() {
+        let f: FieldRef<Txn, String> = FieldRef::new("tag");
+        let agg = f.string_agg(", ");
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &agg.node);
+        let sql = qb.sql();
+        // Column is bare, separator is a bound parameter ($1).
+        assert!(sql.contains("STRING_AGG(tag, $1)"), "got: {sql}");
+    }
+
+    #[test]
+    fn emit_bool_and() {
+        let f: FieldRef<Txn, bool> = FieldRef::new("active");
+        let agg = f.bool_and();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &agg.node);
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "BOOL_AND(active)", "got: {sql}");
+    }
+
+    #[test]
+    fn emit_bool_or() {
+        let f: FieldRef<Txn, bool> = FieldRef::new("active");
+        let agg = f.bool_or();
+        let mut qb = SqlAccumulator::new("");
+        emit_expr(&mut qb, &agg.node);
+        let sql = qb.sql();
+        assert_eq!(sql.trim(), "BOOL_OR(active)", "got: {sql}");
     }
 }

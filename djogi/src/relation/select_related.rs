@@ -533,6 +533,7 @@ mod tests {
         rationale: None,
         indexes: &[],
         is_through: false,
+        fts: None,
     };
 
     static FUEL_TYPES_DESC: ModelDescriptor = ModelDescriptor {
@@ -564,6 +565,7 @@ mod tests {
         rationale: None,
         indexes: &[],
         is_through: false,
+        fts: None,
     };
 
     fn owners_descriptor() -> &'static ModelDescriptor {

@@ -111,6 +111,18 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::Null => {
             acc.push_null_literal();
         }
+        FilterValue::ArrayString(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayI32(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayI64(v) => {
+            acc.push_bind(v);
+        }
+        FilterValue::ArrayBool(v) => {
+            acc.push_bind(v);
+        }
         FilterValue::List(_) | FilterValue::Pair(_, _) => {
             // These are handled at the operator level (see `emit_leaf`) and
             // never reach this function. Unreachable signals a Djogi
@@ -169,12 +181,20 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::Decimal(d) => {
             acc.push_bind(d);
         }
-        FilterValue::Null | FilterValue::List(_) | FilterValue::Pair(_, _) => {
+        FilterValue::Null
+        | FilterValue::List(_)
+        | FilterValue::Pair(_, _)
+        | FilterValue::ArrayString(_)
+        | FilterValue::ArrayI32(_)
+        | FilterValue::ArrayI64(_)
+        | FilterValue::ArrayBool(_) => {
             // Same reasoning as `push_filter_value`: enum is
             // `#[non_exhaustive]` at the crate boundary but exhaustive
             // within this crate. Any new variant added to `FilterValue`
             // must also be taught to bind here.
-            unreachable!("nested/null FilterValue in IN list — typed FieldRef API prevents this")
+            unreachable!(
+                "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
+            )
         }
     }
 }
@@ -409,6 +429,170 @@ pub(crate) fn emit_condition(
         // interaction, deferred to Task 5).
         Condition::Expr(expr) => {
             crate::expr::sql::emit_expr(acc, &expr.node);
+        }
+        // ── Array operators (Phase 5 Task 5) ─────────────────────────────
+        //
+        // All three operators take the form `col OP $n` where `$n` is a
+        // bound Postgres array parameter. `parent_table` qualification is
+        // intentionally forwarded for the column name but array operators
+        // are always single-table (no cross-join semantics), so the
+        // `parent_table` prefix is cosmetic here — it matches the behaviour
+        // of every other `Leaf` arm.
+        Condition::ArrayContains(leaf) => {
+            if let Some(table) = parent_table {
+                acc.push_sql(table);
+                acc.push_sql(".");
+            }
+            acc.push_sql(leaf.column);
+            acc.push_sql(" @> ");
+            push_filter_value(acc, leaf.values);
+        }
+        Condition::ArrayContainedBy(leaf) => {
+            if let Some(table) = parent_table {
+                acc.push_sql(table);
+                acc.push_sql(".");
+            }
+            acc.push_sql(leaf.column);
+            acc.push_sql(" <@ ");
+            push_filter_value(acc, leaf.values);
+        }
+        Condition::ArrayOverlap(leaf) => {
+            if let Some(table) = parent_table {
+                acc.push_sql(table);
+                acc.push_sql(".");
+            }
+            acc.push_sql(leaf.column);
+            acc.push_sql(" && ");
+            push_filter_value(acc, leaf.values);
+        }
+        // ── JSONB flat-path condition (Phase 5 Task 5) ───────────────────
+        //
+        // `JsonbPathLeaf` stores the column + path + cast as structured
+        // parts so the emitter can qualify the column reference with the
+        // parent table name in joined-query contexts (same pattern as
+        // `emit_leaf`'s `push_col` helper). SQL is rendered here at
+        // emit time, never at condition-tree construction time.
+        Condition::JsonbPath(leaf) => {
+            emit_jsonb_path_leaf(acc, leaf, parent_table);
+        }
+    }
+}
+
+/// Emit a [`crate::jsonb::path::JsonbPathLeaf`] — `(col->...'key')::cast op $n`.
+///
+/// SQL is rendered at emit time from the structured `column`, `path`, and
+/// `cast` fields rather than from a pre-rendered string. This lets the
+/// emitter qualify the column with the parent table name when inside a
+/// joined query (same `{table}.{column}` prefix logic as [`emit_leaf`]).
+///
+/// When `parent_table` is `Some(table)`, the emitted expression is
+/// `(table.col->'a'->>'b')::cast` — the Postgres JSONB navigation
+/// operators apply to the `table.col` expression, so parenthesisation
+/// wraps the qualified column reference correctly.
+fn emit_jsonb_path_leaf(
+    acc: &mut SqlAccumulator,
+    leaf: crate::jsonb::path::JsonbPathLeaf,
+    parent_table: Option<&'static str>,
+) {
+    use LookupOp::{Eq, Gt, Gte, In, IsNotNull, IsNull, Lt, Lte, Neq};
+
+    /// Build the LHS expression from structured parts — `(col->'a'->>'b')::cast`.
+    /// When `parent_table` is Some, the column reference is `{table}.{col}`.
+    fn build_lhs(
+        acc: &mut SqlAccumulator,
+        column: &'static str,
+        path: &'static str,
+        cast: Option<&'static str>,
+        parent_table: Option<&'static str>,
+    ) {
+        let segments: Vec<&str> = path.split('.').collect();
+        acc.push_sql("(");
+        if let Some(table) = parent_table {
+            acc.push_sql(table);
+            acc.push_sql(".");
+        }
+        acc.push_sql(column);
+        for (i, seg) in segments.iter().enumerate() {
+            if i == segments.len() - 1 {
+                // Last segment: text extraction operator.
+                acc.push_sql("->>'");
+                acc.push_sql(seg);
+                acc.push_sql("'");
+            } else {
+                // Intermediate segment: object navigation operator.
+                acc.push_sql("->'");
+                acc.push_sql(seg);
+                acc.push_sql("'");
+            }
+        }
+        acc.push_sql(")");
+        if let Some(c) = cast {
+            acc.push_sql(c);
+        }
+    }
+
+    match leaf.op {
+        Eq => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" = ");
+            push_filter_value(acc, leaf.value);
+        }
+        Neq => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" <> ");
+            push_filter_value(acc, leaf.value);
+        }
+        Gt => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" > ");
+            push_filter_value(acc, leaf.value);
+        }
+        Gte => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" >= ");
+            push_filter_value(acc, leaf.value);
+        }
+        Lt => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" < ");
+            push_filter_value(acc, leaf.value);
+        }
+        Lte => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" <= ");
+            push_filter_value(acc, leaf.value);
+        }
+        IsNull => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" IS NULL");
+        }
+        IsNotNull => {
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" IS NOT NULL");
+        }
+        In => {
+            let list = match leaf.value {
+                FilterValue::List(v) => v,
+                _ => unreachable!("JsonbPath In requires FilterValue::List"),
+            };
+            if list.is_empty() {
+                acc.push_sql("FALSE");
+                return;
+            }
+            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+            acc.push_sql(" IN (");
+            for (i, v) in list.into_iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(", ");
+                }
+                push_list_element(acc, v);
+            }
+            acc.push_sql(")");
+        }
+        _ => {
+            // No other LookupOps are constructible from JsonbPathRef —
+            // the typed surface only exposes eq/neq/gt/gte/lt/lte/in/is_null/is_not_null.
+            unreachable!("unsupported LookupOp in JsonbPathLeaf: {:?}", leaf.op)
         }
     }
 }
@@ -1545,6 +1729,7 @@ mod tests {
         rationale: None,
         indexes: &[],
         is_through: false,
+        fts: None,
     };
 
     fn owners_join_descriptor() -> &'static ModelDescriptor {

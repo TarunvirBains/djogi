@@ -18,6 +18,20 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue, Token};
 
+/// Parsed `#[model(fts(source = "...", dictionary = "..."))]` sub-attribute.
+///
+/// Both fields are required. `source` is a comma-separated list of column
+/// names (e.g. `"title, body"`); `dictionary` is a Postgres text-search
+/// configuration name (e.g. `"english"`). Both are validated byte-level at
+/// parse time per `feedback_no_regex_in_djogi`.
+#[derive(Debug, Clone)]
+pub struct FtsSpec {
+    /// Comma-separated source column names, e.g. `"title, body"`.
+    pub source: String,
+    /// Postgres text-search configuration name, e.g. `"english"`.
+    pub dictionary: String,
+}
+
 /// Options extracted from `#[model(table = "...", pk = "...")]`.
 // Fields are read by Tasks 4–9 (inject, crud, descriptor, stubs). The
 // dead-code lint fires now because those callers are stubs — suppress it.
@@ -93,6 +107,37 @@ pub struct ModelAttrs {
     /// The parser rejects anything else so the value can be safely
     /// embedded into the emitted SQL.
     pub idempotency_key: Option<String>,
+
+    /// The user-field name that serves as the tenant discriminator for
+    /// Row Level Security — Phase 5 Task 9.
+    ///
+    /// Set via `#[model(table = "...", tenant_key = "org_id")]`. When present,
+    /// the macro emits a side-channel `target/djogi_rls/{table}_rls.sql` file
+    /// containing `ALTER TABLE … ENABLE ROW LEVEL SECURITY` and a
+    /// `CREATE POLICY … USING (col = current_setting('app.tenant_id')::type)`
+    /// statement. Phase 7's migration differ will consume this file; for now
+    /// it is hand-applied in integration tests.
+    ///
+    /// The column referenced by `tenant_key` must be one of: `BigInt`
+    /// (HeerId), `Uuid` (RanjId), `Text`, or `Citext`. Any other SQL type
+    /// triggers a span-precise compile error at the `tenant_key` attribute.
+    ///
+    /// At runtime, call [`DjogiContext::set_tenant`] inside an `atomic()`
+    /// block to activate the RLS policy for a request.
+    pub tenant_key: Option<String>,
+
+    /// Full-text search specification — Phase 5 Task 14.
+    ///
+    /// Set via `#[model(fts(source = "col1, col2", dictionary = "english"))]`.
+    /// When present, the macro emits an `FtsDescriptor` into the
+    /// `ModelDescriptor` and the `{Model}Fields` struct gains a `search()`
+    /// accessor that returns a typed `FtsFieldRef` for building
+    /// `@@` / `ts_rank` predicates.
+    ///
+    /// Both `source` and `dictionary` are required; omitting either is a
+    /// compile error. Both values are validated byte-level at parse time
+    /// per `feedback_no_regex_in_djogi`.
+    pub fts: Option<FtsSpec>,
 }
 
 /// Parsed `pk = "..."` value.
@@ -122,6 +167,8 @@ impl ModelAttrs {
         let mut events = false;
         let mut seen_events = false;
         let mut idempotency_key: Option<String> = Option::None;
+        let mut tenant_key: Option<String> = Option::None;
+        let mut fts: Option<FtsSpec> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -211,15 +258,53 @@ impl ModelAttrs {
                             ));
                         }
                         idempotency_key = Some(key_val);
+                    } else if path.is_ident("tenant_key") {
+                        if tenant_key.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `tenant_key` key in #[model(...)]",
+                            ));
+                        }
+                        let key_val = s.value();
+                        // Validate: plain ASCII identifier. Byte-level check
+                        // per `feedback_no_regex_in_djogi` — leading
+                        // letter/underscore, rest alnum/underscore.
+                        let bytes = key_val.as_bytes();
+                        let ident_ok = !bytes.is_empty()
+                            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                            && bytes
+                                .iter()
+                                .skip(1)
+                                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+                        if !ident_ok {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "`tenant_key` value must be a plain ASCII identifier \
+                                 (letter or underscore, then alphanumerics/underscores)",
+                            ));
+                        }
+                        tenant_key = Some(key_val);
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
-                                "unknown #[model] attribute `{}`; expected `table`, `pk`, `idempotency_key`, `no_default`, `through`, or `events`",
+                                "unknown #[model] attribute `{}`; expected `table`, `pk`, \
+                                 `idempotency_key`, `tenant_key`, `fts`, `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
                     }
+                }
+                // `fts(source = "...", dictionary = "...")` — paren-delimited
+                // sub-attribute parsed as a Meta::List.
+                Meta::List(list) if list.path.is_ident("fts") => {
+                    if fts.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            &list.path,
+                            "duplicate `fts` key in #[model(...)]",
+                        ));
+                    }
+                    fts = Some(FtsSpec::parse_from_list(list)?);
                 }
                 other => {
                     return Err(syn::Error::new_spanned(
@@ -245,6 +330,8 @@ impl ModelAttrs {
             through,
             events,
             idempotency_key,
+            tenant_key,
+            fts,
         })
     }
 }
@@ -263,6 +350,167 @@ impl PkStrategy {
     }
 }
 
+impl FtsSpec {
+    /// Parse `{ source = "col1, col2", dictionary = "english" }` from a
+    /// `Meta::List` (the `{ ... }` token stream inside `fts = { ... }`).
+    ///
+    /// Both `source` and `dictionary` are required. Values are validated
+    /// byte-level per `feedback_no_regex_in_djogi` — no regex engine.
+    fn parse_from_list(list: &syn::MetaList) -> syn::Result<Self> {
+        let inner_metas = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+
+        let mut source: Option<String> = Option::None;
+        let mut dictionary: Option<String> = Option::None;
+
+        for meta in &inner_metas {
+            match meta {
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value:
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }),
+                    ..
+                }) => {
+                    if path.is_ident("source") {
+                        if source.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `source` in fts { ... }",
+                            ));
+                        }
+                        let val = s.value();
+                        // Validate each column name in the comma-separated list.
+                        // Byte-level checks per `feedback_no_regex_in_djogi`.
+                        for col_raw in val.split(',') {
+                            let col = col_raw.trim();
+                            let bytes = col.as_bytes();
+                            if bytes.is_empty() {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    "source column name must not be empty",
+                                ));
+                            }
+                            if bytes.len() > 63 {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    format!(
+                                        "source column `{col}` exceeds 63 bytes \
+                                         (Postgres identifier length cap)"
+                                    ),
+                                ));
+                            }
+                            if !bytes[0].is_ascii_alphabetic() && bytes[0] != b'_' {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    format!(
+                                        "source column `{col}` must start with an ASCII \
+                                         letter or underscore"
+                                    ),
+                                ));
+                            }
+                            for b in bytes.iter().skip(1) {
+                                if !b.is_ascii_alphanumeric() && *b != b'_' {
+                                    return Err(syn::Error::new_spanned(
+                                        s,
+                                        format!(
+                                            "source column `{col}` contains invalid character \
+                                             `{}`; only ASCII letters, digits, and underscores \
+                                             are allowed",
+                                            *b as char
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        source = Some(val);
+                    } else if path.is_ident("dictionary") {
+                        if dictionary.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `dictionary` in fts { ... }",
+                            ));
+                        }
+                        let val = s.value();
+                        // Validate dictionary name: ASCII identifier, max 63 bytes.
+                        // Byte-level checks per `feedback_no_regex_in_djogi`.
+                        // Rule: letter or underscore start, alphanumerics or
+                        // underscores after, up to 63 bytes.
+                        let bytes = val.as_bytes();
+                        if bytes.is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "dictionary name must not be empty",
+                            ));
+                        }
+                        if bytes.len() > 63 {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                format!(
+                                    "dictionary name `{val}` exceeds 63 bytes \
+                                     (Postgres identifier length cap)"
+                                ),
+                            ));
+                        }
+                        if !bytes[0].is_ascii_alphabetic() && bytes[0] != b'_' {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                format!(
+                                    "dictionary name `{val}` must start with an ASCII \
+                                     letter or underscore"
+                                ),
+                            ));
+                        }
+                        for b in bytes.iter().skip(1) {
+                            if !b.is_ascii_alphanumeric() && *b != b'_' {
+                                return Err(syn::Error::new_spanned(
+                                    s,
+                                    format!(
+                                        "dictionary name `{val}` contains invalid character \
+                                         `{}`; only ASCII letters, digits, and underscores \
+                                         are allowed",
+                                        *b as char
+                                    ),
+                                ));
+                            }
+                        }
+                        dictionary = Some(val);
+                    } else {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            format!(
+                                "unknown key `{}` in fts {{ ... }}; expected `source` or `dictionary`",
+                                path.get_ident().map(|i| i.to_string()).unwrap_or_default()
+                            ),
+                        ));
+                    }
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "expected `source = \"...\"` or `dictionary = \"...\"` in fts { ... }",
+                    ));
+                }
+            }
+        }
+
+        let source = source.ok_or_else(|| {
+            syn::Error::new_spanned(
+                list,
+                "fts { ... } requires `source = \"col1, col2\"` — list of column names to index",
+            )
+        })?;
+        let dictionary = dictionary.ok_or_else(|| {
+            syn::Error::new_spanned(
+                list,
+                "fts { ... } requires `dictionary = \"english\"` — Postgres text-search config name",
+            )
+        })?;
+
+        Ok(FtsSpec { source, dictionary })
+    }
+}
+
 /// Options extracted from a single `#[field(...)]` annotation on a struct field.
 ///
 /// Parsed via `darling::FromField`. Unknown keys, type mismatches, and
@@ -276,7 +524,7 @@ impl PkStrategy {
 // granularity so new fields don't spuriously re-trip the lint.
 #[allow(dead_code)]
 #[derive(Debug, FromField)]
-#[darling(attributes(field))]
+#[darling(attributes(field), allow_unknown_fields)]
 pub struct FieldAttrs {
     /// The struct field's identifier.
     ///
@@ -296,9 +544,18 @@ pub struct FieldAttrs {
     /// `#[field(unique)]` — emits a `UNIQUE` constraint in migrations.
     #[darling(default)]
     pub unique: bool,
-    /// `#[field(index)]` — emits a `CREATE INDEX` in migrations.
-    #[darling(default)]
+    /// `#[field(index)]` or `#[field(index = "method")]`.
+    /// Set entirely via raw attribute parsing in [`FieldAttrs::parse`], not via darling.
+    /// - `false` if no index attribute
+    /// - `true` if bare `#[field(index)]`
+    /// - explicit methods are stored separately in index_method
+    #[darling(skip)]
     pub index: bool,
+    /// `#[field(index = "btree"|"gin"|"gist"|"brin"|"hash"|"spgist")]` — explicit index method.
+    /// Set via raw attribute parsing in [`FieldAttrs::parse`], not via darling.
+    /// Only Some if an explicit method string was provided; bare `#[field(index)]` leaves this None.
+    #[darling(skip)]
+    pub index_method: Option<String>,
     /// `#[field(max_length = N)]` — caps `TEXT` columns at `VARCHAR(N)`.
     #[darling(default)]
     pub max_length: Option<u32>,
@@ -324,6 +581,22 @@ pub struct FieldAttrs {
     /// the literal against the accepted set.
     #[darling(default)]
     pub outbox: Option<String>,
+    /// `#[field(version)]` — marks this field as the optimistic-lock
+    /// version counter. Exactly one field per model may carry this
+    /// attribute, and its type must be `i32` or `i64`. On every
+    /// `save()` call the macro emits `{col} = {col} + 1` in the SET
+    /// list and `AND {col} = $n` in the WHERE clause, binding the
+    /// current in-memory value. When Postgres returns zero rows
+    /// (another writer already bumped the version) `save()` returns
+    /// `Err(DjogiError::LockConflict(_))` rather than silently
+    /// succeeding with a no-op.
+    ///
+    /// Only bare `i32` / `i64` are accepted — `Option<i32>` and all
+    /// other types are rejected at macro-expansion time with a
+    /// span-precise compile error.
+    #[darling(default)]
+    pub version: bool,
+
     /// `#[field(sequence_within = "parent_fk_column")]` — assigns this
     /// column a monotonically-increasing sequence scoped to the
     /// parent-FK column named in the attribute value. Phase 4 Task
@@ -351,6 +624,19 @@ pub struct FieldAttrs {
     /// `create_sequence_counter_sql`.
     #[darling(default)]
     pub sequence_within: Option<String>,
+
+    /// `#[field(rationale = "...")]` — free-text justification for why this
+    /// field carries a behaviour-modifying attribute such as
+    /// `outbox = "ignore"`.
+    ///
+    /// No validation is applied to the string value — it exists purely as
+    /// in-source documentation that suppresses the advisory warning emitted
+    /// when `outbox = "ignore"` is present without an accompanying
+    /// `rationale`. Future attribute advisories (`lazy`, `partition_by`)
+    /// will key off the same field once those attributes become functional
+    /// features (deferred; see Task 11 in the Phase 5 plan).
+    #[darling(default)]
+    pub rationale: Option<String>,
 
     /// `#[field(expose(...))]` — per-attribute parsed specs. Darling
     /// accepts **multiple** `#[field(expose(...))]` attributes on the
@@ -603,6 +889,101 @@ impl FieldAttrs {
         let mut attrs =
             <Self as darling::FromField>::from_field(field).map_err(syn::Error::from)?;
 
+        // Phase 5 — manually parse index from raw attributes.
+        // Support both bare `#[field(index)]` and `#[field(index = "method")]`.
+        // We do this entirely outside of darling to have fine-grained control over both forms.
+        attrs.index = false;
+        attrs.index_method = None;
+        for attr in &field.attrs {
+            if !attr.path().is_ident("field") {
+                continue;
+            }
+            let Ok(inner) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            else {
+                // If the attr doesn't parse as a comma-separated Meta list,
+                // darling has already emitted a better diagnostic; skip.
+                continue;
+            };
+            for nested in &inner {
+                match nested {
+                    // Bare `#[field(index)]` form — Meta::Path.
+                    Meta::Path(path) if path.is_ident("index") => {
+                        attrs.index = true;
+                    }
+                    // `#[field(index = "method")]` form — Meta::NameValue with string literal.
+                    Meta::NameValue(MetaNameValue {
+                        path,
+                        value:
+                            Expr::Lit(ExprLit {
+                                lit: lit @ Lit::Str(lit_str),
+                                ..
+                            }),
+                        ..
+                    }) if path.is_ident("index") => {
+                        attrs.index = true; // Also set the bare flag for indexed=true
+                        let method = lit_str.value();
+                        let span = lit.span();
+                        // Validate the method string.
+                        parse_index_method(&method, span)?;
+                        attrs.index_method = Some(method);
+                        break; // Only one index per field.
+                    }
+                    // Reject non-string values for `#[field(index = X)]`.
+                    Meta::NameValue(mnv) if mnv.path.is_ident("index") => {
+                        return Err(syn::Error::new_spanned(
+                            &mnv.value,
+                            "`#[field(index)]` takes an optional string method (e.g. `index = \"gin\"`) or no value",
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Validate that all field attribute keys are known.
+        // Since we use `allow_unknown_fields`, darling won't reject them,
+        // so we must validate manually to reject invalid keys.
+        const VALID_FIELD_KEYS: &[&str] = &[
+            "ident",
+            "ty", // Auto-populated by darling
+            "unique",
+            "index",
+            "max_length",
+            "renamed_from",
+            "on_delete",
+            "outbox",
+            "sequence_within",
+            "expose",
+            "rationale",
+            "lazy",
+            "version", // Task 3 — optimistic lock version counter
+        ];
+        for attr in &field.attrs {
+            if !attr.path().is_ident("field") {
+                continue;
+            }
+            let Ok(inner) = attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            else {
+                continue;
+            };
+            for nested in &inner {
+                let key = match nested {
+                    Meta::Path(path) => path.get_ident().map(|i| i.to_string()),
+                    Meta::NameValue(nv) => nv.path.get_ident().map(|i| i.to_string()),
+                    _ => None,
+                };
+                if let Some(key) = key
+                    .as_ref()
+                    .filter(|k| !VALID_FIELD_KEYS.contains(&k.as_str()))
+                {
+                    return Err(syn::Error::new_spanned(
+                        nested,
+                        format!("unknown field attribute: `{key}`"),
+                    ));
+                }
+            }
+        }
+
         if let Some(on_delete) = &attrs.on_delete {
             let valid = [
                 "cascade",
@@ -747,6 +1128,24 @@ impl FieldAttrs {
 
         attrs.expose = expose;
         Ok(attrs)
+    }
+}
+
+/// Parse an index method string to validate it against known `IndexType` methods.
+///
+/// Valid methods: `btree`, `gin`, `gist`, `brin`, `hash`, `spgist`.
+/// Returns an error with a clean message listing all valid methods if the
+/// string does not match. The returned error's span points to the offending
+/// literal, not the whole field. Returns `Ok(())` if the method is valid.
+fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    match s {
+        "btree" | "gin" | "gist" | "brin" | "hash" | "spgist" => Ok(()),
+        other => Err(syn::Error::new(
+            span,
+            format!(
+                "unknown index method: '{other}'; expected one of btree, gin, gist, brin, hash, spgist"
+            ),
+        )),
     }
 }
 
@@ -1054,5 +1453,56 @@ fn is_prelude_option_path(path: &syn::Path) -> bool {
             (root == "std" || root == "core") && module == "option" && ty == "Option"
         }
         _ => false,
+    }
+}
+
+/// Simplified SQL type category for tenant-key cast selection in RLS DDL.
+///
+/// `rust_type_to_sql` returns a full SQL type string; this categorises the
+/// result into the three buckets the RLS `current_setting(...)::cast`
+/// expression needs. Types outside the accepted set are returned as
+/// `Unsupported(sql_type_string)` so the caller can emit a span-precise
+/// compile error at the `tenant_key` attribute.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldSqlTypeCategory {
+    /// `BIGINT` — cast is `::bigint` (HeerId tenant keys).
+    BigInt,
+    /// `UUID` — cast is `::uuid` (RanjId tenant keys).
+    Uuid,
+    /// `TEXT` or `CITEXT` — no cast needed (text comparison is exact).
+    Text,
+    /// Any SQL type not in the accepted tenant-key set. The inner string
+    /// is the full SQL type name for use in the compile-error message.
+    Unsupported(String),
+}
+
+/// Derive the `FieldSqlTypeCategory` for a Rust field type.
+///
+/// Used by the RLS DDL emitter to pick the correct `current_setting(...)::cast`
+/// expression. `HeerId` → `BigInt`; `Uuid` / `RanjId` → `Uuid`; `String` →
+/// `Text`; everything else → `Unsupported`.
+///
+/// One `Option<…>` layer is stripped first so nullable tenant columns
+/// (`Option<HeerId>`) are also accepted.
+#[allow(dead_code)]
+pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
+    let (inner, _nullable) = unwrap_option(ty);
+    // Build a normalised type-string for pattern matching.
+    let s = quote::quote!(#inner).to_string().replace(' ', "");
+    match s.as_str() {
+        // HeerId is a Djogi type alias for i64 BIGINT.
+        "HeerId" | "i64" => FieldSqlTypeCategory::BigInt,
+        // RanjId is a Djogi type alias for Uuid.
+        "RanjId" | "Uuid" | "uuid::Uuid" => FieldSqlTypeCategory::Uuid,
+        "String" => FieldSqlTypeCategory::Text,
+        // Fall through to the sql-type table for anything else.
+        _ => match rust_type_to_sql(&inner) {
+            Some("BIGINT") | Some("SMALLINT") | Some("INTEGER") => FieldSqlTypeCategory::BigInt,
+            Some("UUID") => FieldSqlTypeCategory::Uuid,
+            Some("TEXT") | Some("CITEXT") => FieldSqlTypeCategory::Text,
+            Some(other) => FieldSqlTypeCategory::Unsupported(other.to_owned()),
+            None => FieldSqlTypeCategory::Unsupported(s),
+        },
     }
 }

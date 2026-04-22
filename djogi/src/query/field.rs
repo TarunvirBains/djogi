@@ -46,6 +46,7 @@
 //! - `{Model}Fields` generation — `djogi-macros/src/model/fields.rs` (Task 4).
 //! - `Model::Fields` associated type — `djogi/src/model.rs`.
 
+use crate::jsonb::Jsonb;
 use crate::model::Model;
 use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use std::marker::PhantomData;
@@ -350,6 +351,11 @@ impl IntoFilterValue for crate::RanjId {
         FilterValue::RanjId(self)
     }
 }
+impl IntoFilterValue for rust_decimal::Decimal {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::Decimal(self)
+    }
+}
 
 // ── Generic lookup methods (any V: IntoFilterValue) ───────────────────────
 
@@ -605,6 +611,212 @@ impl<M: Model, V> FieldRef<M, V> {
             op: LookupOp::IsNotNull,
             value: FilterValue::Null,
         })
+    }
+}
+
+// ── Array field operators ─────────────────────────────────────────────────
+//
+// Available on `FieldRef<M, Vec<V>>` for element types Djogi supports as
+// Postgres array columns: `Vec<String>`, `Vec<i32>`, `Vec<i64>`, `Vec<bool>`.
+//
+// The sealed trait `IntoArrayFilterValue` maps each supported element type to
+// its matching `FilterValue::Array*` variant. The sealed impl block prevents
+// downstream crates from implementing the trait for unsupported types.
+
+mod array_sealed {
+    pub trait Sealed {}
+    impl Sealed for String {}
+    impl Sealed for i32 {}
+    impl Sealed for i64 {}
+    impl Sealed for bool {}
+}
+
+/// Converts a `Vec<V>` element type into the matching [`FilterValue::Array*`]
+/// variant for use in array operator conditions.
+///
+/// Sealed so that only the Djogi-blessed array element types (`String`, `i32`,
+/// `i64`, `bool`) can be used with the array operator methods on
+/// `FieldRef<M, Vec<V>>`. Downstream code cannot implement this trait.
+pub trait IntoArrayFilterValue: array_sealed::Sealed {
+    /// Wrap a `Vec<Self>` in the corresponding `FilterValue::Array*` variant.
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue
+    where
+        Self: Sized;
+}
+
+impl IntoArrayFilterValue for String {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayString(values)
+    }
+}
+impl IntoArrayFilterValue for i32 {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayI32(values)
+    }
+}
+impl IntoArrayFilterValue for i64 {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayI64(values)
+    }
+}
+impl IntoArrayFilterValue for bool {
+    fn into_array_filter_value(values: Vec<Self>) -> FilterValue {
+        FilterValue::ArrayBool(values)
+    }
+}
+
+impl<M: Model, V: IntoArrayFilterValue + Clone + 'static> FieldRef<M, Vec<V>> {
+    /// `column @> $1` — array contains.
+    ///
+    /// Returns rows where every element in `values` also appears in the column.
+    /// Maps to the Postgres `@>` (contains) array operator.
+    ///
+    /// Djogi arrays are always 1-dimensional; multi-dimensional arrays are not
+    /// a supported field type.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains(self, values: &[V]) -> Condition {
+        Condition::ArrayContains(crate::array::ArrayContainsLeaf {
+            column: self.column,
+            values: V::into_array_filter_value(values.to_vec()),
+        })
+    }
+
+    /// `column <@ $1` — contained by.
+    ///
+    /// Returns rows where every element in the column also appears in `values`.
+    /// Maps to the Postgres `<@` (contained by) array operator.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contained_by(self, values: &[V]) -> Condition {
+        Condition::ArrayContainedBy(crate::array::ArrayContainedByLeaf {
+            column: self.column,
+            values: V::into_array_filter_value(values.to_vec()),
+        })
+    }
+
+    /// `column && $1` — overlap (at least one element in common).
+    ///
+    /// Returns rows where the column and `values` share at least one element.
+    /// Maps to the Postgres `&&` array overlap operator.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn overlap(self, values: &[V]) -> Condition {
+        Condition::ArrayOverlap(crate::array::ArrayOverlapLeaf {
+            column: self.column,
+            values: V::into_array_filter_value(values.to_vec()),
+        })
+    }
+
+    /// `array_length(column, 1)` — number of elements in the 1-dimensional array.
+    ///
+    /// Returns an [`Expr<i32>`](crate::expr::Expr) that slots into the
+    /// expression IR so `.len().gt(3)` composes with the existing `Cmp`
+    /// machinery (Phase 4 expression IR).
+    ///
+    /// The dimension argument is hardcoded to `1`. Djogi arrays are always
+    /// 1-dimensional; multi-dimensional arrays are not a supported field type.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn len(self) -> crate::expr::Expr<i32> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::ArrayLength {
+            column: self.column,
+        })
+    }
+}
+
+// ── JSONB flat-path entry point ───────────────────────────────────────────
+//
+// `.path::<V>("a.b.c")` on a `FieldRef<M, Jsonb<T>>` produces a
+// `JsonbPathRef<M, V>` that exposes the same comparison surface
+// (`eq`, `gt`, etc.) as a plain `FieldRef<M, V>`, but emits
+// `(col->'a'->'b'->>'c')::cast op $n` instead of `col op $n`.
+
+impl<M: Model, T> FieldRef<M, Jsonb<T>> {
+    /// Navigate to a sub-field of this JSONB column via a dot-separated path.
+    ///
+    /// Returns a [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef) that supports
+    /// the same comparison surface as `FieldRef<M, V>`: `eq`, `neq`, `gt`,
+    /// `gte`, `lt`, `lte`, `in_list`, `is_null`, `is_not_null`.
+    ///
+    /// # Path format
+    ///
+    /// Dot-separated segments. Each segment must be non-empty, begin with an
+    /// ASCII letter or underscore, contain only ASCII alphanumerics or
+    /// underscores, and be at most 63 bytes long.
+    ///
+    /// # SQL emission
+    ///
+    /// `specs.path::<i32>("engine.cylinders")` emits
+    /// `(specs->'engine'->>'cylinders')::int` on the LHS of the comparison.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Post::objects()
+    ///     .filter(|f| f.specs().path::<i32>("engine.cylinders").gt(4))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
+    pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
+        crate::jsonb::JsonbPathRef::new(self.column, dotted)
+    }
+
+    /// Enter the compile-time typed path tree for this JSONB column.
+    ///
+    /// Returns `T::Path<M>` — the derive-generated tree that provides one
+    /// method per field of `T`. Scalar fields return a
+    /// [`JsonbPathRef<M, V>`](crate::jsonb::JsonbPathRef) ready for
+    /// comparison; nested fields return the nested type's `Path<M>`.
+    ///
+    /// `T` must implement [`JsonbSchema`](crate::jsonb::JsonbSchema) (done
+    /// by adding `#[derive(JsonbSchema)]` to the schema struct). If `T`
+    /// does not implement `JsonbSchema` the compiler reports a trait-bound
+    /// error at the `#[derive(Model)]` site.
+    ///
+    /// The flat [`path`](Self::path) escape hatch remains available when you
+    /// need dynamic paths or types outside the cast-matrix allowlist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// Vehicle::objects()
+    ///     .filter(|f| f.specs().typed().engine.cylinders.gt(4))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
+    pub fn typed(self) -> T::Path<M>
+    where
+        T: crate::jsonb::JsonbSchema,
+    {
+        T::root_path::<M>(self.column)
+    }
+}
+
+/// `path()` is also available on nullable JSONB columns (`Option<Jsonb<T>>`).
+/// The SQL expression navigates into the column as if it were non-null; when
+/// the column IS NULL the Postgres JSONB path operators themselves return NULL,
+/// so comparisons naturally exclude NULL rows — consistent with SQL's
+/// three-valued logic.
+impl<M: Model, T> FieldRef<M, Option<Jsonb<T>>> {
+    /// Navigate to a sub-field of this nullable JSONB column.
+    ///
+    /// Rows where the column IS NULL are excluded by the comparison (SQL NULL
+    /// semantics), which is the expected behavior for optional JSONB fields.
+    ///
+    /// See [`FieldRef<M, Jsonb<T>>::path`] for the full documentation.
+    #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
+    pub fn path<V>(self, dotted: &'static str) -> crate::jsonb::JsonbPathRef<M, V> {
+        crate::jsonb::JsonbPathRef::new(self.column, dotted)
+    }
+
+    /// Enter the compile-time typed path tree for this nullable JSONB column.
+    ///
+    /// Rows where the column IS NULL are excluded by comparisons (SQL NULL
+    /// semantics). Otherwise identical to the non-nullable variant —
+    /// see [`FieldRef<M, Jsonb<T>>::typed`].
+    #[must_use = "typed path handles are lazy — dropping one silently omits the filter"]
+    pub fn typed(self) -> T::Path<M>
+    where
+        T: crate::jsonb::JsonbSchema,
+    {
+        T::root_path::<M>(self.column)
     }
 }
 

@@ -1,4 +1,4 @@
-//! Transactional outbox — Phase 4 Task 6.
+//! Transactional outbox — Phase 4 Task 6 (write side) + Phase 5 Task 11.5 (worker side).
 //!
 //! Models annotated with `#[model(events)]` emit one outbox row into
 //! `{table}_outbox` on every successful `create`, `save`, or `delete`
@@ -8,6 +8,16 @@
 //! write — no separate "event publisher" fan-out is required at the
 //! write side. A downstream poller / CDC consumer drains `{table}_outbox`
 //! asynchronously.
+//!
+//! # Module layout
+//!
+//! - `mod.rs` (this file) — write side: `emit_event`, `OutboxAction`, payload shaping.
+//!   All Phase 4 exports are unchanged.
+//! - `worker` — claim-pending, mark-published/failed, recover-stale. Feature-gated
+//!   on the `outbox` cargo feature.
+//! - `publisher` — `Publisher` trait + `PublishError` enum. Feature-gated on `outbox`.
+//! - `publishers` — concrete publisher implementations. `NotifyPublisher` is always
+//!   available under `outbox`; Redis/Kafka/NATS ship behind their own sub-feature flags.
 //!
 //! # Why this lives here (not inside the macro body)
 //!
@@ -61,6 +71,30 @@
 //! `tests/integration/migrations/phase4/*.sql`; Phase 6 / Phase 7 will
 //! land the macro-side side-channel and retire those hand-written
 //! fixtures.
+
+// ---------------------------------------------------------------------------
+// Worker / publisher sub-modules — feature-gated on `outbox`.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "outbox")]
+pub mod publisher;
+#[cfg(feature = "outbox")]
+pub mod publishers;
+#[cfg(feature = "outbox")]
+pub mod worker;
+
+/// Re-exported for `djogi::outbox::PublishError` and `djogi::outbox::Publisher`
+/// convenience paths.
+#[cfg(feature = "outbox")]
+pub use publisher::{PublishError, Publisher};
+
+/// Re-exported for the `djogi::outbox::OutboxRow` convenience path.
+#[cfg(feature = "outbox")]
+pub use worker::OutboxRow;
+
+// ---------------------------------------------------------------------------
+// Write-side implementation (Phase 4 Task 6) — always compiled.
+// ---------------------------------------------------------------------------
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
@@ -303,6 +337,7 @@ mod tests {
             rationale: None,
             indexes: &[],
             is_through: false,
+            fts: None,
         }
     }
 

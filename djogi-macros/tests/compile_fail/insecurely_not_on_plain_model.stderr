@@ -1,0 +1,8 @@
+error[E0599]: no function or associated item named `get_insecurely` found for struct `Plain` in the current scope
+  --> tests/compile_fail/insecurely_not_on_plain_model.rs:20:20
+   |
+13 | pub struct Plain {
+   | ---------------- function or associated item `get_insecurely` not found for this struct
+...
+20 |     let _ = Plain::get_insecurely;
+   |                    ^^^^^^^^^^^^^^ function or associated item not found in `Plain`

@@ -24,3 +24,7 @@ trybuild.workspace = true
 # only participate when compiling this crate's own tests. Required so trybuild
 # compile_pass/*.rs fixtures can `use djogi::prelude::*` to reach `#[model]`.
 djogi.workspace = true
+# serde — needed by JsonbSchema compile_pass fixtures that derive Serialize +
+# Deserialize on schema structs. The trybuild process compiles each fixture
+# as a standalone crate with the same dev-deps as djogi-macros.
+serde.workspace = true
