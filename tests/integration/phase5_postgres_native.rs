@@ -25,14 +25,14 @@ use djogi::prelude::*;
 // Test models
 // ---------------------------------------------------------------------------
 
-// Minimal Account used across Task 1-3. The migration provisions
-// `balance BIGINT NOT NULL DEFAULT 0` and
-// `revision INTEGER NOT NULL DEFAULT 0` so this struct can stay
-// small in Task 1; Task 2 and Task 3 will expand it.
+// Minimal Account used across Task 1 and Task 2. The migration provisions
+// `balance BIGINT NOT NULL DEFAULT 0` so this struct can stay
+// small in Task 1; Task 2 will extend it with behavior only.
 //
-// Task 2: `name` is Tracked<String> (dirty-aware), `balance` is a plain
-// non-Tracked i64 (always emitted unconditionally in SET). This lets the
-// tests verify both halves of the contract:
+// Task 1 (base): `name` is Tracked<String> round-trips through postgres-types.
+// Task 1 (extended): `note` is Tracked<Option<String>> to test NULL decode.
+// Task 2: `balance` is a plain non-Tracked i64 (always emitted unconditionally
+// in SET). This lets tests verify both halves of the contract:
 // - Dirty Tracked fields appear in the UPDATE SET list.
 // - Clean Tracked fields do NOT appear in the UPDATE SET list.
 // - Non-Tracked fields always appear regardless of dirty state.
@@ -41,6 +41,7 @@ use djogi::prelude::*;
 pub struct Account {
     pub name: Tracked<String>,
     pub balance: i64,
+    pub note: Tracked<Option<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -268,4 +269,42 @@ async fn save_rehydration_marks_tracked_fields_clean(mut ctx: djogi::DjogiContex
         &*account.name, "bob",
         "value must persist across save + rehydration"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Task 1 (extended) — Tracked<Option<_>> NULL round-trip
+// ---------------------------------------------------------------------------
+
+/// Prove that Tracked<Option<_>> fields decode NULL correctly from the DB.
+///
+/// The FromSql impl must override from_sql_null to delegate to the inner
+/// T::from_sql_null and wrap the result in Tracked::new. Without this, NULL
+/// values bubble up as errors instead of being decoded as None.
+#[djogi::djogi_test]
+async fn tracked_option_round_trips_null(mut ctx: djogi::DjogiContext) {
+    setup_phase5(&mut ctx).await;
+
+    // Create an account with note = None (i.e., NULL in DB).
+    let created = Account::create(
+        &mut ctx,
+        Account {
+            name: Tracked::new("alice".to_string()),
+            balance: 0,
+            note: Tracked::new(None),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create");
+
+    assert_eq!(*created.note, None);
+    assert!(
+        !created.note.is_dirty(),
+        "fresh NULL Tracked<Option<_>> is clean"
+    );
+
+    // Reload via get() to force a fresh decode from the DB row.
+    let reloaded = Account::get(&mut ctx, created.id).await.expect("get");
+    assert_eq!(*reloaded.note, None, "NULL column decoded as None");
+    assert!(!reloaded.note.is_dirty(), "reloaded NULL Tracked is clean");
 }

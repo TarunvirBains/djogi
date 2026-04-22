@@ -85,6 +85,10 @@ where
         T::from_sql(ty, raw).map(Tracked::new)
     }
 
+    fn from_sql_null(ty: &Type) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        T::from_sql_null(ty).map(Tracked::new)
+    }
+
     fn accepts(ty: &Type) -> bool {
         T::accepts(ty)
     }
@@ -161,5 +165,15 @@ mod tests {
     fn into_inner_returns_value() {
         let tracked = Tracked::new(String::from("alice"));
         assert_eq!(tracked.into_inner(), "alice");
+    }
+
+    #[test]
+    fn deserialize_produces_clean_tracked() {
+        // A serialized Tracked<String> is just the inner JSON string. Deserialize
+        // it; assert the resulting Tracked is clean (dirty == false) — never-
+        // mutated-yet is the correct post-deserialize state.
+        let tracked: Tracked<String> = serde_json::from_str("\"hello\"").expect("deserialize");
+        assert!(!tracked.is_dirty(), "deserialized Tracked must start clean");
+        assert_eq!(&*tracked, "hello");
     }
 }
