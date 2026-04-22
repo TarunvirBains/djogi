@@ -69,6 +69,9 @@ impl AuthContext {
 pub mod error;
 pub use error::AuthError;
 
+pub mod password;
+pub use password::PasswordHash;
+
 mod context_ext;
 
 /// Core authentication trait for Djogi.

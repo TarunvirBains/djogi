@@ -20,3 +20,34 @@ async fn with_auth_attaches_and_reads_back(mut ctx: djogi::DjogiContext) {
     assert_eq!(attached.tenant_id, Some("org_a".into()));
     assert!(attached.has_scope("read"));
 }
+
+#[cfg(feature = "auth-argon2")]
+#[djogi::djogi_test]
+async fn password_hash_round_trips_through_pg(mut ctx: djogi::DjogiContext) {
+    ctx.raw_ddl(
+        "CREATE TABLE IF NOT EXISTS users_password_hash_roundtrip (
+            id BIGINT PRIMARY KEY DEFAULT generate_id(),
+            password_hash TEXT NOT NULL
+        )",
+    )
+    .await
+    .expect("create table");
+
+    let h = djogi::auth::PasswordHash::hash("s3cret").unwrap();
+    ctx.raw_execute(
+        "INSERT INTO users_password_hash_roundtrip (password_hash) VALUES ($1)",
+        &[&h],
+    )
+    .await
+    .expect("insert");
+
+    let stored: djogi::auth::PasswordHash = ctx
+        .raw_scalar(
+            "SELECT password_hash FROM users_password_hash_roundtrip LIMIT 1",
+            &[],
+        )
+        .await
+        .expect("select");
+    assert!(stored.verify("s3cret"));
+    assert!(!stored.verify("wrong"));
+}
