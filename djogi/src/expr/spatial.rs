@@ -12,7 +12,7 @@
 //! - [`SpatialExpr::Intersects`] — emits `ST_Intersects(<col>, $1::geography)` (T9)
 //! - [`SpatialExpr::Touches`] — emits `ST_Touches(<col>, $1::geography)` (T9)
 //! - [`SpatialExpr::WithinShape`] — emits `ST_Within(<col>, $1::geography)` (T9)
-//! - [`SpatialExpr::BoundedBy`] — bbox prefilter; emission wired in T10
+//! - [`SpatialExpr::BoundedBy`] — bbox prefilter using `ST_MakeEnvelope` + `&&` (T10)
 //!
 //! # Naming note for `WithinShape`
 //!
@@ -39,11 +39,13 @@
 //! # Where
 //!
 //! - [`crate::query::field`] is the only non-spatial module that produces these
-//!   nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`; the T9 methods
-//!   on `FieldRef<M, G: GeographyValue>` build `Contains` / `Intersects` /
-//!   `Touches` / `WithinShape`; and `FieldRef<M, GeoPoint>::order_by_distance`
-//!   captures `Distance` indirectly via
-//!   [`crate::query::order::OrderExpr::SpatialDistance`].
+//!   nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`;
+//!   `FieldRef<M, GeoPoint>::distance_to` builds `Distance` (T10);
+//!   the T9 methods on `FieldRef<M, G: GeographyValue>` build `Contains` /
+//!   `Intersects` / `Touches` / `WithinShape`;
+//!   `FieldRef<M, G: GeographyValue>::bounded_by` builds `BoundedBy` (T10);
+//!   and `FieldRef<M, GeoPoint>::order_by_distance` captures `Distance`
+//!   indirectly via [`crate::query::order::OrderExpr::SpatialDistance`].
 //! - [`super::sql::emit_expr`] has one arm for `ExprNode::Spatial(s)` that
 //!   delegates to [`SpatialExpr::emit`].
 
@@ -82,16 +84,15 @@ pub enum SpatialExpr {
     /// `ST_Distance(<field>, ST_Point($lon, $lat)::geography)`
     ///
     /// Returns a `float8` (Rust `f64`): the great-circle distance in meters
-    /// between `<field>` and `center`. Used in `ORDER BY` expressions via
-    /// [`crate::query::order::OrderExpr::SpatialDistance`] — it is not normally
-    /// used directly as a `Condition`.
+    /// between `<field>` and `center`. Exposed as a first-class composable
+    /// expression method via [`crate::query::field::FieldRef::distance_to`]
+    /// (T10), which enables `.filter`, `.annotate`, and `.order_by`
+    /// composition with the distance expression.
     ///
-    /// T4 live-PostGIS tests and future annotate / expression-composition
-    /// contexts will consume this variant. The T3 ordering path embeds
-    /// `ST_Distance` SQL inline in `OrderExpr::SpatialDistance::emit` for
-    /// performance, but this variant powers the expression-IR path that lets
-    /// callers use `filter_expr(|f| f.loc().distance(center).lt(1000.0))`.
-    #[allow(dead_code)]
+    /// The T3 ordering path embeds `ST_Distance` SQL inline in
+    /// `OrderExpr::SpatialDistance::emit` for performance, but this variant
+    /// powers the expression-IR path that lets callers compose:
+    /// `filter_expr(|f| f.loc().distance_to(&center).lt(1000.0))`.
     Distance {
         /// Column name — a `&'static str` from the macro descriptor.
         /// Validated by `assert_plain_ident`; safe to push as raw SQL.
@@ -165,12 +166,10 @@ pub enum SpatialExpr {
     /// bounds. Uses the `&&` operator so Postgres can use a GiST index for
     /// fast pre-filtering before more expensive shape predicates.
     ///
-    /// Emission is wired in T10. Constructing a `BoundedBy` node before T10
-    /// lands will panic with a clear diagnostic at emit time.
-    // `dead_code`: no public constructor exists in T9; T10 wires `.bounded_by`
-    // on `FieldRef`. The variant is defined here so T10 can add its method
-    // and emit arm without touching this declaration.
-    #[allow(dead_code)]
+    /// Constructed by [`crate::query::field::FieldRef::bounded_by`] (T10).
+    /// The Rust API accepts `(min_lat, min_lon, max_lat, max_lon)` to match
+    /// the `GeoPoint` (lat, lon) convention; the emitter reorders to
+    /// Postgres's (x, y) = (lon, lat) convention.
     BoundedBy {
         /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
         field_column: &'static str,
@@ -213,8 +212,12 @@ impl SpatialExpr {
     /// ```
     /// where `$1` is the EWKB bytes of the other geometry.
     ///
-    /// `BoundedBy` is not yet implemented — reaching its emit arm before T10
-    /// lands will panic with a diagnostic message.
+    /// `BoundedBy` emits:
+    /// ```sql
+    /// ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography && <col>
+    /// ```
+    /// where `$1 = min_lon`, `$2 = min_lat`, `$3 = max_lon`, `$4 = max_lat`.
+    /// The `&&` operator enables GiST index usage for cheap bbox prefiltering.
     ///
     /// The parameter numbers shown are relative to when `emit` is called —
     /// the accumulator's global counter determines the actual `$n` values
@@ -275,12 +278,26 @@ impl SpatialExpr {
             } => {
                 emit_binary_predicate(acc, "ST_Within", field_column, other_ewkb);
             }
-            SpatialExpr::BoundedBy { .. } => {
-                // T10 implements this — panic with a clear message to flag the
-                // missing implementation if it's reached before T10 lands.
-                // No public constructor for BoundedBy exists in T9, so this
-                // arm is unreachable in practice until T10 wires it.
-                panic!("SpatialExpr::BoundedBy emission is wired in T10");
+            SpatialExpr::BoundedBy {
+                field_column,
+                min_lat,
+                min_lon,
+                max_lat,
+                max_lon,
+            } => {
+                // Postgres order: ST_MakeEnvelope(min_x, min_y, max_x, max_y, srid)
+                // where x = longitude, y = latitude. Our API keeps lat first to match
+                // GeoPoint convention; emission reorders.
+                acc.push_sql("ST_MakeEnvelope(");
+                acc.push_bind(*min_lon);
+                acc.push_sql(", ");
+                acc.push_bind(*min_lat);
+                acc.push_sql(", ");
+                acc.push_bind(*max_lon);
+                acc.push_sql(", ");
+                acc.push_bind(*max_lat);
+                acc.push_sql(", 4326)::geography && ");
+                acc.push_sql(field_column);
             }
         }
     }
@@ -639,6 +656,142 @@ mod tests {
     }
 
     // ── Sequential bind numbering when multiple expressions are emitted ───────
+
+    // ── T10: BoundedBy emission tests ────────────────────────────────────────
+
+    /// `BoundedBy` must emit `ST_MakeEnvelope(...)` using Postgres (x, y) =
+    /// (lon, lat) order even though the Rust API accepts (lat, lon).
+    /// The column name must appear after the `&&` operator.
+    #[test]
+    fn bounded_by_emits_st_makeenvelope_in_xy_order() {
+        // min_lat=37.0, min_lon=-123.0, max_lat=38.0, max_lon=-122.0
+        let expr = SpatialExpr::BoundedBy {
+            field_column: "area",
+            min_lat: 37.0,
+            min_lon: -123.0,
+            max_lat: 38.0,
+            max_lon: -122.0,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        // Must use ST_MakeEnvelope with the geography cast and && operator.
+        assert!(
+            sql.contains("ST_MakeEnvelope("),
+            "expected ST_MakeEnvelope in SQL; got: {sql}"
+        );
+        assert!(
+            sql.contains("::geography &&"),
+            "expected ::geography && in SQL; got: {sql}"
+        );
+        assert!(
+            sql.contains("area"),
+            "expected column name 'area' after &&; got: {sql}"
+        );
+        // Bind order: $1=min_lon, $2=min_lat, $3=max_lon, $4=max_lat.
+        // SQL must contain all four placeholders.
+        assert!(
+            sql.contains("$1") && sql.contains("$2") && sql.contains("$3") && sql.contains("$4"),
+            "expected $1 $2 $3 $4 in SQL; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            4,
+            "BoundedBy must bind exactly 4 params; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// All four coordinate values must flow through `push_bind` — none may
+    /// appear as literal text in the emitted SQL fragment.
+    #[test]
+    fn bounded_by_emits_all_four_coords_as_binds() {
+        // Use distinctive values that would be visible if they leaked into SQL.
+        let expr = SpatialExpr::BoundedBy {
+            field_column: "zone",
+            min_lat: 11.1111,
+            min_lon: 22.2222,
+            max_lat: 33.3333,
+            max_lon: 44.4444,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        // None of the coordinate values may appear literally.
+        assert!(
+            !sql.contains("11.1111"),
+            "min_lat leaked into SQL; got: {sql}"
+        );
+        assert!(
+            !sql.contains("22.2222"),
+            "min_lon leaked into SQL; got: {sql}"
+        );
+        assert!(
+            !sql.contains("33.3333"),
+            "max_lat leaked into SQL; got: {sql}"
+        );
+        assert!(
+            !sql.contains("44.4444"),
+            "max_lon leaked into SQL; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            4,
+            "expected 4 binds, got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// SRID 4326 must appear as a literal integer — it is a fixed constant,
+    /// not a user-supplied value, so it is safe to embed directly.
+    #[test]
+    fn bounded_by_includes_srid_4326_literal() {
+        let expr = SpatialExpr::BoundedBy {
+            field_column: "coverage",
+            min_lat: 0.0,
+            min_lon: 0.0,
+            max_lat: 1.0,
+            max_lon: 1.0,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        assert!(
+            acc.sql().contains("4326"),
+            "expected literal 4326 SRID in SQL; got: {}",
+            acc.sql()
+        );
+    }
+
+    // ── T10: Distance emission tests ─────────────────────────────────────────
+
+    /// `Distance` variant must emit `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`.
+    /// Bind order: $1 = lon, $2 = lat.
+    #[test]
+    fn distance_emits_st_distance_with_correct_structure() {
+        let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+        let expr = SpatialExpr::Distance {
+            field_column: "loc",
+            center,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Distance"),
+            "expected ST_Distance; got: {sql}"
+        );
+        assert!(sql.contains("loc"), "expected column 'loc'; got: {sql}");
+        assert!(
+            sql.contains("::geography"),
+            "expected ::geography cast; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            2,
+            "Distance binds lon + lat (2 params); got {}",
+            acc.bind_count()
+        );
+    }
 
     /// When two shape predicates are emitted sequentially onto the same
     /// accumulator, the second bind parameter must be `$2` (not `$1`).

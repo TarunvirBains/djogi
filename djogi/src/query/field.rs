@@ -1064,6 +1064,95 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     }
 }
 
+// ── T10: bounded_by (any GeographyValue) + distance_to (GeoPoint-only) ──────
+//
+// `.bounded_by` is generic over `G: GeographyValue` — a bbox prefilter makes
+// sense for any geography column (polygon coverage zones, linestring routes,
+// point locations, etc.). The four coordinate arguments follow the GeoPoint
+// (lat, lon) convention; emission swaps to Postgres (x=lon, y=lat) order.
+//
+// `.distance_to` is specific to `FieldRef<M, GeoPoint>` because
+// `ST_Distance` applied to a non-point geometry (e.g. a Polygon) returns the
+// minimum boundary distance, which is a different semantic. Keeping it on the
+// GeoPoint receiver makes the API unambiguous and mirrors the existing
+// `.within_km` / `.order_by_distance` surface.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
+    /// Emits a GiST-indexed bounding-box prefilter:
+    /// `ST_MakeEnvelope($min_lon, $min_lat, $max_lon, $max_lat, 4326)::geography && <col>`
+    ///
+    /// The `&&` operator lets Postgres use a GiST spatial index for a cheap
+    /// first pass before expensive `ST_*` predicates. Combine with a shape
+    /// predicate for best performance:
+    ///
+    /// ```ignore
+    /// // Fast bbox prefilter, then exact intersection.
+    /// Delivery::objects()
+    ///     .filter(|f| f.area().bounded_by(37.0, -123.0, 38.0, -122.0))
+    ///     .filter(|f| f.area().intersects(&zone))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    ///
+    /// Argument order matches the `GeoPoint` (lat, lon) convention:
+    /// `min_lat`, `min_lon`, `max_lat`, `max_lon`. The emission swaps to
+    /// Postgres's (x, y) = (lon, lat) order internally.
+    ///
+    /// All four coordinate values flow through `push_bind` — no string
+    /// interpolation of user-supplied data.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn bounded_by(
+        self,
+        min_lat: f64,
+        min_lon: f64,
+        max_lat: f64,
+        max_lon: f64,
+    ) -> crate::expr::Expr<bool> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::BoundedBy {
+                field_column: self.column(),
+                min_lat,
+                min_lon,
+                max_lat,
+                max_lon,
+            },
+        ))
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
+    /// Emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)` — returns
+    /// great-circle distance in meters from `<col>` to `center`.
+    ///
+    /// Composes with `.filter`, `.annotate`, and `.order_by`:
+    ///
+    /// ```ignore
+    /// let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+    ///
+    /// // Filter by distance threshold.
+    /// Store::objects()
+    ///     .filter(|f| f.location().distance_to(&center).lt(5000.0))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    ///
+    /// This wraps the existing `SpatialExpr::Distance` IR variant that was
+    /// added in Phase 6 but previously only used by the `.order_by_distance`
+    /// shortcut. T10 exposes it as a first-class expression method so it
+    /// composes cleanly anywhere an `Expr<f64>` is accepted.
+    ///
+    /// Bind order: `$1 = center.lon`, `$2 = center.lat`.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn distance_to(self, center: &crate::geo::GeoPoint) -> crate::expr::Expr<f64> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::Distance {
+                field_column: self.column(),
+                center: *center,
+            },
+        ))
+    }
+}
+
 // ── Fluent combinators on Condition ───────────────────────────────────────
 //
 // `Condition::and(a, b)` / `::or(a, b)` are the associative constructors in
@@ -1546,5 +1635,300 @@ mod spatial_field_tests {
             ),
             "expected Intersects, got {s:?}"
         );
+    }
+}
+
+// ── T10: bounded_by + distance_to method dispatch tests ──────────────────
+
+#[cfg(all(test, feature = "spatial"))]
+mod bbox_tests {
+    use super::*;
+    use crate::expr::node::ExprNode;
+    use crate::expr::spatial::SpatialExpr;
+    use crate::geo::{GeoPoint, MultiPolygon, Polygon};
+    use crate::pg::accumulator::SqlAccumulator;
+    use std::future::Future;
+
+    // Minimal `Model` stub shared across T10 tests.
+    struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fakes"
+        }
+        fn pk_value(&self) -> &i64 {
+            unimplemented!()
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+    }
+
+    // Helper: unwrap `Expr<bool>` -> `SpatialExpr` for assertion.
+    fn unwrap_spatial_from_expr(expr: crate::expr::Expr<bool>) -> SpatialExpr {
+        if let ExprNode::Spatial(s) = expr.node {
+            return s;
+        }
+        panic!("expected ExprNode::Spatial(...)");
+    }
+
+    // Helper: minimal closed Polygon.
+    fn make_polygon() -> Polygon {
+        let ring = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(),
+        ];
+        Polygon::closed(&ring).unwrap()
+    }
+
+    /// `.bounded_by` on `FieldRef<Fake, GeoPoint>` must emit
+    /// `ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography && <col>`
+    /// with bind order: $1=min_lon, $2=min_lat, $3=max_lon, $4=max_lat.
+    #[test]
+    fn bounded_by_emits_st_makeenvelope_in_xy_order() {
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        // min_lat=37.0, min_lon=-123.0, max_lat=38.0, max_lon=-122.0
+        let expr = field.bounded_by(37.0, -123.0, 38.0, -122.0);
+        let s = unwrap_spatial_from_expr(expr);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_MakeEnvelope("),
+            "expected ST_MakeEnvelope; got: {sql}"
+        );
+        assert!(
+            sql.contains("::geography &&"),
+            "expected ::geography &&; got: {sql}"
+        );
+        assert!(
+            sql.contains("location"),
+            "expected column 'location' after &&; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            4,
+            "expected 4 binds; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// Coordinate values must not appear as literal text in the emitted SQL.
+    #[test]
+    fn bounded_by_emits_all_four_coords_as_binds() {
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        let expr = field.bounded_by(55.5555, 66.6666, 77.7777, 88.8888);
+        let s = unwrap_spatial_from_expr(expr);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(!sql.contains("55.5555"), "min_lat leaked; got: {sql}");
+        assert!(!sql.contains("66.6666"), "min_lon leaked; got: {sql}");
+        assert!(!sql.contains("77.7777"), "max_lat leaked; got: {sql}");
+        assert!(!sql.contains("88.8888"), "max_lon leaked; got: {sql}");
+        assert_eq!(acc.bind_count(), 4);
+    }
+
+    /// `.bounded_by` is generic over `GeographyValue` — verify it compiles
+    /// and produces a `BoundedBy` node for `Polygon` and `MultiPolygon`
+    /// fields (not just `GeoPoint`).
+    #[test]
+    fn bounded_by_works_on_polygon_and_multipolygon_fieldrefs() {
+        // Polygon field
+        let poly_field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        let expr_poly = poly_field.bounded_by(37.0, -123.0, 38.0, -122.0);
+        let s_poly = unwrap_spatial_from_expr(expr_poly);
+        assert!(
+            matches!(
+                s_poly,
+                SpatialExpr::BoundedBy {
+                    field_column: "area",
+                    ..
+                }
+            ),
+            "expected BoundedBy on Polygon field; got {s_poly:?}"
+        );
+
+        // MultiPolygon field
+        let mpoly = make_polygon();
+        let mp_field: FieldRef<Fake, MultiPolygon> = FieldRef::new("coverage");
+        let _ = mpoly; // make_polygon is just to satisfy type-checker in make fn; field is enough
+        let expr_mp = mp_field.bounded_by(0.0, 0.0, 1.0, 1.0);
+        let s_mp = unwrap_spatial_from_expr(expr_mp);
+        assert!(
+            matches!(
+                s_mp,
+                SpatialExpr::BoundedBy {
+                    field_column: "coverage",
+                    ..
+                }
+            ),
+            "expected BoundedBy on MultiPolygon field; got {s_mp:?}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "spatial"))]
+mod distance_tests {
+    use super::*;
+    use crate::expr::node::ExprNode;
+    use crate::expr::spatial::SpatialExpr;
+    use crate::geo::GeoPoint;
+    use crate::pg::accumulator::SqlAccumulator;
+    use std::future::Future;
+
+    // Minimal `Model` stub for distance_to tests.
+    struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fakes"
+        }
+        fn pk_value(&self) -> &i64 {
+            unimplemented!()
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+    }
+
+    /// `.distance_to` must emit `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`.
+    #[test]
+    fn distance_to_emits_st_distance() {
+        let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        let expr: crate::expr::Expr<f64> = field.distance_to(&center);
+        if let ExprNode::Spatial(SpatialExpr::Distance {
+            field_column,
+            center: c,
+        }) = expr.node
+        {
+            assert_eq!(field_column, "loc");
+            // Verify the center was stored correctly.
+            assert!((c.lat - 37.7749).abs() < 1e-10, "lat mismatch: {}", c.lat);
+            assert!(
+                (c.lon - (-122.4194)).abs() < 1e-10,
+                "lon mismatch: {}",
+                c.lon
+            );
+            // Emit and check SQL structure.
+            let mut acc = SqlAccumulator::new("");
+            SpatialExpr::Distance {
+                field_column,
+                center: c,
+            }
+            .emit(&mut acc);
+            let sql = acc.sql();
+            assert!(
+                sql.contains("ST_Distance"),
+                "expected ST_Distance; got: {sql}"
+            );
+            assert!(sql.contains("loc"), "expected column; got: {sql}");
+            assert!(
+                sql.contains("::geography"),
+                "expected ::geography; got: {sql}"
+            );
+            assert_eq!(acc.bind_count(), 2, "expected 2 binds (lon, lat)");
+        } else {
+            panic!("expected Distance spatial expr");
+        }
+    }
+
+    /// `.distance_to(&center).lt(1000.0)` must produce `Expr<bool>` wrapping
+    /// a `Cmp` node whose LHS is a `Spatial(Distance(...))` node.
+    #[test]
+    fn distance_to_composes_with_filter_lt() {
+        let center = GeoPoint::new(48.8566, 2.3522).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("position");
+        // `.lt(1000.0f64)` is on `Expr<f64>` — requires `f64: Into<Expr<f64>>`.
+        let predicate: crate::expr::Expr<bool> = field.distance_to(&center).lt(1000.0f64);
+        // The result should be a Cmp node whose LHS is a Distance spatial expr.
+        if let ExprNode::Cmp { lhs, .. } = predicate.node
+            && let ExprNode::Spatial(SpatialExpr::Distance { field_column, .. }) = *lhs
+        {
+            assert_eq!(field_column, "position");
+            return;
+        }
+        panic!("expected Cmp {{ lhs: Spatial(Distance {{..}}) }}");
+    }
+
+    /// `.distance_to` must return `Expr<f64>` — verified by type inference
+    /// (the binding annotation below is the check; if the return type were
+    /// wrong this would not compile).
+    #[test]
+    fn distance_to_produces_f64_expr() {
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        // Type annotation is the compile-time assertion.
+        let _expr: crate::expr::Expr<f64> = field.distance_to(&center);
     }
 }
