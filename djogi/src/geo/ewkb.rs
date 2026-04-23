@@ -322,3 +322,101 @@ pub(crate) fn decode_multipoint(bytes: &[u8]) -> Result<super::MultiPoint, GeoEr
     super::MultiPoint::new(&points)
         .map_err(|e| GeoError::MalformedEwkb(format!("decoded MultiPoint failed validation: {e}")))
 }
+
+// ── MultiPolygon codec ────────────────────────────────────────────────────────
+
+/// Encode a `MultiPolygon` as an EWKB buffer for `GEOGRAPHY(MultiPolygon, 4326)`.
+///
+/// Each sub-polygon is encoded as a headerless EWKB polygon:
+/// `[endian_byte(1), poly_type_no_srid(4), ring_count(4), rings...]`
+/// The SRID is carried only by the outer envelope.
+pub(crate) fn encode_multipolygon(mp: &super::MultiPolygon) -> Vec<u8> {
+    // MultiPolygon | SRID_FLAG → `0x20000006` LE.
+    const TYPE_MULTIPOLYGON: [u8; 4] = [0x06, 0x00, 0x00, 0x20];
+    // Polygon base type word (no SRID flag) → `0x00000003` LE.
+    const SUBTYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
+
+    let mut buf = Vec::new();
+    push_outer_header(&mut buf, TYPE_MULTIPOLYGON);
+    buf.extend_from_slice(&(mp.polygons.len() as u32).to_le_bytes());
+    for poly in &mp.polygons {
+        buf.push(ENDIAN_BYTE);
+        buf.extend_from_slice(&SUBTYPE_POLYGON);
+        buf.extend_from_slice(&(poly.rings.len() as u32).to_le_bytes());
+        for ring in &poly.rings {
+            buf.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+            for p in ring {
+                push_coord_pair(&mut buf, p.lon, p.lat);
+            }
+        }
+    }
+    buf
+}
+
+/// Decode an EWKB buffer into a `MultiPolygon`.
+pub(crate) fn decode_multipolygon(bytes: &[u8]) -> Result<super::MultiPolygon, GeoError> {
+    const TYPE_MULTIPOLYGON: [u8; 4] = [0x06, 0x00, 0x00, 0x20];
+    const SUBTYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
+
+    let pos = read_outer_header(bytes, TYPE_MULTIPOLYGON)?;
+    let poly_count = read_u32(bytes, pos)? as usize;
+    let mut pos = pos + 4;
+    let mut polygons = Vec::with_capacity(poly_count);
+    for pi in 0..poly_count {
+        // Sub-polygon header: endian(1) + type_word(4) = 5 bytes.
+        if pos + 5 > bytes.len() {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiPolygon sub-polygon {pi} header truncated at offset {pos}"
+            )));
+        }
+        if bytes[pos] != ENDIAN_BYTE {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiPolygon sub-polygon {pi}: expected little-endian marker, got 0x{:02X}",
+                bytes[pos]
+            )));
+        }
+        if bytes[pos + 1..pos + 5] != SUBTYPE_POLYGON {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiPolygon sub-polygon {pi}: unexpected type word {:?}",
+                &bytes[pos + 1..pos + 5]
+            )));
+        }
+        pos += 5;
+        let ring_count = read_u32(bytes, pos)? as usize;
+        pos += 4;
+        let mut rings: Vec<Vec<super::GeoPoint>> = Vec::with_capacity(ring_count);
+        for _ in 0..ring_count {
+            let n = read_u32(bytes, pos)? as usize;
+            pos += 4;
+            let mut ring = Vec::with_capacity(n);
+            for _ in 0..n {
+                let (lon, lat, next) = read_coord_pair(bytes, pos)?;
+                let p = super::GeoPoint::new(lat, lon).map_err(|e| {
+                    GeoError::MalformedEwkb(format!(
+                        "invalid coordinate in MultiPolygon sub-polygon {pi}: {e}"
+                    ))
+                })?;
+                ring.push(p);
+                pos = next;
+            }
+            rings.push(ring);
+        }
+        if rings.is_empty() {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiPolygon sub-polygon {pi} has zero rings"
+            )));
+        }
+        let mut iter = rings.into_iter();
+        let outer = iter.next().expect("checked non-empty");
+        let holes: Vec<Vec<super::GeoPoint>> = iter.collect();
+        let poly = super::Polygon::with_holes(outer, holes).map_err(|e| {
+            GeoError::MalformedEwkb(format!(
+                "decoded MultiPolygon sub-polygon {pi} failed validation: {e}"
+            ))
+        })?;
+        polygons.push(poly);
+    }
+    super::MultiPolygon::new(polygons).map_err(|e| {
+        GeoError::MalformedEwkb(format!("decoded MultiPolygon failed validation: {e}"))
+    })
+}
