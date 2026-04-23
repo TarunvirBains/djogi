@@ -520,6 +520,40 @@ mod tests {
         );
     }
 
+    // T2 — .rollup and .cube entry points produce GroupedQuerySet with the
+    // correct GroupingMode. The mode is verified via the SQL emitter — calling
+    // .annotate then build_grouped_annotated_select and asserting the clause.
+
+    #[test]
+    fn queryset_rollup_returns_grouped_queryset_with_rollup_mode() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let f: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs.rollup(|_| f).annotate(|_| vals.sum());
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUP BY ROLLUP (org_id)"),
+            "expected ROLLUP clause via .rollup entry point, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn queryset_cube_returns_grouped_queryset_with_cube_mode() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let f: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs.cube(|_| f).annotate(|_| vals.sum());
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUP BY CUBE (org_id)"),
+            "expected CUBE clause via .cube entry point, got: {sql}"
+        );
+    }
+
     // P1-2 — arity-3 key tuple: same check.
     #[test]
     fn having_on_arity_three_key_emits_having_clause() {

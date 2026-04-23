@@ -721,6 +721,67 @@ impl<T: Model> QuerySet<T> {
             _k: std::marker::PhantomData,
         }
     }
+
+    /// Enter grouped state with ROLLUP semantics. Emits
+    /// `GROUP BY ROLLUP (<keys>)` — Postgres expands this to include all
+    /// hierarchical subtotals and the grand total in one pass.
+    ///
+    /// This is a convenience entry point equivalent to
+    /// `.group_by(f)` followed by setting the grouping mode to
+    /// `GroupingMode::Rollup`. Call `.annotate(...)` on the result to
+    /// attach aggregate expressions.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Emits: GROUP BY ROLLUP (org_id)
+    /// // Produces subtotals per org_id plus the grand total in one query.
+    /// let rows = Txn::objects()
+    ///     .rollup(|f| f.org_id())
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn rollup<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
+    where
+        F: FnOnce(T::Fields) -> K,
+        K: crate::query::grouped::IntoGroupKeyTuple,
+    {
+        let mut gq = self.group_by(f);
+        gq.grouping = crate::query::grouped::GroupingMode::Rollup;
+        gq
+    }
+
+    /// Enter grouped state with CUBE semantics. Emits
+    /// `GROUP BY CUBE (<keys>)` — Postgres expands this to all 2^n subsets
+    /// of the key columns, covering every possible grouping combination.
+    ///
+    /// This is a convenience entry point equivalent to
+    /// `.group_by(f)` followed by setting the grouping mode to
+    /// `GroupingMode::Cube`. Call `.annotate(...)` on the result to
+    /// attach aggregate expressions.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Emits: GROUP BY CUBE (org_id, region_id)
+    /// // Produces subtotals for (org_id, region_id), (org_id), (region_id),
+    /// // and the grand total — all four combinations.
+    /// let rows = Txn::objects()
+    ///     .cube(|f| (f.org_id(), f.region_id()))
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn cube<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
+    where
+        F: FnOnce(T::Fields) -> K,
+        K: crate::query::grouped::IntoGroupKeyTuple,
+    {
+        let mut gq = self.group_by(f);
+        gq.grouping = crate::query::grouped::GroupingMode::Cube;
+        gq
+    }
 }
 
 /// Private marker trait used to seal [`IntoDistinctColumns`].
