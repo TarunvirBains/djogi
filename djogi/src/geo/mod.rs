@@ -10,13 +10,8 @@
 //!
 //! - [`GeoPoint`] — a WGS-84 latitude/longitude coordinate, stored as
 //!   `GEOGRAPHY(Point, 4326)` in Postgres.
+//! - [`GeographyValue`] — sealed trait implemented by all geometry types.
 //! - [`GeoError`] — errors from coordinate validation and EWKB codec failures.
-//!
-//! # Future work
-//!
-//! The `spatial` feature flag is intentionally narrow at first: only `GeoPoint`
-//! ships in Phase 6. Polygon, linestring, and multipoint support — along with
-//! index-backed spatial query operators — will arrive in a later phase.
 
 mod ewkb;
 pub mod point;
@@ -59,4 +54,94 @@ pub enum GeoError {
     /// the caller can diagnose the mismatch.
     #[error("unexpected SRID {0}: Djogi requires SRID 4326 (WGS-84)")]
     UnexpectedSrid(u32),
+}
+
+// ── Sealed GeographyValue trait ───────────────────────────────────────────────
+
+/// Private sealing module — its `Sealed` trait cannot be named outside this
+/// crate, so `GeographyValue` cannot be implemented downstream.
+#[cfg(feature = "spatial")]
+mod sealed_value {
+    pub trait Sealed {}
+}
+
+/// Sealed trait implemented by every Djogi geometry that maps to a
+/// `GEOGRAPHY(..., 4326)` column.
+///
+/// ## Purpose
+///
+/// Query APIs that accept "any geography value" are generic over this trait
+/// rather than enumerating concrete types. The seal prevents downstream crates
+/// from inventing geometries that the query layer does not know how to emit or
+/// decode. New geometry types ship via Djogi phases, not user code.
+///
+/// ## Wire format contract
+///
+/// Each implementor must round-trip through `GEOGRAPHY(<SUBTYPE>, 4326)` via
+/// EWKB encoding. The `GEO_TYPE_WORD` constant embeds both the SRID flag
+/// (`0x20000000`) and the base OGC geometry type number so the codec can
+/// dispatch on a single `u32` comparison.
+///
+/// ## Geometry type words
+///
+/// | Type          | Base | With SRID flag   |
+/// |---------------|------|------------------|
+/// | Point         |    1 | `0x20000001`     |
+/// | LineString    |    2 | `0x20000002`     |
+/// | Polygon       |    3 | `0x20000003`     |
+/// | MultiPoint    |    4 | `0x20000004`     |
+/// | MultiPolygon  |    6 | `0x20000006`     |
+#[cfg(feature = "spatial")]
+pub trait GeographyValue: sealed_value::Sealed {
+    /// EWKB type word including the SRID flag (`0x20000000` ORed with the
+    /// base OGC geometry type number).
+    const GEO_TYPE_WORD: u32;
+
+    /// Descriptor-level subtype discriminant from [`crate::descriptor::GeographySubtype`].
+    const SUBTYPE: crate::descriptor::GeographySubtype;
+
+    /// Encode `self` into its EWKB wire format (little-endian, SRID 4326).
+    fn to_ewkb_bytes(&self) -> Vec<u8>;
+
+    /// Decode an EWKB buffer into `Self`.
+    ///
+    /// Returns an error if the type word does not match `GEO_TYPE_WORD`,
+    /// the SRID is not 4326, or the coordinate data is structurally invalid.
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError>
+    where
+        Self: Sized;
+}
+
+// ── GeoPoint impl ─────────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for GeoPoint {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for GeoPoint {
+    const GEO_TYPE_WORD: u32 = 0x20000001;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::Point;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        GeoPoint::to_ewkb_bytes(*self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        GeoPoint::from_ewkb_bytes(bytes)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "spatial"))]
+mod geography_value_tests {
+    use super::*;
+
+    fn takes_geo<G: GeographyValue>() {}
+
+    #[test]
+    fn geopoint_is_geography_value() {
+        takes_geo::<GeoPoint>();
+    }
 }
