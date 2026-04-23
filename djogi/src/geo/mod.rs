@@ -14,15 +14,19 @@
 //!   `GEOGRAPHY(LineString, 4326)`.
 //! - [`Polygon`] — a closed ring (with optional holes), stored as
 //!   `GEOGRAPHY(Polygon, 4326)`.
+//! - [`MultiPoint`] — an unordered collection of one or more points, stored as
+//!   `GEOGRAPHY(MultiPoint, 4326)`.
 //! - [`GeographyValue`] — sealed trait implemented by all geometry types above.
 //! - [`GeoError`] — errors from coordinate validation and EWKB codec failures.
 
 mod ewkb;
 pub mod linestring;
+pub mod multipoint;
 pub mod point;
 pub mod polygon;
 
 pub use linestring::LineString;
+pub use multipoint::MultiPoint;
 pub use point::GeoPoint;
 pub use polygon::Polygon;
 
@@ -85,6 +89,16 @@ pub enum GeoError {
     #[cfg(feature = "spatial")]
     #[error("invalid Polygon: {reason}")]
     InvalidPolygon {
+        /// Human-readable description of the violated constraint.
+        reason: &'static str,
+    },
+
+    /// A `MultiPoint` was constructed with an empty point list.
+    ///
+    /// `MultiPoint` requires at least one point.
+    #[cfg(feature = "spatial")]
+    #[error("invalid MultiPoint: {reason}")]
+    InvalidMultiPoint {
         /// Human-readable description of the violated constraint.
         reason: &'static str,
     },
@@ -205,6 +219,26 @@ impl GeographyValue for Polygon {
     }
 }
 
+// ── MultiPoint impl ───────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for MultiPoint {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for MultiPoint {
+    const GEO_TYPE_WORD: u32 = 0x20000004;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::MultiPoint;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        ewkb::encode_multipoint(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_multipoint(bytes)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "spatial"))]
@@ -226,5 +260,10 @@ mod geography_value_tests {
     #[test]
     fn polygon_is_geography_value() {
         takes_geo::<Polygon>();
+    }
+
+    #[test]
+    fn multipoint_is_geography_value() {
+        takes_geo::<MultiPoint>();
     }
 }

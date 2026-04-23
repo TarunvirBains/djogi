@@ -253,3 +253,72 @@ pub(crate) fn decode_polygon(bytes: &[u8]) -> Result<super::Polygon, GeoError> {
     super::Polygon::with_holes(outer, holes)
         .map_err(|e| GeoError::MalformedEwkb(format!("decoded Polygon failed validation: {e}")))
 }
+
+// ── MultiPoint codec ──────────────────────────────────────────────────────────
+
+/// Encode a `MultiPoint` as an EWKB buffer for `GEOGRAPHY(MultiPoint, 4326)`.
+///
+/// Each sub-point is encoded as a headerless EWKB point:
+/// `[endian_byte(1), point_type_no_srid(4), lon_f64_LE(8), lat_f64_LE(8)]`
+/// — 21 bytes per sub-point. The SRID is carried only by the outer envelope.
+pub(crate) fn encode_multipoint(mp: &super::MultiPoint) -> Vec<u8> {
+    // Point base type word (no SRID flag) → `0x00000001` LE.
+    const SUBTYPE_POINT: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+    // MultiPoint | SRID_FLAG → `0x20000004` LE.
+    const TYPE_MULTIPOINT: [u8; 4] = [0x04, 0x00, 0x00, 0x20];
+
+    let n = mp.points.len();
+    // outer header = 9 bytes; count = 4 bytes; each sub-point = 1+4+8+8 = 21 bytes.
+    let cap = 9 + 4 + 21 * n;
+    let mut buf = Vec::with_capacity(cap);
+    push_outer_header(&mut buf, TYPE_MULTIPOINT);
+    buf.extend_from_slice(&(n as u32).to_le_bytes());
+    for p in &mp.points {
+        buf.push(ENDIAN_BYTE);
+        buf.extend_from_slice(&SUBTYPE_POINT);
+        push_coord_pair(&mut buf, p.lon, p.lat);
+    }
+    buf
+}
+
+/// Decode an EWKB buffer into a `MultiPoint`.
+pub(crate) fn decode_multipoint(bytes: &[u8]) -> Result<super::MultiPoint, GeoError> {
+    const SUBTYPE_POINT: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+    const TYPE_MULTIPOINT: [u8; 4] = [0x04, 0x00, 0x00, 0x20];
+
+    let pos = read_outer_header(bytes, TYPE_MULTIPOINT)?;
+    let n = read_u32(bytes, pos)? as usize;
+    let mut pos = pos + 4;
+    let mut points = Vec::with_capacity(n);
+    for i in 0..n {
+        // Each sub-point: endian(1) + type_word(4) + lon(8) + lat(8) = 21 bytes.
+        if pos + 21 > bytes.len() {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiPoint sub-point {i} truncated at offset {pos}"
+            )));
+        }
+        if bytes[pos] != ENDIAN_BYTE {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiPoint sub-point {i}: expected little-endian marker, got 0x{:02X}",
+                bytes[pos]
+            )));
+        }
+        if bytes[pos + 1..pos + 5] != SUBTYPE_POINT {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiPoint sub-point {i}: unexpected type word {:?}",
+                &bytes[pos + 1..pos + 5]
+            )));
+        }
+        pos += 5;
+        let (lon, lat, next) = read_coord_pair(bytes, pos)?;
+        let p = super::GeoPoint::new(lat, lon).map_err(|e| {
+            GeoError::MalformedEwkb(format!(
+                "invalid coordinate in MultiPoint sub-point {i}: {e}"
+            ))
+        })?;
+        points.push(p);
+        pos = next;
+    }
+    super::MultiPoint::new(&points)
+        .map_err(|e| GeoError::MalformedEwkb(format!("decoded MultiPoint failed validation: {e}")))
+}
