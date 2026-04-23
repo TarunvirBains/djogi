@@ -270,9 +270,15 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 ///
 /// # Attribute arguments
 ///
-/// `#[djogi_test]` takes no arguments in v1. Future versions may accept
-/// options such as `migrations = "path/to/sql"` to apply fixtures before
-/// the test body runs.
+/// - `extensions = [ "postgis", "pg_trgm", ... ]` — optional array of
+///   Postgres extension names to provision on the per-test database via
+///   `CREATE EXTENSION IF NOT EXISTS` before the test body runs. Each
+///   name is validated against a strict ASCII-identifier rule at runtime
+///   (letters / digits / underscores, 1..=63 bytes) before being
+///   interpolated into SQL.
+///
+/// Future versions may accept additional options such as
+/// `migrations = "path/to/sql"` to apply fixtures before the test body.
 ///
 /// # Requirements
 ///

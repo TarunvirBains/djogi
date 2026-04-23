@@ -1,0 +1,5 @@
+error: #[djogi_test] `extensions` expects an array literal, e.g. `extensions = ["postgis"]`
+ --> tests/compile_fail/djogi_test_extensions_not_array.rs:5:34
+  |
+5 | #[djogi::djogi_test(extensions = "postgis")]
+  |                                  ^^^^^^^^^
