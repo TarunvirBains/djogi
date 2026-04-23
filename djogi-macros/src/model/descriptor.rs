@@ -452,40 +452,86 @@ pub fn expand(
     // No `Box::leak` is needed because the entire `inventory::submit!` block
     // is emitted as a single `static` initialiser; all nested `&[...]` slices
     // are literal arrays with `'static` lifetimes.
-    let geography_index_specs: Vec<TokenStream> = user_fields
-        .iter()
-        .filter(|(field, _fa)| is_geography_field_type(&field.ty))
-        .map(|(field, _fa)| {
-            let raw_name = field.ident.as_ref().unwrap().to_string();
-            let col = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
-            // Index name convention: "<table>_<column>_gix"
-            let index_name = format!("{table_name}_{col}_gix");
-            let col_str = col.as_str();
-            quote! {
-                ::djogi::descriptor::IndexSpec {
-                    name: #index_name,
-                    target: ::djogi::descriptor::IndexTarget::Columns(&[
-                        ::djogi::descriptor::IndexColumnSpec::simple(#col_str),
-                    ]),
-                    kind: ::djogi::descriptor::IndexKind::NonUnique,
-                    index_type: ::djogi::descriptor::IndexType::Gist,
-                    predicate: ::std::option::Option::None,
-                    include: &[],
-                    nulls_not_distinct: false,
-                    requires_out_of_transaction: true,
-                    extension_dependency: ::std::option::Option::Some("postgis"),
-                }
+    let mut named_index_specs: Vec<(String, TokenStream)> = Vec::new();
+
+    // Phase 6 spatial GiST indexes — implicit, one per GeographyValue field.
+    // The generated name `<table>_<col>_gix` is reserved against user-
+    // declared collisions below.
+    let mut reserved_generated_names: Vec<String> = Vec::new();
+    for (field, _fa) in user_fields.iter() {
+        if !is_geography_field_type(&field.ty) {
+            continue;
+        }
+        let raw_name = field.ident.as_ref().unwrap().to_string();
+        let col = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+        let index_name = format!("{table_name}_{col}_gix");
+        reserved_generated_names.push(index_name.clone());
+        let col_str = col.as_str();
+        let tokens = quote! {
+            ::djogi::descriptor::IndexSpec {
+                name: #index_name,
+                target: ::djogi::descriptor::IndexTarget::Columns(&[
+                    ::djogi::descriptor::IndexColumnSpec::simple(#col_str),
+                ]),
+                kind: ::djogi::descriptor::IndexKind::NonUnique,
+                index_type: ::djogi::descriptor::IndexType::Gist,
+                predicate: ::std::option::Option::None,
+                include: &[],
+                nulls_not_distinct: false,
+                requires_out_of_transaction: true,
+                extension_dependency: ::std::option::Option::Some("postgis"),
             }
+        };
+        named_index_specs.push((index_name, tokens));
+    }
+
+    // Phase 7-Zero v3 T3 — lower every `#[model(indexes(...))]` declaration.
+    // Column-name validation walks the user-declared field set (raw-ident-
+    // stripped) to catch typos at macro-expansion time. Name collisions
+    // with the spatial GiST reserved names above are rejected in the
+    // lowerer so users cannot silently shadow framework-emitted indexes.
+    let mut declared_columns: Vec<String> = user_fields
+        .iter()
+        .map(|(field, _fa)| {
+            let raw = field.ident.as_ref().unwrap().to_string();
+            raw.strip_prefix("r#").unwrap_or(&raw).to_string()
         })
         .collect();
+    // Framework-injected columns (`id` when pk != none, plus `created_at`
+    // and `updated_at`) are valid index targets too — include them in the
+    // declared set so `indexes(index(fields = [created_at]))` compiles.
+    if !matches!(model_attrs.pk, PkStrategy::None) {
+        declared_columns.push("id".to_string());
+    }
+    declared_columns.push("created_at".to_string());
+    declared_columns.push("updated_at".to_string());
+    let lowering_ctx = crate::model::indexes::LoweringCtx {
+        table_name: table_name.as_str(),
+        declared_columns: &declared_columns,
+        reserved_generated_names: &reserved_generated_names,
+    };
+    for decl in &model_attrs.indexes {
+        match crate::model::indexes::emit_index_spec_tokens(decl, &lowering_ctx) {
+            Ok((name, tokens)) => named_index_specs.push((name, tokens)),
+            Err(e) => {
+                let err_tokens = e.to_compile_error();
+                return quote! { #err_tokens };
+            }
+        }
+    }
 
-    // Emit the indexes slice. If there are no geography fields, the slice is
-    // empty (`&[]`) — identical to the Phase 1 default. If there are one or
-    // more geography fields, emit a `&[IndexSpec { … }, …]` literal.
-    let indexes_tokens = if geography_index_specs.is_empty() {
+    // Alphabetise by generated name — deterministic emission means minor
+    // reorderings in the user's source do not produce spurious migration
+    // diffs. Matches the Phase 4.5 `visage_map` alphabetisation per
+    // `feedback_verify_api_shape_conventions.md`.
+    named_index_specs.sort_by(|a, b| a.0.cmp(&b.0));
+    let index_spec_tokens: Vec<TokenStream> =
+        named_index_specs.into_iter().map(|(_, ts)| ts).collect();
+
+    let indexes_tokens = if index_spec_tokens.is_empty() {
         quote! { &[] }
     } else {
-        quote! { &[ #(#geography_index_specs,)* ] }
+        quote! { &[ #(#index_spec_tokens,)* ] }
     };
 
     quote! {

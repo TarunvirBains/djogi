@@ -138,6 +138,16 @@ pub struct ModelAttrs {
     /// compile error. Both values are validated byte-level at parse time
     /// per `feedback_no_regex_in_djogi`.
     pub fts: Option<FtsSpec>,
+
+    /// Model-level index declarations parsed from `#[model(indexes(...))]`
+    /// — Phase 7-Zero v3 T3.
+    ///
+    /// Each entry lowers to one `IndexSpec` struct literal in the
+    /// descriptor's `indexes` slice. Empty when no `indexes(...)` group
+    /// is present; otherwise the order follows the user's source-order
+    /// declarations, and the descriptor emitter alphabetises by
+    /// generated name before producing the final slice literal.
+    pub indexes: Vec<crate::model::indexes::ModelIndexDecl>,
 }
 
 /// Parsed `pk = "..."` value.
@@ -177,6 +187,8 @@ impl ModelAttrs {
         let mut idempotency_key: Option<String> = Option::None;
         let mut tenant_key: Option<String> = Option::None;
         let mut fts: Option<FtsSpec> = Option::None;
+        let mut indexes: Vec<crate::model::indexes::ModelIndexDecl> = Vec::new();
+        let mut seen_indexes = false;
 
         for meta in &metas {
             match meta {
@@ -314,6 +326,19 @@ impl ModelAttrs {
                     }
                     fts = Some(FtsSpec::parse_from_list(list)?);
                 }
+                // `indexes(index(...), unique(...), ...)` — Phase 7-Zero v3 T3.
+                // Full model-level grammar lives in `crate::model::indexes`;
+                // parse here and stash the IR for the descriptor emitter.
+                Meta::List(list) if list.path.is_ident("indexes") => {
+                    if seen_indexes {
+                        return Err(syn::Error::new_spanned(
+                            &list.path,
+                            "duplicate `indexes` key in #[model(...)]",
+                        ));
+                    }
+                    seen_indexes = true;
+                    indexes = crate::model::indexes::parse_indexes_meta_list(list)?;
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
@@ -340,6 +365,7 @@ impl ModelAttrs {
             idempotency_key,
             tenant_key,
             fts,
+            indexes,
         })
     }
 }

@@ -1,0 +1,5 @@
+error: `opclass = "9starts_with_digit"` must start with an ASCII letter or underscore
+ --> tests/compile_fail/phase7_zero_model_indexes_per_column_opclass_bad_shape.rs:8:5
+  |
+8 |     index(fields = [(col = email, opclass = "9starts_with_digit")]),
+  |     ^^^^^

@@ -1,0 +1,5 @@
+error: `name = "places_location_gix"` collides with a macro-generated index name — pick a different explicit name or remove the override.
+ --> tests/compile_fail/phase7_zero_model_indexes_name_collides_with_generated.rs:7:5
+  |
+7 |     index(fields = [label], name = "places_location_gix"),
+  |     ^^^^^

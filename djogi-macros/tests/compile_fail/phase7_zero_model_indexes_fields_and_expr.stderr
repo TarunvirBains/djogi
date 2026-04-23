@@ -1,0 +1,5 @@
+error: `fields = [..]` and `expr = ".."` are mutually exclusive — use exactly one
+ --> tests/compile_fail/phase7_zero_model_indexes_fields_and_expr.rs:5:5
+  |
+5 |     index(fields = [email], expr = "lower(email)"),
+  |     ^^^^^

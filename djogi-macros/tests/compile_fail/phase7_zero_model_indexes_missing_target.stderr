@@ -1,0 +1,5 @@
+error: missing target — every index declaration must set either `fields = [..]` or `expr = ".."`
+ --> tests/compile_fail/phase7_zero_model_indexes_missing_target.rs:5:5
+  |
+5 |     index(using = "btree"),
+  |     ^^^^^
