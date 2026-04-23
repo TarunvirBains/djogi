@@ -46,7 +46,7 @@ pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
 #[cfg(feature = "spatial")]
-pub use spatial_grouping::{RegionKey, SpatialJoinSpec};
+pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
 

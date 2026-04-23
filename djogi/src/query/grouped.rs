@@ -145,39 +145,43 @@ pub(crate) enum SpatialGroupSource {
     Geohash(crate::query::spatial_grouping::GeohashSpec),
 }
 
-// ── Spatial region key: RegionKeyWithCol<R> ──────────────────────────────
+// ── Spatial region key: RegionKey<R> ─────────────────────────────────────
 //
-// `RegionKeyWithCol<R>` is the key type for the `group_by_region` path.
-// It holds the `r_pk_col` name so `push_select_columns` and
-// `push_group_by_columns` can emit `r.<pk-col>` without breaking the
-// `IntoGroupKeyTuple` method signature (which takes `&self`, no extra args).
+// `RegionKey<R>` is the public key type for the `group_by_region` path.
+// It carries a `pub(crate)` `r_pk_col: Option<&'static str>` field that
+// the SQL builder reads to emit `r.<pk-col>`.  The field is `Some` on the
+// sentinel value stored in `GroupedQuerySet::keys` (set by
+// `group_by_region`) and `None` on the decoded output produced by
+// `decode_tuple` (the user-facing value, which needs no column name).
 //
 // Both the `sealed::Sealed` impl AND the `IntoGroupKeyTuple` impl live here
 // (in `grouped.rs`) because the seal is defined in this module's private
 // `mod sealed` and cannot be named from `spatial_grouping.rs`.
 
 #[cfg(feature = "spatial")]
-impl<R: crate::model::Model> sealed::Sealed
-    for crate::query::spatial_grouping::RegionKeyWithCol<R>
-{
-}
+impl<R: crate::model::Model> sealed::Sealed for crate::query::spatial_grouping::RegionKey<R> {}
 
 #[cfg(feature = "spatial")]
-impl<R: crate::model::Model> IntoGroupKeyTuple
-    for crate::query::spatial_grouping::RegionKeyWithCol<R>
+impl<R: crate::model::Model> IntoGroupKeyTuple for crate::query::spatial_grouping::RegionKey<R>
 where
     R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     type Decoded = crate::query::spatial_grouping::RegionKey<R>;
 
     fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        let col = self
+            .r_pk_col
+            .expect("RegionKey::push_group_by_columns called on a decoded key (r_pk_col is None)");
         acc.push_sql("r.");
-        acc.push_sql(self.r_pk_col);
+        acc.push_sql(col);
     }
 
     fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+        let col = self
+            .r_pk_col
+            .expect("RegionKey::push_select_columns called on a decoded key (r_pk_col is None)");
         acc.push_sql("r.");
-        acc.push_sql(self.r_pk_col);
+        acc.push_sql(col);
         acc.push_sql(" AS rk0");
     }
 
@@ -186,6 +190,7 @@ where
         let region_pk: Option<R::Pk> = row.try_get::<_, Option<R::Pk>>(0)?;
         Ok(crate::query::spatial_grouping::RegionKey {
             region_pk,
+            r_pk_col: None, // decoded output — column name not needed
             _phantom: PhantomData,
         })
     }

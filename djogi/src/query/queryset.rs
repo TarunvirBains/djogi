@@ -873,10 +873,7 @@ impl<T: Model> QuerySet<T> {
         self,
         field: F,
         _regions: QuerySet<R>,
-    ) -> crate::query::grouped::GroupedQuerySet<
-        T,
-        crate::query::spatial_grouping::RegionKeyWithCol<R>,
-    >
+    ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::RegionKey<R>>
     where
         F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
         G: crate::geo::GeographyValue,
@@ -935,9 +932,9 @@ impl<T: Model> QuerySet<T> {
             r_pk_col,
         };
 
-        let keys = crate::query::spatial_grouping::RegionKeyWithCol::<R> {
+        let keys = crate::query::spatial_grouping::RegionKey::<R> {
             region_pk: None,
-            r_pk_col,
+            r_pk_col: Some(r_pk_col),
             _phantom: std::marker::PhantomData,
         };
 
@@ -970,7 +967,7 @@ impl<T: Model> QuerySet<T> {
         regions: QuerySet<R>,
     ) -> crate::query::grouped::GroupedAnnotatedQuerySet<
         T,
-        crate::query::spatial_grouping::RegionKeyWithCol<R>,
+        crate::query::spatial_grouping::RegionKey<R>,
         crate::expr::AggregateExpr<i64>,
     >
     where
@@ -1299,13 +1296,181 @@ mod tests {
     //
     // These tests confirm the entry-point signatures compile and return the
     // expected type shapes. The SQL emission shape is tested in sql.rs.
+
+    // ── P1-2 once-warn counter test ───────────────────────────────────────────
     //
-    // The "warning fires once" invariant is guaranteed by `std::sync::Once`
-    // semantics — `call_once` is idempotent and thread-safe. We do not test
-    // that invariant with a log-counter here because the process-wide static
-    // `ONCE` state makes log-count assertions non-deterministic across test
-    // orderings. The Once guarantee is a stdlib contract, not a Djogi
-    // implementation detail that needs re-testing.
+    // Verifies that calling `group_by_region` against an unindexed region model
+    // emits at most one `tracing::warn!` regardless of how many times the method
+    // is called. The guard uses `std::sync::Once` which is process-wide; the
+    // counter is captured with `tracing_test::traced_test` scoped to this test's
+    // thread-local subscriber.
+    //
+    // `ONCE` fires at most once per process run. `#[traced_test]` captures the
+    // warn if it fires inside this test invocation and zero otherwise. The
+    // assertion uses `<=` rather than `==` because test parallelism may cause
+    // another unindexed call (in a different test) to consume the `Once` first —
+    // the bound of at most one is still the invariant being checked.
+
+    /// A region model with a geography field but NO GiST index — triggers the
+    /// once-per-process warn path in `group_by_region`.
+    #[cfg(feature = "spatial")]
+    struct FakeUnindexedRegion;
+    #[cfg(feature = "spatial")]
+    impl crate::model::__sealed::Sealed for FakeUnindexedRegion {}
+    #[cfg(feature = "spatial")]
+    #[allow(clippy::manual_async_fn)]
+    impl Model for FakeUnindexedRegion {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "unindexed_regions"
+        }
+        fn pk_value(&self) -> &i64 {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            use crate::descriptor::{FieldDescriptor, FieldSqlType, GeographySubtype, PkType};
+            static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+                name: "boundary",
+                sql_type: FieldSqlType::Geography {
+                    subtype: GeographySubtype::Polygon,
+                    srid: 4326,
+                },
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            }];
+            static DESC: ModelDescriptor = ModelDescriptor {
+                type_name: "FakeUnindexedRegion",
+                table_name: "unindexed_regions",
+                pk_type: PkType::HeerId,
+                fields: FIELDS,
+                partition_by: None,
+                has_outbox: false,
+                idempotency_key: None,
+                tenant_key: None,
+                cache_ttl: None,
+                rationale: None,
+                indexes: &[],
+                is_through: false,
+                fts: None,
+            };
+            &DESC
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+    }
+
+    /// Verifies the once-warn guard: `group_by_region` must emit at most one
+    /// `warn!` for an unindexed region model even when called multiple times.
+    ///
+    /// A custom `tracing::Subscriber` counts `WARN`-level events from the
+    /// `djogi::spatial` target. The `std::sync::Once` guard is process-wide,
+    /// so the warn fires in whichever test invocation happens first;
+    /// the counter captures it if it fires inside this test. The assertion
+    /// bounds the count to `<= 1`, which is the invariant regardless of
+    /// test ordering.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn group_by_region_warns_at_most_once_for_unindexed_region() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Per-invocation counter — never accumulates across tests because
+        // each test sees its own stack-allocated `AtomicUsize`.
+        let warn_count = std::sync::Arc::new(AtomicUsize::new(0));
+
+        // Minimal `Subscriber` that counts WARN events from "djogi::spatial".
+        struct WarnCountSub {
+            count: std::sync::Arc<AtomicUsize>,
+        }
+        impl tracing::Subscriber for WarnCountSub {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                if *event.metadata().level() == tracing::Level::WARN
+                    && event.metadata().target() == "djogi::spatial"
+                {
+                    self.count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+
+        let subscriber = WarnCountSub {
+            count: warn_count.clone(),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Call group_by_region twice — only the first call (in this process)
+        // should fire the tracing::warn!. The second is a no-op via Once.
+        let _g1 = QuerySet::<Fake>::new().group_by_region(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            QuerySet::<FakeUnindexedRegion>::new(),
+        );
+        let _g2 = QuerySet::<Fake>::new().group_by_region(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            QuerySet::<FakeUnindexedRegion>::new(),
+        );
+
+        // The Once guard ensures at most one warn fires across the whole process.
+        // If this test runs first on the unindexed path: count == 1.
+        // If another test fired the Once before us: count == 0.
+        // Both satisfy the invariant "never > 1".
+        let count = warn_count.load(Ordering::Relaxed);
+        assert!(
+            count <= 1,
+            "expected at most 1 warn from group_by_region (Once guard), got {count}"
+        );
+    }
 
     /// A `FakeIndexedRegion` that returns a descriptor with a GiST index on a
     /// Geography field — `group_by_region` should NOT emit a warning.
@@ -1407,7 +1572,7 @@ mod tests {
         }
     }
 
-    /// `group_by_region` returns a `GroupedQuerySet<T, RegionKeyWithCol<R>>`.
+    /// `group_by_region` returns a `GroupedQuerySet<T, RegionKey<R>>`.
     /// This compile-pass test verifies the type shape is as specified.
     #[cfg(feature = "spatial")]
     #[test]
@@ -1415,15 +1580,15 @@ mod tests {
         use crate::geo::GeoPoint;
         use crate::query::field::FieldRef;
         use crate::query::grouped::GroupedQuerySet;
-        use crate::query::spatial_grouping::RegionKeyWithCol;
+        use crate::query::spatial_grouping::RegionKey;
 
         let qs: QuerySet<Fake> = QuerySet::new();
         let regions: QuerySet<FakeIndexedRegion> = QuerySet::new();
-        let _grouped: GroupedQuerySet<Fake, RegionKeyWithCol<FakeIndexedRegion>> =
+        let _grouped: GroupedQuerySet<Fake, RegionKey<FakeIndexedRegion>> =
             qs.group_by_region(|_| FieldRef::<Fake, GeoPoint>::new("location"), regions);
     }
 
-    /// `count_by_region` returns a `GroupedAnnotatedQuerySet<T, RegionKeyWithCol<R>, AggregateExpr<i64>>`.
+    /// `count_by_region` returns a `GroupedAnnotatedQuerySet<T, RegionKey<R>, AggregateExpr<i64>>`.
     #[cfg(feature = "spatial")]
     #[test]
     fn count_by_region_returns_grouped_annotated_queryset() {
@@ -1431,15 +1596,12 @@ mod tests {
         use crate::geo::GeoPoint;
         use crate::query::field::FieldRef;
         use crate::query::grouped::GroupedAnnotatedQuerySet;
-        use crate::query::spatial_grouping::RegionKeyWithCol;
+        use crate::query::spatial_grouping::RegionKey;
 
         let qs: QuerySet<Fake> = QuerySet::new();
         let regions: QuerySet<FakeIndexedRegion> = QuerySet::new();
-        let _gaq: GroupedAnnotatedQuerySet<
-            Fake,
-            RegionKeyWithCol<FakeIndexedRegion>,
-            AggregateExpr<i64>,
-        > = qs.count_by_region(|_| FieldRef::<Fake, GeoPoint>::new("location"), regions);
+        let _gaq: GroupedAnnotatedQuerySet<Fake, RegionKey<FakeIndexedRegion>, AggregateExpr<i64>> =
+            qs.count_by_region(|_| FieldRef::<Fake, GeoPoint>::new("location"), regions);
     }
 
     /// Calling `group_by_region` twice on the same model compiles — verifies

@@ -1161,7 +1161,7 @@ where
     let mut acc = SqlAccumulator::new("SELECT ");
 
     // Key columns first (positional decode). For the spatial path this emits
-    // `r.<pk-col> AS rk0` via `RegionKeyWithCol::push_select_columns`.
+    // `r.<pk-col> AS rk0` via `RegionKey::push_select_columns`.
     gaq.keys.push_select_columns(&mut acc);
 
     // Aggregate columns follow, decoded by alias (__djogi_agg_N).
@@ -2594,13 +2594,13 @@ mod tests {
         spec: crate::query::spatial_grouping::SpatialJoinSpec,
     ) -> crate::query::grouped::GroupedAnnotatedQuerySet<
         Fake,
-        crate::query::spatial_grouping::RegionKeyWithCol<FakeRegion>,
+        crate::query::spatial_grouping::RegionKey<FakeRegion>,
         crate::expr::AggregateExpr<i64>,
     > {
         use std::marker::PhantomData;
-        let keys = crate::query::spatial_grouping::RegionKeyWithCol::<FakeRegion> {
+        let keys = crate::query::spatial_grouping::RegionKey::<FakeRegion> {
             region_pk: None,
-            r_pk_col: spec.r_pk_col,
+            r_pk_col: Some(spec.r_pk_col),
             _phantom: PhantomData,
         };
         let agg: crate::expr::AggregateExpr<i64> =

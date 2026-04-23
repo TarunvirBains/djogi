@@ -794,6 +794,13 @@ impl ModelDescriptor {
     ///    `sql_type == FieldSqlType::Geography { .. }`.
     /// 3. Return `true` as soon as one such matching field is found.
     ///
+    /// Composite indexes count if **any** column in the index is
+    /// `Geography`-typed. This reflects Postgres's GiST-prefix behaviour:
+    /// a GiST index on `(boundary, other_col)` is still a valid spatial
+    /// index that accelerates `ST_Contains` / `ST_DWithin` lookups on
+    /// `boundary`, so we treat such composite indexes as satisfying the
+    /// "has GiST on geography" check.
+    ///
     /// Returns `false` if no GiST + Geography combination is found.
     pub fn has_gist_on_geography(&self) -> bool {
         for idx in self.indexes {
