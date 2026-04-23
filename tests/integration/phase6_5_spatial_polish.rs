@@ -19,10 +19,13 @@
 //! 4. **`touches_adjacent_polygons`** — `FieldRef::touches` selects the
 //!    polygon that shares an edge with the query polygon but does not
 //!    overlap it.
-//! 5. **`bounded_by_with_order_by_distance_uses_gist`** — bbox prefilter
-//!    composed with `order_by_distance` against a live GiST index, plus an
-//!    `EXPLAIN ANALYZE` assertion that the plan text references the
-//!    `stores_p65` table.
+//! 5. **`bounded_by_with_order_by_distance_plan_mentions_table`** — bbox
+//!    prefilter composed with `order_by_distance`, plus an `EXPLAIN
+//!    ANALYZE` assertion that the plan text references the `stores_p65`
+//!    table. The assertion is deliberately permissive: Postgres's planner
+//!    may skip the GiST index for tiny test fixtures, so the test only
+//!    verifies that the composed query plans and runs end-to-end. Index
+//!    usage on production-sized tables is a separate concern.
 //! 6. **`distance_to_in_filter_expr`** — `FieldRef::distance_to` composed
 //!    into `filter_expr` as a `lt` predicate against 50 km from SFO.
 //! 7. **`group_by_region_counts_stores_per_neighborhood`** — per-region
@@ -441,25 +444,26 @@ async fn touches_adjacent_polygons(mut ctx: djogi::DjogiContext) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 5 — bbox prefilter + order_by_distance + EXPLAIN GiST
+// Scenario 5 — bbox prefilter + order_by_distance + EXPLAIN smoke test
 // ---------------------------------------------------------------------------
 
 /// Confirms two things:
 ///
 /// 1. A `.filter_expr(|f| f.location().bounded_by(...))` predicate composed
 ///    with `.order_by(|f| f.location().order_by_distance(center))` returns the
-///    expected rows in the expected order.
-/// 2. The `EXPLAIN ANALYZE` plan for the same query reaches the GiST index —
-///    the plan text contains `stores_p65_location_gix` when the planner chose
-///    an index-based access method.
+///    expected rows (every bay-area store inside the bbox; every remote store
+///    excluded).
+/// 2. The `EXPLAIN ANALYZE` plan for the same query plans and runs
+///    end-to-end — the plan text must reference the `stores_p65` table.
 ///
-/// The planner may pick a sequential scan for very small fixtures; the
-/// assertion therefore only requires the *plan text* mentions the GiST index
-/// name, which happens when Postgres considered the index even if it was not
-/// ultimately used. A stronger assertion (requiring an actual index scan node)
-/// would be flaky against small test datasets.
+/// **Permissive-by-design GiST check.** The assertion only requires the
+/// plan text to mention the table, not the GiST index. Postgres's planner
+/// routinely picks a sequential scan for very small fixtures (a seq scan
+/// of 20 rows beats index-scan overhead), so asserting on index usage
+/// would be flaky. GiST-path verification against production-sized data
+/// is a separate concern that belongs outside the test harness.
 #[djogi::djogi_test(extensions = ["postgis"])]
-async fn bounded_by_with_order_by_distance_uses_gist(mut ctx: djogi::DjogiContext) {
+async fn bounded_by_with_order_by_distance_plan_mentions_table(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
 
     // Seed 20 stores: 10 inside the SF Bay box, 10 scattered worldwide.

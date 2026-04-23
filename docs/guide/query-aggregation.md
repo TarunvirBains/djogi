@@ -59,52 +59,69 @@ for (org_id, total) in totals {
 
 > **Emitted SQL:**
 > ```sql
-> SELECT t.org_id AS k0, SUM(t.amount) AS __djogi_agg_0
+> SELECT org_id, SUM(amount) AS __djogi_agg_0
 > FROM orders AS t
-> GROUP BY t.org_id
+> GROUP BY org_id
 > ```
 
 Single-column keys decode to a bare scalar (`i64` in the example), not a
-one-tuple.
+one-tuple. The emitter pushes the column name unqualified in the SELECT
+and GROUP BY lists because there is no ambiguity under a single-table
+query; the `FROM <table> AS t` alias is retained for WHERE / ORDER BY
+fragments that the substrate inherits from `QuerySet<T>`.
 
 ### Ordering and pagination
 
 `.order_by(...)` on a grouped queryset accepts the same closure type
-`QuerySet` does and emits ORDER BY against the grouped output. Ordering
-by an aggregate is done through the aggregate expression directly:
+`QuerySet` does and emits ORDER BY against the grouped output. In Phase
+6.5 the closure may order by **key columns** (and `.limit` / `.offset`
+paginate the grouped result):
 
 ```rust
-let top_five: Vec<(i64, i64)> = Order::objects()
+let first_ten: Vec<(i64, i64)> = Order::objects()
     .group_by(|f| f.org_id())
     .annotate(|f| f.amount().sum())
-    .order_by(|f| f.amount().sum().desc())
-    .limit(5)
+    .order_by(|f| f.org_id().asc())
+    .limit(10)
     .fetch_all(&mut ctx)
     .await?;
 ```
 
+**Deferred:** ordering directly by an aggregate expression
+(`.order_by(|f| f.amount().sum().desc())`) is not available in Phase 6.5
+— `AggregateExpr<V>` does not yet have an `Into<Expr<V>>` bridge, so
+aggregate expressions cannot compose into the ORDER BY slot. For
+top-N-by-aggregate queries today, sort client-side after `fetch_all` or
+drop to `ctx.raw_query(...)`.
+
 ### `HAVING` — filtering groups
 
 `.having(|f| ...)` receives the same `Fields` placeholder as other closures.
-The only difference from `.filter` is that the emitted predicate goes in a
-`HAVING` clause and may reference aggregates.
+The emitted predicate goes in a `HAVING` clause — in Phase 6.5 the
+predicate closes over the **group key** (not the aggregate value):
 
 ```rust
-let big_spenders: Vec<(i64, i64)> = Order::objects()
+let selected_orgs: Vec<(i64, i64)> = Order::objects()
     .group_by(|f| f.org_id())
     .annotate(|f| f.amount().sum())
-    .having(|f| f.amount().sum().gt(Expr::literal(10_000_i64)))
+    .having(|f| f.org_id().gt(Expr::literal(100_i64)))
     .fetch_all(&mut ctx)
     .await?;
 ```
 
 > **Emitted SQL:**
 > ```sql
-> SELECT t.org_id AS k0, SUM(t.amount) AS __djogi_agg_0
+> SELECT org_id, SUM(amount) AS __djogi_agg_0
 > FROM orders AS t
-> GROUP BY t.org_id
-> HAVING SUM(t.amount) > $1
+> GROUP BY org_id
+> HAVING org_id > $1
 > ```
+
+**Deferred:** filtering on an aggregate expression
+(`.having(|f| f.amount().sum().gt(...))`) is not available in Phase 6.5
+for the same reason as aggregate-based ordering — it requires the same
+`AggregateExpr<V>` → `Expr<V>` bridge. Filter client-side, or write the
+HAVING predicate through `ctx.raw_query(...)` until the bridge lands.
 
 ---
 
@@ -123,9 +140,9 @@ let by_org_region: Vec<((i64, String), i64)> = Order::objects()
 
 > **Emitted SQL:**
 > ```sql
-> SELECT t.org_id AS k0, t.region_code AS k1, SUM(t.amount) AS __djogi_agg_0
+> SELECT org_id, region_code, SUM(amount) AS __djogi_agg_0
 > FROM orders AS t
-> GROUP BY t.org_id, t.region_code
+> GROUP BY org_id, region_code
 > ```
 
 Djogi supports tuple keys up to arity 4 in 6.5 (the same sealed
@@ -151,7 +168,7 @@ let rollup: Vec<((Option<i64>, Option<String>), i64)> = Order::objects()
 
 > **Emitted SQL:**
 > ```sql
-> GROUP BY ROLLUP(t.org_id, t.region_code)
+> GROUP BY ROLLUP (org_id, region_code)
 > ```
 
 Extended grouping returns `NULL` for the "totals" rows; Djogi decodes those
@@ -161,21 +178,28 @@ SETS).
 
 ```rust
 // Explicit set list: (org), (region), (org, region).
-let sets: Vec<((Option<i64>, Option<String>), i64)> = Order::objects()
+Order::objects()
     .group_by_sets(|f| [
         (Some(f.org_id()), None),
         (None, Some(f.region_code())),
         (Some(f.org_id()), Some(f.region_code())),
     ])
-    .annotate(|f| f.amount().sum())
-    .fetch_all(&mut ctx)
-    .await?;
+    .annotate(|f| f.amount().sum());
 ```
 
-> **Emitted SQL:**
+> **Emitted `GROUP BY` shape:**
 > ```sql
-> GROUP BY GROUPING SETS ((t.org_id), (t.region_code), (t.org_id, t.region_code))
+> GROUP BY GROUPING SETS ((org_id), (region_code), (org_id, region_code))
 > ```
+
+**Deferred in Phase 6.5:** typed `.fetch_all` on a unit-key (arity-0)
+`group_by_sets` — the SELECT list emits a stray leading comma when the
+key-tuple emission produces zero columns (`SELECT , SUM(amount) AS
+__djogi_agg_0 FROM ...`). Until the empty-key SELECT path is fixed, use
+either (a) a non-empty typed key tuple that positionally matches every
+declared grouping set, or (b) `ctx.raw_query(...)` for the composite
+`GROUPING SETS` output. See the integration test file
+`tests/integration/phase6_5_aggregates.rs` for the issue's full repro.
 
 ---
 
@@ -198,18 +222,18 @@ let stats: Vec<(i64, (i64, i64, Option<i64>))> = Order::objects()
 
 > **Emitted SQL:**
 > ```sql
-> SELECT t.org_id AS k0,
->        COUNT(*)       AS __djogi_agg_0,
->        SUM(t.amount)  AS __djogi_agg_1,
->        MAX(t.amount)  AS __djogi_agg_2
+> SELECT org_id,
+>        COUNT(*)     AS __djogi_agg_0,
+>        SUM(amount)  AS __djogi_agg_1,
+>        MAX(amount)  AS __djogi_agg_2
 > FROM orders AS t
-> GROUP BY t.org_id
+> GROUP BY org_id
 > ```
 
 Arity 1/2/3/4 tuples are supported. Aggregate-aggregate collisions on
 synthetic aliases are prevented — Djogi names each aggregate slot
-`__djogi_agg_N` and rejects user-supplied SELECT aliases that overlap with
-the `__djogi_agg_*` namespace at SQL-build time (diagnostic:
+`__djogi_agg_N` (N starting at 0) and rejects user-supplied SELECT aliases
+whose name begins with `__djogi_agg_` at SQL-build time (diagnostic:
 `DjogiError::AnnotationAliasCollision`).
 
 ---
@@ -230,23 +254,21 @@ let rows: Vec<(Order, i64)> = Order::objects()
 
 > **Emitted SQL:**
 > ```sql
-> SELECT t.*, SUM(t.amount) OVER () AS __djogi_agg_0
+> SELECT t.*, SUM(amount) OVER () AS __djogi_agg_0
 > FROM orders AS t
 > ```
 
 ### Custom window frames
 
-`AggregateExpr<V>::over(window)` attaches a `WindowSpec` — partitioning,
-ordering, and frame clauses — to the aggregate call.
+`AggregateExpr<V>::over(|w| ...)` takes a closure that receives a
+`WindowBuilder`. Chain `.partition_by(f.col())` / `.order_by(f.col())`
+(columns, not closures) to build the window spec. Both methods can be
+called multiple times to append additional terms.
 
 ```rust
-use djogi::expr::Window;
-
 let running: Vec<(Order, i64)> = Order::objects()
     .annotate(|f| f.amount().sum().over(
-        Window::new()
-            .partition_by(|f| f.org_id())
-            .order_by(|f| f.created_at().asc())
+        |w| w.partition_by(f.org_id()).order_by(f.created_at())
     ))
     .fetch_all(&mut ctx)
     .await?;
@@ -255,16 +277,16 @@ let running: Vec<(Order, i64)> = Order::objects()
 > **Emitted SQL:**
 > ```sql
 > SELECT t.*,
->        SUM(t.amount) OVER (
->            PARTITION BY t.org_id
->            ORDER BY t.created_at ASC
+>        SUM(amount) OVER (
+>            PARTITION BY org_id
+>            ORDER BY created_at ASC
 >        ) AS __djogi_agg_0
 > FROM orders AS t
 > ```
 
-Frame clauses (`ROWS`, `RANGE`, `GROUPS`) are available via
-`Window::rows_between` / `.range_between` / `.groups_between` — see the
-[expressions guide](./expressions.md) for the full `Window` API.
+Frame clauses (`ROWS`, `RANGE`, `GROUPS`) are available on the builder —
+see the [expressions guide](./expressions.md) for the full `WindowBuilder`
+API including frame bounds and `EXCLUDE` variants.
 
 ### DISTINCT aggregates
 

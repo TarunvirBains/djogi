@@ -417,9 +417,17 @@ first-class group.
 
 **Why `ST_Covers`, not `ST_Contains`:** PostGIS 3.x has no
 `ST_Contains(geography, geography)` overload. `ST_Covers` has one and
-gives identical point-in-polygon semantics (a point is "covered" iff it
-is inside). Using it avoids `::geometry` casts under the JOIN, which
-would defeat GiST-index usage on the geography column.
+gives the boundary-inclusive point-in-polygon answer — a point on the
+polygon's edge returns `true` under `ST_Covers(polygon, point)` but
+returns `false` under `ST_Contains(polygon, point)` (`ST_Contains`
+requires interior intersection). The two functions agree for points in
+the polygon's interior or fully outside it; they differ only for points
+exactly on the boundary. For grouping, the boundary-inclusive
+interpretation is the useful one — a store on a neighborhood boundary
+should still count under *some* neighborhood — so `ST_Covers` is the
+correct choice beyond just the geography-overload availability. Using
+it also avoids `::geometry` casts under the JOIN, which would defeat
+GiST-index usage on the geography column.
 
 ### `cluster_by_proximity` — DBSCAN
 
