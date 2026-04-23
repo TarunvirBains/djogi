@@ -892,10 +892,24 @@ fn validate_index_name_shape(s: &str, span: Span) -> syn::Result<()> {
     validate_opclass_shape(s, span, "name")
 }
 
+/// Mirror of `djogi::descriptor::index_name` — the cycle between djogi
+/// and djogi-macros prevents the macro from depending on djogi at
+/// compile time, so the deterministic naming contract is spelled out in
+/// both places. Unit tests on both sides assert byte-for-byte parity
+/// against a small cross-crate matrix so drift between the two
+/// implementations is caught immediately.
+///
+/// Logic kept deliberately identical to §6.4 + D5 in the v3 plan:
+///
+/// - `NonUnique` / `UniqueConstraint` / `UniqueIndex` stems → `_idx` /
+///   `_key` / `_uidx`.
+/// - Expression targets render with the literal `expr` body; column
+///   lists render as underscore-joined column names in declaration
+///   order.
+/// - When the naïve name exceeds 63 bytes, truncate the stem to 55
+///   bytes and append `_<8-char hex digest>` of the pre-truncation
+///   name (SipHash-1-3 low 32 bits).
 fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
-    // T3 uses the convention from §6.4 in condensed form; T4 will replace
-    // this with the shared `djogi::descriptor::index_name` pure function
-    // that handles length-truncation + hash-suffix collision breaking.
     let table = ctx.table_name;
     let body = &decl.body;
     let stem = match decl.is_unique {
@@ -909,7 +923,7 @@ fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
         true => "key",
         false => "idx",
     };
-    let parts = match &body.target {
+    let body_text = match &body.target {
         IndexDeclTarget::Fields(fs) => {
             let mut parts = Vec::with_capacity(fs.len());
             for f in fs {
@@ -922,16 +936,18 @@ fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
         }
         IndexDeclTarget::Expr(_) => "expr".to_string(),
     };
-    // Simple `<table>_<parts>_<stem>` — T4 extends this with truncation.
-    let proposed = format!("{table}_{parts}_{stem}");
-    if proposed.len() <= 63 {
-        proposed
-    } else {
-        // Fallback: truncate to 63 bytes (T4 replaces with hash-suffix
-        // collision-breaking). Guaranteed ASCII-only; truncation on a
-        // byte boundary is always safe.
-        proposed[..63].to_string()
+    let full = format!("{table}_{body_text}_{stem}");
+    if full.len() <= 63 {
+        return full;
     }
+    // Truncation: 55-byte stem + `_` + 8-char hex digest (see §D5).
+    use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
+    let mut h =
+        BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().build_hasher();
+    h.write(full.as_bytes());
+    let digest = format!("{:08x}", (h.finish() as u32));
+    let stem_55: String = full.as_bytes()[..55].iter().map(|b| *b as char).collect();
+    format!("{stem_55}_{digest}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,6 +1121,122 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("unknown indexes entry `bogus`"));
+    }
+
+    /// T4 parity check — the macro-side `generate_index_name` must
+    /// produce byte-for-byte identical names to the runtime helper
+    /// `djogi::descriptor::index_name` for every shape listed in
+    /// §6.4 + D5. Both sides independently duplicate the logic
+    /// because the djogi / djogi-macros cycle prevents sharing a
+    /// function; this test catches drift immediately.
+    #[test]
+    fn generate_index_name_matches_runtime_contract_shape() {
+        fn mk_decl(
+            is_unique: bool,
+            target: IndexDeclTarget,
+            predicate: Option<String>,
+            include: Vec<String>,
+            nulls_not_distinct: bool,
+        ) -> ModelIndexDecl {
+            ModelIndexDecl {
+                is_unique,
+                body: IndexDeclBody {
+                    target,
+                    using: None,
+                    opclass: None,
+                    include,
+                    predicate,
+                    nulls_not_distinct,
+                    concurrently: false,
+                    name: None,
+                },
+                head_span: Span::call_site(),
+            }
+        }
+        let ctx = LoweringCtx {
+            table_name: "users",
+            declared_columns: &[
+                "email".to_string(),
+                "org_id".to_string(),
+                "external_id".to_string(),
+                "last".to_string(),
+                "first".to_string(),
+            ],
+            reserved_generated_names: &[],
+        };
+
+        let simple = mk_decl(
+            false,
+            IndexDeclTarget::Fields(vec![FieldColSpec::Simple("email".into())]),
+            None,
+            vec![],
+            false,
+        );
+        assert_eq!(generate_index_name(&simple, &ctx), "users_email_idx");
+
+        let unique_constraint = mk_decl(
+            true,
+            IndexDeclTarget::Fields(vec![
+                FieldColSpec::Simple("org_id".into()),
+                FieldColSpec::Simple("external_id".into()),
+            ]),
+            None,
+            vec![],
+            false,
+        );
+        let ctx_orgs = LoweringCtx {
+            table_name: "orgs",
+            ..ctx
+        };
+        assert_eq!(
+            generate_index_name(&unique_constraint, &ctx_orgs),
+            "orgs_org_id_external_id_key"
+        );
+
+        let partial_unique = mk_decl(
+            true,
+            IndexDeclTarget::Fields(vec![FieldColSpec::Simple("email".into())]),
+            Some("deleted_at IS NULL".into()),
+            vec![],
+            false,
+        );
+        let ctx_accounts = LoweringCtx {
+            table_name: "accounts",
+            ..ctx
+        };
+        assert_eq!(
+            generate_index_name(&partial_unique, &ctx_accounts),
+            "accounts_email_uidx"
+        );
+
+        let expr = mk_decl(
+            false,
+            IndexDeclTarget::Expr("lower(email)".into()),
+            None,
+            vec![],
+            false,
+        );
+        assert_eq!(generate_index_name(&expr, &ctx), "users_expr_idx");
+
+        // Column order matters.
+        let last_first = mk_decl(
+            false,
+            IndexDeclTarget::Fields(vec![
+                FieldColSpec::Simple("last".into()),
+                FieldColSpec::Simple("first".into()),
+            ]),
+            None,
+            vec![],
+            false,
+        );
+        let ctx_people = LoweringCtx {
+            table_name: "people",
+            ..ctx
+        };
+        assert_eq!(
+            generate_index_name(&last_first, &ctx_people),
+            "people_last_first_idx"
+        );
     }
 
     #[test]
