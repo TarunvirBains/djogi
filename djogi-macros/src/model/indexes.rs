@@ -595,12 +595,15 @@ pub fn emit_index_spec_tokens(
     let body = &decl.body;
 
     // Resolve IndexKind. Unique + any unique-index-only feature
-    // (partial/NND/expression/covering) forces `UniqueIndex`. Plain
-    // unique lowers to `UniqueConstraint`.
+    // (partial/NND/expression/covering/concurrent) forces `UniqueIndex`.
+    // Plain unique lowers to `UniqueConstraint`. `concurrently = true`
+    // is in this list because `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE`
+    // has no `CONCURRENTLY` form (plan §6.2).
     let forces_unique_index = body.predicate.is_some()
         || body.nulls_not_distinct
         || matches!(body.target, IndexDeclTarget::Expr(_))
-        || !body.include.is_empty();
+        || !body.include.is_empty()
+        || body.concurrently;
     let kind_tokens = if decl.is_unique {
         if forces_unique_index {
             quote! { ::djogi::descriptor::IndexKind::UniqueIndex }
@@ -1246,5 +1249,53 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("unknown key `wrongkey`"));
+    }
+
+    /// Plan §6.2: `unique(..., concurrently = true)` escalates to
+    /// `UniqueIndex` because `ALTER TABLE ADD CONSTRAINT ... UNIQUE`
+    /// has no `CONCURRENTLY` form — emitting `UniqueConstraint` +
+    /// non-transactional would generate invalid DDL.
+    #[test]
+    fn unique_with_concurrently_escalates_kind_to_unique_index() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [email], concurrently = true)
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "users",
+            declared_columns: &["email".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (_name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueIndex"),
+            "expected UniqueIndex for unique + concurrently; got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("IndexKind :: UniqueConstraint"),
+            "must not lower to UniqueConstraint; got: {rendered}"
+        );
+    }
+
+    /// Plain `unique(...)` (no escalation trigger) stays as
+    /// `UniqueConstraint`. Sanity check companion to the test above.
+    #[test]
+    fn plain_unique_stays_as_unique_constraint() {
+        let decls = parse_indexes_from_attr(quote! {
+            unique(fields = [email])
+        })
+        .unwrap();
+        let ctx = LoweringCtx {
+            table_name: "users",
+            declared_columns: &["email".to_string()],
+            reserved_generated_names: &[],
+        };
+        let (_name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let rendered = tokens.to_string();
+        assert!(
+            rendered.contains("IndexKind :: UniqueConstraint"),
+            "expected UniqueConstraint for plain unique; got: {rendered}"
+        );
     }
 }

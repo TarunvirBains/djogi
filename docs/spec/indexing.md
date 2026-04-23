@@ -88,9 +88,11 @@ Pass whatever the Postgres predicate grammar accepts. If the migration fails, re
 | `expr = "..."` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 | `concurrently = true` | `CREATE UNIQUE INDEX ...` | `..._uidx` |
 
-Unique constraints are the default for ordinary uniqueness because they integrate with `REFERENCES`, `ON CONFLICT`, and the constraint catalogue. Unique indexes exist for the cases where Postgres requires one — partial uniqueness, `INCLUDE`, `NULLS NOT DISTINCT`, expression targets, or concurrent builds (a constraint cannot be added `CONCURRENTLY`; it has to be a pre-existing `CREATE UNIQUE INDEX CONCURRENTLY` that a follow-up `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE USING INDEX` adopts).
+Unique constraints are the default for ordinary uniqueness because they integrate with `REFERENCES`, `ON CONFLICT`, and the constraint catalogue. Unique indexes exist for the cases where Postgres requires one — partial uniqueness, `INCLUDE`, `NULLS NOT DISTINCT`, expression targets, and concurrent builds.
 
-The macro picks automatically. Users do not have to know the distinction for the common cases.
+The concurrent-build row deserves a callout. `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` has no `CONCURRENTLY` form, so Djogi's contract is unambiguous: **`concurrently = true` on a `unique(...)` declaration escalates the kind to `UniqueIndex`** (plan §6.2). The emitter produces `CREATE UNIQUE INDEX CONCURRENTLY` with a `..._uidx` name; no `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX` adoption follows. The user gets a unique index, not a unique constraint. If the constraint form is required (for `ON CONFLICT ON CONSTRAINT <name>` or cross-referencing FKs that must name the constraint), drop `concurrently = true` and accept the `ACCESS EXCLUSIVE` window that `ADD CONSTRAINT` takes.
+
+Outside that one escalation, the macro picks automatically. Users do not have to know the distinction for the common cases.
 
 ---
 
@@ -108,7 +110,13 @@ Because this model accepts a user-facing foot-gun in exchange for CI/prod parity
 
 Builds the index under a weak `SHARE UPDATE EXCLUSIVE` table lock — reads and writes continue against the table throughout the build. Postgres runs a two-pass scan (the second pass catches rows the first pass raced against), so the wall-clock build is slower than a non-concurrent build — but no writer is ever blocked.
 
-(Plain `CREATE INDEX` takes `SHARE`, which permits concurrent reads but blocks every writer for the duration of the scan. Neither flavour takes `ACCESS EXCLUSIVE`, but the practical effect of `SHARE` on a hot table is a write-only outage — see item 4.)
+Lock-mode reference for comparison (see item 4 for how these play out in practice):
+
+| Statement | Table lock it takes | Writers blocked? | Reads blocked? |
+|-----------|---------------------|------------------|----------------|
+| `CREATE INDEX CONCURRENTLY` | `SHARE UPDATE EXCLUSIVE` | no | no |
+| `CREATE INDEX` (plain) | `SHARE` | yes | no |
+| `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` | `ACCESS EXCLUSIVE` | yes | yes |
 
 #### 2. When to use it
 
@@ -124,7 +132,12 @@ Concurrent builds add overhead — more disk I/O, longer wall-clock, a transacti
 
 #### 4. The foot-gun
 
-Omitting `concurrently = true` on an index added to a large production table takes a `SHARE` lock and **blocks every write to that table for the duration of the build**. Reads continue, but every INSERT / UPDATE / DELETE — and every transaction holding one — queues until the index finishes building. On a multi-gigabyte write-hot table, that can be minutes of effective write-side downtime.
+Omitting `concurrently = true` on an index added to a large production table blocks every write to that table for the duration of the build. The lock mode depends on the declaration:
+
+- `index(...)` or `unique(...)` lowered to `UniqueIndex` (partial / include / NND / expression target) → `CREATE INDEX` / `CREATE UNIQUE INDEX` takes `SHARE` — reads continue, writes queue.
+- `unique(...)` lowered to `UniqueConstraint` (the default ordinary-uniqueness path) → `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` takes `ACCESS EXCLUSIVE` — reads *and* writes queue for the full build.
+
+Either way, every INSERT / UPDATE / DELETE against the table — and every transaction holding one — stalls until the index finishes building. On a multi-gigabyte write-hot table, that can be minutes of application impact; on the constraint path, reads stall too.
 
 **Djogi does not detect this for you.** The operator owns the per-index decision. The §6.5 apply-time advisory warning (see item 7) is a rescue, not a guarantee.
 

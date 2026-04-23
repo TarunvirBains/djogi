@@ -67,7 +67,7 @@ use proc_macro::TokenStream;
 /// | `include` | `= [ident, ...]` | `INCLUDE(...)` payload columns for covering indexes. |
 /// | `where` | `= "deleted_at IS NULL"` | Partial-index predicate. Raw SQL — Djogi does not parse it; Postgres validates at migration time. |
 /// | `nulls_not_distinct` | `= true` | Unique indexes only — treat two `NULL`s as equal. Forces the `UniqueIndex` kind. |
-/// | `concurrently` | `= true` | Emit `CREATE INDEX CONCURRENTLY`. **Foot-gun:** omitting this on an index added to a large production table takes a `SHARE` lock that blocks every writer for the duration of the build. The framework does not auto-detect — operator responsibility. See the [indexing spec] "concurrently contract" section for the full eight-item doc promise. |
+/// | `concurrently` | `= true` | Emit `CREATE INDEX CONCURRENTLY`. On a `unique(...)` declaration this escalates the kind to `UniqueIndex` (`ALTER TABLE ADD CONSTRAINT` has no concurrent form). **Foot-gun:** omitting this on an index added to a large production table blocks every writer — `SHARE` on the `CREATE INDEX` path, `ACCESS EXCLUSIVE` on the `ADD CONSTRAINT` path. The framework does not auto-detect — operator responsibility. See the [indexing spec] "concurrently contract" section for the full eight-item doc promise. |
 /// | `name` | `= "custom_idx"` | Override the deterministic index name. Must not collide with a name the emitter would generate for another declared index. |
 ///
 /// `unique(...)` differs from `index(...)` only in kind — by default it lowers
