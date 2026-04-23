@@ -1,0 +1,5 @@
+error[E0599]: no method named `having` found for struct `QuerySet<T>` in the current scope
+  --> tests/compile_fail/having_on_ungrouped.rs:12:28
+   |
+12 |     let _ = Txn::objects().having(|_, _| unimplemented!());
+   |                            ^^^^^^ method not found in `QuerySet<Txn>`
