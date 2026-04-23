@@ -782,6 +782,48 @@ impl<T: Model> QuerySet<T> {
         gq.grouping = crate::query::grouped::GroupingMode::Cube;
         gq
     }
+
+    /// Enter grouped state with GROUPING SETS semantics. Takes a closure
+    /// that returns `[&'static str; N]` — each element becomes one
+    /// single-column grouping set. Emits `GROUP BY GROUPING SETS ((col_a),
+    /// (col_b), ...)`.
+    ///
+    /// The key type is `()` — there are no statically-typed key columns to
+    /// decode because each row's "key" depends on which grouping set matched.
+    /// Call `.annotate(...)` on the result to attach aggregate expressions;
+    /// grouping-set column values are accessible via raw row access on the
+    /// rows returned by `.fetch_all`.
+    ///
+    /// Phase 6.5 ships arity-1 per set (one column per set). Multi-column
+    /// sets are a future promotion.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Emits: GROUP BY GROUPING SETS ((org_id), (region))
+    /// // Each result row is grouped by exactly one of the listed columns.
+    /// let rows = Txn::objects()
+    ///     .group_by_sets(|_| ["org_id", "region"])
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn group_by_sets<F, const N: usize>(
+        self,
+        f: F,
+    ) -> crate::query::grouped::GroupedQuerySet<T, ()>
+    where
+        F: FnOnce(T::Fields) -> [&'static str; N],
+    {
+        let cols = f(T::Fields::default());
+        let sets: Vec<Vec<&'static str>> = cols.iter().map(|c| vec![*c]).collect();
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys: (),
+            grouping: crate::query::grouped::GroupingMode::Sets(sets),
+            _k: std::marker::PhantomData,
+        }
+    }
 }
 
 /// Private marker trait used to seal [`IntoDistinctColumns`].

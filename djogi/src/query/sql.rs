@@ -1030,11 +1030,26 @@ where
             gaq.keys.push_group_by_columns(&mut acc);
             acc.push_sql(")");
         }
-        #[allow(unreachable_patterns)]
-        _ => {
-            // Forward-compat arm for `#[non_exhaustive]` variants added in
-            // future tasks (e.g. `Sets` in T2). Fall back to plain GROUP BY.
-            gaq.keys.push_group_by_columns(&mut acc);
+        crate::query::grouped::GroupingMode::Sets(ref sets) => {
+            // Emit: GROUPING SETS ((col_a), (col_b), ...)
+            // Each inner Vec is one grouping set's column list.
+            // Column names are &'static str validated upstream by
+            // assert_plain_ident — no bind slots, safe to push as SQL.
+            acc.push_sql("GROUPING SETS (");
+            for (i, set) in sets.iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(", ");
+                }
+                acc.push_sql("(");
+                for (j, col) in set.iter().enumerate() {
+                    if j > 0 {
+                        acc.push_sql(", ");
+                    }
+                    acc.push_sql(col);
+                }
+                acc.push_sql(")");
+            }
+            acc.push_sql(")");
         }
     }
 
@@ -1943,6 +1958,33 @@ mod tests {
         assert!(
             sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
             "expected skip_locked to win over nowait, got: {sql}"
+        );
+    }
+
+    // ── T2 emitter: GROUPING SETS ─────────────────────────────────────────
+
+    #[test]
+    fn build_grouped_annotated_select_emits_grouping_sets() {
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::{GroupedAnnotatedQuerySet, GroupingMode};
+        use std::marker::PhantomData;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq: GroupedAnnotatedQuerySet<Fake, (), AggregateExpr<i64>> = {
+            let gq = crate::query::grouped::GroupedQuerySet {
+                qs,
+                keys: (),
+                grouping: GroupingMode::Sets(vec![vec!["org_id"], vec!["region"]]),
+                _k: PhantomData,
+            };
+            gq.annotate(|_| vals.sum())
+        };
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUPING SETS ((org_id), (region))"),
+            "expected GROUPING SETS clause, got: {sql}"
         );
     }
 

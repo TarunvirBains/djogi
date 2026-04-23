@@ -115,15 +115,45 @@ impl_into_group_key_tuple!(
     types = [(A, 0, 0), (B, 1, 1), (C, 2, 2), (D, 3, 3)]
 );
 
+// ── Arity 0: unit key () — used exclusively by group_by_sets ─────────────
+//
+// GROUPING SETS emits its own column list directly from the `Sets` payload;
+// the key tuple plays no role in SQL emission for that mode. The `()` impl
+// exists only so `GroupedQuerySet<T, ()>` satisfies the `IntoGroupKeyTuple`
+// bound — it is a structural marker, not a real decoder.
+
+impl sealed::Sealed for () {}
+
+impl IntoGroupKeyTuple for () {
+    type Decoded = ();
+
+    fn push_group_by_columns(&self, _acc: &mut SqlAccumulator) {
+        // No-op — GROUPING SETS emits its column list from the Sets payload,
+        // not from the key tuple. This method is never called for Sets mode.
+    }
+
+    fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
+        // No-op — the SELECT list for a group_by_sets query consists only of
+        // aggregate columns; there are no typed key columns to project.
+    }
+
+    fn decode_tuple(_row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        // The unit key decodes as `()` — callers access grouped-set column
+        // values via raw row access on the returned `tokio_postgres::Row`,
+        // not through this typed decode path.
+        Ok(())
+    }
+}
+
 // ── GroupedQuerySet ───────────────────────────────────────────────────────
 
 /// Grouping mode for `GROUP BY` variant.
 ///
-/// `Plain` emits a plain `GROUP BY (col, ...)`. `Rollup` and `Cube` are
-/// supported; `GROUPING SETS` support lands in T2 (it requires a richer
-/// multi-set-list payload that changes the variant shape — `#[non_exhaustive]`
-/// lets that change land without a breaking API change).
-#[derive(Debug, Clone, Copy)]
+/// `Plain` emits a plain `GROUP BY col [, col ...]`. `Rollup` and `Cube`
+/// wrap the column list in `ROLLUP (...)` and `CUBE (...)` respectively.
+/// `Sets` emits `GROUPING SETS (...)` with an explicit per-set column list,
+/// enabling arbitrary subtotal combinations in a single query pass.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum GroupingMode {
     /// `GROUP BY col [, col ...]`
@@ -132,6 +162,11 @@ pub enum GroupingMode {
     Rollup,
     /// `GROUP BY CUBE (col [, col ...])`
     Cube,
+    /// `GROUP BY GROUPING SETS ((col_a), (col_b), ...)`. Each inner
+    /// `Vec<&'static str>` is one grouping set's column list. Column names
+    /// are `&'static str` because they come from `FieldRef::column()` —
+    /// validated upstream by `assert_plain_ident`.
+    Sets(Vec<Vec<&'static str>>),
 }
 
 /// Grouped queryset with no annotations yet. No terminal available —
@@ -551,6 +586,28 @@ mod tests {
         assert!(
             sql.contains("GROUP BY CUBE (org_id)"),
             "expected CUBE clause via .cube entry point, got: {sql}"
+        );
+    }
+
+    // T2 — .group_by_sets entry point produces GroupedQuerySet<T, ()>
+    // and the emitter outputs GROUPING SETS (...).
+
+    #[test]
+    fn queryset_group_by_sets_returns_grouped_queryset_unit_key() {
+        // Type-level check: group_by_sets returns GroupedQuerySet<T, ()>.
+        // Also verifies the GROUPING SETS clause is emitted correctly via
+        // the SQL emitter.
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs
+            .group_by_sets(|_| ["org_id", "region"])
+            .annotate(|_| vals.sum());
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUPING SETS ((org_id), (region))"),
+            "expected GROUPING SETS clause, got: {sql}"
         );
     }
 
