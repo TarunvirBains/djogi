@@ -76,13 +76,13 @@ Apps are declared explicitly:
 
 ```rust
 djogi::apps! {
-    Vehicles,
-    Users,
-    Orders,
+    pub struct Vehicles;
+    pub struct Users;
+    pub struct Orders;
 }
 ```
 
-The macro defines a sealed set of app/domain identifiers for the crate.
+The macro emits each entry as a zero-sized unit struct bound to a sealed `djogi::App` trait; apps are addressed by **type path**, not by string label. Rust's own name resolution enforces declaration — `#[model(app = Vehicles)]` referring to an undeclared or non-app type fails with a standard rustc error. (Phase 7-Zero v3 §4B, Codex P0-03 fix 2026-04-23.)
 
 Models opt in explicitly:
 
@@ -115,13 +115,13 @@ Representative shape:
 ```rust
 djogi::apps! {
     #[app(database = "main")]
-    Vehicles,
+    pub struct Vehicles;
 
     #[app(database = "main")]
-    Users,
+    pub struct Users;
 
     #[app(database = "crud_log")]
-    Audit,
+    pub struct Audit;
 }
 ```
 
@@ -150,24 +150,34 @@ That means:
 
 The migration engine still applies one database target at a time. Djogi does not pretend a single migration run across `main`, `crud_log`, and `event_log` is one distributed transaction.
 
-Recommended on-disk layout:
+On-disk layout — snapshots and migration files nest per-(target, app):
 
 ```text
 migrations/
 ├── main/
-│   ├── schema_snapshot.json
-│   ├── 0001_initial_up.sql
-│   ├── 0001_initial_down.sql
+│   ├── vehicles/
+│   │   ├── schema_snapshot.json
+│   │   ├── 0001_initial_up.sql
+│   │   ├── 0001_initial_down.sql
+│   │   └── ...
+│   ├── users/
+│   │   ├── schema_snapshot.json
+│   │   └── ...
 │   └── ...
 ├── crud_log/
-│   ├── schema_snapshot.json
-│   └── ...
+│   └── audit/
+│       ├── schema_snapshot.json
+│       └── ...
 └── event_log/
-    ├── schema_snapshot.json
     └── ...
 ```
 
-If app/domain grouping is enabled within a target, that grouping nests inside the target boundary rather than replacing it.
+Granularity differs by artifact:
+
+- **Per `(target, app)` pair:** directory, snapshot (`migrations/<target>/<app>/schema_snapshot.json`), pending build-artifact (`target/djogi_pending/<target>/<app>.json`), and the migration SQL files within each app directory. (Phase 7 v3 OQ-10 ruling 2026-04-23.)
+- **Per `target`:** the `djogi_schema_migrations` ledger table (one per database target, shared across all apps in that target) and the advisory-lock namespace keyed on `SHA-256("djogi:migrations:<target-name>")`. (See `docs/spec/decisions.md` rows "Migration advisory lock key" and "Multi-database migration contract.")
+
+Apps inside one target are serialized by the same target-level lock; cross-target migrations run independently with their own locks.
 
 ---
 

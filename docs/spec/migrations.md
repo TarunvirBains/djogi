@@ -38,8 +38,8 @@ These truths must remain separate.
 It may:
 
 1. read model descriptors from `target/djogi_models.json`
-2. read committed snapshots from `migrations/<scope>/schema_snapshot.json`
-3. read pending target-state files from `target/djogi_pending/<scope>.json`
+2. read committed snapshots from `migrations/<target>/<app>/schema_snapshot.json`
+3. read pending target-state files from `target/djogi_pending/<target>/<app>.json`
 4. emit a plain cargo warning when drift is detected
 
 It must **not**:
@@ -57,10 +57,10 @@ djogi migrations compose --allow-destructive
 djogi migrations compose --name add_vehicle_horsepower
 ```
 
-Three-way match logic:
+Three-way match logic, run per `(target, app)` pair:
 
-1. `djogi_models.json == schema_snapshot.json` for every scope → silent
-2. descriptor/snapshot mismatch, but matching `target/djogi_pending/<scope>.json` exists → warn that a migration is pending apply
+1. `djogi_models.json == schema_snapshot.json` for every `(target, app)` pair → silent
+2. descriptor/snapshot mismatch, but matching `target/djogi_pending/<target>/<app>.json` exists → warn that a migration is pending apply
 3. descriptor/snapshot mismatch and no matching pending file exists → warn that schema drift exists and `migrations compose` should be run
 
 Example build warning:
@@ -76,8 +76,8 @@ Djogi uses three file roles:
 | File | Location | Role | Committed? |
 |---|---|---|---|
 | `target/djogi_models.json` | build artifact | what Rust source currently declares | no |
-| `target/djogi_pending/<scope>.json` | build artifact | generated target state waiting to be applied | no |
-| `migrations/<scope>/schema_snapshot.json` | migrations submodule | last known applied schema shape for that scope | yes |
+| `target/djogi_pending/<target>/<app>.json` | build artifact | generated target state waiting to be applied | no |
+| `migrations/<target>/<app>/schema_snapshot.json` | migrations submodule | last known applied schema shape for that `(target, app)` pair | yes |
 
 `schema_snapshot.json` is updated exactly once per successful apply flow, via atomic file replacement (`tmp -> fsync -> rename`). It is never updated by `build.rs`.
 
