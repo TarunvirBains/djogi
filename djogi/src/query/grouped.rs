@@ -15,6 +15,8 @@
 use crate::model::Model;
 use crate::pg::accumulator::SqlAccumulator;
 use crate::query::field::FieldRef;
+use crate::query::queryset::QuerySet;
+use std::marker::PhantomData;
 
 mod sealed {
     pub trait Sealed {}
@@ -111,6 +113,39 @@ impl_into_group_key_tuple!(
     types = [(A, 0, 0), (B, 1, 1), (C, 2, 2), (D, 3, 3)]
 );
 
+// ── GroupedQuerySet ───────────────────────────────────────────────────────
+
+/// Grouping mode for `GROUP BY` variant.
+///
+/// `Plain` emits a plain `GROUP BY (col, ...)`. `Rollup` and `Cube` are
+/// supported; `GROUPING SETS` support lands in T2 (it requires a richer
+/// multi-set-list payload that changes the variant shape — `#[non_exhaustive]`
+/// lets that change land without a breaking API change).
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum GroupingMode {
+    /// `GROUP BY col [, col ...]`
+    Plain,
+    /// `GROUP BY ROLLUP (col [, col ...])`
+    Rollup,
+    /// `GROUP BY CUBE (col [, col ...])`
+    Cube,
+}
+
+/// Grouped queryset with no annotations yet. No terminal available —
+/// user must call `.annotate(...)` before fetching.
+///
+/// This is the intermediate state produced by `QuerySet::group_by`. Dropping
+/// one without annotating is flagged by the `#[must_use]` attribute — the
+/// query is silently discarded if the result is not used.
+#[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+pub struct GroupedQuerySet<T: Model, K: IntoGroupKeyTuple> {
+    pub(crate) qs: QuerySet<T>,
+    pub(crate) keys: K,
+    pub(crate) grouping: GroupingMode,
+    pub(crate) _k: PhantomData<fn() -> K>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,5 +234,13 @@ mod tests {
             FieldRef<Fake, i32>,
             FieldRef<Fake, bool>,
         )>();
+    }
+
+    // Step 1.4 — QuerySet::group_by type transition
+    #[test]
+    fn queryset_group_by_returns_grouped_queryset() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let f: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let _grouped: GroupedQuerySet<Fake, FieldRef<Fake, i64>> = qs.group_by(|_| f);
     }
 }

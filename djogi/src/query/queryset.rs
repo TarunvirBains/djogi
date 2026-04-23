@@ -685,6 +685,42 @@ impl<T: Model> QuerySet<T> {
     pub(crate) fn is_empty(&self) -> bool {
         self.is_empty
     }
+
+    /// Group this queryset by one or more key columns, transitioning into
+    /// [`crate::query::grouped::GroupedQuerySet<T, K>`].
+    ///
+    /// The closure receives a default-constructed `T::Fields` handle and must
+    /// return one `FieldRef<T, V>` (arity 1) or a tuple of `FieldRef`s (arity
+    /// 2..=4) — any type that implements
+    /// [`crate::query::grouped::IntoGroupKeyTuple`].
+    ///
+    /// `GroupedQuerySet` has no terminals. Call `.annotate(...)` on the result
+    /// to attach aggregate expressions and enter the terminal-bearing
+    /// [`crate::query::grouped::GroupedAnnotatedQuerySet`] state. Premature
+    /// `.fetch_all` on `GroupedQuerySet` is a compile error.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let rows: Vec<(i64, i64)> = Txn::objects()
+    ///     .group_by(|f| f.org_id())
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn group_by<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
+    where
+        F: FnOnce(T::Fields) -> K,
+        K: crate::query::grouped::IntoGroupKeyTuple,
+    {
+        let keys = f(T::Fields::default());
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys,
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            _k: std::marker::PhantomData,
+        }
+    }
 }
 
 /// Private marker trait used to seal [`IntoDistinctColumns`].
