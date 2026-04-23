@@ -15,6 +15,11 @@
 //!
 //! `[endian(1), type_word 0x20000002 LE(4), srid(4), num_points u32 LE(4), points(16*n)]`
 //!
+//! # Polygon wire format
+//!
+//! `[endian(1), type_word 0x20000003 LE(4), srid(4), num_rings u32 LE(4), rings...]`
+//! Each ring: `[num_points u32 LE(4), points(16*n)]`.
+//!
 //! This module has NO dependency on `postgres_types`, `bytes`, or `serde`.
 
 use crate::geo::GeoError;
@@ -39,6 +44,8 @@ const SRID_4326: u32 = 4326;
 const TYPE_BYTES: [u8; 4] = [0x01, 0x00, 0x00, 0x20];
 /// LineString | SRID_FLAG → `0x20000002` LE.
 const TYPE_LINESTRING: [u8; 4] = [0x02, 0x00, 0x00, 0x20];
+/// Polygon | SRID_FLAG → `0x20000003` LE.
+const TYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x20];
 
 // ── EWKB header helpers ───────────────────────────────────────────────────────
 
@@ -194,4 +201,55 @@ pub(crate) fn decode_linestring(bytes: &[u8]) -> Result<super::LineString, GeoEr
     }
     super::LineString::new(&points)
         .map_err(|e| GeoError::MalformedEwkb(format!("decoded LineString failed validation: {e}")))
+}
+
+// ── Polygon codec ─────────────────────────────────────────────────────────────
+
+/// Encode a `Polygon` as an EWKB buffer for `GEOGRAPHY(Polygon, 4326)`.
+pub(crate) fn encode_polygon(poly: &super::Polygon) -> Vec<u8> {
+    let ring_count = poly.rings.len();
+    let point_count: usize = poly.rings.iter().map(|r| r.len()).sum();
+    let cap = 9 + 4 + ring_count * 4 + point_count * 16;
+    let mut buf = Vec::with_capacity(cap);
+    push_outer_header(&mut buf, TYPE_POLYGON);
+    buf.extend_from_slice(&(ring_count as u32).to_le_bytes());
+    for ring in &poly.rings {
+        buf.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+        for p in ring {
+            push_coord_pair(&mut buf, p.lon, p.lat);
+        }
+    }
+    buf
+}
+
+/// Decode an EWKB buffer into a `Polygon`.
+pub(crate) fn decode_polygon(bytes: &[u8]) -> Result<super::Polygon, GeoError> {
+    let pos = read_outer_header(bytes, TYPE_POLYGON)?;
+    let ring_count = read_u32(bytes, pos)? as usize;
+    let mut pos = pos + 4;
+    let mut rings: Vec<Vec<super::GeoPoint>> = Vec::with_capacity(ring_count);
+    for _ in 0..ring_count {
+        let n = read_u32(bytes, pos)? as usize;
+        pos += 4;
+        let mut ring = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (lon, lat, next) = read_coord_pair(bytes, pos)?;
+            let p = super::GeoPoint::new(lat, lon).map_err(|e| {
+                GeoError::MalformedEwkb(format!("invalid coordinate in Polygon EWKB: {e}"))
+            })?;
+            ring.push(p);
+            pos = next;
+        }
+        rings.push(ring);
+    }
+    if rings.is_empty() {
+        return Err(GeoError::MalformedEwkb(
+            "Polygon EWKB contains zero rings".to_owned(),
+        ));
+    }
+    let mut iter = rings.into_iter();
+    let outer = iter.next().expect("checked non-empty");
+    let holes: Vec<Vec<super::GeoPoint>> = iter.collect();
+    super::Polygon::with_holes(outer, holes)
+        .map_err(|e| GeoError::MalformedEwkb(format!("decoded Polygon failed validation: {e}")))
 }

@@ -12,15 +12,19 @@
 //!   `GEOGRAPHY(Point, 4326)` in Postgres.
 //! - [`LineString`] — an ordered sequence of two or more points, stored as
 //!   `GEOGRAPHY(LineString, 4326)`.
+//! - [`Polygon`] — a closed ring (with optional holes), stored as
+//!   `GEOGRAPHY(Polygon, 4326)`.
 //! - [`GeographyValue`] — sealed trait implemented by all geometry types above.
 //! - [`GeoError`] — errors from coordinate validation and EWKB codec failures.
 
 mod ewkb;
 pub mod linestring;
 pub mod point;
+pub mod polygon;
 
 pub use linestring::LineString;
 pub use point::GeoPoint;
+pub use polygon::Polygon;
 
 use thiserror::Error;
 
@@ -71,6 +75,18 @@ pub enum GeoError {
         got: usize,
         /// Minimum number of points required (always 2).
         need: usize,
+    },
+
+    /// A `Polygon` ring failed validation.
+    ///
+    /// The `reason` string describes the specific constraint that was violated:
+    /// insufficient vertices, an unclosed ring, or a hole that fails the same
+    /// constraints as the outer ring.
+    #[cfg(feature = "spatial")]
+    #[error("invalid Polygon: {reason}")]
+    InvalidPolygon {
+        /// Human-readable description of the violated constraint.
+        reason: &'static str,
     },
 }
 
@@ -169,6 +185,26 @@ impl GeographyValue for LineString {
     }
 }
 
+// ── Polygon impl ──────────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for Polygon {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for Polygon {
+    const GEO_TYPE_WORD: u32 = 0x20000003;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::Polygon;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        ewkb::encode_polygon(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_polygon(bytes)
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(all(test, feature = "spatial"))]
@@ -185,5 +221,10 @@ mod geography_value_tests {
     #[test]
     fn linestring_is_geography_value() {
         takes_geo::<LineString>();
+    }
+
+    #[test]
+    fn polygon_is_geography_value() {
+        takes_geo::<Polygon>();
     }
 }
