@@ -517,14 +517,15 @@ async fn bounded_by_with_order_by_distance_plan_mentions_table(mut ctx: djogi::D
     // wrapper — the typed path does not surface EXPLAIN.
     //
     // ANALYZE forces the planner to run the query and report the real plan.
-    // The plan text must mention the GiST index name — either as a scan node
-    // (`Bitmap Index Scan on stores_p65_location_gix`) or as a considered
-    // alternative. For tiny datasets the planner may still pick seq scan; the
-    // test is therefore permissive and asserts only that the plan text
-    // contains the table or the index name.
+    // The assertion is deliberately loose: it only verifies that the plan
+    // text references the `stores_p65` table. Postgres's planner routinely
+    // picks a sequential scan for very small fixtures, so asserting on
+    // GiST-index usage would be flaky. GiST-path verification on
+    // production-sized data is a separate concern that belongs outside the
+    // test harness.
     //
-    // We stitch the entire EXPLAIN output (many rows) into one string before
-    // asserting.
+    // We stitch the entire EXPLAIN output (many rows) into one string
+    // before asserting.
     let rows = ctx
         .__query_all_for_macros(
             "EXPLAIN ANALYZE SELECT * FROM stores_p65 AS t \
@@ -548,9 +549,8 @@ async fn bounded_by_with_order_by_distance_plan_mentions_table(mut ctx: djogi::D
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Must mention our table. The GiST index name is checked permissively —
-    // planners on tiny datasets sometimes skip it, and a seq-scan outcome is
-    // a valid planner decision for small-N fixtures.
+    // Loose assertion — only verify the plan references the table. See the
+    // comment above the EXPLAIN call for why index-usage is not checked.
     assert!(
         plan.contains("stores_p65"),
         "EXPLAIN plan must reference the stores_p65 table; got:\n{plan}"
