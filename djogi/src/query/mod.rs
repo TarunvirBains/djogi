@@ -27,6 +27,7 @@ pub mod annotate;
 pub mod condition;
 pub mod field;
 pub mod filter;
+pub mod grouped;
 pub(crate) mod lock;
 pub mod order;
 pub mod queryset;
