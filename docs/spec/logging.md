@@ -156,6 +156,15 @@ The operator workflow should stay unified even though the databases are separate
 
 Where a migration affects both app and log schemas, Djogi should generate and apply the required work per target database with explicit labeling of which database each step touches.
 
+Migration execution remains target-scoped:
+
+- `djogi migrations compose --target main` composes app-database history
+- `djogi migrations compose --target crud_log` composes CRUD-log history
+- `djogi migrations compose --target event_log` composes event-log history
+- `djogi migrations apply/rollback/status/verify/repair/baseline --target ...` operate on one database target at a time
+
+Each target owns its own ledger, snapshot, and advisory-lock scope. Djogi may later coordinate ordered multi-target workflows, but it does not claim distributed atomic migration across the app, CRUD-log, and event-log databases.
+
 ### 9.3 Log Database Retention
 
 > Note: this section covers retention of the log databases themselves. For application-data lifecycle (purge / anonymize / archive of rows in the app DB), see [Data Lifecycle & Governance](./data-lifecycle.md).

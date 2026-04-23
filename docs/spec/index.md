@@ -17,6 +17,7 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 ## Infrastructure
 
 - [Migrations](./migrations.md) — build-time drift detection, schema snapshots, differ
+- [Apps & Database Domains](./apps-and-database-domains.md) — app ownership, database-target subscription, and same-target relation boundaries
 - [Protected Data Metadata & Field Codecs](./protected-data.md) — sensitive-field annotations, descriptor metadata, and storage transforms
 - [Data Lifecycle & Governance](./data-lifecycle.md) — lifecycle classes, anonymize/archive/purge planning, legal holds
 - [Logging](./logging.md) — three-database architecture, CRUD audit trail, event tracing

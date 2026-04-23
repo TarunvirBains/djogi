@@ -17,6 +17,13 @@ impl App for VehiclesApp {
 }
 ```
 Apps are registered at link time via `inventory`. At startup Djogi collects all registered apps, merges their `Router`s when a web-framework feature flag is active (for example `axum`), and makes all `ModelDescriptor`s available to the differ and shell. With no web-framework flag enabled, Djogi still registers app models and descriptors — only the router-merge step is skipped, letting adopters wire HTTP manually.
+
+This runtime registration surface is separate from the schema-ownership domain surface described in [Apps & Database Domains](./apps-and-database-domains.md):
+
+- `djogi::register_app!` = runtime registration of models/routes/descriptors
+- `djogi::apps!` = compile-time schema ownership domains and database-target grouping
+
+They are complementary, not competing APIs.
 ---
 
 ## 12. Configuration
@@ -46,6 +53,7 @@ port = 8000
 [migrations]
 submodule = "migrations"
 allow_destructive = false
+lock_timeout_secs = 30
 
 [shell]
 history_file = ".djogi_history"                # gitignored — personal and noisy
@@ -76,28 +84,50 @@ cargo install djogi-cli
 ```
 ```bash
 # Migrations
-cargo djogi migrate                          # apply pending migrations, update snapshot
-cargo djogi migrate rollback                 # roll back last migration, rewind snapshot
-cargo djogi migrate --fake 0005             # mark applied without running SQL
+djogi migrations compose               # generate migration files from current drift
+djogi migrations compose --dry-run     # preview SQL without writing files
+djogi migrations compose --allow-destructive
+djogi migrations apply                 # apply pending migrations, update snapshot
+djogi migrations apply --fake 0005     # mark applied without running SQL
+djogi migrations rollback              # roll back last migration, rewind snapshot
+djogi migrations status                # show file/ledger/snapshot state
+djogi migrations verify                # compare snapshot expectations to the live DB
+djogi migrations repair                # resolve partial apply or rebuild snapshot state
+djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
 
-# Migration generation (manual trigger — build.rs handles automatic generation)
-cargo djogi makemigrations                   # force-generate from current drift
-cargo djogi makemigrations --dry-run         # preview SQL without writing files
-cargo djogi makemigrations --allow-destructive
+# Migration-history state management
+djogi migrations attune                # attune local migration-history files to the repo-default target
+djogi migrations attune <target>       # attune to a local or remote git target
+djogi migrations attune <target> --verify
+djogi migrations attune <target> --record
+djogi migrations attune --squash       # dev-only local squash of migration history
+djogi migrations attune --squash --push
 
 # Database (dev only — gated on dev_mode + localhost + DJOGI_ENV != production)
-cargo djogi db reset                         # drop → recreate → migrate
-cargo djogi db reset --seed                  # drop → recreate → migrate → seed
-cargo djogi db seed                          # run seeds.rhai only
+djogi db reset                         # drop → recreate → migrate
+djogi db reset --seed                  # drop → recreate → migrate → seed
+djogi db seed                          # run seeds.rhai only
 
 # Shell
-cargo djogi shell
+djogi shell
 
 # Project scaffolding
-cargo djogi new my-project                   # scaffold project + init migrations submodule
-cargo djogi init                             # add Djogi to existing project
+djogi new my-project                   # scaffold project + init migrations submodule
+djogi init                             # add Djogi to existing project
 ```
 `db reset` hard-errors unless all three guards pass: `dev_mode = true`, `DATABASE_URL` resolves to localhost, `DJOGI_ENV` is not `production`.
+
+`migrations attune` manages local migration-history Git state. It may fetch remote refs when needed to resolve a target, but it does not mutate the database unless `--apply` is explicitly passed. Parent-repo submodule-pointer changes are explicit via `--record` or options that clearly imply recording, such as `--squash`.
+
+`migrations attune` target contract:
+
+- target may be omitted, in which case Djogi attunes to the repo-default/expected migration-history state
+- target may be a local or remote commit, tag, or branch
+- if `migrations/` has no remote configured, attune is limited to locally available Git targets
+- `--record` updates the parent repo's recorded submodule pointer after successful attunement
+- `--squash` is hard-gated exactly like `db reset`: `dev_mode = true`, localhost URL resolution, and `DJOGI_ENV != production`
+- `--squash` should refuse when the migration history is already treated as shared staging/production history
+- `--squash --push` requires a configured remote
 ---
 
 ## 16. Web Framework Integration

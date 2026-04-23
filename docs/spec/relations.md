@@ -29,6 +29,14 @@ No lazy loading. No surprise queries. The developer always knows when the DB is 
 
 Transport nesting: when a relation is surfaced through an [audience visage](./visages.md), it must point to a named visage of the related model (e.g. `#[field(expose(public = "UserSummary"))]` on `owner_id`), not at the raw persistence struct. Visage nesting and relation prefetch are independent — prefetch decides when the relation is loaded; the visage decides what shape it takes at a transport boundary.
 
+Foreign-key boundary:
+
+- `ForeignKey<T>` is only valid when both models belong to the same database target
+- cross-database foreign keys are explicitly rejected
+- if two models live in different database targets, store the referenced ID as a scalar field and handle consistency in application logic
+
+Djogi does not pretend to provide database-enforced referential integrity across separate databases. See [Apps & Database Domains](./apps-and-database-domains.md).
+
 ### 8.2 Many-to-Many — Explicit Through Models
 
 Implicit M2M fields are not provided. All M2M relationships require an explicit through model — this avoids the forced migration that implicit M2M fields eventually require when you need to store data on the relationship.
