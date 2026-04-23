@@ -26,7 +26,8 @@ mod testing;
 use proc_macro::TokenStream;
 
 /// The primary Djogi macro. Annotate any struct with `#[model(table = "...")]`
-/// to inject framework fields and derive CRUD, `FromRow`, and model descriptor.
+/// to inject framework fields (`id`, `created_at`, `updated_at`) and derive
+/// CRUD, `FromRow`, and the `ModelDescriptor` the migration differ consumes.
 ///
 /// ```rust,ignore
 /// use djogi::prelude::*;
@@ -38,6 +39,57 @@ use proc_macro::TokenStream;
 ///     pub published: bool,
 /// }
 /// ```
+///
+/// # `#[model(...)]` attribute grammar
+///
+/// | Key | Shape | Meaning |
+/// |-----|-------|---------|
+/// | `table` | `= "snake_case"` | Physical table name. Required. |
+/// | `pk` | `= "heerid" \| "ranjid" \| "heerid_desc" \| "ranjid_desc" \| "serial" \| "none"` | Primary-key strategy. Default: `heerid`. The `_desc` variants (Phase 7-Zero v3) store the XOR-flipped bit layout so BTree scans run newest-first without a secondary descending index — see the [indexing spec] §4.1 for the one-question decision rule. |
+/// | `no_default` | flag | Suppress the `impl Default` emitted for the model. Use when a user field lacks `Default`. |
+/// | `through` | flag | Marks a through-table (M2M join) — relaxes the "M2M needs explicit through model" check. |
+/// | `events` | flag | Opt into outbox `ModelEvent` emission for create/update/delete. |
+/// | `idempotency_key` | `= "field"` | Name of a field whose value is the upsert idempotency key. |
+/// | `tenant_key` | `= "field"` | Name of a field that carries the tenant id; enables `auto-set_tenant` and RLS sealing. |
+/// | `fts(config = "english", fields = [...])` | list | Register a full-text-search vector over the listed fields. |
+/// | `indexes(...)` | list | Declare model-level indexes — see below. |
+///
+/// # `indexes(...)` sub-grammar (Phase 7-Zero v3 §5)
+///
+/// Each entry is either `index(...)` or `unique(...)`. The body keys are:
+///
+/// | Key | Shape | Meaning |
+/// |-----|-------|---------|
+/// | `fields` | `= [ident, ...]` or `= [(col = ident, opclass = "...", order = asc\|desc, nulls = first\|last\|default), ...]` | Column list. Order is semantic — `[last, first]` and `[first, last]` are different indexes with different names. |
+/// | `expr` | `= "lower(email)"` | Expression-target index (mutually exclusive with `fields`). |
+/// | `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash"` | Access method. Default: `btree`. |
+/// | `opclass` | `= "text_pattern_ops"` | Single-column opclass (declaration shortcut; the per-column record form is preferred for multi-column indexes). |
+/// | `include` | `= [ident, ...]` | `INCLUDE(...)` payload columns for covering indexes. |
+/// | `where` | `= "deleted_at IS NULL"` | Partial-index predicate. Raw SQL — Djogi does not parse it; Postgres validates at migration time. |
+/// | `nulls_not_distinct` | `= true` | Unique indexes only — treat two `NULL`s as equal. Forces the `UniqueIndex` kind. |
+/// | `concurrently` | `= true` | Emit `CREATE INDEX CONCURRENTLY`. **Foot-gun:** omitting this on an index added to a large production table takes a `SHARE` lock that blocks every writer for the duration of the build. The framework does not auto-detect — operator responsibility. See the [indexing spec] "concurrently contract" section for the full eight-item doc promise. |
+/// | `name` | `= "custom_idx"` | Override the deterministic index name. Must not collide with a name the emitter would generate for another declared index. |
+///
+/// `unique(...)` differs from `index(...)` only in kind — by default it lowers
+/// to a `UNIQUE` constraint (`..._key` name), but the emitter escalates to a
+/// `UNIQUE INDEX` (`..._uidx` name) when the declaration uses `where`,
+/// `include`, `nulls_not_distinct`, or an `expr` target (Postgres constraints
+/// do not support those features).
+///
+/// Example:
+///
+/// ```rust,ignore
+/// #[model(table = "orders", indexes(
+///     index(fields = [created_at, id]),
+///     unique(fields = [tenant_id, external_id]),
+///     index(fields = [tenant_id], where = "deleted_at IS NULL"),
+///     index(expr = "lower(email)"),
+///     index(fields = [(col = body, opclass = "jsonb_path_ops")], using = "gin"),
+/// ))]
+/// pub struct Order { /* ... */ }
+/// ```
+///
+/// [indexing spec]: ../docs/spec/indexing.md
 #[proc_macro_attribute]
 pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
     model::expand(attr.into(), item.into()).into()

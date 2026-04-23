@@ -371,3 +371,5 @@ Composite boundary:
   - composite primary keys
 
 For supported composite unique/index cases, Djogi must preserve declared column order in both diffs and generated SQL.
+
+The model-level declaration grammar (`#[model(indexes(...))]`), the unique-constraint-vs-unique-index lowering rules, the deterministic name format, and the `concurrently = true` operator contract — including the apply-time advisory warning — are specified in the [indexing spec](./indexing.md). This chapter covers only how `IndexSpec` feeds the differ and the generated DDL; the contract itself lives there.
