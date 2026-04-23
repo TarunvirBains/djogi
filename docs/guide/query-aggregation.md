@@ -27,12 +27,18 @@ GroupedQuerySet<T, K>
     │  .annotate(|f| ...)                 — attach one or more aggregates
     ▼
 GroupedAnnotatedQuerySet<T, K, A>
-    │  .having(|f| ...)                   — filter aggregated groups
-    │  .order_by(|f| ...) / .limit / .offset
+    │  .having(|k, a| Expr<bool>)         — filter aggregated groups
+    │  .order_by(|k, a| OrderExpr)        — order the grouped result
+    │  .limit(n) / .offset(n)             — paginate the grouped result
     │  .fetch_all(&mut ctx)
     ▼
 Vec<(K::Decoded, A::Decoded)>
 ```
+
+`.having` and `.order_by` receive **two** arguments: the key tuple `k`
+and the aggregate tuple `a`. See "Ordering and pagination" and
+"`HAVING` — filtering groups" below for the closure shape and for the
+deferred aggregate-bridge caveat.
 
 The key tuple `K` and the aggregate tuple `A` are both sealed trait objects
 — users never name them directly. Each terminal returns a `Vec` of
