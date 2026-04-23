@@ -10,12 +10,16 @@
 //!
 //! - [`GeoPoint`] — a WGS-84 latitude/longitude coordinate, stored as
 //!   `GEOGRAPHY(Point, 4326)` in Postgres.
-//! - [`GeographyValue`] — sealed trait implemented by all geometry types.
+//! - [`LineString`] — an ordered sequence of two or more points, stored as
+//!   `GEOGRAPHY(LineString, 4326)`.
+//! - [`GeographyValue`] — sealed trait implemented by all geometry types above.
 //! - [`GeoError`] — errors from coordinate validation and EWKB codec failures.
 
 mod ewkb;
+pub mod linestring;
 pub mod point;
 
+pub use linestring::LineString;
 pub use point::GeoPoint;
 
 use thiserror::Error;
@@ -54,6 +58,20 @@ pub enum GeoError {
     /// the caller can diagnose the mismatch.
     #[error("unexpected SRID {0}: Djogi requires SRID 4326 (WGS-84)")]
     UnexpectedSrid(u32),
+
+    /// A `LineString` was constructed with fewer than the required number of
+    /// points.
+    ///
+    /// `LineString` requires at least 2 distinct points. `got` is the number
+    /// of points supplied; `need` is the minimum required.
+    #[cfg(feature = "spatial")]
+    #[error("invalid LineString: got {got} point(s), need at least {need}")]
+    InvalidLineString {
+        /// Number of points supplied by the caller.
+        got: usize,
+        /// Minimum number of points required (always 2).
+        need: usize,
+    },
 }
 
 // ── Sealed GeographyValue trait ───────────────────────────────────────────────
@@ -120,8 +138,7 @@ impl sealed_value::Sealed for GeoPoint {}
 #[cfg(feature = "spatial")]
 impl GeographyValue for GeoPoint {
     const GEO_TYPE_WORD: u32 = 0x20000001;
-    const SUBTYPE: crate::descriptor::GeographySubtype =
-        crate::descriptor::GeographySubtype::Point;
+    const SUBTYPE: crate::descriptor::GeographySubtype = crate::descriptor::GeographySubtype::Point;
 
     fn to_ewkb_bytes(&self) -> Vec<u8> {
         GeoPoint::to_ewkb_bytes(*self)
@@ -129,6 +146,26 @@ impl GeographyValue for GeoPoint {
 
     fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
         GeoPoint::from_ewkb_bytes(bytes)
+    }
+}
+
+// ── LineString impl ───────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for LineString {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for LineString {
+    const GEO_TYPE_WORD: u32 = 0x20000002;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::LineString;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        ewkb::encode_linestring(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_linestring(bytes)
     }
 }
 
@@ -143,5 +180,10 @@ mod geography_value_tests {
     #[test]
     fn geopoint_is_geography_value() {
         takes_geo::<GeoPoint>();
+    }
+
+    #[test]
+    fn linestring_is_geography_value() {
+        takes_geo::<LineString>();
     }
 }
