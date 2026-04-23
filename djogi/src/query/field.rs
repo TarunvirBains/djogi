@@ -919,6 +919,151 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     }
 }
 
+// ── Spatial shape predicates on any GeographyValue field (T9) ────────────────
+//
+// Gated on `#[cfg(feature = "spatial")]`. Generic over `G: GeographyValue` so
+// the methods are available on `FieldRef<M, Polygon>`, `FieldRef<M, LineString>`,
+// `FieldRef<M, GeoPoint>`, etc. The `other` argument is also generic (`O:
+// GeographyValue`) so callers may test across geometry types — for example,
+// `FieldRef<M, Polygon>::intersects(some_linestring)` is valid because both
+// `Polygon` and `LineString` implement `GeographyValue`.
+//
+// Note: `.within_km` remains in the `impl<M: Model> FieldRef<M, GeoPoint>`
+// block above — it is radius-based and specific to `GeoPoint`. The shape-based
+// `.within(&geom)` below lives here (generic receiver) and routes to the
+// `WithinShape` variant, avoiding any naming collision.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
+    /// Filter rows where this geography column entirely contains `other`.
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Contains(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`. The EWKB bytes flow through `push_bind` — no
+    /// string interpolation of user-supplied data.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find delivery zones that fully contain the customer's neighbourhood.
+    /// DeliveryZone::objects()
+    ///     .filter(|z| z.area().contains(&neighbourhood_polygon))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::Contains {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+
+    /// Filter rows where this geography column intersects `other` (shares at
+    /// least one point).
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Intersects(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find routes that cross the construction zone.
+    /// Route::objects()
+    ///     .filter(|r| r.path().intersects(&construction_zone))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn intersects<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::Intersects {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+
+    /// Filter rows where this geography column touches `other` — the geometries
+    /// share boundary points but no interior points (touch but do not overlap).
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Touches(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find parcels adjacent to (touching) the road boundary.
+    /// Parcel::objects()
+    ///     .filter(|p| p.boundary().touches(&road_line))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn touches<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::Touches {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+
+    /// Filter rows where this geography column is entirely within `other`.
+    ///
+    /// This is the shape-based `within` — distinct from Phase 6's radius-based
+    /// `.within_km(center, km)` on `FieldRef<M, GeoPoint>`. The two methods
+    /// live on different receivers and do not collide.
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Within(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`. Internally routes to `SpatialExpr::WithinShape`
+    /// to avoid the variant-name collision with the radius-based `Within`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find deliveries whose drop-off point falls inside a coverage polygon.
+    /// Delivery::objects()
+    ///     .filter(|d| d.drop_off().within(&coverage_polygon))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::WithinShape {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+}
+
 // ── Fluent combinators on Condition ───────────────────────────────────────
 //
 // `Condition::and(a, b)` / `::or(a, b)` are the associative constructors in
@@ -1119,5 +1264,287 @@ mod tests {
         } else {
             panic!("expected Or, got {combined:?}");
         }
+    }
+}
+
+// ── T9: Method dispatch tests for shape predicates ────────────────────────
+
+#[cfg(all(test, feature = "spatial"))]
+mod spatial_field_tests {
+    use super::*;
+    use crate::expr::node::ExprNode;
+    use crate::expr::spatial::SpatialExpr;
+    use crate::geo::{GeoPoint, LineString, MultiPoint, MultiPolygon, Polygon};
+    use crate::query::condition::Condition;
+    use std::future::Future;
+
+    // Minimal `Model` stub for spatial method dispatch tests.
+    struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fakes"
+        }
+        fn pk_value(&self) -> &i64 {
+            unimplemented!()
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+    }
+
+    // Helper: build a minimal valid `Polygon` using the `closed` constructor.
+    fn make_polygon() -> Polygon {
+        let ring = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(), // closed ring
+        ];
+        Polygon::closed(&ring).unwrap()
+    }
+
+    // Helper: extract the `SpatialExpr` from a `Condition::Expr(Expr<bool>)`.
+    fn unwrap_spatial(cond: Condition) -> SpatialExpr {
+        if let Condition::Expr(expr) = cond
+            && let ExprNode::Spatial(s) = expr.node
+        {
+            return s;
+        }
+        panic!("expected Condition::Expr(ExprNode::Spatial(...))");
+    }
+
+    // ── contains ─────────────────────────────────────────────────────────────
+
+    /// `.contains(&poly)` on a `FieldRef<Fake, Polygon>` must produce
+    /// `Condition::Expr(ExprNode::Spatial(SpatialExpr::Contains { .. }))`.
+    #[test]
+    fn contains_method_dispatch_produces_contains_variant() {
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        let cond = field.contains(&poly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Contains {
+                    field_column: "area",
+                    ..
+                }
+            ),
+            "expected Contains variant, got {s:?}"
+        );
+    }
+
+    /// `.contains` injection safety: EWKB bytes must not appear as literal SQL.
+    #[test]
+    fn contains_method_dispatch_ewkb_is_bound() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        let cond = field.contains(&poly);
+        let s = unwrap_spatial(cond);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        assert_eq!(acc.bind_count(), 1, "EWKB must flow through push_bind");
+        assert!(acc.sql().contains("$1"), "expected $1 placeholder");
+    }
+
+    // ── intersects ────────────────────────────────────────────────────────────
+
+    /// `.intersects(&line)` on a `FieldRef<Fake, LineString>` must produce
+    /// `SpatialExpr::Intersects { field_column: "route", .. }`.
+    #[test]
+    fn intersects_method_dispatch_produces_intersects_variant() {
+        let pts = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+        ];
+        let line = LineString::new(&pts).unwrap();
+        let field: FieldRef<Fake, LineString> = FieldRef::new("route");
+        let cond = field.intersects(&line);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Intersects {
+                    field_column: "route",
+                    ..
+                }
+            ),
+            "expected Intersects variant, got {s:?}"
+        );
+    }
+
+    /// Cross-geometry dispatch: `FieldRef<Fake, Polygon>::intersects(some_linestring)`.
+    /// Both types implement `GeographyValue`; the method must accept the call.
+    #[test]
+    fn intersects_cross_geometry_polygon_field_with_linestring_arg() {
+        let pts = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(2.0, 2.0).unwrap(),
+        ];
+        let line = LineString::new(&pts).unwrap();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        // `Polygon` field, `LineString` argument — both are `GeographyValue`.
+        let cond = field.intersects(&line);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Intersects {
+                    field_column: "area",
+                    ..
+                }
+            ),
+            "cross-geometry intersects failed: {s:?}"
+        );
+    }
+
+    // ── touches ───────────────────────────────────────────────────────────────
+
+    /// `.touches(&poly)` on a `FieldRef<Fake, Polygon>` must produce
+    /// `SpatialExpr::Touches { field_column: "boundary", .. }`.
+    #[test]
+    fn touches_method_dispatch_produces_touches_variant() {
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("boundary");
+        let cond = field.touches(&poly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Touches {
+                    field_column: "boundary",
+                    ..
+                }
+            ),
+            "expected Touches variant, got {s:?}"
+        );
+    }
+
+    /// `.touches` injection safety.
+    #[test]
+    fn touches_method_dispatch_ewkb_is_bound() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("boundary");
+        let cond = field.touches(&poly);
+        let s = unwrap_spatial(cond);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        assert_eq!(acc.bind_count(), 1);
+        assert!(acc.sql().contains("$1"));
+    }
+
+    // ── within ────────────────────────────────────────────────────────────────
+
+    /// `.within(&poly)` on a `FieldRef<Fake, GeoPoint>` must produce
+    /// `SpatialExpr::WithinShape { field_column: "drop_off", .. }`.
+    #[test]
+    fn within_method_dispatch_produces_within_shape_variant() {
+        let poly = make_polygon();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("drop_off");
+        let cond = field.within(&poly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::WithinShape {
+                    field_column: "drop_off",
+                    ..
+                }
+            ),
+            "expected WithinShape variant, got {s:?}"
+        );
+    }
+
+    /// `.within` injection safety.
+    #[test]
+    fn within_method_dispatch_ewkb_is_bound() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let poly = make_polygon();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("drop_off");
+        let cond = field.within(&poly);
+        let s = unwrap_spatial(cond);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        assert_eq!(acc.bind_count(), 1);
+        assert!(acc.sql().contains("$1"));
+    }
+
+    /// Cross-geometry dispatch: `FieldRef<Fake, MultiPolygon>::within(some_multipolygon)`.
+    /// Both the field type and arg type are `GeographyValue`.
+    #[test]
+    fn within_cross_geometry_multipolygon_field() {
+        let poly = make_polygon();
+        let mpoly = MultiPolygon::new(vec![poly]).unwrap();
+        let field: FieldRef<Fake, MultiPolygon> = FieldRef::new("coverage");
+        let cond = field.within(&mpoly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::WithinShape {
+                    field_column: "coverage",
+                    ..
+                }
+            ),
+            "cross-geometry within failed: {s:?}"
+        );
+    }
+
+    /// Cross-geometry dispatch: `FieldRef<Fake, GeoPoint>::intersects(multipoint)`.
+    #[test]
+    fn contains_cross_geometry_geopoint_field_multipoint_arg() {
+        let pts = [GeoPoint::new(0.0, 0.0).unwrap()];
+        let mpt = MultiPoint::new(&pts).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        let cond = field.intersects(&mpt);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Intersects {
+                    field_column: "loc",
+                    ..
+                }
+            ),
+            "expected Intersects, got {s:?}"
+        );
     }
 }
