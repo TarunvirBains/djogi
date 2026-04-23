@@ -72,39 +72,42 @@ fragments that the substrate inherits from `QuerySet<T>`.
 
 ### Ordering and pagination
 
-`.order_by(...)` on a grouped queryset accepts the same closure type
-`QuerySet` does and emits ORDER BY against the grouped output. In Phase
-6.5 the closure may order by **key columns** (and `.limit` / `.offset`
-paginate the grouped result):
+`.order_by(...)` on a grouped queryset receives a closure of the form
+`|k, a| -> OrderExpr`, where `k` is the group-key tuple and `a` is the
+aggregate tuple. For a single-column key, `k` is the `FieldRef` itself,
+so `k.asc()` / `k.desc()` produce an `OrderExpr` directly. `.limit` /
+`.offset` paginate the grouped result:
 
 ```rust
-let first_ten: Vec<(i64, i64)> = Order::objects()
+let top_three_orgs: Vec<(i64, i64)> = Order::objects()
     .group_by(|f| f.org_id())
     .annotate(|f| f.amount().sum())
-    .order_by(|f| f.org_id().asc())
-    .limit(10)
+    .order_by(|k, _a| k.desc())
+    .limit(3)
     .fetch_all(&mut ctx)
     .await?;
 ```
 
 **Deferred:** ordering directly by an aggregate expression
-(`.order_by(|f| f.amount().sum().desc())`) is not available in Phase 6.5
-— `AggregateExpr<V>` does not yet have an `Into<Expr<V>>` bridge, so
-aggregate expressions cannot compose into the ORDER BY slot. For
-top-N-by-aggregate queries today, sort client-side after `fetch_all` or
-drop to `ctx.raw_query(...)`.
+(`.order_by(|k, a| a.desc())`) is not available in Phase 6.5 —
+`AggregateExpr<V>` has no `.asc()` / `.desc()` methods and no
+`Into<Expr<V>>` bridge, so the aggregate cannot compose into the
+ORDER BY slot through the typed surface. For top-N-by-aggregate
+queries today, sort client-side after `fetch_all` or drop to
+`ctx.raw_query(...)`.
 
 ### `HAVING` — filtering groups
 
-`.having(|f| ...)` receives the same `Fields` placeholder as other closures.
-The emitted predicate goes in a `HAVING` clause — in Phase 6.5 the
-predicate closes over the **group key** (not the aggregate value):
+`.having(...)` also receives a `|k, a| -> Expr<bool>` closure. For a
+single-column key, lift the `FieldRef` into the expression substrate
+with `k.as_expr()` and then use the comparison methods on `Expr<V>`
+(`.gte`, `.lt`, `.eq`, …):
 
 ```rust
-let selected_orgs: Vec<(i64, i64)> = Order::objects()
+let big_orgs: Vec<(i64, i64)> = Order::objects()
     .group_by(|f| f.org_id())
     .annotate(|f| f.amount().sum())
-    .having(|f| f.org_id().gt(Expr::literal(100_i64)))
+    .having(|k, _a| k.as_expr().gte(Expr::literal(2_i64)))
     .fetch_all(&mut ctx)
     .await?;
 ```
@@ -114,14 +117,15 @@ let selected_orgs: Vec<(i64, i64)> = Order::objects()
 > SELECT org_id, SUM(amount) AS __djogi_agg_0
 > FROM orders AS t
 > GROUP BY org_id
-> HAVING org_id > $1
+> HAVING org_id >= $1
 > ```
 
 **Deferred:** filtering on an aggregate expression
-(`.having(|f| f.amount().sum().gt(...))`) is not available in Phase 6.5
-for the same reason as aggregate-based ordering — it requires the same
-`AggregateExpr<V>` → `Expr<V>` bridge. Filter client-side, or write the
-HAVING predicate through `ctx.raw_query(...)` until the bridge lands.
+(`.having(|k, a| a.gt(Expr::literal(10_000_i64)))`) is not available
+in Phase 6.5 for the same reason as aggregate-based ordering — it
+requires the same `AggregateExpr<V>` → `Expr<V>` bridge. Filter
+client-side, or write the HAVING predicate through `ctx.raw_query(...)`
+until the bridge lands.
 
 ---
 
