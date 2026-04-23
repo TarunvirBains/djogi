@@ -1945,4 +1945,63 @@ mod tests {
             "expected skip_locked to win over nowait, got: {sql}"
         );
     }
+
+    // ── T1 emitter behavior: ROLLUP / CUBE ────────────────────────────────
+    //
+    // These tests document that the T1 emitter already handles ROLLUP and
+    // CUBE correctly. T2 adds the entry-point methods (.rollup, .cube) and
+    // the GROUPING SETS emitter arm; the tests below pin the existing
+    // emitter behavior so regressions surface before the new arms land.
+
+    #[test]
+    fn build_grouped_annotated_select_emits_rollup() {
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::{GroupedAnnotatedQuerySet, GroupingMode};
+        use std::marker::PhantomData;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq: GroupedAnnotatedQuerySet<Fake, FieldRef<Fake, i64>, AggregateExpr<i64>> = {
+            let gq = crate::query::grouped::GroupedQuerySet {
+                qs,
+                keys,
+                grouping: GroupingMode::Rollup,
+                _k: PhantomData,
+            };
+            gq.annotate(|_| vals.sum())
+        };
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUP BY ROLLUP (org_id)"),
+            "expected ROLLUP clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn build_grouped_annotated_select_emits_cube() {
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::{GroupedAnnotatedQuerySet, GroupingMode};
+        use std::marker::PhantomData;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq: GroupedAnnotatedQuerySet<Fake, FieldRef<Fake, i64>, AggregateExpr<i64>> = {
+            let gq = crate::query::grouped::GroupedQuerySet {
+                qs,
+                keys,
+                grouping: GroupingMode::Cube,
+                _k: PhantomData,
+            };
+            gq.annotate(|_| vals.sum())
+        };
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUP BY CUBE (org_id)"),
+            "expected CUBE clause, got: {sql}"
+        );
+    }
 }
