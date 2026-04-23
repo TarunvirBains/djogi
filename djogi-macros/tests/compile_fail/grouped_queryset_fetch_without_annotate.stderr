@@ -1,0 +1,17 @@
+warning: unreachable statement
+  --> tests/compile_fail/grouped_queryset_fetch_without_annotate.rs:14:5
+   |
+13 |     let mut ctx: djogi::context::DjogiContext = unimplemented!();
+   |                                                 ---------------- any code following this expression is unreachable
+14 |     let _ = Txn::objects().group_by(|f| f.org_id()).fetch_all(&mut ctx);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unreachable statement
+   |
+   = note: `#[warn(unreachable_code)]` (part of `#[warn(unused)]`) on by default
+
+error[E0599]: no method named `fetch_all` found for struct `GroupedQuerySet<T, K>` in the current scope
+  --> tests/compile_fail/grouped_queryset_fetch_without_annotate.rs:14:53
+   |
+14 |     let _ = Txn::objects().group_by(|f| f.org_id()).fetch_all(&mut ctx);
+   |             --------------                          ^^^^^^^^^ method not found in `GroupedQuerySet<Txn, FieldRef<Txn, i64>>`
+   |             |
+   |             method `fetch_all` is available on `QuerySet<Txn>`
