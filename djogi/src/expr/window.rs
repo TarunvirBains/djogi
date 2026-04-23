@@ -49,10 +49,6 @@ pub struct WindowSpec {
 ///
 /// Attached to a [`WindowSpec`] by calling `.rows(...)`, `.range(...)`, or
 /// `.groups(...)` on a [`WindowBuilder`], optionally followed by `.exclude(...)`.
-// `kind`, `start`, and `end` are read by `WindowSpec::emit` (Commit 1) and
-// by `ExprNode::Aggregate` in Commit 2. The dead-code lint fires here because
-// the integration lands in the next commit.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub(crate) kind: FrameKind,
@@ -237,9 +233,6 @@ impl WindowBuilder {
     }
 
     /// Finalise the builder and return the [`WindowSpec`].
-    // Used by `AggregateExpr::over` (Commit 3). Suppress the dead-code lint
-    // in the interim commit that introduces the type before the consumer lands.
-    #[allow(dead_code)]
     pub(crate) fn build(self) -> WindowSpec {
         self.0
     }
@@ -250,9 +243,6 @@ impl WindowSpec {
     /// `acc`. The leading space is part of the emission — callers append
     /// this directly after the aggregate function call and optional FILTER
     /// clause.
-    // Called by the aggregate emitters in `query::sql` (Commit 3). The
-    // dead-code lint fires here in Commit 1 because the callers land later.
-    #[allow(dead_code)]
     pub(crate) fn emit(&self, acc: &mut SqlAccumulator) {
         acc.push_sql(" OVER (");
         let mut spacer = false;
@@ -312,9 +302,6 @@ impl WindowSpec {
     }
 }
 
-// Called only from `WindowSpec::emit`; linted as dead-code in Commit 1
-// because `emit` itself carries `#[allow(dead_code)]`.
-#[allow(dead_code)]
 fn emit_bound(acc: &mut SqlAccumulator, bound: FrameBound) {
     match bound {
         FrameBound::UnboundedPreceding => acc.push_sql("UNBOUNDED PRECEDING"),

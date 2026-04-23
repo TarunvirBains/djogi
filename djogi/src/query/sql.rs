@@ -824,34 +824,45 @@ pub(crate) fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator 
     acc
 }
 
-/// Emit `(AGG(..))::CAST` for the scalar-aggregate path — wraps the
-/// bare aggregate in parens so the narrowing `::CAST` applies to the
-/// whole function call, including any `FILTER (WHERE ...)` tail.
+/// Emit `(AGG(..) [OVER (...)])::CAST` for the scalar-aggregate and
+/// grouped-annotate paths — wraps the aggregate (plus the optional window
+/// clause) in parens when a narrowing `::CAST` is needed, then appends
+/// the cast.
 ///
 /// `cast_to` is pulled from the [`crate::expr::node::ExprNode::Aggregate`]
 /// payload; `None` skips the cast entirely (used for `COUNT` /
 /// `MIN` / `MAX` where the Postgres return type already decodes into
 /// `Out` directly).
+///
+/// When the aggregate carries a user-set `window: Some(spec)` (from
+/// `.over(|w| ...)`), the `OVER (...)` clause is appended immediately
+/// after `emit_expr` returns — in the right position for Postgres
+/// window-function syntax (`AGG(...) OVER (...)`). No default `OVER ()`
+/// is added when `window` is `None`: this path is used for both the
+/// scalar terminal and the grouped annotate SELECT list, neither of which
+/// should silently grow a window clause.
 pub(crate) fn emit_aggregate_with_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
 ) {
-    if let crate::expr::node::ExprNode::Aggregate { cast_to, .. } = agg
-        && cast_to.is_some()
-    {
+    let (cast_to, window) = match agg {
+        crate::expr::node::ExprNode::Aggregate {
+            cast_to, window, ..
+        } => (*cast_to, window.as_ref()),
+        _ => (None, None),
+    };
+    // Only wrap in parens when a cast is needed — `(AGG(..) OVER (...))::ty`.
+    // A window-only aggregate (no cast) emits directly: `AGG(..) OVER (...)`.
+    if cast_to.is_some() {
         acc.push_sql("(");
-        crate::expr::sql::emit_expr(acc, agg);
+    }
+    crate::expr::sql::emit_expr(acc, agg);
+    if let Some(ws) = window {
+        ws.emit(acc);
+    }
+    if let Some(ty) = cast_to {
         acc.push_sql(")::");
-        // Safe because we matched `cast_to.is_some()` above; the
-        // pattern binding borrows immutably so we re-extract here.
-        if let crate::expr::node::ExprNode::Aggregate {
-            cast_to: Some(ty), ..
-        } = agg
-        {
-            acc.push_sql(ty);
-        }
-    } else {
-        crate::expr::sql::emit_expr(acc, agg);
+        acc.push_sql(ty);
     }
 }
 
@@ -879,15 +890,22 @@ pub(crate) fn emit_aggregate_with_window_and_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
 ) {
-    let cast = match agg {
-        crate::expr::node::ExprNode::Aggregate { cast_to, .. } => *cast_to,
-        _ => None,
+    let (cast, window) = match agg {
+        crate::expr::node::ExprNode::Aggregate {
+            cast_to, window, ..
+        } => (*cast_to, window.as_ref()),
+        _ => (None, None),
     };
     if cast.is_some() {
         acc.push_sql("(");
     }
     crate::expr::sql::emit_expr(acc, agg);
-    acc.push_sql(" OVER ()");
+    // Use the user's window spec when present; fall back to the bare `OVER ()`
+    // default that all pre-T3 ungrouped annotate callers expect.
+    match window {
+        Some(ws) => ws.emit(acc),
+        None => acc.push_sql(" OVER ()"),
+    }
     if let Some(ty) = cast {
         acc.push_sql(")::");
         acc.push_sql(ty);

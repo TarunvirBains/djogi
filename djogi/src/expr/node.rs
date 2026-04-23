@@ -152,8 +152,9 @@ pub(crate) enum ExprNode {
         /// Reserved for T4's `.distinct()` builder. Always `false` until
         /// T4 wires it; present now so T4 only changes the aggregate.rs
         /// builder and the emitter — no new fields anywhere.
-        // `#[allow(dead_code)]` is needed here because T4 (the first consumer
-        // of the `distinct` flag in the emitter) lands in a later commit.
+        // `#[allow(dead_code)]` here because T4 (the first emitter consumer of
+        // this flag) lands in a later task. The field must exist now so T4 does
+        // not need to add a new struct field and update construction sites.
         #[allow(dead_code)]
         distinct: bool,
         /// Optional user-specified window clause produced by
@@ -162,9 +163,6 @@ pub(crate) enum ExprNode {
         /// annotate path in `query::sql` wraps `None`-window aggregates in
         /// `OVER ()` for backwards compatibility. `Some(spec)` emits the
         /// full `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
-        // `#[allow(dead_code)]` here because the emitter reads `window` in
-        // Commit 3; it is already set by AggregateExpr::over (also Commit 3).
-        #[allow(dead_code)]
         window: Option<crate::expr::window::WindowSpec>,
     },
 
