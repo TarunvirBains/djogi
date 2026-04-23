@@ -34,6 +34,36 @@ pub use crate::relation::{OnDelete, RelationKind};
 // the descriptor module path.
 pub use crate::fts::FtsDescriptor;
 
+/// Subtype discriminator for `FieldSqlType::Geography`.
+///
+/// Phase 7's migration differ compares subtypes by discriminant, not by
+/// `Display` text, so subtype renames or new variants do not surface as
+/// spurious migration diffs.
+///
+/// Sealed via `#[non_exhaustive]` — adding a variant in a future phase is
+/// not a breaking change for downstream consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GeographySubtype {
+    Point,
+    LineString,
+    Polygon,
+    MultiPoint,
+    MultiPolygon,
+}
+
+impl std::fmt::Display for GeographySubtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Point => "Point",
+            Self::LineString => "LineString",
+            Self::Polygon => "Polygon",
+            Self::MultiPoint => "MultiPoint",
+            Self::MultiPolygon => "MultiPolygon",
+        })
+    }
+}
+
 /// SQL type a model field maps to.
 ///
 /// This enum is the bridge between Rust field types and the column types
@@ -66,9 +96,15 @@ pub enum FieldSqlType {
     /// Case-insensitive text (Postgres `CITEXT`). Declared in Phase 1;
     /// used by the SQL linting plan in later phases.
     Citext,
-    /// PostGIS `geography(Point, SRID)`. Declared in Phase 1;
-    /// full wiring (codec, migration support) lands in later phases.
+    /// PostGIS `geography(<subtype>, SRID)`. The `subtype` discriminant
+    /// is a typed `GeographySubtype` so Phase 7's migration differ can
+    /// compare subtypes by discriminant — subtype renames or new variants
+    /// do not surface as spurious migration diffs.
+    ///
+    /// Phase 6 shipped with `Point` hardcoded in `Display`; T6 freezes the
+    /// final descriptor shape that Phase 7 will consume.
     Geography {
+        subtype: GeographySubtype,
         srid: u32,
     },
     /// Fallback for SQL types the framework doesn't model explicitly.
@@ -99,7 +135,9 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::BigIntArray => write!(f, "BIGINT[]"),
             FieldSqlType::BoolArray => write!(f, "BOOLEAN[]"),
             FieldSqlType::Citext => write!(f, "CITEXT"),
-            FieldSqlType::Geography { srid } => write!(f, "geography(Point, {srid})"),
+            FieldSqlType::Geography { subtype, srid } => {
+                write!(f, "geography({subtype}, {srid})")
+            }
             FieldSqlType::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -209,9 +247,59 @@ impl IndexSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PkType,
-        migration_shape::MigrationShape,
+        FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec, IndexType, ModelDescriptor,
+        PkType, migration_shape::MigrationShape,
     };
+
+    // ── T6: GeographySubtype Display ─────────────────────────────────────────
+
+    /// Phase 6 regression guard: `Geography { subtype: Point, srid: 4326 }`
+    /// must emit exactly `"geography(Point, 4326)"` — unchanged from Phase 6
+    /// where `"Point"` was hardcoded.
+    #[test]
+    fn geography_point_subtype_displays_unchanged_from_phase_6() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::Point,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(Point, 4326)");
+    }
+
+    #[test]
+    fn geography_linestring_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::LineString,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(LineString, 4326)");
+    }
+
+    #[test]
+    fn geography_polygon_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::Polygon,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(Polygon, 4326)");
+    }
+
+    #[test]
+    fn geography_multipoint_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::MultiPoint,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(MultiPoint, 4326)");
+    }
+
+    #[test]
+    fn geography_multipolygon_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::MultiPolygon,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(MultiPolygon, 4326)");
+    }
 
     #[test]
     fn simple_constructor_defaults_policy_fields_to_benign() {

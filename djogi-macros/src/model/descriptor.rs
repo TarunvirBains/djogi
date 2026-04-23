@@ -618,11 +618,17 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "BIGINT[]" => quote! { ::djogi::FieldSqlType::BigIntArray },
         "BOOLEAN[]" => quote! { ::djogi::FieldSqlType::BoolArray },
         // Spatial — GeoPoint fields are mapped to GEOGRAPHY(Point, 4326) in
-        // rust_type_to_sql. Emit the typed Geography variant so downstream
-        // consumers (migration differ, djogi docs, admin UI) never need to
-        // parse a Custom("...") string to discover the SRID.
+        // rust_type_to_sql. Emit the typed Geography variant with the typed
+        // GeographySubtype discriminant so Phase 7's migration differ can
+        // compare subtypes by discriminant rather than Display text.
+        // T7 extends this match to cover non-point geometries.
         "GEOGRAPHY(Point, 4326)" => {
-            quote! { ::djogi::FieldSqlType::Geography { srid: 4326u32 } }
+            quote! {
+                ::djogi::FieldSqlType::Geography {
+                    subtype: ::djogi::descriptor::GeographySubtype::Point,
+                    srid: 4326u32,
+                }
+            }
         }
         other => {
             let s = other.to_string();
