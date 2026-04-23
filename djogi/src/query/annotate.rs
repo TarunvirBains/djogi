@@ -120,6 +120,21 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// column-ordering surprises (though the framework never reorders
     /// the SELECT list in practice).
     fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error>;
+
+    /// Validate all aggregate nodes in this tuple for unsupported
+    /// DISTINCT modifier combinations before building SQL.
+    ///
+    /// Called at the start of each terminal method
+    /// ([`AnnotatedQuerySet::fetch_all`], grouped terminals) so the
+    /// caller gets a typed [`crate::DjogiError::UnsupportedAggregate`]
+    /// rather than a cryptic Postgres syntax error.
+    ///
+    /// Default impl returns `Ok(())` — overridden by each concrete impl
+    /// to walk its nodes through
+    /// [`crate::expr::sql::check_aggregate_legality`].
+    fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
 }
 
 // ── Arity 1: single AggregateExpr<V> ─────────────────────────────────
@@ -155,6 +170,10 @@ where
 
     fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
         row.try_get::<_, V>("__djogi_agg_0")
+    }
+
+    fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        crate::expr::sql::check_aggregate_legality(&self.node)
     }
 }
 
@@ -207,6 +226,13 @@ macro_rules! impl_into_aggregate_tuple {
                         row.try_get::<_, $ty>($alias)?,
                     )+
                 ))
+            }
+
+            fn check_legality(&self) -> Result<(), crate::DjogiError> {
+                $(
+                    crate::expr::sql::check_aggregate_legality(&self.$slot.node)?;
+                )+
+                Ok(())
             }
         }
     };
@@ -280,6 +306,10 @@ where
             if qs.is_empty() {
                 return Ok(Vec::new());
             }
+
+            // Validate DISTINCT modifier combinations before building SQL —
+            // rejected combos surface as DjogiError::UnsupportedAggregate.
+            aggregates.check_legality()?;
 
             let acc = build_select_with_annotations(&qs, |acc| {
                 aggregates.push_columns(acc);

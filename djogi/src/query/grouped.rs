@@ -328,6 +328,9 @@ where
         A::Decoded: 'ctx,
     {
         async move {
+            // Validate DISTINCT modifier combinations before building SQL —
+            // rejected combos surface as DjogiError::UnsupportedAggregate.
+            self.aggregates.check_legality()?;
             let acc = crate::query::sql::build_grouped_annotated_select(&self);
             let (sql, binds) = acc.into_parts();
             let params: Vec<&(dyn postgres_types::ToSql + Sync)> = binds

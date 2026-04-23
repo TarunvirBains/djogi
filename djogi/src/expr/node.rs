@@ -149,13 +149,12 @@ pub(crate) enum ExprNode {
         /// framework-baked `&'static str` from
         /// [`super::aggregate`]'s method bodies — never user input.
         cast_to: Option<&'static str>,
-        /// Reserved for T4's `.distinct()` builder. Always `false` until
-        /// T4 wires it; present now so T4 only changes the aggregate.rs
-        /// builder and the emitter — no new fields anywhere.
-        // `#[allow(dead_code)]` here because T4 (the first emitter consumer of
-        // this flag) lands in a later task. The field must exist now so T4 does
-        // not need to add a new struct field and update construction sites.
-        #[allow(dead_code)]
+        /// When `true`, the `DISTINCT` keyword is emitted before the aggregate
+        /// argument: `AGG(DISTINCT col)`. Set via
+        /// [`super::aggregate::AggregateExpr::distinct`] (T4). Fetch-time
+        /// validation in [`super::sql::check_aggregate_legality`] rejects
+        /// combinations that Postgres does not accept or that Djogi's current
+        /// IR cannot correctly represent.
         distinct: bool,
         /// Optional user-specified window clause produced by
         /// [`super::aggregate::AggregateExpr::over`]. `None` means the
