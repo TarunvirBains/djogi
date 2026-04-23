@@ -53,16 +53,27 @@
 | Dirty tracking | Off by default; opt-in globally via `Djogi.toml` or per-model via `#[model(dirty_tracking)]` |
 | FK cascade default | `RESTRICT` — safest Postgres default; overridden per-field with `#[field(on_delete = "...")]` |
 | Field rename detection | `#[field(renamed_from = "old_name")]` — differ treats as rename not drop+add |
-| Build drift diagnostic | Compiler-style `note` (not error) — migration generated, build continues, developer reviews |
-| Migration generation | Automatic via `build.rs` on drift detection — generates pair, build continues |
-| `makemigrations` CLI | Retained as manual trigger for `--dry-run`, `--allow-destructive`, custom naming |
-| Schema snapshot | Updated only on successful `cargo djogi migrate` — reflects actual DB state, never build state |
+| Build drift diagnostic | Plain cargo warning — `build.rs` is diagnostic-only and never writes migration files |
+| Migration generation | Explicit via `djogi migrations compose`; `build.rs` detects drift but does not mutate `migrations/` |
+| Migration CLI surface | `djogi migrations compose/apply/rollback/status/verify/repair/baseline` are the canonical migration commands |
+| Migration history attunement | `djogi migrations attune [target]` adjusts local migration-history Git state; it may fetch if needed, does not mutate the DB unless `--apply` is passed, and only updates the parent repo's submodule pointer with explicit `--record` or options that imply recording |
+| Migration history squashing | `djogi migrations attune --squash` is dev-gated with the same safety contract as `djogi db reset` and must refuse on shared staging/production history |
+| Schema snapshot | Updated only on successful `djogi migrations apply` — reflects actual DB state, never build state |
 | Migrations folder | Git submodule — pipeline-managed, invisible to developer day-to-day |
 | Migration down files | Always generated as a pair; data loss on destructive rollback documented in file |
+| Migration runner | Djogi-owned on `tokio-postgres` / `deadpool-postgres` — no `sqlx::migrate` compatibility layer |
+| Migration ledger table name | `djogi_schema_migrations` |
+| Migration advisory lock key | `0x444A4F474D494752` (decimal `4994068948568834898`) |
+| Migration checksum format | SHA-256 over normalized SQL bytes, stored as `V1:` + lowercase hex digest |
+| Migration rollback order | Reverse ledger insertion order (`id` descending), not version-string order |
+| Out-of-order migration policy | local/dev allow + warn + record; CI/prod reject by default; override requires explicit flag |
+| Composite migration boundary | Composite unique constraints and composite indexes are in `0.1.0`; composite primary keys are not |
+| Multi-database migration contract | Migrations are target-scoped: each database target has its own ledger, snapshot, and advisory-lock namespace; Djogi does not promise distributed atomic migration across targets |
+| Cross-database foreign keys | Explicitly rejected — ORM `ForeignKey<T>` is same-database-target only; cross-target references must be scalar/application-level references |
 | Database target | Postgres only — permanent decision, not a limitation; enables JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING` |
 | Postgres version floor | Postgres 18 — no support for older versions. Rationale: Djogi is pre-publish and unapologetic about adoption shape; teams migrating an existing app to Djogi have substantial app-side work regardless, so bundling a Postgres upgrade is a small marginal cost. The framework will freely use any Postgres 18+ feature (extended protocol niceties, latest JSONB work, `MERGE`, logical replication, generated-column expressiveness) without version-gating fallbacks. |
-| Dev database reset | `cargo djogi db reset` — gated on `dev_mode = true` + localhost URL + `DJOGI_ENV != production` |
-| CLI interface | `cargo djogi` subcommand — installed via `cargo install djogi-cli`, idiomatic Rust toolchain |
+| Dev database reset | `djogi db reset` — gated on `dev_mode = true` + localhost URL + `DJOGI_ENV != production` |
+| CLI interface | `djogi` CLI — installed via `cargo install djogi-cli` |
 | Djogi's scope | Model derivation chain only — does not duplicate SQLx, HeeRanjId, Tokio, or any Rust web framework's responsibilities. `axum` is the best-covered framework example today (opt-in via the `axum` feature flag); other frameworks integrate through their own per-framework flags or manual wiring. |
 | Public requirement translation | Private app requirements may inform Djogi, but specs/docs describe them only as product-agnostic framework capabilities |
 | Core vs companion crate boundary | Djogi keeps reusable data-layer primitives; domain policy, workflow logic, and specialized integrations belong in app crates or companion crates |
@@ -75,7 +86,7 @@
 | CRUD logging | Optional per-model or global; stored in `_djogi_crud_log` table; off by default |
 | CRUD log JSON diffing | Dot-notation paths through full `Jsonb<T>` nesting depth including unknown field changes |
 | CRUD log actor | Optional `save_with_actor()` or request-context hook; null if not provided |
-| Project scaffolding | `cargo djogi new` — scaffolds project and initializes migrations submodule |
+| Project scaffolding | `djogi new` — scaffolds project and initializes migrations submodule |
 | Regex anywhere in djogi | **Prohibited — no exceptions.** No regex-engine dependency (`regex`, `regex-lite`, `fancy-regex`, `regex-automata`, or equivalent) may enter any workspace crate (`djogi`, `djogi-macros`, `djogi-cli`, `djogi-shell`, or any future crate), **and regex notation is not permitted in doc comments, commit messages, or any other in-repo text either.** Rules are expressed in plain English and implemented with stdlib byte primitives: `u8::is_ascii_alphabetic`, `u8::is_ascii_alphanumeric`, explicit byte equality, sorted const slices with `binary_search`, stack-allocated `[u8; N]` buffers, and similar. Regex is heavy, hides intent behind a DSL most readers re-parse every time, and invites per-query allocation. Regex notation in prose is no easier to skim than the underlying rule written out — it pretends to be universal shorthand but actually requires a mental parser pass. Spell the rule out in words (e.g. "ASCII letter or underscore followed by ASCII alphanumerics or underscores, up to 63 bytes"). |
 | Spatial SRID | Locked to `GEOGRAPHY(Point, 4326)` in Phase 6. Non-4326 work goes through raw SQL (`ctx.raw_execute(...)`) combined with `FieldSqlType::Custom(&'static str)` on the field type. A future `GeoPoint<const SRID: u32>` generalization is a candidate if real adoption pressure emerges — it would be an additive, non-breaking change per the pre-publish policy. |
 | Spatial codec | Manual EWKB encode/decode in-repo (`djogi/src/geo/ewkb.rs`) — 25-byte little-endian layout (endian marker, type word with SRID flag, SRID, X longitude, Y latitude). No new dependency. A future dep swap to `geozero` or equivalent is a single-file change because all raw-byte logic is isolated in `ewkb.rs`. |

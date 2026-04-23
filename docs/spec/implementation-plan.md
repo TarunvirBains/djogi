@@ -435,7 +435,7 @@ Shipped 2026-04-22 as squash `b9e9860` (PR #11). Ships the `spatial` feature fla
 
 ## Phase 7: Migration System
 
-**Goal:** Build-time drift detection, SQL generation, apply/rollback.
+**Goal:** Drift diagnostics, explicit SQL composition, target-scoped apply/rollback/repair.
 
 ### 7a: Schema Differ
 
@@ -457,17 +457,25 @@ Shipped 2026-04-22 as squash `b9e9860` (PR #11). Ships the `spatial` feature fla
 
 - [ ] `build.rs` reads `target/djogi_models.json` and diffs against `schema_snapshot.json`
 - [ ] Emits compiler warning (not error) when drift detected
-- [ ] Writes migration SQL files to `migrations/`
+- [ ] Never mutates migration files or snapshots directly
+- [ ] Stages pending composition artifacts under `target/djogi_pending/` for explicit CLI review
 
 ### 7d: CLI
 
-- [ ] `cargo djogi migrate` — apply pending, update snapshot
-- [ ] `cargo djogi migrate rollback` — roll back last migration
-- [ ] `cargo djogi migrate show NNNN` — display SQL without running
-- [ ] `cargo djogi makemigrations` — manual trigger with `--dry-run`, `--allow-destructive`
-- [ ] `cargo djogi migrate --fake NNNN` — mark applied without running
-- [ ] `cargo djogi db reset` — drop + recreate + migrate (dev only, triple-gated)
-- [ ] `cargo djogi db seed` — run `seeds.rhai`
+- [ ] `djogi migrations compose` — compose pending up/down SQL pairs from descriptor drift
+- [ ] `djogi migrations apply` — apply pending migrations for one database target, update snapshot
+- [ ] `djogi migrations rollback` — roll back the last applied migration for one target
+- [ ] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
+- [ ] `djogi migrations verify` — verify snapshot, history, and live DB alignment for one target
+- [ ] `djogi migrations repair` — repair failed or partially applied target-local migration state
+- [ ] `djogi migrations baseline` — mark an existing schema as adopted without replay
+- [ ] `djogi migrations attune [target]` — attune local migration-history Git state to a chosen local or remote target; may fetch if needed; does not mutate the DB unless `--apply` is passed
+- [ ] `djogi migrations attune --squash` — dev-gated history squashing with the same safety contract as `db reset`
+- [ ] `djogi migrations apply --fake NNNN` — mark applied without running
+- [ ] `djogi db reset` — drop + recreate + migrate (dev only, triple-gated)
+- [ ] `djogi db seed` — run `seeds.rhai`
+
+Phase 7's migration CLI is explicitly target-scoped. App, CRUD-log, and event-log databases each have their own migration ledger, snapshot, and advisory-lock boundary. Cross-database foreign keys are rejected rather than modeled as first-class relations.
 
 ### 7e: Data Migrations
 
@@ -477,17 +485,17 @@ Shipped 2026-04-22 as squash `b9e9860` (PR #11). Ships the `spatial` feature fla
 ### 7f: Online / Zero-Downtime Migration Patterns
 
 - [ ] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 7f phased-migration model") rather than a silent SQLSTATE from Postgres
-- [ ] Advisory-lock-based single-active-migration coordination (no two `cargo djogi migrate` invocations apply concurrently against the same database)
+- [ ] Advisory-lock-based single-active-migration coordination (no two `djogi migrations apply` invocations apply concurrently against the same database target)
 - [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL)
 - [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]`
 - [ ] Two-phase type widening: add new-type column, backfill, cut over, drop old (analogous pattern)
 - [ ] Safe NOT NULL addition: `ADD COLUMN ... DEFAULT value` (Postgres 11+ makes this fast-path without table rewrite) plus a `VALIDATE` pass for pre-existing-table columns
 - [ ] Constraint addition with `NOT VALID` + `VALIDATE` as separate steps
 - [ ] Backfill orchestration primitive: chunked `UPDATE ... WHERE pk BETWEEN $1 AND $2` with configurable chunk size, delay between chunks, progress reporting
-- [ ] Destructive-op detection: dropping a column, dropping a table, narrowing a type — gated behind `--allow-destructive` (already in 7a) with an additional "migration is not online" warning emitted at generation time
+- [ ] Destructive-op detection: dropping a column, dropping a table, narrowing a type — gated behind `--allow-destructive` (already in 7a) with an additional "migration is not online" warning emitted at composition time
 - [ ] Backfill side-effect suppression: chunked `UPDATE` backfills run with outbox emission and audit writes suppressed by default. Migrations represent schema evolution, not domain events; firing outbox messages and audit rows for every historical row rewritten during a backfill is never the right default. Opt in per migration via an explicit `emit_side_effects = true` flag when the backfill genuinely is a business event
 
-**Deliverable:** Full migration system with drift detection, SQL generation, CLI, data migrations, online migration patterns.
+**Deliverable:** Full migration system with drift diagnostics, explicit SQL composition, target-scoped CLI, data migrations, and online migration patterns.
 
 ---
 
