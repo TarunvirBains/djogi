@@ -1278,6 +1278,93 @@ pub(crate) fn build_delete<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
     acc
 }
 
+/// Walk the emitted SELECT list and check that every column's alias (or
+/// plain column name if no `AS` alias) is unique. A collision would cause
+/// the terminal decoder to read the wrong value for one of the columns.
+///
+/// # Algorithm
+///
+/// 1. Find the substring between `SELECT ` and the next ` FROM ` (case
+///    matters — emitters use uppercase keywords).
+/// 2. Split on commas at the top parenthesis level into logical columns.
+///    Parens and nested function calls are handled by tracking depth, so
+///    aggregate expressions like `SUM(a, b)` are not split mid-argument.
+/// 3. For each column, extract the alias — the substring after the last
+///    ` AS ` if present, otherwise the whole column text (trimmed).
+/// 4. Check uniqueness; return `Err(DjogiError::AliasCollision)` on
+///    duplicate.
+///
+/// # Limitations
+///
+/// This is a best-effort string parse. It does not handle:
+/// - Nested subqueries in the SELECT list (not emitted by Phase 6.5).
+/// - Unparenthesised comma-separated arguments at the top level (our
+///   emitter always parenthesises function args).
+///
+/// The check is defensive; failure means something has gone subtly wrong
+/// in the query builder, not that the user did something wrong.
+pub(crate) fn assert_no_alias_collision(sql: &str) -> Result<(), crate::DjogiError> {
+    // Locate the SELECT keyword — accept leading text for safety.
+    let after_select = if let Some(s) = sql.strip_prefix("SELECT ") {
+        s
+    } else if let Some(i) = sql.find("SELECT ") {
+        &sql[i + "SELECT ".len()..]
+    } else {
+        return Ok(()); // not a SELECT we recognise; skip
+    };
+
+    // Locate FROM to extract the select-list. We look for " FROM " with
+    // surrounding spaces so we don't accidentally match a column named FROM.
+    let from_idx = match after_select.find(" FROM ") {
+        Some(i) => i,
+        None => return Ok(()),
+    };
+    let select_list = &after_select[..from_idx];
+
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for col in split_top_level_commas(select_list) {
+        let col = col.trim();
+        // Use rfind so that expressions like `CAST(x AS int) AS alias`
+        // pick up the outermost ` AS ` rather than the one inside CAST.
+        let alias = if let Some(idx) = col.rfind(" AS ") {
+            col[idx + " AS ".len()..].trim()
+        } else {
+            col
+        };
+        if !seen.insert(alias) {
+            return Err(crate::DjogiError::AliasCollision {
+                alias: alias.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Split a SQL fragment on commas that are at the top parenthesis level.
+///
+/// Phase 6.5's emitter output uses simple function-call args, so a single
+/// paren counter suffices. No regex — depth is tracked byte by byte using
+/// `u8` comparison on `b'('` and `b')'`.
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let bytes = s.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     //! Emitter unit tests — assert on the generated SQL text without
@@ -2062,6 +2149,70 @@ mod tests {
         assert!(
             sql.contains("GROUP BY CUBE (org_id)"),
             "expected CUBE clause, got: {sql}"
+        );
+    }
+
+    // T5 — alias-collision diagnostic
+
+    #[test]
+    fn alias_collision_detected_in_grouped_select() {
+        // Positive case: clean SQL with no collision should pass.
+        let ok_sql = "SELECT org_id, SUM(amount) AS __djogi_agg_0 FROM txns GROUP BY org_id";
+        let result = assert_no_alias_collision(ok_sql);
+        assert!(result.is_ok(), "expected no collision, got: {:?}", result);
+    }
+
+    #[test]
+    fn alias_collision_names_both_columns_in_error() {
+        let bad_sql = "SELECT foo AS dup, bar AS dup FROM t";
+        let err = assert_no_alias_collision(bad_sql).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("dup"),
+            "error should name the conflicting alias 'dup', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn alias_collision_bare_name_collision_detected() {
+        // Two bare column names (no AS) that share the same identifier.
+        let bad_sql = "SELECT foo, foo FROM t";
+        let err = assert_no_alias_collision(bad_sql).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("foo"),
+            "error should name the conflicting alias 'foo', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn alias_collision_mixed_as_and_bare_collision_detected() {
+        // A bare column 'org_id' collides with an explicit 'AS org_id'.
+        let bad_sql = "SELECT org_id, SUM(amount) AS org_id FROM t GROUP BY org_id";
+        let err = assert_no_alias_collision(bad_sql).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("org_id"),
+            "error should name the conflicting alias 'org_id', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn alias_collision_happy_path_grouped_queryset() {
+        // End-to-end: build a grouped queryset, emit SQL, verify no collision.
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs.group_by(|_| keys).annotate(|_| vals.sum());
+        let acc =
+            build_grouped_annotated_select::<Fake, FieldRef<Fake, i64>, AggregateExpr<i64>>(&gaq);
+        let result = assert_no_alias_collision(acc.sql());
+        assert!(
+            result.is_ok(),
+            "expected no alias collision in grouped queryset, got: {:?}",
+            result
         );
     }
 }

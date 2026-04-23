@@ -381,6 +381,20 @@ pub enum DjogiError {
         /// Human-readable explanation of why this combination is rejected.
         reason: &'static str,
     },
+
+    /// The emitted SELECT list contains two columns with the same alias;
+    /// the decoder would read the wrong value for one of the columns.
+    ///
+    /// This is a Djogi internal bug — a future API extension likely introduced
+    /// a path that collides with a group-key column name or another aggregate
+    /// alias. The check runs before any SQL is sent to Postgres so the
+    /// collision is caught immediately rather than silently returning wrong
+    /// data.
+    #[error("alias collision in SELECT list: {alias}")]
+    AliasCollision {
+        /// The alias string that appears more than once in the SELECT list.
+        alias: String,
+    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.

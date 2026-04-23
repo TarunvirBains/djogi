@@ -332,6 +332,11 @@ where
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             self.aggregates.check_legality()?;
             let acc = crate::query::sql::build_grouped_annotated_select(&self);
+            // Defensive alias-collision check — fires only if a future API
+            // extension introduces a path that collides with a group-key
+            // column name or another __djogi_agg_N alias. Today's emitter
+            // cannot produce a collision; the check guards future regressions.
+            crate::query::sql::assert_no_alias_collision(acc.sql())?;
             let (sql, binds) = acc.into_parts();
             let params: Vec<&(dyn postgres_types::ToSql + Sync)> = binds
                 .iter()
