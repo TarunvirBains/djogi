@@ -115,6 +115,52 @@ impl_into_group_key_tuple!(
     types = [(A, 0, 0), (B, 1, 1), (C, 2, 2), (D, 3, 3)]
 );
 
+// ── Spatial region key: RegionKeyWithCol<R> ──────────────────────────────
+//
+// `RegionKeyWithCol<R>` is the key type for the `group_by_region` path.
+// It holds the `r_pk_col` name so `push_select_columns` and
+// `push_group_by_columns` can emit `r.<pk-col>` without breaking the
+// `IntoGroupKeyTuple` method signature (which takes `&self`, no extra args).
+//
+// Both the `sealed::Sealed` impl AND the `IntoGroupKeyTuple` impl live here
+// (in `grouped.rs`) because the seal is defined in this module's private
+// `mod sealed` and cannot be named from `spatial_grouping.rs`.
+
+#[cfg(feature = "spatial")]
+impl<R: crate::model::Model> sealed::Sealed
+    for crate::query::spatial_grouping::RegionKeyWithCol<R>
+{
+}
+
+#[cfg(feature = "spatial")]
+impl<R: crate::model::Model> IntoGroupKeyTuple
+    for crate::query::spatial_grouping::RegionKeyWithCol<R>
+where
+    R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
+{
+    type Decoded = crate::query::spatial_grouping::RegionKey<R>;
+
+    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql("r.");
+        acc.push_sql(self.r_pk_col);
+    }
+
+    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql("r.");
+        acc.push_sql(self.r_pk_col);
+        acc.push_sql(" AS rk0");
+    }
+
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        use std::marker::PhantomData;
+        let region_pk: Option<R::Pk> = row.try_get::<_, Option<R::Pk>>(0)?;
+        Ok(crate::query::spatial_grouping::RegionKey {
+            region_pk,
+            _phantom: PhantomData,
+        })
+    }
+}
+
 // ── Arity 0: unit key () — used exclusively by group_by_sets ─────────────
 //
 // GROUPING SETS emits its own column list directly from the `Sets` payload;
@@ -175,11 +221,19 @@ pub enum GroupingMode {
 /// This is the intermediate state produced by `QuerySet::group_by`. Dropping
 /// one without annotating is flagged by the `#[must_use]` attribute — the
 /// query is silently discarded if the result is not used.
+///
+/// The optional `spatial_join` field carries the LEFT JOIN spec for the
+/// `group_by_region` path. `None` means a plain `GROUP BY col` query.
+/// The SQL builder reads this field to decide which emission path to take.
 #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
 pub struct GroupedQuerySet<T: Model, K: IntoGroupKeyTuple> {
     pub(crate) qs: QuerySet<T>,
     pub(crate) keys: K,
     pub(crate) grouping: GroupingMode,
+    /// Spatial LEFT JOIN spec for `group_by_region`. `None` for all plain
+    /// GROUP BY paths (the overwhelming majority of callers).
+    #[cfg(feature = "spatial")]
+    pub(crate) spatial_join: Option<crate::query::spatial_grouping::SpatialJoinSpec>,
     pub(crate) _k: PhantomData<fn() -> K>,
 }
 
@@ -191,6 +245,10 @@ pub struct GroupedQuerySet<T: Model, K: IntoGroupKeyTuple> {
 /// `SELECT keys, aggregates FROM table [WHERE ...] GROUP BY keys
 /// [HAVING ...] [ORDER BY ...] [LIMIT ...] [OFFSET ...]` query and decode the
 /// result into `Vec<(K::Decoded, A::Decoded)>`.
+///
+/// The optional `spatial_join` field carries the LEFT JOIN spec for the
+/// `group_by_region` / `count_by_region` path. Propagated through `.annotate`
+/// from `GroupedQuerySet`; `None` for all plain GROUP BY paths.
 #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
 pub struct GroupedAnnotatedQuerySet<
     T: Model,
@@ -205,6 +263,10 @@ pub struct GroupedAnnotatedQuerySet<
     pub(crate) order: Vec<crate::query::order::OrderExpr>,
     pub(crate) limit: Option<u64>,
     pub(crate) offset: Option<u64>,
+    /// Spatial LEFT JOIN spec propagated from `GroupedQuerySet`. `None` for
+    /// plain GROUP BY queries; `Some` for `group_by_region` paths.
+    #[cfg(feature = "spatial")]
+    pub(crate) spatial_join: Option<crate::query::spatial_grouping::SpatialJoinSpec>,
     pub(crate) _k: PhantomData<fn() -> K>,
     pub(crate) _a: PhantomData<fn() -> A>,
 }
@@ -235,6 +297,10 @@ impl<T: Model, K: IntoGroupKeyTuple> GroupedQuerySet<T, K> {
             order: Vec::new(),
             limit: None,
             offset: None,
+            // Propagate any spatial JOIN spec from the GroupedQuerySet so the
+            // SQL builder can read it on the annotated state's fetch_all path.
+            #[cfg(feature = "spatial")]
+            spatial_join: self.spatial_join,
             _k: PhantomData,
             _a: PhantomData,
         }

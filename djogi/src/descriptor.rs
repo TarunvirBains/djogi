@@ -411,6 +411,176 @@ mod tests {
         assert_eq!(shape.columns[1].sql_type_text, "TEXT");
         assert!(shape.columns[1].not_null);
     }
+
+    // ── T11: has_gist_on_geography helper ────────────────────────────────────
+
+    // Static descriptors used by has_gist_on_geography tests.
+    // `ModelDescriptor` requires `'static` slices for `fields` and `indexes`,
+    // so the entire data set must be declared as module-level statics rather
+    // than local temporaries.
+
+    static T11_GEO_FIELD: FieldDescriptor = FieldDescriptor {
+        name: "boundary",
+        sql_type: FieldSqlType::Geography {
+            subtype: GeographySubtype::Polygon,
+            srid: 4326,
+        },
+        nullable: false,
+        unique: false,
+        indexed: false,
+        max_length: None,
+        renamed_from: None,
+        rationale: None,
+        outbox_exclude: false,
+        sequence_within: None,
+        index_type: None,
+        relation_kind: None,
+        on_delete: None,
+        target_type_name: None,
+        visage_map: &[],
+    };
+
+    static T11_TEXT_FIELD: FieldDescriptor = FieldDescriptor {
+        name: "label",
+        sql_type: FieldSqlType::Text,
+        nullable: false,
+        unique: false,
+        indexed: false,
+        max_length: None,
+        renamed_from: None,
+        rationale: None,
+        outbox_exclude: false,
+        sequence_within: None,
+        index_type: None,
+        relation_kind: None,
+        on_delete: None,
+        target_type_name: None,
+        visage_map: &[],
+    };
+
+    static T11_GIST_INDEX: IndexSpec = IndexSpec {
+        name: "idx_boundary_gist",
+        columns: &["boundary"],
+        unique: false,
+        index_type: IndexType::Gist,
+        requires_out_of_transaction: true,
+        extension_dependency: Some("postgis"),
+    };
+
+    static T11_BTREE_INDEX: IndexSpec = IndexSpec {
+        name: "idx_boundary_btree",
+        columns: &["boundary"],
+        unique: false,
+        index_type: IndexType::BTree,
+        requires_out_of_transaction: false,
+        extension_dependency: None,
+    };
+
+    static T11_GIST_ON_TEXT: IndexSpec = IndexSpec {
+        name: "idx_label_gist",
+        columns: &["label"],
+        unique: false,
+        index_type: IndexType::Gist,
+        requires_out_of_transaction: false,
+        extension_dependency: None,
+    };
+
+    /// A descriptor with a GiST index on a Geography field returns `true`.
+    #[test]
+    fn has_gist_on_geography_returns_true_when_indexed() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_GEO_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: std::slice::from_ref(&T11_GIST_INDEX),
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            desc.has_gist_on_geography(),
+            "expected true: GiST index on a Geography field must be detected"
+        );
+    }
+
+    /// A descriptor with no indexes at all returns `false`.
+    #[test]
+    fn has_gist_on_geography_returns_false_when_no_indexes() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_GEO_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: &[],
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            !desc.has_gist_on_geography(),
+            "expected false: no indexes means no GiST-on-Geography"
+        );
+    }
+
+    /// A descriptor with a BTree (not GiST) index on a Geography field
+    /// returns `false` — only GiST is relevant for spatial acceleration.
+    #[test]
+    fn has_gist_on_geography_returns_false_for_btree_on_geography() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_GEO_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: std::slice::from_ref(&T11_BTREE_INDEX),
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            !desc.has_gist_on_geography(),
+            "expected false: BTree index on Geography is not spatial acceleration"
+        );
+    }
+
+    /// A GiST index on a non-Geography (text) column returns `false`.
+    #[test]
+    fn has_gist_on_geography_returns_false_for_gist_on_non_geo() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_TEXT_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: std::slice::from_ref(&T11_GIST_ON_TEXT),
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            !desc.has_gist_on_geography(),
+            "expected false: GiST on a text column is not spatial acceleration"
+        );
+    }
 }
 
 /// Metadata for a single model field.
@@ -607,6 +777,44 @@ pub struct ModelDescriptor {
 }
 
 impl ModelDescriptor {
+    /// Returns `true` if this model has a GiST index on at least one
+    /// `Geography`-typed field.
+    ///
+    /// Used by [`crate::query::queryset::QuerySet::group_by_region`] at
+    /// call time to warn when the region model has no spatial index, which
+    /// causes the spatial JOIN to scan the region table linearly for every
+    /// row in the data table.
+    ///
+    /// # Detection algorithm
+    ///
+    /// For each [`IndexSpec`] in `self.indexes`:
+    /// 1. Skip entries whose `index_type` is not [`IndexType::Gist`].
+    /// 2. For each column name in the spec's `columns` slice, check whether
+    ///    the corresponding [`FieldDescriptor`] has
+    ///    `sql_type == FieldSqlType::Geography { .. }`.
+    /// 3. Return `true` as soon as one such matching field is found.
+    ///
+    /// Returns `false` if no GiST + Geography combination is found.
+    pub fn has_gist_on_geography(&self) -> bool {
+        for idx in self.indexes {
+            if !matches!(idx.index_type, IndexType::Gist) {
+                continue;
+            }
+            for col in idx.columns {
+                let is_geo = self
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *col)
+                    .map(|f| matches!(f.sql_type, FieldSqlType::Geography { .. }))
+                    .unwrap_or(false);
+                if is_geo {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// The primary key column name for this model.
     ///
     /// Returns `Some("id")` for the three standard PK types (`HeerId`,

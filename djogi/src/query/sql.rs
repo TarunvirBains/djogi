@@ -1013,6 +1013,12 @@ where
 /// functions in the SELECT list for its aggregate columns — Postgres would
 /// reject the combination. `push_columns_bare` emits the aggregate with only
 /// the narrowing cast but no window frame.
+///
+/// # Spatial JOIN delegation
+///
+/// When the `spatial` feature is enabled and `gaq.spatial_join` is `Some`,
+/// this function delegates to [`build_spatial_join_grouped_select`] so the
+/// caller does not need to be aware of which emission path to take.
 pub(crate) fn build_grouped_annotated_select<T, K, A>(
     gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
 ) -> SqlAccumulator
@@ -1021,6 +1027,12 @@ where
     K: crate::query::grouped::IntoGroupKeyTuple,
     A: crate::query::annotate::IntoAggregateTuple,
 {
+    // ── Spatial JOIN delegation ──────────────────────────────────────────────
+    #[cfg(feature = "spatial")]
+    if let Some(ref spec) = gaq.spatial_join {
+        return build_spatial_join_grouped_select(gaq, spec);
+    }
+
     let mut acc = SqlAccumulator::new("SELECT ");
     gaq.keys.push_select_columns(&mut acc);
     gaq.aggregates.push_columns_bare(&mut acc);
@@ -1068,6 +1080,118 @@ where
                 acc.push_sql(")");
             }
             acc.push_sql(")");
+        }
+    }
+
+    // HAVING
+    if let Some(h) = &gaq.having {
+        acc.push_sql(" HAVING ");
+        crate::expr::sql::emit_expr(&mut acc, h);
+    }
+
+    // ORDER BY
+    if !gaq.order.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in gaq.order.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(&mut acc, None);
+        }
+    }
+
+    // LIMIT / OFFSET
+    if let Some(n) = gaq.limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n as i64);
+    }
+    if let Some(n) = gaq.offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n as i64);
+    }
+
+    acc
+}
+
+/// Build the spatial-JOIN variant of the grouped-annotated SELECT:
+///
+/// ```sql
+/// SELECT r.<pk-col> AS rk0, <aggregates>
+/// FROM <t-table> AS t
+/// LEFT JOIN <r-table> AS r ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)
+/// [WHERE ...]
+/// GROUP BY r.<pk-col>
+/// [HAVING ...]
+/// [ORDER BY ...]
+/// [LIMIT $n] [OFFSET $n]
+/// ```
+///
+/// Called by [`build_grouped_annotated_select`] when `gaq.spatial_join` is
+/// `Some`. All clause-ordering and bind-slot semantics are identical to the
+/// plain grouped path — the only difference is the FROM + LEFT JOIN instead of
+/// the bare `FROM <t-table> AS t`.
+///
+/// # Column name safety
+///
+/// `spec.t_geo_col`, `spec.r_geo_col`, `spec.r_pk_col`, and `spec.r_table`
+/// are all `&'static str` baked by the macro or read from `ModelDescriptor`
+/// field names. They are pushed as SQL text (not bound parameters) on the same
+/// basis as every other column or table name in this file. No user input flows
+/// through these slots.
+#[cfg(feature = "spatial")]
+pub(crate) fn build_spatial_join_grouped_select<T, K, A>(
+    gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
+    spec: &crate::query::spatial_grouping::SpatialJoinSpec,
+) -> SqlAccumulator
+where
+    T: Model,
+    K: crate::query::grouped::IntoGroupKeyTuple,
+    A: crate::query::annotate::IntoAggregateTuple,
+{
+    let mut acc = SqlAccumulator::new("SELECT ");
+
+    // Key columns first (positional decode). For the spatial path this emits
+    // `r.<pk-col> AS rk0` via `RegionKeyWithCol::push_select_columns`.
+    gaq.keys.push_select_columns(&mut acc);
+
+    // Aggregate columns follow, decoded by alias (__djogi_agg_N).
+    gaq.aggregates.push_columns_bare(&mut acc);
+
+    // FROM <t-table> AS t
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+
+    // LEFT JOIN <r-table> AS r ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)
+    //
+    // LEFT JOIN so unmatched rows (no containing region) appear in the result
+    // with r.<pk-col> = NULL rather than being silently dropped.
+    acc.push_sql(" LEFT JOIN ");
+    acc.push_sql(spec.r_table);
+    acc.push_sql(" AS r ON ST_Contains(r.");
+    acc.push_sql(spec.r_geo_col);
+    acc.push_sql(", t.");
+    acc.push_sql(spec.t_geo_col);
+    acc.push_sql(")");
+
+    // WHERE from the upstream queryset — qualifies t.<col> references so
+    // they don't collide with r.<col> under the JOIN.
+    push_where_qualified(&mut acc, &gaq.qs, Some("t"));
+
+    // GROUP BY r.<pk-col>
+    acc.push_sql(" GROUP BY ");
+    match gaq.grouping {
+        crate::query::grouped::GroupingMode::Plain => {
+            gaq.keys.push_group_by_columns(&mut acc);
+        }
+        // ROLLUP / CUBE / SETS are not meaningful for spatial region grouping —
+        // the key is derived from a JOIN condition, not a column value. Reaching
+        // here indicates the user set the grouping mode manually, which is not
+        // supported via the `group_by_region` entry point. Emit plain GROUP BY
+        // as a safe fallback (the user is off-path if they reach this via any
+        // internal route).
+        _ => {
+            gaq.keys.push_group_by_columns(&mut acc);
         }
     }
 
@@ -2081,6 +2205,8 @@ mod tests {
                 qs,
                 keys: (),
                 grouping: GroupingMode::Sets(vec![vec!["org_id"], vec!["region"]]),
+                #[cfg(feature = "spatial")]
+                spatial_join: None,
                 _k: PhantomData,
             };
             gq.annotate(|_| vals.sum())
@@ -2114,6 +2240,8 @@ mod tests {
                 qs,
                 keys,
                 grouping: GroupingMode::Rollup,
+                #[cfg(feature = "spatial")]
+                spatial_join: None,
                 _k: PhantomData,
             };
             gq.annotate(|_| vals.sum())
@@ -2140,6 +2268,8 @@ mod tests {
                 qs,
                 keys,
                 grouping: GroupingMode::Cube,
+                #[cfg(feature = "spatial")]
+                spatial_join: None,
                 _k: PhantomData,
             };
             gq.annotate(|_| vals.sum())
@@ -2213,6 +2343,189 @@ mod tests {
             result.is_ok(),
             "expected no alias collision in grouped queryset, got: {:?}",
             result
+        );
+    }
+
+    // ── T11: spatial JOIN grouped SELECT emitter ────────────────────────────
+    //
+    // These tests construct a `GroupedAnnotatedQuerySet` with a spatial join
+    // spec and assert that the emitted SQL contains the expected LEFT JOIN,
+    // ST_Contains call, and GROUP BY clause.
+
+    /// Minimal region model — no real descriptor needed for SQL emission tests.
+    #[cfg(feature = "spatial")]
+    struct FakeRegion;
+    #[cfg(feature = "spatial")]
+    impl crate::model::__sealed::Sealed for FakeRegion {}
+    #[cfg(feature = "spatial")]
+    #[allow(clippy::manual_async_fn)]
+    impl Model for FakeRegion {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "neighborhoods"
+        }
+        fn pk_value(&self) -> &i64 {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            unreachable!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+    }
+
+    /// Helper: build a `GroupedAnnotatedQuerySet` with a spatial join spec by
+    /// hand, bypassing the `group_by_region` entry point (which requires a
+    /// real descriptor). This lets us test the SQL builder in isolation.
+    #[cfg(feature = "spatial")]
+    fn make_spatial_gaq(
+        spec: crate::query::spatial_grouping::SpatialJoinSpec,
+    ) -> crate::query::grouped::GroupedAnnotatedQuerySet<
+        Fake,
+        crate::query::spatial_grouping::RegionKeyWithCol<FakeRegion>,
+        crate::expr::AggregateExpr<i64>,
+    > {
+        use std::marker::PhantomData;
+        let keys = crate::query::spatial_grouping::RegionKeyWithCol::<FakeRegion> {
+            region_pk: None,
+            r_pk_col: spec.r_pk_col,
+            _phantom: PhantomData,
+        };
+        let agg: crate::expr::AggregateExpr<i64> =
+            crate::query::field::FieldRef::<Fake, i64>::new("id").count_star();
+        crate::query::grouped::GroupedAnnotatedQuerySet {
+            qs: QuerySet::new(),
+            keys,
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            aggregates: agg,
+            having: None,
+            order: Vec::new(),
+            limit: None,
+            offset: None,
+            spatial_join: Some(spec),
+            _k: PhantomData,
+            _a: PhantomData,
+        }
+    }
+
+    /// The emitted SQL must contain `LEFT JOIN <r-table> AS r ON ST_Contains(…)`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_emits_left_join_with_st_contains() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("LEFT JOIN neighborhoods AS r ON ST_Contains(r.boundary, t.location)"),
+            "expected LEFT JOIN with ST_Contains, got: {sql}"
+        );
+    }
+
+    /// The emitted SQL must GROUP BY the region PK column qualified with `r.`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_groups_by_region_pk_qualified() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("GROUP BY r.id"),
+            "expected GROUP BY r.id, got: {sql}"
+        );
+    }
+
+    /// The SELECT list must contain `r.<pk-col> AS rk0` before the aggregates.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_select_list_starts_with_region_pk_alias() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        // The SELECT list must begin with the region key alias.
+        assert!(
+            sql.starts_with("SELECT r.id AS rk0"),
+            "expected SELECT to start with 'SELECT r.id AS rk0', got: {sql}"
+        );
+    }
+
+    /// Clause ordering: FROM, LEFT JOIN, WHERE (if any), GROUP BY, ORDER BY,
+    /// LIMIT, OFFSET. Verify positions relative to each other.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_clause_order_is_correct() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        let from_pos = sql.find("FROM fakes AS t").unwrap();
+        let join_pos = sql.find("LEFT JOIN neighborhoods").unwrap();
+        let group_pos = sql.find("GROUP BY").unwrap();
+
+        assert!(
+            from_pos < join_pos,
+            "FROM must precede LEFT JOIN; got: {sql}"
+        );
+        assert!(
+            join_pos < group_pos,
+            "LEFT JOIN must precede GROUP BY; got: {sql}"
         );
     }
 }
