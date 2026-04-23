@@ -94,7 +94,8 @@ pub(crate) enum ExprNode {
 
     /// Aggregate function call — `COUNT(*)` / `COUNT(col)` / `SUM(col)`
     /// / `AVG(col)` / `MIN(col)` / `MAX(col)` with an optional
-    /// `FILTER (WHERE ...)` post-filter clause. The typed
+    /// `FILTER (WHERE ...)` post-filter clause and an optional window
+    /// (`OVER (...)`) clause. The typed
     /// [`super::aggregate::AggregateExpr<Out>`] wrapper carries the Rust
     /// return type (`i64` for `COUNT`, `f64` for `AVG`, `V` for
     /// `SUM`/`MIN`/`MAX`) so the emitted scalar decodes to the right
@@ -112,6 +113,17 @@ pub(crate) enum ExprNode {
     /// `filter` is an optional boolean sub-expression that gates which
     /// rows contribute to the aggregate. Postgres emits this as
     /// `AGG(arg) FILTER (WHERE <cond>)`. `None` emits the bare aggregate.
+    ///
+    /// `distinct` reserves the `DISTINCT` keyword slot for Phase 6.5 T4's
+    /// `.distinct()` builder method. Always `false` until T4 wires it.
+    ///
+    /// `window` is an optional [`super::window::WindowSpec`] that promotes
+    /// this aggregate to a window function via `OVER (...)`. Supplied by
+    /// the `.over(|w| ...)` method on
+    /// [`super::aggregate::AggregateExpr`] (T3). `None` leaves the
+    /// aggregate bare; the terminal-layer helpers in
+    /// `query::sql` add `OVER ()` for the ungrouped annotate path when
+    /// `window` is `None`.
     Aggregate {
         /// Which aggregate function to call.
         op: AggOp,
@@ -137,6 +149,23 @@ pub(crate) enum ExprNode {
         /// framework-baked `&'static str` from
         /// [`super::aggregate`]'s method bodies — never user input.
         cast_to: Option<&'static str>,
+        /// Reserved for T4's `.distinct()` builder. Always `false` until
+        /// T4 wires it; present now so T4 only changes the aggregate.rs
+        /// builder and the emitter — no new fields anywhere.
+        // `#[allow(dead_code)]` is needed here because T4 (the first consumer
+        // of the `distinct` flag in the emitter) lands in a later commit.
+        #[allow(dead_code)]
+        distinct: bool,
+        /// Optional user-specified window clause produced by
+        /// [`super::aggregate::AggregateExpr::over`]. `None` means the
+        /// aggregate has no `OVER` clause of its own; the ungrouped
+        /// annotate path in `query::sql` wraps `None`-window aggregates in
+        /// `OVER ()` for backwards compatibility. `Some(spec)` emits the
+        /// full `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
+        // `#[allow(dead_code)]` here because the emitter reads `window` in
+        // Commit 3; it is already set by AggregateExpr::over (also Commit 3).
+        #[allow(dead_code)]
+        window: Option<crate::expr::window::WindowSpec>,
     },
 
     /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE

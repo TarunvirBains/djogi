@@ -162,6 +162,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -193,6 +195,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -241,6 +245,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
             // own Postgres cast target there; see
             // [`Numeric::SUM_CAST`] for the full rationale.
             cast_to: Some(<V as Numeric>::SUM_CAST),
+            distinct: false,
+            window: None,
         })
     }
 
@@ -265,6 +271,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
             // type — the typed surface's `Out = f64` promise holds
             // uniformly.
             cast_to: Some(<V as Numeric>::AVG_CAST),
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -303,6 +311,8 @@ where
             // MIN / MAX return the column's own type — no widening,
             // no cast needed.
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -319,6 +329,8 @@ where
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -355,6 +367,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -375,6 +389,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -412,6 +428,8 @@ impl<M: Model> FieldRef<M, String> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -442,6 +460,8 @@ impl<M: Model> FieldRef<M, bool> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -459,6 +479,8 @@ impl<M: Model> FieldRef<M, bool> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }

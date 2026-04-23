@@ -117,6 +117,8 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             arg,
             filter,
             cast_to: _,
+            distinct: _,
+            window: _,
         } => {
             // Bare aggregate emission — keyword, argument, closing
             // paren, optional FILTER clause. The `cast_to` field is
