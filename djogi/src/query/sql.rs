@@ -1128,7 +1128,7 @@ where
 /// ```sql
 /// SELECT r.<pk-col> AS rk0, <aggregates>
 /// FROM <t-table> AS t
-/// LEFT JOIN <r-table> AS r ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)
+/// LEFT JOIN <r-table> AS r ON ST_Covers(r.<r-geo-col>, t.<t-geo-col>)
 /// [WHERE ...]
 /// GROUP BY r.<pk-col>
 /// [HAVING ...]
@@ -1172,13 +1172,33 @@ where
     acc.push_sql(T::table_name());
     acc.push_sql(" AS t");
 
-    // LEFT JOIN <r-table> AS r ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)
+    // LEFT JOIN <r-table> AS r ON ST_Covers(r.<r-geo-col>, t.<t-geo-col>)
     //
     // LEFT JOIN so unmatched rows (no containing region) appear in the result
     // with r.<pk-col> = NULL rather than being silently dropped.
+    //
+    // # ST_Covers vs ST_Contains
+    //
+    // `ST_Covers` is used (not `ST_Contains`) because:
+    //
+    // - `ST_Contains(geography, geography)` does **not** exist in PostGIS 3.x
+    //   — only the geometry overload is defined, and Djogi stores spatial
+    //   columns as `GEOGRAPHY(..., 4326)`. Using `ST_Contains` here forces
+    //   `::geometry` casts on both sides, which defeats GiST index usage on
+    //   the geography column.
+    // - `ST_Covers` has a native `geography` overload and gives the same
+    //   answer as `ST_Contains` for the point-in-polygon use case this JOIN
+    //   implements (a point is "covered by" a polygon iff it is "inside" the
+    //   polygon; the distinction between the two functions only matters when
+    //   the inner geometry touches the boundary of the outer one — and for
+    //   the scalar point case, being on the boundary is treated as inside
+    //   under both functions for geography inputs).
+    //
+    // The geography-native form keeps GiST-indexed bbox prefiltering active
+    // under the JOIN.
     acc.push_sql(" LEFT JOIN ");
     acc.push_sql(spec.r_table);
-    acc.push_sql(" AS r ON ST_Contains(r.");
+    acc.push_sql(" AS r ON ST_Covers(r.");
     acc.push_sql(spec.r_geo_col);
     acc.push_sql(", t.");
     acc.push_sql(spec.t_geo_col);
@@ -1238,19 +1258,52 @@ where
 /// Build the DBSCAN-clustering variant of the grouped-annotated SELECT:
 ///
 /// ```sql
-/// SELECT ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER () AS cluster_id,
-///        <aggregates>
-/// FROM <table> AS t
-/// [WHERE ...]
+/// SELECT cluster_id, <aggregates>
+/// FROM (
+///     SELECT t.*, ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER ()
+///                                                                 AS cluster_id
+///     FROM <table> AS t
+///     [WHERE ...]
+/// ) AS t
 /// GROUP BY cluster_id
 /// [HAVING ...]
 /// [ORDER BY ...]
 /// [LIMIT $n] [OFFSET $n]
 /// ```
 ///
+/// # Why the subquery
+///
+/// A flat `SELECT ST_ClusterDBSCAN(...) OVER () AS cluster_id ... GROUP BY
+/// cluster_id` query is rejected by Postgres with
+///
+/// ```text
+/// ERROR: window functions are not allowed in GROUP BY
+/// ```
+///
+/// because the GROUP BY references an alias whose defining expression is a
+/// window aggregate. Wrapping the window call in an inner subquery
+/// materialises `cluster_id` as a plain column in the outer query, so the
+/// outer `GROUP BY cluster_id` is valid.
+///
+/// The inner subquery projects `t.*` so any outer aggregate expression that
+/// references `t.<col>` continues to resolve — the outer subquery alias is
+/// also `t`, keeping the column-qualification pattern identical to every
+/// other query shape in this file.
+///
+/// # Clause placement under the subquery
+///
+/// - `WHERE` stays on the **inner** subquery — it prunes rows *before*
+///   clustering, which is the only semantically meaningful position for a
+///   filter that does not reference `cluster_id`.
+/// - `HAVING` stays on the **outer** query — it filters the aggregated
+///   groups.
+/// - `ORDER BY` / `LIMIT` / `OFFSET` stay on the **outer** query — they
+///   paginate the aggregated result.
+///
+/// # Casts and binds
+///
 /// The `::geometry` cast is required because `ST_ClusterDBSCAN` does not
-/// accept the `geography` type directly in PostGIS 3.x — the cast is part of
-/// the specification.
+/// accept the `geography` type directly in PostGIS 3.x.
 ///
 /// `$eps` is bound as `f64`; `$minpoints` as `i32`. Both are positional
 /// parameters (no user-controlled SQL text).
@@ -1267,39 +1320,37 @@ where
     K: crate::query::grouped::IntoGroupKeyTuple,
     A: crate::query::annotate::IntoAggregateTuple,
 {
-    let mut acc = SqlAccumulator::new("SELECT ");
+    // Outer SELECT: cluster_id key + aggregates.
+    let mut acc = SqlAccumulator::new("SELECT cluster_id");
+    gaq.aggregates.push_columns_bare(&mut acc);
 
-    // Window-aggregate expression: the key column.
-    // ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER () AS cluster_id
-    acc.push_sql("ST_ClusterDBSCAN(t.");
+    // Inner subquery materialises cluster_id so the outer GROUP BY sees a
+    // plain column rather than a window-function reference.
+    acc.push_sql(" FROM (SELECT t.*, ST_ClusterDBSCAN(t.");
     acc.push_sql(spec.t_geo_col);
     acc.push_sql("::geometry, ");
     acc.push_bind(spec.eps_degrees);
     acc.push_sql(", ");
     acc.push_bind(spec.minpoints);
-    acc.push_sql(") OVER () AS cluster_id");
-
-    // Aggregate columns follow, decoded by alias (__djogi_agg_N).
-    gaq.aggregates.push_columns_bare(&mut acc);
-
-    // FROM <table> AS t
-    acc.push_sql(" FROM ");
+    acc.push_sql(") OVER () AS cluster_id FROM ");
     acc.push_sql(T::table_name());
     acc.push_sql(" AS t");
 
-    // WHERE from the upstream queryset.
+    // WHERE from the upstream queryset — prunes BEFORE clustering.
     push_where(&mut acc, &gaq.qs);
 
-    // GROUP BY cluster_id  (references the window-aggregate alias)
+    acc.push_sql(") AS t");
+
+    // Outer GROUP BY on the materialised cluster_id column — now valid.
     acc.push_sql(" GROUP BY cluster_id");
 
-    // HAVING
+    // HAVING filters the aggregated groups (outer scope).
     if let Some(h) = &gaq.having {
         acc.push_sql(" HAVING ");
         crate::expr::sql::emit_expr(&mut acc, h);
     }
 
-    // ORDER BY
+    // ORDER BY (outer scope).
     if !gaq.order.is_empty() {
         acc.push_sql(" ORDER BY ");
         for (i, o) in gaq.order.iter().enumerate() {
@@ -1310,7 +1361,7 @@ where
         }
     }
 
-    // LIMIT / OFFSET
+    // LIMIT / OFFSET (outer scope).
     if let Some(n) = gaq.limit {
         acc.push_sql(" LIMIT ");
         acc.push_bind(n as i64);
@@ -2531,7 +2582,8 @@ mod tests {
     //
     // These tests construct a `GroupedAnnotatedQuerySet` with a spatial join
     // spec and assert that the emitted SQL contains the expected LEFT JOIN,
-    // ST_Contains call, and GROUP BY clause.
+    // ST_Covers call (the geography-native point-in-polygon function), and
+    // GROUP BY clause.
 
     /// Minimal region model — no real descriptor needed for SQL emission tests.
     #[cfg(feature = "spatial")]
@@ -2620,10 +2672,15 @@ mod tests {
         }
     }
 
-    /// The emitted SQL must contain `LEFT JOIN <r-table> AS r ON ST_Contains(…)`.
+    /// The emitted SQL must contain `LEFT JOIN <r-table> AS r ON ST_Covers(…)`.
+    ///
+    /// `ST_Covers` is used rather than `ST_Contains` because the former has a
+    /// native `geography` overload in PostGIS 3.x; `ST_Contains(geography,
+    /// geography)` does not exist. Semantics are equivalent for the
+    /// point-in-polygon case this JOIN implements.
     #[cfg(feature = "spatial")]
     #[test]
-    fn spatial_join_emits_left_join_with_st_contains() {
+    fn spatial_join_emits_left_join_with_st_covers() {
         let spec = crate::query::spatial_grouping::SpatialJoinSpec {
             t_geo_col: "location",
             r_table: "neighborhoods",
@@ -2635,8 +2692,12 @@ mod tests {
         let sql = acc.sql();
 
         assert!(
-            sql.contains("LEFT JOIN neighborhoods AS r ON ST_Contains(r.boundary, t.location)"),
-            "expected LEFT JOIN with ST_Contains, got: {sql}"
+            sql.contains("LEFT JOIN neighborhoods AS r ON ST_Covers(r.boundary, t.location)"),
+            "expected LEFT JOIN with ST_Covers (geography overload), got: {sql}"
+        );
+        assert!(
+            !sql.contains("ST_Contains"),
+            "must not emit ST_Contains (no geography overload in PostGIS 3.x); got: {sql}"
         );
     }
 
@@ -2794,6 +2855,50 @@ mod tests {
         assert!(
             !sql.contains("LEFT JOIN"),
             "cluster path should not emit LEFT JOIN, got: {sql}"
+        );
+    }
+
+    /// Regression test for the pre-T14.5 shape `SELECT ST_ClusterDBSCAN(...)
+    /// OVER () AS cluster_id ... GROUP BY cluster_id`, which Postgres rejects
+    /// with `ERROR: window functions are not allowed in GROUP BY`. The
+    /// emitter must wrap the window call in an inner subquery so the outer
+    /// `GROUP BY cluster_id` references a materialised column.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_grouped_select_wraps_window_in_subquery() {
+        use crate::query::spatial_grouping::ClusterSpec;
+        let spec = ClusterSpec {
+            t_geo_col: "location",
+            eps_degrees: 0.004491,
+            minpoints: 3,
+        };
+        let gaq = make_cluster_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        // Outer SELECT starts with the materialised cluster_id column, not
+        // the inline window call.
+        assert!(
+            sql.starts_with("SELECT cluster_id"),
+            "outer SELECT must start with 'SELECT cluster_id', got: {sql}"
+        );
+        // The window call lives inside the subquery — the `FROM (SELECT t.*,
+        // ST_ClusterDBSCAN(...)` substring locks in the wrap.
+        assert!(
+            sql.contains("FROM (SELECT t.*, ST_ClusterDBSCAN("),
+            "window call must be wrapped in an inner subquery; got: {sql}"
+        );
+        // Subquery alias must be `t` so outer aggregate references resolve.
+        assert!(
+            sql.contains(") AS t GROUP BY cluster_id"),
+            "subquery must be aliased 'AS t' and outer must GROUP BY cluster_id; got: {sql}"
+        );
+        // The inline window-function-in-GROUP-BY anti-pattern must not leak.
+        // (The string `OVER () AS cluster_id` is still present inside the
+        // subquery — we assert on the *outer SELECT head* instead.)
+        assert!(
+            !sql.starts_with("SELECT ST_ClusterDBSCAN"),
+            "outer SELECT must not begin with the inline window form; got: {sql}"
         );
     }
 

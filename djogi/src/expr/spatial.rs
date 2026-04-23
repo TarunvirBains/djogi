@@ -8,10 +8,10 @@
 //! - [`SpatialExpr::Within`] — emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`
 //!   (radius-based predicate; Phase 6)
 //! - [`SpatialExpr::Distance`] — emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`
-//! - [`SpatialExpr::Contains`] — emits `ST_Contains(<col>, $1::geography)` (T9)
-//! - [`SpatialExpr::Intersects`] — emits `ST_Intersects(<col>, $1::geography)` (T9)
-//! - [`SpatialExpr::Touches`] — emits `ST_Touches(<col>, $1::geography)` (T9)
-//! - [`SpatialExpr::WithinShape`] — emits `ST_Within(<col>, $1::geography)` (T9)
+//! - [`SpatialExpr::Contains`] — emits `ST_Contains(<col>::geometry, $1::bytea::geometry)` (T9)
+//! - [`SpatialExpr::Intersects`] — emits `ST_Intersects(<col>, $1::bytea::geography)` (T9)
+//! - [`SpatialExpr::Touches`] — emits `ST_Touches(<col>::geometry, $1::bytea::geometry)` (T9)
+//! - [`SpatialExpr::WithinShape`] — emits `ST_Within(<col>::geometry, $1::bytea::geometry)` (T9)
 //! - [`SpatialExpr::BoundedBy`] — bbox prefilter using `ST_MakeEnvelope` + `&&` (T10)
 //!
 //! # Naming note for `WithinShape`
@@ -102,11 +102,12 @@ pub enum SpatialExpr {
     },
 
     // ── Shape-based predicates (T9) ───────────────────────────────────────────
-    /// `ST_Contains(<col>, $1::geography)`
+    /// `ST_Contains(<col>::geometry, $1::bytea::geometry)`
     ///
     /// Returns `true` when the geometry stored in `<col>` entirely contains
     /// the bound geometry. The bound geometry goes through `push_bind` as
-    /// its EWKB byte representation.
+    /// its EWKB byte representation; see [`emit_binary_predicate`] for the
+    /// cast rationale.
     ///
     /// Constructed by [`crate::query::field::FieldRef::contains`].
     Contains {
@@ -116,11 +117,13 @@ pub enum SpatialExpr {
         other_ewkb: Vec<u8>,
     },
 
-    /// `ST_Intersects(<col>, $1::geography)`
+    /// `ST_Intersects(<col>, $1::bytea::geography)`
     ///
     /// Returns `true` when the geometry stored in `<col>` and the bound
     /// geometry share at least one point. The bound geometry goes through
-    /// `push_bind` as its EWKB byte representation.
+    /// `push_bind` as its EWKB byte representation. This is the only T9
+    /// predicate with a native `geography` overload — see
+    /// [`emit_binary_predicate`].
     ///
     /// Constructed by [`crate::query::field::FieldRef::intersects`].
     Intersects {
@@ -130,11 +133,12 @@ pub enum SpatialExpr {
         other_ewkb: Vec<u8>,
     },
 
-    /// `ST_Touches(<col>, $1::geography)`
+    /// `ST_Touches(<col>::geometry, $1::bytea::geometry)`
     ///
     /// Returns `true` when the geometry stored in `<col>` and the bound
     /// geometry share boundary points but no interior points (touch but do
-    /// not overlap). The bound geometry goes through `push_bind`.
+    /// not overlap). The bound geometry goes through `push_bind`; see
+    /// [`emit_binary_predicate`] for the cast rationale.
     ///
     /// Constructed by [`crate::query::field::FieldRef::touches`].
     Touches {
@@ -144,12 +148,13 @@ pub enum SpatialExpr {
         other_ewkb: Vec<u8>,
     },
 
-    /// `ST_Within(<col>, $1::geography)`
+    /// `ST_Within(<col>::geometry, $1::bytea::geometry)`
     ///
     /// Returns `true` when the geometry stored in `<col>` is entirely within
     /// the bound geometry. Named `WithinShape` internally to avoid a
     /// variant-name collision with the radius-based [`SpatialExpr::Within`];
     /// the public method on `FieldRef` is still called `.within(&geom)`.
+    /// See [`emit_binary_predicate`] for the cast rationale.
     ///
     /// Constructed by [`crate::query::field::FieldRef::within`].
     WithinShape {
@@ -206,11 +211,24 @@ impl SpatialExpr {
     /// ```
     /// where `$1 = center.lon`, `$2 = center.lat`.
     ///
-    /// `Contains` / `Intersects` / `Touches` / `WithinShape` each emit:
+    /// `Contains`, `Touches`, `WithinShape` emit:
     /// ```sql
-    /// ST_<Function>(<col>, $1::geography)
+    /// ST_<Function>(<col>::geometry, $1::bytea::geometry)
     /// ```
-    /// where `$1` is the EWKB bytes of the other geometry.
+    /// because in PostGIS 3.x these three functions only have a `geometry`
+    /// overload — `ST_Contains(geography, ...)` etc. do not exist.
+    ///
+    /// `Intersects` emits:
+    /// ```sql
+    /// ST_Intersects(<col>, $1::bytea::geography)
+    /// ```
+    /// because `ST_Intersects` has a native `geography` overload.
+    ///
+    /// In both cases `$1` is bound as raw EWKB `bytea` and cast at query
+    /// time — `tokio_postgres` prepares the parameter as `bytea`
+    /// (which matches `Vec<u8>: ToSql`) and Postgres performs the
+    /// `bytea::geometry` / `bytea::geography` cast via the implicit
+    /// PostGIS input functions.
     ///
     /// `BoundedBy` emits:
     /// ```sql
@@ -303,13 +321,33 @@ impl SpatialExpr {
     }
 }
 
-/// Emit `<func>(<col>, $n::geography)` where `$n` is bound to `other_ewkb`.
+/// Emit a binary spatial predicate call.
 ///
-/// The four T9 shape predicates (`ST_Contains`, `ST_Intersects`, `ST_Touches`,
-/// `ST_Within`) share an identical two-argument structure; this helper
-/// eliminates the repetition while keeping each match arm a single readable
-/// line. The column name flows through `push_sql` (already validated as a
-/// plain identifier); the EWKB bytes flow through `push_bind`.
+/// # Cast selection
+///
+/// PostGIS 3.x splits these four functions across two type families:
+///
+/// - `ST_Intersects` has native `geography` overloads, so both the column
+///   and the bind stay in the `geography` space. The column reference is
+///   emitted unadorned (it already has the `geography` column type) and the
+///   bind is cast `::bytea::geography`.
+/// - `ST_Contains`, `ST_Touches`, and `ST_Within` are **geometry-only**:
+///   `ST_Contains(geography, geography)` etc. do not exist. Both sides are
+///   cast to `geometry` — the column via `::geometry`, the bind via
+///   `::bytea::geometry`.
+///
+/// # Bind encoding
+///
+/// `Vec<u8>: ToSql` binds as Postgres `bytea`. The target parameter type
+/// registered at prepare time must therefore be `bytea`; the explicit
+/// `$n::bytea::<type>` double-cast forces that. A plain `$n::geography`
+/// (or `$n::geometry`) would make `tokio_postgres` prepare the parameter
+/// as `geography` and reject the `Vec<u8>` bind, because `Vec<u8>` cannot
+/// satisfy a `geography`-typed slot.
+///
+/// The column name flows through `push_sql` (already validated as a
+/// plain identifier by `assert_plain_ident`); the EWKB bytes flow through
+/// `push_bind`.
 #[cfg(feature = "spatial")]
 fn emit_binary_predicate(
     acc: &mut SqlAccumulator,
@@ -317,12 +355,24 @@ fn emit_binary_predicate(
     field_column: &'static str,
     other_ewkb: &[u8],
 ) {
+    // Only ST_Intersects has a geography overload; the other three are
+    // geometry-only in PostGIS 3.x.
+    let use_geometry = !matches!(func, "ST_Intersects");
+    let col_cast = if use_geometry { "::geometry" } else { "" };
+    let bind_cast = if use_geometry {
+        "::bytea::geometry"
+    } else {
+        "::bytea::geography"
+    };
+
     acc.push_sql(func);
     acc.push_sql("(");
     acc.push_sql(field_column);
+    acc.push_sql(col_cast);
     acc.push_sql(", ");
     acc.push_bind(other_ewkb.to_vec());
-    acc.push_sql("::geography)");
+    acc.push_sql(bind_cast);
+    acc.push_sql(")");
 }
 
 #[cfg(all(test, feature = "spatial"))]
@@ -464,8 +514,10 @@ mod tests {
 
     // ── T9: Shape predicate tests ─────────────────────────────────────────────
 
-    /// `Contains` must emit `ST_Contains(...)` with the column name, the
-    /// `::geography` cast, and exactly one bind parameter (the EWKB bytes).
+    /// `Contains` must emit `ST_Contains(<col>::geometry, $1::bytea::geometry)`
+    /// with the column name cast to `::geometry` (PostGIS 3.x has no
+    /// `ST_Contains(geography, geography)` overload) and exactly one bind
+    /// parameter for the EWKB bytes.
     #[test]
     fn contains_emits_st_contains_with_ewkb_bind() {
         let other_poly_bytes = vec![0x01, 0x02, 0x03]; // dummy EWKB — real one in live tests
@@ -480,10 +532,17 @@ mod tests {
             sql.contains("ST_Contains"),
             "expected ST_Contains, got: {sql}"
         );
-        assert!(sql.contains("area"), "expected column 'area', got: {sql}");
         assert!(
-            sql.contains("::geography"),
-            "expected ::geography cast, got: {sql}"
+            sql.contains("area::geometry"),
+            "expected column 'area::geometry', got: {sql}"
+        );
+        assert!(
+            sql.contains("::bytea::geometry"),
+            "expected ::bytea::geometry bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("::geography"),
+            "ST_Contains must not use ::geography (no such overload in PostGIS 3.x); got: {sql}"
         );
         assert_eq!(
             acc.bind_count(),
@@ -493,7 +552,9 @@ mod tests {
         );
     }
 
-    /// `Intersects` must emit `ST_Intersects(...)` with column + cast + 1 bind.
+    /// `Intersects` keeps the geography path — both the bare column
+    /// reference and the `::bytea::geography` bind cast stay in the geography
+    /// type family because `ST_Intersects` has native geography overloads.
     #[test]
     fn intersects_emits_st_intersects_with_ewkb_bind() {
         let ewkb = vec![0xDE, 0xAD, 0xBE, 0xEF];
@@ -510,8 +571,12 @@ mod tests {
         );
         assert!(sql.contains("route"), "expected column 'route', got: {sql}");
         assert!(
-            sql.contains("::geography"),
-            "expected ::geography cast, got: {sql}"
+            sql.contains("::bytea::geography"),
+            "expected ::bytea::geography bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("route::geometry"),
+            "ST_Intersects must keep geography column (no ::geometry cast); got: {sql}"
         );
         assert_eq!(
             acc.bind_count(),
@@ -521,7 +586,8 @@ mod tests {
         );
     }
 
-    /// `Touches` must emit `ST_Touches(...)` with column + cast + 1 bind.
+    /// `Touches` is geometry-only in PostGIS 3.x — both the column and the
+    /// bind must be cast to `geometry`.
     #[test]
     fn touches_emits_st_touches_with_ewkb_bind() {
         let ewkb = vec![0xAA, 0xBB];
@@ -537,12 +603,16 @@ mod tests {
             "expected ST_Touches, got: {sql}"
         );
         assert!(
-            sql.contains("boundary"),
-            "expected column 'boundary', got: {sql}"
+            sql.contains("boundary::geometry"),
+            "expected column 'boundary::geometry', got: {sql}"
         );
         assert!(
-            sql.contains("::geography"),
-            "expected ::geography cast, got: {sql}"
+            sql.contains("::bytea::geometry"),
+            "expected ::bytea::geometry bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("::geography"),
+            "ST_Touches must not use ::geography (no such overload); got: {sql}"
         );
         assert_eq!(
             acc.bind_count(),
@@ -552,7 +622,9 @@ mod tests {
         );
     }
 
-    /// `WithinShape` must emit `ST_Within(...)` (not ST_DWithin) with column + cast + 1 bind.
+    /// `WithinShape` must emit `ST_Within(...)` (not ST_DWithin) with
+    /// `::geometry` casts on both sides — `ST_Within(geography, geography)`
+    /// does not exist in PostGIS 3.x.
     #[test]
     fn within_shape_emits_st_within_not_st_dwithin() {
         let ewkb = vec![0x01, 0xFF];
@@ -568,10 +640,17 @@ mod tests {
             !sql.contains("ST_DWithin"),
             "got ST_DWithin instead of ST_Within: {sql}"
         );
-        assert!(sql.contains("zone"), "expected column 'zone', got: {sql}");
         assert!(
-            sql.contains("::geography"),
-            "expected ::geography cast, got: {sql}"
+            sql.contains("zone::geometry"),
+            "expected column 'zone::geometry', got: {sql}"
+        );
+        assert!(
+            sql.contains("::bytea::geometry"),
+            "expected ::bytea::geometry bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("::geography"),
+            "ST_Within must not use ::geography (no such overload); got: {sql}"
         );
         assert_eq!(
             acc.bind_count(),

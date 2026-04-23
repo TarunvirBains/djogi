@@ -4,71 +4,60 @@
 //! # Scope
 //!
 //! Each test is annotated `#[djogi_test(extensions = ["postgis"])]` so the
-//! per-test database is auto-provisioned with PostGIS 3.x.
+//! per-test database is auto-provisioned with PostGIS 3.x. All eleven
+//! scenarios are live under T14.5 after the four emitter fixes described
+//! below.
 //!
-//! ## Passing scenarios
+//! ## Scenarios
 //!
+//! 1. **`contains_point_in_polygon_matches`** — `FieldRef::contains`
+//!    selects only the neighborhood polygon that contains the query point.
+//! 2. **`intersects_linestring_polygon`** — `FieldRef::intersects`
+//!    selects only the route that crosses the query polygon.
+//! 3. **`contains_point_in_multipolygon`** — `FieldRef::contains` on a
+//!    `MultiPolygon` finds a point that lives in one of its member polygons.
+//! 4. **`touches_adjacent_polygons`** — `FieldRef::touches` selects the
+//!    polygon that shares an edge with the query polygon but does not
+//!    overlap it.
 //! 5. **`bounded_by_with_order_by_distance_uses_gist`** — bbox prefilter
 //!    composed with `order_by_distance` against a live GiST index, plus an
 //!    `EXPLAIN ANALYZE` assertion that the plan text references the
 //!    `stores_p65` table.
 //! 6. **`distance_to_in_filter_expr`** — `FieldRef::distance_to` composed
 //!    into `filter_expr` as a `lt` predicate against 50 km from SFO.
+//! 7. **`group_by_region_counts_stores_per_neighborhood`** — per-region
+//!    counts including the `None` bucket for stores outside every region.
+//! 8. **`count_by_region_matches_group_by_region`** — the scalar-count
+//!    sugar matches its `.annotate(|f| f.id().count_star())` equivalent.
+//! 9. **`cluster_by_proximity_dbscan_three_clusters_plus_noise`** — DBSCAN
+//!    over 3 tight clusters + 1 outlier yields exactly 3 non-null cluster
+//!    ids and one noise bucket.
 //! 10. **`bucket_by_cell_p5_tight_cluster_single_bucket`** — geohash
 //!     bucketing at `P5` collapses 5 tightly-clustered points into one cell.
 //! 11. **`missing_gist_warn_fires_at_most_once`** — the T11 once-per-process
 //!     `tracing::warn!` guard fires at most once across two consecutive
 //!     `group_by_region` calls against an unindexed region.
 //!
-//! ## Ignored scenarios — blocked on framework defects
+//! # T14.5 emitter fixes (landed before these tests ran green)
 //!
-//! Four pre-existing bugs in Phase 6.5's emitter surface prevent the other
-//! seven scenarios from running today. Each test below documents the exact
-//! SQL-level failure in its doc comment and links back to the file/line of
-//! the source bug; each is `#[ignore = "..."]` so the binary stays green
-//! until the bugs are fixed.
+//! The initial T14 run surfaced four pre-existing emitter defects; all four
+//! were fixed in the T14.5 follow-up commit so every scenario above now
+//! runs end-to-end. The defects and their fixes:
 //!
-//! 1. **`contains_point_in_polygon_matches`** — `FieldRef::contains`.
-//! 2. **`intersects_linestring_polygon`** — `FieldRef::intersects`.
-//! 3. **`contains_point_in_multipolygon`** — `FieldRef::contains` on
-//!    `MultiPolygon`.
-//! 4. **`touches_adjacent_polygons`** — `FieldRef::touches`.
-//! 7. **`group_by_region_counts_stores_per_neighborhood`** —
-//!    `QuerySet::group_by_region`.
-//! 8. **`count_by_region_matches_group_by_region`** —
-//!    `QuerySet::count_by_region`.
-//! 9. **`cluster_by_proximity_dbscan_three_clusters_plus_noise`** —
-//!    `QuerySet::cluster_by_proximity`.
-//!
-//! ### Summary of framework defects these tests surface
-//!
-//! - **T9 `$1::geography` bind mismatch** — `SpatialExpr::Contains` /
-//!   `Intersects` / `Touches` / `WithinShape` push the other-geometry EWKB
-//!   as `Vec<u8>` and cast via `$1::geography`. `tokio_postgres` prepares
-//!   `$1` as `geography` and rejects the `Vec<u8>` bind because `Vec<u8>:
-//!   ToSql` only accepts `bytea`. The fix is to bind the geometry value
-//!   directly (each `GeographyValue` type has a `ToSql` impl that encodes
-//!   to `geography`) or to emit `$1::bytea::geography`.
-//!
-//! - **T9 `ST_Contains` / `ST_Touches` / `ST_Within` wrong argument type** —
-//!   in PostGIS 3.x these three only accept `geometry`, not `geography`.
-//!   The `emit_binary_predicate` helper in `djogi/src/expr/spatial.rs` needs
-//!   to cast to `::geometry` for the three and keep `::geography` only for
-//!   `ST_Intersects` (which has a geography overload).
-//!
-//! - **T11 `ST_Contains(geography, geography)` in the JOIN condition** — the
-//!   spatial-join builder at `djogi/src/query/sql.rs:1179-1185` emits
-//!   `ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)` using geography columns
-//!   directly. Fix: add `::geometry` casts on both sides, or switch the
-//!   function to `ST_Covers` which has a geography overload with
-//!   equivalent semantics for point-in-polygon.
-//!
-//! - **T12 window-function in GROUP BY** — `build_cluster_grouped_select`
-//!   at `djogi/src/query/sql.rs:1261-1324` emits
-//!   `SELECT ST_ClusterDBSCAN(...) OVER () AS cluster_id ... GROUP BY
-//!   cluster_id`, which Postgres rejects with `ERROR: window functions are
-//!   not allowed in GROUP BY`. Fix: wrap the cluster assignment in a CTE /
-//!   subquery and GROUP BY over the outer SELECT.
+//! - **T9 `$1::geography` bind mismatch** → `$n::bytea::geography` double
+//!   cast so `tokio_postgres` prepares `$n` as `bytea` (which `Vec<u8>`
+//!   satisfies) and Postgres casts to `geography` at query time.
+//! - **T9 `ST_Contains` / `ST_Touches` / `ST_Within` wrong argument type**
+//!   → `emit_binary_predicate` now casts both the column and the bind to
+//!   `::geometry` for these three functions, keeping `::geography` only for
+//!   `ST_Intersects` (which has a native geography overload).
+//! - **T11 `ST_Contains(geography, geography)` in the JOIN** →
+//!   `build_spatial_join_grouped_select` now emits `ST_Covers(...)` instead,
+//!   which has a native `geography` overload and identical semantics for
+//!   the point-in-polygon use case.
+//! - **T12 window-function in GROUP BY** → `build_cluster_grouped_select`
+//!   now wraps the `ST_ClusterDBSCAN(...) OVER ()` call in an inner subquery
+//!   so the outer `GROUP BY cluster_id` references a materialised column.
 //!
 //! # Infrastructure notes
 //!
@@ -236,33 +225,6 @@ fn square_polygon(center: GeoPoint, half_side: f64) -> Polygon {
 
 /// A neighborhood polygon must be selectable by
 /// `.filter(|n| n.boundary().contains(&point))` when `point` falls inside.
-///
-/// # Current status — BLOCKED on framework bugs in T9
-///
-/// Two independent defects in the T9 predicate emitter prevent this test
-/// from passing today; both are pre-existing and surfaced — not introduced
-/// — by this test file:
-///
-/// 1. **`$1::geography` type mismatch.** `SpatialExpr::Contains::emit` binds
-///    the other geometry's EWKB bytes as `Vec<u8>` (which `tokio_postgres`
-///    encodes as `bytea`) and casts via `$1::geography`. Postgres prepares
-///    the statement with `$1` typed as `geography`, then `tokio_postgres`
-///    rejects the `Vec<u8>` bind because `Vec<u8>: ToSql` only accepts
-///    `bytea`. The fix is to bind the geometry value directly via its
-///    `ToSql` impl (each `GeographyValue` type implements it), or to
-///    double-cast `$1::bytea::geography` in the emitter.
-///
-/// 2. **`ST_Contains` requires `geometry`, not `geography`.** In PostGIS
-///    3.x, `ST_Contains(geography, geography)` simply does not exist.
-///    Three of the four T9 predicates (`ST_Contains`, `ST_Touches`,
-///    `ST_Within`) only accept `geometry`; only `ST_Intersects` has a
-///    geography overload. The `emit_binary_predicate` helper needs to emit
-///    `::geometry` for those three and `::geography` only for
-///    `ST_Intersects`.
-///
-/// Once both defects are fixed (small, localised changes in
-/// `djogi/src/expr/spatial.rs`) this test should pass without modification.
-#[ignore = "T9 emitter bugs (bytea→geography bind + ST_Contains wants geometry); see test doc comment"]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn contains_point_in_polygon_matches(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
@@ -305,15 +267,6 @@ async fn contains_point_in_polygon_matches(mut ctx: djogi::DjogiContext) {
 
 /// A linestring that crosses a polygon's interior must satisfy
 /// `FieldRef::intersects(&polygon)`.
-///
-/// # Current status — BLOCKED on the T9 `$1::geography` bind-type bug
-///
-/// `ST_Intersects` does accept `geography` (unlike the other three T9
-/// predicates), but the `$1::geography` cast still breaks
-/// `tokio_postgres`'s type check: the `Vec<u8>` value cannot satisfy the
-/// `geography` parameter type. See the `contains_point_in_polygon_matches`
-/// doc comment for the full fix.
-#[ignore = "T9 emitter bug: Vec<u8> bind cannot satisfy $1::geography; see test doc comment"]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn intersects_linestring_polygon(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
@@ -372,10 +325,6 @@ async fn intersects_linestring_polygon(mut ctx: djogi::DjogiContext) {
 
 /// A `MultiPolygon` must be selectable by `.contains(&point)` when one of its
 /// member polygons contains the point.
-///
-/// # Current status — BLOCKED on the same T9 emitter defects described on
-/// `contains_point_in_polygon_matches`.
-#[ignore = "T9 emitter bugs; see contains_point_in_polygon_matches for details"]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn contains_point_in_multipolygon(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
@@ -424,10 +373,6 @@ async fn contains_point_in_multipolygon(mut ctx: djogi::DjogiContext) {
 /// Two polygons sharing a single edge (no interior overlap) must satisfy
 /// `ST_Touches`. The test creates two squares that share their vertical
 /// border, then queries one against the other.
-///
-/// # Current status — BLOCKED on the same T9 emitter defects described on
-/// `contains_point_in_polygon_matches`.
-#[ignore = "T9 emitter bugs; see contains_point_in_polygon_matches for details"]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn touches_adjacent_polygons(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
@@ -662,18 +607,6 @@ async fn distance_to_in_filter_expr(mut ctx: djogi::DjogiContext) {
 /// Seeds 3 non-overlapping neighborhood polygons plus 10 stores — 3 in the
 /// first region, 4 in the second, 2 in the third, and 1 outside all regions
 /// — and asserts the counts per `RegionKey`, including the `None` bucket.
-///
-/// # Current status — BLOCKED on a T11 emitter bug
-///
-/// `build_spatial_join_grouped_select` (djogi/src/query/sql.rs:1179-1185)
-/// emits the join condition as
-/// `LEFT JOIN <r-table> AS r ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)`.
-/// In PostGIS 3.x, `ST_Contains(geography, geography)` does not exist — the
-/// function requires `geometry`. The fix mirrors the T9 bug: add
-/// `::geometry` casts to both column references in the ON clause (or switch
-/// the function to `ST_Covers`, which has a `geography` overload and gives
-/// the same semantics for point-in-polygon).
-#[ignore = "T11 emitter bug: ST_Contains(geography, geography) does not exist; see test doc"]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn group_by_region_counts_stores_per_neighborhood(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
@@ -749,10 +682,6 @@ async fn group_by_region_counts_stores_per_neighborhood(mut ctx: djogi::DjogiCon
 
 /// Same dataset as scenario 7; asserts the scalar-count sugar matches
 /// `group_by_region(...).annotate(|f| f.id.count_star())`.
-///
-/// # Current status — BLOCKED on the same T11 emitter bug described on
-/// `group_by_region_counts_stores_per_neighborhood`.
-#[ignore = "T11 emitter bug: ST_Contains(geography, geography) does not exist"]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn count_by_region_matches_group_by_region(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
@@ -817,35 +746,6 @@ async fn count_by_region_matches_group_by_region(mut ctx: djogi::DjogiContext) {
 /// (-125.0, 40.0). With `min_points(3)` and a small radius, DBSCAN must
 /// produce exactly 3 non-null cluster ids and one `ClusterId(None)` for the
 /// outlier.
-///
-/// # Current status — BLOCKED on a T12 emitter bug
-///
-/// `build_cluster_grouped_select` (djogi/src/query/sql.rs:1261-1324) emits:
-///
-/// ```sql
-/// SELECT ST_ClusterDBSCAN(t.location::geometry, $1, $2) OVER () AS cluster_id,
-///        COUNT(*) AS __djogi_agg_0
-/// FROM stores_p65 AS t
-/// GROUP BY cluster_id
-/// ```
-///
-/// Postgres rejects this query with `ERROR: window functions are not allowed
-/// in GROUP BY` because the `GROUP BY cluster_id` references a window
-/// aggregate via its alias. The correct shape is a subquery or CTE that
-/// computes `cluster_id` first, then groups:
-///
-/// ```sql
-/// WITH clustered AS (
-///     SELECT t.*, ST_ClusterDBSCAN(t.location::geometry, $1, $2) OVER () AS cluster_id
-///     FROM stores_p65 AS t
-/// )
-/// SELECT cluster_id, COUNT(*)
-/// FROM clustered
-/// GROUP BY cluster_id;
-/// ```
-///
-/// The CTE fix is localised to `build_cluster_grouped_select`.
-#[ignore = "T12 emitter bug: window functions not allowed in GROUP BY; needs CTE rewrite"]
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn cluster_by_proximity_dbscan_three_clusters_plus_noise(mut ctx: djogi::DjogiContext) {
     setup_spatial_tables(&mut ctx).await;
