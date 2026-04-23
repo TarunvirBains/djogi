@@ -380,10 +380,11 @@ pub fn expand(
         );
     }
 
-    // ── Phase 6 Task 2: implicit GiST indexes for GeoPoint fields ────────────
+    // ── Phase 6 Task 2 + T8: implicit GiST indexes for geography fields ────────
     //
-    // For every user field whose Rust type is `GeoPoint` (or a path ending in
-    // `GeoPoint`), emit one `IndexSpec` entry with:
+    // For every user field whose Rust type is any `GeographyValue`-implementing
+    // geometry (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
+    // `MultiPolygon`), emit one `IndexSpec` entry with:
     //   - name:       "<table>_<column>_gix"
     //   - columns:    &["<column>"]
     //   - unique:     false
@@ -398,9 +399,9 @@ pub fn expand(
     // `requires_out_of_transaction` and `extension_dependency` are the
     // T5-added `IndexSpec` fields that carry GiST-on-PostGIS migration
     // policy forward to Phase 7 without relying on type-name inference.
-    let geopoint_index_specs: Vec<TokenStream> = user_fields
+    let geography_index_specs: Vec<TokenStream> = user_fields
         .iter()
-        .filter(|(field, _fa)| is_geopoint_type(&field.ty))
+        .filter(|(field, _fa)| is_geography_field_type(&field.ty))
         .map(|(field, _fa)| {
             let raw_name = field.ident.as_ref().unwrap().to_string();
             let col = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
@@ -420,13 +421,13 @@ pub fn expand(
         })
         .collect();
 
-    // Emit the indexes slice. If there are no GeoPoint fields, the slice is
+    // Emit the indexes slice. If there are no geography fields, the slice is
     // empty (`&[]`) — identical to the Phase 1 default. If there are one or
-    // more GeoPoint fields, emit a `&[IndexSpec { … }, …]` literal.
-    let indexes_tokens = if geopoint_index_specs.is_empty() {
+    // more geography fields, emit a `&[IndexSpec { … }, …]` literal.
+    let indexes_tokens = if geography_index_specs.is_empty() {
         quote! { &[] }
     } else {
-        quote! { &[ #(#geopoint_index_specs,)* ] }
+        quote! { &[ #(#geography_index_specs,)* ] }
     };
 
     quote! {
@@ -617,15 +618,46 @@ fn sql_str_to_tokens(s: &str) -> TokenStream {
         "INTEGER[]" => quote! { ::djogi::FieldSqlType::IntegerArray },
         "BIGINT[]" => quote! { ::djogi::FieldSqlType::BigIntArray },
         "BOOLEAN[]" => quote! { ::djogi::FieldSqlType::BoolArray },
-        // Spatial — GeoPoint fields are mapped to GEOGRAPHY(Point, 4326) in
-        // rust_type_to_sql. Emit the typed Geography variant with the typed
-        // GeographySubtype discriminant so Phase 7's migration differ can
-        // compare subtypes by discriminant rather than Display text.
-        // T7 extends this match to cover non-point geometries.
+        // Spatial — all GeographyValue types map to the typed Geography variant
+        // with the matching GeographySubtype discriminant so Phase 7's
+        // migration differ can compare subtypes by discriminant rather than
+        // Display text. T8 extends this match to cover all five geometry types.
         "GEOGRAPHY(Point, 4326)" => {
             quote! {
                 ::djogi::FieldSqlType::Geography {
                     subtype: ::djogi::descriptor::GeographySubtype::Point,
+                    srid: 4326u32,
+                }
+            }
+        }
+        "GEOGRAPHY(LineString, 4326)" => {
+            quote! {
+                ::djogi::FieldSqlType::Geography {
+                    subtype: ::djogi::descriptor::GeographySubtype::LineString,
+                    srid: 4326u32,
+                }
+            }
+        }
+        "GEOGRAPHY(Polygon, 4326)" => {
+            quote! {
+                ::djogi::FieldSqlType::Geography {
+                    subtype: ::djogi::descriptor::GeographySubtype::Polygon,
+                    srid: 4326u32,
+                }
+            }
+        }
+        "GEOGRAPHY(MultiPoint, 4326)" => {
+            quote! {
+                ::djogi::FieldSqlType::Geography {
+                    subtype: ::djogi::descriptor::GeographySubtype::MultiPoint,
+                    srid: 4326u32,
+                }
+            }
+        }
+        "GEOGRAPHY(MultiPolygon, 4326)" => {
+            quote! {
+                ::djogi::FieldSqlType::Geography {
+                    subtype: ::djogi::descriptor::GeographySubtype::MultiPolygon,
                     srid: 4326u32,
                 }
             }
@@ -651,21 +683,42 @@ fn is_jsonb_type(ty: &syn::Type) -> bool {
         .unwrap_or(false)
 }
 
-/// Detect if a field type is `GeoPoint` by checking the last-segment ident.
+/// Detect if a field type is any `GeographyValue`-implementing geometry type
+/// by checking the last-segment ident.
 ///
-/// Returns `true` if the type path ends in `GeoPoint`, after stripping `Option`.
-/// Uses last-segment path matching so all of the following are accepted:
-/// - bare `GeoPoint`
-/// - `djogi::GeoPoint`
-/// - `geo::GeoPoint`
-/// - `djogi::geo::GeoPoint`
-/// - `Option<GeoPoint>` and the above qualified forms under `Option`
+/// Returns `true` if the type path ends in one of the five recognized geometry
+/// type names (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
+/// `MultiPolygon`), after stripping `Option`. Uses last-segment path matching
+/// so qualified paths (`djogi::geo::LineString`, `geo::Polygon`, etc.) and bare
+/// idents are all accepted.
 ///
 /// The `spatial` feature flag lives on the `djogi` runtime crate, not on
-/// `djogi-macros`. The macro recognises the type name unconditionally so
-/// it emits the correct descriptor regardless of feature state. If the
-/// user omits the `spatial` feature, the compile error surfaces at the
-/// struct definition as "unresolved type `GeoPoint`", not here.
+/// `djogi-macros`. The macro recognises type names unconditionally so it emits
+/// the correct descriptor regardless of feature state. If the user omits the
+/// `spatial` feature, the compile error surfaces at the struct definition as
+/// "unresolved type", not here.
+fn is_geography_field_type(ty: &syn::Type) -> bool {
+    let (inner, _) = unwrap_option(ty);
+    let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
+        return false;
+    };
+    path.segments
+        .last()
+        .map(|seg| {
+            matches!(
+                seg.ident.to_string().as_str(),
+                "GeoPoint" | "LineString" | "Polygon" | "MultiPoint" | "MultiPolygon"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Detect if a field type is `GeoPoint` specifically.
+///
+/// Retained as a narrower helper for callers that need to distinguish
+/// `GeoPoint` from other geometry types (e.g. test assertions). For the
+/// common "is this any geography?" check, prefer `is_geography_field_type`.
+#[allow(dead_code)]
 fn is_geopoint_type(ty: &syn::Type) -> bool {
     let (inner, _) = unwrap_option(ty);
     let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
@@ -698,12 +751,13 @@ fn is_geography_type(ty: &syn::Type) -> bool {
 /// Compute the default `IndexType` for a field when `#[field(index)]` is
 /// present without an explicit method.
 /// - `Jsonb<T>` → `IndexType::Gin`
-/// - `GeoPoint` or `Geography<…>` → `IndexType::Gist`
+/// - Any geography type (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
+///   `MultiPolygon`) or raw `Geography<…>` wrapper → `IndexType::Gist`
 /// - Everything else → `IndexType::BTree`
 fn default_index_type(ty: &syn::Type) -> TokenStream {
     if is_jsonb_type(ty) {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gin) }
-    } else if is_geopoint_type(ty) || is_geography_type(ty) {
+    } else if is_geography_field_type(ty) || is_geography_type(ty) {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::Gist) }
     } else {
         quote! { ::std::option::Option::Some(::djogi::descriptor::IndexType::BTree) }
@@ -811,6 +865,62 @@ mod tests {
     fn test_is_geography_type_jsonb_false() {
         let ty = syn::parse_str::<syn::Type>("Jsonb<String>").unwrap();
         assert!(!is_geography_type(&ty));
+    }
+
+    // ── is_geography_field_type ───────────────────────────────────────────────
+
+    #[test]
+    fn test_is_geography_field_type_geopoint() {
+        let ty = syn::parse_str::<syn::Type>("GeoPoint").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_linestring() {
+        let ty = syn::parse_str::<syn::Type>("LineString").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_polygon() {
+        let ty = syn::parse_str::<syn::Type>("Polygon").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_multipoint() {
+        let ty = syn::parse_str::<syn::Type>("MultiPoint").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_multipolygon() {
+        let ty = syn::parse_str::<syn::Type>("MultiPolygon").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_qualified_linestring() {
+        let ty = syn::parse_str::<syn::Type>("djogi::geo::LineString").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_option_polygon() {
+        let ty = syn::parse_str::<syn::Type>("Option<Polygon>").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_option_multipolygon() {
+        let ty = syn::parse_str::<syn::Type>("Option<MultiPolygon>").unwrap();
+        assert!(is_geography_field_type(&ty));
+    }
+
+    #[test]
+    fn test_is_geography_field_type_string_false() {
+        let ty = syn::parse_str::<syn::Type>("String").unwrap();
+        assert!(!is_geography_field_type(&ty));
     }
 
     // ── is_geopoint_type ─────────────────────────────────────────────────────

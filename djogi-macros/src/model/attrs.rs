@@ -1221,15 +1221,34 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "Vec<i32>" => Some("INTEGER[]"),
         "Vec<i64>" => Some("BIGINT[]"),
         "Vec<bool>" => Some("BOOLEAN[]"),
-        // Spatial — GeoPoint maps to GEOGRAPHY(Point, 4326). The `spatial`
+        // Spatial — all GeographyValue-implementing types map to the
+        // corresponding GEOGRAPHY(<SUBTYPE>, 4326) SQL type. The `spatial`
         // feature flag lives on the `djogi` runtime crate, not here; the
-        // macro recognises the type name unconditionally so it can emit the
-        // correct descriptor regardless of feature state. If the user has
-        // the spatial feature off, the compile error comes from "unresolved
-        // type GeoPoint" at the struct definition, not from the macro.
+        // macro recognises type names unconditionally so it emits the correct
+        // descriptor regardless of feature state. If the user has the spatial
+        // feature off, the compile error comes from "unresolved type" at the
+        // struct definition, not from the macro.
+        //
+        // Path forms accepted: bare ident, `geo::T`, `djogi::T`,
+        // `djogi::geo::T`. The match strips the module prefix via the
+        // `replace(' ', "")` normalization above, so e.g. `djogi :: geo ::
+        // LineString` becomes `djogi::geo::LineString`.
         "GeoPoint" | "geo::GeoPoint" | "djogi::geo::GeoPoint" | "djogi::GeoPoint" => {
             Some("GEOGRAPHY(Point, 4326)")
         }
+        "LineString" | "geo::LineString" | "djogi::geo::LineString" | "djogi::LineString" => {
+            Some("GEOGRAPHY(LineString, 4326)")
+        }
+        "Polygon" | "geo::Polygon" | "djogi::geo::Polygon" | "djogi::Polygon" => {
+            Some("GEOGRAPHY(Polygon, 4326)")
+        }
+        "MultiPoint" | "geo::MultiPoint" | "djogi::geo::MultiPoint" | "djogi::MultiPoint" => {
+            Some("GEOGRAPHY(MultiPoint, 4326)")
+        }
+        "MultiPolygon"
+        | "geo::MultiPolygon"
+        | "djogi::geo::MultiPolygon"
+        | "djogi::MultiPolygon" => Some("GEOGRAPHY(MultiPolygon, 4326)"),
         // Option<T> is handled at call site — strip and recurse via unwrap_option
         _ if s.starts_with("Option<") => None,
         _ => None,
