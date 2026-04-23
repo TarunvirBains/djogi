@@ -1276,7 +1276,7 @@ where
     acc.push_sql("::geometry, ");
     acc.push_bind(spec.eps_degrees);
     acc.push_sql(", ");
-    acc.push_bind(spec.minpoints as i32);
+    acc.push_bind(spec.minpoints);
     acc.push_sql(") OVER () AS cluster_id");
 
     // Aggregate columns follow, decoded by alias (__djogi_agg_N).
@@ -2813,7 +2813,7 @@ mod tests {
             crate::query::field::FieldRef::<Fake, i64>::new("id").count_star();
         crate::query::grouped::GroupedAnnotatedQuerySet {
             qs: QuerySet::new(),
-            keys: crate::query::spatial_grouping::GeohashKey(String::new()),
+            keys: crate::query::spatial_grouping::GeohashKey(None),
             grouping: crate::query::grouped::GroupingMode::Plain,
             aggregates: agg,
             having: None,

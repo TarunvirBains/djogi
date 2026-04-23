@@ -1000,6 +1000,16 @@ impl<T: Model> QuerySet<T> {
     /// `minpoints` neighbours within `eps`). With the default `min_points = 1`
     /// every row is a core point of its own cluster, so noise never appears.
     ///
+    /// # Filter ordering
+    ///
+    /// SQL evaluates `WHERE` before window functions, so `.filter(...)` calls
+    /// chained *before* `cluster_by_proximity` prune points **from the DBSCAN
+    /// input** — the clustering sees only the survivors, which can produce
+    /// different cluster ids than clustering the full set and filtering
+    /// after. Use `.having(...)` (evaluated after `GROUP BY cluster_id`) when
+    /// you want to filter on aggregate output without changing which rows
+    /// participate in the clustering.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -1051,10 +1061,20 @@ impl<T: Model> QuerySet<T> {
     /// GROUP BY geohash
     /// ```
     ///
-    /// Every point maps to exactly one geohash cell, so the key is never
-    /// `NULL`. Geohash strings are prefix-ordered: a `P5` key is a prefix of
-    /// any `P6` key that falls in the same parent cell — coarser re-aggregation
-    /// is possible via string truncation without re-querying.
+    /// Geohash strings are prefix-ordered: a `P5` key is a prefix of any
+    /// `P6` key that falls in the same parent cell — coarser re-aggregation
+    /// is possible via string truncation without re-querying. Nullable
+    /// geography columns (`Option<G>`) bucket NULLs into `GeohashKey(None)`;
+    /// non-nullable columns never produce `None`.
+    ///
+    /// # Filter ordering
+    ///
+    /// SQL evaluates `WHERE` before the `ST_GeoHash` projection, so
+    /// `.filter(...)` calls chained *before* `bucket_by_cell` prune points
+    /// **from the bucketing input** — only the survivors are assigned a
+    /// geohash and aggregated. Use `.having(...)` (evaluated after
+    /// `GROUP BY geohash`) when you want to filter on aggregate output
+    /// without affecting which rows are bucketed.
     ///
     /// # Example
     ///
@@ -1087,7 +1107,7 @@ impl<T: Model> QuerySet<T> {
         };
         crate::query::grouped::GroupedQuerySet {
             qs: self,
-            keys: crate::query::spatial_grouping::GeohashKey(String::new()),
+            keys: crate::query::spatial_grouping::GeohashKey(None),
             grouping: crate::query::grouped::GroupingMode::Plain,
             spatial_source: Some(crate::query::grouped::SpatialGroupSource::Geohash(spec)),
             _k: std::marker::PhantomData,

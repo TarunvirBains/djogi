@@ -214,11 +214,18 @@ impl IntoGroupKeyTuple for crate::query::spatial_grouping::ClusterId {
         acc.push_sql("cluster_id");
     }
 
-    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
-        // The cluster SQL builder emits the full expression; this method
-        // is a fallback alias push used only on the plain grouped path,
-        // which the cluster entry point never reaches.
-        acc.push_sql("cluster_id");
+    fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
+        // Unreachable: `cluster_by_proximity` always routes through
+        // `build_cluster_grouped_select`, which emits its own
+        // `ST_ClusterDBSCAN(...) OVER () AS cluster_id` expression directly
+        // and never invokes this trait method. Panic rather than emit a bare
+        // alias so a future refactor that accidentally routes ClusterId
+        // through the plain `build_grouped_annotated_select` path fails
+        // loudly instead of producing an invalid SELECT list.
+        unreachable!(
+            "ClusterId::push_select_columns is never called — \
+             cluster_by_proximity emits its own SELECT via build_cluster_grouped_select"
+        );
     }
 
     fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
@@ -243,14 +250,25 @@ impl IntoGroupKeyTuple for crate::query::spatial_grouping::GeohashKey {
         acc.push_sql("geohash");
     }
 
-    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
-        // The geohash SQL builder emits the full `ST_GeoHash(...) AS geohash`
-        // expression; this method is the fallback for the plain grouped path.
-        acc.push_sql("geohash");
+    fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
+        // Unreachable: `bucket_by_cell` always routes through
+        // `build_geohash_grouped_select`, which emits its own
+        // `ST_GeoHash(...) AS geohash` expression directly and never invokes
+        // this trait method. Panic rather than emit a bare alias so a future
+        // refactor that accidentally routes GeohashKey through the plain
+        // grouped path fails loudly instead of producing an invalid SELECT.
+        unreachable!(
+            "GeohashKey::push_select_columns is never called — \
+             bucket_by_cell emits its own SELECT via build_geohash_grouped_select"
+        );
     }
 
     fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-        let hash: String = row.try_get::<_, String>(0)?;
+        // `ST_GeoHash(NULL::geometry, _)` returns NULL, so we decode as
+        // Option<String>. Non-nullable geography columns never produce
+        // `None`; nullable (`Option<G>`) ones bucket NULLs into
+        // `GeohashKey(None)`.
+        let hash: Option<String> = row.try_get::<_, Option<String>>(0)?;
         Ok(crate::query::spatial_grouping::GeohashKey(hash))
     }
 }

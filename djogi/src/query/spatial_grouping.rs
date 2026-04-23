@@ -115,15 +115,21 @@ pub struct ClusterRadius {
     /// DBSCAN `eps` parameter in degrees (computed from meters at construction).
     pub(crate) eps_degrees: f64,
     /// DBSCAN `minpoints` parameter. Default `1`.
-    pub(crate) minpoints: u32,
+    ///
+    /// Typed as `i32` to match the PostGIS `ST_ClusterDBSCAN(geometry, float8,
+    /// integer)` signature directly — no cast, no silent wrap on overflow.
+    pub(crate) minpoints: i32,
 }
 
 impl ClusterRadius {
     /// Build a `ClusterRadius` from a distance in **metres**.
     ///
-    /// Converts using the equatorial approximation: 1 degree ≈ 111 320 m.
-    /// For high-latitude use cases, prefer [`ClusterRadius::degrees`] with a
-    /// precomputed value.
+    /// Converts using the equatorial approximation `1 degree ≈ 111 320 m`,
+    /// derived from `(2 · π · R_earth) / 360` with the WGS84 equatorial radius
+    /// `R_earth = 6 378 137 m`. Accuracy degrades with latitude — at 60° the
+    /// longitudinal degree is only ~55 660 m. For high-latitude datasets or
+    /// when exact metre semantics matter, prefer [`ClusterRadius::degrees`]
+    /// with a precomputed value.
     pub fn meters(m: f64) -> Self {
         const METERS_PER_DEGREE: f64 = 111_320.0;
         Self {
@@ -147,7 +153,11 @@ impl ClusterRadius {
     ///
     /// Points with fewer than `n` neighbours within `eps` are *noise*
     /// (`ClusterId(None)`). Default is `1`.
-    pub fn min_points(mut self, n: u32) -> Self {
+    ///
+    /// Typed as `i32` to match `ST_ClusterDBSCAN`'s `integer` parameter —
+    /// passing a negative or zero value makes PostGIS reject the query at
+    /// execution time.
+    pub fn min_points(mut self, n: i32) -> Self {
         self.minpoints = n;
         self
     }
@@ -247,9 +257,16 @@ pub struct ClusterId(pub Option<i32>);
 
 /// Group key produced by [`QuerySet::bucket_by_cell`].
 ///
-/// Holds the geohash string at the chosen [`GeohashPrecision`].  Every point
-/// maps to exactly one geohash cell, so `GeohashKey` is always `Some` — there
-/// is no noise bucket.
+/// Holds the geohash string at the chosen [`GeohashPrecision`], wrapped in
+/// `Option` for symmetry with [`ClusterId`] and to handle the NULL case:
+///
+/// - `GeohashKey(Some(h))` — the row's geography column had a value, and
+///   `ST_GeoHash` produced the geohash string `h`.
+/// - `GeohashKey(None)` — the row's geography column was SQL `NULL`
+///   (`Option<G>` field). `ST_GeoHash(NULL, _)` returns `NULL`, and these
+///   rows land in a single `None` bucket.
+///
+/// Non-nullable geography columns (no `Option<G>`) never produce `None`.
 ///
 /// # Interpreting the key
 ///
@@ -267,11 +284,14 @@ pub struct ClusterId(pub Option<i32>);
 ///     .fetch_all(&mut ctx).await?;
 ///
 /// for (key, count) in &buckets {
-///     println!("{}: {} stores", key.0, count);
+///     match &key.0 {
+///         Some(h) => println!("{h}: {count} stores"),
+///         None => println!("(no location): {count} stores"),
+///     }
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub struct GeohashKey(pub String);
+pub struct GeohashKey(pub Option<String>);
 
 // ── ClusterSpec / GeohashSpec ─────────────────────────────────────────────────
 
@@ -287,8 +307,8 @@ pub(crate) struct ClusterSpec {
     pub(crate) t_geo_col: &'static str,
     /// DBSCAN radius in degrees.
     pub(crate) eps_degrees: f64,
-    /// DBSCAN `minpoints` parameter.
-    pub(crate) minpoints: u32,
+    /// DBSCAN `minpoints` parameter — matches PostGIS `integer` signature.
+    pub(crate) minpoints: i32,
 }
 
 /// Internal parameters captured at `bucket_by_cell` call time.
@@ -466,12 +486,17 @@ mod tests {
         assert_bound::<ClusterId>();
     }
 
+    /// `ClusterId::push_select_columns` is a load-bearing `unreachable!`:
+    /// `cluster_by_proximity` always routes through `build_cluster_grouped_select`,
+    /// which emits its own SELECT expression. This test asserts the panic
+    /// fires so a future refactor that accidentally hits the plain grouped
+    /// path cannot silently emit an invalid bare alias.
     #[test]
-    fn cluster_id_push_select_emits_alias() {
+    #[should_panic(expected = "ClusterId::push_select_columns is never called")]
+    fn cluster_id_push_select_panics_because_unreachable() {
         let key = ClusterId(None);
         let mut acc = SqlAccumulator::new("");
         key.push_select_columns(&mut acc);
-        assert_eq!(acc.sql(), "cluster_id");
     }
 
     #[test]
@@ -490,17 +515,22 @@ mod tests {
         assert_bound::<GeohashKey>();
     }
 
+    /// `GeohashKey::push_select_columns` is a load-bearing `unreachable!`:
+    /// `bucket_by_cell` always routes through `build_geohash_grouped_select`,
+    /// which emits its own SELECT expression. This test asserts the panic
+    /// fires so a future refactor that accidentally hits the plain grouped
+    /// path cannot silently emit an invalid bare alias.
     #[test]
-    fn geohash_key_push_select_emits_alias() {
-        let key = GeohashKey(String::new());
+    #[should_panic(expected = "GeohashKey::push_select_columns is never called")]
+    fn geohash_key_push_select_panics_because_unreachable() {
+        let key = GeohashKey(None);
         let mut acc = SqlAccumulator::new("");
         key.push_select_columns(&mut acc);
-        assert_eq!(acc.sql(), "geohash");
     }
 
     #[test]
     fn geohash_key_push_group_by_emits_alias() {
-        let key = GeohashKey(String::new());
+        let key = GeohashKey(None);
         let mut acc = SqlAccumulator::new("");
         key.push_group_by_columns(&mut acc);
         assert_eq!(acc.sql(), "geohash");
