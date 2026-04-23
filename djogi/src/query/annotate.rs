@@ -103,6 +103,15 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// every push here begins with a comma.
     fn push_columns(&self, acc: &mut SqlAccumulator);
 
+    /// Push the aggregate SELECT-list columns onto `acc` without the
+    /// `OVER ()` window-function wrap, each aliased as `__djogi_agg_{N}`.
+    ///
+    /// Used by `build_grouped_annotated_select` — a `GROUP BY` query must
+    /// not use window functions in the SELECT list for its aggregate columns.
+    /// Every push here begins with a comma; callers already pushed the key
+    /// columns as the leading SELECT columns.
+    fn push_columns_bare(&self, acc: &mut SqlAccumulator);
+
     /// Decode the aggregate columns from `row` into [`Self::Decoded`].
     ///
     /// The aliases are fixed (`__djogi_agg_0`, `__djogi_agg_1`, ...)
@@ -135,6 +144,12 @@ where
     fn push_columns(&self, acc: &mut SqlAccumulator) {
         acc.push_sql(", ");
         emit_aggregate_with_window_and_cast(acc, &self.node);
+        acc.push_sql(" AS __djogi_agg_0");
+    }
+
+    fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql(", ");
+        crate::query::sql::emit_aggregate_with_cast(acc, &self.node);
         acc.push_sql(" AS __djogi_agg_0");
     }
 
@@ -174,6 +189,14 @@ macro_rules! impl_into_aggregate_tuple {
                 $(
                     acc.push_sql(", ");
                     emit_aggregate_with_window_and_cast(acc, &self.$slot.node);
+                    acc.push_sql(concat!(" AS ", $alias));
+                )+
+            }
+
+            fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
+                $(
+                    acc.push_sql(", ");
+                    crate::query::sql::emit_aggregate_with_cast(acc, &self.$slot.node);
                     acc.push_sql(concat!(" AS ", $alias));
                 )+
             }

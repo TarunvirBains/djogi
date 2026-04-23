@@ -976,6 +976,98 @@ where
     acc
 }
 
+/// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys
+/// [HAVING ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the terminal for
+/// [`crate::query::grouped::GroupedAnnotatedQuerySet::fetch_all`].
+///
+/// # SELECT list layout
+///
+/// Keys MUST be emitted first and in `push_group_by_columns` order —
+/// `K::decode_tuple` reads positionally (ordinals 0..N_keys). Aggregate
+/// columns follow, decoded by alias (`__djogi_agg_N`). If the key/aggregate
+/// order in the SELECT list ever changes, key decoding will silently read the
+/// wrong columns.
+///
+/// # Why `push_columns_bare` not `push_columns`
+///
+/// `IntoAggregateTuple::push_columns` wraps each aggregate in `OVER ()` for
+/// the `annotate`-on-ungrouped path. A `GROUP BY` query must not use window
+/// functions in the SELECT list for its aggregate columns — Postgres would
+/// reject the combination. `push_columns_bare` emits the aggregate with only
+/// the narrowing cast but no window frame.
+pub(crate) fn build_grouped_annotated_select<T, K, A>(
+    gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
+) -> SqlAccumulator
+where
+    T: Model,
+    K: crate::query::grouped::IntoGroupKeyTuple,
+    A: crate::query::annotate::IntoAggregateTuple,
+{
+    let mut acc = SqlAccumulator::new("SELECT ");
+    gaq.keys.push_select_columns(&mut acc);
+    gaq.aggregates.push_columns_bare(&mut acc);
+
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+
+    // WHERE from the upstream queryset (filters set before .group_by)
+    push_where(&mut acc, &gaq.qs);
+
+    // GROUP BY
+    acc.push_sql(" GROUP BY ");
+    match gaq.grouping {
+        crate::query::grouped::GroupingMode::Plain => {
+            gaq.keys.push_group_by_columns(&mut acc);
+        }
+        crate::query::grouped::GroupingMode::Rollup => {
+            acc.push_sql("ROLLUP (");
+            gaq.keys.push_group_by_columns(&mut acc);
+            acc.push_sql(")");
+        }
+        crate::query::grouped::GroupingMode::Cube => {
+            acc.push_sql("CUBE (");
+            gaq.keys.push_group_by_columns(&mut acc);
+            acc.push_sql(")");
+        }
+        #[allow(unreachable_patterns)]
+        _ => {
+            // Forward-compat arm for `#[non_exhaustive]` variants added in
+            // future tasks (e.g. `Sets` in T2). Fall back to plain GROUP BY.
+            gaq.keys.push_group_by_columns(&mut acc);
+        }
+    }
+
+    // HAVING
+    if let Some(h) = &gaq.having {
+        acc.push_sql(" HAVING ");
+        crate::expr::sql::emit_expr(&mut acc, h);
+    }
+
+    // ORDER BY
+    if !gaq.order.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in gaq.order.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(&mut acc, None);
+        }
+    }
+
+    // LIMIT / OFFSET
+    if let Some(n) = gaq.limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n as i64);
+    }
+    if let Some(n) = gaq.offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n as i64);
+    }
+
+    acc
+}
+
 /// Build `SELECT COUNT(*) FROM <table> [WHERE ...]`, honoring
 /// [`DistinctMode`].
 ///
