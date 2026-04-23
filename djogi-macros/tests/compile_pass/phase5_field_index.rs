@@ -1,4 +1,5 @@
 use djogi::prelude::*;
+use serde_json::Value;
 
 // Note: the is_jsonb_type and is_geography_type last-segment detection is
 // fully covered by unit tests in djogi-macros/src/model/descriptor.rs:tests,
@@ -13,11 +14,16 @@ pub struct WithBTree {
     pub name: String,
 }
 
+// Phase 7-Zero v3 T2 Q4: `#[field(index = "gin")]` is type-gated — the
+// field type must be one of `Jsonb<T>`, `Vec<T>`, or `tsvector`. An
+// earlier revision of this fixture put gin on a `String` column, which
+// the new field-coherence validation rejects. `Jsonb<Value>` exercises
+// the canonical accepted form.
 #[model(table = "test_gin")]
 #[derive(Debug, Clone)]
 pub struct WithGin {
     #[field(index = "gin")]
-    pub data: String,
+    pub data: Jsonb<Value>,
 }
 
 #[model(table = "test_gist")]

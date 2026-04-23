@@ -969,6 +969,26 @@ impl FieldAttrs {
             "lazy",
             "version", // Task 3 — optimistic lock version counter
         ];
+        // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
+        // out of scope at the field level. The feature lives on the model-
+        // level `#[model(indexes(unique(...)))]` grammar where the full
+        // opclass / predicate / multi-column surface is available. Catching
+        // the key here (before the generic "unknown field attribute"
+        // rejection below) lets the error point users directly at the
+        // fixing syntax rather than making them hunt.
+        let field_name_for_redirect = field
+            .ident
+            .as_ref()
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "<anonymous>".to_string());
+        let nulls_not_distinct_redirect = format!(
+            "`#[field(unique, nulls_not_distinct = true)]` on `{field_name_for_redirect}`: \
+             `nulls_not_distinct` is only supported at the model level. Move `{field_name_for_redirect}` \
+             into a model-level unique index: \
+             `#[model(indexes(unique(fields = [{field_name_for_redirect}], nulls_not_distinct = true)))]`."
+        );
+        let field_level_redirects: &[(&str, &str)] =
+            &[("nulls_not_distinct", nulls_not_distinct_redirect.as_str())];
         for attr in &field.attrs {
             if !attr.path().is_ident("field") {
                 continue;
@@ -983,16 +1003,71 @@ impl FieldAttrs {
                     Meta::NameValue(nv) => nv.path.get_ident().map(|i| i.to_string()),
                     _ => None,
                 };
-                if let Some(key) = key
-                    .as_ref()
-                    .filter(|k| !VALID_FIELD_KEYS.contains(&k.as_str()))
-                {
-                    return Err(syn::Error::new_spanned(
-                        nested,
-                        format!("unknown field attribute: `{key}`"),
-                    ));
+                if let Some(key_str) = key.as_ref() {
+                    // Phase 7-Zero T2 redirects take priority over the
+                    // generic "unknown field attribute" rejection so the
+                    // error actively guides the user toward the right
+                    // syntax.
+                    if let Some((_, message)) = field_level_redirects
+                        .iter()
+                        .find(|(k, _)| *k == key_str.as_str())
+                    {
+                        return Err(syn::Error::new_spanned(nested, message.to_string()));
+                    }
+                    if !VALID_FIELD_KEYS.contains(&key_str.as_str()) {
+                        return Err(syn::Error::new_spanned(
+                            nested,
+                            format!("unknown field attribute: `{key_str}`"),
+                        ));
+                    }
                 }
             }
+        }
+
+        // Phase 7-Zero v3 T2 Q3 — hash indexes cannot enforce uniqueness.
+        // Postgres hash indexes store only the hash of the key, so they
+        // physically cannot support `UNIQUE`; Postgres itself errors out
+        // on `CREATE UNIQUE INDEX ... USING HASH(...)`. Catching it at the
+        // declaration gives the user a span-precise error pointing at the
+        // field rather than at a migration failure much later.
+        if attrs.unique && attrs.index_method.as_deref() == Some("hash") {
+            let field_name = field
+                .ident
+                .as_ref()
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "<anonymous>".to_string());
+            let span = find_named_str_lit_span(field, "index").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "`#[field(index = \"hash\", unique)]` on `{field_name}`: hash indexes \
+                     cannot enforce uniqueness. Use `index = \"btree\"` with `unique`, or \
+                     drop `unique` if a non-unique hash lookup index is what you want."
+                ),
+            ));
+        }
+
+        // Phase 7-Zero v3 T2 Q4 — `#[field(index = "gin")]` is type-gated.
+        // Accepted on `Jsonb<T>`, `Vec<T>` (Postgres array columns), and the
+        // FTS `TsVector` column. Anything else must declare the index via
+        // the model-level `#[model(indexes(...))]` syntax, where the opclass
+        // can be named (`text_pattern_ops`, `gin_trgm_ops`, etc.).
+        if attrs.index_method.as_deref() == Some("gin") && !is_gin_compatible_type(&attrs.ty) {
+            let field_name = field
+                .ident
+                .as_ref()
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "<anonymous>".to_string());
+            let span = find_named_str_lit_span(field, "index").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "`#[field(index = \"gin\")]` on `{field_name}`: GIN indexes at the field \
+                     level are only valid on `Jsonb<T>`, `Vec<T>`, and `TsVector`. For other \
+                     types, declare the index at the model level: \
+                     `#[model(indexes(index(fields = [{field_name}], using = \"gin\", opclass = \"...\")))]`."
+                ),
+            ));
         }
 
         if let Some(on_delete) = &attrs.on_delete {
@@ -1158,6 +1233,25 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
             ),
         )),
     }
+}
+
+/// `true` when `ty` is an accepted target for `#[field(index = "gin")]` —
+/// i.e. `Jsonb<T>`, `Vec<T>`, or `TsVector`, unwrapping one layer of
+/// `Option<…>` so nullable columns are accepted too.
+///
+/// Uses last-segment name matching so bare idents, `djogi::Jsonb<T>`,
+/// `djogi::fts::TsVector`, and similar qualified forms all resolve. Phase
+/// 7-Zero v3 T2 Q4 codifies this set; anything outside it must declare
+/// the index at the model level where opclass can be specified.
+fn is_gin_compatible_type(ty: &syn::Type) -> bool {
+    let (inner, _) = unwrap_option(ty);
+    let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
+        return false;
+    };
+    path.segments
+        .last()
+        .map(|seg| matches!(seg.ident.to_string().as_str(), "Jsonb" | "Vec" | "TsVector"))
+        .unwrap_or(false)
 }
 
 /// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
