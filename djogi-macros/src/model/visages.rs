@@ -270,6 +270,12 @@ fn framework_field_decls(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
         PkStrategy::RanjId => {
             out.push(quote! { pub id: ::djogi::types::RanjId, });
         }
+        PkStrategy::HeerIdDesc => {
+            out.push(quote! { pub id: ::djogi::types::HeerIdDesc, });
+        }
+        PkStrategy::RanjIdDesc => {
+            out.push(quote! { pub id: ::djogi::types::RanjIdDesc, });
+        }
         PkStrategy::Serial => {
             out.push(quote! { pub id: i32, });
         }

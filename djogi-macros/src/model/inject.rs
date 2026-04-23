@@ -152,6 +152,8 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
     let id_field: Option<syn::Field> = match model_attrs.pk {
         PkStrategy::HeerId => Some(parse_quote! { pub id: ::djogi::types::HeerId }),
         PkStrategy::RanjId => Some(parse_quote! { pub id: ::djogi::types::RanjId }),
+        PkStrategy::HeerIdDesc => Some(parse_quote! { pub id: ::djogi::types::HeerIdDesc }),
+        PkStrategy::RanjIdDesc => Some(parse_quote! { pub id: ::djogi::types::RanjIdDesc }),
         PkStrategy::Serial => Some(parse_quote! { pub id: i32 }),
         PkStrategy::None => None,
     };
@@ -214,6 +216,8 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
     let id_part = match model_attrs.pk {
         PkStrategy::HeerId => quote! { id: ::djogi::types::__heerid_default(), },
         PkStrategy::RanjId => quote! { id: ::djogi::types::__ranjid_default(), },
+        PkStrategy::HeerIdDesc => quote! { id: ::djogi::types::__heerid_desc_default(), },
+        PkStrategy::RanjIdDesc => quote! { id: ::djogi::types::__ranjid_desc_default(), },
         PkStrategy::Serial => quote! { id: 0i32, },
         PkStrategy::None => quote! {},
     };

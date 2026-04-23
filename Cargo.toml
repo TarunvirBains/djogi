@@ -29,12 +29,13 @@ indexmap = { version = "2", features = ["serde"] }
 deadpool-postgres = "0.14"
 bytes = "1"
 
-# HeeRanjId — 0.2.1 adds `heeranjid::postgres_schema::install_schema` and
-# `seed_default_node` async helpers (gated on the `postgres` feature), plus
-# SQL constants (`INSTALL_SQL`, `SEED_SQL`, etc.). The `postgres` feature
-# enables `postgres_types::ToSql`/`FromSql` impls for `HeerId` (BIGINT) and
-# `RanjId` (UUID).
-heeranjid = { version = "0.2.1", features = ["postgres"] }
+# HeeRanjId — 0.3 adds the `HeerIdDesc` and `RanjIdDesc` reverse-chronological
+# ID siblings consumed by Phase 7-Zero (`pk = "heerid_desc"` /
+# `pk = "ranjid_desc"`). The 0.2 helpers (`install_schema`, `seed_default_node`,
+# SQL constants, `postgres_types::ToSql`/`FromSql` impls for `HeerId` /
+# `RanjId`) are preserved; the `postgres` feature additionally covers the
+# new *Desc types.
+heeranjid = { version = "0.3", features = ["postgres"] }
 
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }

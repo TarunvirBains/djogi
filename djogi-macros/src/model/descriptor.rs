@@ -37,6 +37,8 @@ pub fn expand(
     let pk_type_tokens = match model_attrs.pk {
         PkStrategy::HeerId => quote! { ::djogi::PkType::HeerId },
         PkStrategy::RanjId => quote! { ::djogi::PkType::RanjId },
+        PkStrategy::HeerIdDesc => quote! { ::djogi::PkType::HeerIdDesc },
+        PkStrategy::RanjIdDesc => quote! { ::djogi::PkType::RanjIdDesc },
         PkStrategy::Serial => quote! { ::djogi::PkType::Serial },
         PkStrategy::None => quote! { ::djogi::PkType::None },
     };
@@ -91,6 +93,58 @@ pub fn expand(
             }
         }),
         PkStrategy::RanjId => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::Uuid,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[
+                    ("admin", "id"),
+                    ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
+                ],
+            }
+        }),
+        // HeerIdDesc / RanjIdDesc share the same descriptor shape as their
+        // ascending siblings — the stored column type (BIGINT / UUID) does
+        // not change. The PK-type flip lives on `ModelDescriptor::pk_type`
+        // and is consumed by Phase 7's migration differ.
+        PkStrategy::HeerIdDesc => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::BigInt,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[
+                    ("admin", "id"),
+                    ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
+                ],
+            }
+        }),
+        PkStrategy::RanjIdDesc => Some(quote! {
             ::djogi::FieldDescriptor {
                 name: "id",
                 sql_type: ::djogi::FieldSqlType::Uuid,
@@ -384,21 +438,20 @@ pub fn expand(
     //
     // For every user field whose Rust type is any `GeographyValue`-implementing
     // geometry (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
-    // `MultiPolygon`), emit one `IndexSpec` entry with:
-    //   - name:       "<table>_<column>_gix"
-    //   - columns:    &["<column>"]
-    //   - unique:     false
-    //   - index_type: IndexType::Gist
+    // `MultiPolygon`), emit one `IndexSpec` entry. Phase 7-Zero v3 widened the
+    // IndexSpec shape — the column list is now `IndexTarget::Columns(&[
+    // IndexColumnSpec::simple(...)])`, the `unique: bool` flag is now
+    // `kind: IndexKind::NonUnique`, and three new optional fields (`predicate`,
+    // `include`, `nulls_not_distinct`) default to benign values. No behavior
+    // change: the emitted DDL under the Phase 7 differ is still
+    // `CREATE INDEX CONCURRENTLY ... USING gist ("<col>")` after the
+    // `CREATE EXTENSION IF NOT EXISTS postgis` guard.
     //
     // The names are baked in as `'static str` string literals — they are
     // compile-time constants derived from the model attrs and field names.
     // No `Box::leak` is needed because the entire `inventory::submit!` block
     // is emitted as a single `static` initialiser; all nested `&[...]` slices
     // are literal arrays with `'static` lifetimes.
-    //
-    // `requires_out_of_transaction` and `extension_dependency` are the
-    // T5-added `IndexSpec` fields that carry GiST-on-PostGIS migration
-    // policy forward to Phase 7 without relying on type-name inference.
     let geography_index_specs: Vec<TokenStream> = user_fields
         .iter()
         .filter(|(field, _fa)| is_geography_field_type(&field.ty))
@@ -411,9 +464,14 @@ pub fn expand(
             quote! {
                 ::djogi::descriptor::IndexSpec {
                     name: #index_name,
-                    columns: &[#col_str],
-                    unique: false,
+                    target: ::djogi::descriptor::IndexTarget::Columns(&[
+                        ::djogi::descriptor::IndexColumnSpec::simple(#col_str),
+                    ]),
+                    kind: ::djogi::descriptor::IndexKind::NonUnique,
                     index_type: ::djogi::descriptor::IndexType::Gist,
+                    predicate: ::std::option::Option::None,
+                    include: &[],
+                    nulls_not_distinct: false,
                     requires_out_of_transaction: true,
                     extension_dependency: ::std::option::Option::Some("postgis"),
                 }

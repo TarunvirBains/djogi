@@ -11,7 +11,7 @@
 //! fields on the input struct, so these sentinel values never reach the
 //! database — they exist solely so `..Default::default()` works at call sites.
 
-pub use heeranjid::{HeerId, RanjId, RanjPrecision};
+pub use heeranjid::{HeerId, HeerIdDesc, RanjId, RanjIdDesc, RanjPrecision};
 
 /// `TIMESTAMPTZ` — alias for `time::OffsetDateTime`.
 pub type DateTime = time::OffsetDateTime;
@@ -48,4 +48,26 @@ pub fn __heerid_default() -> HeerId {
 pub fn __ranjid_default() -> RanjId {
     RanjId::new(0, RanjPrecision::Microseconds, 0, 0)
         .expect("RanjId with all-zero components is always valid as a sentinel")
+}
+
+/// Sentinel zero value for `HeerIdDesc` `Default` impls.
+///
+/// Analogous to [`__heerid_default`]: `HeerIdDesc::from_i64(0)` is always
+/// valid (the Desc XOR mask is applied over a non-negative logical
+/// component-tuple, not the stored bit pattern) and the value never reaches
+/// the database — `create()` overwrites it via `RETURNING id`.
+#[doc(hidden)]
+pub fn __heerid_desc_default() -> HeerIdDesc {
+    HeerIdDesc::new(0, 0, 0).expect("HeerIdDesc(0,0,0) is always valid as a sentinel")
+}
+
+/// Sentinel value for `RanjIdDesc` `Default` impls.
+///
+/// Mirrors [`__ranjid_default`]: minimum valid RanjIdDesc — all-zero logical
+/// components at microsecond precision. The value never reaches the
+/// database; `create()` overwrites it via `RETURNING id`.
+#[doc(hidden)]
+pub fn __ranjid_desc_default() -> RanjIdDesc {
+    RanjIdDesc::new(0, RanjPrecision::Microseconds, 0, 0)
+        .expect("RanjIdDesc with all-zero components is always valid as a sentinel")
 }

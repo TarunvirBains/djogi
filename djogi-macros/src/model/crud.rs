@@ -172,6 +172,8 @@ pub fn expand(
     let (pk_type_tokens, pk_value_body) = match model_attrs.pk {
         PkStrategy::HeerId => (quote! { ::djogi::types::HeerId }, quote! { &self.id }),
         PkStrategy::RanjId => (quote! { ::djogi::types::RanjId }, quote! { &self.id }),
+        PkStrategy::HeerIdDesc => (quote! { ::djogi::types::HeerIdDesc }, quote! { &self.id }),
+        PkStrategy::RanjIdDesc => (quote! { ::djogi::types::RanjIdDesc }, quote! { &self.id }),
         PkStrategy::Serial => (quote! { i32 }, quote! { &self.id }),
         PkStrategy::None => unreachable!("handled by early return"),
     };
@@ -415,13 +417,11 @@ pub fn expand(
     let get_sql = format!("SELECT {column_list} FROM {table} WHERE id = $1");
 
     let id_param_for_get = match model_attrs.pk {
-        PkStrategy::HeerId => {
-            quote! { &id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::RanjId => {
-            quote! { &id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::Serial => {
+        PkStrategy::HeerId
+        | PkStrategy::RanjId
+        | PkStrategy::HeerIdDesc
+        | PkStrategy::RanjIdDesc
+        | PkStrategy::Serial => {
             quote! { &id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
         }
         PkStrategy::None => unreachable!("handled by early return"),
@@ -432,13 +432,11 @@ pub fn expand(
     // Like save, RPITIT captures `&self` so no pre-capture clone is needed.
     // -------------------------------------------------------------------------
     let refresh_id_param = match model_attrs.pk {
-        PkStrategy::HeerId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::RanjId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::Serial => {
+        PkStrategy::HeerId
+        | PkStrategy::RanjId
+        | PkStrategy::HeerIdDesc
+        | PkStrategy::RanjIdDesc
+        | PkStrategy::Serial => {
             quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
         }
         PkStrategy::None => unreachable!("handled by early return"),
@@ -450,13 +448,11 @@ pub fn expand(
     let delete_sql = format!("DELETE FROM {table} WHERE id = $1");
 
     let owned_pk_param = match model_attrs.pk {
-        PkStrategy::HeerId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::RanjId => {
-            quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
-        }
-        PkStrategy::Serial => {
+        PkStrategy::HeerId
+        | PkStrategy::RanjId
+        | PkStrategy::HeerIdDesc
+        | PkStrategy::RanjIdDesc
+        | PkStrategy::Serial => {
             quote! { &self.id as &(dyn ::djogi::__private::postgres_types::ToSql + Sync) }
         }
         PkStrategy::None => unreachable!("handled by early return"),
@@ -1196,7 +1192,9 @@ pub fn expand(
         // HeerId needs `.as_i64()` to encode as BIGINT; RanjId and i32 bind as-is.
         let pk_bind_for_upsert = match model_attrs.pk {
             PkStrategy::HeerId => quote! { __acc.push_bind(row.id.as_i64()); },
+            PkStrategy::HeerIdDesc => quote! { __acc.push_bind(row.id.as_i64()); },
             PkStrategy::RanjId => quote! { __acc.push_bind(row.id); },
+            PkStrategy::RanjIdDesc => quote! { __acc.push_bind(row.id); },
             PkStrategy::Serial => quote! { __acc.push_bind(row.id); },
             PkStrategy::None => unreachable!("handled by early return"),
         };
@@ -1696,7 +1694,9 @@ pub fn expand(
             let insecure_upsert_per_row_binds: TokenStream = {
                 let pk_bind = match model_attrs.pk {
                     PkStrategy::HeerId => quote! { __acc.push_bind(row.id.as_i64()); },
+                    PkStrategy::HeerIdDesc => quote! { __acc.push_bind(row.id.as_i64()); },
                     PkStrategy::RanjId => quote! { __acc.push_bind(row.id); },
+                    PkStrategy::RanjIdDesc => quote! { __acc.push_bind(row.id); },
                     PkStrategy::Serial => quote! { __acc.push_bind(row.id); },
                     PkStrategy::None => unreachable!("handled by early return"),
                 };

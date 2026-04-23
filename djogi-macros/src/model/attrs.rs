@@ -145,6 +145,14 @@ pub struct ModelAttrs {
 pub enum PkStrategy {
     HeerId,
     RanjId,
+    /// `pk = "heerid_desc"` — reverse-chronological HeerId variant added in
+    /// Phase 7-Zero v3. Lowers to `PkType::HeerIdDesc`; injects `id:
+    /// HeerIdDesc` into the struct.
+    HeerIdDesc,
+    /// `pk = "ranjid_desc"` — reverse-chronological RanjId variant added in
+    /// Phase 7-Zero v3. Lowers to `PkType::RanjIdDesc`; injects `id:
+    /// RanjIdDesc` into the struct.
+    RanjIdDesc,
     Serial,
     None,
 }
@@ -341,10 +349,13 @@ impl PkStrategy {
         match s {
             "heerid" => Ok(PkStrategy::HeerId),
             "ranjid" => Ok(PkStrategy::RanjId),
+            "heerid_desc" => Ok(PkStrategy::HeerIdDesc),
+            "ranjid_desc" => Ok(PkStrategy::RanjIdDesc),
             "serial" => Ok(PkStrategy::Serial),
             "none" => Ok(PkStrategy::None),
             other => Err(format!(
-                "unknown pk strategy `{other}`; expected one of: heerid, ranjid, serial, none"
+                "unknown pk strategy `{other}`; expected one of: heerid, ranjid, \
+                 heerid_desc, ranjid_desc, serial, none"
             )),
         }
     }
