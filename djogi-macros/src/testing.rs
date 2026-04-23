@@ -107,6 +107,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_name = &func.sig.ident;
     let fn_body = &func.block;
     let fn_vis = &func.vis;
+    // Propagate outer attributes (e.g. `#[ignore]`, `#[should_panic]`,
+    // rustdoc comments) onto the generated `#[::tokio::test]` wrapper so
+    // user-space test modifiers behave as they would on a plain tokio test.
+    // Without this forwarding the macro silently drops `#[ignore]`, causing
+    // blocked tests to run and fail instead of being skipped.
+    let fn_attrs = &func.attrs;
 
     // Generate a private inner async fn containing the original test body.
     // The wrapper calls this inner fn via catch_unwind so teardown always runs.
@@ -119,6 +125,7 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     let extensions_slice = quote! { &[ #( #extensions ),* ] as &[&str] };
 
     quote! {
+        #( #fn_attrs )*
         #[::tokio::test]
         #fn_vis async fn #fn_name() {
             use ::djogi::__private::futures::FutureExt as _;

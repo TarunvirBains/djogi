@@ -163,3 +163,8 @@ harness = true
 name = "phase6_5_aggregates"
 path = "../tests/integration/phase6_5_aggregates.rs"
 harness = true
+
+[[test]]
+name = "phase6_5_spatial_polish"
+path = "../tests/integration/phase6_5_spatial_polish.rs"
+harness = true
