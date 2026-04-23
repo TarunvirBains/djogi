@@ -583,6 +583,22 @@ pub struct LoweringCtx<'a> {
     pub reserved_generated_names: &'a [String],
 }
 
+/// Whether a `unique(...)` declaration carries any feature that
+/// `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE` cannot express — in
+/// which case the macro escalates the kind to `UniqueIndex`
+/// (plan §6.2 + §6.4). Shared by [`emit_index_spec_tokens`] (which
+/// selects the `IndexKind` token) and [`generate_index_name`] (which
+/// selects the name stem); they **must** agree or the emitted
+/// `IndexSpec` would carry a constraint-shaped name against an
+/// index-shaped kind (or vice versa).
+fn forces_unique_index(body: &IndexDeclBody) -> bool {
+    body.predicate.is_some()
+        || body.nulls_not_distinct
+        || matches!(body.target, IndexDeclTarget::Expr(_))
+        || !body.include.is_empty()
+        || body.concurrently
+}
+
 /// Lower a parsed decl into an `IndexSpec` struct-literal token stream +
 /// the generated index name (used for alphabetising emission).
 pub fn emit_index_spec_tokens(
@@ -596,14 +612,9 @@ pub fn emit_index_spec_tokens(
 
     // Resolve IndexKind. Unique + any unique-index-only feature
     // (partial/NND/expression/covering/concurrent) forces `UniqueIndex`.
-    // Plain unique lowers to `UniqueConstraint`. `concurrently = true`
-    // is in this list because `ALTER TABLE ... ADD CONSTRAINT ... UNIQUE`
-    // has no `CONCURRENTLY` form (plan §6.2).
-    let forces_unique_index = body.predicate.is_some()
-        || body.nulls_not_distinct
-        || matches!(body.target, IndexDeclTarget::Expr(_))
-        || !body.include.is_empty()
-        || body.concurrently;
+    // Plain unique lowers to `UniqueConstraint`. See `forces_unique_index`
+    // for the shared escalation predicate.
+    let forces_unique_index = forces_unique_index(body);
     let kind_tokens = if decl.is_unique {
         if forces_unique_index {
             quote! { ::djogi::descriptor::IndexKind::UniqueIndex }
@@ -915,16 +926,12 @@ fn validate_index_name_shape(s: &str, span: Span) -> syn::Result<()> {
 fn generate_index_name(decl: &ModelIndexDecl, ctx: &LoweringCtx<'_>) -> String {
     let table = ctx.table_name;
     let body = &decl.body;
-    let stem = match decl.is_unique {
-        true if body.predicate.is_some()
-            || body.nulls_not_distinct
-            || matches!(body.target, IndexDeclTarget::Expr(_))
-            || !body.include.is_empty() =>
-        {
-            "uidx"
-        }
-        true => "key",
-        false => "idx",
+    let stem = if !decl.is_unique {
+        "idx"
+    } else if forces_unique_index(body) {
+        "uidx"
+    } else {
+        "key"
     };
     let body_text = match &body.target {
         IndexDeclTarget::Fields(fs) => {
@@ -1254,7 +1261,10 @@ mod tests {
     /// Plan §6.2: `unique(..., concurrently = true)` escalates to
     /// `UniqueIndex` because `ALTER TABLE ADD CONSTRAINT ... UNIQUE`
     /// has no `CONCURRENTLY` form — emitting `UniqueConstraint` +
-    /// non-transactional would generate invalid DDL.
+    /// non-transactional would generate invalid DDL. The name stem
+    /// has to escalate with the kind — a `_key` stem against a
+    /// `UniqueIndex` kind would mean the migration emitter names a
+    /// unique index after the constraint convention.
     #[test]
     fn unique_with_concurrently_escalates_kind_to_unique_index() {
         let decls = parse_indexes_from_attr(quote! {
@@ -1266,7 +1276,7 @@ mod tests {
             declared_columns: &["email".to_string()],
             reserved_generated_names: &[],
         };
-        let (_name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
+        let (name, tokens) = emit_index_spec_tokens(&decls[0], &ctx).unwrap();
         let rendered = tokens.to_string();
         assert!(
             rendered.contains("IndexKind :: UniqueIndex"),
@@ -1275,6 +1285,10 @@ mod tests {
         assert!(
             !rendered.contains("IndexKind :: UniqueConstraint"),
             "must not lower to UniqueConstraint; got: {rendered}"
+        );
+        assert_eq!(
+            name, "users_email_uidx",
+            "name stem must escalate with the kind"
         );
     }
 
