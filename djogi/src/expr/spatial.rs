@@ -3,17 +3,31 @@
 //! # What
 //!
 //! [`SpatialExpr`] is an internal sub-IR that plugs into [`super::node::ExprNode`]
-//! via the `ExprNode::Spatial(SpatialExpr)` variant. It carries two variants:
+//! via the `ExprNode::Spatial(SpatialExpr)` variant. It carries variants for:
 //!
 //! - [`SpatialExpr::Within`] — emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`
+//!   (radius-based predicate; Phase 6)
 //! - [`SpatialExpr::Distance`] — emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`
+//! - [`SpatialExpr::Contains`] — emits `ST_Contains(<col>::geometry, $1::bytea::geometry)` (T9)
+//! - [`SpatialExpr::Intersects`] — emits `ST_Intersects(<col>, $1::bytea::geography)` (T9)
+//! - [`SpatialExpr::Touches`] — emits `ST_Touches(<col>::geometry, $1::bytea::geometry)` (T9)
+//! - [`SpatialExpr::WithinShape`] — emits `ST_Within(<col>::geometry, $1::bytea::geometry)` (T9)
+//! - [`SpatialExpr::BoundedBy`] — bbox prefilter using `ST_MakeEnvelope` + `&&` (T10)
+//!
+//! # Naming note for `WithinShape`
+//!
+//! The variant is named `WithinShape` internally to avoid a collision with the
+//! radius-based `Within` variant that Phase 6 shipped. The public method on
+//! `FieldRef<M, G: GeographyValue>` is still called `.within(&geom)` — the two
+//! methods coexist on different receivers (`.within_km` is `FieldRef<M, GeoPoint>`
+//! only; `.within` is generic over any `GeographyValue`) so there is no ambiguity.
 //!
 //! # Bind discipline
 //!
-//! All floating-point values (longitude, latitude, radius) flow through
-//! [`crate::pg::accumulator::SqlAccumulator::push_bind`]. The column name is a
-//! `&'static str` validated upstream by `assert_plain_ident` at `FieldRef`
-//! construction time — it is safe to push via `push_sql` without quoting.
+//! All floating-point values (longitude, latitude, radius) and raw EWKB bytes
+//! flow through [`crate::pg::accumulator::SqlAccumulator::push_bind`]. Column
+//! names are `&'static str` values validated upstream by `assert_plain_ident` at
+//! `FieldRef` construction time — it is safe to push them via `push_sql`.
 //!
 //! # Why two separate variants rather than one with an optional radius?
 //!
@@ -25,9 +39,13 @@
 //! # Where
 //!
 //! - [`crate::query::field`] is the only non-spatial module that produces these
-//!   nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`, and
-//!   `FieldRef<M, GeoPoint>::order_by_distance` captures `Distance` indirectly
-//!   via [`crate::query::order::OrderExpr::SpatialDistance`].
+//!   nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`;
+//!   `FieldRef<M, GeoPoint>::distance_to` builds `Distance` (T10);
+//!   the T9 methods on `FieldRef<M, G: GeographyValue>` build `Contains` /
+//!   `Intersects` / `Touches` / `WithinShape`;
+//!   `FieldRef<M, G: GeographyValue>::bounded_by` builds `BoundedBy` (T10);
+//!   and `FieldRef<M, GeoPoint>::order_by_distance` captures `Distance`
+//!   indirectly via [`crate::query::order::OrderExpr::SpatialDistance`].
 //! - [`super::sql::emit_expr`] has one arm for `ExprNode::Spatial(s)` that
 //!   delegates to [`SpatialExpr::emit`].
 
@@ -38,14 +56,15 @@ use crate::pg::accumulator::SqlAccumulator;
 
 /// Spatial expression node — plugged into the query IR via `ExprNode::Spatial`.
 ///
-/// Both variants carry a `&'static str` column name (baked in by the
-/// `#[model]` macro, validated by `assert_plain_ident`) and a [`GeoPoint`]
-/// center. `Within` additionally carries the radius in meters.
+/// Variants carry a `&'static str` column name (baked in by the `#[model]`
+/// macro, validated by `assert_plain_ident`) plus the query parameters needed
+/// for each PostGIS function call.
 ///
-/// The emitter pushes all user-supplied floating-point values as bind
-/// parameters and embeds the column name as raw SQL.
+/// The emitter pushes all user-supplied values as bind parameters and embeds
+/// the column name as raw SQL.
 #[cfg(feature = "spatial")]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SpatialExpr {
     /// `ST_DWithin(<field>, ST_Point($lon, $lat)::geography, $radius_m)`
     ///
@@ -65,22 +84,108 @@ pub enum SpatialExpr {
     /// `ST_Distance(<field>, ST_Point($lon, $lat)::geography)`
     ///
     /// Returns a `float8` (Rust `f64`): the great-circle distance in meters
-    /// between `<field>` and `center`. Used in `ORDER BY` expressions via
-    /// [`crate::query::order::OrderExpr::SpatialDistance`] — it is not normally
-    /// used directly as a `Condition`.
+    /// between `<field>` and `center`. Exposed as a first-class composable
+    /// expression method via [`crate::query::field::FieldRef::distance_to`]
+    /// (T10), which enables `.filter`, `.annotate`, and `.order_by`
+    /// composition with the distance expression.
     ///
-    /// T4 live-PostGIS tests and future annotate / expression-composition
-    /// contexts will consume this variant. The T3 ordering path embeds
-    /// `ST_Distance` SQL inline in `OrderExpr::SpatialDistance::emit` for
-    /// performance, but this variant powers the expression-IR path that lets
-    /// callers use `filter_expr(|f| f.loc().distance(center).lt(1000.0))`.
-    #[allow(dead_code)]
+    /// The T3 ordering path embeds `ST_Distance` SQL inline in
+    /// `OrderExpr::SpatialDistance::emit` for performance, but this variant
+    /// powers the expression-IR path that lets callers compose:
+    /// `filter_expr(|f| f.loc().distance_to(&center).lt(1000.0))`.
     Distance {
         /// Column name — a `&'static str` from the macro descriptor.
         /// Validated by `assert_plain_ident`; safe to push as raw SQL.
         field_column: &'static str,
         /// The reference point.
         center: GeoPoint,
+    },
+
+    // ── Shape-based predicates (T9) ───────────────────────────────────────────
+    /// `ST_Contains(<col>::geometry, $1::bytea::geometry)`
+    ///
+    /// Returns `true` when the geometry stored in `<col>` entirely contains
+    /// the bound geometry. The bound geometry goes through `push_bind` as
+    /// its EWKB byte representation; see [`emit_binary_predicate`] for the
+    /// cast rationale.
+    ///
+    /// Constructed by [`crate::query::field::FieldRef::contains`].
+    Contains {
+        /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
+        field_column: &'static str,
+        /// EWKB encoding of the geometry to test containment against.
+        other_ewkb: Vec<u8>,
+    },
+
+    /// `ST_Intersects(<col>, $1::bytea::geography)`
+    ///
+    /// Returns `true` when the geometry stored in `<col>` and the bound
+    /// geometry share at least one point. The bound geometry goes through
+    /// `push_bind` as its EWKB byte representation. This is the only T9
+    /// predicate with a native `geography` overload — see
+    /// [`emit_binary_predicate`].
+    ///
+    /// Constructed by [`crate::query::field::FieldRef::intersects`].
+    Intersects {
+        /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
+        field_column: &'static str,
+        /// EWKB encoding of the geometry to test intersection against.
+        other_ewkb: Vec<u8>,
+    },
+
+    /// `ST_Touches(<col>::geometry, $1::bytea::geometry)`
+    ///
+    /// Returns `true` when the geometry stored in `<col>` and the bound
+    /// geometry share boundary points but no interior points (touch but do
+    /// not overlap). The bound geometry goes through `push_bind`; see
+    /// [`emit_binary_predicate`] for the cast rationale.
+    ///
+    /// Constructed by [`crate::query::field::FieldRef::touches`].
+    Touches {
+        /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
+        field_column: &'static str,
+        /// EWKB encoding of the geometry to test touch against.
+        other_ewkb: Vec<u8>,
+    },
+
+    /// `ST_Within(<col>::geometry, $1::bytea::geometry)`
+    ///
+    /// Returns `true` when the geometry stored in `<col>` is entirely within
+    /// the bound geometry. Named `WithinShape` internally to avoid a
+    /// variant-name collision with the radius-based [`SpatialExpr::Within`];
+    /// the public method on `FieldRef` is still called `.within(&geom)`.
+    /// See [`emit_binary_predicate`] for the cast rationale.
+    ///
+    /// Constructed by [`crate::query::field::FieldRef::within`].
+    WithinShape {
+        /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
+        field_column: &'static str,
+        /// EWKB encoding of the geometry to test containment by.
+        other_ewkb: Vec<u8>,
+    },
+
+    /// `ST_MakeEnvelope($min_lon, $min_lat, $max_lon, $max_lat, 4326)::geography && <col>`
+    ///
+    /// GiST-indexed bbox prefilter — returns `true` when the geometry stored
+    /// in `<col>` overlaps the bounding box defined by the four coordinate
+    /// bounds. Uses the `&&` operator so Postgres can use a GiST index for
+    /// fast pre-filtering before more expensive shape predicates.
+    ///
+    /// Constructed by [`crate::query::field::FieldRef::bounded_by`] (T10).
+    /// The Rust API accepts `(min_lat, min_lon, max_lat, max_lon)` to match
+    /// the `GeoPoint` (lat, lon) convention; the emitter reorders to
+    /// Postgres's (x, y) = (lon, lat) convention.
+    BoundedBy {
+        /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
+        field_column: &'static str,
+        /// Southern bound (minimum latitude).
+        min_lat: f64,
+        /// Western bound (minimum longitude).
+        min_lon: f64,
+        /// Northern bound (maximum latitude).
+        max_lat: f64,
+        /// Eastern bound (maximum longitude).
+        max_lon: f64,
     },
 }
 
@@ -89,7 +194,7 @@ impl SpatialExpr {
     /// Emit the SQL fragment for this spatial expression onto `acc`.
     ///
     /// - The column name is pushed via `push_sql` (trusted static identifier).
-    /// - Longitude, latitude, and (for `Within`) radius are pushed via
+    /// - Longitude, latitude, radius, and EWKB bytes are pushed via
     ///   `push_bind` — no string interpolation of user-supplied values.
     ///
     /// ## SQL shapes
@@ -105,6 +210,32 @@ impl SpatialExpr {
     /// ST_Distance(<col>, ST_Point($1, $2)::geography)
     /// ```
     /// where `$1 = center.lon`, `$2 = center.lat`.
+    ///
+    /// `Contains`, `Touches`, `WithinShape` emit:
+    /// ```sql
+    /// ST_<Function>(<col>::geometry, $1::bytea::geometry)
+    /// ```
+    /// because in PostGIS 3.x these three functions only have a `geometry`
+    /// overload — `ST_Contains(geography, ...)` etc. do not exist.
+    ///
+    /// `Intersects` emits:
+    /// ```sql
+    /// ST_Intersects(<col>, $1::bytea::geography)
+    /// ```
+    /// because `ST_Intersects` has a native `geography` overload.
+    ///
+    /// In both cases `$1` is bound as raw EWKB `bytea` and cast at query
+    /// time — `tokio_postgres` prepares the parameter as `bytea`
+    /// (which matches `Vec<u8>: ToSql`) and Postgres performs the
+    /// `bytea::geometry` / `bytea::geography` cast via the implicit
+    /// PostGIS input functions.
+    ///
+    /// `BoundedBy` emits:
+    /// ```sql
+    /// ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography && <col>
+    /// ```
+    /// where `$1 = min_lon`, `$2 = min_lat`, `$3 = max_lon`, `$4 = max_lat`.
+    /// The `&&` operator enables GiST index usage for cheap bbox prefiltering.
     ///
     /// The parameter numbers shown are relative to when `emit` is called —
     /// the accumulator's global counter determines the actual `$n` values
@@ -140,8 +271,108 @@ impl SpatialExpr {
                 acc.push_bind(center.lat);
                 acc.push_sql(")::geography)");
             }
+            // ── Shape predicates (T9) ─────────────────────────────────────────
+            SpatialExpr::Contains {
+                field_column,
+                other_ewkb,
+            } => {
+                emit_binary_predicate(acc, "ST_Contains", field_column, other_ewkb);
+            }
+            SpatialExpr::Intersects {
+                field_column,
+                other_ewkb,
+            } => {
+                emit_binary_predicate(acc, "ST_Intersects", field_column, other_ewkb);
+            }
+            SpatialExpr::Touches {
+                field_column,
+                other_ewkb,
+            } => {
+                emit_binary_predicate(acc, "ST_Touches", field_column, other_ewkb);
+            }
+            SpatialExpr::WithinShape {
+                field_column,
+                other_ewkb,
+            } => {
+                emit_binary_predicate(acc, "ST_Within", field_column, other_ewkb);
+            }
+            SpatialExpr::BoundedBy {
+                field_column,
+                min_lat,
+                min_lon,
+                max_lat,
+                max_lon,
+            } => {
+                // Postgres order: ST_MakeEnvelope(min_x, min_y, max_x, max_y, srid)
+                // where x = longitude, y = latitude. Our API keeps lat first to match
+                // GeoPoint convention; emission reorders.
+                acc.push_sql("ST_MakeEnvelope(");
+                acc.push_bind(*min_lon);
+                acc.push_sql(", ");
+                acc.push_bind(*min_lat);
+                acc.push_sql(", ");
+                acc.push_bind(*max_lon);
+                acc.push_sql(", ");
+                acc.push_bind(*max_lat);
+                acc.push_sql(", 4326)::geography && ");
+                acc.push_sql(field_column);
+            }
         }
     }
+}
+
+/// Emit a binary spatial predicate call.
+///
+/// # Cast selection
+///
+/// PostGIS 3.x splits these four functions across two type families:
+///
+/// - `ST_Intersects` has native `geography` overloads, so both the column
+///   and the bind stay in the `geography` space. The column reference is
+///   emitted unadorned (it already has the `geography` column type) and the
+///   bind is cast `::bytea::geography`.
+/// - `ST_Contains`, `ST_Touches`, and `ST_Within` are **geometry-only**:
+///   `ST_Contains(geography, geography)` etc. do not exist. Both sides are
+///   cast to `geometry` — the column via `::geometry`, the bind via
+///   `::bytea::geometry`.
+///
+/// # Bind encoding
+///
+/// `Vec<u8>: ToSql` binds as Postgres `bytea`. The target parameter type
+/// registered at prepare time must therefore be `bytea`; the explicit
+/// `$n::bytea::<type>` double-cast forces that. A plain `$n::geography`
+/// (or `$n::geometry`) would make `tokio_postgres` prepare the parameter
+/// as `geography` and reject the `Vec<u8>` bind, because `Vec<u8>` cannot
+/// satisfy a `geography`-typed slot.
+///
+/// The column name flows through `push_sql` (already validated as a
+/// plain identifier by `assert_plain_ident`); the EWKB bytes flow through
+/// `push_bind`.
+#[cfg(feature = "spatial")]
+fn emit_binary_predicate(
+    acc: &mut SqlAccumulator,
+    func: &'static str,
+    field_column: &'static str,
+    other_ewkb: &[u8],
+) {
+    // Only ST_Intersects has a geography overload; the other three are
+    // geometry-only in PostGIS 3.x.
+    let use_geometry = !matches!(func, "ST_Intersects");
+    let col_cast = if use_geometry { "::geometry" } else { "" };
+    let bind_cast = if use_geometry {
+        "::bytea::geometry"
+    } else {
+        "::bytea::geography"
+    };
+
+    acc.push_sql(func);
+    acc.push_sql("(");
+    acc.push_sql(field_column);
+    acc.push_sql(col_cast);
+    acc.push_sql(", ");
+    acc.push_bind(other_ewkb.to_vec());
+    acc.push_sql(bind_cast);
+    acc.push_sql(")");
 }
 
 #[cfg(all(test, feature = "spatial"))]
@@ -279,5 +510,396 @@ mod tests {
             "Distance must include ::geography cast; got: {}",
             acc2.sql()
         );
+    }
+
+    // ── T9: Shape predicate tests ─────────────────────────────────────────────
+
+    /// `Contains` must emit `ST_Contains(<col>::geometry, $1::bytea::geometry)`
+    /// with the column name cast to `::geometry` (PostGIS 3.x has no
+    /// `ST_Contains(geography, geography)` overload) and exactly one bind
+    /// parameter for the EWKB bytes.
+    #[test]
+    fn contains_emits_st_contains_with_ewkb_bind() {
+        let other_poly_bytes = vec![0x01, 0x02, 0x03]; // dummy EWKB — real one in live tests
+        let expr = SpatialExpr::Contains {
+            field_column: "area",
+            other_ewkb: other_poly_bytes.clone(),
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Contains"),
+            "expected ST_Contains, got: {sql}"
+        );
+        assert!(
+            sql.contains("area::geometry"),
+            "expected column 'area::geometry', got: {sql}"
+        );
+        assert!(
+            sql.contains("::bytea::geometry"),
+            "expected ::bytea::geometry bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("::geography"),
+            "ST_Contains must not use ::geography (no such overload in PostGIS 3.x); got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "expected 1 bind (the EWKB bytes), got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// `Intersects` keeps the geography path — both the bare column
+    /// reference and the `::bytea::geography` bind cast stay in the geography
+    /// type family because `ST_Intersects` has native geography overloads.
+    #[test]
+    fn intersects_emits_st_intersects_with_ewkb_bind() {
+        let ewkb = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let expr = SpatialExpr::Intersects {
+            field_column: "route",
+            other_ewkb: ewkb,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Intersects"),
+            "expected ST_Intersects, got: {sql}"
+        );
+        assert!(sql.contains("route"), "expected column 'route', got: {sql}");
+        assert!(
+            sql.contains("::bytea::geography"),
+            "expected ::bytea::geography bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("route::geometry"),
+            "ST_Intersects must keep geography column (no ::geometry cast); got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "expected 1 bind, got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// `Touches` is geometry-only in PostGIS 3.x — both the column and the
+    /// bind must be cast to `geometry`.
+    #[test]
+    fn touches_emits_st_touches_with_ewkb_bind() {
+        let ewkb = vec![0xAA, 0xBB];
+        let expr = SpatialExpr::Touches {
+            field_column: "boundary",
+            other_ewkb: ewkb,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Touches"),
+            "expected ST_Touches, got: {sql}"
+        );
+        assert!(
+            sql.contains("boundary::geometry"),
+            "expected column 'boundary::geometry', got: {sql}"
+        );
+        assert!(
+            sql.contains("::bytea::geometry"),
+            "expected ::bytea::geometry bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("::geography"),
+            "ST_Touches must not use ::geography (no such overload); got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "expected 1 bind, got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// `WithinShape` must emit `ST_Within(...)` (not ST_DWithin) with
+    /// `::geometry` casts on both sides — `ST_Within(geography, geography)`
+    /// does not exist in PostGIS 3.x.
+    #[test]
+    fn within_shape_emits_st_within_not_st_dwithin() {
+        let ewkb = vec![0x01, 0xFF];
+        let expr = SpatialExpr::WithinShape {
+            field_column: "zone",
+            other_ewkb: ewkb,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(sql.contains("ST_Within"), "expected ST_Within, got: {sql}");
+        assert!(
+            !sql.contains("ST_DWithin"),
+            "got ST_DWithin instead of ST_Within: {sql}"
+        );
+        assert!(
+            sql.contains("zone::geometry"),
+            "expected column 'zone::geometry', got: {sql}"
+        );
+        assert!(
+            sql.contains("::bytea::geometry"),
+            "expected ::bytea::geometry bind cast, got: {sql}"
+        );
+        assert!(
+            !sql.contains("::geography"),
+            "ST_Within must not use ::geography (no such overload); got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "expected 1 bind, got {}",
+            acc.bind_count()
+        );
+    }
+
+    // ── Injection safety: EWKB bytes must not appear as literal text in SQL ───
+
+    /// Injection safety — the EWKB bytes must not appear as literal SQL text;
+    /// they must appear only as a bind placeholder (`$1`).
+    #[test]
+    fn contains_injection_safe() {
+        // Use a distinctive byte sequence; if it leaked into SQL it would be
+        // visible as hex-encoded bytes or similar.
+        let ewkb = vec![0x01, 0x03, 0x00, 0x00, 0x20]; // EWKB Polygon preamble
+        let expr = SpatialExpr::Contains {
+            field_column: "coverage",
+            other_ewkb: ewkb,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        // The raw bytes must not appear as "103000020" or similar decimal string.
+        // The key invariant: SQL contains exactly one placeholder and the byte
+        // content lives in the bound params, never in the SQL text.
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "EWKB must be a bind param, not embedded in SQL; bind_count={}",
+            acc.bind_count()
+        );
+        // SQL should only have `$1` as a parameter reference, not literal byte values.
+        assert!(sql.contains("$1"), "expected $1 placeholder, got: {sql}");
+    }
+
+    /// Injection safety for `Intersects`.
+    #[test]
+    fn intersects_injection_safe() {
+        let ewkb = vec![0x01, 0x02, 0x00, 0x00, 0x20];
+        let expr = SpatialExpr::Intersects {
+            field_column: "coverage",
+            other_ewkb: ewkb,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert_eq!(acc.bind_count(), 1);
+        assert!(sql.contains("$1"), "expected $1 placeholder, got: {sql}");
+    }
+
+    /// Injection safety for `Touches`.
+    #[test]
+    fn touches_injection_safe() {
+        let ewkb = vec![0x01, 0x05, 0x00, 0x00, 0x20];
+        let expr = SpatialExpr::Touches {
+            field_column: "coverage",
+            other_ewkb: ewkb,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert_eq!(acc.bind_count(), 1);
+        assert!(sql.contains("$1"), "expected $1 placeholder, got: {sql}");
+    }
+
+    /// Injection safety for `WithinShape`.
+    #[test]
+    fn within_shape_injection_safe() {
+        let ewkb = vec![0x01, 0x06, 0x00, 0x00, 0x20];
+        let expr = SpatialExpr::WithinShape {
+            field_column: "coverage",
+            other_ewkb: ewkb,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert_eq!(acc.bind_count(), 1);
+        assert!(sql.contains("$1"), "expected $1 placeholder, got: {sql}");
+    }
+
+    // ── Sequential bind numbering when multiple expressions are emitted ───────
+
+    // ── T10: BoundedBy emission tests ────────────────────────────────────────
+
+    /// `BoundedBy` must emit `ST_MakeEnvelope(...)` using Postgres (x, y) =
+    /// (lon, lat) order even though the Rust API accepts (lat, lon).
+    /// The column name must appear after the `&&` operator.
+    #[test]
+    fn bounded_by_emits_st_makeenvelope_in_xy_order() {
+        // min_lat=37.0, min_lon=-123.0, max_lat=38.0, max_lon=-122.0
+        let expr = SpatialExpr::BoundedBy {
+            field_column: "area",
+            min_lat: 37.0,
+            min_lon: -123.0,
+            max_lat: 38.0,
+            max_lon: -122.0,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        // Must use ST_MakeEnvelope with the geography cast and && operator.
+        assert!(
+            sql.contains("ST_MakeEnvelope("),
+            "expected ST_MakeEnvelope in SQL; got: {sql}"
+        );
+        assert!(
+            sql.contains("::geography &&"),
+            "expected ::geography && in SQL; got: {sql}"
+        );
+        assert!(
+            sql.contains("area"),
+            "expected column name 'area' after &&; got: {sql}"
+        );
+        // Bind order: $1=min_lon, $2=min_lat, $3=max_lon, $4=max_lat.
+        // SQL must contain all four placeholders.
+        assert!(
+            sql.contains("$1") && sql.contains("$2") && sql.contains("$3") && sql.contains("$4"),
+            "expected $1 $2 $3 $4 in SQL; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            4,
+            "BoundedBy must bind exactly 4 params; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// All four coordinate values must flow through `push_bind` — none may
+    /// appear as literal text in the emitted SQL fragment.
+    #[test]
+    fn bounded_by_emits_all_four_coords_as_binds() {
+        // Use distinctive values that would be visible if they leaked into SQL.
+        let expr = SpatialExpr::BoundedBy {
+            field_column: "zone",
+            min_lat: 11.1111,
+            min_lon: 22.2222,
+            max_lat: 33.3333,
+            max_lon: 44.4444,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        // None of the coordinate values may appear literally.
+        assert!(
+            !sql.contains("11.1111"),
+            "min_lat leaked into SQL; got: {sql}"
+        );
+        assert!(
+            !sql.contains("22.2222"),
+            "min_lon leaked into SQL; got: {sql}"
+        );
+        assert!(
+            !sql.contains("33.3333"),
+            "max_lat leaked into SQL; got: {sql}"
+        );
+        assert!(
+            !sql.contains("44.4444"),
+            "max_lon leaked into SQL; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            4,
+            "expected 4 binds, got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// SRID 4326 must appear as a literal integer — it is a fixed constant,
+    /// not a user-supplied value, so it is safe to embed directly.
+    #[test]
+    fn bounded_by_includes_srid_4326_literal() {
+        let expr = SpatialExpr::BoundedBy {
+            field_column: "coverage",
+            min_lat: 0.0,
+            min_lon: 0.0,
+            max_lat: 1.0,
+            max_lon: 1.0,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        assert!(
+            acc.sql().contains("4326"),
+            "expected literal 4326 SRID in SQL; got: {}",
+            acc.sql()
+        );
+    }
+
+    // ── T10: Distance emission tests ─────────────────────────────────────────
+
+    /// `Distance` variant must emit `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`.
+    /// Bind order: $1 = lon, $2 = lat.
+    #[test]
+    fn distance_emits_st_distance_with_correct_structure() {
+        let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+        let expr = SpatialExpr::Distance {
+            field_column: "loc",
+            center,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Distance"),
+            "expected ST_Distance; got: {sql}"
+        );
+        assert!(sql.contains("loc"), "expected column 'loc'; got: {sql}");
+        assert!(
+            sql.contains("::geography"),
+            "expected ::geography cast; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            2,
+            "Distance binds lon + lat (2 params); got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// When two shape predicates are emitted sequentially onto the same
+    /// accumulator, the second bind parameter must be `$2` (not `$1`).
+    /// This verifies the accumulator's global counter increments correctly
+    /// across calls.
+    #[test]
+    fn sequential_predicates_increment_bind_counter() {
+        let ewkb_a = vec![0xAA];
+        let ewkb_b = vec![0xBB];
+        let expr_a = SpatialExpr::Contains {
+            field_column: "area",
+            other_ewkb: ewkb_a,
+        };
+        let expr_b = SpatialExpr::Intersects {
+            field_column: "route",
+            other_ewkb: ewkb_b,
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr_a.emit(&mut acc);
+        acc.push_sql(" AND ");
+        expr_b.emit(&mut acc);
+        let sql = acc.sql();
+        assert_eq!(
+            acc.bind_count(),
+            2,
+            "expected 2 total binds, got {}",
+            acc.bind_count()
+        );
+        assert!(sql.contains("$1"), "first bind must be $1; got: {sql}");
+        assert!(sql.contains("$2"), "second bind must be $2; got: {sql}");
     }
 }

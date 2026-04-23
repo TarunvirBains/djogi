@@ -824,34 +824,45 @@ pub(crate) fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator 
     acc
 }
 
-/// Emit `(AGG(..))::CAST` for the scalar-aggregate path — wraps the
-/// bare aggregate in parens so the narrowing `::CAST` applies to the
-/// whole function call, including any `FILTER (WHERE ...)` tail.
+/// Emit `(AGG(..) [OVER (...)])::CAST` for the scalar-aggregate and
+/// grouped-annotate paths — wraps the aggregate (plus the optional window
+/// clause) in parens when a narrowing `::CAST` is needed, then appends
+/// the cast.
 ///
 /// `cast_to` is pulled from the [`crate::expr::node::ExprNode::Aggregate`]
 /// payload; `None` skips the cast entirely (used for `COUNT` /
 /// `MIN` / `MAX` where the Postgres return type already decodes into
 /// `Out` directly).
+///
+/// When the aggregate carries a user-set `window: Some(spec)` (from
+/// `.over(|w| ...)`), the `OVER (...)` clause is appended immediately
+/// after `emit_expr` returns — in the right position for Postgres
+/// window-function syntax (`AGG(...) OVER (...)`). No default `OVER ()`
+/// is added when `window` is `None`: this path is used for both the
+/// scalar terminal and the grouped annotate SELECT list, neither of which
+/// should silently grow a window clause.
 pub(crate) fn emit_aggregate_with_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
 ) {
-    if let crate::expr::node::ExprNode::Aggregate { cast_to, .. } = agg
-        && cast_to.is_some()
-    {
+    let (cast_to, window) = match agg {
+        crate::expr::node::ExprNode::Aggregate {
+            cast_to, window, ..
+        } => (*cast_to, window.as_ref()),
+        _ => (None, None),
+    };
+    // Only wrap in parens when a cast is needed — `(AGG(..) OVER (...))::ty`.
+    // A window-only aggregate (no cast) emits directly: `AGG(..) OVER (...)`.
+    if cast_to.is_some() {
         acc.push_sql("(");
-        crate::expr::sql::emit_expr(acc, agg);
+    }
+    crate::expr::sql::emit_expr(acc, agg);
+    if let Some(ws) = window {
+        ws.emit(acc);
+    }
+    if let Some(ty) = cast_to {
         acc.push_sql(")::");
-        // Safe because we matched `cast_to.is_some()` above; the
-        // pattern binding borrows immutably so we re-extract here.
-        if let crate::expr::node::ExprNode::Aggregate {
-            cast_to: Some(ty), ..
-        } = agg
-        {
-            acc.push_sql(ty);
-        }
-    } else {
-        crate::expr::sql::emit_expr(acc, agg);
+        acc.push_sql(ty);
     }
 }
 
@@ -879,15 +890,22 @@ pub(crate) fn emit_aggregate_with_window_and_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
 ) {
-    let cast = match agg {
-        crate::expr::node::ExprNode::Aggregate { cast_to, .. } => *cast_to,
-        _ => None,
+    let (cast, window) = match agg {
+        crate::expr::node::ExprNode::Aggregate {
+            cast_to, window, ..
+        } => (*cast_to, window.as_ref()),
+        _ => (None, None),
     };
     if cast.is_some() {
         acc.push_sql("(");
     }
     crate::expr::sql::emit_expr(acc, agg);
-    acc.push_sql(" OVER ()");
+    // Use the user's window spec when present; fall back to the bare `OVER ()`
+    // default that all pre-T3 ungrouped annotate callers expect.
+    match window {
+        Some(ws) => ws.emit(acc),
+        None => acc.push_sql(" OVER ()"),
+    }
     if let Some(ty) = cast {
         acc.push_sql(")::");
         acc.push_sql(ty);
@@ -973,6 +991,469 @@ where
     acc.push_sql(T::table_name());
     acc.push_sql(" AS t");
     push_tail(&mut acc, qs);
+    acc
+}
+
+/// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys
+/// [HAVING ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the terminal for
+/// [`crate::query::grouped::GroupedAnnotatedQuerySet::fetch_all`].
+///
+/// # SELECT list layout
+///
+/// Keys MUST be emitted first and in `push_group_by_columns` order —
+/// `K::decode_tuple` reads positionally (ordinals 0..N_keys). Aggregate
+/// columns follow, decoded by alias (`__djogi_agg_N`). If the key/aggregate
+/// order in the SELECT list ever changes, key decoding will silently read the
+/// wrong columns.
+///
+/// # Why `push_columns_bare` not `push_columns`
+///
+/// `IntoAggregateTuple::push_columns` wraps each aggregate in `OVER ()` for
+/// the `annotate`-on-ungrouped path. A `GROUP BY` query must not use window
+/// functions in the SELECT list for its aggregate columns — Postgres would
+/// reject the combination. `push_columns_bare` emits the aggregate with only
+/// the narrowing cast but no window frame.
+///
+/// # Spatial JOIN delegation
+///
+/// When the `spatial` feature is enabled and `gaq.spatial_source` is `Some`,
+/// this function delegates to the appropriate spatial builder so the caller
+/// does not need to be aware of which emission path to take.
+pub(crate) fn build_grouped_annotated_select<T, K, A>(
+    gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
+) -> SqlAccumulator
+where
+    T: Model,
+    K: crate::query::grouped::IntoGroupKeyTuple,
+    A: crate::query::annotate::IntoAggregateTuple,
+{
+    // ── Spatial group-source delegation ─────────────────────────────────────
+    #[cfg(feature = "spatial")]
+    if let Some(ref src) = gaq.spatial_source {
+        return match src {
+            crate::query::grouped::SpatialGroupSource::Join(spec) => {
+                build_spatial_join_grouped_select(gaq, spec)
+            }
+            crate::query::grouped::SpatialGroupSource::Cluster(spec) => {
+                build_cluster_grouped_select(gaq, spec)
+            }
+            crate::query::grouped::SpatialGroupSource::Geohash(spec) => {
+                build_geohash_grouped_select(gaq, spec)
+            }
+        };
+    }
+
+    let mut acc = SqlAccumulator::new("SELECT ");
+    gaq.keys.push_select_columns(&mut acc);
+    gaq.aggregates.push_columns_bare(&mut acc);
+
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+
+    // WHERE from the upstream queryset (filters set before .group_by)
+    push_where(&mut acc, &gaq.qs);
+
+    // GROUP BY
+    acc.push_sql(" GROUP BY ");
+    match gaq.grouping {
+        crate::query::grouped::GroupingMode::Plain => {
+            gaq.keys.push_group_by_columns(&mut acc);
+        }
+        crate::query::grouped::GroupingMode::Rollup => {
+            acc.push_sql("ROLLUP (");
+            gaq.keys.push_group_by_columns(&mut acc);
+            acc.push_sql(")");
+        }
+        crate::query::grouped::GroupingMode::Cube => {
+            acc.push_sql("CUBE (");
+            gaq.keys.push_group_by_columns(&mut acc);
+            acc.push_sql(")");
+        }
+        crate::query::grouped::GroupingMode::Sets(ref sets) => {
+            // Emit: GROUPING SETS ((col_a), (col_b), ...)
+            // Each inner Vec is one grouping set's column list.
+            // Column names are &'static str validated upstream by
+            // assert_plain_ident — no bind slots, safe to push as SQL.
+            acc.push_sql("GROUPING SETS (");
+            for (i, set) in sets.iter().enumerate() {
+                if i > 0 {
+                    acc.push_sql(", ");
+                }
+                acc.push_sql("(");
+                for (j, col) in set.iter().enumerate() {
+                    if j > 0 {
+                        acc.push_sql(", ");
+                    }
+                    acc.push_sql(col);
+                }
+                acc.push_sql(")");
+            }
+            acc.push_sql(")");
+        }
+    }
+
+    // HAVING
+    if let Some(h) = &gaq.having {
+        acc.push_sql(" HAVING ");
+        crate::expr::sql::emit_expr(&mut acc, h);
+    }
+
+    // ORDER BY
+    if !gaq.order.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in gaq.order.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(&mut acc, None);
+        }
+    }
+
+    // LIMIT / OFFSET
+    if let Some(n) = gaq.limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n as i64);
+    }
+    if let Some(n) = gaq.offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n as i64);
+    }
+
+    acc
+}
+
+/// Build the spatial-JOIN variant of the grouped-annotated SELECT:
+///
+/// ```sql
+/// SELECT r.<pk-col> AS rk0, <aggregates>
+/// FROM <t-table> AS t
+/// LEFT JOIN <r-table> AS r ON ST_Covers(r.<r-geo-col>, t.<t-geo-col>)
+/// [WHERE ...]
+/// GROUP BY r.<pk-col>
+/// [HAVING ...]
+/// [ORDER BY ...]
+/// [LIMIT $n] [OFFSET $n]
+/// ```
+///
+/// Called by [`build_grouped_annotated_select`] when `gaq.spatial_source` is
+/// `Some(SpatialGroupSource::Join(_))`. All clause-ordering and bind-slot
+/// semantics are identical to the plain grouped path — the only difference is
+/// the FROM + LEFT JOIN instead of the bare `FROM <t-table> AS t`.
+///
+/// # Column name safety
+///
+/// `spec.t_geo_col`, `spec.r_geo_col`, `spec.r_pk_col`, and `spec.r_table`
+/// are all `&'static str` baked by the macro or read from `ModelDescriptor`
+/// field names. They are pushed as SQL text (not bound parameters) on the same
+/// basis as every other column or table name in this file. No user input flows
+/// through these slots.
+#[cfg(feature = "spatial")]
+pub(crate) fn build_spatial_join_grouped_select<T, K, A>(
+    gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
+    spec: &crate::query::spatial_grouping::SpatialJoinSpec,
+) -> SqlAccumulator
+where
+    T: Model,
+    K: crate::query::grouped::IntoGroupKeyTuple,
+    A: crate::query::annotate::IntoAggregateTuple,
+{
+    let mut acc = SqlAccumulator::new("SELECT ");
+
+    // Key columns first (positional decode). For the spatial path this emits
+    // `r.<pk-col> AS rk0` via `RegionKey::push_select_columns`.
+    gaq.keys.push_select_columns(&mut acc);
+
+    // Aggregate columns follow, decoded by alias (__djogi_agg_N).
+    gaq.aggregates.push_columns_bare(&mut acc);
+
+    // FROM <t-table> AS t
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+
+    // LEFT JOIN <r-table> AS r ON ST_Covers(r.<r-geo-col>, t.<t-geo-col>)
+    //
+    // LEFT JOIN so unmatched rows (no containing region) appear in the result
+    // with r.<pk-col> = NULL rather than being silently dropped.
+    //
+    // # ST_Covers vs ST_Contains
+    //
+    // `ST_Covers` is used (not `ST_Contains`) because:
+    //
+    // - `ST_Contains(geography, geography)` does **not** exist in PostGIS 3.x
+    //   — only the geometry overload is defined, and Djogi stores spatial
+    //   columns as `GEOGRAPHY(..., 4326)`. Using `ST_Contains` here forces
+    //   `::geometry` casts on both sides, which defeats GiST index usage on
+    //   the geography column.
+    // - `ST_Covers` has a native `geography` overload and gives the same
+    //   answer as `ST_Contains` for the point-in-polygon use case this JOIN
+    //   implements (a point is "covered by" a polygon iff it is "inside" the
+    //   polygon; the distinction between the two functions only matters when
+    //   the inner geometry touches the boundary of the outer one — and for
+    //   the scalar point case, being on the boundary is treated as inside
+    //   under both functions for geography inputs).
+    //
+    // The geography-native form keeps GiST-indexed bbox prefiltering active
+    // under the JOIN.
+    acc.push_sql(" LEFT JOIN ");
+    acc.push_sql(spec.r_table);
+    acc.push_sql(" AS r ON ST_Covers(r.");
+    acc.push_sql(spec.r_geo_col);
+    acc.push_sql(", t.");
+    acc.push_sql(spec.t_geo_col);
+    acc.push_sql(")");
+
+    // WHERE from the upstream queryset — qualifies t.<col> references so
+    // they don't collide with r.<col> under the JOIN.
+    push_where_qualified(&mut acc, &gaq.qs, Some("t"));
+
+    // GROUP BY r.<pk-col>
+    acc.push_sql(" GROUP BY ");
+    match gaq.grouping {
+        crate::query::grouped::GroupingMode::Plain => {
+            gaq.keys.push_group_by_columns(&mut acc);
+        }
+        // ROLLUP / CUBE / SETS are not meaningful for spatial region grouping —
+        // the key is derived from a JOIN condition, not a column value. Reaching
+        // here indicates the user set the grouping mode manually, which is not
+        // supported via the `group_by_region` entry point. Emit plain GROUP BY
+        // as a safe fallback (the user is off-path if they reach this via any
+        // internal route).
+        _ => {
+            gaq.keys.push_group_by_columns(&mut acc);
+        }
+    }
+
+    // HAVING
+    if let Some(h) = &gaq.having {
+        acc.push_sql(" HAVING ");
+        crate::expr::sql::emit_expr(&mut acc, h);
+    }
+
+    // ORDER BY
+    if !gaq.order.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in gaq.order.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(&mut acc, None);
+        }
+    }
+
+    // LIMIT / OFFSET
+    if let Some(n) = gaq.limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n as i64);
+    }
+    if let Some(n) = gaq.offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n as i64);
+    }
+
+    acc
+}
+
+/// Build the DBSCAN-clustering variant of the grouped-annotated SELECT:
+///
+/// ```sql
+/// SELECT cluster_id, <aggregates>
+/// FROM (
+///     SELECT t.*, ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER ()
+///                                                                 AS cluster_id
+///     FROM <table> AS t
+///     [WHERE ...]
+/// ) AS t
+/// GROUP BY cluster_id
+/// [HAVING ...]
+/// [ORDER BY ...]
+/// [LIMIT $n] [OFFSET $n]
+/// ```
+///
+/// # Why the subquery
+///
+/// A flat `SELECT ST_ClusterDBSCAN(...) OVER () AS cluster_id ... GROUP BY
+/// cluster_id` query is rejected by Postgres with
+///
+/// ```text
+/// ERROR: window functions are not allowed in GROUP BY
+/// ```
+///
+/// because the GROUP BY references an alias whose defining expression is a
+/// window aggregate. Wrapping the window call in an inner subquery
+/// materialises `cluster_id` as a plain column in the outer query, so the
+/// outer `GROUP BY cluster_id` is valid.
+///
+/// The inner subquery projects `t.*` so any outer aggregate expression that
+/// references `t.<col>` continues to resolve — the outer subquery alias is
+/// also `t`, keeping the column-qualification pattern identical to every
+/// other query shape in this file.
+///
+/// # Clause placement under the subquery
+///
+/// - `WHERE` stays on the **inner** subquery — it prunes rows *before*
+///   clustering, which is the only semantically meaningful position for a
+///   filter that does not reference `cluster_id`.
+/// - `HAVING` stays on the **outer** query — it filters the aggregated
+///   groups.
+/// - `ORDER BY` / `LIMIT` / `OFFSET` stay on the **outer** query — they
+///   paginate the aggregated result.
+///
+/// # Casts and binds
+///
+/// The `::geometry` cast is required because `ST_ClusterDBSCAN` does not
+/// accept the `geography` type directly in PostGIS 3.x.
+///
+/// `$eps` is bound as `f64`; `$minpoints` as `i32`. Both are positional
+/// parameters (no user-controlled SQL text).
+///
+/// Called by [`build_grouped_annotated_select`] when
+/// `gaq.spatial_source == Some(SpatialGroupSource::Cluster(_))`.
+#[cfg(feature = "spatial")]
+pub(crate) fn build_cluster_grouped_select<T, K, A>(
+    gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
+    spec: &crate::query::spatial_grouping::ClusterSpec,
+) -> SqlAccumulator
+where
+    T: Model,
+    K: crate::query::grouped::IntoGroupKeyTuple,
+    A: crate::query::annotate::IntoAggregateTuple,
+{
+    // Outer SELECT: cluster_id key + aggregates.
+    let mut acc = SqlAccumulator::new("SELECT cluster_id");
+    gaq.aggregates.push_columns_bare(&mut acc);
+
+    // Inner subquery materialises cluster_id so the outer GROUP BY sees a
+    // plain column rather than a window-function reference.
+    acc.push_sql(" FROM (SELECT t.*, ST_ClusterDBSCAN(t.");
+    acc.push_sql(spec.t_geo_col);
+    acc.push_sql("::geometry, ");
+    acc.push_bind(spec.eps_degrees);
+    acc.push_sql(", ");
+    acc.push_bind(spec.minpoints);
+    acc.push_sql(") OVER () AS cluster_id FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+
+    // WHERE from the upstream queryset — prunes BEFORE clustering.
+    push_where(&mut acc, &gaq.qs);
+
+    acc.push_sql(") AS t");
+
+    // Outer GROUP BY on the materialised cluster_id column — now valid.
+    acc.push_sql(" GROUP BY cluster_id");
+
+    // HAVING filters the aggregated groups (outer scope).
+    if let Some(h) = &gaq.having {
+        acc.push_sql(" HAVING ");
+        crate::expr::sql::emit_expr(&mut acc, h);
+    }
+
+    // ORDER BY (outer scope).
+    if !gaq.order.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in gaq.order.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(&mut acc, None);
+        }
+    }
+
+    // LIMIT / OFFSET (outer scope).
+    if let Some(n) = gaq.limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n as i64);
+    }
+    if let Some(n) = gaq.offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n as i64);
+    }
+
+    acc
+}
+
+/// Build the geohash-bucketing variant of the grouped-annotated SELECT:
+///
+/// ```sql
+/// SELECT ST_GeoHash(t.<col>::geometry, $precision) AS geohash, <aggregates>
+/// FROM <table> AS t
+/// [WHERE ...]
+/// GROUP BY geohash
+/// [HAVING ...]
+/// [ORDER BY ...]
+/// [LIMIT $n] [OFFSET $n]
+/// ```
+///
+/// The `::geometry` cast is required for the same reason as DBSCAN —
+/// `ST_GeoHash` accepts `geometry`, not `geography`, in PostGIS 3.x.
+///
+/// `$precision` is bound as `i32` from [`GeohashPrecision::as_i32`].
+///
+/// Called by [`build_grouped_annotated_select`] when
+/// `gaq.spatial_source == Some(SpatialGroupSource::Geohash(_))`.
+#[cfg(feature = "spatial")]
+pub(crate) fn build_geohash_grouped_select<T, K, A>(
+    gaq: &crate::query::grouped::GroupedAnnotatedQuerySet<T, K, A>,
+    spec: &crate::query::spatial_grouping::GeohashSpec,
+) -> SqlAccumulator
+where
+    T: Model,
+    K: crate::query::grouped::IntoGroupKeyTuple,
+    A: crate::query::annotate::IntoAggregateTuple,
+{
+    let mut acc = SqlAccumulator::new("SELECT ");
+
+    // Scalar expression: the key column.
+    // ST_GeoHash(t.<col>::geometry, $precision) AS geohash
+    acc.push_sql("ST_GeoHash(t.");
+    acc.push_sql(spec.t_geo_col);
+    acc.push_sql("::geometry, ");
+    acc.push_bind(spec.precision);
+    acc.push_sql(") AS geohash");
+
+    // Aggregate columns follow.
+    gaq.aggregates.push_columns_bare(&mut acc);
+
+    // FROM <table> AS t
+    acc.push_sql(" FROM ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" AS t");
+
+    // WHERE from the upstream queryset.
+    push_where(&mut acc, &gaq.qs);
+
+    // GROUP BY geohash  (references the scalar-function alias)
+    acc.push_sql(" GROUP BY geohash");
+
+    // HAVING
+    if let Some(h) = &gaq.having {
+        acc.push_sql(" HAVING ");
+        crate::expr::sql::emit_expr(&mut acc, h);
+    }
+
+    // ORDER BY
+    if !gaq.order.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in gaq.order.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(&mut acc, None);
+        }
+    }
+
+    // LIMIT / OFFSET
+    if let Some(n) = gaq.limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n as i64);
+    }
+    if let Some(n) = gaq.offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n as i64);
+    }
+
     acc
 }
 
@@ -1151,6 +1632,93 @@ pub(crate) fn build_delete<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
     acc.push_sql(T::table_name());
     push_where(&mut acc, qs);
     acc
+}
+
+/// Walk the emitted SELECT list and check that every column's alias (or
+/// plain column name if no `AS` alias) is unique. A collision would cause
+/// the terminal decoder to read the wrong value for one of the columns.
+///
+/// # Algorithm
+///
+/// 1. Find the substring between `SELECT ` and the next ` FROM ` (case
+///    matters — emitters use uppercase keywords).
+/// 2. Split on commas at the top parenthesis level into logical columns.
+///    Parens and nested function calls are handled by tracking depth, so
+///    aggregate expressions like `SUM(a, b)` are not split mid-argument.
+/// 3. For each column, extract the alias — the substring after the last
+///    ` AS ` if present, otherwise the whole column text (trimmed).
+/// 4. Check uniqueness; return `Err(DjogiError::AliasCollision)` on
+///    duplicate.
+///
+/// # Limitations
+///
+/// This is a best-effort string parse. It does not handle:
+/// - Nested subqueries in the SELECT list (not emitted by Phase 6.5).
+/// - Unparenthesised comma-separated arguments at the top level (our
+///   emitter always parenthesises function args).
+///
+/// The check is defensive; failure means something has gone subtly wrong
+/// in the query builder, not that the user did something wrong.
+pub(crate) fn assert_no_alias_collision(sql: &str) -> Result<(), crate::DjogiError> {
+    // Locate the SELECT keyword — accept leading text for safety.
+    let after_select = if let Some(s) = sql.strip_prefix("SELECT ") {
+        s
+    } else if let Some(i) = sql.find("SELECT ") {
+        &sql[i + "SELECT ".len()..]
+    } else {
+        return Ok(()); // not a SELECT we recognise; skip
+    };
+
+    // Locate FROM to extract the select-list. We look for " FROM " with
+    // surrounding spaces so we don't accidentally match a column named FROM.
+    let from_idx = match after_select.find(" FROM ") {
+        Some(i) => i,
+        None => return Ok(()),
+    };
+    let select_list = &after_select[..from_idx];
+
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for col in split_top_level_commas(select_list) {
+        let col = col.trim();
+        // Use rfind so that expressions like `CAST(x AS int) AS alias`
+        // pick up the outermost ` AS ` rather than the one inside CAST.
+        let alias = if let Some(idx) = col.rfind(" AS ") {
+            col[idx + " AS ".len()..].trim()
+        } else {
+            col
+        };
+        if !seen.insert(alias) {
+            return Err(crate::DjogiError::AliasCollision {
+                alias: alias.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Split a SQL fragment on commas that are at the top parenthesis level.
+///
+/// Phase 6.5's emitter output uses simple function-call args, so a single
+/// paren counter suffices. No regex — depth is tracked byte by byte using
+/// `u8` comparison on `b'('` and `b')'`.
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let bytes = s.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
 }
 
 #[cfg(test)]
@@ -1851,6 +2419,570 @@ mod tests {
         assert!(
             sql.trim_end().ends_with("FOR UPDATE SKIP LOCKED"),
             "expected skip_locked to win over nowait, got: {sql}"
+        );
+    }
+
+    // ── T2 emitter: GROUPING SETS ─────────────────────────────────────────
+
+    #[test]
+    fn build_grouped_annotated_select_emits_grouping_sets() {
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::{GroupedAnnotatedQuerySet, GroupingMode};
+        use std::marker::PhantomData;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq: GroupedAnnotatedQuerySet<Fake, (), AggregateExpr<i64>> = {
+            let gq = crate::query::grouped::GroupedQuerySet {
+                qs,
+                keys: (),
+                grouping: GroupingMode::Sets(vec![vec!["org_id"], vec!["region"]]),
+                #[cfg(feature = "spatial")]
+                spatial_source: None,
+                _k: PhantomData,
+            };
+            gq.annotate(|_| vals.sum())
+        };
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUPING SETS ((org_id), (region))"),
+            "expected GROUPING SETS clause, got: {sql}"
+        );
+    }
+
+    // ── T1 emitter behavior: ROLLUP / CUBE ────────────────────────────────
+    //
+    // These tests document that the T1 emitter already handles ROLLUP and
+    // CUBE correctly. T2 adds the entry-point methods (.rollup, .cube) and
+    // the GROUPING SETS emitter arm; the tests below pin the existing
+    // emitter behavior so regressions surface before the new arms land.
+
+    #[test]
+    fn build_grouped_annotated_select_emits_rollup() {
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::{GroupedAnnotatedQuerySet, GroupingMode};
+        use std::marker::PhantomData;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq: GroupedAnnotatedQuerySet<Fake, FieldRef<Fake, i64>, AggregateExpr<i64>> = {
+            let gq = crate::query::grouped::GroupedQuerySet {
+                qs,
+                keys,
+                grouping: GroupingMode::Rollup,
+                #[cfg(feature = "spatial")]
+                spatial_source: None,
+                _k: PhantomData,
+            };
+            gq.annotate(|_| vals.sum())
+        };
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUP BY ROLLUP (org_id)"),
+            "expected ROLLUP clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn build_grouped_annotated_select_emits_cube() {
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::{GroupedAnnotatedQuerySet, GroupingMode};
+        use std::marker::PhantomData;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq: GroupedAnnotatedQuerySet<Fake, FieldRef<Fake, i64>, AggregateExpr<i64>> = {
+            let gq = crate::query::grouped::GroupedQuerySet {
+                qs,
+                keys,
+                grouping: GroupingMode::Cube,
+                #[cfg(feature = "spatial")]
+                spatial_source: None,
+                _k: PhantomData,
+            };
+            gq.annotate(|_| vals.sum())
+        };
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUP BY CUBE (org_id)"),
+            "expected CUBE clause, got: {sql}"
+        );
+    }
+
+    // T5 — alias-collision diagnostic
+
+    #[test]
+    fn alias_collision_detected_in_grouped_select() {
+        // Positive case: clean SQL with no collision should pass.
+        let ok_sql = "SELECT org_id, SUM(amount) AS __djogi_agg_0 FROM txns GROUP BY org_id";
+        let result = assert_no_alias_collision(ok_sql);
+        assert!(result.is_ok(), "expected no collision, got: {:?}", result);
+    }
+
+    #[test]
+    fn alias_collision_names_both_columns_in_error() {
+        let bad_sql = "SELECT foo AS dup, bar AS dup FROM t";
+        let err = assert_no_alias_collision(bad_sql).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("dup"),
+            "error should name the conflicting alias 'dup', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn alias_collision_bare_name_collision_detected() {
+        // Two bare column names (no AS) that share the same identifier.
+        let bad_sql = "SELECT foo, foo FROM t";
+        let err = assert_no_alias_collision(bad_sql).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("foo"),
+            "error should name the conflicting alias 'foo', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn alias_collision_mixed_as_and_bare_collision_detected() {
+        // A bare column 'org_id' collides with an explicit 'AS org_id'.
+        let bad_sql = "SELECT org_id, SUM(amount) AS org_id FROM t GROUP BY org_id";
+        let err = assert_no_alias_collision(bad_sql).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("org_id"),
+            "error should name the conflicting alias 'org_id', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn alias_collision_happy_path_grouped_queryset() {
+        // End-to-end: build a grouped queryset, emit SQL, verify no collision.
+        use crate::expr::AggregateExpr;
+        use crate::query::field::FieldRef;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let keys: FieldRef<Fake, i64> = FieldRef::new("org_id");
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs.group_by(|_| keys).annotate(|_| vals.sum());
+        let acc =
+            build_grouped_annotated_select::<Fake, FieldRef<Fake, i64>, AggregateExpr<i64>>(&gaq);
+        let result = assert_no_alias_collision(acc.sql());
+        assert!(
+            result.is_ok(),
+            "expected no alias collision in grouped queryset, got: {:?}",
+            result
+        );
+    }
+
+    // ── T11: spatial JOIN grouped SELECT emitter ────────────────────────────
+    //
+    // These tests construct a `GroupedAnnotatedQuerySet` with a spatial join
+    // spec and assert that the emitted SQL contains the expected LEFT JOIN,
+    // ST_Covers call (the geography-native point-in-polygon function), and
+    // GROUP BY clause.
+
+    /// Minimal region model — no real descriptor needed for SQL emission tests.
+    #[cfg(feature = "spatial")]
+    struct FakeRegion;
+    #[cfg(feature = "spatial")]
+    impl crate::model::__sealed::Sealed for FakeRegion {}
+    #[cfg(feature = "spatial")]
+    #[allow(clippy::manual_async_fn)]
+    impl Model for FakeRegion {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "neighborhoods"
+        }
+        fn pk_value(&self) -> &i64 {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            unreachable!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+    }
+
+    /// Helper: build a `GroupedAnnotatedQuerySet` with a spatial join spec by
+    /// hand, bypassing the `group_by_region` entry point (which requires a
+    /// real descriptor). This lets us test the SQL builder in isolation.
+    #[cfg(feature = "spatial")]
+    fn make_spatial_gaq(
+        spec: crate::query::spatial_grouping::SpatialJoinSpec,
+    ) -> crate::query::grouped::GroupedAnnotatedQuerySet<
+        Fake,
+        crate::query::spatial_grouping::RegionKey<FakeRegion>,
+        crate::expr::AggregateExpr<i64>,
+    > {
+        use std::marker::PhantomData;
+        let keys = crate::query::spatial_grouping::RegionKey::<FakeRegion> {
+            region_pk: None,
+            r_pk_col: Some(spec.r_pk_col),
+            _phantom: PhantomData,
+        };
+        let agg: crate::expr::AggregateExpr<i64> =
+            crate::query::field::FieldRef::<Fake, i64>::new("id").count_star();
+        crate::query::grouped::GroupedAnnotatedQuerySet {
+            qs: QuerySet::new(),
+            keys,
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            aggregates: agg,
+            having: None,
+            order: Vec::new(),
+            limit: None,
+            offset: None,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Join(spec)),
+            _k: PhantomData,
+            _a: PhantomData,
+        }
+    }
+
+    /// The emitted SQL must contain `LEFT JOIN <r-table> AS r ON ST_Covers(…)`.
+    ///
+    /// `ST_Covers` is used rather than `ST_Contains` because the former has a
+    /// native `geography` overload in PostGIS 3.x; `ST_Contains(geography,
+    /// geography)` does not exist. Semantics are equivalent for the
+    /// point-in-polygon case this JOIN implements.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_emits_left_join_with_st_covers() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("LEFT JOIN neighborhoods AS r ON ST_Covers(r.boundary, t.location)"),
+            "expected LEFT JOIN with ST_Covers (geography overload), got: {sql}"
+        );
+        assert!(
+            !sql.contains("ST_Contains"),
+            "must not emit ST_Contains (no geography overload in PostGIS 3.x); got: {sql}"
+        );
+    }
+
+    /// The emitted SQL must GROUP BY the region PK column qualified with `r.`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_groups_by_region_pk_qualified() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("GROUP BY r.id"),
+            "expected GROUP BY r.id, got: {sql}"
+        );
+    }
+
+    /// The SELECT list must contain `r.<pk-col> AS rk0` before the aggregates.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_select_list_starts_with_region_pk_alias() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        // The SELECT list must begin with the region key alias.
+        assert!(
+            sql.starts_with("SELECT r.id AS rk0"),
+            "expected SELECT to start with 'SELECT r.id AS rk0', got: {sql}"
+        );
+    }
+
+    /// Clause ordering: FROM, LEFT JOIN, WHERE (if any), GROUP BY, ORDER BY,
+    /// LIMIT, OFFSET. Verify positions relative to each other.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn spatial_join_clause_order_is_correct() {
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col: "location",
+            r_table: "neighborhoods",
+            r_geo_col: "boundary",
+            r_pk_col: "id",
+        };
+        let gaq = make_spatial_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        let from_pos = sql.find("FROM fakes AS t").unwrap();
+        let join_pos = sql.find("LEFT JOIN neighborhoods").unwrap();
+        let group_pos = sql.find("GROUP BY").unwrap();
+
+        assert!(
+            from_pos < join_pos,
+            "FROM must precede LEFT JOIN; got: {sql}"
+        );
+        assert!(
+            join_pos < group_pos,
+            "LEFT JOIN must precede GROUP BY; got: {sql}"
+        );
+    }
+
+    // ── T12: cluster_by_proximity SQL emission ────────────────────────────
+
+    /// Helper: build a `GroupedAnnotatedQuerySet` with a cluster spec, bypassing
+    /// the `cluster_by_proximity` entry point so we can test SQL emission in
+    /// isolation without a real model descriptor.
+    #[cfg(feature = "spatial")]
+    fn make_cluster_gaq(
+        spec: crate::query::spatial_grouping::ClusterSpec,
+    ) -> crate::query::grouped::GroupedAnnotatedQuerySet<
+        Fake,
+        crate::query::spatial_grouping::ClusterId,
+        crate::expr::AggregateExpr<i64>,
+    > {
+        use std::marker::PhantomData;
+        let agg: crate::expr::AggregateExpr<i64> =
+            crate::query::field::FieldRef::<Fake, i64>::new("id").count_star();
+        crate::query::grouped::GroupedAnnotatedQuerySet {
+            qs: QuerySet::new(),
+            keys: crate::query::spatial_grouping::ClusterId(None),
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            aggregates: agg,
+            having: None,
+            order: Vec::new(),
+            limit: None,
+            offset: None,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Cluster(spec)),
+            _k: PhantomData,
+            _a: PhantomData,
+        }
+    }
+
+    /// The emitted SQL must contain `ST_ClusterDBSCAN(t.<col>::geometry, ...)
+    /// OVER () AS cluster_id` and `GROUP BY cluster_id`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_grouped_select_emits_st_cluster_dbscan_with_geometry_cast() {
+        use crate::query::spatial_grouping::ClusterSpec;
+        let spec = ClusterSpec {
+            t_geo_col: "location",
+            eps_degrees: 0.004491,
+            minpoints: 3,
+        };
+        let gaq = make_cluster_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("ST_ClusterDBSCAN(t.location::geometry,"),
+            "expected ST_ClusterDBSCAN with ::geometry cast, got: {sql}"
+        );
+        assert!(
+            sql.contains("OVER () AS cluster_id"),
+            "expected OVER () AS cluster_id, got: {sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY cluster_id"),
+            "expected GROUP BY cluster_id, got: {sql}"
+        );
+    }
+
+    /// The cluster query must bind exactly 2 parameters: eps (f64) then
+    /// minpoints (i32). No JOIN, no extra clauses.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_grouped_select_binds_eps_and_minpoints() {
+        use crate::query::spatial_grouping::ClusterSpec;
+        let spec = ClusterSpec {
+            t_geo_col: "location",
+            eps_degrees: 0.00449,
+            minpoints: 5,
+        };
+        let gaq = make_cluster_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        // The accumulator SQL should contain two bind slots before the agg alias.
+        let sql = acc.sql();
+        // $1 = eps, $2 = minpoints — at least two parameter slots present.
+        assert!(
+            sql.contains("$1") && sql.contains("$2"),
+            "expected $1 (eps) and $2 (minpoints) bind slots, got: {sql}"
+        );
+        // No LEFT JOIN — this is a single-table window query.
+        assert!(
+            !sql.contains("LEFT JOIN"),
+            "cluster path should not emit LEFT JOIN, got: {sql}"
+        );
+    }
+
+    /// Regression test for the pre-T14.5 shape `SELECT ST_ClusterDBSCAN(...)
+    /// OVER () AS cluster_id ... GROUP BY cluster_id`, which Postgres rejects
+    /// with `ERROR: window functions are not allowed in GROUP BY`. The
+    /// emitter must wrap the window call in an inner subquery so the outer
+    /// `GROUP BY cluster_id` references a materialised column.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_grouped_select_wraps_window_in_subquery() {
+        use crate::query::spatial_grouping::ClusterSpec;
+        let spec = ClusterSpec {
+            t_geo_col: "location",
+            eps_degrees: 0.004491,
+            minpoints: 3,
+        };
+        let gaq = make_cluster_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        // Outer SELECT starts with the materialised cluster_id column, not
+        // the inline window call.
+        assert!(
+            sql.starts_with("SELECT cluster_id"),
+            "outer SELECT must start with 'SELECT cluster_id', got: {sql}"
+        );
+        // The window call lives inside the subquery — the `FROM (SELECT t.*,
+        // ST_ClusterDBSCAN(...)` substring locks in the wrap.
+        assert!(
+            sql.contains("FROM (SELECT t.*, ST_ClusterDBSCAN("),
+            "window call must be wrapped in an inner subquery; got: {sql}"
+        );
+        // Subquery alias must be `t` so outer aggregate references resolve.
+        assert!(
+            sql.contains(") AS t GROUP BY cluster_id"),
+            "subquery must be aliased 'AS t' and outer must GROUP BY cluster_id; got: {sql}"
+        );
+        // The inline window-function-in-GROUP-BY anti-pattern must not leak.
+        // (The string `OVER () AS cluster_id` is still present inside the
+        // subquery — we assert on the *outer SELECT head* instead.)
+        assert!(
+            !sql.starts_with("SELECT ST_ClusterDBSCAN"),
+            "outer SELECT must not begin with the inline window form; got: {sql}"
+        );
+    }
+
+    // ── T12: bucket_by_cell SQL emission ─────────────────────────────────
+
+    /// Helper: build a `GroupedAnnotatedQuerySet` with a geohash spec.
+    #[cfg(feature = "spatial")]
+    fn make_geohash_gaq(
+        spec: crate::query::spatial_grouping::GeohashSpec,
+    ) -> crate::query::grouped::GroupedAnnotatedQuerySet<
+        Fake,
+        crate::query::spatial_grouping::GeohashKey,
+        crate::expr::AggregateExpr<i64>,
+    > {
+        use std::marker::PhantomData;
+        let agg: crate::expr::AggregateExpr<i64> =
+            crate::query::field::FieldRef::<Fake, i64>::new("id").count_star();
+        crate::query::grouped::GroupedAnnotatedQuerySet {
+            qs: QuerySet::new(),
+            keys: crate::query::spatial_grouping::GeohashKey(None),
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            aggregates: agg,
+            having: None,
+            order: Vec::new(),
+            limit: None,
+            offset: None,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Geohash(spec)),
+            _k: PhantomData,
+            _a: PhantomData,
+        }
+    }
+
+    /// The emitted SQL must contain `ST_GeoHash(t.<col>::geometry, $n) AS geohash`
+    /// and `GROUP BY geohash`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn geohash_grouped_select_emits_st_geohash_with_geometry_cast() {
+        use crate::query::spatial_grouping::GeohashSpec;
+        let spec = GeohashSpec {
+            t_geo_col: "location",
+            precision: 5,
+        };
+        let gaq = make_geohash_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("ST_GeoHash(t.location::geometry,"),
+            "expected ST_GeoHash with ::geometry cast, got: {sql}"
+        );
+        assert!(
+            sql.contains("AS geohash"),
+            "expected AS geohash alias, got: {sql}"
+        );
+        assert!(
+            sql.contains("GROUP BY geohash"),
+            "expected GROUP BY geohash, got: {sql}"
+        );
+    }
+
+    /// The geohash query must bind exactly 1 parameter (precision) and no JOIN.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn geohash_grouped_select_binds_precision_only() {
+        use crate::query::spatial_grouping::GeohashSpec;
+        let spec = GeohashSpec {
+            t_geo_col: "location",
+            precision: 7,
+        };
+        let gaq = make_geohash_gaq(spec);
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("$1"),
+            "expected $1 (precision) bind slot, got: {sql}"
+        );
+        // Precision is the only bind — no $2.
+        // The agg alias also uses positional notation but is a text suffix, not
+        // a numeric param. Check there is no second numeric parameter slot from
+        // the spatial expression itself.
+        assert!(
+            !sql.contains("LEFT JOIN"),
+            "geohash path should not emit LEFT JOIN, got: {sql}"
         );
     }
 }

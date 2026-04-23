@@ -54,6 +54,84 @@
 use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
 use crate::pg::accumulator::SqlAccumulator;
 
+/// Check whether an [`ExprNode`] tree contains any aggregate whose `DISTINCT`
+/// modifier combination Postgres would reject or that Djogi cannot currently
+/// emit correctly.
+///
+/// # Rejected combinations
+///
+/// - `COUNT(*)` with `distinct = true` — `COUNT(DISTINCT *)` is not valid SQL.
+/// - `STRING_AGG(col, sep)` with `distinct = true` — Postgres requires an
+///   explicit per-aggregate `ORDER BY` clause when DISTINCT is combined with
+///   `STRING_AGG`. Djogi's Phase 6.5 IR does not track per-aggregate ORDER BY;
+///   this restriction will be lifted in a future phase.
+///
+/// All other `(op, distinct = true)` combinations are accepted and emitted as
+/// `AGG(DISTINCT col)`.
+///
+/// # When to call
+///
+/// Terminal methods (`fetch_one`, `fetch_all`) call this before building the
+/// SQL string so the caller gets a typed `DjogiError::UnsupportedAggregate`
+/// rather than a cryptic Postgres syntax error.
+pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::DjogiError> {
+    match node {
+        ExprNode::Aggregate {
+            op,
+            distinct,
+            arg,
+            filter,
+            ..
+        } => {
+            if *distinct {
+                match op {
+                    AggOp::CountStar => {
+                        return Err(crate::DjogiError::UnsupportedAggregate {
+                            op: "COUNT(*)",
+                            reason: "COUNT(DISTINCT *) is not valid SQL — \
+                                     use COUNT(DISTINCT col) via FieldRef::count() instead",
+                        });
+                    }
+                    AggOp::StringAgg(_) => {
+                        return Err(crate::DjogiError::UnsupportedAggregate {
+                            op: "STRING_AGG",
+                            reason: "STRING_AGG(DISTINCT col, sep) requires a per-aggregate \
+                                     ORDER BY clause, which Djogi's Phase 6.5 IR does not \
+                                     track — this restriction will be lifted in a future phase",
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            // Recurse into arg and filter sub-trees in case there are nested
+            // aggregates (unusual but structurally possible).
+            check_aggregate_legality(arg)?;
+            if let Some(f) = filter {
+                check_aggregate_legality(f)?;
+            }
+            Ok(())
+        }
+        // Recurse into compound expression nodes.
+        ExprNode::Add(l, r) | ExprNode::Sub(l, r) | ExprNode::Mul(l, r) | ExprNode::Div(l, r) => {
+            check_aggregate_legality(l)?;
+            check_aggregate_legality(r)
+        }
+        ExprNode::Cmp { lhs, rhs, .. } => {
+            check_aggregate_legality(lhs)?;
+            check_aggregate_legality(rhs)
+        }
+        ExprNode::Case { arms, otherwise } => {
+            for (cond, val) in arms {
+                check_aggregate_legality(cond)?;
+                check_aggregate_legality(val)?;
+            }
+            check_aggregate_legality(otherwise)
+        }
+        // Leaf nodes and variants with no sub-expressions are trivially valid.
+        _ => Ok(()),
+    }
+}
+
 /// Walk an [`ExprNode`] and push the corresponding SQL fragment onto
 /// `acc`. Leaves consume bind slots (via
 /// [`crate::query::sql::push_filter_value`]); internal nodes push SQL
@@ -117,9 +195,11 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             arg,
             filter,
             cast_to: _,
+            distinct,
+            window: _,
         } => {
-            // Bare aggregate emission — keyword, argument, closing
-            // paren, optional FILTER clause. The `cast_to` field is
+            // Bare aggregate emission — keyword, optional DISTINCT, argument,
+            // closing paren, optional FILTER clause. The `cast_to` field is
             // intentionally ignored here; the narrowing cast lives at
             // the terminal layer (see
             // [`crate::query::sql::emit_aggregate_with_cast`] and
@@ -136,72 +216,123 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // `emit_expr(arg)` call — the `arg` slot on the typed
             // wrapper carries an inert placeholder for that variant,
             // never a real column reference.
+            //
+            // The `distinct` flag is checked by
+            // `check_aggregate_legality` before emission — rejected
+            // combinations (CountStar + DISTINCT, StringAgg + DISTINCT)
+            // never reach this arm at fetch time; they fail earlier.
+            // At the bare-emit level (unit tests, nested contexts) the
+            // flag is still emitted verbatim so tests can verify the
+            // flag round-trips correctly.
             match op {
                 AggOp::Count => {
                     acc.push_sql("COUNT(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::CountStar => {
+                    // `distinct` on CountStar is rejected by
+                    // `check_aggregate_legality` before fetch time. At
+                    // the raw emit level (tests that bypass the terminal)
+                    // we emit `COUNT(*)` as normal — the legality check
+                    // is the enforcement point, not the emitter.
                     acc.push_sql("COUNT(*)");
                 }
                 AggOp::Sum => {
                     acc.push_sql("SUM(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::Avg => {
                     acc.push_sql("AVG(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::Min => {
                     acc.push_sql("MIN(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::Max => {
                     acc.push_sql("MAX(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::ArrayAgg => {
-                    // ARRAY_AGG(col) — collects non-null values into a
-                    // Postgres array. Decoded as Vec<V> at the Rust level.
+                    // ARRAY_AGG([DISTINCT] col) — collects non-null values
+                    // into a Postgres array. Decoded as Vec<V> at the Rust
+                    // level. ARRAY_AGG(DISTINCT col) is valid Postgres
+                    // syntax — duplicates are removed from the result array.
                     acc.push_sql("ARRAY_AGG(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::JsonAgg => {
-                    // JSONB_AGG(col) — Djogi standardises on JSONB for all
-                    // JSON wire and storage formats, so JSON_AGG is never
-                    // emitted. See docs/spec/decisions.md.
+                    // JSONB_AGG([DISTINCT] col) — Djogi standardises on
+                    // JSONB for all JSON wire and storage formats, so
+                    // JSON_AGG is never emitted. See docs/spec/decisions.md.
                     acc.push_sql("JSONB_AGG(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::StringAgg(sep) => {
-                    // STRING_AGG(col, $sep) — separator is bound as a
-                    // parameter to guard against injection from a
-                    // runtime-computed separator string. The clone is
-                    // required because `sep` is `&String` (borrowed from
-                    // the ExprNode) and `push_bind` takes owned values.
+                    // STRING_AGG([DISTINCT] col, $sep) — separator is bound
+                    // as a parameter. DISTINCT on STRING_AGG is rejected by
+                    // `check_aggregate_legality` at fetch time because
+                    // Postgres requires a per-aggregate ORDER BY clause
+                    // alongside DISTINCT, and Djogi's Phase 6.5 IR does not
+                    // track that. The clone is required because `sep` is
+                    // `&String` (borrowed from the ExprNode) and `push_bind`
+                    // takes owned values.
                     acc.push_sql("STRING_AGG(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(", ");
                     acc.push_bind(sep.clone());
                     acc.push_sql(")");
                 }
                 AggOp::BoolAnd => {
-                    // BOOL_AND(col) — true if every non-null value is true.
+                    // BOOL_AND([DISTINCT] col) — true if every non-null
+                    // value is true. DISTINCT is semantically a no-op for
+                    // boolean aggregation but Postgres accepts it.
                     acc.push_sql("BOOL_AND(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }
                 AggOp::BoolOr => {
-                    // BOOL_OR(col) — true if at least one non-null value is
-                    // true.
+                    // BOOL_OR([DISTINCT] col) — true if at least one
+                    // non-null value is true. DISTINCT is semantically
+                    // a no-op but Postgres accepts it.
                     acc.push_sql("BOOL_OR(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
                     emit_expr(acc, arg);
                     acc.push_sql(")");
                 }

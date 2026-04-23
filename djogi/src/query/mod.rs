@@ -27,9 +27,12 @@ pub mod annotate;
 pub mod condition;
 pub mod field;
 pub mod filter;
+pub mod grouped;
 pub(crate) mod lock;
 pub mod order;
 pub mod queryset;
+#[cfg(feature = "spatial")]
+pub mod spatial_grouping;
 pub mod sql;
 pub mod stream;
 pub mod terminal;
@@ -42,6 +45,8 @@ pub use field::{FieldRef, IntoFilterValue};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
+#[cfg(feature = "spatial")]
+pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
 

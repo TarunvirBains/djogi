@@ -6,8 +6,11 @@
 //! 1. Connect to the admin database (via `DATABASE_URL`).
 //! 2. Create a fresh `djogi_test_<uuid>` database.
 //! 3. Install HeeRanjID schema and seed the default node.
-//! 4. Return a `DjogiContext` backed by a pool pointed at the new database.
-//! 5. Drop the database via `teardown_test_db` — called explicitly by the
+//! 4. Optionally provision extra Postgres extensions (e.g. `postgis`) via
+//!    `CREATE EXTENSION IF NOT EXISTS` — driven by the
+//!    `#[djogi_test(extensions = [...])]` attribute argument.
+//! 5. Return a `DjogiContext` backed by a pool pointed at the new database.
+//! 6. Drop the database via `teardown_test_db` — called explicitly by the
 //!    macro-generated wrapper, both on normal return and after a caught panic.
 //!
 //! # Substrate
@@ -22,6 +25,18 @@
 //! hyphens, fully lowercase. The name is always under 63 bytes (Postgres
 //! identifier length limit), is safe as a double-quoted identifier, and
 //! contains only ASCII alphanumeric characters plus the `djogi_test_` prefix.
+//!
+//! # Extension name validation
+//!
+//! Extension names flow from Rust source (attribute arguments) into SQL as
+//! quoted identifiers. To keep that path safe even when the attribute is
+//! written by hand, `setup_test_db_with_extensions` rejects any name that
+//! is not a plain Postgres identifier: ASCII letter or underscore followed
+//! by ASCII letters, digits, or underscores, from 1 to 63 bytes total. This
+//! matches how Postgres itself tokenizes unquoted identifiers and covers
+//! every real extension on PGXN and `contrib/`. Per the Djogi-wide no-regex
+//! rule (`docs/spec/decisions.md`), the validator is implemented with
+//! stdlib byte primitives only.
 //!
 //! # Teardown approach
 //!
@@ -60,8 +75,26 @@ pub struct TestDbCleanup {
 
 /// Set up a fresh per-test database and return the cleanup token + context.
 ///
-/// Called by macro-generated code from `#[djogi_test]`-annotated tests.
-/// Do not call directly from production code.
+/// Convenience wrapper over [`setup_test_db_with_extensions`] for callers
+/// that do not need any extra Postgres extensions beyond the HeeRanjID
+/// schema. Equivalent to passing an empty extensions slice.
+///
+/// Called by macro-generated code from `#[djogi_test]`-annotated tests that
+/// omit the `extensions = [...]` argument. Also available for direct use
+/// from hand-written test harnesses that do not go through the attribute.
+///
+/// # Errors
+///
+/// Returns `DjogiError::Db` on all setup failures.
+pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
+    setup_test_db_with_extensions(&[]).await
+}
+
+/// Set up a fresh per-test database, provision extra extensions, and return
+/// the cleanup token + context.
+///
+/// Called by macro-generated code from `#[djogi_test(extensions = [...])]`
+/// tests. Also available for direct use from hand-written test harnesses.
 ///
 /// # Steps
 ///
@@ -72,14 +105,35 @@ pub struct TestDbCleanup {
 /// 5. Connect to the new database via `tokio_postgres`.
 /// 6. Install HeeRanjID schema + seed the default node via
 ///    `heeranjid::postgres_schema::install_schema` and `seed_default_node`.
-/// 7. Set `heer.node_id = '1'` at the database level so every new connection
+/// 7. For each entry in `extensions`, validate the name against the
+///    identifier rule (see module docs) and issue
+///    `CREATE EXTENSION IF NOT EXISTS "<name>"`. `IF NOT EXISTS` means a
+///    repeated name or a pre-installed extension is a no-op.
+/// 8. Set `heer.node_id = '1'` at the database level so every new connection
 ///    inherits it without a per-connection SET call.
-/// 8. Open a `DjogiPool` (deadpool-postgres) and return it as a `DjogiContext`.
+/// 9. Open a `DjogiPool` (deadpool-postgres) and return it as a `DjogiContext`.
 ///
 /// # Errors
 ///
-/// Returns `DjogiError::Db` on all setup failures.
-pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
+/// Returns `DjogiError::Db` on all setup failures. Failure modes that
+/// mention the offending extension by name:
+///
+/// - The extension name does not match the identifier rule (handled in Rust).
+/// - The Postgres server rejects `CREATE EXTENSION IF NOT EXISTS` — for
+///   example, when the named extension is not installed on the server
+///   (missing `.control` file). The original `tokio_postgres::Error` is
+///   preserved in the `DjogiError::Db` source chain so the adopter can see
+///   the full server message.
+pub async fn setup_test_db_with_extensions(
+    extensions: &[&str],
+) -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
+    // Validate extension names up front so we fail before CREATE DATABASE
+    // when the attribute author made a typo. This means an invalid name
+    // does not leak a stray `djogi_test_<uuid>` database.
+    for name in extensions {
+        validate_extension_name(name)?;
+    }
+
     // Read DATABASE_URL — same env var convention as #[sqlx::test].
     let database_url = std::env::var("DATABASE_URL").map_err(|_| {
         DjogiError::Db(DbError::other(
@@ -144,6 +198,21 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
             )))
         })?;
 
+    // Auto-provision extra extensions requested via `#[djogi_test(extensions = [...])]`.
+    // Each name is already validated above, so interpolating it into a
+    // double-quoted identifier is safe. `IF NOT EXISTS` makes this a no-op
+    // if the extension is already present (for example, if a previous step
+    // pulled it in transitively).
+    for name in extensions {
+        let sql = format!("CREATE EXTENSION IF NOT EXISTS \"{name}\"");
+        test_client.batch_execute(&sql).await.map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "failed to create Postgres extension `{name}` \
+                 (is it installed on the server?): {e}"
+            )))
+        })?;
+    }
+
     // Set heer.node_id at the database level so every NEW connection inherits
     // it. This must happen before we open the app pool, so that all connections
     // in the DjogiPool see node_id = 1 without needing per-connection SET calls.
@@ -204,6 +273,58 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
     }
 }
 
+/// Validate that `name` is a plain Postgres identifier safe to interpolate
+/// into a `CREATE EXTENSION IF NOT EXISTS "<name>"` statement.
+///
+/// Rules (byte-level, no regex per the Djogi-wide no-regex policy):
+///
+/// - Length between 1 and 63 bytes inclusive (Postgres `NAMEDATALEN` minus
+///   the trailing `NUL`).
+/// - First byte is an ASCII letter (upper- or lower-case) or underscore.
+/// - Every subsequent byte is an ASCII letter, digit, or underscore.
+///
+/// All real-world extension names on PGXN and in `contrib/` (`postgis`,
+/// `pg_trgm`, `pgcrypto`, `uuid-ossp` — wait, that last one contains a
+/// hyphen, but it is itself aliased to `"uuid-ossp"` double-quoted) match
+/// this rule with one caveat: extensions whose names require double
+/// quoting are rejected here. The caveat is documented on the
+/// [`setup_test_db_with_extensions`] entry point.
+fn validate_extension_name(name: &str) -> Result<(), DjogiError> {
+    let bytes = name.as_bytes();
+
+    if bytes.is_empty() {
+        return Err(DjogiError::Db(DbError::other(
+            "djogi_test: extension name must not be empty",
+        )));
+    }
+    if bytes.len() > 63 {
+        return Err(DjogiError::Db(DbError::other(format!(
+            "djogi_test: extension name `{name}` exceeds 63-byte Postgres identifier limit",
+        ))));
+    }
+
+    let first = bytes[0];
+    let first_ok = first.is_ascii_alphabetic() || first == b'_';
+    if !first_ok {
+        return Err(DjogiError::Db(DbError::other(format!(
+            "djogi_test: extension name `{name}` must start with an ASCII letter or underscore",
+        ))));
+    }
+
+    for &b in &bytes[1..] {
+        let ok = b.is_ascii_alphanumeric() || b == b'_';
+        if !ok {
+            return Err(DjogiError::Db(DbError::other(format!(
+                "djogi_test: extension name `{name}` contains invalid byte `{c}` \
+                 (only ASCII letters, digits, and underscores are allowed)",
+                c = b as char,
+            ))));
+        }
+    }
+
+    Ok(())
+}
+
 /// Replace the database name component in a Postgres connection URL.
 ///
 /// Accepts URLs in the form `postgres://user:pass@host:port/dbname` or
@@ -226,7 +347,7 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::replace_db_in_url;
+    use super::{replace_db_in_url, validate_extension_name};
 
     #[test]
     fn replace_db_preserves_host_and_port() {
@@ -247,5 +368,59 @@ mod tests {
         let url = "postgresql://localhost/old_db";
         let result = replace_db_in_url(url, "fresh_db").unwrap();
         assert_eq!(result, "postgresql://localhost/fresh_db");
+    }
+
+    #[test]
+    fn validate_extension_name_accepts_real_extensions() {
+        validate_extension_name("postgis").unwrap();
+        validate_extension_name("pg_trgm").unwrap();
+        validate_extension_name("pgcrypto").unwrap();
+        validate_extension_name("_leading_underscore").unwrap();
+        validate_extension_name("WithMixedCase").unwrap();
+        validate_extension_name("ext1").unwrap();
+    }
+
+    #[test]
+    fn validate_extension_name_rejects_empty() {
+        let err = validate_extension_name("").unwrap_err();
+        assert!(err.to_string().contains("must not be empty"), "{err}");
+    }
+
+    #[test]
+    fn validate_extension_name_rejects_too_long() {
+        let name = "a".repeat(64);
+        let err = validate_extension_name(&name).unwrap_err();
+        assert!(err.to_string().contains("exceeds 63-byte"), "{err}");
+    }
+
+    #[test]
+    fn validate_extension_name_rejects_leading_digit() {
+        let err = validate_extension_name("1ext").unwrap_err();
+        assert!(
+            err.to_string().contains("must start with"),
+            "error message should mention leading character rule: {err}",
+        );
+    }
+
+    #[test]
+    fn validate_extension_name_rejects_injection_attempts() {
+        // These would be catastrophic if interpolated into SQL unvalidated.
+        // Each must fail validation before any DB work happens.
+        for candidate in [
+            "postgis; DROP DATABASE postgres",
+            "a\"b",
+            "a b",
+            "a-b",
+            "a.b",
+            "a/b",
+            "\"postgis\"",
+        ] {
+            let err = validate_extension_name(candidate).unwrap_err();
+            assert!(
+                err.to_string().contains("invalid byte")
+                    || err.to_string().contains("must start with"),
+                "expected validation failure for `{candidate}`, got: {err}",
+            );
+        }
     }
 }

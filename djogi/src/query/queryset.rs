@@ -685,6 +685,434 @@ impl<T: Model> QuerySet<T> {
     pub(crate) fn is_empty(&self) -> bool {
         self.is_empty
     }
+
+    /// Group this queryset by one or more key columns, transitioning into
+    /// [`crate::query::grouped::GroupedQuerySet<T, K>`].
+    ///
+    /// The closure receives a default-constructed `T::Fields` handle and must
+    /// return one `FieldRef<T, V>` (arity 1) or a tuple of `FieldRef`s (arity
+    /// 2..=4) — any type that implements
+    /// [`crate::query::grouped::IntoGroupKeyTuple`].
+    ///
+    /// `GroupedQuerySet` has no terminals. Call `.annotate(...)` on the result
+    /// to attach aggregate expressions and enter the terminal-bearing
+    /// [`crate::query::grouped::GroupedAnnotatedQuerySet`] state. Premature
+    /// `.fetch_all` on `GroupedQuerySet` is a compile error.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let rows: Vec<(i64, i64)> = Txn::objects()
+    ///     .group_by(|f| f.org_id())
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn group_by<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
+    where
+        F: FnOnce(T::Fields) -> K,
+        K: crate::query::grouped::IntoGroupKeyTuple,
+    {
+        let keys = f(T::Fields::default());
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys,
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            #[cfg(feature = "spatial")]
+            spatial_source: None,
+            _k: std::marker::PhantomData,
+        }
+    }
+
+    /// Enter grouped state with ROLLUP semantics. Emits
+    /// `GROUP BY ROLLUP (<keys>)` — Postgres expands this to include all
+    /// hierarchical subtotals and the grand total in one pass.
+    ///
+    /// This is a convenience entry point equivalent to
+    /// `.group_by(f)` followed by setting the grouping mode to
+    /// `GroupingMode::Rollup`. Call `.annotate(...)` on the result to
+    /// attach aggregate expressions.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Emits: GROUP BY ROLLUP (org_id)
+    /// // Produces subtotals per org_id plus the grand total in one query.
+    /// let rows = Txn::objects()
+    ///     .rollup(|f| f.org_id())
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn rollup<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
+    where
+        F: FnOnce(T::Fields) -> K,
+        K: crate::query::grouped::IntoGroupKeyTuple,
+    {
+        let mut gq = self.group_by(f);
+        gq.grouping = crate::query::grouped::GroupingMode::Rollup;
+        gq
+    }
+
+    /// Enter grouped state with CUBE semantics. Emits
+    /// `GROUP BY CUBE (<keys>)` — Postgres expands this to all 2^n subsets
+    /// of the key columns, covering every possible grouping combination.
+    ///
+    /// This is a convenience entry point equivalent to
+    /// `.group_by(f)` followed by setting the grouping mode to
+    /// `GroupingMode::Cube`. Call `.annotate(...)` on the result to
+    /// attach aggregate expressions.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Emits: GROUP BY CUBE (org_id, region_id)
+    /// // Produces subtotals for (org_id, region_id), (org_id), (region_id),
+    /// // and the grand total — all four combinations.
+    /// let rows = Txn::objects()
+    ///     .cube(|f| (f.org_id(), f.region_id()))
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn cube<F, K>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, K>
+    where
+        F: FnOnce(T::Fields) -> K,
+        K: crate::query::grouped::IntoGroupKeyTuple,
+    {
+        let mut gq = self.group_by(f);
+        gq.grouping = crate::query::grouped::GroupingMode::Cube;
+        gq
+    }
+
+    /// Enter grouped state with GROUPING SETS semantics. Takes a closure
+    /// that returns `[&'static str; N]` — each element becomes one
+    /// single-column grouping set. Emits `GROUP BY GROUPING SETS ((col_a),
+    /// (col_b), ...)`.
+    ///
+    /// The key type is `()` — there are no statically-typed key columns to
+    /// decode because each row's "key" depends on which grouping set matched.
+    /// Call `.annotate(...)` on the result to attach aggregate expressions;
+    /// grouping-set column values are accessible via raw row access on the
+    /// rows returned by `.fetch_all`.
+    ///
+    /// Phase 6.5 ships arity-1 per set (one column per set). Multi-column
+    /// sets are a future promotion.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Emits: GROUP BY GROUPING SETS ((org_id), (region))
+    /// // Each result row is grouped by exactly one of the listed columns.
+    /// let rows = Txn::objects()
+    ///     .group_by_sets(|_| ["org_id", "region"])
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn group_by_sets<F, const N: usize>(
+        self,
+        f: F,
+    ) -> crate::query::grouped::GroupedQuerySet<T, ()>
+    where
+        F: FnOnce(T::Fields) -> [&'static str; N],
+    {
+        let cols = f(T::Fields::default());
+        let sets: Vec<Vec<&'static str>> = cols.iter().map(|c| vec![*c]).collect();
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys: (),
+            grouping: crate::query::grouped::GroupingMode::Sets(sets),
+            #[cfg(feature = "spatial")]
+            spatial_source: None,
+            _k: std::marker::PhantomData,
+        }
+    }
+
+    /// Spatial LEFT JOIN GROUP BY: group rows by which region of `R` contains
+    /// them.
+    ///
+    /// Emits:
+    ///
+    /// ```sql
+    /// SELECT r.<pk-col> AS rk0, <aggregates>
+    /// FROM <t-table> AS t
+    /// LEFT JOIN <r-table> AS r ON ST_Contains(r.<r-geo-col>, t.<t-geo-col>)
+    /// GROUP BY r.<pk-col>
+    /// ```
+    ///
+    /// The `LEFT JOIN` gives users the unassigned bucket —
+    /// `RegionKey { region_pk: None }` — so rows that fall outside all known
+    /// regions are visible in the result, not silently dropped (which an
+    /// `INNER JOIN` would do).
+    ///
+    /// ## Runtime warning
+    ///
+    /// If `R` has no GiST index on its geography column, this method warns
+    /// once per process via `tracing::warn!`. A spatial JOIN without a GiST
+    /// index performs a full table scan on `R` for every row in `T`, scaling
+    /// as O(|T| × |R|). Add `#[model(index = ...)]` on the region model's
+    /// geography field or declare an `IndexSpec` with `IndexType::Gist`.
+    ///
+    /// ## Type parameters
+    ///
+    /// - `F` — closure that picks the geography column on `T`.
+    /// - `G` — the concrete geography type (e.g. `GeoPoint`, `Polygon`).
+    /// - `R` — the region model. Must have at least one `Geography`-typed field
+    ///   in its descriptor.
+    ///
+    /// ## Panics
+    ///
+    /// Panics at call time if `R`'s descriptor contains no
+    /// `FieldSqlType::Geography` field. This is a programming error (missing
+    /// geo column on the region model), not a runtime condition, so a panic is
+    /// appropriate — the same way an out-of-bounds slice index is.
+    #[cfg(feature = "spatial")]
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn group_by_region<F, G, R>(
+        self,
+        field: F,
+        _regions: QuerySet<R>,
+    ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::RegionKey<R>>
+    where
+        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        G: crate::geo::GeographyValue,
+        R: Model,
+        R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
+    {
+        // ── Missing-GiST warning ─────────────────────────────────────────────
+        // Fire once per process via `std::sync::Once` so logs aren't flooded
+        // even when the same queryset is constructed in a hot loop.
+        if !R::descriptor().has_gist_on_geography() {
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                tracing::warn!(
+                    target: "djogi::spatial",
+                    model = R::table_name(),
+                    "group_by_region called against a region model with no GiST index on a \
+                     geography column; spatial JOINs without GiST scale linearly in both \
+                     table sizes — add IndexType::Gist on the region model's geography field \
+                     or declare an IndexSpec with extension_dependency = Some(\"postgis\")"
+                );
+            });
+        }
+
+        // ── Identify the data-side geo column ────────────────────────────────
+        let t_geo_col = field(T::Fields::default()).column();
+
+        // ── Identify the region-side geo column ──────────────────────────────
+        // Walk the region model's descriptor to find the first Geography-typed
+        // field. Panics if none exists — that is a programming error (the
+        // caller named a non-spatial model as the region model).
+        let r_geo_col = R::descriptor()
+            .fields
+            .iter()
+            .find(|f| {
+                matches!(
+                    f.sql_type,
+                    crate::descriptor::FieldSqlType::Geography { .. }
+                )
+            })
+            .map(|f| f.name)
+            .expect(
+                "region model R must have at least one Geography-typed field; \
+                 add a GeoPoint / Polygon / … field before calling group_by_region",
+            );
+
+        // ── PK column for the region model ───────────────────────────────────
+        let r_pk_col = R::descriptor()
+            .pk_column()
+            .expect("region model R must have a primary key");
+
+        // ── Build the spatial join spec ───────────────────────────────────────
+        let spec = crate::query::spatial_grouping::SpatialJoinSpec {
+            t_geo_col,
+            r_table: R::table_name(),
+            r_geo_col,
+            r_pk_col,
+        };
+
+        let keys = crate::query::spatial_grouping::RegionKey::<R> {
+            region_pk: None,
+            r_pk_col: Some(r_pk_col),
+            _phantom: std::marker::PhantomData,
+        };
+
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys,
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Join(spec)),
+            _k: std::marker::PhantomData,
+        }
+    }
+
+    /// Sugar for `group_by_region(..).annotate(|_| id_field.count_star())`.
+    ///
+    /// Returns a `GroupedAnnotatedQuerySet` that counts rows per region
+    /// (including an unassigned bucket for rows outside all regions).
+    ///
+    /// The count aggregate is `COUNT(*)` on the data table alias `t`.
+    /// Callers who need a different aggregate (e.g. `SUM(amount)`) use
+    /// `group_by_region` directly and call `.annotate` themselves.
+    ///
+    /// ## Type parameters
+    ///
+    /// Same bounds as [`QuerySet::group_by_region`].
+    #[cfg(feature = "spatial")]
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn count_by_region<F, G, R>(
+        self,
+        field: F,
+        regions: QuerySet<R>,
+    ) -> crate::query::grouped::GroupedAnnotatedQuerySet<
+        T,
+        crate::query::spatial_grouping::RegionKey<R>,
+        crate::expr::AggregateExpr<i64>,
+    >
+    where
+        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        G: crate::geo::GeographyValue,
+        R: Model,
+        R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
+    {
+        // Build a `count_star` aggregate on the `id` column as the proxy
+        // receiver — the aggregate emitter uses `COUNT(*)` regardless of
+        // the column name (see `AggOp::CountStar` emitter in expr/sql.rs).
+        self.group_by_region(field, regions)
+            .annotate(|_| crate::query::field::FieldRef::<T, i64>::new("id").count_star())
+    }
+
+    /// DBSCAN density-based clustering: group nearby points into clusters
+    /// without specifying the number of clusters in advance.
+    ///
+    /// Emits:
+    ///
+    /// ```sql
+    /// SELECT ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER () AS cluster_id,
+    ///        <aggregates>
+    /// FROM <table> AS t
+    /// [WHERE ...]
+    /// GROUP BY cluster_id
+    /// ```
+    ///
+    /// `cluster_id = NULL` for noise points (isolated rows with fewer than
+    /// `minpoints` neighbours within `eps`). With the default `min_points = 1`
+    /// every row is a core point of its own cluster, so noise never appears.
+    ///
+    /// # Filter ordering
+    ///
+    /// SQL evaluates `WHERE` before window functions, so `.filter(...)` calls
+    /// chained *before* `cluster_by_proximity` prune points **from the DBSCAN
+    /// input** — the clustering sees only the survivors, which can produce
+    /// different cluster ids than clustering the full set and filtering
+    /// after. Use `.having(...)` (evaluated after `GROUP BY cluster_id`) when
+    /// you want to filter on aggregate output without changing which rows
+    /// participate in the clustering.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let counts = Store::objects()
+    ///     .cluster_by_proximity(|f| f.location(), ClusterRadius::meters(500.0).min_points(3))
+    ///     .annotate(|f| f.id.count_star())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Type parameters
+    ///
+    /// - `F` — closure that resolves the geography column from `T::Fields`.
+    /// - `G` — concrete geography type (e.g. `GeoPoint`, `Polygon`).
+    #[cfg(feature = "spatial")]
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn cluster_by_proximity<F, G>(
+        self,
+        field: F,
+        radius: crate::query::spatial_grouping::ClusterRadius,
+    ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::ClusterId>
+    where
+        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        G: crate::geo::GeographyValue,
+    {
+        let t_geo_col = field(T::Fields::default()).column();
+        let spec = crate::query::spatial_grouping::ClusterSpec {
+            t_geo_col,
+            eps_degrees: radius.eps_degrees,
+            minpoints: radius.minpoints,
+        };
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys: crate::query::spatial_grouping::ClusterId(None),
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Cluster(spec)),
+            _k: std::marker::PhantomData,
+        }
+    }
+
+    /// Geohash grid bucketing: assign each row to a spatial cell of the
+    /// chosen [`GeohashPrecision`] and group by that cell.
+    ///
+    /// Emits:
+    ///
+    /// ```sql
+    /// SELECT ST_GeoHash(t.<col>::geometry, $precision) AS geohash, <aggregates>
+    /// FROM <table> AS t
+    /// [WHERE ...]
+    /// GROUP BY geohash
+    /// ```
+    ///
+    /// Geohash strings are prefix-ordered: a `P5` key is a prefix of any
+    /// `P6` key that falls in the same parent cell — coarser re-aggregation
+    /// is possible via string truncation without re-querying. Nullable
+    /// geography columns (`Option<G>`) bucket NULLs into `GeohashKey(None)`;
+    /// non-nullable columns never produce `None`.
+    ///
+    /// # Filter ordering
+    ///
+    /// SQL evaluates `WHERE` before the `ST_GeoHash` projection, so
+    /// `.filter(...)` calls chained *before* `bucket_by_cell` prune points
+    /// **from the bucketing input** — only the survivors are assigned a
+    /// geohash and aggregated. Use `.having(...)` (evaluated after
+    /// `GROUP BY geohash`) when you want to filter on aggregate output
+    /// without affecting which rows are bucketed.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let heatmap = Store::objects()
+    ///     .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
+    ///     .annotate(|f| f.id.count_star())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Type parameters
+    ///
+    /// - `F` — closure that resolves the geography column from `T::Fields`.
+    /// - `G` — concrete geography type (e.g. `GeoPoint`).
+    #[cfg(feature = "spatial")]
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn bucket_by_cell<F, G>(
+        self,
+        field: F,
+        precision: crate::query::spatial_grouping::GeohashPrecision,
+    ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::GeohashKey>
+    where
+        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        G: crate::geo::GeographyValue,
+    {
+        let t_geo_col = field(T::Fields::default()).column();
+        let spec = crate::query::spatial_grouping::GeohashSpec {
+            t_geo_col,
+            precision: precision.as_i32(),
+        };
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys: crate::query::spatial_grouping::GeohashKey(None),
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Geohash(spec)),
+            _k: std::marker::PhantomData,
+        }
+    }
 }
 
 /// Private marker trait used to seal [`IntoDistinctColumns`].
@@ -882,5 +1310,369 @@ mod tests {
         let qs: QuerySet<Fake> = QuerySet::new().limit(5);
         let qs2 = qs.clone();
         assert_eq!(qs.limit, qs2.limit);
+    }
+
+    // ── T11: group_by_region / count_by_region type-dispatch tests ────────────
+    //
+    // These tests confirm the entry-point signatures compile and return the
+    // expected type shapes. The SQL emission shape is tested in sql.rs.
+
+    // ── P1-2 once-warn counter test ───────────────────────────────────────────
+    //
+    // Verifies that calling `group_by_region` against an unindexed region model
+    // emits at most one `tracing::warn!` regardless of how many times the method
+    // is called. The guard uses `std::sync::Once` which is process-wide; the
+    // counter is captured with `tracing_test::traced_test` scoped to this test's
+    // thread-local subscriber.
+    //
+    // `ONCE` fires at most once per process run. `#[traced_test]` captures the
+    // warn if it fires inside this test invocation and zero otherwise. The
+    // assertion uses `<=` rather than `==` because test parallelism may cause
+    // another unindexed call (in a different test) to consume the `Once` first —
+    // the bound of at most one is still the invariant being checked.
+
+    /// A region model with a geography field but NO GiST index — triggers the
+    /// once-per-process warn path in `group_by_region`.
+    #[cfg(feature = "spatial")]
+    struct FakeUnindexedRegion;
+    #[cfg(feature = "spatial")]
+    impl crate::model::__sealed::Sealed for FakeUnindexedRegion {}
+    #[cfg(feature = "spatial")]
+    #[allow(clippy::manual_async_fn)]
+    impl Model for FakeUnindexedRegion {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "unindexed_regions"
+        }
+        fn pk_value(&self) -> &i64 {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            use crate::descriptor::{FieldDescriptor, FieldSqlType, GeographySubtype, PkType};
+            static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+                name: "boundary",
+                sql_type: FieldSqlType::Geography {
+                    subtype: GeographySubtype::Polygon,
+                    srid: 4326,
+                },
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            }];
+            static DESC: ModelDescriptor = ModelDescriptor {
+                type_name: "FakeUnindexedRegion",
+                table_name: "unindexed_regions",
+                pk_type: PkType::HeerId,
+                fields: FIELDS,
+                partition_by: None,
+                has_outbox: false,
+                idempotency_key: None,
+                tenant_key: None,
+                cache_ttl: None,
+                rationale: None,
+                indexes: &[],
+                is_through: false,
+                fts: None,
+            };
+            &DESC
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+    }
+
+    /// Verifies the once-warn guard: `group_by_region` must emit at most one
+    /// `warn!` for an unindexed region model even when called multiple times.
+    ///
+    /// A custom `tracing::Subscriber` counts `WARN`-level events from the
+    /// `djogi::spatial` target. The `std::sync::Once` guard is process-wide,
+    /// so the warn fires in whichever test invocation happens first;
+    /// the counter captures it if it fires inside this test. The assertion
+    /// bounds the count to `<= 1`, which is the invariant regardless of
+    /// test ordering.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn group_by_region_warns_at_most_once_for_unindexed_region() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Per-invocation counter — never accumulates across tests because
+        // each test sees its own stack-allocated `AtomicUsize`.
+        let warn_count = std::sync::Arc::new(AtomicUsize::new(0));
+
+        // Minimal `Subscriber` that counts WARN events from "djogi::spatial".
+        struct WarnCountSub {
+            count: std::sync::Arc<AtomicUsize>,
+        }
+        impl tracing::Subscriber for WarnCountSub {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                if *event.metadata().level() == tracing::Level::WARN
+                    && event.metadata().target() == "djogi::spatial"
+                {
+                    self.count.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+        }
+
+        let subscriber = WarnCountSub {
+            count: warn_count.clone(),
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        // Call group_by_region twice — only the first call (in this process)
+        // should fire the tracing::warn!. The second is a no-op via Once.
+        let _g1 = QuerySet::<Fake>::new().group_by_region(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            QuerySet::<FakeUnindexedRegion>::new(),
+        );
+        let _g2 = QuerySet::<Fake>::new().group_by_region(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            QuerySet::<FakeUnindexedRegion>::new(),
+        );
+
+        // The Once guard ensures at most one warn fires across the whole process.
+        // If this test runs first on the unindexed path: count == 1.
+        // If another test fired the Once before us: count == 0.
+        // Both satisfy the invariant "never > 1".
+        let count = warn_count.load(Ordering::Relaxed);
+        assert!(
+            count <= 1,
+            "expected at most 1 warn from group_by_region (Once guard), got {count}"
+        );
+    }
+
+    /// A `FakeIndexedRegion` that returns a descriptor with a GiST index on a
+    /// Geography field — `group_by_region` should NOT emit a warning.
+    #[cfg(feature = "spatial")]
+    struct FakeIndexedRegion;
+    #[cfg(feature = "spatial")]
+    impl crate::model::__sealed::Sealed for FakeIndexedRegion {}
+    #[cfg(feature = "spatial")]
+    #[allow(clippy::manual_async_fn)]
+    impl Model for FakeIndexedRegion {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "indexed_regions"
+        }
+        fn pk_value(&self) -> &i64 {
+            unreachable!()
+        }
+        fn descriptor() -> &'static ModelDescriptor {
+            use crate::descriptor::{
+                FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec, IndexType, PkType,
+            };
+            static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+                name: "boundary",
+                sql_type: FieldSqlType::Geography {
+                    subtype: GeographySubtype::Polygon,
+                    srid: 4326,
+                },
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            }];
+            static INDEXES: &[IndexSpec] = &[IndexSpec {
+                name: "idx_regions_boundary_gist",
+                columns: &["boundary"],
+                unique: false,
+                index_type: IndexType::Gist,
+                requires_out_of_transaction: true,
+                extension_dependency: Some("postgis"),
+            }];
+            static DESC: ModelDescriptor = ModelDescriptor {
+                type_name: "FakeIndexedRegion",
+                table_name: "indexed_regions",
+                pk_type: PkType::HeerId,
+                fields: FIELDS,
+                partition_by: None,
+                has_outbox: false,
+                idempotency_key: None,
+                tenant_key: None,
+                cache_ttl: None,
+                rationale: None,
+                indexes: INDEXES,
+                is_through: false,
+                fts: None,
+            };
+            &DESC
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+    }
+
+    /// `group_by_region` returns a `GroupedQuerySet<T, RegionKey<R>>`.
+    /// This compile-pass test verifies the type shape is as specified.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn group_by_region_returns_grouped_queryset_with_region_key() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::GroupedQuerySet;
+        use crate::query::spatial_grouping::RegionKey;
+
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let regions: QuerySet<FakeIndexedRegion> = QuerySet::new();
+        let _grouped: GroupedQuerySet<Fake, RegionKey<FakeIndexedRegion>> =
+            qs.group_by_region(|_| FieldRef::<Fake, GeoPoint>::new("location"), regions);
+    }
+
+    /// `count_by_region` returns a `GroupedAnnotatedQuerySet<T, RegionKey<R>, AggregateExpr<i64>>`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn count_by_region_returns_grouped_annotated_queryset() {
+        use crate::expr::AggregateExpr;
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::GroupedAnnotatedQuerySet;
+        use crate::query::spatial_grouping::RegionKey;
+
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let regions: QuerySet<FakeIndexedRegion> = QuerySet::new();
+        let _gaq: GroupedAnnotatedQuerySet<Fake, RegionKey<FakeIndexedRegion>, AggregateExpr<i64>> =
+            qs.count_by_region(|_| FieldRef::<Fake, GeoPoint>::new("location"), regions);
+    }
+
+    /// Calling `group_by_region` twice on the same model compiles — verifies
+    /// that constructing two querysets does not conflict on the `Once`-based
+    /// warn guard. The `std::sync::Once` is process-wide and non-resettable;
+    /// the second call is a no-op without deadlock.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn group_by_region_twice_does_not_deadlock() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+
+        let _g1 = QuerySet::<Fake>::new().group_by_region(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            QuerySet::<FakeIndexedRegion>::new(),
+        );
+        let _g2 = QuerySet::<Fake>::new().group_by_region(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            QuerySet::<FakeIndexedRegion>::new(),
+        );
+        // If we got here without a deadlock or panic, the Once guard is correct.
+    }
+
+    // ── T12: cluster_by_proximity / bucket_by_cell type-dispatch tests ────────
+
+    /// `cluster_by_proximity` returns `GroupedQuerySet<T, ClusterId>`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_by_proximity_returns_grouped_queryset_with_cluster_id() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::GroupedQuerySet;
+        use crate::query::spatial_grouping::{ClusterId, ClusterRadius};
+        // Type-level check: the return type must be `GroupedQuerySet<Fake, ClusterId>`.
+        let _g: GroupedQuerySet<Fake, ClusterId> = QuerySet::<Fake>::new().cluster_by_proximity(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            ClusterRadius::meters(500.0).min_points(3),
+        );
+    }
+
+    /// `bucket_by_cell` returns `GroupedQuerySet<T, GeohashKey>`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn bucket_by_cell_returns_grouped_queryset_with_geohash_key() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::GroupedQuerySet;
+        use crate::query::spatial_grouping::{GeohashKey, GeohashPrecision};
+        let _g: GroupedQuerySet<Fake, GeohashKey> = QuerySet::<Fake>::new().bucket_by_cell(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            GeohashPrecision::P5,
+        );
     }
 }

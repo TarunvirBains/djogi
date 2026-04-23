@@ -919,6 +919,240 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     }
 }
 
+// ── Spatial shape predicates on any GeographyValue field (T9) ────────────────
+//
+// Gated on `#[cfg(feature = "spatial")]`. Generic over `G: GeographyValue` so
+// the methods are available on `FieldRef<M, Polygon>`, `FieldRef<M, LineString>`,
+// `FieldRef<M, GeoPoint>`, etc. The `other` argument is also generic (`O:
+// GeographyValue`) so callers may test across geometry types — for example,
+// `FieldRef<M, Polygon>::intersects(some_linestring)` is valid because both
+// `Polygon` and `LineString` implement `GeographyValue`.
+//
+// Note: `.within_km` remains in the `impl<M: Model> FieldRef<M, GeoPoint>`
+// block above — it is radius-based and specific to `GeoPoint`. The shape-based
+// `.within(&geom)` below lives here (generic receiver) and routes to the
+// `WithinShape` variant, avoiding any naming collision.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
+    /// Filter rows where this geography column entirely contains `other`.
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Contains(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`. The EWKB bytes flow through `push_bind` — no
+    /// string interpolation of user-supplied data.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find delivery zones that fully contain the customer's neighbourhood.
+    /// DeliveryZone::objects()
+    ///     .filter(|z| z.area().contains(&neighbourhood_polygon))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn contains<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::Contains {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+
+    /// Filter rows where this geography column intersects `other` (shares at
+    /// least one point).
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Intersects(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find routes that cross the construction zone.
+    /// Route::objects()
+    ///     .filter(|r| r.path().intersects(&construction_zone))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn intersects<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::Intersects {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+
+    /// Filter rows where this geography column touches `other` — the geometries
+    /// share boundary points but no interior points (touch but do not overlap).
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Touches(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find parcels adjacent to (touching) the road boundary.
+    /// Parcel::objects()
+    ///     .filter(|p| p.boundary().touches(&road_line))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn touches<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::Touches {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+
+    /// Filter rows where this geography column is entirely within `other`.
+    ///
+    /// This is the shape-based `within` — distinct from Phase 6's radius-based
+    /// `.within_km(center, km)` on `FieldRef<M, GeoPoint>`. The two methods
+    /// live on different receivers and do not collide.
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Within(<col>, $1::geography)` where `$1` is the EWKB
+    /// encoding of `other`. Internally routes to `SpatialExpr::WithinShape`
+    /// to avoid the variant-name collision with the radius-based `Within`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Find deliveries whose drop-off point falls inside a coverage polygon.
+    /// Delivery::objects()
+    ///     .filter(|d| d.drop_off().within(&coverage_polygon))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within<O: crate::geo::GeographyValue>(
+        self,
+        other: &O,
+    ) -> crate::query::condition::Condition {
+        use crate::expr::node::ExprNode;
+        use crate::expr::spatial::SpatialExpr;
+        crate::query::condition::Condition::Expr(crate::expr::Expr::from_node(ExprNode::Spatial(
+            SpatialExpr::WithinShape {
+                field_column: self.column(),
+                other_ewkb: other.to_ewkb_bytes(),
+            },
+        )))
+    }
+}
+
+// ── T10: bounded_by (any GeographyValue) + distance_to (GeoPoint-only) ──────
+//
+// `.bounded_by` is generic over `G: GeographyValue` — a bbox prefilter makes
+// sense for any geography column (polygon coverage zones, linestring routes,
+// point locations, etc.). The four coordinate arguments follow the GeoPoint
+// (lat, lon) convention; emission swaps to Postgres (x=lon, y=lat) order.
+//
+// `.distance_to` is specific to `FieldRef<M, GeoPoint>` because
+// `ST_Distance` applied to a non-point geometry (e.g. a Polygon) returns the
+// minimum boundary distance, which is a different semantic. Keeping it on the
+// GeoPoint receiver makes the API unambiguous and mirrors the existing
+// `.within_km` / `.order_by_distance` surface.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
+    /// Emits a GiST-indexed bounding-box prefilter:
+    /// `ST_MakeEnvelope($min_lon, $min_lat, $max_lon, $max_lat, 4326)::geography && <col>`
+    ///
+    /// The `&&` operator lets Postgres use a GiST spatial index for a cheap
+    /// first pass before expensive `ST_*` predicates. Combine with a shape
+    /// predicate for best performance:
+    ///
+    /// ```ignore
+    /// // Fast bbox prefilter, then exact intersection.
+    /// Delivery::objects()
+    ///     .filter(|f| f.area().bounded_by(37.0, -123.0, 38.0, -122.0))
+    ///     .filter(|f| f.area().intersects(&zone))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    ///
+    /// Argument order matches the `GeoPoint` (lat, lon) convention:
+    /// `min_lat`, `min_lon`, `max_lat`, `max_lon`. The emission swaps to
+    /// Postgres's (x, y) = (lon, lat) order internally.
+    ///
+    /// All four coordinate values flow through `push_bind` — no string
+    /// interpolation of user-supplied data.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn bounded_by(
+        self,
+        min_lat: f64,
+        min_lon: f64,
+        max_lat: f64,
+        max_lon: f64,
+    ) -> crate::expr::Expr<bool> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::BoundedBy {
+                field_column: self.column(),
+                min_lat,
+                min_lon,
+                max_lat,
+                max_lon,
+            },
+        ))
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
+    /// Emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)` — returns
+    /// great-circle distance in meters from `<col>` to `center`.
+    ///
+    /// Composes with `.filter`, `.annotate`, and `.order_by`:
+    ///
+    /// ```ignore
+    /// let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+    ///
+    /// // Filter by distance threshold.
+    /// Store::objects()
+    ///     .filter(|f| f.location().distance_to(&center).lt(5000.0))
+    ///     .fetch_all(&mut ctx).await?
+    /// ```
+    ///
+    /// This wraps the existing `SpatialExpr::Distance` IR variant that was
+    /// added in Phase 6 but previously only used by the `.order_by_distance`
+    /// shortcut. T10 exposes it as a first-class expression method so it
+    /// composes cleanly anywhere an `Expr<f64>` is accepted.
+    ///
+    /// Bind order: `$1 = center.lon`, `$2 = center.lat`.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn distance_to(self, center: &crate::geo::GeoPoint) -> crate::expr::Expr<f64> {
+        crate::expr::Expr::from_node(crate::expr::node::ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::Distance {
+                field_column: self.column(),
+                center: *center,
+            },
+        ))
+    }
+}
+
 // ── Fluent combinators on Condition ───────────────────────────────────────
 //
 // `Condition::and(a, b)` / `::or(a, b)` are the associative constructors in
@@ -1119,5 +1353,582 @@ mod tests {
         } else {
             panic!("expected Or, got {combined:?}");
         }
+    }
+}
+
+// ── T9: Method dispatch tests for shape predicates ────────────────────────
+
+#[cfg(all(test, feature = "spatial"))]
+mod spatial_field_tests {
+    use super::*;
+    use crate::expr::node::ExprNode;
+    use crate::expr::spatial::SpatialExpr;
+    use crate::geo::{GeoPoint, LineString, MultiPoint, MultiPolygon, Polygon};
+    use crate::query::condition::Condition;
+    use std::future::Future;
+
+    // Minimal `Model` stub for spatial method dispatch tests.
+    struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fakes"
+        }
+        fn pk_value(&self) -> &i64 {
+            unimplemented!()
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+    }
+
+    // Helper: build a minimal valid `Polygon` using the `closed` constructor.
+    fn make_polygon() -> Polygon {
+        let ring = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(), // closed ring
+        ];
+        Polygon::closed(&ring).unwrap()
+    }
+
+    // Helper: extract the `SpatialExpr` from a `Condition::Expr(Expr<bool>)`.
+    fn unwrap_spatial(cond: Condition) -> SpatialExpr {
+        if let Condition::Expr(expr) = cond
+            && let ExprNode::Spatial(s) = expr.node
+        {
+            return s;
+        }
+        panic!("expected Condition::Expr(ExprNode::Spatial(...))");
+    }
+
+    // ── contains ─────────────────────────────────────────────────────────────
+
+    /// `.contains(&poly)` on a `FieldRef<Fake, Polygon>` must produce
+    /// `Condition::Expr(ExprNode::Spatial(SpatialExpr::Contains { .. }))`.
+    #[test]
+    fn contains_method_dispatch_produces_contains_variant() {
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        let cond = field.contains(&poly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Contains {
+                    field_column: "area",
+                    ..
+                }
+            ),
+            "expected Contains variant, got {s:?}"
+        );
+    }
+
+    /// `.contains` injection safety: EWKB bytes must not appear as literal SQL.
+    #[test]
+    fn contains_method_dispatch_ewkb_is_bound() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        let cond = field.contains(&poly);
+        let s = unwrap_spatial(cond);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        assert_eq!(acc.bind_count(), 1, "EWKB must flow through push_bind");
+        assert!(acc.sql().contains("$1"), "expected $1 placeholder");
+    }
+
+    // ── intersects ────────────────────────────────────────────────────────────
+
+    /// `.intersects(&line)` on a `FieldRef<Fake, LineString>` must produce
+    /// `SpatialExpr::Intersects { field_column: "route", .. }`.
+    #[test]
+    fn intersects_method_dispatch_produces_intersects_variant() {
+        let pts = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+        ];
+        let line = LineString::new(&pts).unwrap();
+        let field: FieldRef<Fake, LineString> = FieldRef::new("route");
+        let cond = field.intersects(&line);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Intersects {
+                    field_column: "route",
+                    ..
+                }
+            ),
+            "expected Intersects variant, got {s:?}"
+        );
+    }
+
+    /// Cross-geometry dispatch: `FieldRef<Fake, Polygon>::intersects(some_linestring)`.
+    /// Both types implement `GeographyValue`; the method must accept the call.
+    #[test]
+    fn intersects_cross_geometry_polygon_field_with_linestring_arg() {
+        let pts = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(2.0, 2.0).unwrap(),
+        ];
+        let line = LineString::new(&pts).unwrap();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        // `Polygon` field, `LineString` argument — both are `GeographyValue`.
+        let cond = field.intersects(&line);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Intersects {
+                    field_column: "area",
+                    ..
+                }
+            ),
+            "cross-geometry intersects failed: {s:?}"
+        );
+    }
+
+    // ── touches ───────────────────────────────────────────────────────────────
+
+    /// `.touches(&poly)` on a `FieldRef<Fake, Polygon>` must produce
+    /// `SpatialExpr::Touches { field_column: "boundary", .. }`.
+    #[test]
+    fn touches_method_dispatch_produces_touches_variant() {
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("boundary");
+        let cond = field.touches(&poly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Touches {
+                    field_column: "boundary",
+                    ..
+                }
+            ),
+            "expected Touches variant, got {s:?}"
+        );
+    }
+
+    /// `.touches` injection safety.
+    #[test]
+    fn touches_method_dispatch_ewkb_is_bound() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let poly = make_polygon();
+        let field: FieldRef<Fake, Polygon> = FieldRef::new("boundary");
+        let cond = field.touches(&poly);
+        let s = unwrap_spatial(cond);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        assert_eq!(acc.bind_count(), 1);
+        assert!(acc.sql().contains("$1"));
+    }
+
+    // ── within ────────────────────────────────────────────────────────────────
+
+    /// `.within(&poly)` on a `FieldRef<Fake, GeoPoint>` must produce
+    /// `SpatialExpr::WithinShape { field_column: "drop_off", .. }`.
+    #[test]
+    fn within_method_dispatch_produces_within_shape_variant() {
+        let poly = make_polygon();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("drop_off");
+        let cond = field.within(&poly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::WithinShape {
+                    field_column: "drop_off",
+                    ..
+                }
+            ),
+            "expected WithinShape variant, got {s:?}"
+        );
+    }
+
+    /// `.within` injection safety.
+    #[test]
+    fn within_method_dispatch_ewkb_is_bound() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let poly = make_polygon();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("drop_off");
+        let cond = field.within(&poly);
+        let s = unwrap_spatial(cond);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        assert_eq!(acc.bind_count(), 1);
+        assert!(acc.sql().contains("$1"));
+    }
+
+    /// Cross-geometry dispatch: `FieldRef<Fake, MultiPolygon>::within(some_multipolygon)`.
+    /// Both the field type and arg type are `GeographyValue`.
+    #[test]
+    fn within_cross_geometry_multipolygon_field() {
+        let poly = make_polygon();
+        let mpoly = MultiPolygon::new(vec![poly]).unwrap();
+        let field: FieldRef<Fake, MultiPolygon> = FieldRef::new("coverage");
+        let cond = field.within(&mpoly);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::WithinShape {
+                    field_column: "coverage",
+                    ..
+                }
+            ),
+            "cross-geometry within failed: {s:?}"
+        );
+    }
+
+    /// Cross-geometry dispatch: `FieldRef<Fake, GeoPoint>::intersects(multipoint)`.
+    #[test]
+    fn contains_cross_geometry_geopoint_field_multipoint_arg() {
+        let pts = [GeoPoint::new(0.0, 0.0).unwrap()];
+        let mpt = MultiPoint::new(&pts).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        let cond = field.intersects(&mpt);
+        let s = unwrap_spatial(cond);
+        assert!(
+            matches!(
+                s,
+                SpatialExpr::Intersects {
+                    field_column: "loc",
+                    ..
+                }
+            ),
+            "expected Intersects, got {s:?}"
+        );
+    }
+}
+
+// ── T10: bounded_by + distance_to method dispatch tests ──────────────────
+
+#[cfg(all(test, feature = "spatial"))]
+mod bbox_tests {
+    use super::*;
+    use crate::expr::node::ExprNode;
+    use crate::expr::spatial::SpatialExpr;
+    use crate::geo::{GeoPoint, MultiPolygon, Polygon};
+    use crate::pg::accumulator::SqlAccumulator;
+    use std::future::Future;
+
+    // Minimal `Model` stub shared across T10 tests.
+    struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fakes"
+        }
+        fn pk_value(&self) -> &i64 {
+            unimplemented!()
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+    }
+
+    // Helper: unwrap `Expr<bool>` -> `SpatialExpr` for assertion.
+    fn unwrap_spatial_from_expr(expr: crate::expr::Expr<bool>) -> SpatialExpr {
+        if let ExprNode::Spatial(s) = expr.node {
+            return s;
+        }
+        panic!("expected ExprNode::Spatial(...)");
+    }
+
+    // Helper: minimal closed Polygon.
+    fn make_polygon() -> Polygon {
+        let ring = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(),
+        ];
+        Polygon::closed(&ring).unwrap()
+    }
+
+    /// `.bounded_by` on `FieldRef<Fake, GeoPoint>` must emit
+    /// `ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography && <col>`
+    /// with bind order: $1=min_lon, $2=min_lat, $3=max_lon, $4=max_lat.
+    #[test]
+    fn bounded_by_emits_st_makeenvelope_in_xy_order() {
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        // min_lat=37.0, min_lon=-123.0, max_lat=38.0, max_lon=-122.0
+        let expr = field.bounded_by(37.0, -123.0, 38.0, -122.0);
+        let s = unwrap_spatial_from_expr(expr);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_MakeEnvelope("),
+            "expected ST_MakeEnvelope; got: {sql}"
+        );
+        assert!(
+            sql.contains("::geography &&"),
+            "expected ::geography &&; got: {sql}"
+        );
+        assert!(
+            sql.contains("location"),
+            "expected column 'location' after &&; got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            4,
+            "expected 4 binds; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// Coordinate values must not appear as literal text in the emitted SQL.
+    #[test]
+    fn bounded_by_emits_all_four_coords_as_binds() {
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        let expr = field.bounded_by(55.5555, 66.6666, 77.7777, 88.8888);
+        let s = unwrap_spatial_from_expr(expr);
+        let mut acc = SqlAccumulator::new("");
+        s.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(!sql.contains("55.5555"), "min_lat leaked; got: {sql}");
+        assert!(!sql.contains("66.6666"), "min_lon leaked; got: {sql}");
+        assert!(!sql.contains("77.7777"), "max_lat leaked; got: {sql}");
+        assert!(!sql.contains("88.8888"), "max_lon leaked; got: {sql}");
+        assert_eq!(acc.bind_count(), 4);
+    }
+
+    /// `.bounded_by` is generic over `GeographyValue` — verify it compiles
+    /// and produces a `BoundedBy` node for `Polygon` and `MultiPolygon`
+    /// fields (not just `GeoPoint`).
+    #[test]
+    fn bounded_by_works_on_polygon_and_multipolygon_fieldrefs() {
+        // Polygon field
+        let poly_field: FieldRef<Fake, Polygon> = FieldRef::new("area");
+        let expr_poly = poly_field.bounded_by(37.0, -123.0, 38.0, -122.0);
+        let s_poly = unwrap_spatial_from_expr(expr_poly);
+        assert!(
+            matches!(
+                s_poly,
+                SpatialExpr::BoundedBy {
+                    field_column: "area",
+                    ..
+                }
+            ),
+            "expected BoundedBy on Polygon field; got {s_poly:?}"
+        );
+
+        // MultiPolygon field
+        let mpoly = make_polygon();
+        let mp_field: FieldRef<Fake, MultiPolygon> = FieldRef::new("coverage");
+        let _ = mpoly; // make_polygon is just to satisfy type-checker in make fn; field is enough
+        let expr_mp = mp_field.bounded_by(0.0, 0.0, 1.0, 1.0);
+        let s_mp = unwrap_spatial_from_expr(expr_mp);
+        assert!(
+            matches!(
+                s_mp,
+                SpatialExpr::BoundedBy {
+                    field_column: "coverage",
+                    ..
+                }
+            ),
+            "expected BoundedBy on MultiPolygon field; got {s_mp:?}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "spatial"))]
+mod distance_tests {
+    use super::*;
+    use crate::expr::node::ExprNode;
+    use crate::expr::spatial::SpatialExpr;
+    use crate::geo::GeoPoint;
+    use crate::pg::accumulator::SqlAccumulator;
+    use std::future::Future;
+
+    // Minimal `Model` stub for distance_to tests.
+    struct Fake;
+    impl crate::model::__sealed::Sealed for Fake {}
+    #[allow(clippy::manual_async_fn)]
+    impl crate::model::Model for Fake {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fakes"
+        }
+        fn pk_value(&self) -> &i64 {
+            unimplemented!()
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unimplemented!()
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: i64,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unimplemented!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx {
+            async { unimplemented!() }
+        }
+    }
+
+    /// `.distance_to` must emit `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`.
+    #[test]
+    fn distance_to_emits_st_distance() {
+        let center = GeoPoint::new(37.7749, -122.4194).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        let expr: crate::expr::Expr<f64> = field.distance_to(&center);
+        if let ExprNode::Spatial(SpatialExpr::Distance {
+            field_column,
+            center: c,
+        }) = expr.node
+        {
+            assert_eq!(field_column, "loc");
+            // Verify the center was stored correctly.
+            assert!((c.lat - 37.7749).abs() < 1e-10, "lat mismatch: {}", c.lat);
+            assert!(
+                (c.lon - (-122.4194)).abs() < 1e-10,
+                "lon mismatch: {}",
+                c.lon
+            );
+            // Emit and check SQL structure.
+            let mut acc = SqlAccumulator::new("");
+            SpatialExpr::Distance {
+                field_column,
+                center: c,
+            }
+            .emit(&mut acc);
+            let sql = acc.sql();
+            assert!(
+                sql.contains("ST_Distance"),
+                "expected ST_Distance; got: {sql}"
+            );
+            assert!(sql.contains("loc"), "expected column; got: {sql}");
+            assert!(
+                sql.contains("::geography"),
+                "expected ::geography; got: {sql}"
+            );
+            assert_eq!(acc.bind_count(), 2, "expected 2 binds (lon, lat)");
+        } else {
+            panic!("expected Distance spatial expr");
+        }
+    }
+
+    /// `.distance_to(&center).lt(1000.0)` must produce `Expr<bool>` wrapping
+    /// a `Cmp` node whose LHS is a `Spatial(Distance(...))` node.
+    #[test]
+    fn distance_to_composes_with_filter_lt() {
+        let center = GeoPoint::new(48.8566, 2.3522).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("position");
+        // `.lt(1000.0f64)` is on `Expr<f64>` — requires `f64: Into<Expr<f64>>`.
+        let predicate: crate::expr::Expr<bool> = field.distance_to(&center).lt(1000.0f64);
+        // The result should be a Cmp node whose LHS is a Distance spatial expr.
+        if let ExprNode::Cmp { lhs, .. } = predicate.node
+            && let ExprNode::Spatial(SpatialExpr::Distance { field_column, .. }) = *lhs
+        {
+            assert_eq!(field_column, "position");
+            return;
+        }
+        panic!("expected Cmp {{ lhs: Spatial(Distance {{..}}) }}");
+    }
+
+    /// `.distance_to` must return `Expr<f64>` — verified by type inference
+    /// (the binding annotation below is the check; if the return type were
+    /// wrong this would not compile).
+    #[test]
+    fn distance_to_produces_f64_expr() {
+        let center = GeoPoint::new(0.0, 0.0).unwrap();
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
+        // Type annotation is the compile-time assertion.
+        let _expr: crate::expr::Expr<f64> = field.distance_to(&center);
     }
 }

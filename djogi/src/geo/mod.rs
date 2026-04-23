@@ -10,18 +10,29 @@
 //!
 //! - [`GeoPoint`] — a WGS-84 latitude/longitude coordinate, stored as
 //!   `GEOGRAPHY(Point, 4326)` in Postgres.
+//! - [`LineString`] — an ordered sequence of two or more points, stored as
+//!   `GEOGRAPHY(LineString, 4326)`.
+//! - [`Polygon`] — a closed ring (with optional holes), stored as
+//!   `GEOGRAPHY(Polygon, 4326)`.
+//! - [`MultiPoint`] — an unordered collection of one or more points, stored as
+//!   `GEOGRAPHY(MultiPoint, 4326)`.
+//! - [`MultiPolygon`] — a collection of one or more polygons, stored as
+//!   `GEOGRAPHY(MultiPolygon, 4326)`.
+//! - [`GeographyValue`] — sealed trait implemented by all geometry types above.
 //! - [`GeoError`] — errors from coordinate validation and EWKB codec failures.
-//!
-//! # Future work
-//!
-//! The `spatial` feature flag is intentionally narrow at first: only `GeoPoint`
-//! ships in Phase 6. Polygon, linestring, and multipoint support — along with
-//! index-backed spatial query operators — will arrive in a later phase.
 
 mod ewkb;
+pub mod linestring;
+pub mod multipoint;
+pub mod multipolygon;
 pub mod point;
+pub mod polygon;
 
+pub use linestring::LineString;
+pub use multipoint::MultiPoint;
+pub use multipolygon::MultiPolygon;
 pub use point::GeoPoint;
+pub use polygon::Polygon;
 
 use thiserror::Error;
 
@@ -59,4 +70,239 @@ pub enum GeoError {
     /// the caller can diagnose the mismatch.
     #[error("unexpected SRID {0}: Djogi requires SRID 4326 (WGS-84)")]
     UnexpectedSrid(u32),
+
+    /// A `LineString` was constructed with fewer than the required number of
+    /// points.
+    ///
+    /// `LineString` requires at least 2 distinct points. `got` is the number
+    /// of points supplied; `need` is the minimum required.
+    #[cfg(feature = "spatial")]
+    #[error("invalid LineString: got {got} point(s), need at least {need}")]
+    InvalidLineString {
+        /// Number of points supplied by the caller.
+        got: usize,
+        /// Minimum number of points required (always 2).
+        need: usize,
+    },
+
+    /// A `Polygon` ring failed validation.
+    ///
+    /// The `reason` string describes the specific constraint that was violated:
+    /// insufficient vertices, an unclosed ring, or a hole that fails the same
+    /// constraints as the outer ring.
+    #[cfg(feature = "spatial")]
+    #[error("invalid Polygon: {reason}")]
+    InvalidPolygon {
+        /// Human-readable description of the violated constraint.
+        reason: &'static str,
+    },
+
+    /// A `MultiPoint` was constructed with an empty point list.
+    ///
+    /// `MultiPoint` requires at least one point.
+    #[cfg(feature = "spatial")]
+    #[error("invalid MultiPoint: {reason}")]
+    InvalidMultiPoint {
+        /// Human-readable description of the violated constraint.
+        reason: &'static str,
+    },
+
+    /// A `MultiPolygon` was constructed with an empty polygon list.
+    ///
+    /// `MultiPolygon` requires at least one polygon.
+    #[cfg(feature = "spatial")]
+    #[error("invalid MultiPolygon: {reason}")]
+    InvalidMultiPolygon {
+        /// Human-readable description of the violated constraint.
+        reason: &'static str,
+    },
+}
+
+// ── Sealed GeographyValue trait ───────────────────────────────────────────────
+
+/// Private sealing module — its `Sealed` trait cannot be named outside this
+/// crate, so `GeographyValue` cannot be implemented downstream.
+#[cfg(feature = "spatial")]
+mod sealed_value {
+    pub trait Sealed {}
+}
+
+/// Sealed trait implemented by every Djogi geometry that maps to a
+/// `GEOGRAPHY(..., 4326)` column.
+///
+/// ## Purpose
+///
+/// Query APIs that accept "any geography value" are generic over this trait
+/// rather than enumerating concrete types. The seal prevents downstream crates
+/// from inventing geometries that the query layer does not know how to emit or
+/// decode. New geometry types ship via Djogi phases, not user code.
+///
+/// ## Wire format contract
+///
+/// Each implementor must round-trip through `GEOGRAPHY(<SUBTYPE>, 4326)` via
+/// EWKB encoding. The `GEO_TYPE_WORD` constant embeds both the SRID flag
+/// (`0x20000000`) and the base OGC geometry type number so the codec can
+/// dispatch on a single `u32` comparison.
+///
+/// ## Geometry type words
+///
+/// | Type          | Base | With SRID flag   |
+/// |---------------|------|------------------|
+/// | Point         |    1 | `0x20000001`     |
+/// | LineString    |    2 | `0x20000002`     |
+/// | Polygon       |    3 | `0x20000003`     |
+/// | MultiPoint    |    4 | `0x20000004`     |
+/// | MultiPolygon  |    6 | `0x20000006`     |
+#[cfg(feature = "spatial")]
+pub trait GeographyValue: sealed_value::Sealed {
+    /// EWKB type word including the SRID flag (`0x20000000` ORed with the
+    /// base OGC geometry type number).
+    const GEO_TYPE_WORD: u32;
+
+    /// Descriptor-level subtype discriminant from [`crate::descriptor::GeographySubtype`].
+    const SUBTYPE: crate::descriptor::GeographySubtype;
+
+    /// Encode `self` into its EWKB wire format (little-endian, SRID 4326).
+    fn to_ewkb_bytes(&self) -> Vec<u8>;
+
+    /// Decode an EWKB buffer into `Self`.
+    ///
+    /// Returns an error if the type word does not match `GEO_TYPE_WORD`,
+    /// the SRID is not 4326, or the coordinate data is structurally invalid.
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError>
+    where
+        Self: Sized;
+}
+
+// ── GeoPoint impl ─────────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for GeoPoint {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for GeoPoint {
+    const GEO_TYPE_WORD: u32 = 0x20000001;
+    const SUBTYPE: crate::descriptor::GeographySubtype = crate::descriptor::GeographySubtype::Point;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        GeoPoint::to_ewkb_bytes(*self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        GeoPoint::from_ewkb_bytes(bytes)
+    }
+}
+
+// ── LineString impl ───────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for LineString {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for LineString {
+    const GEO_TYPE_WORD: u32 = 0x20000002;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::LineString;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        ewkb::encode_linestring(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_linestring(bytes)
+    }
+}
+
+// ── Polygon impl ──────────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for Polygon {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for Polygon {
+    const GEO_TYPE_WORD: u32 = 0x20000003;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::Polygon;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        ewkb::encode_polygon(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_polygon(bytes)
+    }
+}
+
+// ── MultiPoint impl ───────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for MultiPoint {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for MultiPoint {
+    const GEO_TYPE_WORD: u32 = 0x20000004;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::MultiPoint;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        ewkb::encode_multipoint(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_multipoint(bytes)
+    }
+}
+
+// ── MultiPolygon impl ─────────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for MultiPolygon {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for MultiPolygon {
+    const GEO_TYPE_WORD: u32 = 0x20000006;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::MultiPolygon;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        ewkb::encode_multipolygon(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_multipolygon(bytes)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "spatial"))]
+mod geography_value_tests {
+    use super::*;
+
+    fn takes_geo<G: GeographyValue>() {}
+
+    #[test]
+    fn geopoint_is_geography_value() {
+        takes_geo::<GeoPoint>();
+    }
+
+    #[test]
+    fn linestring_is_geography_value() {
+        takes_geo::<LineString>();
+    }
+
+    #[test]
+    fn polygon_is_geography_value() {
+        takes_geo::<Polygon>();
+    }
+
+    #[test]
+    fn multipoint_is_geography_value() {
+        takes_geo::<MultiPoint>();
+    }
+
+    #[test]
+    fn multipolygon_is_geography_value() {
+        takes_geo::<MultiPolygon>();
+    }
 }

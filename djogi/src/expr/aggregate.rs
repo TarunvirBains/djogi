@@ -64,6 +64,7 @@
 use crate::expr::Expr;
 use crate::expr::arithmetic::Numeric;
 use crate::expr::node::{AggOp, ExprNode};
+use crate::expr::window::WindowBuilder;
 use crate::model::Model;
 use crate::query::field::FieldRef;
 use std::marker::PhantomData;
@@ -129,6 +130,86 @@ impl<Out> AggregateExpr<Out> {
         }
         self
     }
+
+    /// Apply the `DISTINCT` modifier to this aggregate, emitting
+    /// `AGG(DISTINCT col)` rather than `AGG(col)`.
+    ///
+    /// # Accepted aggregates
+    ///
+    /// Valid on COUNT, SUM, AVG, MIN, MAX, ARRAY_AGG, JSONB_AGG,
+    /// BOOL_AND, BOOL_OR (though BOOL_AND/BOOL_OR with DISTINCT is
+    /// semantically a no-op — Postgres accepts it, and we emit it
+    /// verbatim).
+    ///
+    /// # Rejected at fetch time
+    ///
+    /// Two combinations are detected at fetch time and surface as
+    /// [`crate::DjogiError::UnsupportedAggregate`]:
+    ///
+    /// - `COUNT(*)` with `DISTINCT`: `COUNT(DISTINCT *)` is not valid SQL.
+    ///   Use `COUNT(DISTINCT col)` via [`FieldRef::count`] instead.
+    /// - `STRING_AGG(DISTINCT col, sep)`: Postgres requires an explicit
+    ///   per-aggregate `ORDER BY` clause when DISTINCT is used with
+    ///   `STRING_AGG`, and Djogi's Phase 6.5 IR does not track per-aggregate
+    ///   ORDER BY. This combination will be rejected at fetch time rather
+    ///   than producing invalid SQL.
+    ///
+    /// # Overwrite semantics
+    ///
+    /// Calling `.distinct()` on an already-distinct aggregate is a no-op —
+    /// the flag is already set. This matches the [`QuerySet::limit`] pattern
+    /// where the last call wins.
+    #[must_use = "AggregateExpr is a value — dropping discards the DISTINCT flag"]
+    pub fn distinct(mut self) -> Self {
+        if let ExprNode::Aggregate { distinct, .. } = &mut self.node {
+            *distinct = true;
+        }
+        self
+    }
+
+    /// Promote this aggregate to a windowed aggregate via a [`WindowBuilder`].
+    ///
+    /// The builder is passed as a closure that receives a fresh
+    /// `WindowBuilder` and returns the configured one:
+    ///
+    /// ```ignore
+    /// // Empty window — identical to the `annotate` default.
+    /// f.amount().sum().over(|w| w)
+    ///
+    /// // Partitioned + ordered window.
+    /// f.amount().sum().over(|w| {
+    ///     w.partition_by(f.org_id())
+    ///      .order_by(f.created_at())
+    /// })
+    ///
+    /// // Rolling 3-row average.
+    /// f.score().avg().over(|w| {
+    ///     w.order_by(f.created_at())
+    ///      .rows(FrameBound::Preceding(3), FrameBound::CurrentRow)
+    /// })
+    /// ```
+    ///
+    /// # Overwrite semantics
+    ///
+    /// Calling `.over(...)` twice replaces the previous window spec — the
+    /// last call wins, matching the `QuerySet::limit` pattern.
+    ///
+    /// # Interaction with `.filter(...)`
+    ///
+    /// `.over(...)` and `.filter(...)` compose: the `FILTER (WHERE ...)` clause
+    /// is emitted before the `OVER (...)` clause, which is the correct Postgres
+    /// syntax. Chain order does not matter — both are stored independently on
+    /// the node.
+    #[must_use = "AggregateExpr is a value — dropping discards the window spec"]
+    pub fn over<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(WindowBuilder) -> WindowBuilder,
+    {
+        if let ExprNode::Aggregate { window, .. } = &mut self.node {
+            *window = Some(f(WindowBuilder::new()).build());
+        }
+        self
+    }
 }
 
 // ── COUNT ─────────────────────────────────────────────────────────────
@@ -162,6 +243,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -193,6 +276,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -241,6 +326,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
             // own Postgres cast target there; see
             // [`Numeric::SUM_CAST`] for the full rationale.
             cast_to: Some(<V as Numeric>::SUM_CAST),
+            distinct: false,
+            window: None,
         })
     }
 
@@ -265,6 +352,8 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
             // type — the typed surface's `Out = f64` promise holds
             // uniformly.
             cast_to: Some(<V as Numeric>::AVG_CAST),
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -303,6 +392,8 @@ where
             // MIN / MAX return the column's own type — no widening,
             // no cast needed.
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -319,6 +410,8 @@ where
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -355,6 +448,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -375,6 +470,8 @@ impl<M: Model, V> FieldRef<M, V> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -412,6 +509,8 @@ impl<M: Model> FieldRef<M, String> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -442,6 +541,8 @@ impl<M: Model> FieldRef<M, bool> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 
@@ -459,6 +560,8 @@ impl<M: Model> FieldRef<M, bool> {
             }),
             filter: None,
             cast_to: None,
+            distinct: false,
+            window: None,
         })
     }
 }
@@ -677,5 +780,299 @@ mod tests {
         emit_expr(&mut qb, &agg.node);
         let sql = qb.sql();
         assert_eq!(sql.trim(), "BOOL_OR(active)", "got: {sql}");
+    }
+
+    // ── .distinct() tests (T4) ────────────────────────────────────────────────
+
+    #[test]
+    fn sum_distinct_emits_sum_distinct() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.sum().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("SUM(DISTINCT amount)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn count_distinct_emits_count_distinct() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.count().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("COUNT(DISTINCT amount)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn avg_distinct_emits_avg_distinct() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.avg().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("AVG(DISTINCT amount)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn min_distinct_emits_min_distinct() {
+        // MIN(DISTINCT col) is valid Postgres syntax — emits as-is.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.min().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("MIN(DISTINCT amount)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn max_distinct_emits_max_distinct() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.max().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("MAX(DISTINCT amount)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn array_agg_distinct_emits_array_agg_distinct() {
+        let f: FieldRef<Txn, String> = FieldRef::new("tag");
+        let agg = f.array_agg().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("ARRAY_AGG(DISTINCT tag)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn json_agg_distinct_emits_jsonb_agg_distinct() {
+        let f: FieldRef<Txn, String> = FieldRef::new("tag");
+        let agg = f.json_agg().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("JSONB_AGG(DISTINCT tag)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn bool_and_distinct_emits_bool_and_distinct() {
+        // BOOL_AND(DISTINCT col) is valid Postgres syntax — effectively a
+        // no-op semantically (distinctness doesn't change a boolean AND) but
+        // Postgres accepts it. We emit it as-is.
+        let f: FieldRef<Txn, bool> = FieldRef::new("active");
+        let agg = f.bool_and().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("BOOL_AND(DISTINCT active)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn bool_or_distinct_emits_bool_or_distinct() {
+        let f: FieldRef<Txn, bool> = FieldRef::new("active");
+        let agg = f.bool_or().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert!(
+            acc.sql().contains("BOOL_OR(DISTINCT active)"),
+            "got: {}",
+            acc.sql()
+        );
+    }
+
+    #[test]
+    fn count_star_distinct_rejected_at_fetch() {
+        // COUNT(DISTINCT *) is not valid SQL — the distinct flag on a
+        // CountStar aggregate must be caught and returned as
+        // DjogiError::UnsupportedAggregate before any SQL is emitted.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let mut agg = f.count_star();
+        // Forcibly set distinct on the CountStar node, since the `.distinct()`
+        // builder correctly prevents setting distinct on CountStar at the API
+        // level. We reach into the node directly (crate-private) to simulate
+        // a malformed aggregate that must be caught at fetch time.
+        if let ExprNode::Aggregate {
+            ref mut distinct, ..
+        } = agg.node
+        {
+            *distinct = true;
+        }
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected UnsupportedAggregate error for COUNT(DISTINCT *)"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::DjogiError::UnsupportedAggregate { .. }),
+            "expected UnsupportedAggregate variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn string_agg_distinct_rejected_at_fetch() {
+        // STRING_AGG(DISTINCT col, sep) without a per-aggregate ORDER BY is
+        // rejected by Postgres syntax. Djogi's IR does not track per-aggregate
+        // ORDER BY in Phase 6.5, so we reject it at fetch time.
+        let f: FieldRef<Txn, String> = FieldRef::new("tag");
+        let mut agg = f.string_agg(", ");
+        if let ExprNode::Aggregate {
+            ref mut distinct, ..
+        } = agg.node
+        {
+            *distinct = true;
+        }
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected UnsupportedAggregate error for STRING_AGG(DISTINCT ...)"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::DjogiError::UnsupportedAggregate { .. }),
+            "expected UnsupportedAggregate variant, got: {err:?}"
+        );
+    }
+
+    // ── .over(|w| ...) end-to-end tests ──────────────────────────────────────
+    //
+    // These tests exercise the round-trip: `.over(|w| ...)` on `AggregateExpr`
+    // stores a `WindowSpec` on the node, then `emit_aggregate_with_window_and_cast`
+    // picks it up and emits the correct `OVER (...)` clause. The bare
+    // `emit_expr` path (used for nested aggregates) does NOT emit the window
+    // clause — window emission is handled exclusively at the terminal layer.
+
+    #[test]
+    fn over_empty_closure_stores_window_spec() {
+        // `.over(|w| w)` sets `window: Some(WindowSpec::default())` — the
+        // terminal layer will emit `OVER ()` from it, preserving the pre-T3
+        // behaviour.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.sum().over(|w| w);
+        if let ExprNode::Aggregate { window, .. } = &agg.node {
+            assert!(
+                window.is_some(),
+                "over(|w| w) should set window to Some(..)"
+            );
+        } else {
+            panic!("AggregateExpr did not wrap an Aggregate node");
+        }
+    }
+
+    #[test]
+    fn over_empty_closure_emits_over_parens_via_terminal() {
+        // End-to-end: `.over(|w| w)` → `emit_aggregate_with_window_and_cast` →
+        // `SUM(amount) OVER ()`. The narrowing cast (SUM_CAST) wraps the whole
+        // expression in parens: `(SUM(amount) OVER ())::BIGINT`.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.sum().over(|w| w);
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("SUM(amount) OVER ()"),
+            "expected OVER () from empty window spec, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn over_with_partition_emits_partition_clause_via_terminal() {
+        // `.over(|w| w.partition_by(org_id_ref))` → `OVER (PARTITION BY org_id)`.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let p: FieldRef<Txn, i64> = FieldRef::new("org_id");
+        let agg = f.sum().over(|w| w.partition_by(p));
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(sql.contains("OVER (PARTITION BY org_id)"), "got: {sql}");
+    }
+
+    #[test]
+    fn over_with_order_by_emits_order_clause_via_terminal() {
+        // `.over(|w| w.order_by(created_at_ref))` → `OVER (ORDER BY created_at ASC)`.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let o: FieldRef<Txn, i64> = FieldRef::new("created_at");
+        let agg = f.count().over(|w| w.order_by(o));
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(sql.contains("OVER (ORDER BY created_at ASC)"), "got: {sql}");
+    }
+
+    #[test]
+    fn over_with_rows_frame_emits_frame_clause_via_terminal() {
+        // Rolling 3-row SUM: `OVER (ORDER BY created_at ASC ROWS BETWEEN
+        // $1 PRECEDING AND CURRENT ROW)`.
+        use crate::expr::window::FrameBound;
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let o: FieldRef<Txn, i64> = FieldRef::new("created_at");
+        let agg = f.sum().over(|w| {
+            w.order_by(o)
+                .rows(FrameBound::Preceding(3), FrameBound::CurrentRow)
+        });
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("ROWS BETWEEN $1 PRECEDING AND CURRENT ROW"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn over_replaces_previous_window_spec_last_call_wins() {
+        // Calling `.over(...)` twice — the second call replaces the first.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let p1: FieldRef<Txn, i64> = FieldRef::new("org_id");
+        let p2: FieldRef<Txn, i64> = FieldRef::new("dept_id");
+        let agg = f
+            .sum()
+            .over(|w| w.partition_by(p1))
+            .over(|w| w.partition_by(p2));
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(sql.contains("PARTITION BY dept_id"), "got: {sql}");
+        assert!(!sql.contains("org_id"), "first spec should be gone: {sql}");
+    }
+
+    #[test]
+    fn no_over_call_preserves_default_over_empty_via_terminal() {
+        // When `.over(...)` is never called, `window: None` — the terminal
+        // `emit_aggregate_with_window_and_cast` emits `OVER ()` as before T3.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.count();
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("COUNT(amount) OVER ()"),
+            "default should be OVER (), got: {sql}"
+        );
     }
 }

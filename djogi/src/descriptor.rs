@@ -34,6 +34,36 @@ pub use crate::relation::{OnDelete, RelationKind};
 // the descriptor module path.
 pub use crate::fts::FtsDescriptor;
 
+/// Subtype discriminator for `FieldSqlType::Geography`.
+///
+/// Phase 7's migration differ compares subtypes by discriminant, not by
+/// `Display` text, so subtype renames or new variants do not surface as
+/// spurious migration diffs.
+///
+/// Sealed via `#[non_exhaustive]` — adding a variant in a future phase is
+/// not a breaking change for downstream consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GeographySubtype {
+    Point,
+    LineString,
+    Polygon,
+    MultiPoint,
+    MultiPolygon,
+}
+
+impl std::fmt::Display for GeographySubtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Point => "Point",
+            Self::LineString => "LineString",
+            Self::Polygon => "Polygon",
+            Self::MultiPoint => "MultiPoint",
+            Self::MultiPolygon => "MultiPolygon",
+        })
+    }
+}
+
 /// SQL type a model field maps to.
 ///
 /// This enum is the bridge between Rust field types and the column types
@@ -66,9 +96,15 @@ pub enum FieldSqlType {
     /// Case-insensitive text (Postgres `CITEXT`). Declared in Phase 1;
     /// used by the SQL linting plan in later phases.
     Citext,
-    /// PostGIS `geography(Point, SRID)`. Declared in Phase 1;
-    /// full wiring (codec, migration support) lands in later phases.
+    /// PostGIS `geography(<subtype>, SRID)`. The `subtype` discriminant
+    /// is a typed `GeographySubtype` so Phase 7's migration differ can
+    /// compare subtypes by discriminant — subtype renames or new variants
+    /// do not surface as spurious migration diffs.
+    ///
+    /// Phase 6 shipped with `Point` hardcoded in `Display`; T6 freezes the
+    /// final descriptor shape that Phase 7 will consume.
     Geography {
+        subtype: GeographySubtype,
         srid: u32,
     },
     /// Fallback for SQL types the framework doesn't model explicitly.
@@ -99,7 +135,9 @@ impl std::fmt::Display for FieldSqlType {
             FieldSqlType::BigIntArray => write!(f, "BIGINT[]"),
             FieldSqlType::BoolArray => write!(f, "BOOLEAN[]"),
             FieldSqlType::Citext => write!(f, "CITEXT"),
-            FieldSqlType::Geography { srid } => write!(f, "geography(Point, {srid})"),
+            FieldSqlType::Geography { subtype, srid } => {
+                write!(f, "geography({subtype}, {srid})")
+            }
             FieldSqlType::Custom(s) => write!(f, "{s}"),
         }
     }
@@ -209,9 +247,59 @@ impl IndexSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        FieldDescriptor, FieldSqlType, IndexSpec, IndexType, ModelDescriptor, PkType,
-        migration_shape::MigrationShape,
+        FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec, IndexType, ModelDescriptor,
+        PkType, migration_shape::MigrationShape,
     };
+
+    // ── T6: GeographySubtype Display ─────────────────────────────────────────
+
+    /// Phase 6 regression guard: `Geography { subtype: Point, srid: 4326 }`
+    /// must emit exactly `"geography(Point, 4326)"` — unchanged from Phase 6
+    /// where `"Point"` was hardcoded.
+    #[test]
+    fn geography_point_subtype_displays_unchanged_from_phase_6() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::Point,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(Point, 4326)");
+    }
+
+    #[test]
+    fn geography_linestring_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::LineString,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(LineString, 4326)");
+    }
+
+    #[test]
+    fn geography_polygon_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::Polygon,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(Polygon, 4326)");
+    }
+
+    #[test]
+    fn geography_multipoint_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::MultiPoint,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(MultiPoint, 4326)");
+    }
+
+    #[test]
+    fn geography_multipolygon_subtype_displays_correctly() {
+        let ft = FieldSqlType::Geography {
+            subtype: GeographySubtype::MultiPolygon,
+            srid: 4326,
+        };
+        assert_eq!(format!("{ft}"), "geography(MultiPolygon, 4326)");
+    }
 
     #[test]
     fn simple_constructor_defaults_policy_fields_to_benign() {
@@ -322,6 +410,176 @@ mod tests {
         assert_eq!(shape.columns[1].name, "label");
         assert_eq!(shape.columns[1].sql_type_text, "TEXT");
         assert!(shape.columns[1].not_null);
+    }
+
+    // ── T11: has_gist_on_geography helper ────────────────────────────────────
+
+    // Static descriptors used by has_gist_on_geography tests.
+    // `ModelDescriptor` requires `'static` slices for `fields` and `indexes`,
+    // so the entire data set must be declared as module-level statics rather
+    // than local temporaries.
+
+    static T11_GEO_FIELD: FieldDescriptor = FieldDescriptor {
+        name: "boundary",
+        sql_type: FieldSqlType::Geography {
+            subtype: GeographySubtype::Polygon,
+            srid: 4326,
+        },
+        nullable: false,
+        unique: false,
+        indexed: false,
+        max_length: None,
+        renamed_from: None,
+        rationale: None,
+        outbox_exclude: false,
+        sequence_within: None,
+        index_type: None,
+        relation_kind: None,
+        on_delete: None,
+        target_type_name: None,
+        visage_map: &[],
+    };
+
+    static T11_TEXT_FIELD: FieldDescriptor = FieldDescriptor {
+        name: "label",
+        sql_type: FieldSqlType::Text,
+        nullable: false,
+        unique: false,
+        indexed: false,
+        max_length: None,
+        renamed_from: None,
+        rationale: None,
+        outbox_exclude: false,
+        sequence_within: None,
+        index_type: None,
+        relation_kind: None,
+        on_delete: None,
+        target_type_name: None,
+        visage_map: &[],
+    };
+
+    static T11_GIST_INDEX: IndexSpec = IndexSpec {
+        name: "idx_boundary_gist",
+        columns: &["boundary"],
+        unique: false,
+        index_type: IndexType::Gist,
+        requires_out_of_transaction: true,
+        extension_dependency: Some("postgis"),
+    };
+
+    static T11_BTREE_INDEX: IndexSpec = IndexSpec {
+        name: "idx_boundary_btree",
+        columns: &["boundary"],
+        unique: false,
+        index_type: IndexType::BTree,
+        requires_out_of_transaction: false,
+        extension_dependency: None,
+    };
+
+    static T11_GIST_ON_TEXT: IndexSpec = IndexSpec {
+        name: "idx_label_gist",
+        columns: &["label"],
+        unique: false,
+        index_type: IndexType::Gist,
+        requires_out_of_transaction: false,
+        extension_dependency: None,
+    };
+
+    /// A descriptor with a GiST index on a Geography field returns `true`.
+    #[test]
+    fn has_gist_on_geography_returns_true_when_indexed() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_GEO_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: std::slice::from_ref(&T11_GIST_INDEX),
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            desc.has_gist_on_geography(),
+            "expected true: GiST index on a Geography field must be detected"
+        );
+    }
+
+    /// A descriptor with no indexes at all returns `false`.
+    #[test]
+    fn has_gist_on_geography_returns_false_when_no_indexes() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_GEO_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: &[],
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            !desc.has_gist_on_geography(),
+            "expected false: no indexes means no GiST-on-Geography"
+        );
+    }
+
+    /// A descriptor with a BTree (not GiST) index on a Geography field
+    /// returns `false` — only GiST is relevant for spatial acceleration.
+    #[test]
+    fn has_gist_on_geography_returns_false_for_btree_on_geography() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_GEO_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: std::slice::from_ref(&T11_BTREE_INDEX),
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            !desc.has_gist_on_geography(),
+            "expected false: BTree index on Geography is not spatial acceleration"
+        );
+    }
+
+    /// A GiST index on a non-Geography (text) column returns `false`.
+    #[test]
+    fn has_gist_on_geography_returns_false_for_gist_on_non_geo() {
+        let desc = ModelDescriptor {
+            type_name: "Region",
+            table_name: "regions",
+            pk_type: PkType::HeerId,
+            fields: std::slice::from_ref(&T11_TEXT_FIELD),
+            partition_by: None,
+            has_outbox: false,
+            idempotency_key: None,
+            tenant_key: None,
+            cache_ttl: None,
+            rationale: None,
+            indexes: std::slice::from_ref(&T11_GIST_ON_TEXT),
+            is_through: false,
+            fts: None,
+        };
+        assert!(
+            !desc.has_gist_on_geography(),
+            "expected false: GiST on a text column is not spatial acceleration"
+        );
     }
 }
 
@@ -519,6 +777,51 @@ pub struct ModelDescriptor {
 }
 
 impl ModelDescriptor {
+    /// Returns `true` if this model has a GiST index on at least one
+    /// `Geography`-typed field.
+    ///
+    /// Used by [`crate::query::queryset::QuerySet::group_by_region`] at
+    /// call time to warn when the region model has no spatial index, which
+    /// causes the spatial JOIN to scan the region table linearly for every
+    /// row in the data table.
+    ///
+    /// # Detection algorithm
+    ///
+    /// For each [`IndexSpec`] in `self.indexes`:
+    /// 1. Skip entries whose `index_type` is not [`IndexType::Gist`].
+    /// 2. For each column name in the spec's `columns` slice, check whether
+    ///    the corresponding [`FieldDescriptor`] has
+    ///    `sql_type == FieldSqlType::Geography { .. }`.
+    /// 3. Return `true` as soon as one such matching field is found.
+    ///
+    /// Composite indexes count if **any** column in the index is
+    /// `Geography`-typed. This reflects Postgres's GiST-prefix behaviour:
+    /// a GiST index on `(boundary, other_col)` is still a valid spatial
+    /// index that accelerates `ST_Contains` / `ST_DWithin` lookups on
+    /// `boundary`, so we treat such composite indexes as satisfying the
+    /// "has GiST on geography" check.
+    ///
+    /// Returns `false` if no GiST + Geography combination is found.
+    pub fn has_gist_on_geography(&self) -> bool {
+        for idx in self.indexes {
+            if !matches!(idx.index_type, IndexType::Gist) {
+                continue;
+            }
+            for col in idx.columns {
+                let is_geo = self
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *col)
+                    .map(|f| matches!(f.sql_type, FieldSqlType::Geography { .. }))
+                    .unwrap_or(false);
+                if is_geo {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// The primary key column name for this model.
     ///
     /// Returns `Some("id")` for the three standard PK types (`HeerId`,

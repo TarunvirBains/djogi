@@ -7,7 +7,7 @@
 //! populates the `ModelDescriptor` when a model declares a `GeoPoint` field:
 //!
 //! 1. `geography_sql_type_on_location_field` — the `location` field descriptor
-//!    has `sql_type == FieldSqlType::Geography { srid: 4326 }`.
+//!    has `sql_type == FieldSqlType::Geography { subtype: GeographySubtype::Point, srid: 4326 }`.
 //! 2. `gist_index_in_descriptor_for_geopoint_field` — `ModelDescriptor::indexes`
 //!    contains exactly one `IndexSpec` for the `location` column, with
 //!    `index_type == IndexType::Gist`.
@@ -61,10 +61,12 @@ pub struct NonSpatialItem {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// The `location` field on `Place` must have `sql_type == Geography { srid: 4326 }`.
+/// The `location` field on `Place` must have
+/// `sql_type == Geography { subtype: Point, srid: 4326 }`.
 #[cfg(feature = "spatial")]
 #[test]
 fn geography_sql_type_on_location_field() {
+    use djogi::descriptor::GeographySubtype;
     let desc = Place::descriptor();
     let field = desc
         .fields
@@ -73,8 +75,14 @@ fn geography_sql_type_on_location_field() {
         .expect("location field must be present in Place descriptor");
 
     assert!(
-        matches!(field.sql_type, FieldSqlType::Geography { srid: 4326 }),
-        "expected Geography {{ srid: 4326 }}, got {:?}",
+        matches!(
+            field.sql_type,
+            FieldSqlType::Geography {
+                subtype: GeographySubtype::Point,
+                srid: 4326
+            }
+        ),
+        "expected Geography {{ subtype: Point, srid: 4326 }}, got {:?}",
         field.sql_type
     );
 }

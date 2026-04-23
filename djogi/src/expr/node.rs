@@ -94,7 +94,8 @@ pub(crate) enum ExprNode {
 
     /// Aggregate function call — `COUNT(*)` / `COUNT(col)` / `SUM(col)`
     /// / `AVG(col)` / `MIN(col)` / `MAX(col)` with an optional
-    /// `FILTER (WHERE ...)` post-filter clause. The typed
+    /// `FILTER (WHERE ...)` post-filter clause and an optional window
+    /// (`OVER (...)`) clause. The typed
     /// [`super::aggregate::AggregateExpr<Out>`] wrapper carries the Rust
     /// return type (`i64` for `COUNT`, `f64` for `AVG`, `V` for
     /// `SUM`/`MIN`/`MAX`) so the emitted scalar decodes to the right
@@ -112,6 +113,17 @@ pub(crate) enum ExprNode {
     /// `filter` is an optional boolean sub-expression that gates which
     /// rows contribute to the aggregate. Postgres emits this as
     /// `AGG(arg) FILTER (WHERE <cond>)`. `None` emits the bare aggregate.
+    ///
+    /// `distinct` reserves the `DISTINCT` keyword slot for Phase 6.5 T4's
+    /// `.distinct()` builder method. Always `false` until T4 wires it.
+    ///
+    /// `window` is an optional [`super::window::WindowSpec`] that promotes
+    /// this aggregate to a window function via `OVER (...)`. Supplied by
+    /// the `.over(|w| ...)` method on
+    /// [`super::aggregate::AggregateExpr`] (T3). `None` leaves the
+    /// aggregate bare; the terminal-layer helpers in
+    /// `query::sql` add `OVER ()` for the ungrouped annotate path when
+    /// `window` is `None`.
     Aggregate {
         /// Which aggregate function to call.
         op: AggOp,
@@ -137,6 +149,20 @@ pub(crate) enum ExprNode {
         /// framework-baked `&'static str` from
         /// [`super::aggregate`]'s method bodies — never user input.
         cast_to: Option<&'static str>,
+        /// When `true`, the `DISTINCT` keyword is emitted before the aggregate
+        /// argument: `AGG(DISTINCT col)`. Set via
+        /// [`super::aggregate::AggregateExpr::distinct`] (T4). Fetch-time
+        /// validation in [`super::sql::check_aggregate_legality`] rejects
+        /// combinations that Postgres does not accept or that Djogi's current
+        /// IR cannot correctly represent.
+        distinct: bool,
+        /// Optional user-specified window clause produced by
+        /// [`super::aggregate::AggregateExpr::over`]. `None` means the
+        /// aggregate has no `OVER` clause of its own; the ungrouped
+        /// annotate path in `query::sql` wraps `None`-window aggregates in
+        /// `OVER ()` for backwards compatibility. `Some(spec)` emits the
+        /// full `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
+        window: Option<crate::expr::window::WindowSpec>,
     },
 
     /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE

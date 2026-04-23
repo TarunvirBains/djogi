@@ -352,6 +352,49 @@ pub enum DjogiError {
     /// so `ctx` is transaction-backed when `stream` is called.
     #[error("QuerySet::stream requires an active transaction — wrap the call in atomic()")]
     StreamOutsideTransaction,
+
+    /// An aggregate's DISTINCT modifier combination is not supported by
+    /// Postgres syntax or by Djogi's current IR.
+    ///
+    /// # When this surfaces
+    ///
+    /// Raised by the fetch-time legality check in
+    /// [`crate::expr::sql::check_aggregate_legality`] for two cases:
+    ///
+    /// - `COUNT(DISTINCT *)` — `COUNT(DISTINCT *)` is not valid SQL.
+    ///   Use `COUNT(DISTINCT col)` via [`crate::query::field::FieldRef::count`]
+    ///   instead.
+    /// - `STRING_AGG(DISTINCT col, sep)` — Postgres requires an explicit
+    ///   per-aggregate `ORDER BY` when DISTINCT is combined with
+    ///   `STRING_AGG`. Djogi's Phase 6.5 IR does not track per-aggregate
+    ///   ORDER BY; a future phase will lift this restriction.
+    ///
+    /// `op` is the aggregate function keyword (e.g. `"COUNT(*)"`,
+    /// `"STRING_AGG"`). `reason` is a human-readable description of why
+    /// the combination is rejected.
+    #[error("unsupported aggregate: {op} — {reason}")]
+    #[non_exhaustive]
+    UnsupportedAggregate {
+        /// The aggregate function keyword or name, e.g. `"COUNT(*)"` or
+        /// `"STRING_AGG"`.
+        op: &'static str,
+        /// Human-readable explanation of why this combination is rejected.
+        reason: &'static str,
+    },
+
+    /// The emitted SELECT list contains two columns with the same alias;
+    /// the decoder would read the wrong value for one of the columns.
+    ///
+    /// This is a Djogi internal bug — a future API extension likely introduced
+    /// a path that collides with a group-key column name or another aggregate
+    /// alias. The check runs before any SQL is sent to Postgres so the
+    /// collision is caught immediately rather than silently returning wrong
+    /// data.
+    #[error("alias collision in SELECT list: {alias}")]
+    AliasCollision {
+        /// The alias string that appears more than once in the SELECT list.
+        alias: String,
+    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.

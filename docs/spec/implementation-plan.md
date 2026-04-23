@@ -420,16 +420,34 @@ Shipped 2026-04-22 as squash `b9e9860` (PR #11). Ships the `spatial` feature fla
 
 ## Phase 6.5: Spatial Polish
 
-**Goal:** Broaden the spatial surface from point-only, SRID-4326-only, radius-plus-ordering-only into a fuller geometry + predicate vocabulary so that v0.1.0's spatial story lands on crates.io as a genuine differentiator rather than a point solution.
+**Goal:** Two coupled deliverables — (1) the full default-feature grouped + windowed query surface Djogi still lacks (`.group_by` / `.having` / grouped `.order_by` / ROLLUP / CUBE / GROUPING SETS / `.over(window_spec)` / aggregate `.distinct()`); and (2) a `spatial`-gated PostGIS application layer (non-point geometries, shape predicates, bbox prefilter, distance-as-expression, named-region grouping, DBSCAN clustering, geohash bucketing, extension-aware `#[djogi_test]`). Together these make v0.1.0's spatial story a genuine differentiator rather than a point solution, and close the grouped/windowed query gap in the default ORM surface.
 
-**Speculative polish** — no concrete adoption pressure drives any specific deferral; the forcing function is v0.1.0 crates.io differentiation. Everything in scope is additive, feature-gated, and weighted toward ease-of-adoption. A v1 thin draft of the phase plan has been prepared; v2 (user preliminary) and v3 (Claude synthesis) to follow per the plan convention before dispatch. **SRID 4326 stays locked — matching Phase 6**; arbitrary-SRID generalization is roadmap work (see `docs/roadmap/future-work.md` §4.6), explicitly kept out of 6.5 to avoid the ergonomic tax of const-generic SRIDs on the 95% of users who only need WGS84.
+**Ordering.** 6.5 ships **before** Phase 7. The coupling is the descriptor contract (typed `GeographySubtype` discriminant on `FieldSqlType::Geography`, `IndexSpec` usage patterns) — contracts freeze upstream of their consumers, so 6.5 locks the final shape and Phase 7's migration differ is designed once against it. Phase 7's v3 plan must absorb 6.5's final descriptor shape; no "Phase 7 follow-up" task lives inside 6.5.
 
-- [ ] Non-point geometries as first-class field types: `LineString`, `Polygon`, `MultiPoint`, `MultiPolygon` — each backed by `GEOGRAPHY(<Type>, 4326)` with an auto-emitted GiST index. `Polygon::closed(&[...])` auto-closes the ring; `Polygon::with_holes(outer, holes)` is the power-user path
-- [ ] Additional spatial predicates: `contains`, `intersects`, `touches`, plus a shape-based `within(geometry)` distinct from Phase 6's radius-based `within_km` — extend `SpatialExpr` with corresponding variants; SQL routes to `ST_Contains` / `ST_Intersects` / `ST_Touches` / `ST_Within`
-- [ ] Explicit bounding-box prefilter predicate `bounded_by(min_lat, min_lon, max_lat, max_lon)` emitting GiST-indexed `&&` overlap operator; applies to any geography column regardless of subtype. KNN auto-prefilter (auto-emit `ST_DWithin` when `.order_by_distance` is chained with a radius) deferred pending benchmarking
-- [ ] `#[djogi_test(extensions = ["postgis"])]` attribute argument that auto-provisions Postgres extensions at per-test DB creation time — removes Phase 6's per-test `ctx.raw_ddl("CREATE EXTENSION ...")` pattern
+**SRID 4326 stays locked — matching Phase 6.** Arbitrary-SRID generalization is roadmap work (see `docs/roadmap/future-work.md` §4.6), explicitly kept out of 6.5 to avoid the ergonomic tax of const-generic SRIDs on the 95% of users who only need WGS84.
 
-**Deliverable:** Djogi's spatial surface covers polygon containment, line adjacency, multi-geometry containment, and bounding-box prefiltering — enough to power real-world geospatial query patterns (delivery zones, coverage regions, territory-based access) without dropping to `ctx.raw_sql`. Construction APIs bias toward "obvious correct default" with power-user escape hatches.
+Default-feature surface (aggregation + windowing):
+
+- [ ] `.group_by(|f| K)` → `GroupedQuerySet<T, K>`; `.annotate(|f| A)` → `GroupedAnnotatedQuerySet<T, K, A>`; terminals gated on the annotated state (compile-error on premature `.fetch_all`)
+- [ ] `.rollup(|f| K)` / `.cube(|f| K)` / `.group_by_sets(|f| [K; N])` for multi-level aggregation in one Postgres pass
+- [ ] `.having(|k, a| Expr<bool>)` / grouped `.order_by(|k, a| ...)` / `.limit` / `.offset` on `GroupedAnnotatedQuerySet`
+- [ ] `AggregateExpr::over(|w| w.partition_by(...).order_by(...).rows(...).exclude(...))` — full ROWS / RANGE / GROUPS / EXCLUDE frame vocabulary
+- [ ] `AggregateExpr::distinct()` on every aggregate variant that admits DISTINCT
+- [ ] Annotation alias collision → clear runtime error naming both columns
+
+Spatial-gated surface (`spatial` feature):
+
+- [ ] Non-point geometries as first-class field types: `LineString`, `Polygon`, `MultiPoint`, `MultiPolygon` — each backed by `GEOGRAPHY(<Subtype>, 4326)` with an auto-emitted GiST index. `Polygon::closed(&[...])` auto-closes the ring; `Polygon::with_ring(outer)` / `Polygon::with_holes(outer, holes)` for power users
+- [ ] `FieldSqlType::Geography` gains a typed `GeographySubtype { Point, LineString, Polygon, MultiPoint, MultiPolygon }` discriminant — migration differs compare subtypes by discriminant, not by `Display` text
+- [ ] Shape predicates: `.contains` / `.intersects` / `.touches` / `.within(geometry)` — distinct from Phase 6's radius-based `within_km`; dispatch on `FieldRef<M, G: GeographyValue>` via a new sealed `GeographyValue` trait
+- [ ] Bounding-box prefilter: `.bounded_by(min_lat, min_lon, max_lat, max_lon)` emitting the GiST-indexed `&&` overlap operator
+- [ ] Distance-as-expression: `FieldRef<M, GeoPoint>::distance_to(&GeoPoint) -> Expr<f64>` composes with `.filter` / `.annotate` / `.order_by`
+- [ ] Region grouping: `.group_by_region(|f| geo_field, R::objects())` / `.count_by_region(...)` — spatial-JOIN to a region model, returns `GroupedQuerySet<T, RegionKey<R>>` / `GroupedAnnotatedQuerySet<T, RegionKey<R>, i64>`
+- [ ] Dynamic clustering: `.cluster_by_proximity(|f| geo_field, ClusterRadius)` → `GroupedQuerySet<T, ClusterId>` via `ST_ClusterDBSCAN`. `ClusterRadius::meters` / `ClusterRadius::degrees` / `.min_points`
+- [ ] Geohash bucketing: `.bucket_by_cell(|f| geo_field, GeohashPrecision)` → `GroupedQuerySet<T, GeohashKey>` via `ST_GeoHash`. `GeohashPrecision::P1..=P12`
+- [ ] `#[djogi_test(extensions = ["postgis"])]` attribute argument auto-provisions extensions at per-test DB creation time — removes the per-test `ctx.raw_ddl("CREATE EXTENSION ...")` pattern from Phase 6
+
+**Deliverable:** Djogi ships a complete grouped / windowed aggregation surface in the default feature, and a PostGIS application layer (polygon containment, line adjacency, multi-geometry operations, bbox prefilter, distance-as-expression, region grouping, DBSCAN clustering, geohash bucketing) behind the `spatial` gate. Construction APIs bias toward "obvious correct default" with power-user escape hatches. Zero new runtime crate dependencies.
 
 ---
 
