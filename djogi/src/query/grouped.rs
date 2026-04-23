@@ -115,6 +115,36 @@ impl_into_group_key_tuple!(
     types = [(A, 0, 0), (B, 1, 1), (C, 2, 2), (D, 3, 3)]
 );
 
+// ── Spatial group source ─────────────────────────────────────────────────────
+//
+// T11 introduced `Option<SpatialJoinSpec>` on the grouped-query states.
+// T12 adds two more emission shapes (DBSCAN window, geohash scalar), so we
+// generalise the optional field into `Option<SpatialGroupSource>` — an enum
+// with one variant per emission strategy.
+//
+// This keeps `GroupedQuerySet` / `GroupedAnnotatedQuerySet` at one optional
+// field and lets the SQL builder dispatch on a single match arm rather than
+// cascading through three separate Option fields.
+
+/// Discriminated union of the three spatial group-source strategies.
+///
+/// - `Join` — T11 region path: LEFT JOIN + `ST_Contains` + GROUP BY region PK.
+/// - `Cluster` — T12 DBSCAN path: `ST_ClusterDBSCAN(...) OVER ()` window aggregate.
+/// - `Geohash` — T12 geohash path: `ST_GeoHash(..., precision)` scalar function.
+///
+/// Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
+/// `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
+#[cfg(feature = "spatial")]
+#[derive(Debug, Clone)]
+pub(crate) enum SpatialGroupSource {
+    /// T11 region-join path.
+    Join(crate::query::spatial_grouping::SpatialJoinSpec),
+    /// T12 DBSCAN clustering path.
+    Cluster(crate::query::spatial_grouping::ClusterSpec),
+    /// T12 geohash-bucket path.
+    Geohash(crate::query::spatial_grouping::GeohashSpec),
+}
+
 // ── Spatial region key: RegionKeyWithCol<R> ──────────────────────────────
 //
 // `RegionKeyWithCol<R>` is the key type for the `group_by_region` path.
@@ -158,6 +188,65 @@ where
             region_pk,
             _phantom: PhantomData,
         })
+    }
+}
+
+// ── T12: ClusterId IntoGroupKeyTuple ─────────────────────────────────────────
+//
+// `ClusterId` is the key type for `cluster_by_proximity`. Column 0 of the
+// grouped row is the `cluster_id` alias from the `ST_ClusterDBSCAN` window
+// call — an `Option<i32>` where `None` encodes DBSCAN noise points.
+
+#[cfg(feature = "spatial")]
+impl sealed::Sealed for crate::query::spatial_grouping::ClusterId {}
+
+#[cfg(feature = "spatial")]
+impl IntoGroupKeyTuple for crate::query::spatial_grouping::ClusterId {
+    type Decoded = crate::query::spatial_grouping::ClusterId;
+
+    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        // GROUP BY references the window-aggregate alias emitted in SELECT.
+        acc.push_sql("cluster_id");
+    }
+
+    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+        // The cluster SQL builder emits the full expression; this method
+        // is a fallback alias push used only on the plain grouped path,
+        // which the cluster entry point never reaches.
+        acc.push_sql("cluster_id");
+    }
+
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        let id: Option<i32> = row.try_get::<_, Option<i32>>(0)?;
+        Ok(crate::query::spatial_grouping::ClusterId(id))
+    }
+}
+
+// ── T12: GeohashKey IntoGroupKeyTuple ────────────────────────────────────────
+//
+// `GeohashKey` is the key type for `bucket_by_cell`. Column 0 is the
+// `geohash` alias emitted by `ST_GeoHash(...)`.
+
+#[cfg(feature = "spatial")]
+impl sealed::Sealed for crate::query::spatial_grouping::GeohashKey {}
+
+#[cfg(feature = "spatial")]
+impl IntoGroupKeyTuple for crate::query::spatial_grouping::GeohashKey {
+    type Decoded = crate::query::spatial_grouping::GeohashKey;
+
+    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql("geohash");
+    }
+
+    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+        // The geohash SQL builder emits the full `ST_GeoHash(...) AS geohash`
+        // expression; this method is the fallback for the plain grouped path.
+        acc.push_sql("geohash");
+    }
+
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        let hash: String = row.try_get::<_, String>(0)?;
+        Ok(crate::query::spatial_grouping::GeohashKey(hash))
     }
 }
 
@@ -222,18 +311,18 @@ pub enum GroupingMode {
 /// one without annotating is flagged by the `#[must_use]` attribute — the
 /// query is silently discarded if the result is not used.
 ///
-/// The optional `spatial_join` field carries the LEFT JOIN spec for the
-/// `group_by_region` path. `None` means a plain `GROUP BY col` query.
-/// The SQL builder reads this field to decide which emission path to take.
+/// The optional `spatial_source` field carries the spatial group-source spec
+/// for spatially-derived group keys (`group_by_region`, `cluster_by_proximity`,
+/// `bucket_by_cell`). `None` means a plain `GROUP BY col` query. The SQL
+/// builder reads this field to decide which emission path to take.
 #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
 pub struct GroupedQuerySet<T: Model, K: IntoGroupKeyTuple> {
     pub(crate) qs: QuerySet<T>,
     pub(crate) keys: K,
     pub(crate) grouping: GroupingMode,
-    /// Spatial LEFT JOIN spec for `group_by_region`. `None` for all plain
-    /// GROUP BY paths (the overwhelming majority of callers).
+    /// Spatial group source — `None` for all plain GROUP BY paths.
     #[cfg(feature = "spatial")]
-    pub(crate) spatial_join: Option<crate::query::spatial_grouping::SpatialJoinSpec>,
+    pub(crate) spatial_source: Option<SpatialGroupSource>,
     pub(crate) _k: PhantomData<fn() -> K>,
 }
 
@@ -246,9 +335,8 @@ pub struct GroupedQuerySet<T: Model, K: IntoGroupKeyTuple> {
 /// [HAVING ...] [ORDER BY ...] [LIMIT ...] [OFFSET ...]` query and decode the
 /// result into `Vec<(K::Decoded, A::Decoded)>`.
 ///
-/// The optional `spatial_join` field carries the LEFT JOIN spec for the
-/// `group_by_region` / `count_by_region` path. Propagated through `.annotate`
-/// from `GroupedQuerySet`; `None` for all plain GROUP BY paths.
+/// The optional `spatial_source` field carries the spatial group-source spec
+/// propagated from `GroupedQuerySet`. `None` for all plain GROUP BY paths.
 #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
 pub struct GroupedAnnotatedQuerySet<
     T: Model,
@@ -263,10 +351,10 @@ pub struct GroupedAnnotatedQuerySet<
     pub(crate) order: Vec<crate::query::order::OrderExpr>,
     pub(crate) limit: Option<u64>,
     pub(crate) offset: Option<u64>,
-    /// Spatial LEFT JOIN spec propagated from `GroupedQuerySet`. `None` for
-    /// plain GROUP BY queries; `Some` for `group_by_region` paths.
+    /// Spatial group source propagated from `GroupedQuerySet`. `None` for
+    /// plain GROUP BY queries; `Some` for any spatial grouping path.
     #[cfg(feature = "spatial")]
-    pub(crate) spatial_join: Option<crate::query::spatial_grouping::SpatialJoinSpec>,
+    pub(crate) spatial_source: Option<SpatialGroupSource>,
     pub(crate) _k: PhantomData<fn() -> K>,
     pub(crate) _a: PhantomData<fn() -> A>,
 }
@@ -297,10 +385,11 @@ impl<T: Model, K: IntoGroupKeyTuple> GroupedQuerySet<T, K> {
             order: Vec::new(),
             limit: None,
             offset: None,
-            // Propagate any spatial JOIN spec from the GroupedQuerySet so the
-            // SQL builder can read it on the annotated state's fetch_all path.
+            // Propagate any spatial group source from the GroupedQuerySet so
+            // the SQL builder can read it on the annotated state's fetch_all
+            // path.
             #[cfg(feature = "spatial")]
-            spatial_join: self.spatial_join,
+            spatial_source: self.spatial_source,
             _k: PhantomData,
             _a: PhantomData,
         }

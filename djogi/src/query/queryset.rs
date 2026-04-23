@@ -719,7 +719,7 @@ impl<T: Model> QuerySet<T> {
             keys,
             grouping: crate::query::grouped::GroupingMode::Plain,
             #[cfg(feature = "spatial")]
-            spatial_join: None,
+            spatial_source: None,
             _k: std::marker::PhantomData,
         }
     }
@@ -824,7 +824,7 @@ impl<T: Model> QuerySet<T> {
             keys: (),
             grouping: crate::query::grouped::GroupingMode::Sets(sets),
             #[cfg(feature = "spatial")]
-            spatial_join: None,
+            spatial_source: None,
             _k: std::marker::PhantomData,
         }
     }
@@ -945,7 +945,7 @@ impl<T: Model> QuerySet<T> {
             qs: self,
             keys,
             grouping: crate::query::grouped::GroupingMode::Plain,
-            spatial_join: Some(spec),
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Join(spec)),
             _k: std::marker::PhantomData,
         }
     }
@@ -984,6 +984,117 @@ impl<T: Model> QuerySet<T> {
         // the column name (see `AggOp::CountStar` emitter in expr/sql.rs).
         self.group_by_region(field, regions)
             .annotate(|_| crate::query::field::FieldRef::<T, i64>::new("id").count_star())
+    }
+
+    /// DBSCAN density-based clustering: group nearby points into clusters
+    /// without specifying the number of clusters in advance.
+    ///
+    /// Emits:
+    ///
+    /// ```sql
+    /// SELECT ST_ClusterDBSCAN(t.<col>::geometry, $eps, $minpoints) OVER () AS cluster_id,
+    ///        <aggregates>
+    /// FROM <table> AS t
+    /// [WHERE ...]
+    /// GROUP BY cluster_id
+    /// ```
+    ///
+    /// `cluster_id = NULL` for noise points (isolated rows with fewer than
+    /// `minpoints` neighbours within `eps`). With the default `min_points = 1`
+    /// every row is a core point of its own cluster, so noise never appears.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let counts = Store::objects()
+    ///     .cluster_by_proximity(|f| f.location(), ClusterRadius::meters(500.0).min_points(3))
+    ///     .annotate(|f| f.id.count_star())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Type parameters
+    ///
+    /// - `F` — closure that resolves the geography column from `T::Fields`.
+    /// - `G` — concrete geography type (e.g. `GeoPoint`, `Polygon`).
+    #[cfg(feature = "spatial")]
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn cluster_by_proximity<F, G>(
+        self,
+        field: F,
+        radius: crate::query::spatial_grouping::ClusterRadius,
+    ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::ClusterId>
+    where
+        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        G: crate::geo::GeographyValue,
+    {
+        let t_geo_col = field(T::Fields::default()).column();
+        let spec = crate::query::spatial_grouping::ClusterSpec {
+            t_geo_col,
+            eps_degrees: radius.eps_degrees,
+            minpoints: radius.minpoints,
+        };
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys: crate::query::spatial_grouping::ClusterId(None),
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Cluster(spec)),
+            _k: std::marker::PhantomData,
+        }
+    }
+
+    /// Geohash grid bucketing: assign each row to a spatial cell of the
+    /// chosen [`GeohashPrecision`] and group by that cell.
+    ///
+    /// Emits:
+    ///
+    /// ```sql
+    /// SELECT ST_GeoHash(t.<col>::geometry, $precision) AS geohash, <aggregates>
+    /// FROM <table> AS t
+    /// [WHERE ...]
+    /// GROUP BY geohash
+    /// ```
+    ///
+    /// Every point maps to exactly one geohash cell, so the key is never
+    /// `NULL`. Geohash strings are prefix-ordered: a `P5` key is a prefix of
+    /// any `P6` key that falls in the same parent cell — coarser re-aggregation
+    /// is possible via string truncation without re-querying.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let heatmap = Store::objects()
+    ///     .bucket_by_cell(|f| f.location(), GeohashPrecision::P5)
+    ///     .annotate(|f| f.id.count_star())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Type parameters
+    ///
+    /// - `F` — closure that resolves the geography column from `T::Fields`.
+    /// - `G` — concrete geography type (e.g. `GeoPoint`).
+    #[cfg(feature = "spatial")]
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn bucket_by_cell<F, G>(
+        self,
+        field: F,
+        precision: crate::query::spatial_grouping::GeohashPrecision,
+    ) -> crate::query::grouped::GroupedQuerySet<T, crate::query::spatial_grouping::GeohashKey>
+    where
+        F: FnOnce(T::Fields) -> crate::query::field::FieldRef<T, G>,
+        G: crate::geo::GeographyValue,
+    {
+        let t_geo_col = field(T::Fields::default()).column();
+        let spec = crate::query::spatial_grouping::GeohashSpec {
+            t_geo_col,
+            precision: precision.as_i32(),
+        };
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys: crate::query::spatial_grouping::GeohashKey(String::new()),
+            grouping: crate::query::grouped::GroupingMode::Plain,
+            spatial_source: Some(crate::query::grouped::SpatialGroupSource::Geohash(spec)),
+            _k: std::marker::PhantomData,
+        }
     }
 }
 
@@ -1350,5 +1461,36 @@ mod tests {
             QuerySet::<FakeIndexedRegion>::new(),
         );
         // If we got here without a deadlock or panic, the Once guard is correct.
+    }
+
+    // ── T12: cluster_by_proximity / bucket_by_cell type-dispatch tests ────────
+
+    /// `cluster_by_proximity` returns `GroupedQuerySet<T, ClusterId>`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_by_proximity_returns_grouped_queryset_with_cluster_id() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::GroupedQuerySet;
+        use crate::query::spatial_grouping::{ClusterId, ClusterRadius};
+        // Type-level check: the return type must be `GroupedQuerySet<Fake, ClusterId>`.
+        let _g: GroupedQuerySet<Fake, ClusterId> = QuerySet::<Fake>::new().cluster_by_proximity(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            ClusterRadius::meters(500.0).min_points(3),
+        );
+    }
+
+    /// `bucket_by_cell` returns `GroupedQuerySet<T, GeohashKey>`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn bucket_by_cell_returns_grouped_queryset_with_geohash_key() {
+        use crate::geo::GeoPoint;
+        use crate::query::field::FieldRef;
+        use crate::query::grouped::GroupedQuerySet;
+        use crate::query::spatial_grouping::{GeohashKey, GeohashPrecision};
+        let _g: GroupedQuerySet<Fake, GeohashKey> = QuerySet::<Fake>::new().bucket_by_cell(
+            |_| FieldRef::<Fake, GeoPoint>::new("location"),
+            GeohashPrecision::P5,
+        );
     }
 }
