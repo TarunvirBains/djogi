@@ -2273,6 +2273,8 @@ mod tests {
         indexes: &[],
         is_through: false,
         fts: None,
+        app: None,
+        moved_from_app: None,
     };
 
     fn owners_join_descriptor() -> &'static ModelDescriptor {

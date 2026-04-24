@@ -338,6 +338,8 @@ mod tests {
             indexes: &[],
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         }
     }
 

@@ -534,7 +534,49 @@ pub fn expand(
         quote! { &[ #(#index_spec_tokens,)* ] }
     };
 
+    // Phase 7-Zero v3 T8 — apps subsystem linkage.
+    //
+    // `#[model(app = Vehicles)]` becomes `app: Some(<Vehicles as
+    // ::djogi::App>::LABEL)` in the descriptor. Resolution happens at
+    // const-eval time; `None` maps to the synthetic global bucket.
+    // When `app = X` is set we also emit a compile-time assertion
+    // `const _: () = assert!(!<X as ::djogi::App>::TOMBSTONE)` — an
+    // active model cannot point at a tombstoned (retired) app.
+    // `moved_from_app = OldBilling` does *not* get this assertion;
+    // pointing historical metadata at a tombstoned app is the whole
+    // point of `moved_from_app`.
+    let (app_tokens, tombstone_guard_tokens) = match &model_attrs.app {
+        Some(path) => (
+            quote! {
+                ::core::option::Option::Some(
+                    <#path as ::djogi::apps::App>::LABEL,
+                )
+            },
+            quote! {
+                const _: () = {
+                    assert!(
+                        !<#path as ::djogi::apps::App>::TOMBSTONE,
+                        "cannot declare an active model on a tombstoned \
+                         app; use `#[model(app = NewApp, moved_from_app = \
+                         OldApp)]` to record historical metadata",
+                    );
+                };
+            },
+        ),
+        None => (quote! { ::core::option::Option::None }, quote! {}),
+    };
+    let moved_from_app_tokens = match &model_attrs.moved_from_app {
+        Some(path) => quote! {
+            ::core::option::Option::Some(
+                <#path as ::djogi::apps::App>::LABEL,
+            )
+        },
+        None => quote! { ::core::option::Option::None },
+    };
+
     quote! {
+        #tombstone_guard_tokens
+
         ::djogi::__private::inventory::submit! {
             ::djogi::ModelDescriptor {
                 type_name: #type_name,
@@ -562,6 +604,9 @@ pub fn expand(
                 is_through: #is_through,
                 // Phase 5 Task 14 — Full-Text Search.
                 fts: #fts_tokens,
+                // Phase 7-Zero v3 T8 — apps subsystem linkage.
+                app: #app_tokens,
+                moved_from_app: #moved_from_app_tokens,
             }
         }
     }

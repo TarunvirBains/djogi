@@ -937,6 +937,8 @@ async fn missing_gist_warn_fires_at_most_once(_ctx: djogi::DjogiContext) {
                 indexes: &[],
                 is_through: false,
                 fts: None,
+                app: None,
+                moved_from_app: None,
             };
             &DESC
         }

@@ -1384,6 +1384,8 @@ mod tests {
                 indexes: &[],
                 is_through: false,
                 fts: None,
+                app: None,
+                moved_from_app: None,
             };
             &DESC
         }
@@ -1560,6 +1562,8 @@ mod tests {
                 indexes: INDEXES,
                 is_through: false,
                 fts: None,
+                app: None,
+                moved_from_app: None,
             };
             &DESC
         }

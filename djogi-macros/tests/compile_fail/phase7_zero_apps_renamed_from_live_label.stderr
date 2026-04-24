@@ -1,0 +1,5 @@
+error: `renamed_from = "vehicles"` targets a label still declared live in this `djogi::apps!` block. A rename retires the old label; remove the prior app (or its explicit `label = "vehicles"`) before renaming onto it.
+ --> tests/compile_fail/phase7_zero_apps_renamed_from_live_label.rs:9:45
+  |
+9 |     #[app(database = "main", renamed_from = "vehicles")]
+  |                                             ^^^^^^^^^^

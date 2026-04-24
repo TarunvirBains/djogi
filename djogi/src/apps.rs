@@ -104,6 +104,13 @@ pub trait App {
     const LABEL: &'static str;
     /// Database-target name — see [`AppDescriptor::database`].
     const DATABASE: &'static str;
+    /// `true` when this app has been tombstoned via
+    /// `#[app(tombstone, …)]`. `#[derive(Model)]` emits a
+    /// compile-time assertion against this const whenever
+    /// `#[model(app = X)]` references a tombstoned app — active
+    /// models must either stay on a live app or use
+    /// `moved_from_app = X` historical metadata instead.
+    const TOMBSTONE: bool = false;
     /// Const-constructed descriptor emitted into the inventory slice.
     const DESCRIPTOR: AppDescriptor;
 }

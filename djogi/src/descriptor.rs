@@ -929,6 +929,8 @@ mod tests {
                 indexes: &[],
                 is_through: false,
                 fts: None,
+                app: None,
+                moved_from_app: None,
             };
             assert_eq!(desc.pk_column(), Some("id"));
         }
@@ -1003,6 +1005,8 @@ mod tests {
             indexes: &[],
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
 
         let shape = MigrationShape::from_descriptor(&desc);
@@ -1130,6 +1134,8 @@ mod tests {
             indexes: std::slice::from_ref(&T11_GIST_INDEX),
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             desc.has_gist_on_geography(),
@@ -1154,6 +1160,8 @@ mod tests {
             indexes: &[],
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1179,6 +1187,8 @@ mod tests {
             indexes: std::slice::from_ref(&T11_BTREE_INDEX),
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1203,6 +1213,8 @@ mod tests {
             indexes: std::slice::from_ref(&T11_GIST_ON_TEXT),
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1413,6 +1425,27 @@ pub struct ModelDescriptor {
     /// `old_desc.fts` with `new_desc.fts` using `PartialEq` — any difference
     /// in `column`, `source`, or `dictionary` requires a column reconstruction.
     pub fts: Option<FtsDescriptor>,
+
+    // ── Apps subsystem (Phase 7-Zero v3 T8) ─────────────────────────────────
+    /// The stable string label of the app this model belongs to.
+    ///
+    /// Set by `#[model(app = Vehicles)]` — the macro lowers the type
+    /// path to `<Vehicles as ::djogi::App>::LABEL` at const-eval time
+    /// so the descriptor carries the Postgres identifier, not the
+    /// Rust type name. `None` places the model in the synthetic
+    /// global bucket, which Phase 7's differ files under
+    /// `<default-database>/<empty-label>/`.
+    pub app: Option<&'static str>,
+
+    /// Historical-metadata pointer to this model's prior app.
+    ///
+    /// Set by `#[model(moved_from_app = OldBilling)]` when a model
+    /// has been moved between apps. Enables Phase 7's migration
+    /// differ to emit correct move-table-across-schemas operations
+    /// without forcing the old app to stay declared. The pointed-at
+    /// app may be tombstoned — that's the expected retirement flow
+    /// (see `docs/guide/apps.md`).
+    pub moved_from_app: Option<&'static str>,
 }
 
 impl ModelDescriptor {

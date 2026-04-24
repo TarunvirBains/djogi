@@ -148,6 +148,23 @@ pub struct ModelAttrs {
     /// declarations, and the descriptor emitter alphabetises by
     /// generated name before producing the final slice literal.
     pub indexes: Vec<crate::model::indexes::ModelIndexDecl>,
+
+    /// Compile-time schema ownership domain — the type path of the app
+    /// this model belongs to. Set via `#[model(app = Vehicles)]`.
+    /// `None` places the model in the synthetic global bucket, which
+    /// Phase 7's differ files under `<default-database>/<empty-label>/`.
+    /// Resolved at emission time via `<Path as ::djogi::App>::LABEL` so
+    /// the descriptor carries the stable string identifier, not the
+    /// Rust type path.
+    pub app: Option<syn::Path>,
+
+    /// Historical-metadata pointer to the model's prior app. Set via
+    /// `#[model(moved_from_app = OldBilling)]`. Enables Phase 7's
+    /// differ to track model-across-app moves without forcing the old
+    /// app to stay declared. The pointed-at app may be tombstoned;
+    /// that's the intended lifecycle shape for retirements. Resolved
+    /// via `<Path as ::djogi::App>::LABEL` same as `app`.
+    pub moved_from_app: Option<syn::Path>,
 }
 
 /// Parsed `pk = "..."` value.
@@ -189,6 +206,8 @@ impl ModelAttrs {
         let mut fts: Option<FtsSpec> = Option::None;
         let mut indexes: Vec<crate::model::indexes::ModelIndexDecl> = Vec::new();
         let mut seen_indexes = false;
+        let mut app: Option<syn::Path> = Option::None;
+        let mut moved_from_app: Option<syn::Path> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -339,6 +358,40 @@ impl ModelAttrs {
                     seen_indexes = true;
                     indexes = crate::model::indexes::parse_indexes_meta_list(list)?;
                 }
+                // `app = Vehicles` — Phase 7-Zero v3 T8. Value is a
+                // Rust type path (not a string) since apps are
+                // addressed by type per §4B (Codex P0-03). The
+                // descriptor emitter lowers the path to
+                // `<Path as ::djogi::App>::LABEL` at const-eval time.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Path(expr_path),
+                    ..
+                }) if path.is_ident("app") => {
+                    if app.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `app = …` key in #[model(...)]",
+                        ));
+                    }
+                    app = Some(expr_path.path.clone());
+                }
+                // `moved_from_app = OldBilling` — Phase 7-Zero v3 T8.
+                // Same path-valued form as `app`; historical metadata
+                // only, so the referenced app may be tombstoned.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Path(expr_path),
+                    ..
+                }) if path.is_ident("moved_from_app") => {
+                    if moved_from_app.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `moved_from_app = …` key in #[model(...)]",
+                        ));
+                    }
+                    moved_from_app = Some(expr_path.path.clone());
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
@@ -366,6 +419,8 @@ impl ModelAttrs {
             tenant_key,
             fts,
             indexes,
+            app,
+            moved_from_app,
         })
     }
 }
