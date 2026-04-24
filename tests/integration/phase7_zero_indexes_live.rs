@@ -146,6 +146,34 @@ pub struct T6UniqueConcurrent {
     pub email: String,
 }
 
+/// `unique(fields = [...], include = [...])` — §6.4 escalation: the
+/// covering payload is a unique-index-only feature that
+/// `ALTER TABLE … ADD CONSTRAINT … UNIQUE` cannot express, so the
+/// macro must emit `IndexKind::UniqueIndex` (not `UniqueConstraint`).
+/// Regression guard for `forces_unique_index` dropping the
+/// `!body.include.is_empty()` clause.
+#[model(table = "t6_unique_include", no_default, indexes(
+    unique(fields = [email], include = [display_name]),
+))]
+#[derive(Debug, Clone)]
+pub struct T6UniqueInclude {
+    pub email: String,
+    pub display_name: String,
+}
+
+/// `unique(expr = "lower(email)")` — §6.4 escalation: expression-target
+/// uniqueness is also a unique-index-only feature. Regression guard for
+/// `forces_unique_index` dropping the `IndexDeclTarget::Expr` clause.
+#[model(
+    table = "t6_unique_expr",
+    no_default,
+    indexes(unique(expr = "lower(email)"),)
+)]
+#[derive(Debug, Clone)]
+pub struct T6UniqueExpr {
+    pub email: String,
+}
+
 /// Regression guard — Phase 6 GiST path. A model with a `GeoPoint` field
 /// must still emit exactly one GiST `IndexSpec` on the geography column,
 /// and that index must land in `pg_am.amname = 'gist'`.
@@ -418,12 +446,13 @@ async fn has_unique_constraint(ctx: &mut djogi::DjogiContext, name: &str) -> boo
 // Descriptor-only tests — no database needed.
 // ---------------------------------------------------------------------------
 
-/// Every §5 grammar form must populate `ModelDescriptor::indexes` with
-/// exactly one entry, and the key discriminators (`kind`, `index_type`,
-/// `target` shape, name stem) must match the declaration.
+// Each descriptor form gets its own `#[test]` so a regression localises
+// to a single grammar form rather than short-circuiting the whole batch.
+// See §5 of the plan for the grammar; the kind / name-stem / target
+// discriminators are what the migration differ consumes.
+
 #[test]
-fn descriptors_emit_all_grammar_forms() {
-    // Plain composite → NonUnique, BTree, Columns(tenant_id, created_at_evt), _idx.
+fn descriptor_composite_index() {
     let e = T6Event::descriptor();
     assert_eq!(e.indexes.len(), 1);
     assert!(matches!(e.indexes[0].kind, IndexKind::NonUnique));
@@ -437,37 +466,49 @@ fn descriptors_emit_all_grammar_forms() {
         cols.iter().map(|c| c.name).collect::<Vec<_>>(),
         vec!["tenant_id", "created_at_evt"]
     );
+}
 
-    // Simple unique → UniqueConstraint, _key.
+#[test]
+fn descriptor_simple_unique_lowers_to_constraint() {
     let s = T6SimpleUnique::descriptor();
     assert_eq!(s.indexes.len(), 1);
     assert!(matches!(s.indexes[0].kind, IndexKind::UniqueConstraint));
     assert!(s.indexes[0].name.ends_with("_key"));
+}
 
-    // Partial unique → UniqueIndex, _uidx, predicate Some.
+#[test]
+fn descriptor_partial_unique_escalates_to_index() {
     let p = T6PartialUnique::descriptor();
     assert!(matches!(p.indexes[0].kind, IndexKind::UniqueIndex));
     assert!(p.indexes[0].name.ends_with("_uidx"));
     assert_eq!(p.indexes[0].predicate, Some("deleted_at IS NULL"));
+}
 
-    // NULLS NOT DISTINCT → UniqueIndex, nulls_not_distinct=true, _uidx.
+#[test]
+fn descriptor_nnd_unique_escalates_to_index() {
     let n = T6NndUnique::descriptor();
     assert!(matches!(n.indexes[0].kind, IndexKind::UniqueIndex));
     assert!(n.indexes[0].nulls_not_distinct);
     assert!(n.indexes[0].name.ends_with("_uidx"));
+}
 
-    // Covering → NonUnique, include = [status, priority].
+#[test]
+fn descriptor_covering_index_carries_include_columns() {
     let c = T6Covering::descriptor();
     assert!(matches!(c.indexes[0].kind, IndexKind::NonUnique));
     assert_eq!(c.indexes[0].include, &["status", "priority"][..]);
+}
 
-    // Expression → NonUnique, Expression target, _expr_idx.
+#[test]
+fn descriptor_expression_index_uses_expression_target() {
     let x = T6Expression::descriptor();
     assert!(matches!(x.indexes[0].kind, IndexKind::NonUnique));
     assert!(matches!(x.indexes[0].target, IndexTarget::Expression(_)));
     assert!(x.indexes[0].name.ends_with("_expr_idx"));
+}
 
-    // Per-column record → NonUnique, Columns with Desc/First + opclass set.
+#[test]
+fn descriptor_per_column_record_carries_order_and_opclass() {
     let pc = T6PerColumn::descriptor();
     let cols = match pc.indexes[0].target {
         IndexTarget::Columns(cs) => cs,
@@ -478,13 +519,38 @@ fn descriptors_emit_all_grammar_forms() {
     assert!(matches!(cols[0].nulls, IndexNullsOrder::First));
     assert_eq!(cols[1].name, "status");
     assert_eq!(cols[1].opclass, Some("text_pattern_ops"));
+}
 
-    // unique + concurrently → escalation to UniqueIndex + _uidx name
-    // (plan §6.2 the contract this whole file is anchored to).
+/// Plan §6.2 — `unique(..., concurrently = true)` escalates kind to
+/// `UniqueIndex` because `ALTER TABLE ADD CONSTRAINT UNIQUE` has no
+/// `CONCURRENTLY` form. This is the contract the whole file is
+/// anchored on.
+#[test]
+fn descriptor_unique_concurrent_escalates_to_unique_index() {
     let uc = T6UniqueConcurrent::descriptor();
     assert!(matches!(uc.indexes[0].kind, IndexKind::UniqueIndex));
     assert!(uc.indexes[0].requires_out_of_transaction);
     assert!(uc.indexes[0].name.ends_with("_uidx"));
+}
+
+/// Plan §6.4 item 4 — `unique(..., include = [...])` escalates because
+/// `ADD CONSTRAINT` cannot express the covering payload.
+#[test]
+fn descriptor_unique_with_include_escalates_to_unique_index() {
+    let ui = T6UniqueInclude::descriptor();
+    assert!(matches!(ui.indexes[0].kind, IndexKind::UniqueIndex));
+    assert_eq!(ui.indexes[0].include, &["display_name"][..]);
+    assert!(ui.indexes[0].name.ends_with("_uidx"));
+}
+
+/// Plan §6.4 item 3 — `unique(expr = "...")` escalates because
+/// `ADD CONSTRAINT` cannot express an expression target.
+#[test]
+fn descriptor_unique_expression_escalates_to_unique_index() {
+    let ux = T6UniqueExpr::descriptor();
+    assert!(matches!(ux.indexes[0].kind, IndexKind::UniqueIndex));
+    assert!(matches!(ux.indexes[0].target, IndexTarget::Expression(_)));
+    assert!(ux.indexes[0].name.ends_with("_expr_uidx"));
 }
 
 /// Regression guard — a `#[model]` with a `GeoPoint` field still emits
@@ -587,6 +653,19 @@ async fn covering_index_has_include_columns(mut ctx: djogi::DjogiContext) {
     // One key column (created_at_c) + two INCLUDE columns (status, priority).
     assert_eq!(nkey, 1, "one key column");
     assert_eq!(natts, 3, "one key + two include = three total");
+
+    // Column order round-trips — the key column first, then the INCLUDE
+    // payload columns in declaration order. Assert on names so a reorder
+    // bug in the emitter can't hide behind matching counts.
+    let cols = read_index_columns(&mut ctx, name).await;
+    assert_eq!(
+        cols,
+        vec![
+            "created_at_c".to_string(),
+            "status".to_string(),
+            "priority".to_string(),
+        ]
+    );
 }
 
 #[djogi::djogi_test]
@@ -674,6 +753,55 @@ async fn unique_concurrent_lands_as_unique_index_not_constraint(mut ctx: djogi::
     assert!(
         !has_unique_constraint(&mut ctx, name).await,
         "UniqueIndex (escalated from concurrent unique) must NOT create a pg_constraint row"
+    );
+}
+
+/// §6.4 item 4 round-trip — `unique(fields, include = [...])` escalates
+/// to UniqueIndex (no pg_constraint row) because the covering payload is
+/// a unique-index-only feature.
+#[djogi::djogi_test]
+async fn unique_with_include_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
+    let ddl = setup_schema_for::<T6UniqueInclude>(&mut ctx).await;
+    assert!(
+        ddl[0].contains("CREATE UNIQUE INDEX") && ddl[0].contains("INCLUDE (display_name)"),
+        "expected CREATE UNIQUE INDEX with INCLUDE, got: {}",
+        ddl[0]
+    );
+
+    let desc = T6UniqueInclude::descriptor();
+    let name = desc.indexes[0].name;
+
+    let (is_unique, _, _, _, _, _, natts, nkey) = read_pg_index(&mut ctx, name).await;
+    assert!(is_unique);
+    assert_eq!(nkey, 1, "one key column (email)");
+    assert_eq!(natts, 2, "one key + one INCLUDE = two total");
+    assert!(
+        !has_unique_constraint(&mut ctx, name).await,
+        "UniqueIndex (escalated from unique+include) must NOT create a pg_constraint row"
+    );
+}
+
+/// §6.4 item 3 round-trip — `unique(expr = "...")` escalates to
+/// UniqueIndex because expression-target uniqueness cannot be carried by
+/// an `ADD CONSTRAINT ... UNIQUE` statement.
+#[djogi::djogi_test]
+async fn unique_expression_lands_as_unique_index_not_constraint(mut ctx: djogi::DjogiContext) {
+    let ddl = setup_schema_for::<T6UniqueExpr>(&mut ctx).await;
+    assert!(
+        ddl[0].contains("CREATE UNIQUE INDEX"),
+        "expected CREATE UNIQUE INDEX on expression, got: {}",
+        ddl[0]
+    );
+
+    let desc = T6UniqueExpr::descriptor();
+    let name = desc.indexes[0].name;
+
+    let (is_unique, _, _, _, has_expr, _, _, _) = read_pg_index(&mut ctx, name).await;
+    assert!(is_unique);
+    assert!(has_expr, "expression-target index must populate indexprs");
+    assert!(
+        !has_unique_constraint(&mut ctx, name).await,
+        "UniqueIndex (escalated from unique+expr) must NOT create a pg_constraint row"
     );
 }
 
