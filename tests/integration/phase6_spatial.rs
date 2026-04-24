@@ -69,6 +69,11 @@ pub struct NonSpatialItem {
 /// Kept here as a thin helper so every call site spells out the same
 /// translation from the Phase 7-Zero v3 `IndexTarget` shape to the simple
 /// column-name comparison that these tests want.
+///
+/// Feature-gated because every caller is `#[cfg(feature = "spatial")]`;
+/// without the gate, clippy flags this as dead code when CI runs
+/// without the spatial feature.
+#[cfg(feature = "spatial")]
 fn index_column_names(spec: &djogi::IndexSpec) -> Vec<&'static str> {
     match spec.target {
         djogi::IndexTarget::Columns(cs) => cs.iter().map(|c| c.name).collect(),
