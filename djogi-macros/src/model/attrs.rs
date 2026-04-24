@@ -392,10 +392,30 @@ impl ModelAttrs {
                     }
                     moved_from_app = Some(expr_path.path.clone());
                 }
+                // `app` / `moved_from_app` with a non-path value
+                // (commonly a string literal) — known key, wrong shape.
+                // Give a specific diagnostic instead of falling into
+                // the "expected key = value" generic message.
+                Meta::NameValue(nv) if nv.path.is_ident("app") => {
+                    return Err(syn::Error::new_spanned(
+                        &nv.value,
+                        "`app = …` must be a type path (e.g. `app = Vehicles`); \
+                         apps are addressed by type, not by string label",
+                    ));
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("moved_from_app") => {
+                    return Err(syn::Error::new_spanned(
+                        &nv.value,
+                        "`moved_from_app = …` must be a type path (e.g. \
+                         `moved_from_app = OldBilling`); apps are addressed \
+                         by type, not by string label",
+                    ));
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "expected `key = \"value\"` attribute or bare flag (`no_default`, `through`, `events`)",
+                        "expected `key = \"value\"` or `key = TypePath` attribute, \
+                         or bare flag (`no_default`, `through`, `events`)",
                     ));
                 }
             }

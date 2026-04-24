@@ -450,24 +450,29 @@ fn expand_inner(input: TokenStream) -> syn::Result<TokenStream> {
         resolved.push((decl, label));
     }
 
-    // Second pass: validate `renamed_from` does not target any live
-    // label in the same invocation. A rename from a label that is
-    // still present would leave two simultaneous claimants on the
-    // migration `<database>/<label>/` directory. The rule is
-    // stricter than necessary (only same-database collisions matter
-    // for the differ) but the cross-database case is almost
-    // certainly a typo — surface both.
+    // Second pass: validate `renamed_from` does not target a live
+    // label in the *same database* within this invocation. A rename
+    // from a label that is still present in the same database would
+    // leave two simultaneous claimants on the migration
+    // `<database>/<label>/` directory. Cross-database same-label
+    // coexistence is explicitly legitimate per the (database, label)
+    // identity contract (`main/audit/` and `crud_log/audit/` are
+    // distinct apps), so we scope the check accordingly.
     for (decl, _) in &resolved {
         if let Some(rf) = &decl.renamed_from {
             let rf_value = rf.value();
-            if resolved.iter().any(|(_, l)| l == &rf_value) {
+            if resolved
+                .iter()
+                .any(|(other, l)| l == &rf_value && other.database == decl.database)
+            {
                 return Err(syn::Error::new(
                     rf.span(),
                     format!(
                         "`renamed_from = {rf_value:?}` targets a label still \
-                         declared live in this `djogi::apps!` block. A rename \
-                         retires the old label; remove the prior app (or its \
-                         explicit `label = \"{rf_value}\"`) before renaming onto it.",
+                         declared live in the same database in this \
+                         `djogi::apps!` block. A rename retires the old label; \
+                         remove the prior app (or its explicit \
+                         `label = \"{rf_value}\"`) before renaming onto it.",
                     ),
                 ));
             }
