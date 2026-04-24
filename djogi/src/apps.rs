@@ -259,9 +259,12 @@ impl AppRegistry {
     /// Returns every cross-app foreign-key edge in the inventory.
     ///
     /// An edge exists when a field on a [`crate::ModelDescriptor`]
-    /// carries `relation_kind = Some(RelationKind::ForeignKey)` and
-    /// the **source** model's [`crate::ModelDescriptor::app`] differs
-    /// from the **target** model's app. Intra-app FKs are not
+    /// carries `relation_kind` of either
+    /// [`crate::descriptor::RelationKind::ForeignKey`] or
+    /// [`crate::descriptor::RelationKind::OneToOne`] (both lower to
+    /// SQL FKs; O2O is just a unique-backed FK) and the **source**
+    /// model's app identity `(database, app_label)` differs from
+    /// the **target** model's identity. Intra-app FKs are not
     /// returned — they are always safe from the apps-subsystem's
     /// perspective since source and target share a migration
     /// `<database>/<app>/` directory and compose atomically.
@@ -290,44 +293,77 @@ impl AppRegistry {
             use crate::descriptor::ModelDescriptor;
             use crate::descriptor::RelationKind;
 
-            // Build type-name -> app label lookup once.
-            let mut type_to_app: std::collections::HashMap<&'static str, &'static str> =
-                std::collections::HashMap::new();
+            // Resolve a model's database by looking up its app label
+            // in the registry. The synthetic global bucket answers
+            // for unapp'd models (`app == None` lowered to `""`).
+            fn database_for_label(label: &'static str) -> &'static str {
+                AppRegistry::all()
+                    .iter()
+                    .find(|d| d.label == label)
+                    .map(|d| d.database)
+                    .unwrap_or(AppDescriptor::GLOBAL_DATABASE)
+            }
+
+            // Build type-name -> (app_label, database) lookup once.
+            // Keyed by short `type_name` for now; the workspace
+            // convention is that model type names are unique across
+            // linked crates. A future extension will key by
+            // `(module_path, type_name)` once that pair is part of
+            // the descriptor shape.
+            let mut type_to_identity: std::collections::HashMap<
+                &'static str,
+                (&'static str, &'static str),
+            > = std::collections::HashMap::new();
             for m in inventory::iter::<ModelDescriptor> {
-                type_to_app.insert(m.type_name, m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL));
+                let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
+                type_to_identity.insert(m.type_name, (label, database_for_label(label)));
             }
 
             let mut edges: Vec<CrossAppEdge> = Vec::new();
             for source in inventory::iter::<ModelDescriptor> {
                 let source_app = source.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
+                let source_database = database_for_label(source_app);
                 for field in source.fields {
-                    if !matches!(field.relation_kind, Some(RelationKind::ForeignKey)) {
+                    if !matches!(
+                        field.relation_kind,
+                        Some(RelationKind::ForeignKey) | Some(RelationKind::OneToOne)
+                    ) {
                         continue;
                     }
                     let Some(target_type) = field.target_type_name else {
                         continue;
                     };
-                    let Some(&target_app) = type_to_app.get(target_type) else {
+                    let Some(&(target_app, target_database)) = type_to_identity.get(target_type)
+                    else {
                         continue;
                     };
-                    if source_app == target_app {
+                    if source_app == target_app && source_database == target_database {
                         continue;
                     }
                     edges.push(CrossAppEdge {
+                        source_database,
                         source_app,
                         source_type: source.type_name,
                         source_field: field.name,
+                        target_database,
                         target_app,
                         target_type,
                     });
                 }
             }
             edges.sort_by(|a, b| {
-                (a.source_app, a.source_type, a.source_field).cmp(&(
-                    b.source_app,
-                    b.source_type,
-                    b.source_field,
-                ))
+                (
+                    a.source_database,
+                    a.source_app,
+                    a.source_type,
+                    a.source_field,
+                )
+                    .cmp(&(
+                        b.source_database,
+                        b.source_app,
+                        b.source_type,
+                        b.source_field,
+                    ))
             });
             edges
         })
@@ -335,11 +371,16 @@ impl AppRegistry {
 
     /// Returns every cross-app cycle in the FK graph.
     ///
-    /// Each element is a sequence of app labels `[A, B, …, A]`
-    /// describing one cycle. Same-app cycles (a model in `Billing`
-    /// referencing another model in `Billing` through some chain)
-    /// are deferred to Phase 7's intra-app analysis — this method
-    /// surfaces only inter-app cycles.
+    /// Each element is a sequence of app identities `[(db, label),
+    /// …, (db, label)]` describing one cycle. Identities include the
+    /// database target because `(database, label)` is the apps
+    /// contract's identity pair — same-label apps in different
+    /// databases are distinct participants.
+    ///
+    /// Same-app cycles (a model in `Billing` referencing another
+    /// model in `Billing` through some chain) are deferred to Phase
+    /// 7's intra-app analysis — this method surfaces only
+    /// inter-app cycles.
     ///
     /// Algorithm: standard DFS with three-color marking over the
     /// condensed app→app graph (edges collapsed from
@@ -347,17 +388,26 @@ impl AppRegistry {
     /// count and `E` is the number of distinct inter-app edges.
     ///
     /// Result is memoised; inventory is fixed at link time.
-    pub fn cross_app_cycles() -> &'static [Vec<&'static str>] {
-        static CACHE: OnceLock<Vec<Vec<&'static str>>> = OnceLock::new();
+    pub fn cross_app_cycles() -> &'static [Vec<AppIdentity>] {
+        static CACHE: OnceLock<Vec<Vec<AppIdentity>>> = OnceLock::new();
         CACHE.get_or_init(|| {
             use std::collections::{HashMap, HashSet};
 
-            // Collapse CrossAppEdge list to an app→{apps} adjacency map.
-            let mut adj: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
+            // Collapse CrossAppEdge list to an (db,label)→{(db,label)}
+            // adjacency map with dedup.
+            let mut adj: HashMap<AppIdentity, Vec<AppIdentity>> = HashMap::new();
             for edge in Self::cross_app_edges() {
-                let entry = adj.entry(edge.source_app).or_default();
-                if !entry.contains(&edge.target_app) {
-                    entry.push(edge.target_app);
+                let from = AppIdentity {
+                    database: edge.source_database,
+                    label: edge.source_app,
+                };
+                let to = AppIdentity {
+                    database: edge.target_database,
+                    label: edge.target_app,
+                };
+                let entry = adj.entry(from).or_default();
+                if !entry.contains(&to) {
+                    entry.push(to);
                 }
             }
 
@@ -366,34 +416,31 @@ impl AppRegistry {
                 neighbours.sort();
             }
 
-            let mut cycles: Vec<Vec<&'static str>> = Vec::new();
-            let mut onstack: HashSet<&'static str> = HashSet::new();
-            let mut done: HashSet<&'static str> = HashSet::new();
-            let mut stack: Vec<&'static str> = Vec::new();
-            let mut roots: Vec<&'static str> = adj.keys().copied().collect();
+            let mut cycles: Vec<Vec<AppIdentity>> = Vec::new();
+            let mut onstack: HashSet<AppIdentity> = HashSet::new();
+            let mut done: HashSet<AppIdentity> = HashSet::new();
+            let mut stack: Vec<AppIdentity> = Vec::new();
+            let mut roots: Vec<AppIdentity> = adj.keys().copied().collect();
             roots.sort();
 
             fn dfs(
-                node: &'static str,
-                adj: &HashMap<&'static str, Vec<&'static str>>,
-                onstack: &mut HashSet<&'static str>,
-                done: &mut HashSet<&'static str>,
-                stack: &mut Vec<&'static str>,
-                cycles: &mut Vec<Vec<&'static str>>,
+                node: AppIdentity,
+                adj: &HashMap<AppIdentity, Vec<AppIdentity>>,
+                onstack: &mut HashSet<AppIdentity>,
+                done: &mut HashSet<AppIdentity>,
+                stack: &mut Vec<AppIdentity>,
+                cycles: &mut Vec<Vec<AppIdentity>>,
             ) {
-                if done.contains(node) {
+                if done.contains(&node) {
                     return;
                 }
                 onstack.insert(node);
                 stack.push(node);
-                if let Some(neighbours) = adj.get(node) {
+                if let Some(neighbours) = adj.get(&node) {
                     for &nbr in neighbours {
                         if onstack.contains(&nbr) {
-                            // Record the cycle slice from the first
-                            // occurrence of `nbr` in the stack to the
-                            // top, closed with `nbr` itself.
                             if let Some(start) = stack.iter().position(|n| *n == nbr) {
-                                let mut cycle: Vec<&'static str> = stack[start..].to_vec();
+                                let mut cycle: Vec<AppIdentity> = stack[start..].to_vec();
                                 cycle.push(nbr);
                                 cycles.push(cycle);
                             }
@@ -403,16 +450,37 @@ impl AppRegistry {
                     }
                 }
                 stack.pop();
-                onstack.remove(node);
+                onstack.remove(&node);
                 done.insert(node);
             }
 
             for root in &roots {
-                dfs(root, &adj, &mut onstack, &mut done, &mut stack, &mut cycles);
+                dfs(
+                    *root,
+                    &adj,
+                    &mut onstack,
+                    &mut done,
+                    &mut stack,
+                    &mut cycles,
+                );
             }
             cycles
         })
     }
+}
+
+/// App identity pair `(database, label)` — the real app identity
+/// per the Phase 7 migration contract. Two apps with the same label
+/// in different databases are distinct participants in the FK
+/// graph; [`AppRegistry::cross_app_cycles`] returns paths using
+/// this identity rather than bare labels so the same-label /
+/// different-database case is surfaced correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AppIdentity {
+    /// Database target name.
+    pub database: &'static str,
+    /// App label (may be the synthetic global bucket's empty string).
+    pub label: &'static str,
 }
 
 /// One cross-app foreign-key edge surfaced by
@@ -425,19 +493,25 @@ impl AppRegistry {
 /// - Emit schema-qualified `REFERENCES "<target-schema>".<table>`
 ///   clauses when source and target live in different databases /
 ///   apps.
+/// - Reject cross-database FKs entirely at compose time — Postgres
+///   cannot enforce a FK across database targets.
 ///
-/// `source_app` and `target_app` are the stable string labels from
-/// [`AppDescriptor::label`], not Rust type paths. The synthetic
-/// global bucket (empty label) is a valid participant on either
-/// side.
+/// App identity is `(database, label)`: two apps with the same label
+/// in different databases are distinct participants. Both are
+/// recorded per edge so consumers can pattern-match the full
+/// identity without re-looking-up the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CrossAppEdge {
+    /// Database target owning the source model.
+    pub source_database: &'static str,
     /// App label owning the source model (the one with the FK column).
     pub source_app: &'static str,
     /// Source model's Rust type name, e.g. `"Invoice"`.
     pub source_type: &'static str,
     /// Column name of the FK field on the source model.
     pub source_field: &'static str,
+    /// Database target owning the target model.
+    pub target_database: &'static str,
     /// App label owning the target model.
     pub target_app: &'static str,
     /// Target model's Rust type name, e.g. `"Customer"`.
@@ -465,11 +539,14 @@ pub enum AppDiagnostic {
     /// the snapshot's `registered_apps` list is stale. Phase 7's
     /// compose surfaces this with the offending folder path and
     /// suggests `djogi migrations apply --reconcile-apps`.
+    ///
+    /// Fields are owned `String` because the values come from
+    /// runtime filesystem scans, not compile-time descriptors.
     FolderDrift {
         /// Database target containing the orphaned folder.
-        database: &'static str,
+        database: String,
         /// App label of the orphaned folder.
-        label: &'static str,
+        label: String,
     },
 
     /// **D010 — unknown app label in ledger.** A ledger row carries
@@ -479,11 +556,14 @@ pub enum AppDiagnostic {
     /// either re-declares the app or runs
     /// `djogi migrations apply --reconcile-apps` to mark the rows
     /// for archival.
+    ///
+    /// Fields are owned `String` because the values come from
+    /// Postgres ledger rows at runtime, not compile-time descriptors.
     UnknownLedgerApp {
         /// Database target containing the unknown app.
-        database: &'static str,
+        database: String,
         /// The ledger's `app_label` value that failed lookup.
-        label: &'static str,
+        label: String,
     },
 }
 
@@ -543,14 +623,16 @@ mod tests {
     fn app_diagnostic_variants_constructible() {
         // T9 ships the `AppDiagnostic` enum as a contract — no
         // detection logic yet, but consumers can pattern-match on
-        // the variants, so prove they construct.
+        // the variants, so prove they construct. Fields are owned
+        // `String` so runtime filesystem / ledger data can flow in
+        // without leaking heap allocations into `'static`.
         let folder_drift = AppDiagnostic::FolderDrift {
-            database: "main",
-            label: "oldbilling",
+            database: "main".to_string(),
+            label: "oldbilling".to_string(),
         };
         let unknown_ledger = AppDiagnostic::UnknownLedgerApp {
-            database: "main",
-            label: "mystery_app",
+            database: "main".to_string(),
+            label: "mystery_app".to_string(),
         };
         assert_ne!(folder_drift, unknown_ledger);
     }
@@ -558,22 +640,47 @@ mod tests {
     #[test]
     fn cross_app_edge_equality_and_ordering() {
         // Two identical edges compare equal; edges sort by
-        // `(source_app, source_type, source_field)` so the stable
-        // ordering in `cross_app_edges()` is load-bearing.
+        // `(source_database, source_app, source_type, source_field)`
+        // so the stable ordering in `cross_app_edges()` is
+        // load-bearing.
         let a = CrossAppEdge {
+            source_database: "main",
             source_app: "billing",
             source_type: "Invoice",
             source_field: "customer_id",
+            target_database: "main",
             target_app: "users",
             target_type: "User",
         };
         let b = CrossAppEdge {
+            source_database: "main",
             source_app: "billing",
             source_type: "Invoice",
             source_field: "customer_id",
+            target_database: "main",
             target_app: "users",
             target_type: "User",
         };
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn app_identity_sorts_by_database_then_label() {
+        let main_users = AppIdentity {
+            database: "main",
+            label: "users",
+        };
+        let main_billing = AppIdentity {
+            database: "main",
+            label: "billing",
+        };
+        let crud_audit = AppIdentity {
+            database: "crud_log",
+            label: "audit",
+        };
+        let mut ids = vec![main_users, main_billing, crud_audit];
+        ids.sort();
+        // crud_log < main; within main, billing < users.
+        assert_eq!(ids, vec![crud_audit, main_billing, main_users]);
     }
 }
