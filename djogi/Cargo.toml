@@ -173,3 +173,8 @@ harness = true
 name = "phase7_zero_indexes_live"
 path = "../tests/integration/phase7_zero_indexes_live.rs"
 harness = true
+
+[[test]]
+name = "phase7_zero_apps"
+path = "../tests/integration/phase7_zero_apps.rs"
+harness = true

@@ -151,6 +151,32 @@ Validation contract:
 
 ---
 
+## Lifecycle Markers (T8)
+
+Apps carry optional markers for the retirement flow:
+
+- `#[app(renamed_from = "old_label")]` — declares the app is the continuation of a prior label. Phase 7's differ generates an `ALTER SCHEMA ... RENAME`.
+- `#[app(tombstone)]` — flags the app for retirement in this compose cycle. Phase 7 gates destructive migration generation behind `--allow-destructive`.
+- `#[model(moved_from_app = OldBilling)]` — historical-metadata pointer on a model whose prior app is being retired.
+
+`tombstone` and `renamed_from` are mutually exclusive within one `#[app(...)]`. `#[model(app = X)]` on a tombstoned app is a compile error — active models must either stay on a live app or use `moved_from_app = X` instead. For the full two-cycle retirement flow with concrete snippets, see [`docs/guide/apps.md`](../guide/apps.md).
+
+---
+
+## Cross-App FK Graph (T9)
+
+`AppRegistry::cross_app_edges()` returns every FK edge where source and target apps differ (as `(database, label)` identities). `AppRegistry::cross_app_cycles()` returns cross-app cycles as `Vec<AppIdentity>` paths. Phase 7's differ uses both:
+
+- Ordering: per-app compose steps apply in target-before-source order so FKs resolve at DDL time.
+- Cycle rejection: cross-app cycles become a migration-time error with the cycle path.
+- Same-database required: cross-database FKs are structurally impossible (Postgres cannot enforce them); the differ rejects these at compose time.
+
+Both `OneToOne` and `ForeignKey` relation kinds count as edges. Intra-app FKs are omitted — source and target share a compose boundary and are always safe.
+
+`AppDiagnostic` carries Phase 7 D004 (folder drift — directory on disk without descriptor) and D010 (ledger has an `app_label` with no descriptor match). Detection logic lives in Phase 7 proper.
+
+---
+
 ## Migration Grouping
 
 If the apps/database-domains subsystem is enabled, migrations are grouped by:
