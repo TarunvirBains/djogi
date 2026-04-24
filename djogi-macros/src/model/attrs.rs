@@ -138,6 +138,33 @@ pub struct ModelAttrs {
     /// compile error. Both values are validated byte-level at parse time
     /// per `feedback_no_regex_in_djogi`.
     pub fts: Option<FtsSpec>,
+
+    /// Model-level index declarations parsed from `#[model(indexes(...))]`
+    /// — Phase 7-Zero v3 T3.
+    ///
+    /// Each entry lowers to one `IndexSpec` struct literal in the
+    /// descriptor's `indexes` slice. Empty when no `indexes(...)` group
+    /// is present; otherwise the order follows the user's source-order
+    /// declarations, and the descriptor emitter alphabetises by
+    /// generated name before producing the final slice literal.
+    pub indexes: Vec<crate::model::indexes::ModelIndexDecl>,
+
+    /// Compile-time schema ownership domain — the type path of the app
+    /// this model belongs to. Set via `#[model(app = Vehicles)]`.
+    /// `None` places the model in the synthetic global bucket, which
+    /// Phase 7's differ files under `<default-database>/<empty-label>/`.
+    /// Resolved at emission time via `<Path as ::djogi::App>::LABEL` so
+    /// the descriptor carries the stable string identifier, not the
+    /// Rust type path.
+    pub app: Option<syn::Path>,
+
+    /// Historical-metadata pointer to the model's prior app. Set via
+    /// `#[model(moved_from_app = OldBilling)]`. Enables Phase 7's
+    /// differ to track model-across-app moves without forcing the old
+    /// app to stay declared. The pointed-at app may be tombstoned;
+    /// that's the intended lifecycle shape for retirements. Resolved
+    /// via `<Path as ::djogi::App>::LABEL` same as `app`.
+    pub moved_from_app: Option<syn::Path>,
 }
 
 /// Parsed `pk = "..."` value.
@@ -145,6 +172,14 @@ pub struct ModelAttrs {
 pub enum PkStrategy {
     HeerId,
     RanjId,
+    /// `pk = "heerid_desc"` — reverse-chronological HeerId variant added in
+    /// Phase 7-Zero v3. Lowers to `PkType::HeerIdDesc`; injects `id:
+    /// HeerIdDesc` into the struct.
+    HeerIdDesc,
+    /// `pk = "ranjid_desc"` — reverse-chronological RanjId variant added in
+    /// Phase 7-Zero v3. Lowers to `PkType::RanjIdDesc`; injects `id:
+    /// RanjIdDesc` into the struct.
+    RanjIdDesc,
     Serial,
     None,
 }
@@ -169,6 +204,10 @@ impl ModelAttrs {
         let mut idempotency_key: Option<String> = Option::None;
         let mut tenant_key: Option<String> = Option::None;
         let mut fts: Option<FtsSpec> = Option::None;
+        let mut indexes: Vec<crate::model::indexes::ModelIndexDecl> = Vec::new();
+        let mut seen_indexes = false;
+        let mut app: Option<syn::Path> = Option::None;
+        let mut moved_from_app: Option<syn::Path> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -306,10 +345,77 @@ impl ModelAttrs {
                     }
                     fts = Some(FtsSpec::parse_from_list(list)?);
                 }
+                // `indexes(index(...), unique(...), ...)` — Phase 7-Zero v3 T3.
+                // Full model-level grammar lives in `crate::model::indexes`;
+                // parse here and stash the IR for the descriptor emitter.
+                Meta::List(list) if list.path.is_ident("indexes") => {
+                    if seen_indexes {
+                        return Err(syn::Error::new_spanned(
+                            &list.path,
+                            "duplicate `indexes` key in #[model(...)]",
+                        ));
+                    }
+                    seen_indexes = true;
+                    indexes = crate::model::indexes::parse_indexes_meta_list(list)?;
+                }
+                // `app = Vehicles` — Phase 7-Zero v3 T8. Value is a
+                // Rust type path (not a string) since apps are
+                // addressed by type per §4B (Codex P0-03). The
+                // descriptor emitter lowers the path to
+                // `<Path as ::djogi::App>::LABEL` at const-eval time.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Path(expr_path),
+                    ..
+                }) if path.is_ident("app") => {
+                    if app.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `app = …` key in #[model(...)]",
+                        ));
+                    }
+                    app = Some(expr_path.path.clone());
+                }
+                // `moved_from_app = OldBilling` — Phase 7-Zero v3 T8.
+                // Same path-valued form as `app`; historical metadata
+                // only, so the referenced app may be tombstoned.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Path(expr_path),
+                    ..
+                }) if path.is_ident("moved_from_app") => {
+                    if moved_from_app.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `moved_from_app = …` key in #[model(...)]",
+                        ));
+                    }
+                    moved_from_app = Some(expr_path.path.clone());
+                }
+                // `app` / `moved_from_app` with a non-path value
+                // (commonly a string literal) — known key, wrong shape.
+                // Give a specific diagnostic instead of falling into
+                // the "expected key = value" generic message.
+                Meta::NameValue(nv) if nv.path.is_ident("app") => {
+                    return Err(syn::Error::new_spanned(
+                        &nv.value,
+                        "`app = …` must be a type path (e.g. `app = Vehicles`); \
+                         apps are addressed by type, not by string label",
+                    ));
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("moved_from_app") => {
+                    return Err(syn::Error::new_spanned(
+                        &nv.value,
+                        "`moved_from_app = …` must be a type path (e.g. \
+                         `moved_from_app = OldBilling`); apps are addressed \
+                         by type, not by string label",
+                    ));
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "expected `key = \"value\"` attribute or bare flag (`no_default`, `through`, `events`)",
+                        "expected `key = \"value\"` or `key = TypePath` attribute, \
+                         or bare flag (`no_default`, `through`, `events`)",
                     ));
                 }
             }
@@ -332,6 +438,9 @@ impl ModelAttrs {
             idempotency_key,
             tenant_key,
             fts,
+            indexes,
+            app,
+            moved_from_app,
         })
     }
 }
@@ -341,10 +450,13 @@ impl PkStrategy {
         match s {
             "heerid" => Ok(PkStrategy::HeerId),
             "ranjid" => Ok(PkStrategy::RanjId),
+            "heerid_desc" => Ok(PkStrategy::HeerIdDesc),
+            "ranjid_desc" => Ok(PkStrategy::RanjIdDesc),
             "serial" => Ok(PkStrategy::Serial),
             "none" => Ok(PkStrategy::None),
             other => Err(format!(
-                "unknown pk strategy `{other}`; expected one of: heerid, ranjid, serial, none"
+                "unknown pk strategy `{other}`; expected one of: heerid, ranjid, \
+                 heerid_desc, ranjid_desc, serial, none"
             )),
         }
     }
@@ -958,6 +1070,26 @@ impl FieldAttrs {
             "lazy",
             "version", // Task 3 — optimistic lock version counter
         ];
+        // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
+        // out of scope at the field level. The feature lives on the model-
+        // level `#[model(indexes(unique(...)))]` grammar where the full
+        // opclass / predicate / multi-column surface is available. Catching
+        // the key here (before the generic "unknown field attribute"
+        // rejection below) lets the error point users directly at the
+        // fixing syntax rather than making them hunt.
+        let field_name_for_redirect = field
+            .ident
+            .as_ref()
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "<anonymous>".to_string());
+        let nulls_not_distinct_redirect = format!(
+            "`#[field(unique, nulls_not_distinct = true)]` on `{field_name_for_redirect}`: \
+             `nulls_not_distinct` is only supported at the model level. Move `{field_name_for_redirect}` \
+             into a model-level unique index: \
+             `#[model(indexes(unique(fields = [{field_name_for_redirect}], nulls_not_distinct = true)))]`."
+        );
+        let field_level_redirects: &[(&str, &str)] =
+            &[("nulls_not_distinct", nulls_not_distinct_redirect.as_str())];
         for attr in &field.attrs {
             if !attr.path().is_ident("field") {
                 continue;
@@ -972,16 +1104,71 @@ impl FieldAttrs {
                     Meta::NameValue(nv) => nv.path.get_ident().map(|i| i.to_string()),
                     _ => None,
                 };
-                if let Some(key) = key
-                    .as_ref()
-                    .filter(|k| !VALID_FIELD_KEYS.contains(&k.as_str()))
-                {
-                    return Err(syn::Error::new_spanned(
-                        nested,
-                        format!("unknown field attribute: `{key}`"),
-                    ));
+                if let Some(key_str) = key.as_ref() {
+                    // Phase 7-Zero T2 redirects take priority over the
+                    // generic "unknown field attribute" rejection so the
+                    // error actively guides the user toward the right
+                    // syntax.
+                    if let Some((_, message)) = field_level_redirects
+                        .iter()
+                        .find(|(k, _)| *k == key_str.as_str())
+                    {
+                        return Err(syn::Error::new_spanned(nested, message.to_string()));
+                    }
+                    if !VALID_FIELD_KEYS.contains(&key_str.as_str()) {
+                        return Err(syn::Error::new_spanned(
+                            nested,
+                            format!("unknown field attribute: `{key_str}`"),
+                        ));
+                    }
                 }
             }
+        }
+
+        // Phase 7-Zero v3 T2 Q3 — hash indexes cannot enforce uniqueness.
+        // Postgres hash indexes store only the hash of the key, so they
+        // physically cannot support `UNIQUE`; Postgres itself errors out
+        // on `CREATE UNIQUE INDEX ... USING HASH(...)`. Catching it at the
+        // declaration gives the user a span-precise error pointing at the
+        // field rather than at a migration failure much later.
+        if attrs.unique && attrs.index_method.as_deref() == Some("hash") {
+            let field_name = field
+                .ident
+                .as_ref()
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "<anonymous>".to_string());
+            let span = find_named_str_lit_span(field, "index").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "`#[field(index = \"hash\", unique)]` on `{field_name}`: hash indexes \
+                     cannot enforce uniqueness. Use `index = \"btree\"` with `unique`, or \
+                     drop `unique` if a non-unique hash lookup index is what you want."
+                ),
+            ));
+        }
+
+        // Phase 7-Zero v3 T2 Q4 — `#[field(index = "gin")]` is type-gated.
+        // Accepted on `Jsonb<T>`, `Vec<T>` (Postgres array columns), and the
+        // FTS `TsVector` column. Anything else must declare the index via
+        // the model-level `#[model(indexes(...))]` syntax, where the opclass
+        // can be named (`text_pattern_ops`, `gin_trgm_ops`, etc.).
+        if attrs.index_method.as_deref() == Some("gin") && !is_gin_compatible_type(&attrs.ty) {
+            let field_name = field
+                .ident
+                .as_ref()
+                .map(|i| i.to_string())
+                .unwrap_or_else(|| "<anonymous>".to_string());
+            let span = find_named_str_lit_span(field, "index").unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "`#[field(index = \"gin\")]` on `{field_name}`: GIN indexes at the field \
+                     level are only valid on `Jsonb<T>`, `Vec<T>`, and `TsVector`. For other \
+                     types, declare the index at the model level: \
+                     `#[model(indexes(index(fields = [{field_name}], using = \"gin\", opclass = \"...\")))]`."
+                ),
+            ));
         }
 
         if let Some(on_delete) = &attrs.on_delete {
@@ -1147,6 +1334,25 @@ fn parse_index_method(s: &str, span: proc_macro2::Span) -> syn::Result<()> {
             ),
         )),
     }
+}
+
+/// `true` when `ty` is an accepted target for `#[field(index = "gin")]` —
+/// i.e. `Jsonb<T>`, `Vec<T>`, or `TsVector`, unwrapping one layer of
+/// `Option<…>` so nullable columns are accepted too.
+///
+/// Uses last-segment name matching so bare idents, `djogi::Jsonb<T>`,
+/// `djogi::fts::TsVector`, and similar qualified forms all resolve. Phase
+/// 7-Zero v3 T2 Q4 codifies this set; anything outside it must declare
+/// the index at the model level where opclass can be specified.
+fn is_gin_compatible_type(ty: &syn::Type) -> bool {
+    let (inner, _) = unwrap_option(ty);
+    let syn::Type::Path(syn::TypePath { path, qself: None }) = inner else {
+        return false;
+    };
+    path.segments
+        .last()
+        .map(|seg| matches!(seg.ident.to_string().as_str(), "Jsonb" | "Vec" | "TsVector"))
+        .unwrap_or(false)
 }
 
 /// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of

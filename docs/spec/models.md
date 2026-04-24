@@ -204,6 +204,22 @@ pub new_name: String,
 
 `#[field(max_length = N)]` is acceptable as the Phase 1 bootstrap surface, but the stronger roadmap contract is that bounded string fields and text fields remain distinguishable in descriptor metadata so migration tooling can treat `TEXT <-> VARCHAR(n)` as a real schema change rather than only as validation.
 
+#### 4.5.1 Model-level indexes
+
+`#[field(unique)]` and `#[field(index)]` cover the single-column cases. Composite indexes, partial indexes, covering indexes, expression-target indexes, per-column opclass, `NULLS NOT DISTINCT`, and concurrent builds are declared at the model level:
+
+```rust
+#[model(table = "orders", indexes(
+    index(fields = [tenant_id, created_at]),
+    unique(fields = [tenant_id, external_id]),
+    index(fields = [tenant_id], where = "deleted_at IS NULL"),
+    index(expr = "lower(email)"),
+))]
+pub struct Order { /* ... */ }
+```
+
+The full grammar — including the per-column record form, the unique-constraint-vs-unique-index lowering rules, predicate validation policy, deterministic index naming, and the eight-item `concurrently = true` documentation contract — lives in the [indexing spec](./indexing.md). See there for the authoritative surface.
+
 ---
 
 ## 7. Dirty Tracking (Feature Flag: `dirty-tracking`)

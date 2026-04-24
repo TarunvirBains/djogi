@@ -6,12 +6,15 @@
 
 Djogi uses the HeeRanjId system for primary key generation. HeeRanjId is maintained as a standalone external crate — it is not part of Djogi itself. This separation keeps the ID system independently maintainable, testable, and usable outside of Djogi.
 
-HeeRanjId provides two related ID formats with a built-in upgrade path:
+HeeRanjId provides two related ID formats with a built-in upgrade path, and
+Djogi exposes four public PK choices on top of them:
 
-- **HeerId** (default): Compact 64-bit `BIGINT`, time-ordered, suitable for most applications
-- **RanjId**: UUIDv8-compatible 128-bit identifier with sub-millisecond precision and higher node/sequence capacity — for when HeerId's headroom is insufficient
+- **HeerIdRecencyBiased** (Djogi default): compact 64-bit `BIGINT`, newest-first scan order
+- **HeerId**: compact 64-bit `BIGINT`, ascending chronological scan order
+- **RanjId**: UUIDv8-compatible 128-bit identifier with sub-millisecond precision and higher node/sequence capacity
+- **RanjIdRecencyBiased**: newest-first scan-order variant of `RanjId`
 
-The migration from HeerId to RanjId is lossless: HeerId converts to RanjId without data loss, and the `UUID` column type is compatible with existing tooling. Start with HeerId; upgrade to RanjId when you need more headroom.
+The migration from HeerId to RanjId is lossless: HeerId converts to RanjId without data loss, and the `UUID` column type is compatible with existing tooling. Djogi defaults to the recency-biased variants for write-heavy newest-first workloads; opt into the ascending variants when forward chronological scans also matter.
 
 ### 3.1 What HeerId Is
 
@@ -45,7 +48,7 @@ Sub-millisecond precision, up to 32,767 nodes, 65,535 IDs per node per timestamp
 
 Opt in per model:
 ```rust
-#[model(table = "high_volume_events", pk = "ranjid")]
+#[model(table = "high_volume_events", pk = RanjId)]
 #[derive(Debug, Clone)]
 pub struct Event {
     pub kind: String,
@@ -95,7 +98,7 @@ JavaScript loses precision on 64-bit integers. `HeerId` always serializes as a s
 
 Small lookup/reference tables can opt into `SERIAL` where human-readable sequential IDs are genuinely useful:
 ```rust
-#[model(table = "fuel_types", pk = "serial")]
+#[model(table = "fuel_types", pk = Serial)]
 #[derive(Debug, Clone)]
 pub struct FuelType {
     pub name: String,
@@ -107,7 +110,10 @@ HeerId supports three patterns. All are valid — the right choice depends on th
 
 **Pattern 1 — Default (zero ceremony):**
 
-The `id` column default calls `generate_id()`. Djogi fires the INSERT and reads the ID back via `RETURNING id`. The developer never thinks about ID generation.
+The `id` column default calls the PK's configured database generator.
+For Djogi's default `HeerIdRecencyBiased`, that is `heerid_next_desc()`.
+Djogi fires the INSERT and reads the ID back via `RETURNING id`. The
+developer never thinks about ID generation.
 ```rust
 let car = Vehicle::create(&mut ctx, Vehicle {
     make: "Toyota".into(),
@@ -120,10 +126,14 @@ println!("{}", car.id);   // populated by RETURNING id
 ```
 **Pattern 2 — Bulk pre-allocation (link tables and bulk relational inserts):**
 
-Call `generate_ids(n)` to allocate a batch of IDs before any INSERT fires. All IDs are known upfront — cross-referencing related records in a bulk insert becomes straightforward. Exactly one update to `heer_node_state` for the entire batch, making it efficient and concurrency-safe.
+Call `generate_many(&mut ctx, n)` to allocate a batch of IDs before any
+INSERT fires. All IDs are known upfront — cross-referencing related
+records in a bulk insert becomes straightforward. Exactly one update to
+`heer_node_state` for the entire batch, making it efficient and
+concurrency-safe.
 ```rust
 // Allocate IDs before any write touches the DB
-let ids = HeerId::generate_many(&pool, 3).await?;
+let ids = HeerId::generate_many(&mut ctx, 3).await?;
 
 let memberships = vec![
     PersonGroup { id: ids[0], person_id: alice.id, group_id: group.id, role: "admin".into() },
@@ -140,7 +150,10 @@ let ids = HeerId::generate_many(3);
 ```
 **Pattern 3 — Form pre-generation (admin and create forms):**
 
-Generate the ID at form render time — before the user submits anything. This solves a common pain point in frameworks where the ID isn't available until after the first INSERT, making file uploads and related records awkward to anchor.
+Generate the ID at form render time — before the user submits anything.
+This solves a common pain point in frameworks where the ID isn't
+available until after the first INSERT, making file uploads and related
+records awkward to anchor.
 
 With pre-generation:
 - The ID is a hidden field from the moment the form renders
@@ -149,10 +162,11 @@ With pre-generation:
 - The final INSERT becomes idempotent — retry or double-submit with the same ID is safe via `ON CONFLICT (id) DO NOTHING`
 ```rust
 async fn new_vehicle_form(
-    State(pool): State<PgPool>,
+    State(app): State<AppState>,
 ) -> impl IntoResponse {
     // ID generated at form render — before any user input
-    let id = HeerId::generate(&pool).await?;
+    let mut ctx = app.db_context().await?;
+    let id = HeerId::generate(&mut ctx).await?;
 
     Html(render_template("vehicles/new.html", context! {
         form_id: id,
@@ -160,9 +174,10 @@ async fn new_vehicle_form(
 }
 
 async fn create_vehicle(
-    State(pool): State<PgPool>,
+    State(app): State<AppState>,
     Form(input): Form<CreateVehicleInput>,
 ) -> impl IntoResponse {
+    let mut ctx = app.db_context().await?;
     // ID arrives from the form — INSERT is idempotent
     Vehicle::create_with_id(&mut ctx, input.form_id, Vehicle {
         make: input.make,
@@ -178,7 +193,21 @@ INSERT INTO vehicles (id, make, model_name, gas_fill, active, created_at, update
 VALUES ($1, $2, $3, $4, $5, now(), now())
 ON CONFLICT (id) DO NOTHING;
 ```
-This is documented as a first-class Djogi idiom — idempotent writes with pre-generated IDs.
+This is documented as a first-class Djogi idiom — idempotent writes with
+pre-generated IDs.
+
+### 3.5a Public naming vs internal desc types
+
+Djogi's public surface names the newest-first variants
+`HeerIdRecencyBiased` and `RanjIdRecencyBiased`. Internally, the
+descriptor and migration substrate still use the underlying
+HeeRanjId-side `HeerIdDesc` / `RanjIdDesc` types and playbook wording.
+That split is intentional:
+
+- user-facing model declarations and docs should describe scan-order
+  intent, not bit-layout mechanics
+- migration internals still need to refer to the concrete desc variants
+  that HeeRanjId installs and migrates
 ### 3.6 Clock and Sequence Edge Cases
 
 HeerId handles these at the database level — Djogi does not need to think about them:

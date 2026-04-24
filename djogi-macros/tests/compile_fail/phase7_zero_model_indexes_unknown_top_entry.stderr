@@ -1,0 +1,5 @@
+error: unknown indexes entry `bogus` — expected `index(...)` or `unique(...)`
+ --> tests/compile_fail/phase7_zero_model_indexes_unknown_top_entry.rs:6:5
+  |
+6 |     bogus(fields = [email]),
+  |     ^^^^^

@@ -13,6 +13,7 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 - [JSONB Schema Fields](./jsonb.md) — `Jsonb<T>`, unknown field preservation, validation, subfield queries
 - [Relations](./relations.md) — ForeignKey, ManyToMany, explicit through models
 - [Primary Keys](./primary-keys.md) — HeeRanjId: HeerId (64-bit), RanjId (128-bit UUIDv8), generation patterns
+- [Indexing](./indexing.md) — `#[model(indexes(...))]` grammar, unique-constraint vs unique-index lowering, the `concurrently = true` contract, descending PK variants
 
 ## Infrastructure
 

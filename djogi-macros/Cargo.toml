@@ -28,3 +28,8 @@ djogi.workspace = true
 # Deserialize on schema structs. The trybuild process compiles each fixture
 # as a standalone crate with the same dev-deps as djogi-macros.
 serde.workspace = true
+# serde_json — needed by the Phase 7-Zero T2 compile_pass fixture covering
+# `#[field(index = "gin")]` on `Jsonb<serde_json::Value>`. Same rationale as
+# serde above: trybuild compiles fixtures as standalone crates whose deps
+# come from djogi-macros' dev-dependencies.
+serde_json.workspace = true

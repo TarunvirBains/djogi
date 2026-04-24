@@ -351,6 +351,16 @@ impl IntoFilterValue for crate::RanjId {
         FilterValue::RanjId(self)
     }
 }
+impl IntoFilterValue for crate::HeerIdDesc {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::HeerIdDesc(self)
+    }
+}
+impl IntoFilterValue for crate::RanjIdDesc {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::RanjIdDesc(self)
+    }
+}
 impl IntoFilterValue for rust_decimal::Decimal {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::Decimal(self)

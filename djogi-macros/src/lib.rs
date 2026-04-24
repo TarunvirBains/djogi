@@ -14,6 +14,7 @@
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
+mod apps;
 mod case;
 mod djogi_enum;
 mod ident;
@@ -26,7 +27,8 @@ mod testing;
 use proc_macro::TokenStream;
 
 /// The primary Djogi macro. Annotate any struct with `#[model(table = "...")]`
-/// to inject framework fields and derive CRUD, `FromRow`, and model descriptor.
+/// to inject framework fields (`id`, `created_at`, `updated_at`) and derive
+/// CRUD, `FromRow`, and the `ModelDescriptor` the migration differ consumes.
 ///
 /// ```rust,ignore
 /// use djogi::prelude::*;
@@ -38,6 +40,57 @@ use proc_macro::TokenStream;
 ///     pub published: bool,
 /// }
 /// ```
+///
+/// # `#[model(...)]` attribute grammar
+///
+/// | Key | Shape | Meaning |
+/// |-----|-------|---------|
+/// | `table` | `= "snake_case"` | Physical table name. Required. |
+/// | `pk` | `= "heerid" \| "ranjid" \| "heerid_desc" \| "ranjid_desc" \| "serial" \| "none"` | Primary-key strategy. Default: `heerid`. The `_desc` variants (Phase 7-Zero v3) store the XOR-flipped bit layout so BTree scans run newest-first without a secondary descending index — see the [indexing spec] §4.1 for the one-question decision rule. |
+/// | `no_default` | flag | Suppress the `impl Default` emitted for the model. Use when a user field lacks `Default`. |
+/// | `through` | flag | Marks a through-table (M2M join) — relaxes the "M2M needs explicit through model" check. |
+/// | `events` | flag | Opt into outbox `ModelEvent` emission for create/update/delete. |
+/// | `idempotency_key` | `= "field"` | Name of a field whose value is the upsert idempotency key. |
+/// | `tenant_key` | `= "field"` | Name of a field that carries the tenant id; enables `auto-set_tenant` and RLS sealing. |
+/// | `fts(config = "english", fields = [...])` | list | Register a full-text-search vector over the listed fields. |
+/// | `indexes(...)` | list | Declare model-level indexes — see below. |
+///
+/// # `indexes(...)` sub-grammar (Phase 7-Zero v3 §5)
+///
+/// Each entry is either `index(...)` or `unique(...)`. The body keys are:
+///
+/// | Key | Shape | Meaning |
+/// |-----|-------|---------|
+/// | `fields` | `= [ident, ...]` or `= [(col = ident, opclass = "...", order = asc\|desc, nulls = first\|last\|default), ...]` | Column list. Order is semantic — `[last, first]` and `[first, last]` are different indexes with different names. |
+/// | `expr` | `= "lower(email)"` | Expression-target index (mutually exclusive with `fields`). |
+/// | `using` | `= "btree" \| "gin" \| "gist" \| "brin" \| "hash"` | Access method. Default: `btree`. |
+/// | `opclass` | `= "text_pattern_ops"` | Single-column opclass (declaration shortcut; the per-column record form is preferred for multi-column indexes). |
+/// | `include` | `= [ident, ...]` | `INCLUDE(...)` payload columns for covering indexes. |
+/// | `where` | `= "deleted_at IS NULL"` | Partial-index predicate. Raw SQL — Djogi does not parse it; Postgres validates at migration time. |
+/// | `nulls_not_distinct` | `= true` | Unique indexes only — treat two `NULL`s as equal. Forces the `UniqueIndex` kind. |
+/// | `concurrently` | `= true` | Emit `CREATE INDEX CONCURRENTLY`. On a `unique(...)` declaration this escalates the kind to `UniqueIndex` (`ALTER TABLE ADD CONSTRAINT` has no concurrent form). **Foot-gun:** omitting this on an index added to a large production table blocks every writer — `SHARE` on the `CREATE INDEX` path, `ACCESS EXCLUSIVE` on the `ADD CONSTRAINT` path. The framework does not auto-detect — operator responsibility. See the [indexing spec] "concurrently contract" section for the full eight-item doc promise. |
+/// | `name` | `= "custom_idx"` | Override the deterministic index name. Must not collide with a name the emitter would generate for another declared index. |
+///
+/// `unique(...)` differs from `index(...)` only in kind — by default it lowers
+/// to a `UNIQUE` constraint (`..._key` name), but the emitter escalates to a
+/// `UNIQUE INDEX` (`..._uidx` name) when the declaration uses `where`,
+/// `include`, `nulls_not_distinct`, or an `expr` target (Postgres constraints
+/// do not support those features).
+///
+/// Example:
+///
+/// ```rust,ignore
+/// #[model(table = "orders", indexes(
+///     index(fields = [created_at, id]),
+///     unique(fields = [tenant_id, external_id]),
+///     index(fields = [tenant_id], where = "deleted_at IS NULL"),
+///     index(expr = "lower(email)"),
+///     index(fields = [(col = body, opclass = "jsonb_path_ops")], using = "gin"),
+/// ))]
+/// pub struct Order { /* ... */ }
+/// ```
+///
+/// [indexing spec]: ../docs/spec/indexing.md
 #[proc_macro_attribute]
 pub fn model(attr: TokenStream, item: TokenStream) -> TokenStream {
     model::expand(attr.into(), item.into()).into()
@@ -291,4 +344,63 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     testing::expand(attr.into(), item.into()).into()
+}
+
+/// Declare the crate's compile-time schema ownership domains.
+///
+/// `djogi::apps!` takes a block of unit-struct declarations, each
+/// carrying an `#[app(...)]` attribute describing the database target
+/// and (optionally) an explicit label:
+///
+/// ```rust,ignore
+/// use djogi::prelude::*;
+///
+/// djogi::apps! {
+///     #[app(database = "main")]
+///     pub struct Vehicles;
+///
+///     #[app(database = "main")]
+///     pub struct Users;
+///
+///     #[app(database = "crud_log", label = "fleet_audit")]
+///     pub struct Audit;
+/// }
+/// ```
+///
+/// For each entry the macro emits:
+///
+/// - the unit struct itself (visibility preserved),
+/// - `impl djogi::apps::App` with const `LABEL`, `DATABASE`, and
+///   `DESCRIPTOR` associated constants,
+/// - a sealed-trait impl that enforces "only this macro creates apps",
+/// - an `inventory::submit!` registering the struct's
+///   [`djogi::AppDescriptor`] for Phase 7's migration differ.
+///
+/// # `#[app(...)]` grammar
+///
+/// | Key | Shape | Meaning |
+/// |-----|-------|---------|
+/// | `database` | `= "main"` (required) | Database-target name this app belongs to. |
+/// | `label` | `= "fleet_vehicles"` (optional) | Override the default label (struct name lowercased). |
+///
+/// # Constraints
+///
+/// - At most one `djogi::apps!` invocation per crate. A second
+///   invocation produces a duplicate-definition error on the hidden
+///   sentinel module the macro emits.
+/// - Every label (whether default-derived or explicit) must satisfy
+///   the Postgres identifier grammar: non-empty, first byte an ASCII
+///   letter or `_`, remaining bytes ASCII alphanumerics or `_`, total
+///   length ≤ 63 bytes. No regex engine — validation uses byte-level
+///   primitives per `CLAUDE.md` + `feedback_no_regex_in_djogi.md`.
+/// - Structs must be unit form (`pub struct Foo;`). Tuple or named
+///   structs are rejected with a span-precise diagnostic.
+///
+/// Phase 7-Zero v3 T7 lands this core infrastructure; T8 extends the
+/// `#[app(...)]` grammar with the lifecycle markers (`renamed_from`,
+/// `tombstone`) and wires `#[model(app = …)]` into
+/// `ModelDescriptor`.
+#[proc_macro]
+pub fn apps(input: TokenStream) -> TokenStream {
+    apps::expand(input.into()).into()
 }

@@ -176,6 +176,117 @@ pub enum IndexType {
     Brin,
 }
 
+/// Uniqueness discipline for an [`IndexSpec`] — introduced in Phase 7-Zero
+/// v3 to replace the binary `unique: bool` field with a three-valued enum.
+///
+/// Postgres distinguishes between a `UNIQUE` constraint (declared on the
+/// table; created with a backing unique index; references the index by name)
+/// and a `UNIQUE INDEX` (a plain index that happens to enforce uniqueness
+/// without participating in the constraint catalogue). The former is what
+/// most users mean when they say "unique"; the latter is what you reach for
+/// when you need `WHERE ... IS NOT NULL` partial uniqueness or
+/// `NULLS NOT DISTINCT` semantics that the constraint form does not expose.
+///
+/// Variant map:
+/// - [`IndexKind::NonUnique`] — a plain index. The typical case.
+/// - [`IndexKind::UniqueConstraint`] — `UNIQUE` constraint on the table.
+///   `IndexSpec::simple(..., unique = true, ...)` maps to this variant.
+/// - [`IndexKind::UniqueIndex`] — `CREATE UNIQUE INDEX` without a constraint
+///   row. Required when [`IndexSpec::predicate`] is set or when
+///   [`IndexSpec::nulls_not_distinct`] is `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexKind {
+    NonUnique,
+    UniqueConstraint,
+    UniqueIndex,
+}
+
+/// Sort direction for a single column inside an [`IndexColumnSpec`].
+///
+/// Column order is schema-significant: an index on `(a ASC, b DESC)` accelerates
+/// a different set of `ORDER BY` queries than one on `(a DESC, b ASC)`. The
+/// migration differ therefore treats per-column order as a meaningful field
+/// rather than collapsing it away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexOrder {
+    Asc,
+    Desc,
+}
+
+/// `NULLS FIRST` / `NULLS LAST` policy for a single column inside an
+/// [`IndexColumnSpec`].
+///
+/// `IndexNullsOrder::Default` is the Postgres default (`NULLS LAST` for
+/// `ASC`, `NULLS FIRST` for `DESC`) — use it when the user has not expressed
+/// a preference so the emitter omits the `NULLS …` clause entirely and the
+/// index remains a straight-forward structural match with the table DDL
+/// Postgres itself would print.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexNullsOrder {
+    /// Postgres default — ASC implies NULLS LAST, DESC implies NULLS FIRST.
+    /// The emitter does not print an explicit `NULLS …` clause for this
+    /// variant.
+    Default,
+    First,
+    Last,
+}
+
+/// Per-column knobs carried inside an [`IndexTarget::Columns`] entry.
+///
+/// Postgres indexes carry per-column sort direction, per-column nulls
+/// ordering, and per-column opclass — flattening these onto the enclosing
+/// [`IndexSpec`] (as an earlier v3 draft did) would make multi-column
+/// indexes with mixed direction or mixed opclass impossible to express
+/// without breaking the descriptor contract later. Keeping them on the
+/// column spec leaves the contract additively-extensible for 0.1.0 and
+/// beyond.
+///
+/// For the common "one simple column, no per-column knobs" case, use
+/// [`IndexColumnSpec::simple`]; it fills in `opclass: None`, `order: Asc`,
+/// `nulls: Default` so declarations stay one-liners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IndexColumnSpec {
+    pub name: &'static str,
+    /// Per-column Postgres opclass, e.g. `"text_pattern_ops"` on a `LIKE`
+    /// acceleration index. `None` lets Postgres pick the default opclass
+    /// for the column's data type.
+    pub opclass: Option<&'static str>,
+    pub order: IndexOrder,
+    pub nulls: IndexNullsOrder,
+}
+
+impl IndexColumnSpec {
+    /// Ergonomic constructor for the common case: name-only, `Asc`, default
+    /// nulls, no opclass. Multi-column simple indexes stay one-liners:
+    ///
+    /// ```ignore
+    /// IndexTarget::Columns(&[
+    ///     IndexColumnSpec::simple("first"),
+    ///     IndexColumnSpec::simple("last"),
+    /// ])
+    /// ```
+    pub const fn simple(name: &'static str) -> Self {
+        Self {
+            name,
+            opclass: None,
+            order: IndexOrder::Asc,
+            nulls: IndexNullsOrder::Default,
+        }
+    }
+}
+
+/// Target — column list or expression — that an [`IndexSpec`] covers.
+///
+/// The two forms are mutually exclusive by enum construction; an index
+/// cannot simultaneously be a column-list index and an expression index.
+/// Expression-target indexes do **not** support per-column opclass in
+/// 0.1.0 — drop to raw SQL via `ctx.raw_execute(...)` if you need that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexTarget {
+    Columns(&'static [IndexColumnSpec]),
+    Expression(&'static str),
+}
+
 /// Named index declaration.
 ///
 /// `ModelDescriptor::indexes` is `&[IndexSpec]` so a model can declare
@@ -183,34 +294,45 @@ pub enum IndexType {
 /// `CREATE INDEX` statements. An empty slice — the Phase 1 default — means
 /// "only the implicit PK and per-field `#[field(index)]` indexes".
 ///
-/// # Phase 6 migration-policy fields
+/// # Phase 7-Zero v3 shape
 ///
-/// Two fields were added in Phase 6 to carry DDL-emission intent directly in
-/// the descriptor rather than having Phase 7 reverse-engineer intent from
-/// type names:
+/// Phase 7-Zero widened the contract from a `(columns, unique)` pair into
+/// a richer structure that can express the full Postgres index surface
+/// without further breaking changes:
 ///
-/// - `requires_out_of_transaction` — when `true`, the migration emitter must
-///   run the index DDL outside any implicit transaction wrapper (i.e.
-///   `CREATE INDEX CONCURRENTLY`). GiST indexes on large tables typically
-///   need this. Non-spatial indexes default to `false`.
+/// - `target` replaces `columns` and uses [`IndexTarget`] to pick either a
+///   per-column list ([`IndexTarget::Columns`]) or an expression
+///   ([`IndexTarget::Expression`]).
+/// - `kind` replaces `unique: bool` with [`IndexKind`] so partial / nulls-
+///   not-distinct unique indexes stop being forced through the constraint
+///   form.
+/// - `predicate`, `include`, and `nulls_not_distinct` are new optional
+///   fields matching the Postgres DDL vocabulary.
+/// - `requires_out_of_transaction` and `extension_dependency` from Phase 6
+///   are preserved unchanged.
 ///
-/// - `extension_dependency` — names a required Postgres extension (e.g.
-///   `"postgis"`) that must be present before the index DDL runs. The
-///   migration emitter inserts a `CREATE EXTENSION IF NOT EXISTS <ext>`
-///   guard before the index statement when this is `Some`. Non-spatial
-///   indexes default to `None`.
-///
-/// Use [`IndexSpec::simple`] to construct non-spatial indexes without listing
-/// these two fields.
+/// Use [`IndexSpec::simple`] to construct a plain column-list index without
+/// listing every optional field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSpec {
     pub name: &'static str,
-    pub columns: &'static [&'static str],
-    pub unique: bool,
+    pub target: IndexTarget,
+    pub kind: IndexKind,
     pub index_type: IndexType,
+    /// Partial-index `WHERE` clause, e.g. `"deleted_at IS NULL"`. Raw SQL —
+    /// emitted verbatim. `None` for a full-table index.
+    pub predicate: Option<&'static str>,
+    /// Columns to attach via `INCLUDE(...)` — non-key payload columns that
+    /// let index-only scans answer more queries. Empty slice when unused.
+    pub include: &'static [&'static str],
+    /// When `true`, the emitted `CREATE UNIQUE INDEX` carries
+    /// `NULLS NOT DISTINCT`. Forces `IndexKind::UniqueIndex` (constraint form
+    /// does not expose this knob). `false` everywhere else.
+    pub nulls_not_distinct: bool,
     /// When `true`, the migration emitter must place this index DDL outside
     /// any implicit transaction (e.g. `CREATE INDEX CONCURRENTLY`). Set to
-    /// `true` for GiST indexes on PostGIS `GEOGRAPHY` columns.
+    /// `true` for GiST indexes on PostGIS `GEOGRAPHY` columns and for any
+    /// index declared with `concurrently = true` at the model level.
     pub requires_out_of_transaction: bool,
     /// Postgres extension name (e.g. `"postgis"`) that must be installed
     /// before this index can be created. `None` for standard BTree / GIN / …
@@ -218,26 +340,151 @@ pub struct IndexSpec {
     pub extension_dependency: Option<&'static str>,
 }
 
+/// Which flavour of index is being named — drives the stem selection in
+/// [`index_name`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexNameKind {
+    /// `<table>_<cols>_idx` — the default for `index(...)` declarations.
+    NonUnique,
+    /// `<table>_<cols>_key` — the default for `unique(...)` declarations
+    /// that lower to `ADD CONSTRAINT ... UNIQUE`.
+    UniqueConstraint,
+    /// `<table>_<cols>_uidx` — used when uniqueness is enforced via
+    /// `CREATE UNIQUE INDEX` rather than a constraint (partial,
+    /// nulls-not-distinct, or other unique-index-only features).
+    UniqueIndex,
+}
+
+/// Target shape for [`index_name`] — column-list or expression.
+///
+/// Expression-form indexes do not render the expression into the name
+/// (expressions can be arbitrarily complex SQL and embedding them
+/// defeats the 63-byte limit). Instead the stem becomes `_expr_idx` /
+/// `_expr_uidx` and the hash suffix guarantees uniqueness across
+/// multiple expression indexes on the same table.
+#[derive(Debug, Clone, Copy)]
+pub enum IndexNameTarget<'a> {
+    /// Column-list form — each entry is one column name in declaration
+    /// order. Order is semantic: `["last", "first"]` and `["first",
+    /// "last"]` produce different names byte-for-byte.
+    Columns(&'a [&'a str]),
+    /// Expression form — the expression text is **not** included in the
+    /// generated name; only the `expr` stem is used.
+    Expression,
+}
+
+/// Compute the deterministic index name for a Phase 7 migration emitter.
+///
+/// Shape: `<table>_<stem-body>_<suffix>` where:
+///
+/// - `<stem-body>` is either the underscore-joined column names (for
+///   [`IndexNameTarget::Columns`]) or the literal `expr` (for
+///   [`IndexNameTarget::Expression`]).
+/// - `<suffix>` is `idx` / `key` / `uidx` per [`IndexNameKind`].
+///
+/// Truncation rule (plan §D5): when the naïve name would exceed the
+/// Postgres 63-byte identifier limit, the stem is truncated to 55 bytes
+/// and an 8-character hex digest of the full pre-truncation name is
+/// appended so near-duplicate inputs cannot collide.
+///
+/// The hash uses `std::hash::DefaultHasher` (SipHash-1-3) — determinism
+/// within a single process is sufficient because the name is computed
+/// once, emitted into a `static` literal, and never re-hashed at
+/// runtime.
+///
+/// # Examples
+///
+/// ```ignore
+/// use djogi::descriptor::{IndexNameKind, IndexNameTarget, index_name};
+///
+/// // Short, plain columns → verbatim `<table>_<cols>_idx`.
+/// let name = index_name("users", IndexNameKind::NonUnique,
+///     IndexNameTarget::Columns(&["email"]));
+/// assert_eq!(name, "users_email_idx");
+///
+/// // Unique constraint → `_key` stem.
+/// assert_eq!(
+///     index_name("orgs", IndexNameKind::UniqueConstraint,
+///         IndexNameTarget::Columns(&["org_id", "external_id"])),
+///     "orgs_org_id_external_id_key"
+/// );
+///
+/// // Expression index — table name + `expr` stem (hash suffix appears
+/// // here only if the `<table>_expr_idx` string exceeds 63 bytes).
+/// assert_eq!(
+///     index_name("users", IndexNameKind::NonUnique,
+///         IndexNameTarget::Expression),
+///     "users_expr_idx"
+/// );
+/// ```
+pub fn index_name(table: &str, kind: IndexNameKind, target: IndexNameTarget<'_>) -> String {
+    let suffix = match kind {
+        IndexNameKind::NonUnique => "idx",
+        IndexNameKind::UniqueConstraint => "key",
+        IndexNameKind::UniqueIndex => "uidx",
+    };
+    let body = match target {
+        IndexNameTarget::Columns(cols) => cols.join("_"),
+        IndexNameTarget::Expression => "expr".to_string(),
+    };
+    let full = format!("{table}_{body}_{suffix}");
+    if full.len() <= 63 {
+        return full;
+    }
+    // Truncate to 55 bytes and append an 8-char hex digest of the full
+    // pre-truncation name. The byte-slice take is safe because `full` is
+    // ASCII (table + body + suffix are all ASCII-ident-shape by Q5).
+    let digest = {
+        use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
+        let mut h = BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default()
+            .build_hasher();
+        h.write(full.as_bytes());
+        let raw = h.finish();
+        format!("{:08x}", (raw as u32))
+    };
+    let stem: String = full.as_bytes()[..55].iter().map(|b| *b as char).collect();
+    format!("{stem}_{digest}")
+}
+
 impl IndexSpec {
-    /// Backward-compatible constructor for non-spatial indexes.
+    /// Backward-compatible constructor for plain column-list indexes.
     ///
-    /// Defaults `requires_out_of_transaction = false` and
-    /// `extension_dependency = None` so call sites that predated Phase 6 can
-    /// remain on the 4-argument shape without listing the two new fields.
+    /// Lifts each `&str` in `columns` into an [`IndexColumnSpec::simple`]
+    /// entry, maps `unique = true` → [`IndexKind::UniqueConstraint`] and
+    /// `unique = false` → [`IndexKind::NonUnique`], and defaults every other
+    /// optional field (`predicate`, `include`, `nulls_not_distinct`,
+    /// `requires_out_of_transaction`, `extension_dependency`) to benign values.
     ///
-    /// This constructor is `const` so it can be used in `const` contexts and
-    /// in `&[IndexSpec::simple(...)]` literal arrays.
-    pub const fn simple(
+    /// Not `const`: the per-column spec slice is allocated on the heap via
+    /// `Box::leak` so the lifted slice satisfies the `&'static` bound that
+    /// `IndexTarget::Columns` requires. The leak is intentional — `IndexSpec`
+    /// values are descriptor-lifetime data that lives for the entire process,
+    /// so a once-per-index leak behaves like a `static` initialiser. For
+    /// truly `static` contexts (macro-emitted descriptors), construct an
+    /// `IndexSpec { ... }` literal directly and put the `IndexColumnSpec`
+    /// slice behind a `static` binding.
+    pub fn simple(
         name: &'static str,
         columns: &'static [&'static str],
         unique: bool,
         index_type: IndexType,
     ) -> Self {
+        let lifted: Box<[IndexColumnSpec]> =
+            columns.iter().map(|c| IndexColumnSpec::simple(c)).collect();
+        let leaked: &'static [IndexColumnSpec] = Box::leak(lifted);
+        let kind = if unique {
+            IndexKind::UniqueConstraint
+        } else {
+            IndexKind::NonUnique
+        };
         Self {
             name,
-            columns,
-            unique,
+            target: IndexTarget::Columns(leaked),
+            kind,
             index_type,
+            predicate: None,
+            include: &[],
+            nulls_not_distinct: false,
             requires_out_of_transaction: false,
             extension_dependency: None,
         }
@@ -314,9 +561,379 @@ mod tests {
         );
         // Spot-check that the positional fields were forwarded correctly.
         assert_eq!(spec.name, "idx");
-        assert_eq!(spec.columns, &["col"]);
-        assert!(!spec.unique);
+        assert!(matches!(spec.kind, super::IndexKind::NonUnique));
         assert_eq!(spec.index_type, IndexType::BTree);
+        match spec.target {
+            super::IndexTarget::Columns(cols) => {
+                assert_eq!(cols.len(), 1);
+                assert_eq!(cols[0].name, "col");
+            }
+            super::IndexTarget::Expression(_) => panic!("expected Columns target"),
+        }
+        // New-in-7-Zero benign defaults round-trip.
+        assert_eq!(spec.predicate, None);
+        assert!(spec.include.is_empty());
+        assert!(!spec.nulls_not_distinct);
+    }
+
+    // ── T1 (Phase 7-Zero v3) — new descriptor-shape assertions ───────────────
+
+    #[test]
+    fn index_kind_has_three_variants() {
+        use super::IndexKind;
+        // Compile-time existence + exhaustive-match coverage. If a variant
+        // is renamed or removed, this match fails to compile.
+        let variants = [
+            IndexKind::NonUnique,
+            IndexKind::UniqueConstraint,
+            IndexKind::UniqueIndex,
+        ];
+        for v in &variants {
+            match v {
+                IndexKind::NonUnique | IndexKind::UniqueConstraint | IndexKind::UniqueIndex => {}
+            }
+        }
+        assert_eq!(variants.len(), 3);
+    }
+
+    #[test]
+    fn index_order_and_nulls_order_variants_exist() {
+        use super::{IndexNullsOrder, IndexOrder};
+        // Exhaustive coverage: if a variant is renamed or removed, these
+        // matches stop compiling. The `let _ = ...` lines also pin the
+        // variant construction surface.
+        let orders = [IndexOrder::Asc, IndexOrder::Desc];
+        for o in &orders {
+            match o {
+                IndexOrder::Asc | IndexOrder::Desc => {}
+            }
+        }
+        assert_eq!(orders.len(), 2);
+
+        let nulls = [
+            IndexNullsOrder::Default,
+            IndexNullsOrder::First,
+            IndexNullsOrder::Last,
+        ];
+        for n in &nulls {
+            match n {
+                IndexNullsOrder::Default | IndexNullsOrder::First | IndexNullsOrder::Last => {}
+            }
+        }
+        assert_eq!(nulls.len(), 3);
+    }
+
+    #[test]
+    fn index_column_spec_simple_has_benign_defaults() {
+        use super::{IndexColumnSpec, IndexNullsOrder, IndexOrder};
+        let c = IndexColumnSpec::simple("last");
+        assert_eq!(c.name, "last");
+        assert_eq!(c.opclass, None);
+        assert!(matches!(c.order, IndexOrder::Asc));
+        assert!(matches!(c.nulls, IndexNullsOrder::Default));
+    }
+
+    #[test]
+    fn index_target_is_mutually_exclusive_enum() {
+        use super::{IndexColumnSpec, IndexTarget};
+        // Mutual exclusion at the type level: both arms inhabit the same
+        // enum so only one form can be stored per IndexSpec.
+        static COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("a")];
+        let columns = IndexTarget::Columns(COLS);
+        let expr = IndexTarget::Expression("lower(email)");
+        assert!(matches!(columns, IndexTarget::Columns(_)));
+        assert!(matches!(expr, IndexTarget::Expression(_)));
+    }
+
+    #[test]
+    fn index_spec_simple_lifts_str_slice_into_column_specs() {
+        use super::{IndexKind, IndexSpec, IndexTarget, IndexType};
+        let spec = IndexSpec::simple("idx", &["first", "last"], false, IndexType::BTree);
+        match spec.target {
+            IndexTarget::Columns(cols) => {
+                assert_eq!(cols.len(), 2);
+                assert_eq!(cols[0].name, "first");
+                assert_eq!(cols[1].name, "last");
+                assert_eq!(cols[0].opclass, None);
+                assert_eq!(cols[1].opclass, None);
+            }
+            IndexTarget::Expression(_) => panic!("expected Columns target"),
+        }
+        assert!(matches!(spec.kind, IndexKind::NonUnique));
+        // Column order matters — reversing produces a different index.
+        let reverse = IndexSpec::simple("idx", &["last", "first"], false, IndexType::BTree);
+        match (spec.target, reverse.target) {
+            (IndexTarget::Columns(a), IndexTarget::Columns(b)) => {
+                assert_eq!(a[0].name, "first");
+                assert_eq!(b[0].name, "last");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn index_spec_simple_maps_unique_to_unique_constraint() {
+        use super::{IndexKind, IndexSpec, IndexType};
+        let spec = IndexSpec::simple("uix", &["email"], true, IndexType::BTree);
+        assert!(matches!(spec.kind, IndexKind::UniqueConstraint));
+    }
+
+    #[test]
+    fn index_spec_equality_and_clone_preserve_new_fields() {
+        use super::{
+            IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget,
+            IndexType,
+        };
+        // Construct an `IndexSpec` literal that exercises *every* new
+        // Phase 7-Zero field at a non-default value. If `Clone` or
+        // `PartialEq` drop any field — or if a future refactor reorders
+        // the fields and forgets one — this test catches the regression.
+        static COLS: &[IndexColumnSpec] = &[IndexColumnSpec {
+            name: "email",
+            opclass: Some("text_pattern_ops"),
+            order: IndexOrder::Desc,
+            nulls: IndexNullsOrder::First,
+        }];
+        let a = IndexSpec {
+            name: "uniq_email_active",
+            target: IndexTarget::Columns(COLS),
+            kind: IndexKind::UniqueIndex,
+            index_type: IndexType::BTree,
+            predicate: Some("deleted_at IS NULL"),
+            include: &["tenant_id"],
+            nulls_not_distinct: true,
+            requires_out_of_transaction: true,
+            extension_dependency: Some("postgis"),
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+        assert_eq!(b.predicate, Some("deleted_at IS NULL"));
+        assert_eq!(b.include, &["tenant_id"]);
+        assert!(b.nulls_not_distinct);
+        assert!(matches!(b.kind, IndexKind::UniqueIndex));
+        match b.target {
+            IndexTarget::Columns(cs) => {
+                assert_eq!(cs[0].opclass, Some("text_pattern_ops"));
+                assert!(matches!(cs[0].order, IndexOrder::Desc));
+                assert!(matches!(cs[0].nulls, IndexNullsOrder::First));
+            }
+            IndexTarget::Expression(_) => panic!("expected Columns target"),
+        }
+
+        // Also round-trip the legacy `simple()` path.
+        let c = IndexSpec::simple("idx", &["col"], false, IndexType::BTree);
+        let d = c.clone();
+        assert_eq!(c, d);
+    }
+
+    /// Pin the complete field list of `IndexSpec` — if a future edit
+    /// re-introduces a top-level `opclass` field (or drops one of the new
+    /// v3 fields), the destructuring pattern below stops matching
+    /// exhaustively and the test fails to compile. This is the
+    /// machine-checked counterpart to the plan-text rule in §4:
+    /// "top-level `IndexSpec::opclass` field is **removed**
+    /// (per-column opclass lives on `IndexColumnSpec`)".
+    #[test]
+    fn index_spec_field_set_is_frozen_to_v3_shape() {
+        use super::{IndexSpec, IndexType};
+        let spec = IndexSpec::simple("idx", &["col"], false, IndexType::BTree);
+        let IndexSpec {
+            name: _,
+            target: _,
+            kind: _,
+            index_type: _,
+            predicate: _,
+            include: _,
+            nulls_not_distinct: _,
+            requires_out_of_transaction: _,
+            extension_dependency: _,
+        } = spec;
+    }
+
+    // ── T4 (Phase 7-Zero v3) — index_name deterministic helper ──────────────
+
+    #[test]
+    fn index_name_short_non_unique_is_verbatim() {
+        use super::{IndexNameKind, IndexNameTarget, index_name};
+        assert_eq!(
+            index_name(
+                "users",
+                IndexNameKind::NonUnique,
+                IndexNameTarget::Columns(&["email"])
+            ),
+            "users_email_idx"
+        );
+    }
+
+    #[test]
+    fn index_name_short_unique_constraint_uses_key_stem() {
+        use super::{IndexNameKind, IndexNameTarget, index_name};
+        assert_eq!(
+            index_name(
+                "orgs",
+                IndexNameKind::UniqueConstraint,
+                IndexNameTarget::Columns(&["org_id", "external_id"])
+            ),
+            "orgs_org_id_external_id_key"
+        );
+    }
+
+    #[test]
+    fn index_name_short_unique_index_uses_uidx_stem() {
+        use super::{IndexNameKind, IndexNameTarget, index_name};
+        assert_eq!(
+            index_name(
+                "accounts",
+                IndexNameKind::UniqueIndex,
+                IndexNameTarget::Columns(&["email"])
+            ),
+            "accounts_email_uidx"
+        );
+    }
+
+    #[test]
+    fn index_name_expression_target_uses_expr_stem() {
+        use super::{IndexNameKind, IndexNameTarget, index_name};
+        assert_eq!(
+            index_name(
+                "users",
+                IndexNameKind::NonUnique,
+                IndexNameTarget::Expression
+            ),
+            "users_expr_idx"
+        );
+        assert_eq!(
+            index_name(
+                "users",
+                IndexNameKind::UniqueIndex,
+                IndexNameTarget::Expression
+            ),
+            "users_expr_uidx"
+        );
+    }
+
+    #[test]
+    fn index_name_column_order_is_semantic() {
+        use super::{IndexNameKind, IndexNameTarget, index_name};
+        let a = index_name(
+            "people",
+            IndexNameKind::NonUnique,
+            IndexNameTarget::Columns(&["last", "first"]),
+        );
+        let b = index_name(
+            "people",
+            IndexNameKind::NonUnique,
+            IndexNameTarget::Columns(&["first", "last"]),
+        );
+        assert_ne!(
+            a, b,
+            "column order must produce different names byte-for-byte"
+        );
+        assert_eq!(a, "people_last_first_idx");
+        assert_eq!(b, "people_first_last_idx");
+    }
+
+    #[test]
+    fn index_name_long_input_truncates_to_55_plus_8hex_suffix() {
+        use super::{IndexNameKind, IndexNameTarget, index_name};
+        // Deliberately over-long table + column combination so the
+        // naive name exceeds 63 bytes.
+        let table = "very_long_table_with_many_underscore_separated_words";
+        let cols = ["first_column_name", "second_column_name"];
+        let name = index_name(
+            table,
+            IndexNameKind::NonUnique,
+            IndexNameTarget::Columns(&cols),
+        );
+        assert_eq!(
+            name.len(),
+            55 + 1 + 8,
+            "truncated name layout: 55-byte stem + `_` + 8-char hex digest; got '{name}'"
+        );
+        // Stem must be an ASCII prefix of the naive full name.
+        let naive = format!("{}_{}_{}_{}", table, cols[0], cols[1], "idx");
+        assert!(
+            naive.as_bytes().starts_with(name.as_bytes()[..55].as_ref()),
+            "truncated stem must be a prefix of the pre-truncation full name"
+        );
+        // The suffix must be 8 hex digits.
+        let tail = &name[name.len() - 8..];
+        assert!(
+            tail.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "hash suffix must be 8 lowercase hex chars; got '{tail}'"
+        );
+    }
+
+    #[test]
+    fn index_name_near_duplicate_long_inputs_do_not_collide() {
+        use super::{IndexNameKind, IndexNameTarget, index_name};
+        // Two inputs that differ only past the 55th byte of the
+        // pre-truncation name — without the hash suffix, both would
+        // collide on the same 55-byte prefix.
+        let table = "very_long_table_with_many_underscore_separated_words";
+        let a = index_name(
+            table,
+            IndexNameKind::NonUnique,
+            IndexNameTarget::Columns(&["payload_one_extra_suffix_a"]),
+        );
+        let b = index_name(
+            table,
+            IndexNameKind::NonUnique,
+            IndexNameTarget::Columns(&["payload_one_extra_suffix_b"]),
+        );
+        assert_ne!(a, b, "hash suffix must break near-duplicate collisions");
+        assert_eq!(a.len(), 55 + 1 + 8);
+        assert_eq!(b.len(), 55 + 1 + 8);
+    }
+
+    #[test]
+    fn pk_type_desc_variants_resolve_to_id_column() {
+        // Constructing a minimal descriptor twice — once per new variant —
+        // and asserting `pk_column` answers `Some("id")` is the cleanest
+        // way to pin the Phase 7-Zero PkType addition.
+        use super::super::relation::{OnDelete, RelationKind};
+
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            name: "id",
+            sql_type: FieldSqlType::BigInt,
+            nullable: false,
+            unique: true,
+            indexed: true,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            visage_map: &[],
+        }];
+
+        let _ = (OnDelete::Restrict, RelationKind::ForeignKey);
+
+        for pk in [PkType::HeerIdDesc, PkType::RanjIdDesc] {
+            let desc = ModelDescriptor {
+                type_name: "Desc",
+                table_name: "descs",
+                pk_type: pk,
+                fields: FIELDS,
+                partition_by: None,
+                has_outbox: false,
+                idempotency_key: None,
+                tenant_key: None,
+                cache_ttl: None,
+                rationale: None,
+                indexes: &[],
+                is_through: false,
+                fts: None,
+                app: None,
+                moved_from_app: None,
+            };
+            assert_eq!(desc.pk_column(), Some("id"));
+        }
     }
 
     /// Construct a minimal `ModelDescriptor` by hand and verify that
@@ -388,6 +1005,8 @@ mod tests {
             indexes: &[],
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
 
         let shape = MigrationShape::from_descriptor(&desc);
@@ -458,29 +1077,42 @@ mod tests {
         visage_map: &[],
     };
 
+    static T11_BOUNDARY_COLS: &[super::IndexColumnSpec] =
+        &[super::IndexColumnSpec::simple("boundary")];
+    static T11_LABEL_COLS: &[super::IndexColumnSpec] = &[super::IndexColumnSpec::simple("label")];
+
     static T11_GIST_INDEX: IndexSpec = IndexSpec {
         name: "idx_boundary_gist",
-        columns: &["boundary"],
-        unique: false,
+        target: super::IndexTarget::Columns(T11_BOUNDARY_COLS),
+        kind: super::IndexKind::NonUnique,
         index_type: IndexType::Gist,
+        predicate: None,
+        include: &[],
+        nulls_not_distinct: false,
         requires_out_of_transaction: true,
         extension_dependency: Some("postgis"),
     };
 
     static T11_BTREE_INDEX: IndexSpec = IndexSpec {
         name: "idx_boundary_btree",
-        columns: &["boundary"],
-        unique: false,
+        target: super::IndexTarget::Columns(T11_BOUNDARY_COLS),
+        kind: super::IndexKind::NonUnique,
         index_type: IndexType::BTree,
+        predicate: None,
+        include: &[],
+        nulls_not_distinct: false,
         requires_out_of_transaction: false,
         extension_dependency: None,
     };
 
     static T11_GIST_ON_TEXT: IndexSpec = IndexSpec {
         name: "idx_label_gist",
-        columns: &["label"],
-        unique: false,
+        target: super::IndexTarget::Columns(T11_LABEL_COLS),
+        kind: super::IndexKind::NonUnique,
         index_type: IndexType::Gist,
+        predicate: None,
+        include: &[],
+        nulls_not_distinct: false,
         requires_out_of_transaction: false,
         extension_dependency: None,
     };
@@ -502,6 +1134,8 @@ mod tests {
             indexes: std::slice::from_ref(&T11_GIST_INDEX),
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             desc.has_gist_on_geography(),
@@ -526,6 +1160,8 @@ mod tests {
             indexes: &[],
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -551,6 +1187,8 @@ mod tests {
             indexes: std::slice::from_ref(&T11_BTREE_INDEX),
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -575,6 +1213,8 @@ mod tests {
             indexes: std::slice::from_ref(&T11_GIST_ON_TEXT),
             is_through: false,
             fts: None,
+            app: None,
+            moved_from_app: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -665,14 +1305,25 @@ pub struct FieldDescriptor {
 
 /// Primary key strategy.
 ///
-/// The four leaf variants (`HeerId`, `RanjId`, `Serial`, `None`) map 1:1 to
-/// the `#[model(pk = "...")]` attribute values. `Composite` is emitted for
-/// models that declare multiple PK columns — rare, mostly join tables — and
-/// carries the ordered list of column names.
+/// The six leaf variants (`HeerId`, `RanjId`, `HeerIdDesc`, `RanjIdDesc`,
+/// `Serial`, `None`) map 1:1 to the `#[model(pk = "...")]` attribute values.
+/// `Composite` is emitted for models that declare multiple PK columns —
+/// rare, mostly join tables — and carries the ordered list of column names.
+///
+/// `HeerIdDesc` / `RanjIdDesc` (added in Phase 7-Zero v3) store the same
+/// logical identity as their ascending siblings but with timestamp + sequence
+/// bits XORed so that a BTree index on the PK column scans
+/// **most-recent-first** without a secondary descending index. See
+/// [`crate::types::HeerIdDesc`] / [`crate::types::RanjIdDesc`] and the
+/// Phase 7-Zero plan §4.1 for the full indexing trade-off. The ascending ↔
+/// descending PK migration itself lands in Phase 7; 7-Zero only freezes the
+/// variant additions, attribute-parse paths, and descriptor shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PkType {
     HeerId,
     RanjId,
+    HeerIdDesc,
+    RanjIdDesc,
     Serial,
     None,
     Composite(&'static [&'static str]),
@@ -774,6 +1425,27 @@ pub struct ModelDescriptor {
     /// `old_desc.fts` with `new_desc.fts` using `PartialEq` — any difference
     /// in `column`, `source`, or `dictionary` requires a column reconstruction.
     pub fts: Option<FtsDescriptor>,
+
+    // ── Apps subsystem (Phase 7-Zero v3 T8) ─────────────────────────────────
+    /// The stable string label of the app this model belongs to.
+    ///
+    /// Set by `#[model(app = Vehicles)]` — the macro lowers the type
+    /// path to `<Vehicles as ::djogi::App>::LABEL` at const-eval time
+    /// so the descriptor carries the Postgres identifier, not the
+    /// Rust type name. `None` places the model in the synthetic
+    /// global bucket, which Phase 7's differ files under
+    /// `<default-database>/<empty-label>/`.
+    pub app: Option<&'static str>,
+
+    /// Historical-metadata pointer to this model's prior app.
+    ///
+    /// Set by `#[model(moved_from_app = OldBilling)]` when a model
+    /// has been moved between apps. Enables Phase 7's migration
+    /// differ to emit correct move-table-across-schemas operations
+    /// without forcing the old app to stay declared. The pointed-at
+    /// app may be tombstoned — that's the expected retirement flow
+    /// (see `docs/guide/apps.md`).
+    pub moved_from_app: Option<&'static str>,
 }
 
 impl ModelDescriptor {
@@ -789,10 +1461,14 @@ impl ModelDescriptor {
     ///
     /// For each [`IndexSpec`] in `self.indexes`:
     /// 1. Skip entries whose `index_type` is not [`IndexType::Gist`].
-    /// 2. For each column name in the spec's `columns` slice, check whether
-    ///    the corresponding [`FieldDescriptor`] has
+    /// 2. Skip entries whose `target` is [`IndexTarget::Expression`] —
+    ///    expression-target spatial indexes are legal but their column
+    ///    relationship is opaque here, so we conservatively answer "no"
+    ///    rather than guess.
+    /// 3. For each [`IndexColumnSpec`] in the spec's column list, check
+    ///    whether the corresponding [`FieldDescriptor`] has
     ///    `sql_type == FieldSqlType::Geography { .. }`.
-    /// 3. Return `true` as soon as one such matching field is found.
+    /// 4. Return `true` as soon as one such matching field is found.
     ///
     /// Composite indexes count if **any** column in the index is
     /// `Geography`-typed. This reflects Postgres's GiST-prefix behaviour:
@@ -807,11 +1483,15 @@ impl ModelDescriptor {
             if !matches!(idx.index_type, IndexType::Gist) {
                 continue;
             }
-            for col in idx.columns {
+            let cols = match idx.target {
+                IndexTarget::Columns(cs) => cs,
+                IndexTarget::Expression(_) => continue,
+            };
+            for col in cols {
                 let is_geo = self
                     .fields
                     .iter()
-                    .find(|f| f.name == *col)
+                    .find(|f| f.name == col.name)
                     .map(|f| matches!(f.sql_type, FieldSqlType::Geography { .. }))
                     .unwrap_or(false);
                 if is_geo {
@@ -824,16 +1504,21 @@ impl ModelDescriptor {
 
     /// The primary key column name for this model.
     ///
-    /// Returns `Some("id")` for the three standard PK types (`HeerId`,
-    /// `RanjId`, `Serial`) and `None` for `pk = "none"` models. `Composite`
-    /// PKs are uncommon; this method returns the first column in the composite
-    /// list on the assumption that it is the most natural tiebreak candidate.
+    /// Returns `Some("id")` for the five standard PK types (`HeerId`,
+    /// `RanjId`, `HeerIdDesc`, `RanjIdDesc`, `Serial`) and `None` for
+    /// `pk = "none"` models. `Composite` PKs are uncommon; this method
+    /// returns the first column in the composite list on the assumption
+    /// that it is the most natural tiebreak candidate.
     ///
     /// Used by [`crate::query::order::OrderExpr::spatial_distance_with_pk_tiebreak`]
     /// to capture the PK column at `order_by_distance` construction time.
     pub fn pk_column(&self) -> Option<&'static str> {
         match &self.pk_type {
-            PkType::HeerId | PkType::RanjId | PkType::Serial => Some("id"),
+            PkType::HeerId
+            | PkType::RanjId
+            | PkType::HeerIdDesc
+            | PkType::RanjIdDesc
+            | PkType::Serial => Some("id"),
             PkType::None => None,
             PkType::Composite(cols) => cols.first().copied(),
         }
@@ -883,7 +1568,7 @@ inventory::collect!(ModelDescriptor);
 pub mod migration_shape {
     use std::collections::BTreeSet;
 
-    use super::{FieldSqlType, IndexType, ModelDescriptor};
+    use super::{FieldSqlType, IndexKind, IndexTarget, IndexType, ModelDescriptor};
 
     // -----------------------------------------------------------------------
     // Public types
@@ -937,13 +1622,24 @@ pub mod migration_shape {
 
     /// DDL-relevant metadata for a single index, plus the SQL the emitter
     /// would produce.
+    ///
+    /// This is a simplified projection of the Phase 7-Zero `IndexSpec`
+    /// tailored to the Phase 6 `MigrationShape` contract — Phase 7's real
+    /// differ consumes the full `IndexSpec` directly.
     #[derive(Debug, Clone)]
     pub struct IndexShape {
         /// Index name from `IndexSpec::name`.
         pub name: &'static str,
-        /// Column list from `IndexSpec::columns`, converted to an owned `Vec`.
+        /// Column names extracted from the underlying
+        /// `IndexSpec::target`. For `IndexTarget::Columns`, this is the
+        /// per-column `name` field from every `IndexColumnSpec`. For
+        /// `IndexTarget::Expression`, this is an empty vector and the
+        /// expression text lives inside `sql_text` instead.
         pub columns: Vec<&'static str>,
-        /// Whether the index is a `UNIQUE` constraint.
+        /// `true` when the underlying `IndexSpec::kind` is either
+        /// `IndexKind::UniqueConstraint` or `IndexKind::UniqueIndex`. The
+        /// MigrationShape contract does not distinguish the two forms —
+        /// Phase 7's real differ reads `IndexSpec::kind` directly.
         pub unique: bool,
         /// Mirrors `IndexSpec::requires_out_of_transaction`.
         /// When `true`, `sql_text` will contain `CONCURRENTLY`.
@@ -996,9 +1692,27 @@ pub mod migration_shape {
                     }
 
                     let type_kw = index_type_keyword(spec.index_type);
-                    let cols_joined = spec.columns.join(",");
+                    // Phase 7-Zero v3: IndexSpec now carries
+                    // `target: IndexTarget` (column list | expression) and
+                    // `kind: IndexKind`. Collapse back to the
+                    // `(columns: Vec<&str>, unique: bool)` shape the Phase 6
+                    // MigrationShape contract expects — the richer per-column
+                    // knobs (opclass / order / nulls) stay on the underlying
+                    // IndexSpec for Phase 7's real differ to consume.
+                    let (columns, target_sql) = match spec.target {
+                        IndexTarget::Columns(cs) => {
+                            let names: Vec<&'static str> = cs.iter().map(|c| c.name).collect();
+                            let joined = names.join(",");
+                            (names, joined)
+                        }
+                        IndexTarget::Expression(expr) => (Vec::new(), expr.to_string()),
+                    };
 
-                    let create_kw = if spec.unique {
+                    let is_unique = matches!(
+                        spec.kind,
+                        IndexKind::UniqueConstraint | IndexKind::UniqueIndex
+                    );
+                    let create_kw = if is_unique {
                         "CREATE UNIQUE INDEX"
                     } else {
                         "CREATE INDEX"
@@ -1010,14 +1724,14 @@ pub mod migration_shape {
                     };
 
                     let sql_text = format!(
-                        "{create_kw}{concurrently} IF NOT EXISTS {name} ON {table} USING {type_kw}({cols_joined})",
+                        "{create_kw}{concurrently} IF NOT EXISTS {name} ON {table} USING {type_kw}({target_sql})",
                         name = spec.name,
                     );
 
                     IndexShape {
                         name: spec.name,
-                        columns: spec.columns.to_vec(),
-                        unique: spec.unique,
+                        columns,
+                        unique: is_unique,
                         requires_out_of_transaction: spec.requires_out_of_transaction,
                         extension_dependency: spec.extension_dependency,
                         sql_text,

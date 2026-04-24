@@ -1,0 +1,5 @@
+error: `expr = ".."` indexes do not accept `opclass = ".."` in 0.1.0 — drop to raw SQL via `ctx.raw_execute(...)` if a non-default opclass is required.
+ --> tests/compile_fail/phase7_zero_model_indexes_expr_opclass.rs:6:5
+  |
+6 |     index(expr = "lower(email)", opclass = "text_pattern_ops"),
+  |     ^^^^^

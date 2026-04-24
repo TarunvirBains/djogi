@@ -40,6 +40,25 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Ubuntu-latest GHA runners ship with ~14GB of free disk. Phase 7-Zero
+      # pushed the workspace test footprint past that ceiling — 22
+      # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + 50+
+      # trybuild fixtures (each compiling to its own binary) + the existing
+      # Phase 6/6.5 integration tests fill the disk partway into
+      # `cargo test --workspace`. The runner dies with "No space left on
+      # device" before it can finish or emit useful logs. Freeing ~30GB of
+      # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
+      # toolcache) restores headroom for the full test surface. Cheap enough
+      # (~10s) to keep in every run rather than gate.
+      - name: Free disk space on GHA runner
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          df -h /
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

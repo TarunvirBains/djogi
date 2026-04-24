@@ -1384,6 +1384,8 @@ mod tests {
                 indexes: &[],
                 is_through: false,
                 fts: None,
+                app: None,
+                moved_from_app: None,
             };
             &DESC
         }
@@ -1511,7 +1513,8 @@ mod tests {
         }
         fn descriptor() -> &'static ModelDescriptor {
             use crate::descriptor::{
-                FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec, IndexType, PkType,
+                FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind,
+                IndexSpec, IndexTarget, IndexType, PkType,
             };
             static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
                 name: "boundary",
@@ -1533,11 +1536,15 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
             }];
+            static BOUNDARY_COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("boundary")];
             static INDEXES: &[IndexSpec] = &[IndexSpec {
                 name: "idx_regions_boundary_gist",
-                columns: &["boundary"],
-                unique: false,
+                target: IndexTarget::Columns(BOUNDARY_COLS),
+                kind: IndexKind::NonUnique,
                 index_type: IndexType::Gist,
+                predicate: None,
+                include: &[],
+                nulls_not_distinct: false,
                 requires_out_of_transaction: true,
                 extension_dependency: Some("postgis"),
             }];
@@ -1555,6 +1562,8 @@ mod tests {
                 indexes: INDEXES,
                 is_through: false,
                 fts: None,
+                app: None,
+                moved_from_app: None,
             };
             &DESC
         }

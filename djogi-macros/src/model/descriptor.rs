@@ -37,6 +37,8 @@ pub fn expand(
     let pk_type_tokens = match model_attrs.pk {
         PkStrategy::HeerId => quote! { ::djogi::PkType::HeerId },
         PkStrategy::RanjId => quote! { ::djogi::PkType::RanjId },
+        PkStrategy::HeerIdDesc => quote! { ::djogi::PkType::HeerIdDesc },
+        PkStrategy::RanjIdDesc => quote! { ::djogi::PkType::RanjIdDesc },
         PkStrategy::Serial => quote! { ::djogi::PkType::Serial },
         PkStrategy::None => quote! { ::djogi::PkType::None },
     };
@@ -91,6 +93,58 @@ pub fn expand(
             }
         }),
         PkStrategy::RanjId => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::Uuid,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[
+                    ("admin", "id"),
+                    ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
+                ],
+            }
+        }),
+        // HeerIdDesc / RanjIdDesc share the same descriptor shape as their
+        // ascending siblings — the stored column type (BIGINT / UUID) does
+        // not change. The PK-type flip lives on `ModelDescriptor::pk_type`
+        // and is consumed by Phase 7's migration differ.
+        PkStrategy::HeerIdDesc => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::BigInt,
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[
+                    ("admin", "id"),
+                    ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
+                ],
+            }
+        }),
+        PkStrategy::RanjIdDesc => Some(quote! {
             ::djogi::FieldDescriptor {
                 name: "id",
                 sql_type: ::djogi::FieldSqlType::Uuid,
@@ -384,53 +438,145 @@ pub fn expand(
     //
     // For every user field whose Rust type is any `GeographyValue`-implementing
     // geometry (`GeoPoint`, `LineString`, `Polygon`, `MultiPoint`,
-    // `MultiPolygon`), emit one `IndexSpec` entry with:
-    //   - name:       "<table>_<column>_gix"
-    //   - columns:    &["<column>"]
-    //   - unique:     false
-    //   - index_type: IndexType::Gist
+    // `MultiPolygon`), emit one `IndexSpec` entry. Phase 7-Zero v3 widened the
+    // IndexSpec shape — the column list is now `IndexTarget::Columns(&[
+    // IndexColumnSpec::simple(...)])`, the `unique: bool` flag is now
+    // `kind: IndexKind::NonUnique`, and three new optional fields (`predicate`,
+    // `include`, `nulls_not_distinct`) default to benign values. No behavior
+    // change: the emitted DDL under the Phase 7 differ is still
+    // `CREATE INDEX CONCURRENTLY ... USING gist ("<col>")` after the
+    // `CREATE EXTENSION IF NOT EXISTS postgis` guard.
     //
     // The names are baked in as `'static str` string literals — they are
     // compile-time constants derived from the model attrs and field names.
     // No `Box::leak` is needed because the entire `inventory::submit!` block
     // is emitted as a single `static` initialiser; all nested `&[...]` slices
     // are literal arrays with `'static` lifetimes.
-    //
-    // `requires_out_of_transaction` and `extension_dependency` are the
-    // T5-added `IndexSpec` fields that carry GiST-on-PostGIS migration
-    // policy forward to Phase 7 without relying on type-name inference.
-    let geography_index_specs: Vec<TokenStream> = user_fields
-        .iter()
-        .filter(|(field, _fa)| is_geography_field_type(&field.ty))
-        .map(|(field, _fa)| {
-            let raw_name = field.ident.as_ref().unwrap().to_string();
-            let col = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
-            // Index name convention: "<table>_<column>_gix"
-            let index_name = format!("{table_name}_{col}_gix");
-            let col_str = col.as_str();
-            quote! {
-                ::djogi::descriptor::IndexSpec {
-                    name: #index_name,
-                    columns: &[#col_str],
-                    unique: false,
-                    index_type: ::djogi::descriptor::IndexType::Gist,
-                    requires_out_of_transaction: true,
-                    extension_dependency: ::std::option::Option::Some("postgis"),
-                }
+    let mut named_index_specs: Vec<(String, TokenStream)> = Vec::new();
+
+    // Phase 6 spatial GiST indexes — implicit, one per GeographyValue field.
+    // The generated name `<table>_<col>_gix` is reserved against user-
+    // declared collisions below.
+    let mut reserved_generated_names: Vec<String> = Vec::new();
+    for (field, _fa) in user_fields.iter() {
+        if !is_geography_field_type(&field.ty) {
+            continue;
+        }
+        let raw_name = field.ident.as_ref().unwrap().to_string();
+        let col = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+        let index_name = format!("{table_name}_{col}_gix");
+        reserved_generated_names.push(index_name.clone());
+        let col_str = col.as_str();
+        let tokens = quote! {
+            ::djogi::descriptor::IndexSpec {
+                name: #index_name,
+                target: ::djogi::descriptor::IndexTarget::Columns(&[
+                    ::djogi::descriptor::IndexColumnSpec::simple(#col_str),
+                ]),
+                kind: ::djogi::descriptor::IndexKind::NonUnique,
+                index_type: ::djogi::descriptor::IndexType::Gist,
+                predicate: ::std::option::Option::None,
+                include: &[],
+                nulls_not_distinct: false,
+                requires_out_of_transaction: true,
+                extension_dependency: ::std::option::Option::Some("postgis"),
             }
+        };
+        named_index_specs.push((index_name, tokens));
+    }
+
+    // Phase 7-Zero v3 T3 — lower every `#[model(indexes(...))]` declaration.
+    // Column-name validation walks the user-declared field set (raw-ident-
+    // stripped) to catch typos at macro-expansion time. Name collisions
+    // with the spatial GiST reserved names above are rejected in the
+    // lowerer so users cannot silently shadow framework-emitted indexes.
+    let mut declared_columns: Vec<String> = user_fields
+        .iter()
+        .map(|(field, _fa)| {
+            let raw = field.ident.as_ref().unwrap().to_string();
+            raw.strip_prefix("r#").unwrap_or(&raw).to_string()
         })
         .collect();
+    // Framework-injected columns (`id` when pk != none, plus `created_at`
+    // and `updated_at`) are valid index targets too — include them in the
+    // declared set so `indexes(index(fields = [created_at]))` compiles.
+    if !matches!(model_attrs.pk, PkStrategy::None) {
+        declared_columns.push("id".to_string());
+    }
+    declared_columns.push("created_at".to_string());
+    declared_columns.push("updated_at".to_string());
+    let lowering_ctx = crate::model::indexes::LoweringCtx {
+        table_name: table_name.as_str(),
+        declared_columns: &declared_columns,
+        reserved_generated_names: &reserved_generated_names,
+    };
+    for decl in &model_attrs.indexes {
+        match crate::model::indexes::emit_index_spec_tokens(decl, &lowering_ctx) {
+            Ok((name, tokens)) => named_index_specs.push((name, tokens)),
+            Err(e) => {
+                let err_tokens = e.to_compile_error();
+                return quote! { #err_tokens };
+            }
+        }
+    }
 
-    // Emit the indexes slice. If there are no geography fields, the slice is
-    // empty (`&[]`) — identical to the Phase 1 default. If there are one or
-    // more geography fields, emit a `&[IndexSpec { … }, …]` literal.
-    let indexes_tokens = if geography_index_specs.is_empty() {
+    // Alphabetise by generated name — deterministic emission means minor
+    // reorderings in the user's source do not produce spurious migration
+    // diffs. Matches the Phase 4.5 `visage_map` alphabetisation per
+    // `feedback_verify_api_shape_conventions.md`.
+    named_index_specs.sort_by(|a, b| a.0.cmp(&b.0));
+    let index_spec_tokens: Vec<TokenStream> =
+        named_index_specs.into_iter().map(|(_, ts)| ts).collect();
+
+    let indexes_tokens = if index_spec_tokens.is_empty() {
         quote! { &[] }
     } else {
-        quote! { &[ #(#geography_index_specs,)* ] }
+        quote! { &[ #(#index_spec_tokens,)* ] }
+    };
+
+    // Phase 7-Zero v3 T8 — apps subsystem linkage.
+    //
+    // `#[model(app = Vehicles)]` becomes `app: Some(<Vehicles as
+    // ::djogi::App>::LABEL)` in the descriptor. Resolution happens at
+    // const-eval time; `None` maps to the synthetic global bucket.
+    // When `app = X` is set we also emit a compile-time assertion
+    // `const _: () = assert!(!<X as ::djogi::App>::TOMBSTONE)` — an
+    // active model cannot point at a tombstoned (retired) app.
+    // `moved_from_app = OldBilling` does *not* get this assertion;
+    // pointing historical metadata at a tombstoned app is the whole
+    // point of `moved_from_app`.
+    let (app_tokens, tombstone_guard_tokens) = match &model_attrs.app {
+        Some(path) => (
+            quote! {
+                ::core::option::Option::Some(
+                    <#path as ::djogi::apps::App>::LABEL,
+                )
+            },
+            quote! {
+                const _: () = {
+                    assert!(
+                        !<#path as ::djogi::apps::App>::TOMBSTONE,
+                        "cannot declare an active model on a tombstoned \
+                         app; use `#[model(app = NewApp, moved_from_app = \
+                         OldApp)]` to record historical metadata",
+                    );
+                };
+            },
+        ),
+        None => (quote! { ::core::option::Option::None }, quote! {}),
+    };
+    let moved_from_app_tokens = match &model_attrs.moved_from_app {
+        Some(path) => quote! {
+            ::core::option::Option::Some(
+                <#path as ::djogi::apps::App>::LABEL,
+            )
+        },
+        None => quote! { ::core::option::Option::None },
     };
 
     quote! {
+        #tombstone_guard_tokens
+
         ::djogi::__private::inventory::submit! {
             ::djogi::ModelDescriptor {
                 type_name: #type_name,
@@ -458,6 +604,9 @@ pub fn expand(
                 is_through: #is_through,
                 // Phase 5 Task 14 — Full-Text Search.
                 fts: #fts_tokens,
+                // Phase 7-Zero v3 T8 — apps subsystem linkage.
+                app: #app_tokens,
+                moved_from_app: #moved_from_app_tokens,
             }
         }
     }

@@ -1,0 +1,5 @@
+error: `djogi::apps!` declarations must be unit structs — `pub struct Vehicles;` with no fields. Tuple and named structs are not allowed.
+ --> tests/compile_fail/phase7_zero_apps_tuple_struct.rs:6:16
+  |
+6 |     pub struct Vehicles(u32);
+  |                ^^^^^^^^

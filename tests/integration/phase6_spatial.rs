@@ -58,6 +58,30 @@ pub struct NonSpatialItem {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Collect the names of the columns covered by an [`IndexSpec`]. Returns an
+/// empty `Vec` for expression-target indexes (none of Phase 6's spatial
+/// indexes use expressions, so callers can treat the empty result as a
+/// "no match" signal).
+///
+/// Kept here as a thin helper so every call site spells out the same
+/// translation from the Phase 7-Zero v3 `IndexTarget` shape to the simple
+/// column-name comparison that these tests want.
+///
+/// Feature-gated because every caller is `#[cfg(feature = "spatial")]`;
+/// without the gate, clippy flags this as dead code when CI runs
+/// without the spatial feature.
+#[cfg(feature = "spatial")]
+fn index_column_names(spec: &djogi::IndexSpec) -> Vec<&'static str> {
+    match spec.target {
+        djogi::IndexTarget::Columns(cs) => cs.iter().map(|c| c.name).collect(),
+        djogi::IndexTarget::Expression(_) => Vec::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -96,7 +120,7 @@ fn gist_index_in_descriptor_for_geopoint_field() {
     let gix = desc
         .indexes
         .iter()
-        .find(|idx| idx.columns == ["location"])
+        .find(|idx| index_column_names(idx) == ["location"])
         .expect("GiST index for `location` must be present in Place::descriptor().indexes");
 
     assert_eq!(
@@ -106,8 +130,10 @@ fn gist_index_in_descriptor_for_geopoint_field() {
         gix.index_type
     );
     assert!(
-        !gix.unique,
-        "spatial GiST index must not be unique — spatial indexes are never unique constraints"
+        matches!(gix.kind, djogi::IndexKind::NonUnique),
+        "spatial GiST index must not be unique — spatial indexes are never unique constraints; \
+         got {:?}",
+        gix.kind
     );
 }
 
@@ -123,7 +149,7 @@ fn gist_index_name_follows_convention() {
     let gix = desc
         .indexes
         .iter()
-        .find(|idx| idx.columns == ["location"])
+        .find(|idx| index_column_names(idx) == ["location"])
         .expect("GiST index for `location` must be present");
 
     assert_eq!(
@@ -462,7 +488,7 @@ fn places_gix_requires_out_of_transaction() {
     let gix = desc
         .indexes
         .iter()
-        .find(|idx| idx.columns == ["location"])
+        .find(|idx| index_column_names(idx) == ["location"])
         .expect("GiST index for `location` must be present in Place::descriptor().indexes");
 
     assert!(

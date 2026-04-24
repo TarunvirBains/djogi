@@ -11,6 +11,7 @@ pub mod descriptor;
 pub mod filter;
 pub mod from_joined_row;
 pub mod from_row;
+pub mod indexes;
 pub mod inject;
 pub mod outer_ref;
 pub mod relations;

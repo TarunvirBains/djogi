@@ -1,0 +1,5 @@
+error: `name = "1-bad"` must start with an ASCII letter or underscore
+ --> tests/compile_fail/phase7_zero_model_indexes_name_bad_shape.rs:7:5
+  |
+7 |     index(fields = [email], name = "1-bad"),
+  |     ^^^^^

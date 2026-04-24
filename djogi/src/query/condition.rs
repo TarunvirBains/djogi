@@ -225,6 +225,14 @@ pub enum FilterValue {
     Uuid(uuid::Uuid),
     HeerId(HeerId),
     RanjId(RanjId),
+    /// Reverse-chronological `HeerId` — stored as BIGINT, same Postgres
+    /// surface as [`FilterValue::HeerId`]. Kept as a distinct variant so
+    /// `FieldRef<M, HeerIdDesc>::eq(x)` can preserve the type identity all
+    /// the way into the emitted bind site (Phase 7-Zero v3).
+    HeerIdDesc(crate::types::HeerIdDesc),
+    /// Reverse-chronological `RanjId` — stored as UUID, same Postgres
+    /// surface as [`FilterValue::RanjId`]. See [`FilterValue::HeerIdDesc`].
+    RanjIdDesc(crate::types::RanjIdDesc),
     Null,
     /// For IN (...) / NOT IN (...) list lookups.
     ///

@@ -130,6 +130,18 @@ impl From<RanjId> for Expr<RanjId> {
     }
 }
 
+impl From<crate::types::HeerIdDesc> for Expr<crate::types::HeerIdDesc> {
+    fn from(v: crate::types::HeerIdDesc) -> Self {
+        Self::from_literal(FilterValue::HeerIdDesc(v))
+    }
+}
+
+impl From<crate::types::RanjIdDesc> for Expr<crate::types::RanjIdDesc> {
+    fn from(v: crate::types::RanjIdDesc) -> Self {
+        Self::from_literal(FilterValue::RanjIdDesc(v))
+    }
+}
+
 // `time::Duration` maps to `ExprNode::IntervalLiteral` rather than
 // `FilterValue::*` because `tokio-postgres` / `postgres-types` does not ship
 // a `ToSql` impl for `time::Duration`. Instead of adding a bind parameter,

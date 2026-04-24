@@ -1,0 +1,5 @@
+error: app label must be non-empty (Phase 7-Zero v3 §3)
+ --> tests/compile_fail/phase7_zero_apps_empty_label.rs:5:19
+  |
+5 |     #[app(label = "", database = "main")]
+  |                   ^^

@@ -25,5 +25,6 @@ For planned features that don't ship yet, see
 | [Full-Text Search](./fts.md) | `#[model(fts = "...")]`, generated `tsvector`, `QuerySet::search` terminals |
 | [Spatial](./spatial.md) | `GeoPoint`, `within_km`, `order_by_distance`, PostGIS integration (requires `spatial` feature) |
 | [Tenancy](./tenancy.md) | `#[model(tenant_key)]`, RLS policy emission, `set_tenant`, `_insecurely()` bypass |
+| [Apps](./apps.md) | `djogi::apps!` subsystem, `#[model(app = ...)]`, retirement flow with tombstones, migration grouping |
 | [Authentication](./auth.md) | `DjogiAuth` trait, `AuthContext`, `PasswordHash`, auto-`set_tenant`, `with_no_tenant_scope` |
 | [Agent Guide](./agent-guide.md) | For AI coding agents — reading Djogi code, golden path, common mistakes |

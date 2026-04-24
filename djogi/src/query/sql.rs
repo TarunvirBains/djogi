@@ -104,6 +104,12 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
         FilterValue::RanjId(r) => {
             acc.push_bind(r);
         }
+        FilterValue::HeerIdDesc(h) => {
+            acc.push_bind(h);
+        }
+        FilterValue::RanjIdDesc(r) => {
+            acc.push_bind(r);
+        }
         FilterValue::Decimal(d) => {
             acc.push_bind(d);
         }
@@ -175,6 +181,12 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
             acc.push_bind(h);
         }
         FilterValue::RanjId(r) => {
+            acc.push_bind(r);
+        }
+        FilterValue::HeerIdDesc(h) => {
+            acc.push_bind(h);
+        }
+        FilterValue::RanjIdDesc(r) => {
             acc.push_bind(r);
         }
         FilterValue::Decimal(d) => {
@@ -2261,6 +2273,8 @@ mod tests {
         indexes: &[],
         is_through: false,
         fts: None,
+        app: None,
+        moved_from_app: None,
     };
 
     fn owners_join_descriptor() -> &'static ModelDescriptor {
