@@ -69,7 +69,7 @@ async fn password_hash_round_trips_through_pg(mut ctx: djogi::DjogiContext) {
 ///
 /// Declares `org_id` as its tenant column so that `set_tenant("org_id")`
 /// drives the `app.tenant_id` GUC that the RLS policy checks.
-#[model(table = "phase5_5_tenant_posts", tenant_key = "org_id")]
+#[model(table = "phase5_5_tenant_posts", pk = HeerId, tenant_key = "org_id")]
 #[derive(Debug, Clone)]
 pub struct TenantPost {
     pub org_id: String,

@@ -425,7 +425,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // Trait impl body: mirrors `many_to_many_hand_impl.rs` down to the
     // fetch-then-get projection in `related`. Using `pk_value()` rather
     // than reaching into `self.id` keeps the macro PK-kind agnostic —
-    // a model with `pk = "ranjid"` or `pk = "serial"` feeds through
+    // a model with `pk = RanjId` or `pk = Serial` feeds through
     // the same expansion without a per-PK branch here.
     //
     // Each method takes `&'ctx mut DjogiContext`. The `related` body threads

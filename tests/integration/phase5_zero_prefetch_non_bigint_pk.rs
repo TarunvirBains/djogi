@@ -4,8 +4,8 @@
 //! `prefetch_loader` decoded the target's `id` column as `Option<i64>`
 //! to distinguish a LEFT JOIN miss from a real row. That probe works
 //! for the default `HeerId` (BIGINT) but silently fails for
-//! `pk = "serial"` (INTEGER decode of `Option<i64>` errors) and
-//! `pk = "ranjid"` (UUID is not convertible to `i64`). With
+//! `pk = Serial` (INTEGER decode of `Option<i64>` errors) and
+//! `pk = RanjId` (UUID is not convertible to `i64`). With
 //! `.unwrap_or(true)`, the decode error was treated as "target absent"
 //! — dropping every joined target on non-BIGINT-PK models.
 //!
@@ -29,11 +29,11 @@ use djogi::prelude::*;
 // Test models
 // ---------------------------------------------------------------------------
 
-// Serial-PK target: `pk = "serial"` gives `id: i32`, so the prefetch
+// Serial-PK target: `pk = Serial` gives `id: i32`, so the prefetch
 // null-probe must handle the non-BIGINT column type correctly. Before
 // the fixup, the probe's `Option<i64>` decode failed and the
 // `.unwrap_or(true)` path dropped every real row.
-#[model(table = "t3_fixup_categories", pk = "serial")]
+#[model(table = "t3_fixup_categories", pk = Serial)]
 #[derive(Debug, Clone)]
 pub struct Category {
     pub name: String,
@@ -44,7 +44,9 @@ pub struct Category {
 // (`secondary_category_id`) exercises the LEFT JOIN miss branch on
 // a NULL source column, which is the other way a prefetch slot can
 // end up `None`.
-#[model(table = "t3_fixup_items", no_default)]
+// Phase 7-Zero-2 T2 default flip — this model carries the HeerId-typed
+// FK key back into the prefetch loader, so pin `pk = HeerId` explicitly.
+#[model(table = "t3_fixup_items", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Item {
     pub label: String,

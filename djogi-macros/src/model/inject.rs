@@ -30,7 +30,7 @@
 //! - **Reserved names.** A user field named `created_at` or `updated_at` is
 //!   rejected unconditionally (the macro always injects those). A user field
 //!   named `id` is rejected for every `pk` strategy except `"none"` — under
-//!   `pk = "none"` the user is *expected* to declare their own `id` (or other
+//!   `pk = None` the user is *expected* to declare their own `id` (or other
 //!   PK-carrying field) and the filter below preserves it.
 //!
 //! # Default impl
@@ -66,7 +66,7 @@ const ALWAYS_RESERVED: &[&str] = &["created_at", "updated_at"];
 /// Returns `syn::Error` if:
 /// - the struct is not `Fields::Named` (tuple / unit shape), or
 /// - the user declared a reserved field name (`created_at` / `updated_at`
-///   always; `id` except under `pk = "none"`).
+///   always; `id` except under `pk = None`).
 ///
 /// When `model_attrs.no_default` is `true`, the `Default` impl is omitted.
 /// This is required for models that contain field types that do not implement
@@ -108,7 +108,7 @@ fn validate_shape(struct_item: &ItemStruct) -> syn::Result<()> {
 /// Reject user fields whose names collide with framework-injected fields.
 ///
 /// `created_at` / `updated_at` are always reserved. `id` is reserved except
-/// for `pk = "none"`, where the user is expected to declare their own PK
+/// for `pk = None`, where the user is expected to declare their own PK
 /// field (which may or may not be called `id`).
 fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<()> {
     let id_is_reserved = reserved_for_pk(model_attrs);
@@ -123,7 +123,7 @@ fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> s
                     field.span(),
                     format!(
                         "#[model] reserves the field name `{name}` — the macro injects it automatically. \
-                         Rename your field or, if you need to control the primary key yourself, set `#[model(pk = \"none\")]`."
+                         Rename your field or, if you need to control the primary key yourself, set `#[model(pk = None)]`."
                     ),
                 ));
             }
@@ -133,7 +133,7 @@ fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> s
 }
 
 /// `true` when the current `pk` strategy injects an `id` field, making `id`
-/// reserved. Only `pk = "none"` lets users declare their own `id`.
+/// reserved. Only `pk = None` lets users declare their own `id`.
 fn reserved_for_pk(model_attrs: &ModelAttrs) -> bool {
     !matches!(model_attrs.pk, PkStrategy::None)
 }
@@ -187,7 +187,7 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
 /// - User fields → `Default::default()` (user types must implement `Default`)
 ///
 /// The `user_field_defaults` filter operates on the struct's field list
-/// *after* `inject_fields` has prepended framework fields. For `pk = "none"`,
+/// *after* `inject_fields` has prepended framework fields. For `pk = None`,
 /// no `id` is injected, so a user's own `id` field (if present) survives the
 /// filter and gets a `Default::default()` entry like any other user field.
 fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {

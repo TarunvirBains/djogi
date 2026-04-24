@@ -42,7 +42,9 @@ use djogi::prelude::*;
 /// test that never constructs instances.
 #[cfg(feature = "spatial")]
 #[allow(dead_code)]
-#[model(table = "places", no_default)]
+// Phase 7-Zero-2 T2 default flip — pin HeerId so the `order_by_distance`
+// + `within_km` tests keep their ascending-HeerId tiebreak semantics.
+#[model(table = "places", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Place {
     pub name: String,
@@ -51,7 +53,7 @@ pub struct Place {
 
 /// Regression model: no GeoPoint fields — indexes slice must be empty.
 #[allow(dead_code)]
-#[model(table = "non_spatial_items")]
+#[model(table = "non_spatial_items", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct NonSpatialItem {
     pub label: String,

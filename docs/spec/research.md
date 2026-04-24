@@ -32,7 +32,7 @@
 - Shell bindings: synchronous `HeerId::generate()`, `HeerId::generate_many(n)`, and `RanjId::generate()` in Rhai
 - HeerId serde impl: `i64` internally, `String` in JSON — no per-field annotation needed
 - RanjId serde impl: `Uuid` internally, standard UUID string in JSON
-- Migration path: `#[model(pk = "ranjid")]` for models that need higher capacity
+- Migration path: `#[model(pk = RanjId)]` for models that need higher capacity
 
 ### Proc Macro Design
 - Struct field injection (`id`, `created_at`, `updated_at`) via `#[model(table = "...")]` attribute macro (`#[derive(Model)]` exists only as a no-op stub; attribute macros are required for field injection)

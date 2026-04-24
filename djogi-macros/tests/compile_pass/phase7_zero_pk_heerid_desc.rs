@@ -1,12 +1,14 @@
-// Phase 7-Zero v3 T1 — `pk = "heerid_desc"` compiles cleanly.
+// Phase 7-Zero v3 T1 + Phase 7-Zero-2 T2 — `pk = HeerIdDesc` compiles cleanly.
 //
 // Pins the full chain from attribute parse → `PkStrategy::HeerIdDesc` →
 // `PkType::HeerIdDesc` → injected `id: HeerIdDesc` field. The ascending ↔
-// descending PK migration itself lands in Phase 7; T1 only freezes that
-// the declaration compiles and injects the right Rust type.
+// descending PK migration itself lands in Phase 7; 7-Zero only freezes that
+// the declaration compiles and injects the right Rust type. 7-Zero-2 T2
+// switched the grammar from the string literal (`pk = "heerid_desc"`) to
+// the bare identifier (`pk = HeerIdDesc`).
 use djogi::prelude::*;
 
-#[model(table = "posts_desc", pk = "heerid_desc")]
+#[model(table = "posts_desc", pk = HeerIdDesc)]
 #[derive(Debug, Clone)]
 struct Post {
     pub title: String,

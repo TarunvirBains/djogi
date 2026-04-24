@@ -8,7 +8,7 @@
 //! generator) iterate `descriptor.fields` as the single schema source and
 //! never synthesize framework columns out-of-band.
 //!
-//! For `pk = "none"`, `id` is omitted from the framework prefix (the user's
+//! For `pk = None`, `id` is omitted from the framework prefix (the user's
 //! own PK field appears as a regular user field in declared order).
 //!
 //! The emitted submission uses Phase 1 defaults for every amended field
@@ -65,7 +65,7 @@ pub fn expand(
     // Phase 1.5: framework columns are emitted FIRST so `descriptor.fields` is
     // the complete schema contract. `id` varies by pk strategy; `created_at`
     // and `updated_at` are always Timestamptz, non-null, not unique/indexed.
-    // For `pk = "none"`, skip `id` entirely — the user's own PK appears as a
+    // For `pk = None`, skip `id` entirely — the user's own PK appears as a
     // regular user field in declared order.
 
     let id_framework_desc: Option<TokenStream> = match model_attrs.pk {

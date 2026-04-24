@@ -5,9 +5,9 @@
 //! A ZST whose inherent methods return [`FieldRef<Self, V>`] for every column,
 //! framework and user alike. The emission order mirrors `descriptor::expand`:
 //!
-//! 1. `id` — present for `pk = heerid | ranjid | serial`; omitted for `pk =
-//!    "none"` (matches the descriptor's framework-prefix gating, keeping the
-//!    single schema contract consistent).
+//! 1. `id` — present for `pk = HeerId | RanjId | HeerIdDesc | RanjIdDesc |
+//!    Serial`; omitted for `pk = None` (matches the descriptor's
+//!    framework-prefix gating, keeping the single schema contract consistent).
 //! 2. `created_at`, `updated_at` — always emitted, typed as
 //!    `::djogi::types::DateTime`.
 //! 3. User-declared columns in struct source order.
@@ -19,14 +19,14 @@
 //! string columns; any other column gets a compile error citing the method's
 //! absence. That's the feature.
 //!
-//! # `pk = "none"`
+//! # `pk = None`
 //!
 //! `FieldRef<M, V>` has `M: Model` as a trait bound, and `crud::expand` does
-//! **not** emit `impl Model` for `pk = "none"` models (the `Pk: Encode` bound
+//! **not** emit `impl Model` for `pk = None` models (the `Pk: Encode` bound
 //! can't be honestly satisfied without a real PK — see `crud.rs` for the
 //! rationale). So emitting accessors here for those models would fail at
 //! E0277 the moment the user's struct is parsed. This module mirrors
-//! `crud.rs`'s gate: `pk = "none"` keeps the Phase-1 empty-stub behaviour
+//! `crud.rs`'s gate: `pk = None` keeps the Phase-1 empty-stub behaviour
 //! unchanged, so everything else (struct injection, `FromRow`, descriptor
 //! registration) still compiles. A future phase introducing a
 //! composite/user-managed PK trait will unlock accessors for them.
@@ -68,14 +68,14 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
     // ── Per-column accessor emission ─────────────────────────────────────────
     //
     // `FieldRef<M, V>` is bounded `M: Model`. `crud::expand` does NOT emit
-    // `impl Model` for `pk = "none"` models (the trait's `Pk: Encode` bound
+    // `impl Model` for `pk = None` models (the trait's `Pk: Encode` bound
     // can't be honestly satisfied without a real PK), so emitting accessor
     // methods here for those models would fail to compile with E0277 the
     // moment the user's struct is parsed — which breaks Phase 1's contract
     // that pk=none models still get struct injection, `FromRow`, and
     // descriptor registration.
     //
-    // Resolution: mirror `crud::expand`'s gate exactly. `pk = "none"` keeps
+    // Resolution: mirror `crud::expand`'s gate exactly. `pk = None` keeps
     // the Phase-1 empty-stub behavior; when the future phase introduces a
     // composite/user-managed PK trait, this branch can emit accessors keyed
     // on that trait instead.

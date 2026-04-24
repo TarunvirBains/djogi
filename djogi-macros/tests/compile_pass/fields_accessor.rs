@@ -9,11 +9,11 @@
 //   - string-only lookups (`.contains`) resolve on `FieldRef<User, String>`;
 //   - raw identifiers (`r#type`) round-trip as a method name and produce a
 //     SQL-safe column string (`"type"`, never `"r#type"`);
-//   - the emission compiles for `pk = "serial"` (different `id` type).
+//   - the emission compiles for `pk = Serial` (different `id` type).
 //
 // TODO: add Jsonb + ForeignKey fixtures once those types land (Phase 3+).
 //
-// `pk = "none"` is deliberately NOT exercised here: `crud::expand` does not
+// `pk = None` is deliberately NOT exercised here: `crud::expand` does not
 // emit `impl Model` for those models (see the module docs), and `FieldRef<M,
 // V>` requires `M: Model`. `stubs::expand` mirrors that gate and emits only
 // the empty `{Model}Fields` shell for pk=none — there are no accessors to
@@ -27,7 +27,10 @@
 use djogi::prelude::*;
 use djogi::query::FieldRef;
 
-#[model(table = "users")]
+// Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`; this
+// fixture continues to exercise the ascending-HeerId accessor shape via
+// an explicit `pk = HeerId` annotation.
+#[model(table = "users", pk = HeerId)]
 #[derive(Debug, Clone)]
 struct User {
     pub name: String,
@@ -40,7 +43,7 @@ struct User {
     pub r#type: String,
 }
 
-#[model(table = "lookups", pk = "serial")]
+#[model(table = "lookups", pk = Serial)]
 #[derive(Debug, Clone)]
 struct Lookup {
     pub label: String,
@@ -96,7 +99,7 @@ fn _lookup_values_compile() {
 
 fn _serial_pk_id_is_i32() {
     let f = LookupFields::default();
-    // `pk = "serial"` types `id` as `i32`, not `HeerId`.
+    // `pk = Serial` types `id` as `i32`, not `HeerId`.
     let _id: FieldRef<Lookup, i32> = f.id();
     let _label: FieldRef<Lookup, String> = f.label();
     let _: Condition = f.id().eq(7i32);

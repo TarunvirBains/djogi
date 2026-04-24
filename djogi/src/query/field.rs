@@ -917,8 +917,8 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
         //
         // The `unwrap_or(self.column())` fallback path is defensive-only and
         // unreachable from the public API: `FieldRef<M, GeoPoint>` requires
-        // `M: Model`, and `#[model(pk = "none")]` models do not receive a
-        // `Model` impl from the macro (only `pk = "none"` with no ordering
+        // `M: Model`, and `#[model(pk = None)]` models do not receive a
+        // `Model` impl from the macro (only `pk = None` with no ordering
         // semantics), so they cannot reach the spatial query surface at all.
         let pk_column = M::descriptor().pk_column().unwrap_or(self.column());
         crate::query::order::OrderExpr::spatial_distance_with_pk_tiebreak(

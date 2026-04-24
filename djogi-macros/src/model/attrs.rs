@@ -1,5 +1,9 @@
-//! Attribute parsing for `#[model(table = "...", pk = "...")]`
+//! Attribute parsing for `#[model(table = "...", pk = X)]`
 //! and `#[field(unique, index, max_length = N, renamed_from = "...", on_delete = "...")]`.
+//!
+//! `pk` takes a bare identifier (Phase 7-Zero-2 T2) — `HeerId`,
+//! `HeerIdRecencyBiased`, `RanjId`, etc. The pre-T2 string-literal form
+//! (`pk = "heerid"`) is rejected with a span-carrying diagnostic.
 //!
 //! `ModelAttrs` keeps a hand-rolled parser: the surface is three keys, the
 //! error messages from `syn::Error::new_spanned` already carry precise
@@ -32,7 +36,7 @@ pub struct FtsSpec {
     pub dictionary: String,
 }
 
-/// Options extracted from `#[model(table = "...", pk = "...")]`.
+/// Options extracted from `#[model(table = "...", pk = X)]`.
 // Fields are read by Tasks 4–9 (inject, crud, descriptor, stubs). The
 // dead-code lint fires now because those callers are stubs — suppress it.
 #[allow(dead_code)]
@@ -167,25 +171,49 @@ pub struct ModelAttrs {
     pub moved_from_app: Option<syn::Path>,
 }
 
-/// Parsed `pk = "..."` value.
+/// Parsed `pk = X` value.
+///
+/// Grammar is a bare identifier (Phase 7-Zero-2 T2). The pre-T2
+/// string-literal grammar (`pk = "heerid"`) is rejected with a
+/// span-carrying diagnostic directing callers at the new form. The
+/// accepted identifier set:
+///
+/// - `HeerId` — ascending 64-bit HeerId (historical default).
+/// - `RanjId` — ascending UUIDv8 RanjId.
+/// - `HeerIdRecencyBiased` / `HeerIdDesc` — reverse-chronological
+///   HeerId; both identifiers lower to the same
+///   [`PkStrategy::HeerIdDesc`] internal variant. `HeerIdRecencyBiased`
+///   is the adopter-facing name per `docs/spec/primary-keys.md` §3.5a;
+///   `HeerIdDesc` is kept as a secondary alias for callers who read
+///   migration internals.
+/// - `RanjIdRecencyBiased` / `RanjIdDesc` — reverse-chronological
+///   RanjId; same dual-name treatment.
+/// - `Serial` — `SERIAL` / `INTEGER` PK for lookup tables.
+/// - `None` — no framework-injected `id`; adopter manages the PK.
+///
+/// Phase 7-Zero-2 T2 flipped the attribute's default: omitted `pk` now
+/// resolves to [`PkStrategy::HeerIdDesc`] (recency-biased), not
+/// [`PkStrategy::HeerId`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PkStrategy {
     HeerId,
     RanjId,
-    /// `pk = "heerid_desc"` — reverse-chronological HeerId variant added in
-    /// Phase 7-Zero v3. Lowers to `PkType::HeerIdDesc`; injects `id:
-    /// HeerIdDesc` into the struct.
+    /// `pk = HeerIdRecencyBiased` (canonical) or `pk = HeerIdDesc`
+    /// (internal-name alias) — reverse-chronological HeerId variant
+    /// added in Phase 7-Zero v3. Lowers to `PkType::HeerIdDesc`;
+    /// injects `id: HeerIdDesc` into the struct.
     HeerIdDesc,
-    /// `pk = "ranjid_desc"` — reverse-chronological RanjId variant added in
-    /// Phase 7-Zero v3. Lowers to `PkType::RanjIdDesc`; injects `id:
-    /// RanjIdDesc` into the struct.
+    /// `pk = RanjIdRecencyBiased` (canonical) or `pk = RanjIdDesc`
+    /// (internal-name alias) — reverse-chronological RanjId variant
+    /// added in Phase 7-Zero v3. Lowers to `PkType::RanjIdDesc`;
+    /// injects `id: RanjIdDesc` into the struct.
     RanjIdDesc,
     Serial,
     None,
 }
 
 impl ModelAttrs {
-    /// Parse `#[model(table = "posts", pk = "heerid")]` from the attribute token stream.
+    /// Parse `#[model(table = "posts", pk = HeerId)]` from the attribute token stream.
     ///
     /// Duplicate keys are rejected with a span-carrying error pointing at the
     /// second occurrence — last-write-wins silently is a footgun in proc-macro
@@ -244,6 +272,42 @@ impl ModelAttrs {
                     seen_events = true;
                     events = true;
                 }
+                // `pk = X` bare-identifier form (Phase 7-Zero-2 T2). Accepts
+                // only single-segment paths matching the alias set in
+                // `PkStrategy::from_path`. Multi-segment paths and unknown
+                // identifiers are rejected so that custom PK types (a T3
+                // feature) can't sneak through the T2 parser.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Path(expr_path),
+                    ..
+                }) if path.is_ident("pk") => {
+                    if pk.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `pk` key in #[model(...)]",
+                        ));
+                    }
+                    pk = Some(PkStrategy::from_path(&expr_path.path)?);
+                }
+                // `pk = "…"` — the pre-T2 string-literal form. Dedicated
+                // diagnostic so callers get a clear migration message; the
+                // span points at the `pk` key so the underline isolates the
+                // offender rather than the whole attribute.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value:
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Str(_), ..
+                        }),
+                    ..
+                }) if path.is_ident("pk") => {
+                    return Err(syn::Error::new_spanned(
+                        path,
+                        "`pk = \"…\"` string-literal form is removed; use bare identifier, \
+                         e.g. `pk = HeerIdRecencyBiased` / `pk = HeerId` / `pk = Serial`",
+                    ));
+                }
                 Meta::NameValue(MetaNameValue {
                     path,
                     value:
@@ -260,17 +324,6 @@ impl ModelAttrs {
                             ));
                         }
                         table = Some(s.value());
-                    } else if path.is_ident("pk") {
-                        if pk.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                path,
-                                "duplicate `pk` key in #[model(...)]",
-                            ));
-                        }
-                        pk = Some(
-                            PkStrategy::from_str(&s.value())
-                                .map_err(|msg| syn::Error::new_spanned(s, msg))?,
-                        );
                     } else if path.is_ident("idempotency_key") {
                         if idempotency_key.is_some() {
                             return Err(syn::Error::new_spanned(
@@ -427,7 +480,13 @@ impl ModelAttrs {
                 "#[model] requires `table = \"...\"`",
             )
         })?;
-        let pk = pk.unwrap_or(PkStrategy::HeerId);
+        // Phase 7-Zero-2 T2 flipped the default: omitted `pk` now resolves
+        // to `HeerIdDesc` (recency-biased), not `HeerId`. Models that still
+        // want ascending PK ordering must declare `pk = HeerId` explicitly.
+        // See `docs/spec/primary-keys.md` §3.5a for the recency-biased
+        // default rationale (covering-index scans land on the most-recent
+        // rows first without a secondary descending index).
+        let pk = pk.unwrap_or(PkStrategy::HeerIdDesc);
 
         Ok(ModelAttrs {
             table,
@@ -446,19 +505,45 @@ impl ModelAttrs {
 }
 
 impl PkStrategy {
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "heerid" => Ok(PkStrategy::HeerId),
-            "ranjid" => Ok(PkStrategy::RanjId),
-            "heerid_desc" => Ok(PkStrategy::HeerIdDesc),
-            "ranjid_desc" => Ok(PkStrategy::RanjIdDesc),
-            "serial" => Ok(PkStrategy::Serial),
-            "none" => Ok(PkStrategy::None),
-            other => Err(format!(
-                "unknown pk strategy `{other}`; expected one of: heerid, ranjid, \
-                 heerid_desc, ranjid_desc, serial, none"
-            )),
+    /// Lower a `pk = X` path expression to a `PkStrategy`.
+    ///
+    /// Accepts the single-segment identifier set documented on
+    /// [`PkStrategy`]. The two recency-biased identifiers carry
+    /// public-facing and internal-facing spellings:
+    ///
+    /// - `HeerIdRecencyBiased` and `HeerIdDesc` both lower to
+    ///   [`PkStrategy::HeerIdDesc`].
+    /// - `RanjIdRecencyBiased` and `RanjIdDesc` both lower to
+    ///   [`PkStrategy::RanjIdDesc`].
+    ///
+    /// Multi-segment paths (e.g. `crate::MyId`) and unknown single-segment
+    /// identifiers are rejected with a span-carrying diagnostic. Custom
+    /// adopter-declared PK types (`djogi::primary_key!`) land in Task 3;
+    /// T2 intentionally has no fall-through to `PkStrategy::Custom`.
+    fn from_path(path: &syn::Path) -> syn::Result<Self> {
+        if let Some(ident) = path.get_ident() {
+            return match ident.to_string().as_str() {
+                "HeerId" => Ok(PkStrategy::HeerId),
+                "RanjId" => Ok(PkStrategy::RanjId),
+                "HeerIdRecencyBiased" | "HeerIdDesc" => Ok(PkStrategy::HeerIdDesc),
+                "RanjIdRecencyBiased" | "RanjIdDesc" => Ok(PkStrategy::RanjIdDesc),
+                "Serial" => Ok(PkStrategy::Serial),
+                "None" => Ok(PkStrategy::None),
+                other => Err(syn::Error::new_spanned(
+                    path,
+                    format!(
+                        "unknown pk strategy `{other}`; expected one of: \
+                         HeerId, RanjId, HeerIdRecencyBiased, HeerIdDesc, \
+                         RanjIdRecencyBiased, RanjIdDesc, Serial, None"
+                    ),
+                )),
+            };
         }
+        Err(syn::Error::new_spanned(
+            path,
+            "`pk = <path>` must be a single-segment identifier in Phase 7-Zero-2 T2; \
+             adopter-declared custom PK types land in Task 3",
+        ))
     }
 }
 
@@ -992,7 +1077,7 @@ impl FieldAttrs {
     /// to recover the literal's `Span`, so the error underlines the bad
     /// value rather than the entire field declaration. Matches the pre-
     /// darling hand-rolled behaviour; keeps the surface consistent with
-    /// how `pk = "..."` span-points at its own literal in `ModelAttrs`.
+    /// how `pk = X` span-points at its own path in `ModelAttrs`.
     pub fn parse(field: &syn::Field) -> syn::Result<Self> {
         // `darling::Error` carries source spans from the originating
         // attribute tokens; `From<darling::Error> for syn::Error` preserves

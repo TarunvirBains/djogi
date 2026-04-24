@@ -94,7 +94,7 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 - [ ] Generate `impl sqlx::FromRow for T`
 - [ ] Generate `ModelDescriptor` and register via `inventory::submit!`
 - [ ] Minimal Phase 1 slice: support the default HeerId primary key path first
-- [ ] Defer `#[model(pk = "serial")]`, `#[model(pk = "ranjid")]`, `#[model(pk = "none")]`, and composite keys until the default path is stable
+- [ ] Defer `#[model(pk = Serial)]`, `#[model(pk = RanjId)]`, `#[model(pk = None)]`, and composite keys until the default path is stable
   - [ ] For `0.1.0`, interpret this as: composite **primary** keys remain deferred, while composite **unique constraints/indexes** are expected to ship through the migration/index metadata path
 
 ### 1b: Field Types

@@ -38,7 +38,10 @@ use serde::{Deserialize, Serialize};
 // - Dirty Tracked fields appear in the UPDATE SET list.
 // - Clean Tracked fields do NOT appear in the UPDATE SET list.
 // - Non-Tracked fields always appear regardless of dirty state.
-#[model(table = "accounts")]
+// Phase 7-Zero-2 T2 default flip — pin ascending HeerId across every
+// model in this file so the HeerId sentinel constructions (`<HeerId as
+// PrimaryKey>::sentinel()`) and cross-test assumptions hold.
+#[model(table = "accounts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Account {
     pub name: Tracked<String>,
@@ -406,7 +409,7 @@ pub enum VehicleStatus {
 /// `no_default` is required because `VehicleStatus` does not implement
 /// `Default` — there is no sensible sentinel value for a status enum.
 /// Callers must always provide an explicit `status` value.
-#[model(table = "vehicles", no_default)]
+#[model(table = "vehicles", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     pub status: VehicleStatus,
@@ -600,7 +603,7 @@ pub struct PostSpec {
 /// - `view_counts` — INTEGER[] for array len test.
 /// - `specs`       — JSONB with a typed partial schema (`PostSpec`) for path
 ///                   filter and unknown-field preservation tests.
-#[model(table = "posts")]
+#[model(table = "posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Post {
     pub title: String,
@@ -950,7 +953,7 @@ async fn jsonb_preserves_unknown_fields(mut ctx: djogi::DjogiContext) {
 /// This model is deliberately separate from `Post` (which uses
 /// `Jsonb<serde_json::Value>`) so changes to the Fix 3 tests do not
 /// disturb the existing Task 5 tests.
-#[model(table = "typed_posts")]
+#[model(table = "typed_posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct TypedPost {
     pub title: String,
@@ -1195,7 +1198,7 @@ pub struct VehicleDeepSpecs {
 /// Vehicle model whose `specs` column is a nested JSONB schema.
 ///
 /// Table provisioned by `006_vehicles_deep.sql`.
-#[model(table = "vehicles_deep")]
+#[model(table = "vehicles_deep", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct VehicleDeep {
     pub name: String,
@@ -1686,7 +1689,7 @@ pub struct CamelSpec {
 }
 
 /// Model backed by `camel_posts`.
-#[model(table = "camel_posts")]
+#[model(table = "camel_posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CamelPost {
     pub spec: Option<Jsonb<CamelSpec>>,
@@ -1819,7 +1822,7 @@ async fn jsonb_camel_create_and_typed_path_roundtrip(mut ctx: djogi::DjogiContex
 /// Each row belongs to an org identified by `org_id`. The RLS policy
 /// enforces that a connection can only see rows whose `org_id` matches
 /// `current_setting('app.tenant_id')::bigint`.
-#[model(table = "tenant_post", tenant_key = "org_id")]
+#[model(table = "tenant_post", pk = HeerId, tenant_key = "org_id")]
 #[derive(Debug, Clone)]
 pub struct TenantPost {
     pub org_id: i64,

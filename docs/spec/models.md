@@ -176,7 +176,7 @@ Phase 1's `String -> TEXT` rule is the bootstrap mapping, not the long-term publ
 | `Vec<i64>` | `BIGINT[]` |
 | `Vec<bool>` | `BOOLEAN[]` |
 | `HeerId` | `BIGINT` (injected PK default) |
-| `RanjId` | `UUID` (opt-in via `#[model(pk = "ranjid")]`) |
+| `RanjId` | `UUID` (opt-in via `#[model(pk = RanjId)]`) |
 | `Option<T>` | nullable wrapper around T's SQL type |
 
 `ForeignKey<T>` and typed `Jsonb<T>` are not yet shipped — see the [Relations spec](./relations.md) and [JSONB spec](./jsonb.md) for their planned design.

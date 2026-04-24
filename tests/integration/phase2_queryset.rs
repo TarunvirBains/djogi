@@ -4,7 +4,9 @@ use djogi::prelude::*;
 
 // Separate table name (`posts_p2`) so this integration test can share a DB
 // with `phase1_model.rs` without DDL collisions.
-#[model(table = "posts_p2")]
+// Phase 7-Zero-2 T2 default flip — pin ascending HeerId so existing
+// HeerId-typed construction and assertions keep working.
+#[model(table = "posts_p2", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Post {
     pub title: String,

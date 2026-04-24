@@ -45,7 +45,10 @@ use djogi::prelude::*;
 // `Owner` is the FK target for the non-null relation on `Vehicle`. Default-
 // derived so `Owner::create(ctx, Owner { name, ..Default::default() })`
 // stays ergonomic — matches the Phase 1/2 test-model shape.
-#[model(table = "owners_p3")]
+// Phase 7-Zero-2 T2 default flip — pin ascending HeerId; the seed helpers
+// and FK targets below assume `Owner::Pk` / `FuelType::Pk` / `Vehicle::Pk`
+// are all ordinary `HeerId`.
+#[model(table = "owners_p3", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Owner {
     pub name: String,
@@ -53,7 +56,7 @@ pub struct Owner {
 
 // `FuelType` is the FK target for the nullable relation on `Vehicle`.
 // Same Default-derived shape as `Owner` so the seed helpers stay parallel.
-#[model(table = "fuel_types_p3")]
+#[model(table = "fuel_types_p3", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct FuelType {
     pub name: String,
@@ -65,7 +68,7 @@ pub struct FuelType {
 // compile-pass fixture in `djogi-macros/tests/compile_pass/phase3_relations.rs`
 // for the same rationale). Tests construct `Vehicle` with explicit
 // framework-field sentinels via `vehicle_for_insert` below.
-#[model(table = "vehicles_p3", no_default)]
+#[model(table = "vehicles_p3", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     pub make: String,

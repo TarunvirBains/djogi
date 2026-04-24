@@ -8,8 +8,8 @@
 //! return [`OuterRef<Self, V>`](::djogi::expr::OuterRef) for every column,
 //! framework and user alike. The emission order mirrors [`stubs`]:
 //!
-//! 1. `id` — present for `pk = heerid | ranjid | serial`; omitted for
-//!    `pk = "none"`.
+//! 1. `id` — present for `pk = HeerId | RanjId | HeerIdDesc | RanjIdDesc |
+//!    Serial`; omitted for `pk = None`.
 //! 2. `created_at`, `updated_at` — always emitted.
 //! 3. User-declared columns in struct source order.
 //!
@@ -43,7 +43,7 @@
 //! have no such carrier — they reference the enclosing scope, which is
 //! a compile-time concept, not a runtime value.
 //!
-//! # `pk = "none"`
+//! # `pk = None`
 //!
 //! Same gate as [`crate::model::stubs`] / [`crate::model::crud`]: models
 //! that opt out of a PK do not get `impl Model`, so `OuterRef<M, V>`
@@ -68,15 +68,15 @@ use syn::ItemStruct;
 /// has the framework-injected columns (`id` / `created_at` /
 /// `updated_at`) at the front in the same order `descriptor::expand`
 /// and `stubs::expand` rely on. The `model_attrs` are consulted solely
-/// to gate the emission on `pk = "none"`; user-column types otherwise
+/// to gate the emission on `pk = None`; user-column types otherwise
 /// come from the struct verbatim.
 pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {
     let name = &struct_item.ident;
     let outer_name = format_ident!("{}OuterRef", name);
 
-    // Mirror `stubs::expand`: `pk = "none"` keeps the Phase-1 empty-stub
+    // Mirror `stubs::expand`: `pk = None` keeps the Phase-1 empty-stub
     // behaviour because `OuterRef<M, V>` requires `M: Model`, and
-    // `crud::expand` does not emit `impl Model` for `pk = "none"`
+    // `crud::expand` does not emit `impl Model` for `pk = None`
     // models. A later phase that introduces a user-managed / composite
     // PK trait can lift this gate without touching the per-column
     // emission below.

@@ -1232,7 +1232,7 @@ mod tests {
 /// `descriptor.fields` as the single schema source and never
 /// synthesize framework columns out-of-band.
 ///
-/// Field order: `id` (omitted for `pk = "none"`), then `created_at`,
+/// Field order: `id` (omitted for `pk = None`), then `created_at`,
 /// then `updated_at`, then user fields in source order.
 #[derive(Debug, Clone)]
 pub struct FieldDescriptor {
@@ -1325,7 +1325,9 @@ pub struct CustomPrimaryKeyKind {
 /// Primary key strategy.
 ///
 /// The six leaf variants (`HeerId`, `RanjId`, `HeerIdDesc`, `RanjIdDesc`,
-/// `Serial`, `None`) map 1:1 to the `#[model(pk = "...")]` attribute values.
+/// `Serial`, `None`) map 1:1 to the `#[model(pk = X)]` attribute identifiers
+/// (`HeerId`, `RanjId`, `HeerIdRecencyBiased` | `HeerIdDesc`,
+/// `RanjIdRecencyBiased` | `RanjIdDesc`, `Serial`, `None`).
 /// `Composite` is emitted for models that declare multiple PK columns —
 /// rare, mostly join tables — and carries the ordered list of column names.
 /// `Custom` is emitted for adopter-declared PK types registered through
@@ -1535,7 +1537,7 @@ impl ModelDescriptor {
     ///
     /// Returns `Some("id")` for the five standard PK types (`HeerId`,
     /// `RanjId`, `HeerIdDesc`, `RanjIdDesc`, `Serial`) and `None` for
-    /// `pk = "none"` models. `Composite` PKs are uncommon; this method
+    /// `pk = None` models. `Composite` PKs are uncommon; this method
     /// returns the first column in the composite list on the assumption
     /// that it is the most natural tiebreak candidate.
     ///

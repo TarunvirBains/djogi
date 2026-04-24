@@ -79,9 +79,9 @@
 //!   into the returned future, so no clone-capture is needed. `Model: Send
 //!   + Sync` → `&Self: Send`, which keeps the returned future Send-bound.
 //!
-//! # `pk = "none"` special case
+//! # `pk = None` special case
 //!
-//! Models with `#[model(pk = "none")]` have no framework-injected `id` field
+//! Models with `#[model(pk = None)]` have no framework-injected `id` field
 //! and declare their own primary key (possibly composite). Phase 1 does NOT
 //! emit `impl Model for T` for these — the `Model` trait's `type Pk` requires
 //! `postgres_types::ToSql`, which `()` does not implement, and choosing
@@ -113,7 +113,7 @@ pub fn expand(
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
 ) -> TokenStream {
-    // pk = "none" skips Model impl in Phase 1 — Task 8 adds a composite-PK-
+    // pk = None skips Model impl in Phase 1 — Task 8 adds a composite-PK-
     // aware version. The other macro outputs (struct, Default, FromRow,
     // descriptor, Fields/Filter stubs) are still emitted by other modules.
     if matches!(model_attrs.pk, PkStrategy::None) {
@@ -167,7 +167,7 @@ pub fn expand(
 
     // -------------------------------------------------------------------------
     // Associated Pk type and pk_value() body — vary by PK strategy.
-    // (pk = "none" is handled by the early return above.)
+    // (pk = None is handled by the early return above.)
     // -------------------------------------------------------------------------
     let (pk_type_tokens, pk_value_body) = match model_attrs.pk {
         PkStrategy::HeerId => (quote! { ::djogi::types::HeerId }, quote! { &self.id }),

@@ -7,7 +7,12 @@ use serde::{Deserialize, Serialize};
 // Test models — HeerId (default PK)
 // ---------------------------------------------------------------------------
 
-#[model(table = "posts")]
+// Phase 7-Zero-2 T2 flipped the default `pk` to `HeerIdRecencyBiased`
+// (internal `HeerIdDesc`). This test exercises the ascending-HeerId path
+// explicitly — it asserts `PkType::HeerId`, `id sql_type == BigInt`, and
+// `row.id.as_i64() > 0`. Pin the declaration so the flip doesn't silently
+// change what the test exercises.
+#[model(table = "posts", pk = HeerId)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Post {
     pub title: String,
@@ -243,7 +248,7 @@ async fn refresh_from_db_returns_current_state(mut ctx: djogi::DjogiContext) {
 // Serial PK model (Task 8)
 // ---------------------------------------------------------------------------
 
-#[model(table = "tags", pk = "serial")]
+#[model(table = "tags", pk = Serial)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tag {
     pub name: String,
@@ -293,7 +298,7 @@ async fn serial_pk_create_and_get(mut ctx: djogi::DjogiContext) {
 // RanjId PK model (Task 8)
 // ---------------------------------------------------------------------------
 
-#[model(table = "events", pk = "ranjid")]
+#[model(table = "events", pk = RanjId)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub kind: String,
@@ -589,7 +594,7 @@ use rust_decimal::Decimal;
 
 // `no_default` suppresses the generated `Default` impl because `time::Date`
 // does not implement `Default`. The test uses explicit field initialisation.
-#[model(table = "products", no_default)]
+#[model(table = "products", pk = HeerId, no_default)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct Product {
     pub name: String,
