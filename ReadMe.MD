@@ -16,7 +16,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 **Public framework rule:** Djogi may be informed by demanding real-world applications, but this repository documents requirements only in product-agnostic systems language. Domain workflows, business policy, and app-specific integrations belong in application crates or separate companion crates, not in Djogi core.
 
-**Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via `generate_id()` (HeeRanjId), advisory locks for migration safety, `RETURNING` clauses, row locks, rich indexing options, strong constraint semantics, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
+**Postgres only.** Djogi targets PostgreSQL exclusively. This is not a temporary limitation — it is a permanent design decision. Postgres provides the features Djogi's derivation chain depends on: `JSONB` with path operators for typed schema fields, database-native ID generation via HeeRanjId (`generate_id()`, `heerid_next_desc()`, and siblings), advisory locks for migration safety, `RETURNING` clauses, row locks, rich indexing options, strong constraint semantics, and transactional DDL. Abstracting over multiple databases would mean giving up these capabilities or reimplementing them poorly. Every query Djogi generates, every migration it emits, every `Jsonb<T>` filter it compiles targets Postgres directly — no lowest-common-denominator SQL.
 
 ## Status
 
@@ -48,7 +48,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 |---|---|---|
 | HTTP routing, middleware, request/response | Your Rust web framework of choice | Djogi does not own the request lifecycle. Integrations are adapters; Axum is the best-covered example today, and other frameworks are wired through adapters or manually. |
 | DB driver, connection pooling, row mapping | `tokio-postgres` + `deadpool-postgres` + `postgres-types` | Djogi wraps the driver into a typed ORM layer (`Model`, `QuerySet`, `FromPgRow`, `ConditionBuilder`) but never hides it — `ctx.raw_execute` / `ctx.raw_scalar` escape hatches remain available |
-| ID generation | HeeRanjId | Calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()` — owns nothing else |
+| ID generation | HeeRanjId | Calls the HeeRanjId generator family (`generate_id()`, `generate_ids(n)`, `heerid_next_desc()`, `generate_ids_desc(n)`, `generate_ranjid()`, `generate_ranjids_desc(n)`) and owns nothing else |
 | Async runtime | Tokio | Uses it; does not configure it |
 | Model ↔ DB mapping | **Djogi** | Proc macro, field types, QuerySet, relations |
 | Migrations | **Djogi** | Differ, generation, snapshot management |
@@ -63,7 +63,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 |---|---|---|
 | `axum` | HTTP layer, routing, middleware | Opt-in via the `axum` feature flag; the best-covered framework integration today. Not a core dependency — Djogi's core runs without it. Other web frameworks integrate through their own per-framework feature flags or manual wiring. |
 | `tokio-postgres` + `deadpool-postgres` + `postgres-types` | Async Postgres driver + connection pool + type codecs | Postgres 18+ only |
-| `heeranjid` (postgres feature) | Distributed IDs + schema bootstrap | `HeerId` / `RanjId` codecs + `install_schema` / `seed_default_node` helpers |
+| `heeranjid` (postgres feature) | Distributed IDs + schema bootstrap | `HeerId` / `RanjId` codecs, the underlying desc variants used by Djogi's recency-biased PK surface, plus `install_schema` / `seed_default_node` helpers |
 | `tokio` | Async runtime | Standard |
 | `serde` / `serde_json` | Serialization | Model ↔ JSON for shell and API |
 | `rhai` | Embedded scripting shell | Rust-adjacent syntax, sandboxable |
@@ -72,7 +72,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 | `inventory` | Compile-time app/model registration | Cross-crate model discovery |
 | `syn` + `quote` + `proc-macro2` | Proc macro infrastructure | Powers `#[derive(Model)]` |
 | `time` | Datetime field types | Preferred over chrono — cleaner API, no CVE history |
-| `heeranjid` | Primary key generation | External crate — HeerId (64-bit) and RanjId (128-bit UUIDv8) time-ordered IDs |
+| `heeranjid` | Primary key generation | External crate — Djogi builds its public PK surface (`HeerIdRecencyBiased` default, `HeerId`, `RanjId`, `RanjIdRecencyBiased`) on top of HeeRanjId |
 
 **Explicitly excluded:** SeaORM/SeaQuery, Diesel, `chrono`, random UUID (v4) as default PK.
 
@@ -134,7 +134,7 @@ The full framework specification lives in [`docs/spec/`](./docs/spec/index.md):
 | [Query API](./docs/spec/queries.md) | QuerySet, conditions, programmatic filters, ConditionBuilder |
 | [JSONB Schema Fields](./docs/spec/jsonb.md) | `Jsonb<T>`, unknown field preservation, validation, subfield queries |
 | [Relations](./docs/spec/relations.md) | ForeignKey, ManyToMany, explicit through models |
-| [Primary Keys](./docs/spec/primary-keys.md) | HeeRanjId: HeerId (64-bit), RanjId (128-bit UUIDv8), generation patterns |
+| [Primary Keys](./docs/spec/primary-keys.md) | Djogi PK surface: `HeerIdRecencyBiased` default, ascending `HeerId`, `RanjId`, `RanjIdRecencyBiased`, generation patterns |
 | [Migrations](./docs/spec/migrations.md) | Build-time drift detection, schema snapshots, differ |
 | [Logging](./docs/spec/logging.md) | Three-database architecture, CRUD audit trail, event tracing |
 | [Configuration & CLI](./docs/spec/configuration.md) | `Djogi.toml`, `cargo djogi`, app registration, and web framework integration (`axum` shown as the concrete example) |

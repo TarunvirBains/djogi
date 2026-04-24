@@ -175,9 +175,18 @@ The warning is a rescue only. It fires on the table's current size, not its proj
 
 #### 8. Descending-sort PK types (§4.1)
 
-`pk = "heerid_desc"` and `pk = "ranjid_desc"` are alternatives to a reverse secondary index for workloads dominated by descending-chronological scans ("latest N", keyset pagination newest-first, "recent activity" lists).
+`pk = HeerIdRecencyBiased` and `pk = RanjIdRecencyBiased` are
+alternatives to a reverse secondary index for workloads dominated by
+descending-chronological scans ("latest N", keyset pagination
+newest-first, "recent activity" lists). Internally this still lowers to
+the HeeRanjId desc variants.
 
-**What the XOR flip does, conceptually.** A HeerId or RanjId encodes a timestamp in its high bits. A plain BTree index on the column scans oldest-first. The `_desc` variants XOR the identifier bits before storage so the same BTree index scans newest-first — no secondary index, no reverse-order plan step, no extra write amplification.
+**What the XOR flip does, conceptually.** A HeerId or RanjId encodes a
+timestamp in its high bits. A plain BTree index on the column scans
+oldest-first. The underlying desc variants XOR the identifier bits
+before storage so the same BTree index scans newest-first — no
+secondary index, no reverse-order plan step, no extra write
+amplification.
 
 **One-question decision rule:**
 
@@ -185,14 +194,14 @@ The warning is a rescue only. It fires on the table's current size, not its proj
 >
 > **Yes** (forward timelines, oldest-to-newest audits, chronological exports) → use the ascending PK plus a reverse secondary index.
 >
-> **No** (newest-first feeds, latest-N dashboards, keyset pagination of "recent X") → use `pk = "heerid_desc"` / `"ranjid_desc"`.
+> **No** (newest-first feeds, latest-N dashboards, keyset pagination of "recent X") → use `pk = HeerIdRecencyBiased` / `RanjIdRecencyBiased`.
 
 **When to pick which:**
 
 | Workload | Choice |
 |----------|--------|
-| Activity feeds, "recent orders", dashboards | `heerid_desc` / `ranjid_desc` |
-| Audit timeline, seeded integration tests, time-range exports | default `heerid` / `ranjid` + reverse secondary index on the occasional descending query |
+| Activity feeds, "recent orders", dashboards | `HeerIdRecencyBiased` / `RanjIdRecencyBiased` |
+| Audit timeline, seeded integration tests, time-range exports | explicit ascending `HeerId` / `RanjId` + reverse secondary index on the occasional descending query |
 | Mixed read patterns (forward and reverse equally hot) | default PK + secondary index — avoid the migration cost below |
 
 **Migration has a point of no return.** Flipping a table from ascending to descending (or back) is supported by Phase 7's `SchemaDelta::Classification::PkTypeFlip` path, but it rewrites every row, cascades to every FK that references the PK, and must run as a coordinated cutover — every child table with a `ForeignKey<Parent>` to the migrating PK migrates in the same Phase 7 migration, not a later follow-up. There is no per-row backfill window. Plan the flip for a maintenance slot and own the choice up front; the default is more often the right answer than first-time adopters expect.
@@ -276,6 +285,6 @@ IndexTarget::Columns(&[
 
 - [Models](./models.md) §4.5 — field-level `#[field(index)]` / `#[field(unique)]`.
 - [Migrations](./migrations.md) — the Phase 7 differ's consumption of `IndexSpec`, the apply-time advisory warning, and the non-transactional migration rule for `concurrently = true`.
-- [Primary Keys](./primary-keys.md) — HeerId / RanjId / HeerIdDesc / RanjIdDesc semantics.
+- [Primary Keys](./primary-keys.md) — public `HeerIdRecencyBiased` / `RanjIdRecencyBiased` naming, plus the underlying `HeerIdDesc` / `RanjIdDesc` migration semantics.
 - [Decisions](./decisions.md) — rows for concurrent index creation, unique-constraint default, column ordering, per-column spec, predicate validation.
 - `docs/superpowers/plans/2026-04-22-phase7-zero-indexing-v3.md` §§4–6 — the frozen contract, grammar, lowering rules, and apply-time advisory-warning specification.
