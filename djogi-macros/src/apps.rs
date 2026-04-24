@@ -358,19 +358,26 @@ pub fn expand(input: TokenStream) -> TokenStream {
 fn expand_inner(input: TokenStream) -> syn::Result<TokenStream> {
     let block: AppsBlock = syn::parse2(input)?;
 
-    // First pass: validate labels + detect duplicate label collisions
-    // within this single invocation so the error lands at
+    // First pass: validate labels + detect duplicate identity-pair
+    // collisions within this single invocation so the error lands at
     // macro-expansion time rather than as a post-link descriptor-set
-    // conflict.
+    // conflict. Identity is `(database, label)` — two apps with the
+    // same label in *different* databases are legitimate (they map
+    // to separate `<database>/<label>/` migration directories per
+    // `docs/spec/apps-and-database-domains.md`).
     let mut resolved: Vec<(AppDecl, String)> = Vec::with_capacity(block.decls.len());
     for decl in block.decls {
         let label = derive_label(&decl)?;
-        if let Some((prior, _)) = resolved.iter().find(|(_, l)| l == &label) {
+        if let Some((prior, _)) = resolved
+            .iter()
+            .find(|(prior, l)| l == &label && prior.database == decl.database)
+        {
             return Err(syn::Error::new(
                 decl.ident_span,
                 format!(
-                    "duplicate app label {label:?} — also declared by \
-                     `{prior_ident}` in the same `djogi::apps!` block",
+                    "duplicate app identity (database = {database:?}, label = {label:?}) \
+                     — also declared by `{prior_ident}` in the same `djogi::apps!` block",
+                    database = decl.database,
                     prior_ident = prior.ident,
                 ),
             ));
