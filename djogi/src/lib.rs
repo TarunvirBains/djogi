@@ -127,7 +127,7 @@ pub mod __private {
     pub use tracing;
 }
 
-pub use apps::{App, AppDescriptor, AppRegistry};
+pub use apps::{App, AppDescriptor, AppDiagnostic, AppRegistry, CrossAppEdge};
 pub use context::DjogiContext;
 pub use descriptor::{
     EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind,
@@ -168,7 +168,7 @@ pub use types::{Date, DateTime, HeerId, HeerIdDesc, RanjId, RanjIdDesc};
 pub use visage::VisageError;
 
 pub mod prelude {
-    pub use crate::apps::{App, AppDescriptor, AppRegistry};
+    pub use crate::apps::{App, AppDescriptor, AppDiagnostic, AppRegistry, CrossAppEdge};
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
         EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec,

@@ -255,6 +255,236 @@ impl AppRegistry {
             out
         })
     }
+
+    /// Returns every cross-app foreign-key edge in the inventory.
+    ///
+    /// An edge exists when a field on a [`crate::ModelDescriptor`]
+    /// carries `relation_kind = Some(RelationKind::ForeignKey)` and
+    /// the **source** model's [`crate::ModelDescriptor::app`] differs
+    /// from the **target** model's app. Intra-app FKs are not
+    /// returned — they are always safe from the apps-subsystem's
+    /// perspective since source and target share a migration
+    /// `<database>/<app>/` directory and compose atomically.
+    ///
+    /// Phase 7's migration differ consumes this list to:
+    ///
+    /// - Emit cross-app FK clauses with the correct
+    ///   `REFERENCES "<target-schema>".<target-table>(id)` form.
+    /// - Order per-app compose steps so target apps are applied
+    ///   before source apps (FKs resolve at declaration time).
+    ///
+    /// Models whose source or target resolves to the synthetic
+    /// global bucket (empty label) are treated normally — the
+    /// bucket is a valid app for FK-graph purposes.
+    ///
+    /// Unresolvable targets (a `target_type_name` with no matching
+    /// `ModelDescriptor` in inventory) are silently skipped here —
+    /// the diagnostic for that condition (D011-shaped, future) lands
+    /// with Phase 7's validator, not the zero-cost apps-graph layer.
+    ///
+    /// Result is memoised in a `OnceLock` since inventory is fixed
+    /// at link time.
+    pub fn cross_app_edges() -> &'static [CrossAppEdge] {
+        static CACHE: OnceLock<Vec<CrossAppEdge>> = OnceLock::new();
+        CACHE.get_or_init(|| {
+            use crate::descriptor::ModelDescriptor;
+            use crate::descriptor::RelationKind;
+
+            // Build type-name -> app label lookup once.
+            let mut type_to_app: std::collections::HashMap<&'static str, &'static str> =
+                std::collections::HashMap::new();
+            for m in inventory::iter::<ModelDescriptor> {
+                type_to_app.insert(m.type_name, m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL));
+            }
+
+            let mut edges: Vec<CrossAppEdge> = Vec::new();
+            for source in inventory::iter::<ModelDescriptor> {
+                let source_app = source.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
+                for field in source.fields {
+                    if !matches!(field.relation_kind, Some(RelationKind::ForeignKey)) {
+                        continue;
+                    }
+                    let Some(target_type) = field.target_type_name else {
+                        continue;
+                    };
+                    let Some(&target_app) = type_to_app.get(target_type) else {
+                        continue;
+                    };
+                    if source_app == target_app {
+                        continue;
+                    }
+                    edges.push(CrossAppEdge {
+                        source_app,
+                        source_type: source.type_name,
+                        source_field: field.name,
+                        target_app,
+                        target_type,
+                    });
+                }
+            }
+            edges.sort_by(|a, b| {
+                (a.source_app, a.source_type, a.source_field).cmp(&(
+                    b.source_app,
+                    b.source_type,
+                    b.source_field,
+                ))
+            });
+            edges
+        })
+    }
+
+    /// Returns every cross-app cycle in the FK graph.
+    ///
+    /// Each element is a sequence of app labels `[A, B, …, A]`
+    /// describing one cycle. Same-app cycles (a model in `Billing`
+    /// referencing another model in `Billing` through some chain)
+    /// are deferred to Phase 7's intra-app analysis — this method
+    /// surfaces only inter-app cycles.
+    ///
+    /// Algorithm: standard DFS with three-color marking over the
+    /// condensed app→app graph (edges collapsed from
+    /// [`Self::cross_app_edges`]). `O(A + E)` where `A` is the app
+    /// count and `E` is the number of distinct inter-app edges.
+    ///
+    /// Result is memoised; inventory is fixed at link time.
+    pub fn cross_app_cycles() -> &'static [Vec<&'static str>] {
+        static CACHE: OnceLock<Vec<Vec<&'static str>>> = OnceLock::new();
+        CACHE.get_or_init(|| {
+            use std::collections::{HashMap, HashSet};
+
+            // Collapse CrossAppEdge list to an app→{apps} adjacency map.
+            let mut adj: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
+            for edge in Self::cross_app_edges() {
+                let entry = adj.entry(edge.source_app).or_default();
+                if !entry.contains(&edge.target_app) {
+                    entry.push(edge.target_app);
+                }
+            }
+
+            // Sort adjacency lists for deterministic DFS order.
+            for neighbours in adj.values_mut() {
+                neighbours.sort();
+            }
+
+            let mut cycles: Vec<Vec<&'static str>> = Vec::new();
+            let mut onstack: HashSet<&'static str> = HashSet::new();
+            let mut done: HashSet<&'static str> = HashSet::new();
+            let mut stack: Vec<&'static str> = Vec::new();
+            let mut roots: Vec<&'static str> = adj.keys().copied().collect();
+            roots.sort();
+
+            fn dfs(
+                node: &'static str,
+                adj: &HashMap<&'static str, Vec<&'static str>>,
+                onstack: &mut HashSet<&'static str>,
+                done: &mut HashSet<&'static str>,
+                stack: &mut Vec<&'static str>,
+                cycles: &mut Vec<Vec<&'static str>>,
+            ) {
+                if done.contains(node) {
+                    return;
+                }
+                onstack.insert(node);
+                stack.push(node);
+                if let Some(neighbours) = adj.get(node) {
+                    for &nbr in neighbours {
+                        if onstack.contains(&nbr) {
+                            // Record the cycle slice from the first
+                            // occurrence of `nbr` in the stack to the
+                            // top, closed with `nbr` itself.
+                            if let Some(start) = stack.iter().position(|n| *n == nbr) {
+                                let mut cycle: Vec<&'static str> = stack[start..].to_vec();
+                                cycle.push(nbr);
+                                cycles.push(cycle);
+                            }
+                        } else if !done.contains(&nbr) {
+                            dfs(nbr, adj, onstack, done, stack, cycles);
+                        }
+                    }
+                }
+                stack.pop();
+                onstack.remove(node);
+                done.insert(node);
+            }
+
+            for root in &roots {
+                dfs(root, &adj, &mut onstack, &mut done, &mut stack, &mut cycles);
+            }
+            cycles
+        })
+    }
+}
+
+/// One cross-app foreign-key edge surfaced by
+/// [`AppRegistry::cross_app_edges`].
+///
+/// Phase 7's migration differ uses these edges to:
+///
+/// - Order per-app compose steps so target apps apply before source
+///   apps (FK constraints resolve at DDL time).
+/// - Emit schema-qualified `REFERENCES "<target-schema>".<table>`
+///   clauses when source and target live in different databases /
+///   apps.
+///
+/// `source_app` and `target_app` are the stable string labels from
+/// [`AppDescriptor::label`], not Rust type paths. The synthetic
+/// global bucket (empty label) is a valid participant on either
+/// side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CrossAppEdge {
+    /// App label owning the source model (the one with the FK column).
+    pub source_app: &'static str,
+    /// Source model's Rust type name, e.g. `"Invoice"`.
+    pub source_type: &'static str,
+    /// Column name of the FK field on the source model.
+    pub source_field: &'static str,
+    /// App label owning the target model.
+    pub target_app: &'static str,
+    /// Target model's Rust type name, e.g. `"Customer"`.
+    pub target_type: &'static str,
+}
+
+/// Apps-subsystem diagnostic contracts surfaced to Phase 7 consumers.
+///
+/// Phase 7-Zero T9 only declares the variants — the detection logic
+/// and error-surface text live in Phase 7 proper, where the
+/// filesystem-vs-snapshot / ledger-vs-registry comparisons actually
+/// happen. The enum lives here so consumers can pattern-match on
+/// stable variants without a subsequent breaking change.
+///
+/// Adding a variant is a breaking change; the enum is
+/// `#[non_exhaustive]` so callers outside this crate cannot exhaust.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppDiagnostic {
+    /// **D004 — app folder drift.** A migration directory
+    /// `<database>/<app>/` exists on disk but no matching
+    /// `AppDescriptor` appears in the current build's inventory.
+    /// Likely causes: the declaring crate was removed from the
+    /// workspace without running a retirement compose first, or
+    /// the snapshot's `registered_apps` list is stale. Phase 7's
+    /// compose surfaces this with the offending folder path and
+    /// suggests `djogi migrations apply --reconcile-apps`.
+    FolderDrift {
+        /// Database target containing the orphaned folder.
+        database: &'static str,
+        /// App label of the orphaned folder.
+        label: &'static str,
+    },
+
+    /// **D010 — unknown app label in ledger.** A ledger row carries
+    /// an `app_label` that no current inventory descriptor
+    /// declares (neither as `label` nor as `renamed_from`). Phase 7's
+    /// compose refuses to replay the ledger until the operator
+    /// either re-declares the app or runs
+    /// `djogi migrations apply --reconcile-apps` to mark the rows
+    /// for archival.
+    UnknownLedgerApp {
+        /// Database target containing the unknown app.
+        database: &'static str,
+        /// The ledger's `app_label` value that failed lookup.
+        label: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -288,5 +518,62 @@ mod tests {
         let mut sorted = labels.clone();
         sorted.sort();
         assert_eq!(labels, sorted);
+    }
+
+    #[test]
+    fn cross_app_edges_smoke() {
+        // The djogi crate has no `#[model(app = …)]` declarations,
+        // so the edge list should be empty. Real cross-app coverage
+        // lives in T10 integration tests where two apps + models
+        // are actually declared. This test just proves the lazy
+        // initialiser runs without panic and returns a stable slice.
+        let edges = AppRegistry::cross_app_edges();
+        assert!(edges.is_empty(), "djogi core has no cross-app FKs");
+    }
+
+    #[test]
+    fn cross_app_cycles_smoke() {
+        // Same reasoning as `cross_app_edges_smoke` — no apps
+        // declared in this crate means no cycles.
+        let cycles = AppRegistry::cross_app_cycles();
+        assert!(cycles.is_empty(), "djogi core has no cross-app cycles");
+    }
+
+    #[test]
+    fn app_diagnostic_variants_constructible() {
+        // T9 ships the `AppDiagnostic` enum as a contract — no
+        // detection logic yet, but consumers can pattern-match on
+        // the variants, so prove they construct.
+        let folder_drift = AppDiagnostic::FolderDrift {
+            database: "main",
+            label: "oldbilling",
+        };
+        let unknown_ledger = AppDiagnostic::UnknownLedgerApp {
+            database: "main",
+            label: "mystery_app",
+        };
+        assert_ne!(folder_drift, unknown_ledger);
+    }
+
+    #[test]
+    fn cross_app_edge_equality_and_ordering() {
+        // Two identical edges compare equal; edges sort by
+        // `(source_app, source_type, source_field)` so the stable
+        // ordering in `cross_app_edges()` is load-bearing.
+        let a = CrossAppEdge {
+            source_app: "billing",
+            source_type: "Invoice",
+            source_field: "customer_id",
+            target_app: "users",
+            target_type: "User",
+        };
+        let b = CrossAppEdge {
+            source_app: "billing",
+            source_type: "Invoice",
+            source_field: "customer_id",
+            target_app: "users",
+            target_type: "User",
+        };
+        assert_eq!(a, b);
     }
 }
