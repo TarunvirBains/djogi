@@ -57,6 +57,7 @@ pub mod jsonb;
 pub mod model;
 pub mod outbox;
 pub mod pg;
+pub mod primary_key;
 pub mod query;
 pub mod relation;
 pub mod testing;
@@ -144,6 +145,7 @@ pub use djogi_macros::{
 pub use geo::GeoPoint;
 pub use jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
 pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
+pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
 // *runtime helper* it calls (`::djogi::testing::setup_test_db`) is gated on
@@ -164,7 +166,10 @@ pub use relation::{
     OneToOneFieldResolved, PrefetchedRow,
 };
 pub use tracked::Tracked;
-pub use types::{Date, DateTime, HeerId, HeerIdDesc, RanjId, RanjIdDesc};
+pub use types::{
+    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+    RanjIdRecencyBiased,
+};
 pub use visage::VisageError;
 
 pub mod prelude {
@@ -201,12 +206,16 @@ pub mod prelude {
     // five belong in the prelude because a model defining any relation
     // needs the unresolved wrapper, and any handler consuming a
     // prefetched row needs the resolved wrapper.
+    pub use crate::primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
     pub use crate::relation::{
         ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
         OneToOneFieldResolved, PrefetchedRow,
     };
     pub use crate::tracked::Tracked;
-    pub use crate::types::{Date, DateTime, HeerId, HeerIdDesc, RanjId, RanjIdDesc};
+    pub use crate::types::{
+        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+        RanjIdRecencyBiased,
+    };
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.
     pub use djogi_macros::model;

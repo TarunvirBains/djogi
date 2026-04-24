@@ -144,7 +144,7 @@ async fn setup_phase4(ctx: &mut djogi::DjogiContext) {
 
 fn entry_for_insert(memo: &str, ledger: &Ledger) -> Entry {
     Entry {
-        id: ::djogi::types::__heerid_default(),
+        id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
         created_at: ::djogi::types::DateTime::UNIX_EPOCH,
         updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
         ledger_id: ForeignKey::new(ledger.id),

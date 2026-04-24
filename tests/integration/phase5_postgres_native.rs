@@ -458,7 +458,7 @@ async fn tracked_option_round_trips_null(mut ctx: djogi::DjogiContext) {
 /// them via `RETURNING` on `create()`.
 fn make_vehicle(status: VehicleStatus) -> Vehicle {
     Vehicle {
-        id: djogi::types::__heerid_default(),
+        id: <djogi::types::HeerId as djogi::PrimaryKey>::sentinel(),
         created_at: djogi::DateTime::UNIX_EPOCH,
         updated_at: djogi::DateTime::UNIX_EPOCH,
         status,

@@ -93,7 +93,7 @@ async fn setup_tables(ctx: &mut djogi::DjogiContext) {
 /// implement `Default` — same pattern as Phase 3's `vehicle_for_insert`.
 fn item_for_insert(label: &str, category: &Category, secondary: Option<&Category>) -> Item {
     Item {
-        id: djogi::types::__heerid_default(),
+        id: <djogi::types::HeerId as djogi::PrimaryKey>::sentinel(),
         created_at: djogi::types::DateTime::UNIX_EPOCH,
         updated_at: djogi::types::DateTime::UNIX_EPOCH,
         label: label.into(),

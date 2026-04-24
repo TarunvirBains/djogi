@@ -632,7 +632,7 @@ async fn rich_field_types_roundtrip(mut ctx: djogi::DjogiContext) {
     let product = Product::create(
         &mut ctx,
         Product {
-            id: ::djogi::types::__heerid_default(),
+            id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
             created_at: ::djogi::types::DateTime::UNIX_EPOCH,
             updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
             name: "Djogi Framework".into(),

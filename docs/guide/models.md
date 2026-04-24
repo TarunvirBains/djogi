@@ -135,7 +135,7 @@ Without `no_default`, the macro emits:
 impl Default for Product {
     fn default() -> Self {
         Product {
-            id: djogi::types::__heerid_default(),
+            id: <djogi::types::HeerId as djogi::PrimaryKey>::sentinel(),
             created_at: DateTime::UNIX_EPOCH,
             updated_at: DateTime::UNIX_EPOCH,
             name: Default::default(),         // String: OK

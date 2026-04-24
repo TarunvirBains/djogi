@@ -34,6 +34,10 @@ pub fn expand(
     let type_name = struct_item.ident.to_string();
     let table_name = &model_attrs.table;
 
+    // Exhaustive over `PkStrategy` as of T1. Task 3 adds `PkStrategy::Custom`
+    // and the corresponding `PkType::Custom(CustomPrimaryKeyKind { .. })`
+    // emission; matching here stays compile-checked so that addition is a
+    // single-file change.
     let pk_type_tokens = match model_attrs.pk {
         PkStrategy::HeerId => quote! { ::djogi::PkType::HeerId },
         PkStrategy::RanjId => quote! { ::djogi::PkType::RanjId },

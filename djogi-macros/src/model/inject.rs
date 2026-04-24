@@ -178,9 +178,11 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
 /// Generate `impl Default for <Struct>` with sentinel values for framework fields.
 ///
 /// Sentinel values:
-/// - `HeerId` → `::djogi::types::__heerid_default()` (HeerId(0), always valid)
-/// - `RanjId` → `::djogi::types::__ranjid_default()` (minimum valid RanjId sentinel)
-/// - `i32` (serial) → `0i32`
+/// - `HeerId` / `HeerIdDesc` / `RanjId` / `RanjIdDesc` →
+///   `<T as ::djogi::primary_key::PrimaryKey>::sentinel()` — zero-valued
+///   instance the trait factory produces. Replaces the pre-Phase-7-Zero-2
+///   `::djogi::types::__*_default()` hidden helpers.
+/// - `i32` (serial) → `0i32` (matches `<i32 as PrimaryKey>::sentinel()`)
 /// - `created_at` / `updated_at` → `::djogi::types::DateTime::UNIX_EPOCH`
 /// - User fields → `Default::default()` (user types must implement `Default`)
 ///
@@ -214,11 +216,21 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
         .collect();
 
     let id_part = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { id: ::djogi::types::__heerid_default(), },
-        PkStrategy::RanjId => quote! { id: ::djogi::types::__ranjid_default(), },
-        PkStrategy::HeerIdDesc => quote! { id: ::djogi::types::__heerid_desc_default(), },
-        PkStrategy::RanjIdDesc => quote! { id: ::djogi::types::__ranjid_desc_default(), },
-        PkStrategy::Serial => quote! { id: 0i32, },
+        PkStrategy::HeerId => quote! {
+            id: <::djogi::types::HeerId as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::RanjId => quote! {
+            id: <::djogi::types::RanjId as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::HeerIdDesc => quote! {
+            id: <::djogi::types::HeerIdDesc as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::RanjIdDesc => quote! {
+            id: <::djogi::types::RanjIdDesc as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::Serial => quote! {
+            id: <i32 as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
         PkStrategy::None => quote! {},
     };
 

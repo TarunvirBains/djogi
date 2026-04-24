@@ -146,7 +146,7 @@ async fn seed_fuel_type(ctx: &mut djogi::DjogiContext, name: &str) -> FuelType {
 /// otherwise repeat across every test.
 fn vehicle_for_insert(make: &str, owner: &Owner, fuel: Option<&FuelType>) -> Vehicle {
     Vehicle {
-        id: ::djogi::types::__heerid_default(),
+        id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
         created_at: ::djogi::types::DateTime::UNIX_EPOCH,
         updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
         make: make.into(),
