@@ -39,6 +39,7 @@
 //! canonical types (`DateTime`, `Date`, `HeerId`, `RanjId`), and the
 //! `DjogiError` enum — everything a model definition needs.
 
+pub mod apps;
 pub mod array;
 pub mod auth;
 pub mod config;
@@ -126,6 +127,7 @@ pub mod __private {
     pub use tracing;
 }
 
+pub use apps::{App, AppDescriptor, AppRegistry};
 pub use context::DjogiContext;
 pub use descriptor::{
     EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind,
@@ -136,7 +138,7 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    DjogiEnum, JsonbSchema, many_to_many, reverse_one_to_many, reverse_one_to_one,
+    DjogiEnum, JsonbSchema, apps, many_to_many, reverse_one_to_many, reverse_one_to_one,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
@@ -166,6 +168,7 @@ pub use types::{Date, DateTime, HeerId, HeerIdDesc, RanjId, RanjIdDesc};
 pub use visage::VisageError;
 
 pub mod prelude {
+    pub use crate::apps::{App, AppDescriptor, AppRegistry};
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
         EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec,
@@ -205,6 +208,9 @@ pub mod prelude {
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.
     pub use djogi_macros::model;
+    // Re-export the `djogi::apps!` function-like macro — required to declare
+    // compile-time schema ownership domains (Phase 7-Zero v3 T7).
+    pub use djogi_macros::apps;
     // Re-export the `#[djogi_test]` attribute macro for test functions.
     // The macro generates code that calls `::djogi::testing::setup_test_db`;
     // use only in test binaries.

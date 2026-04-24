@@ -1,0 +1,5 @@
+error: duplicate app label "vehicles" — also declared by `Vehicles` in the same `djogi::apps!` block
+  --> tests/compile_fail/phase7_zero_apps_duplicate_label.rs:11:16
+   |
+11 |     pub struct Cars;
+   |                ^^^^

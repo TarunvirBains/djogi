@@ -14,6 +14,7 @@
 //!
 //! `#[derive(Model)]` is a no-op stub kept for potential future use.
 
+mod apps;
 mod case;
 mod djogi_enum;
 mod ident;
@@ -343,4 +344,63 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
     testing::expand(attr.into(), item.into()).into()
+}
+
+/// Declare the crate's compile-time schema ownership domains.
+///
+/// `djogi::apps!` takes a block of unit-struct declarations, each
+/// carrying an `#[app(...)]` attribute describing the database target
+/// and (optionally) an explicit label:
+///
+/// ```rust,ignore
+/// use djogi::prelude::*;
+///
+/// djogi::apps! {
+///     #[app(database = "main")]
+///     pub struct Vehicles;
+///
+///     #[app(database = "main")]
+///     pub struct Users;
+///
+///     #[app(database = "crud_log", label = "fleet_audit")]
+///     pub struct Audit;
+/// }
+/// ```
+///
+/// For each entry the macro emits:
+///
+/// - the unit struct itself (visibility preserved),
+/// - `impl djogi::apps::App` with const `LABEL`, `DATABASE`, and
+///   `DESCRIPTOR` associated constants,
+/// - a sealed-trait impl that enforces "only this macro creates apps",
+/// - an `inventory::submit!` registering the struct's
+///   [`djogi::AppDescriptor`] for Phase 7's migration differ.
+///
+/// # `#[app(...)]` grammar
+///
+/// | Key | Shape | Meaning |
+/// |-----|-------|---------|
+/// | `database` | `= "main"` (required) | Database-target name this app belongs to. |
+/// | `label` | `= "fleet_vehicles"` (optional) | Override the default label (struct name lowercased). |
+///
+/// # Constraints
+///
+/// - At most one `djogi::apps!` invocation per crate. A second
+///   invocation produces a duplicate-definition error on the hidden
+///   sentinel module the macro emits.
+/// - Every label (whether default-derived or explicit) must satisfy
+///   the Postgres identifier grammar: non-empty, first byte an ASCII
+///   letter or `_`, remaining bytes ASCII alphanumerics or `_`, total
+///   length ≤ 63 bytes. No regex engine — validation uses byte-level
+///   primitives per `CLAUDE.md` + `feedback_no_regex_in_djogi.md`.
+/// - Structs must be unit form (`pub struct Foo;`). Tuple or named
+///   structs are rejected with a span-precise diagnostic.
+///
+/// Phase 7-Zero v3 T7 lands this core infrastructure; T8 extends the
+/// `#[app(...)]` grammar with the lifecycle markers (`renamed_from`,
+/// `tombstone`) and wires `#[model(app = …)]` into
+/// `ModelDescriptor`.
+#[proc_macro]
+pub fn apps(input: TokenStream) -> TokenStream {
+    apps::expand(input.into()).into()
 }

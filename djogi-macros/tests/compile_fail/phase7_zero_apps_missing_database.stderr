@@ -1,0 +1,5 @@
+error: `#[app(...)]` on `Vehicles` is missing the required `database = "…"` key (e.g. `database = "main"`)
+ --> tests/compile_fail/phase7_zero_apps_missing_database.rs:4:5
+  |
+4 |     #[app(label = "vehicles")]
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
