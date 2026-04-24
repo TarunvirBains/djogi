@@ -19,7 +19,7 @@ djogi::apps! {
 }
 
 fn main() {
-    // Const assertions on the per-app sealed trait impls.
+    // Const assertions on the per-app macro-generated App impls.
     const _: &str = <Vehicles as App>::LABEL;
     const _: &str = <Vehicles as App>::DATABASE;
     const _: AppDescriptor = <Vehicles as App>::DESCRIPTOR;

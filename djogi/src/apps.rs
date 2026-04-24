@@ -18,21 +18,22 @@
 //! }
 //! ```
 //!
-//! Each entry expands to a zero-sized unit struct, a sealed
-//! [`App`] impl, and an `inventory::submit!` of the struct's
-//! [`AppDescriptor`]. Phase 7's migration differ iterates the
-//! collected descriptors via [`AppRegistry::all`] to group tables by
-//! `(database_target, app_label)`.
+//! Each entry expands to a zero-sized unit struct, a hidden seal
+//! witness on its [`App`] impl, and an `inventory::submit!` of the
+//! struct's [`AppDescriptor`]. Phase 7's migration differ iterates
+//! the collected descriptors via [`AppRegistry::all`] to group tables
+//! by `(database_target, app_label)`.
 //!
 //! # Sealing
 //!
-//! [`App`] has a `Sealed` supertrait living in a `#[doc(hidden)]`
-//! sub-module. Only code emitted by the [`djogi::apps!`] macro
-//! satisfies the seal; manual `impl djogi::App for MyStruct {}` in
-//! downstream crates fails with the familiar "trait bound not
-//! satisfied: `MyStruct: apps::sealed::Sealed`" error. The seal is a
-//! standard Rust API-stability convention, not a cryptographic
-//! barrier — the same pattern used across the Djogi surface.
+//! [`App`] carries a hidden seal witness whose type has no public
+//! constructor. The [`djogi::apps!`] macro emits that witness for each
+//! declared app; hand-written `impl djogi::App for MyStruct {}` in
+//! downstream crates fail because the hidden witness item is missing.
+//! The older public `apps::sealed::Sealed` convention is gone so
+//! downstream crates cannot satisfy the seal with `impl
+//! djogi::apps::sealed::Sealed for MyStruct {}` or aliases of that
+//! path.
 //!
 //! # Global bucket
 //!
@@ -47,21 +48,30 @@
 
 use std::sync::OnceLock;
 
-/// Sealed marker module — referenced directly by macro-emitted code.
-///
-/// The module is `pub` so the macro's emitted `impl
-/// ::djogi::apps::sealed::Sealed for MyApp` is reachable, but the
-/// whole path is hidden from rustdoc. Downstream crates CAN reach
-/// `Sealed` if they know the path; doing so defeats the seal by
-/// convention, not by enforcement — matching every other sealed
-/// pattern in Djogi.
-#[doc(hidden)]
-pub mod sealed {
-    /// Seal supertrait for [`crate::apps::App`].
-    ///
-    /// Implemented exclusively by the [`djogi::apps!`] proc macro.
-    pub trait Sealed {}
+mod sealed {
+    /// Hidden witness carried by macro-generated [`crate::apps::App`]
+    /// impls. The field stays private so handwritten code cannot
+    /// construct the token accidentally.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct SealToken {
+        _private: (),
+    }
+
+    pub const TOKEN: SealToken = SealToken { _private: () };
 }
+
+/// Hidden seal witness type for [`App`].
+///
+/// This is public only so the proc-macro expansion in downstream
+/// crates can name the type. The sole value lives in
+/// [`__DJOGI_APPS_SEAL_TOKEN`]; the struct has no public constructor.
+#[doc(hidden)]
+pub use sealed::SealToken;
+
+/// Hidden witness value that only macro-generated [`App`] impls are
+/// expected to use.
+#[doc(hidden)]
+pub const __DJOGI_APPS_SEAL_TOKEN: SealToken = sealed::TOKEN;
 
 /// Compile-time schema ownership domain for a set of models.
 ///
@@ -86,7 +96,10 @@ pub mod sealed {
 ///   app's runtime metadata. Phase 7's differ prefers iterating
 ///   [`AppRegistry::all`] but consumers that know a specific app at
 ///   compile time can read the const directly.
-pub trait App: sealed::Sealed {
+pub trait App {
+    /// Hidden seal witness emitted by [`djogi::apps!`].
+    #[doc(hidden)]
+    const __DJOGI_APP_SEAL: SealToken;
     /// Stable string identifier for this app — see [`AppDescriptor::label`].
     const LABEL: &'static str;
     /// Database-target name — see [`AppDescriptor::database`].

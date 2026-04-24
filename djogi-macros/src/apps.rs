@@ -4,15 +4,15 @@
 //!
 //! 1. The unit structs themselves, with every `#[app(...)]` attribute
 //!    stripped (the emitted struct is plain Rust; all app metadata is
-//!    captured in the sealed-trait impl).
-//! 2. One `impl ::djogi::apps::sealed::Sealed for <Struct>` per entry.
-//! 3. One `impl ::djogi::apps::App for <Struct>` per entry, with
+//!    captured in the [`App`] impl).
+//! 2. One `impl ::djogi::apps::App for <Struct>` per entry, carrying
+//!    the hidden seal witness required by `App`, with
 //!    `LABEL` / `DATABASE` / `DESCRIPTOR` associated constants fully
 //!    resolvable at const-eval time.
-//! 4. One `inventory::submit!` of the struct's
+//! 3. One `inventory::submit!` of the struct's
 //!    `::djogi::apps::AppDescriptor` per entry — Phase 7's differ
 //!    iterates these.
-//! 5. A single zero-sized invocation sentinel emitted exactly once
+//! 4. A single zero-sized invocation sentinel emitted exactly once
 //!    per `djogi::apps!` call. Two invocations in the same crate
 //!    collide on the sentinel's name and rustc raises `duplicate
 //!    definition`.
@@ -400,9 +400,9 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
     quote! {
         #vis struct #ident_hidden;
 
-        impl ::djogi::apps::sealed::Sealed for #ident_hidden {}
-
         impl ::djogi::apps::App for #ident_hidden {
+            const __DJOGI_APP_SEAL: ::djogi::apps::SealToken =
+                ::djogi::apps::__DJOGI_APPS_SEAL_TOKEN;
             const LABEL: &'static str = #label_lit;
             const DATABASE: &'static str = #database_lit;
             const DESCRIPTOR: ::djogi::apps::AppDescriptor = ::djogi::apps::AppDescriptor {
