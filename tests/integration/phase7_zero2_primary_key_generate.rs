@@ -1,10 +1,12 @@
 //! Phase 7-Zero-2 T1 live-DB coverage for `PrimaryKeyDbGen`.
 //!
-//! Confirms the single-round-trip contract for `generate_many` and the
-//! ascending-monotonicity guarantee `HeerId` advertises. Uses the
-//! standard `#[djogi::djogi_test]` harness so the test spins up a
-//! throwaway database, runs `install_schema` + `seed_default_node`, and
-//! tears down on completion.
+//! Asserts the functional contract — `generate_many(n)` returns `n`
+//! distinct ids, ascending variants are strictly increasing, desc
+//! variants are strictly decreasing — not the round-trip count (which
+//! can only be measured via `pg_stat_statements` and is out of scope
+//! here). Uses the standard `#[djogi::djogi_test]` harness so each
+//! test spins up a throwaway database, runs `install_schema` +
+//! `seed_default_node`, and tears down on completion.
 
 use djogi::prelude::*;
 use djogi::types::{HeerId, HeerIdDesc, RanjId, RanjIdDesc};
@@ -48,20 +50,48 @@ async fn heerid_desc_generate_many_orders_newest_first(mut ctx: DjogiContext) {
     }
 }
 
+// generate_ranjid() / generate_ranjids() read current_heer_ranj_node_id() — a
+// separate session variable from heer.node_id. The #[djogi_test] bootstrap
+// seeds heer.node_id at the database level but not heer.ranj_node_id, which
+// is what these tests need.
+async fn seed_ranj_node(ctx: &mut DjogiContext) {
+    ctx.raw_execute("SELECT set_heer_ranj_node_id(1)", &[])
+        .await
+        .expect("set_heer_ranj_node_id(1) must succeed");
+}
+
 #[djogi::djogi_test]
-async fn ranjid_generate_many_returns_n(mut ctx: DjogiContext) {
+async fn ranjid_generate_many_returns_n_distinct(mut ctx: DjogiContext) {
+    seed_ranj_node(&mut ctx).await;
     let ids = <RanjId as PrimaryKeyDbGen>::generate_many(&mut ctx, 3)
         .await
         .unwrap();
     assert_eq!(ids.len(), 3);
+    let mut sorted = ids.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        3,
+        "generate_many returned duplicates: {ids:?}"
+    );
 }
 
 #[djogi::djogi_test]
-async fn ranjid_desc_generate_many_returns_n(mut ctx: DjogiContext) {
+async fn ranjid_desc_generate_many_returns_n_distinct(mut ctx: DjogiContext) {
+    seed_ranj_node(&mut ctx).await;
     let ids = <RanjIdDesc as PrimaryKeyDbGen>::generate_many(&mut ctx, 3)
         .await
         .unwrap();
     assert_eq!(ids.len(), 3);
+    let mut sorted = ids.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        3,
+        "generate_many returned duplicates: {ids:?}"
+    );
 }
 
 #[djogi::djogi_test]

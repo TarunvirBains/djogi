@@ -1233,9 +1233,8 @@ pub fn expand(
             /// invalid SQL.
             ///
             /// Callers upserting with pre-allocated primary keys must
-            /// [`HeerId::generate_many(ctx, n)`](::djogi::types::HeerId::generate_many)
-            /// the ids up front — row.id is inserted verbatim, no
-            /// column default fires.
+            /// call `<HeerId as djogi::primary_key::PrimaryKeyDbGen>::generate_many(&mut ctx, n)`
+            /// up front — row.id is inserted verbatim, no column default fires.
             pub async fn bulk_upsert(
                 ctx: &mut ::djogi::context::DjogiContext,
                 rows: ::std::vec::Vec<Self>,
