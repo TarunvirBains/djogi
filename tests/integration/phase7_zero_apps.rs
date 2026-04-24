@@ -27,7 +27,11 @@ djogi::apps! {
     #[app(database = "main", renamed_from = "subscription_old")]
     pub struct Subscription;
 
-    #[app(database = "main", tombstone)]
+    // OldBilling tombstoned on a *different* database to prove that
+    // database-field propagation through AppDescriptor + the
+    // cross-app graph actually uses the declared target (not a
+    // fallback default).
+    #[app(database = "crud_log", tombstone)]
     pub struct OldBilling;
 }
 
@@ -63,14 +67,23 @@ pub struct Sub {
 }
 
 #[test]
-fn registry_has_users_billing_subscription_oldbilling_plus_global() {
+fn registry_has_exact_set_of_apps() {
+    // Each integration-test binary is its own crate, so inventory
+    // is isolated — we can assert the exact (label, database) pairs
+    // in registry order. Sort key is label-first (empty bucket
+    // sorts first), then database as tiebreaker.
     let all = AppRegistry::all();
-    let labels: Vec<&str> = all.iter().map(|d| d.label).collect();
-    assert!(labels.contains(&""), "synthetic global bucket");
-    assert!(labels.contains(&"users"));
-    assert!(labels.contains(&"billing"));
-    assert!(labels.contains(&"subscription"));
-    assert!(labels.contains(&"oldbilling"));
+    let shape: Vec<(&str, &str)> = all.iter().map(|d| (d.label, d.database)).collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("", "main"), // synthetic global
+            ("billing", "main"),
+            ("oldbilling", "crud_log"), // different database than the rest
+            ("subscription", "main"),
+            ("users", "main"),
+        ]
+    );
 }
 
 #[test]
@@ -153,28 +166,31 @@ fn sub_to_user_is_cross_app() {
 
 #[test]
 fn cross_app_edges_carry_database_fields() {
+    // OldBilling lives in `crud_log`, every other T10 app lives in
+    // `main`. The graph has no FK into OldBilling (tombstoned, no
+    // active models), so every cross-app edge is within `main`:
     let edges = AppRegistry::cross_app_edges();
-    // All T10 apps are in the `main` database, so every edge's
-    // source_database and target_database are "main".
+    assert!(!edges.is_empty(), "T10 declares cross-app FKs");
     for edge in edges {
-        if edge.source_app == "billing" || edge.source_app == "subscription" {
-            assert_eq!(edge.source_database, "main", "source_database");
-            assert_eq!(edge.target_database, "main", "target_database");
-        }
+        assert_eq!(edge.source_database, "main", "{edge:?}");
+        assert_eq!(edge.target_database, "main", "{edge:?}");
     }
+    // Sanity-check the lookup can *produce* non-main databases too,
+    // via the registry directly — proves the database field isn't
+    // a default fallback:
+    let old_billing = AppRegistry::all()
+        .iter()
+        .find(|d| d.label == "oldbilling")
+        .expect("OldBilling registered");
+    assert_eq!(old_billing.database, "crud_log");
 }
 
 #[test]
 fn cross_app_cycles_empty_for_acyclic_graph() {
-    // The T10 graph is billing→users, subscription→users — both
-    // point at users, which has no outgoing edges. Acyclic.
-    // (Other test integration files may introduce cycles; we only
-    // assert ours doesn't, not that the global result is empty.)
+    // Each integration-test binary has isolated inventory, so we
+    // can assert the *global* cycle result is empty — the T10
+    // graph is billing→users, subscription→users, both pointing at
+    // Users which has no outgoing edges. Acyclic.
     let cycles = AppRegistry::cross_app_cycles();
-    let has_t10_cycle = cycles.iter().any(|c| {
-        c.iter()
-            .any(|id| id.label == "billing" || id.label == "subscription")
-            && c.iter().any(|id| id.label == "users")
-    });
-    assert!(!has_t10_cycle, "unexpected T10 cycle: {cycles:?}");
+    assert!(cycles.is_empty(), "expected zero cycles; got {cycles:?}");
 }

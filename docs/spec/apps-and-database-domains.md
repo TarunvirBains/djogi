@@ -175,6 +175,8 @@ Both `OneToOne` and `ForeignKey` relation kinds count as edges. Intra-app FKs ar
 
 `AppDiagnostic` carries Phase 7 D004 (folder drift — directory on disk without descriptor) and D010 (ledger has an `app_label` with no descriptor match). Detection logic lives in Phase 7 proper.
 
+**Current limitation — short-name type lookup.** The graph resolves `ForeignKey<T>` / `OneToOneField<T>` targets by looking up `T`'s short Rust identifier (e.g. `"User"`) in `inventory::iter::<ModelDescriptor>`. Two distinct models with the same short name across different modules or crates in the same workspace would collide in the lookup — whichever inserts last wins, and edges can route to the wrong app. The working convention is that model type names are unique across the linked crate graph. A future descriptor-shape change will key lookups on `(module_path, type_name)` to remove the limitation; until then, workspace model names must be globally unique.
+
 ---
 
 ## Migration Grouping
