@@ -168,3 +168,8 @@ harness = true
 name = "phase6_5_spatial_polish"
 path = "../tests/integration/phase6_5_spatial_polish.rs"
 harness = true
+
+[[test]]
+name = "phase7_zero_indexes_live"
+path = "../tests/integration/phase7_zero_indexes_live.rs"
+harness = true
