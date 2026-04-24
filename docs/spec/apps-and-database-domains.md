@@ -91,6 +91,14 @@ The macro emits each entry as a zero-sized unit struct bound to a sealed `djogi:
 
 `database = "..."` is required per app declaration in T7. There is no implicit default — an app without an explicit target is a compile error so tables never silently land in the wrong database. Models that don't opt into an app fall into the synthetic global bucket which targets `main` by default.
 
+### Sealing model — convention at compile time, verified at migration time
+
+The `djogi::App` trait is **convention-sealed**, not hard-sealed. A determined downstream crate that reaches into `#[doc(hidden)] pub` items (`djogi::apps::SealToken`, `djogi::apps::__DJOGI_APPS_SEAL_TOKEN`) can hand-write an `impl djogi::App for MyFake` that compiles. True hard-sealing of a trait whose implementations are emitted by a proc macro is **not achievable in stable Rust** when that proc macro lives in a separate crate (as proc macros must) — every pub path the macro reaches from downstream context is also reachable by handwritten downstream code.
+
+The correctness invariant that actually matters is **not** "downstream cannot construct an `App` impl" but **"a forged `App` impl cannot silently break migrations."** That invariant is enforced at the use site, by Phase 7's migration differ: every `#[model(app = X)]` is cross-checked against `AppRegistry::all()` at `djogi migrate` startup, and any model pointing at an App-implementing type whose `AppDescriptor` is missing from inventory hard-errors before any SQL executes. Forged App impls are legal Rust but inert — they never reach the migration path.
+
+Ecosystem precedent (serde, tokio, axum) confirms this convention: user-facing traits implemented via proc macros in separate crates are convention-sealed + use-site-verified, never hard-sealed.
+
 Models opt in explicitly:
 
 ```rust
