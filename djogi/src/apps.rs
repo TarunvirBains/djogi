@@ -196,20 +196,24 @@ impl AppRegistry {
     /// The synthetic bucket's label is the empty string, which sorts
     /// first.
     ///
-    /// # Label uniqueness enforcement
+    /// # Identity uniqueness enforcement
     ///
-    /// Within a single `djogi::apps!` invocation, duplicate labels are
-    /// a compile error. Across multiple invocations — including
-    /// invocations in different modules of the same crate, and apps
-    /// pulled in from multiple djogi-using library crates — this
-    /// function panics on first call if two descriptors share a
-    /// non-empty label. Catching the collision here rather than at
-    /// compile time is a deliberate trade: the macro is function-like
-    /// and expands at its call site, so crate-global compile-time
-    /// enforcement would require either fragile link-time symbol
-    /// tricks (name pollution) or impossible orphan-rule dances.
-    /// Runtime panic at startup (`AppRegistry::all()` runs before any
-    /// migration work) is loud, early, and informative.
+    /// App identity per the migration contract is the pair
+    /// `(database, label)` — migrations group by
+    /// `<database_target>/<app_label>/` on disk, and two apps with the
+    /// same label but different database targets are legitimate (e.g.
+    /// `main/audit/` and `crud_log/audit/`). Within a single
+    /// `djogi::apps!` invocation, duplicate labels are a compile
+    /// error. Across multiple invocations — different modules of the
+    /// same crate, or apps pulled in from multiple djogi-using
+    /// library crates — this function panics on first call if two
+    /// descriptors share the same `(database, label)` pair. Catching
+    /// the collision here rather than at compile time is a deliberate
+    /// trade: the macro is function-like and expands at its call
+    /// site, so crate-global compile-time enforcement would require
+    /// fragile link-time symbol tricks or impossible orphan-rule
+    /// dances. Runtime panic at startup (`AppRegistry::all()` runs
+    /// before any migration work) is loud, early, and informative.
     ///
     /// The result is computed lazily on first call and memoised in a
     /// `OnceLock`. Inventory is fixed at link time so caching the
@@ -222,18 +226,22 @@ impl AppRegistry {
             for desc in inventory::iter::<AppDescriptor> {
                 out.push(*desc);
             }
-            out.sort_by_key(|d| d.label);
-            // Cross-invocation duplicate-label check. The synthetic
-            // GLOBAL bucket's empty label sorts first and is unique by
-            // construction, so scanning adjacent pairs catches any
-            // user-declared collision.
+            // Sort by label first (user-facing alphabetic ordering)
+            // then by database as tiebreaker so same-label/different-
+            // database pairs land adjacent for duplicate-pair scanning.
+            out.sort_by(|a, b| (a.label, a.database).cmp(&(b.label, b.database)));
             for pair in out.windows(2) {
-                if !pair[0].label.is_empty() && pair[0].label == pair[1].label {
+                if !pair[0].label.is_empty()
+                    && pair[0].label == pair[1].label
+                    && pair[0].database == pair[1].database
+                {
                     panic!(
-                        "djogi::apps: duplicate app label {:?} declared across \
-                         multiple `djogi::apps!` invocations — labels must be \
-                         unique per crate (and across linked djogi-using crates)",
-                        pair[0].label
+                        "djogi::apps: duplicate app identity \
+                         (database = {:?}, label = {:?}) declared across \
+                         multiple `djogi::apps!` invocations — \
+                         (database, label) pairs must be unique per crate \
+                         (and across linked djogi-using crates)",
+                        pair[0].database, pair[0].label,
                     );
                 }
             }
