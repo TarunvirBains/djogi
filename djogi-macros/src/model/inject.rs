@@ -149,13 +149,18 @@ fn reserved_for_pk(model_attrs: &ModelAttrs) -> bool {
 /// error — `djogi` re-exports `HeerId`, `RanjId`, `DateTime`, etc. via its
 /// `types` module, so a single dependency is all the user ever needs.
 fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
-    let id_field: Option<syn::Field> = match model_attrs.pk {
+    let id_field: Option<syn::Field> = match &model_attrs.pk {
         PkStrategy::HeerId => Some(parse_quote! { pub id: ::djogi::types::HeerId }),
         PkStrategy::RanjId => Some(parse_quote! { pub id: ::djogi::types::RanjId }),
         PkStrategy::HeerIdDesc => Some(parse_quote! { pub id: ::djogi::types::HeerIdDesc }),
         PkStrategy::RanjIdDesc => Some(parse_quote! { pub id: ::djogi::types::RanjIdDesc }),
         PkStrategy::Serial => Some(parse_quote! { pub id: i32 }),
         PkStrategy::None => None,
+        // Custom PK: inject the user-provided path verbatim. The macro's
+        // downstream trait impls (`PrimaryKey::sentinel`, `ToSql`/`FromSql`
+        // delegation) are emitted by `djogi::primary_key!` at the path's
+        // definition site.
+        PkStrategy::Custom(path) => Some(parse_quote! { pub id: #path }),
     };
 
     let created_at_field: syn::Field = parse_quote! { pub created_at: ::djogi::types::DateTime };
@@ -215,7 +220,7 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
         })
         .collect();
 
-    let id_part = match model_attrs.pk {
+    let id_part = match &model_attrs.pk {
         PkStrategy::HeerId => quote! {
             id: <::djogi::types::HeerId as ::djogi::primary_key::PrimaryKey>::sentinel(),
         },
@@ -232,6 +237,9 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
             id: <i32 as ::djogi::primary_key::PrimaryKey>::sentinel(),
         },
         PkStrategy::None => quote! {},
+        PkStrategy::Custom(path) => quote! {
+            id: <#path as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
     };
 
     let timestamp_defaults = quote! {

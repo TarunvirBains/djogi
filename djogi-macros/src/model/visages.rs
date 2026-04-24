@@ -45,7 +45,7 @@ pub fn expand(
     // Framework columns are prepended by `inject::expand`; n_framework
     // matches the count pushed there (id gated on `pk != none` + the two
     // timestamp columns).
-    let n_framework = match model_attrs.pk {
+    let n_framework = match &model_attrs.pk {
         PkStrategy::None => 2,
         _ => 3,
     };
@@ -263,7 +263,7 @@ fn emit_projection_for_scope(
 
 fn framework_field_decls(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
     let mut out = Vec::new();
-    match model_attrs.pk {
+    match &model_attrs.pk {
         PkStrategy::HeerId => {
             out.push(quote! { pub id: ::djogi::types::HeerId, });
         }
@@ -280,6 +280,9 @@ fn framework_field_decls(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
             out.push(quote! { pub id: i32, });
         }
         PkStrategy::None => {}
+        PkStrategy::Custom(path) => {
+            out.push(quote! { pub id: #path, });
+        }
     }
     out.push(quote! { pub created_at: ::djogi::types::DateTime, });
     out.push(quote! { pub updated_at: ::djogi::types::DateTime, });
@@ -288,7 +291,7 @@ fn framework_field_decls(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
 
 fn framework_field_inits(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
     let mut out = Vec::new();
-    match model_attrs.pk {
+    match &model_attrs.pk {
         PkStrategy::None => {}
         _ => {
             out.push(quote! { id: ::std::clone::Clone::clone(&src.id), });

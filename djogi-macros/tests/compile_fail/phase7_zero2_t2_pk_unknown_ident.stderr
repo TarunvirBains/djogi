@@ -1,5 +1,0 @@
-error: unknown pk strategy `NotAPkStrategy`; expected one of: HeerId, RanjId, HeerIdRecencyBiased, HeerIdDesc, RanjIdRecencyBiased, RanjIdDesc, Serial, None
- --> tests/compile_fail/phase7_zero2_t2_pk_unknown_ident.rs:8:29
-  |
-8 | #[model(table = "foo", pk = NotAPkStrategy)]
-  |                             ^^^^^^^^^^^^^^

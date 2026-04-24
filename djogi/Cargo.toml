@@ -183,3 +183,8 @@ harness = true
 name = "phase7_zero2_primary_key_generate"
 path = "../tests/integration/phase7_zero2_primary_key_generate.rs"
 harness = true
+
+[[test]]
+name = "phase7_zero2_custom_pk_live"
+path = "../tests/integration/phase7_zero2_custom_pk_live.rs"
+harness = true

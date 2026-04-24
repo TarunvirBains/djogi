@@ -139,7 +139,8 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    DjogiEnum, JsonbSchema, apps, many_to_many, reverse_one_to_many, reverse_one_to_one,
+    DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
+    reverse_one_to_one,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
@@ -222,6 +223,9 @@ pub mod prelude {
     // Re-export the `djogi::apps!` function-like macro — required to declare
     // compile-time schema ownership domains (Phase 7-Zero v3 T7).
     pub use djogi_macros::apps;
+    // Re-export the `djogi::primary_key!` function-like macro — lets
+    // adopters declare custom PK newtypes (Phase 7-Zero-2 T3).
+    pub use djogi_macros::primary_key;
     // Re-export the `#[djogi_test]` attribute macro for test functions.
     // The macro generates code that calls `::djogi::testing::setup_test_db`;
     // use only in test binaries.

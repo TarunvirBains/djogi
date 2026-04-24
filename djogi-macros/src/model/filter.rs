@@ -172,7 +172,7 @@ pub fn expand(
     // `updated_at`. A mismatch here would emit a `.id(...)` setter that
     // shadows the PK and disagrees with the descriptor — the single
     // source of truth for the schema contract.
-    let n_framework = match model_attrs.pk {
+    let n_framework = match &model_attrs.pk {
         PkStrategy::None => 2,
         _ => 3,
     };

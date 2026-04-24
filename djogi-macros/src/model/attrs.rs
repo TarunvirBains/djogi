@@ -194,6 +194,13 @@ pub struct ModelAttrs {
 /// Phase 7-Zero-2 T2 flipped the attribute's default: omitted `pk` now
 /// resolves to [`PkStrategy::HeerIdDesc`] (recency-biased), not
 /// [`PkStrategy::HeerId`].
+///
+/// Phase 7-Zero-2 T3 adds [`PkStrategy::Custom`] — the attribute parser's
+/// fall-through bucket for any identifier that is not one of the built-in
+/// aliases. Carries the full `syn::Path` so the descriptor emitter can
+/// reference the user's newtype via `<Path as ::djogi::primary_key::PrimaryKey>::KIND`,
+/// which lowers to `PkType::Custom(CustomPrimaryKeyKind { .. })` at
+/// `inventory::submit!` registration time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PkStrategy {
     HeerId,
@@ -210,6 +217,11 @@ pub enum PkStrategy {
     RanjIdDesc,
     Serial,
     None,
+    /// `pk = MyAppId` — adopter-declared custom PK, typically emitted by
+    /// the `djogi::primary_key!` helper macro. The inner path is the
+    /// user's type; injection and descriptor emission route trait impls
+    /// through it.
+    Custom(syn::Path),
 }
 
 impl ModelAttrs {
@@ -516,34 +528,29 @@ impl PkStrategy {
     /// - `RanjIdRecencyBiased` and `RanjIdDesc` both lower to
     ///   [`PkStrategy::RanjIdDesc`].
     ///
-    /// Multi-segment paths (e.g. `crate::MyId`) and unknown single-segment
-    /// identifiers are rejected with a span-carrying diagnostic. Custom
-    /// adopter-declared PK types (`djogi::primary_key!`) land in Task 3;
-    /// T2 intentionally has no fall-through to `PkStrategy::Custom`.
+    /// Any identifier that is not one of the built-in aliases is treated
+    /// as an adopter-declared custom PK type (`djogi::primary_key!` or
+    /// hand-rolled). Multi-segment paths (e.g. `crate::ids::UserId`) are
+    /// also accepted as Custom — the descriptor emitter routes through
+    /// `<Path as ::djogi::primary_key::PrimaryKey>::KIND` either way, so
+    /// the only constraint is that the path resolves to a type that
+    /// implements `PrimaryKey`. That bound is checked at `#[model]`
+    /// expansion time by the emitted trait impl lookups; a path pointing
+    /// at a non-PK type surfaces a type-error at the const-lookup site,
+    /// not here.
     fn from_path(path: &syn::Path) -> syn::Result<Self> {
         if let Some(ident) = path.get_ident() {
-            return match ident.to_string().as_str() {
-                "HeerId" => Ok(PkStrategy::HeerId),
-                "RanjId" => Ok(PkStrategy::RanjId),
-                "HeerIdRecencyBiased" | "HeerIdDesc" => Ok(PkStrategy::HeerIdDesc),
-                "RanjIdRecencyBiased" | "RanjIdDesc" => Ok(PkStrategy::RanjIdDesc),
-                "Serial" => Ok(PkStrategy::Serial),
-                "None" => Ok(PkStrategy::None),
-                other => Err(syn::Error::new_spanned(
-                    path,
-                    format!(
-                        "unknown pk strategy `{other}`; expected one of: \
-                         HeerId, RanjId, HeerIdRecencyBiased, HeerIdDesc, \
-                         RanjIdRecencyBiased, RanjIdDesc, Serial, None"
-                    ),
-                )),
-            };
+            return Ok(match ident.to_string().as_str() {
+                "HeerId" => PkStrategy::HeerId,
+                "RanjId" => PkStrategy::RanjId,
+                "HeerIdRecencyBiased" | "HeerIdDesc" => PkStrategy::HeerIdDesc,
+                "RanjIdRecencyBiased" | "RanjIdDesc" => PkStrategy::RanjIdDesc,
+                "Serial" => PkStrategy::Serial,
+                "None" => PkStrategy::None,
+                _ => PkStrategy::Custom(path.clone()),
+            });
         }
-        Err(syn::Error::new_spanned(
-            path,
-            "`pk = <path>` must be a single-segment identifier in Phase 7-Zero-2 T2; \
-             adopter-declared custom PK types land in Task 3",
-        ))
+        Ok(PkStrategy::Custom(path.clone()))
     }
 }
 
