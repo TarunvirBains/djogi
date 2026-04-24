@@ -47,7 +47,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    Attribute, Expr, ExprLit, Ident, Lit, Meta, Token, Visibility,
+    Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Token, Visibility,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
 };
@@ -65,13 +65,15 @@ struct AppDecl {
     /// The unit-struct identifier (e.g. `Vehicles`).
     ident: Ident,
     /// The explicit `label = "…"` override, if any. `None` means "use
-    /// the lowercased struct identifier".
-    label_override: Option<String>,
+    /// the lowercased struct identifier". Kept as `LitStr` so the
+    /// original literal's span is preserved for validation diagnostics.
+    label_override: Option<LitStr>,
     /// The `database = "…"` target — required. The macro rejects
     /// entries missing this key before any lowering happens.
     database: String,
-    /// Span of the struct identifier — used to pin label-shape
-    /// validation errors back to the user-declared name.
+    /// Span of the struct identifier — used to pin derived-label
+    /// validation errors back to the user-declared name when no
+    /// explicit `label = "…"` override exists.
     ident_span: Span,
 }
 
@@ -143,7 +145,7 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
 fn parse_app_attribute(
     attrs: &[Attribute],
     ident: &Ident,
-) -> syn::Result<(Option<String>, String)> {
+) -> syn::Result<(Option<LitStr>, String)> {
     let mut app_attr: Option<&Attribute> = None;
     for attr in attrs {
         if attr.path().is_ident("app") {
@@ -186,7 +188,7 @@ fn parse_app_attribute(
         }
     };
 
-    let mut label_override: Option<String> = None;
+    let mut label_override: Option<LitStr> = None;
     let mut database: Option<String> = None;
 
     for meta in &metas {
@@ -220,7 +222,7 @@ fn parse_app_attribute(
                         "duplicate `database = \"…\"` inside the same `#[app(...)]`",
                     ));
                 }
-                database = Some(require_string_lit(&nv.value, "database")?);
+                database = Some(require_string_lit(&nv.value, "database")?.value());
             }
             other => {
                 return Err(syn::Error::new_spanned(
@@ -247,11 +249,11 @@ fn parse_app_attribute(
     Ok((label_override, database))
 }
 
-fn require_string_lit(expr: &Expr, key: &str) -> syn::Result<String> {
+fn require_string_lit(expr: &Expr, key: &str) -> syn::Result<LitStr> {
     match expr {
         Expr::Lit(ExprLit {
             lit: Lit::Str(s), ..
-        }) => Ok(s.value()),
+        }) => Ok(s.clone()),
         other => Err(syn::Error::new_spanned(
             other,
             format!("`{key} = …` must be a string literal"),
@@ -276,7 +278,7 @@ fn require_string_lit(expr: &Expr, key: &str) -> syn::Result<String> {
 /// identifier, which is legal Rust but not a legal Postgres label).
 fn derive_label(decl: &AppDecl) -> syn::Result<String> {
     let (label, span) = match &decl.label_override {
-        Some(explicit) => (explicit.clone(), decl.ident_span),
+        Some(explicit) => (explicit.value(), explicit.span()),
         None => (decl.ident.to_string().to_ascii_lowercase(), decl.ident_span),
     };
     validate_label_shape(&label, span, decl.label_override.is_some())?;
@@ -424,16 +426,21 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
     }
 }
 
-/// Per-crate duplicate-invocation sentinel.
+/// Same-scope duplicate-invocation sentinel.
 ///
-/// `djogi::apps!` may be called at most once per crate (per
-/// `docs/spec/apps-and-database-domains.md` + migration-proposal
-/// §2.5). We enforce that by emitting a zero-sized module with a
-/// well-known name; two invocations collide on that name and rustc
-/// produces `the name '__djogi_apps_invocation_sentinel' is defined
-/// multiple times`. The sentinel lives at the call site's scope —
-/// typically the crate root — which is exactly where the rule
-/// applies.
+/// `djogi::apps!` typically lives at the crate root and appears once.
+/// We emit a zero-sized module with a well-known name at the call
+/// site; two invocations in the *same* scope collide and rustc
+/// produces a clear E0428 ("the name `__djogi_apps_invocation_sentinel`
+/// is defined multiple times").
+///
+/// This is per-module, not per-crate — function-like macros expand at
+/// their call site, so two invocations in different modules would each
+/// emit the sentinel in its own scope and not collide. Crate-global
+/// compile-time enforcement is not achievable for a function-like
+/// proc macro without fragile link-time tricks, so cross-invocation
+/// duplicate *labels* are caught at runtime by
+/// [`crate::apps::AppRegistry::all`] — the real correctness invariant.
 fn emit_invocation_sentinel() -> TokenStream {
     quote! {
         #[doc(hidden)]

@@ -72,17 +72,24 @@ Examples:
 
 ## App Declaration
 
-Apps are declared explicitly:
+Apps are declared explicitly with a required database target:
 
 ```rust
 djogi::apps! {
+    #[app(database = "main")]
     pub struct Vehicles;
+
+    #[app(database = "main")]
     pub struct Users;
+
+    #[app(database = "main")]
     pub struct Orders;
 }
 ```
 
 The macro emits each entry as a zero-sized unit struct bound to a sealed `djogi::App` trait; apps are addressed by **type path**, not by string label. Rust's own name resolution enforces declaration — `#[model(app = Vehicles)]` referring to an undeclared or non-app type fails with a standard rustc error. (Phase 7-Zero v3 §4B, Codex P0-03 fix 2026-04-23.)
+
+`database = "..."` is required per app declaration in T7. There is no implicit default — an app without an explicit target is a compile error so tables never silently land in the wrong database. Models that don't opt into an app fall into the synthetic global bucket which targets `main` by default.
 
 Models opt in explicitly:
 
@@ -125,12 +132,13 @@ djogi::apps! {
 }
 ```
 
-The default database target is `main`.
+The synthetic global bucket — the destination for models that never opt into an app — targets `main`. Named apps have no implicit database default; every `#[app(...)]` must carry an explicit `database = "..."` in T7.
 
 Validation contract:
 
 - every model inherits the database target of its app/domain
-- models without `app = ...` belong to the default bucket and target `main`
+- models without `app = ...` belong to the synthetic global bucket and target `main`
+- named apps without `#[app(database = "...")]` are a compile error
 - the macro rejects `database = ...` on `#[model(...)]` with an error that points at the correct place for the declaration (the enclosing `djogi::apps!` block)
 
 ---

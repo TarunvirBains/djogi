@@ -33,9 +33,12 @@ fn main() {
 
     let all = AppRegistry::all();
     // Global bucket + vehicles + billing. Registry sorts by label,
-    // empty-string first: ["", "billing", "vehicles"].
+    // empty-string first, so the exact slice is pinned.
     let labels: Vec<&str> = all.iter().map(|d| d.label).collect();
-    assert!(labels.iter().any(|l| *l == ""));
-    assert!(labels.iter().any(|l| *l == "vehicles"));
-    assert!(labels.iter().any(|l| *l == "billing"));
+    assert_eq!(labels, vec!["", "billing", "vehicles"]);
+    let databases: Vec<&str> = all.iter().map(|d| d.database).collect();
+    assert_eq!(databases, vec!["main", "crud_log", "main"]);
+    // Forward-declared T8 fields stay empty in T7.
+    assert!(all.iter().all(|d| d.renamed_from.is_none()));
+    assert!(all.iter().all(|d| !d.tombstone));
 }
