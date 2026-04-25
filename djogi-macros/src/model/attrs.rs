@@ -1501,8 +1501,12 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
 /// Called by `descriptor::expand` and `inject::expand` starting in Tasks 4–6.
 #[allow(dead_code)]
 pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
+    // Normalise whitespace and strip an optional leading `::` so absolute
+    // paths (`::djogi::types::HeerId`) match the same arms as their
+    // relative counterparts (`djogi::types::HeerId`).
     let s = quote::quote!(#ty).to_string().replace(' ', "");
-    match s.as_str() {
+    let s = s.strip_prefix("::").unwrap_or(&s);
+    match s {
         "String" => Some("TEXT"),
         "i16" => Some("SMALLINT"),
         "i32" => Some("INTEGER"),
@@ -1514,6 +1518,31 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "Date" | "time::Date" => Some("DATE"),
         "Decimal" | "rust_decimal::Decimal" => Some("NUMERIC"),
         "Uuid" | "uuid::Uuid" => Some("UUID"),
+        // Phase 7-Zero-2 T4 — built-in PK types (HeerId / RanjId family) are
+        // usable as ambient fields outside the framework-injected `id` slot.
+        // Map each name (bare, `djogi::types::*`, and `djogi::*` forms) to the
+        // column type the matching `PrimaryKey::SQL_TYPE` advertises.
+        // `HeerIdRecencyBiased` / `RanjIdRecencyBiased` are Djogi-side aliases
+        // over heeranjid's `HeerIdDesc` / `RanjIdDesc` (spec §3.5a public
+        // naming); both surface the same underlying SQL shape.
+        "HeerId"
+        | "HeerIdDesc"
+        | "HeerIdRecencyBiased"
+        | "djogi::types::HeerId"
+        | "djogi::types::HeerIdDesc"
+        | "djogi::types::HeerIdRecencyBiased"
+        | "djogi::HeerId"
+        | "djogi::HeerIdDesc"
+        | "djogi::HeerIdRecencyBiased" => Some("BIGINT"),
+        "RanjId"
+        | "RanjIdDesc"
+        | "RanjIdRecencyBiased"
+        | "djogi::types::RanjId"
+        | "djogi::types::RanjIdDesc"
+        | "djogi::types::RanjIdRecencyBiased"
+        | "djogi::RanjId"
+        | "djogi::RanjIdDesc"
+        | "djogi::RanjIdRecencyBiased" => Some("UUID"),
         "serde_json::Value" | "Value" => Some("JSONB"),
         "Vec<String>" => Some("TEXT[]"),
         "Vec<i32>" => Some("INTEGER[]"),

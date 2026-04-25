@@ -216,7 +216,28 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
         })
         .map(|f| {
             let fname = &f.ident;
-            quote! { #fname: ::std::default::Default::default() }
+            // Phase 7-Zero-2 T4 — built-in PK-shaped types (HeerId family,
+            // RanjId family, including the `HeerIdRecencyBiased` /
+            // `RanjIdRecencyBiased` spec-§3.5a aliases) do not implement
+            // `Default`: the `PrimaryKey::sentinel()` factory is the
+            // canonical zero value and lives on the trait, not on the type
+            // itself. When such a type appears as an ambient (non-`id`)
+            // field, route its default through `sentinel()` so the
+            // generated `Default` impl still compiles.
+            //
+            // Non-PK user fields keep the `Default::default()` path — that
+            // contract is unchanged. Custom PK types emitted by
+            // `djogi::primary_key!` ship their own `impl Default` that
+            // also delegates to `sentinel()`, so they fall through here
+            // without needing a name match.
+            if is_builtin_pk_type(&f.ty) {
+                let ty = &f.ty;
+                quote! {
+                    #fname: <#ty as ::djogi::primary_key::PrimaryKey>::sentinel()
+                }
+            } else {
+                quote! { #fname: ::std::default::Default::default() }
+            }
         })
         .collect();
 
@@ -258,4 +279,53 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
             }
         }
     }
+}
+
+/// Phase 7-Zero-2 T4 — recognise the built-in PK-shaped types (HeerId
+/// family, RanjId family, plus the spec-§3.5a `HeerIdRecencyBiased` /
+/// `RanjIdRecencyBiased` public aliases) when they appear as user-declared
+/// ambient fields.
+///
+/// These types live in `heeranjid` and are re-exported from `djogi::types`;
+/// because they come from an upstream crate, Djogi cannot add `impl Default`
+/// for them directly (orphan rule). The macro's generated `Default` impl
+/// works around that by routing such fields through
+/// `<T as PrimaryKey>::sentinel()` — the trait factory that produces the
+/// canonical zero value for every PK type.
+///
+/// Custom PK types emitted by `djogi::primary_key!` already carry their own
+/// `impl Default` (delegating to `sentinel()`), so they do not need a name
+/// match here — any user type with `Default` is handled by the default
+/// branch in `generate_default_impl`.
+///
+/// Path forms accepted: bare ident, `djogi::types::T`, and `djogi::T`. The
+/// match strips whitespace so token-tree spacing never foils the lookup.
+fn is_builtin_pk_type(ty: &syn::Type) -> bool {
+    // Normalise the type-token string: strip whitespace, and strip a leading
+    // `::` if the user wrote the absolute path form (`::djogi::types::HeerId`).
+    // Both `djogi::types::HeerId` and `::djogi::types::HeerId` name the same
+    // type; the match table stores the non-prefixed form.
+    let s = quote::quote!(#ty).to_string().replace(' ', "");
+    let normalised = s.strip_prefix("::").unwrap_or(&s);
+    matches!(
+        normalised,
+        "HeerId"
+            | "HeerIdDesc"
+            | "HeerIdRecencyBiased"
+            | "djogi::types::HeerId"
+            | "djogi::types::HeerIdDesc"
+            | "djogi::types::HeerIdRecencyBiased"
+            | "djogi::HeerId"
+            | "djogi::HeerIdDesc"
+            | "djogi::HeerIdRecencyBiased"
+            | "RanjId"
+            | "RanjIdDesc"
+            | "RanjIdRecencyBiased"
+            | "djogi::types::RanjId"
+            | "djogi::types::RanjIdDesc"
+            | "djogi::types::RanjIdRecencyBiased"
+            | "djogi::RanjId"
+            | "djogi::RanjIdDesc"
+            | "djogi::RanjIdRecencyBiased"
+    )
 }

@@ -270,6 +270,17 @@ pub fn expand(input: TokenStream) -> TokenStream {
             }
         }
 
+        // Phase 7-Zero-2 T4 — `impl Default` so adopter code can use the
+        // custom PK type as an ambient (non-PK-slot) field on a `#[model]`
+        // struct. The macro-emitted model `Default` impl assigns
+        // `Default::default()` to every user field; custom PKs must honour
+        // that contract. `Self::sentinel()` is the canonical zero value.
+        impl ::std::default::Default for #name {
+            fn default() -> Self {
+                <Self as ::djogi::primary_key::PrimaryKey>::sentinel()
+            }
+        }
+
         impl ::djogi::__private::postgres_types::ToSql for #name {
             fn to_sql(
                 &self,
