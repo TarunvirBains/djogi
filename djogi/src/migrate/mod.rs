@@ -58,11 +58,13 @@ pub mod diff;
 pub mod guard;
 pub mod ledger;
 pub mod projection;
+pub mod repair;
 pub mod runner;
 pub mod schema;
 pub mod segment;
 pub mod snapshot;
 pub mod sql;
+pub mod verify;
 
 pub use diff::{
     Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
@@ -81,7 +83,14 @@ pub use ledger::{
     update_progress as update_ledger_progress, validate_checksum_format, verify_checksum,
 };
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
-pub use runner::{RunReport, RunnerCtx, RunnerError, advisory_lock_key, apply_plan};
+pub use repair::{
+    LedgerChange, PartialApplyResolution, RepairConfirmation, RepairError, RepairReport,
+    SnapshotChange, repair_checksum_drift, repair_partial_apply, repair_snapshot_rebuild,
+};
+pub use runner::{
+    LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,
+    advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan, rollback_plan,
+};
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
     IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema,
@@ -93,3 +102,4 @@ pub use snapshot::{
     SnapshotError, load_snapshot, parse_snapshot_bytes, save_snapshot, serialize_snapshot,
 };
 pub use sql::{LossyRollbackKind, LossyRollbackWarning, OperationSql, SqlEmitError, lower_delta};
+pub use verify::{VerifyDiagnostic, VerifyReport, VerifyRunError, VerifySeverity, verify};

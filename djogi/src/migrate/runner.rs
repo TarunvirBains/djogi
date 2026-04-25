@@ -70,7 +70,7 @@ use super::projection::BucketKey;
 use super::schema::SNAPSHOT_FORMAT_VERSION;
 use super::segment::{MigrationPlan, Segment, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
-use super::sql::OperationSql;
+use super::sql::{LossyRollbackKind, OperationSql};
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -646,6 +646,704 @@ async fn apply_plan_inner(
         metadata_segments,
         execution_time_ms: elapsed_ms,
     })
+}
+
+// ── Rollback / fake-apply / baseline (Phase 7 v3 §8 — T5) ─────────────────
+
+/// Operator-supplied policy for a rollback whose `down` SQL is
+/// flagged lossy by the SQL emitter (e.g. `DropColumn`, `DropTable`,
+/// `DropEnum`, `DropIndex`).
+///
+/// Lossy rollback means the down SQL cannot reconstruct the original
+/// row data — for `DropColumn` the column is gone, for `DropTable`
+/// the rows are gone, for `DropEnum` the type's existence is gone.
+/// Rollback refuses to run a lossy operation by default; the operator
+/// must explicitly opt in via `LossyRollbackPolicy::Allow { reason }`.
+/// The reason is recorded verbatim in the ledger row's
+/// `partial_apply_note` so the audit trail captures *why* the loss
+/// was acceptable.
+#[derive(Debug, Clone)]
+pub enum LossyRollbackPolicy {
+    /// Refuse to run any lossy down statement. The default and the
+    /// safe choice — verifying the rollback is a non-event before
+    /// proceeding.
+    Refuse,
+    /// Run lossy down statements anyway. The `reason` field is
+    /// preserved into the ledger's `partial_apply_note` for audit.
+    Allow {
+        /// Operator-supplied rationale; non-empty by convention. The
+        /// rollback path does not enforce non-emptiness so dev
+        /// iterations can pass `String::new()`, but production
+        /// callers should always set a real string.
+        reason: String,
+    },
+}
+
+/// Errors specific to [`rollback_plan`]. Distinct from [`RunnerError`]
+/// because rollback shares many shapes with apply but adds the
+/// lossy-policy refusal path.
+#[derive(Debug)]
+pub enum RollbackError {
+    /// Workspace lock / Postgres error from the apply substrate.
+    /// Wraps [`RunnerError`] so the caller can match the specific
+    /// underlying failure.
+    Runner(RunnerError),
+    /// At least one operation's `down` SQL is flagged lossy and the
+    /// operator did not opt in. The rollback was rejected before any
+    /// SQL ran.
+    LossyRollbackRefused {
+        /// Operation labels carrying a lossy marker.
+        offending_labels: Vec<String>,
+        /// Per-label loss kind so the operator-facing message names
+        /// the categories.
+        kinds: Vec<LossyRollbackKind>,
+    },
+    /// The version is not present in the ledger or already in a
+    /// status that admits no rollback (`pending`, `failed`,
+    /// `rolled_back`, `baseline`).
+    VersionNotRollbackable {
+        version: String,
+        current_status: LedgerStatus,
+    },
+    /// The version was not found in the ledger at all.
+    VersionNotFound { version: String },
+    /// A `down` statement raised a Postgres error mid-rollback.
+    DownStatementFailed {
+        segment_index: usize,
+        statement_label: String,
+        source: DjogiError,
+    },
+    /// The runner was asked to revert the snapshot to a prior version
+    /// but no `prior_snapshot` was supplied.
+    PriorSnapshotMissing,
+    /// I/O failure persisting the prior snapshot back to disk.
+    SnapshotPersistFailed {
+        path: PathBuf,
+        source: SnapshotError,
+    },
+}
+
+impl std::fmt::Display for RollbackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RollbackError::Runner(e) => write!(f, "rollback failed at runner level: {e}"),
+            RollbackError::LossyRollbackRefused {
+                offending_labels, ..
+            } => write!(
+                f,
+                "rollback refused: {n} operation(s) carry a lossy down side; \
+                 supply LossyRollbackPolicy::Allow {{ reason }} to proceed: {labels:?}",
+                n = offending_labels.len(),
+                labels = offending_labels,
+            ),
+            RollbackError::VersionNotRollbackable {
+                version,
+                current_status,
+            } => write!(
+                f,
+                "version `{version}` is not in a rollbackable status (current: {current})",
+                current = current_status.as_db_str(),
+            ),
+            RollbackError::VersionNotFound { version } => {
+                write!(f, "version `{version}` is not present in the ledger")
+            }
+            RollbackError::DownStatementFailed {
+                segment_index,
+                statement_label,
+                source,
+            } => write!(
+                f,
+                "rollback `down` segment {segment_index} `{statement_label}` failed: {source}",
+            ),
+            RollbackError::PriorSnapshotMissing => f.write_str(
+                "rollback requires a prior_snapshot to revert to but the caller passed None",
+            ),
+            RollbackError::SnapshotPersistFailed { path, source } => {
+                write!(
+                    f,
+                    "rollback snapshot persist at {} failed: {source}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RollbackError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RollbackError::Runner(e) => Some(e),
+            RollbackError::DownStatementFailed { source, .. } => Some(source),
+            RollbackError::SnapshotPersistFailed { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// Roll back a previously-applied migration by running its emitted
+/// `down` SQL in reverse order.
+///
+/// **Witness-typed workspace lock.** Like [`apply_plan`], rollback
+/// requires a `&WorkspaceGuard` so the file lock is held for the
+/// entire operation.
+///
+/// **Order of execution.** Apply runs transactional segments first
+/// then non-transactional. Rollback inverts that:
+///
+/// 1. Non-transactional segments run first, in reverse statement
+///    order, autocommitting each step. (Apply's order is
+///    NonTx-segment-after-Tx-segment by segment-list position; the
+///    rollback walks segments in *reverse list position* and reverses
+///    each segment's statements.)
+/// 2. Transactional segments run last, all wrapped in one Postgres
+///    transaction so a partial-rollback failure rolls back cleanly.
+///
+/// **Lossy down handling.** Pre-walks the plan and collects every
+/// operation whose `lossy.is_some()`. With
+/// [`LossyRollbackPolicy::Refuse`] (the default), surfaces the list
+/// as [`RollbackError::LossyRollbackRefused`] before any SQL runs.
+/// With [`LossyRollbackPolicy::Allow { reason }`], the rollback
+/// proceeds and the reason is preserved in the ledger row's
+/// `partial_apply_note`.
+///
+/// **Snapshot semantics.** Rollback does NOT re-derive the prior
+/// snapshot from the down SQL — that requires a full delta-replay
+/// engine which is not in T5's scope. The caller (typically T6's
+/// `apply` orchestrator with a snapshot history) supplies the prior
+/// snapshot explicitly via `prior_snapshot` and `prior_snapshot_path`.
+/// Pass `None` to skip the snapshot revert (tests, when the snapshot
+/// is not under test).
+///
+/// **Ledger update.** On success, the ledger row's status flips to
+/// [`LedgerStatus::RolledBack`], `applied_steps_count` resets to 0,
+/// and `partial_apply_note` is filled with a record of the rollback
+/// (timestamp + lossy reason if any).
+pub async fn rollback_plan(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    _guard: &WorkspaceGuard,
+    lossy_policy: LossyRollbackPolicy,
+    prior_snapshot: Option<&super::schema::AppliedSchema>,
+) -> Result<RollbackReport, RollbackError> {
+    // 1. Bootstrap the ledger so the SELECT below cannot fail with
+    //    relation-not-found.
+    ledger::bootstrap(ctx).await.map_err(|e| {
+        RollbackError::Runner(RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })
+    })?;
+
+    // 2. Confirm the row exists and is in a rollbackable status.
+    let row = load_ledger_row_for_version(ctx, &runner_ctx.version)
+        .await
+        .map_err(|e| {
+            RollbackError::Runner(RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            })
+        })?;
+    let row = row.ok_or_else(|| RollbackError::VersionNotFound {
+        version: runner_ctx.version.clone(),
+    })?;
+    if !matches!(row.status, LedgerStatus::Applied | LedgerStatus::Faked) {
+        return Err(RollbackError::VersionNotRollbackable {
+            version: runner_ctx.version.clone(),
+            current_status: row.status,
+        });
+    }
+
+    // 3. Pre-walk: collect every lossy operation. Refuse early when
+    //    the policy is `Refuse`.
+    let lossy_ops: Vec<(String, LossyRollbackKind)> = plan
+        .segments
+        .iter()
+        .flat_map(|s| s.statements.iter())
+        .filter_map(|stmt| stmt.lossy.as_ref().map(|w| (stmt.label.clone(), w.kind)))
+        .collect();
+    let allow_reason = match (&lossy_policy, lossy_ops.is_empty()) {
+        (_, true) => None,
+        (LossyRollbackPolicy::Refuse, false) => {
+            let labels = lossy_ops.iter().map(|(l, _)| l.clone()).collect();
+            let kinds = lossy_ops.iter().map(|(_, k)| *k).collect();
+            return Err(RollbackError::LossyRollbackRefused {
+                offending_labels: labels,
+                kinds,
+            });
+        }
+        (LossyRollbackPolicy::Allow { reason }, false) => Some(reason.clone()),
+    };
+
+    // 4. Acquire the per-bucket advisory lock so a concurrent apply /
+    //    rollback cannot interleave with this one.
+    let lock_key = advisory_lock_key(&plan.bucket);
+    acquire_advisory_lock(ctx, &plan.bucket, lock_key)
+        .await
+        .map_err(RollbackError::Runner)?;
+
+    let result = rollback_inner(ctx, plan, runner_ctx, prior_snapshot, allow_reason).await;
+
+    release_advisory_lock(ctx, lock_key).await;
+
+    result
+}
+
+/// Internal rollback path — split out so the advisory-lock release
+/// runs on every exit branch.
+async fn rollback_inner(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    prior_snapshot: Option<&super::schema::AppliedSchema>,
+    allow_reason: Option<String>,
+) -> Result<RollbackReport, RollbackError> {
+    // 5. Walk segments in reverse list order. Within each segment,
+    //    run statements in reverse so the last-applied statement is
+    //    the first to revert. Non-transactional segments revert
+    //    autocommitted; transactional segments wrap in BEGIN/COMMIT.
+    let mut transactional_undone = 0usize;
+    let mut non_transactional_undone = 0usize;
+
+    for (rev_idx, segment) in plan.segments.iter().enumerate().rev() {
+        match segment.kind {
+            SegmentKind::Transactional => {
+                rollback_transactional_segment(ctx, segment, rev_idx).await?;
+                transactional_undone += 1;
+            }
+            SegmentKind::NonTransactional => {
+                rollback_non_transactional_segment(ctx, segment, rev_idx).await?;
+                non_transactional_undone += 1;
+            }
+            SegmentKind::MetadataOnly => {
+                // Metadata-only segments do not run DDL; rollback is a
+                // no-op at the SQL level. T6's metadata path owns
+                // any folder rename undo.
+            }
+        }
+    }
+
+    // 6. Update the ledger row to `rolled_back`. The note records the
+    //    rollback timestamp and (when applicable) the lossy reason.
+    let timestamp = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "<unknown timestamp>".to_string());
+    let note = match allow_reason.as_deref() {
+        Some(reason) => format!("rolled back at {timestamp}; lossy reason: {reason}"),
+        None => format!("rolled back at {timestamp}"),
+    };
+    ctx.execute(
+        "UPDATE djogi_schema_migrations \
+         SET status = 'rolled_back', applied_steps_count = 0, partial_apply_note = $2 \
+         WHERE version = $1",
+        &[&runner_ctx.version, &note],
+    )
+    .await
+    .map_err(|e| {
+        RollbackError::Runner(RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })
+    })?;
+
+    // 7. Persist the prior snapshot, if supplied. The caller maintains
+    //    snapshot history; T5 only writes whatever was handed in.
+    let mut snapshot_reverted = false;
+    if let (Some(snap), Some(path)) = (prior_snapshot, &runner_ctx.snapshot_path) {
+        save_snapshot(snap, path).map_err(|e| RollbackError::SnapshotPersistFailed {
+            path: path.clone(),
+            source: e,
+        })?;
+        snapshot_reverted = true;
+    } else if prior_snapshot.is_none() && runner_ctx.snapshot_path.is_some() {
+        // Caller has a snapshot path but did not supply the prior
+        // snapshot — surface as a soft error so test paths that pass
+        // `snapshot_path: None` are unaffected but production callers
+        // get told.
+        return Err(RollbackError::PriorSnapshotMissing);
+    }
+
+    Ok(RollbackReport {
+        transactional_undone,
+        non_transactional_undone,
+        snapshot_reverted,
+        lossy_reason: allow_reason,
+    })
+}
+
+/// Run every `down` statement in a transactional segment, in REVERSE
+/// statement order, inside a single Postgres transaction.
+async fn rollback_transactional_segment(
+    ctx: &mut DjogiContext,
+    segment: &Segment,
+    segment_index: usize,
+) -> Result<(), RollbackError> {
+    ctx.raw_ddl("BEGIN")
+        .await
+        .map_err(|e| RollbackError::DownStatementFailed {
+            segment_index,
+            statement_label: "<BEGIN>".to_string(),
+            source: e,
+        })?;
+
+    for stmt in segment.statements.iter().rev() {
+        if stmt.down.is_empty() {
+            continue;
+        }
+        if let Err(e) = ctx.raw_ddl(&stmt.down).await {
+            let _ = ctx.raw_ddl("ROLLBACK").await;
+            return Err(RollbackError::DownStatementFailed {
+                segment_index,
+                statement_label: stmt.label.clone(),
+                source: e,
+            });
+        }
+    }
+
+    ctx.raw_ddl("COMMIT")
+        .await
+        .map_err(|e| RollbackError::DownStatementFailed {
+            segment_index,
+            statement_label: "<COMMIT>".to_string(),
+            source: e,
+        })?;
+
+    Ok(())
+}
+
+/// Run every `down` statement in a non-transactional segment, in
+/// REVERSE statement order, with autocommit.
+async fn rollback_non_transactional_segment(
+    ctx: &mut DjogiContext,
+    segment: &Segment,
+    segment_index: usize,
+) -> Result<(), RollbackError> {
+    for stmt in segment.statements.iter().rev() {
+        if stmt.down.is_empty() {
+            continue;
+        }
+        if let Err(e) = ctx.raw_ddl(&stmt.down).await {
+            return Err(RollbackError::DownStatementFailed {
+                segment_index,
+                statement_label: stmt.label.clone(),
+                source: e,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Successful rollback report.
+#[derive(Debug, Clone)]
+pub struct RollbackReport {
+    /// Number of transactional segments whose `down` SQL ran.
+    pub transactional_undone: usize,
+    /// Number of non-transactional segments whose `down` SQL ran.
+    pub non_transactional_undone: usize,
+    /// `true` when [`save_snapshot`] was invoked with the
+    /// caller-supplied prior snapshot.
+    pub snapshot_reverted: bool,
+    /// Lossy-rollback reason (when the policy was `Allow`). `None`
+    /// for clean rollbacks.
+    pub lossy_reason: Option<String>,
+}
+
+/// Mark a migration version as `faked` — record the row in the ledger
+/// without running any SQL.
+///
+/// **Use case.** An out-of-band tool already applied the schema
+/// change (manual SQL, prior dev tooling, restored backup) and the
+/// operator wants Djogi's ledger to reflect "this version is
+/// considered applied; skip its DDL on a future apply".
+///
+/// **Snapshot moves forward.** The caller supplies a `snapshot` and
+/// `snapshot_path` representing the state Djogi should consider
+/// authoritative now. Fake-apply asserts that the schema is in this
+/// state without verifying it — the operator owns that verification.
+///
+/// **Why a separate function.** Keeping fake-apply distinct from
+/// `apply_plan` makes the audit trail honest: the ledger row carries
+/// `status = 'faked'` (not `applied`) and a `partial_apply_note`
+/// describing the operator's reason. Anyone reviewing the ledger
+/// later can immediately see the row was not produced by the runner's
+/// happy path.
+///
+/// `reason` is required and persisted to `partial_apply_note`.
+pub async fn fake_apply_plan(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    _guard: &WorkspaceGuard,
+    reason: &str,
+) -> Result<RunReport, RunnerError> {
+    // Same advisory-lock dance as apply_plan; fake-apply still needs
+    // exclusive access to the ledger row insertion.
+    ledger::bootstrap(ctx)
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })?;
+
+    let lock_key = advisory_lock_key(&plan.bucket);
+    acquire_advisory_lock(ctx, &plan.bucket, lock_key).await?;
+
+    let result = fake_apply_inner(ctx, plan, runner_ctx, reason).await;
+    release_advisory_lock(ctx, lock_key).await;
+    result
+}
+
+async fn fake_apply_inner(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    reason: &str,
+) -> Result<RunReport, RunnerError> {
+    let started = Instant::now();
+
+    // Verify checksum still matches the plan — fake-apply does not
+    // run SQL but it still records `checksum_up`, and the row is more
+    // useful when the recorded checksum reflects the actual plan.
+    let computed_up = compute_checksum_for_plan_up(plan);
+    if let Err(e) =
+        ledger::verify_checksum(&runner_ctx.version, &runner_ctx.checksum_up, &computed_up)
+    {
+        return Err(match e {
+            VerifyError::Mismatch(m) => RunnerError::ChecksumMismatch(m),
+            VerifyError::Format(f) => RunnerError::ChecksumFormat(f),
+        });
+    }
+
+    let timestamp = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "<unknown timestamp>".to_string());
+    let note = format!("faked at {timestamp}; reason: {reason}");
+    let run_id = generate_run_id(ctx).await?;
+    let row = LedgerRow {
+        version: runner_ctx.version.clone(),
+        description: runner_ctx.description.clone(),
+        checksum_up: runner_ctx.checksum_up.clone(),
+        checksum_down: runner_ctx.checksum_down.clone(),
+        execution_mode: ExecutionMode::Transactional,
+        status: LedgerStatus::Faked,
+        execution_time_ms: 0,
+        out_of_order_flag: false,
+        applied_steps_count: 0,
+        total_steps: None,
+        partial_apply_note: Some(note),
+        run_id,
+        snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        app_label: plan.bucket.app.clone(),
+    };
+    let ledger_id = match ledger::insert_pending(ctx, &row).await {
+        Ok(id) => id,
+        Err(e) => {
+            if is_unique_violation(&e) {
+                let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
+                return Err(RunnerError::VersionAlreadyApplied {
+                    version: runner_ctx.version.clone(),
+                    applied_at,
+                });
+            }
+            return Err(RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            });
+        }
+    };
+
+    // Snapshot moves forward, when supplied.
+    if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
+        save_snapshot(snapshot, path).map_err(|e| RunnerError::SnapshotPersistFailed {
+            path: path.clone(),
+            source: e,
+        })?;
+    }
+
+    let elapsed = elapsed_ms(started);
+    Ok(RunReport {
+        ledger_id,
+        run_id,
+        transactional_segments: 0,
+        non_transactional_segments: 0,
+        metadata_segments: 0,
+        execution_time_ms: elapsed,
+    })
+}
+
+/// Establish a baseline ledger row for an existing database that was
+/// created without Djogi (or by an earlier Djogi version).
+///
+/// **What it does.** Inserts a single ledger row with
+/// `status = 'baseline'`, the operator-supplied `version`, and a
+/// `description` that includes a `<baseline>` marker. No SQL runs;
+/// the schema is whatever Postgres currently holds. The supplied
+/// `snapshot` is written to disk as the canonical baseline so future
+/// migrations diff against it.
+///
+/// **One baseline per bucket.** A bucket should carry at most one
+/// `baseline` row in its history. The unique-violation on `version`
+/// already enforces this when the operator picks the convention
+/// (e.g. `V0__baseline`); the runner does not enforce one-per-bucket
+/// itself because the ledger is shared across buckets via `app_label`
+/// and the operator owns the version-naming policy.
+///
+/// `reason` is recorded in `partial_apply_note` so the audit trail
+/// captures why the baseline was established.
+pub async fn baseline_plan(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+    runner_ctx: &RunnerCtx,
+    _guard: &WorkspaceGuard,
+    reason: &str,
+) -> Result<RunReport, RunnerError> {
+    ledger::bootstrap(ctx)
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })?;
+
+    let lock_key = advisory_lock_key(bucket);
+    acquire_advisory_lock(ctx, bucket, lock_key).await?;
+
+    let result = baseline_inner(ctx, bucket, runner_ctx, reason).await;
+    release_advisory_lock(ctx, lock_key).await;
+    result
+}
+
+async fn baseline_inner(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+    runner_ctx: &RunnerCtx,
+    reason: &str,
+) -> Result<RunReport, RunnerError> {
+    let started = Instant::now();
+    let timestamp = OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "<unknown timestamp>".to_string());
+    let note = format!(
+        "baseline established at {timestamp} for bucket database={db} app={app}; reason: {reason}",
+        db = bucket.database,
+        app = bucket.app,
+    );
+    let run_id = generate_run_id(ctx).await?;
+    let row = LedgerRow {
+        version: runner_ctx.version.clone(),
+        description: format!("<baseline> {}", runner_ctx.description),
+        checksum_up: runner_ctx.checksum_up.clone(),
+        checksum_down: None,
+        execution_mode: ExecutionMode::Transactional,
+        status: LedgerStatus::Baseline,
+        execution_time_ms: 0,
+        out_of_order_flag: false,
+        applied_steps_count: 0,
+        total_steps: None,
+        partial_apply_note: Some(note),
+        run_id,
+        snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        app_label: bucket.app.clone(),
+    };
+    let ledger_id = match ledger::insert_pending(ctx, &row).await {
+        Ok(id) => id,
+        Err(e) => {
+            if is_unique_violation(&e) {
+                let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
+                return Err(RunnerError::VersionAlreadyApplied {
+                    version: runner_ctx.version.clone(),
+                    applied_at,
+                });
+            }
+            return Err(RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            });
+        }
+    };
+
+    // Update the row to `baseline` (insert_pending writes 'pending';
+    // we flip the status here to keep the typed ledger CRUD
+    // helpers narrow).
+    ctx.execute(
+        "UPDATE djogi_schema_migrations SET status = 'baseline' WHERE id = $1",
+        &[&ledger_id],
+    )
+    .await
+    .map_err(|e| RunnerError::LedgerWriteFailed {
+        version: runner_ctx.version.clone(),
+        source: e,
+    })?;
+
+    if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
+        save_snapshot(snapshot, path).map_err(|e| RunnerError::SnapshotPersistFailed {
+            path: path.clone(),
+            source: e,
+        })?;
+    }
+
+    let elapsed = elapsed_ms(started);
+    Ok(RunReport {
+        ledger_id,
+        run_id,
+        transactional_segments: 0,
+        non_transactional_segments: 0,
+        metadata_segments: 0,
+        execution_time_ms: elapsed,
+    })
+}
+
+/// Read a ledger row for a given version. Used by the rollback path
+/// to confirm the row is in a state that admits rollback.
+async fn load_ledger_row_for_version(
+    ctx: &mut DjogiContext,
+    version: &str,
+) -> Result<Option<LedgerRow>, DjogiError> {
+    let row_opt = ctx
+        .query_opt(
+            "SELECT version, description, checksum_up, checksum_down, execution_mode, \
+                    status, execution_time_ms, out_of_order_flag, applied_steps_count, \
+                    total_steps, partial_apply_note, run_id, snapshot_version, app_label \
+             FROM djogi_schema_migrations WHERE version = $1",
+            &[&version],
+        )
+        .await?;
+    let Some(row) = row_opt else { return Ok(None) };
+
+    let description: String = row.try_get(1)?;
+    let checksum_up: String = row.try_get(2)?;
+    let checksum_down: Option<String> = row.try_get(3)?;
+    let execution_mode_s: String = row.try_get(4)?;
+    let status_s: String = row.try_get(5)?;
+    let execution_time_ms: i64 = row.try_get(6)?;
+    let out_of_order_flag: bool = row.try_get(7)?;
+    let applied_steps_count: i32 = row.try_get(8)?;
+    let total_steps: Option<i32> = row.try_get(9)?;
+    let partial_apply_note: Option<String> = row.try_get(10)?;
+    let run_id: i64 = row.try_get(11)?;
+    let snapshot_version: String = row.try_get(12)?;
+    let app_label: String = row.try_get(13)?;
+
+    let execution_mode = match execution_mode_s.as_str() {
+        "transactional" => ExecutionMode::Transactional,
+        _ => ExecutionMode::NonTransactional,
+    };
+    let status = LedgerStatus::from_db_str(&status_s).unwrap_or(LedgerStatus::Failed);
+    Ok(Some(LedgerRow {
+        version: version.to_string(),
+        description,
+        checksum_up,
+        checksum_down,
+        execution_mode,
+        status,
+        execution_time_ms,
+        out_of_order_flag,
+        applied_steps_count,
+        total_steps,
+        partial_apply_note,
+        run_id,
+        snapshot_version,
+        app_label,
+    }))
 }
 
 // ── Segment dispatch helpers ──────────────────────────────────────────────

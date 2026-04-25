@@ -220,3 +220,8 @@ harness = true
 name = "phase7_t4_runner_live"
 path = "../tests/integration/phase7_t4_runner_live.rs"
 harness = true
+
+[[test]]
+name = "phase7_t5_repair_verify_live"
+path = "../tests/integration/phase7_t5_repair_verify_live.rs"
+harness = true
