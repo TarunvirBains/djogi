@@ -648,7 +648,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9c uses the `@on:` list to reason about which node-visits the override covers
 - [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
 - [ ] Drift detection — opt-in: `cargo djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
-- [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 10b / 10e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
+- [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 11b / 11e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
 - [ ] Error modes flagged at build time: missing required frontmatter field, unknown `@on` owner, `@returns` type missing `FromPgRow`, `@binds` arity mismatch with `$N` placeholder count in SQL, reserved-name collision with framework-generated methods, `@signature` mismatch
 - [ ] Scope limits: v1 is read-only (SELECT-shaped overrides). `UPDATE` / `DELETE` / `INSERT` overrides deferred until a concrete use case surfaces — raw `ctx.execute_raw` remains available in the interim
 - [ ] Authoring loop lives in the shell (§9a): `djqry.export`, `djqry.import`, `djqry.diff`, `djqry.sign` close the *test → optimize → compile → deploy* cycle inside the REPL. Authoring a new override never requires leaving the shell to hand-craft frontmatter — `export` captures the canonical macro-query, infers `@returns` / `@binds` from the QuerySet's declared types, computes the initial `@signature`, and seeds the SQL body with the macro-generated query as the baseline for optimization
@@ -671,11 +671,104 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 10: CRUD Logging & Observability
+## Phase 10: Maahi — Admin Console
+
+**Goal:** Auto-generated admin console (Maahi) bound by visage-driven RBAC, multi-tenancy-aware, with a first-class security floor (CSRF triple stack, session rotation, server-side write enforcement, visibility-aware `Label` trait, inline-bulk approval threshold).
+
+The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the `djogi-maahi` workspace crate behind the existing `admin` feature flag; per the carve-out reasoning in `CLAUDE.md`, Maahi is the lone admin-tier exception to the one-djogi-crate rule.
+
+### 10a: Crate Substrate + Auth
+
+- [ ] `djogi-maahi` workspace crate scaffolded; `djogi`'s `admin` feature pulls it in as optional dep; `djogi::maahi::*` re-exports
+- [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_visage_perms` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`)
+- [ ] `cargo djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
+
+### 10b: Permission Model + Feasibility Analysis
+
+- [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, model)` overrides
+- [ ] Single-parent role inheritance with cycle rejection on save and "this affects N child roles" save-time preview
+- [ ] Compile-time / startup feasibility analysis for each `(role, model)` pair surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
+
+### 10c: Visage-Driven Visibility
+
+- [ ] Visage grant resolution from `_admin_role_visage_perms`; field-set union across granted visages, `expose(none)` floor enforcement
+- [ ] `Label` trait with `fn label(&self, visible: &VisibleFields) -> String` — visibility-aware so FK dropdowns and audit log entries cannot leak hidden fields
+- [ ] FK widget tier resolution (preload / typeahead based on `[admin].fk_preload_threshold`); optional `AdminFkFilter` trait + `#[field(admin_fk_filter = "...")]` override
+
+### 10d: Multi-Tenancy
+
+- [ ] Auto-detection of multi-tenant mode from registered RLS-enabled models; `[admin].multi_tenant` config override
+- [ ] Login flow captures `tenant_scope` into session; `set_tenant` middleware on every server-fn call
+- [ ] Tenant picker for cross-tenant users; hidden in single-tenant deployments
+
+### 10e: Dioxus Renderer
+
+- [ ] Dioxus full-stack components: list view, ModelForm, M2M inline, JSONB nested editor, `AdminClean` validation hook
+- [ ] `cargo djogi admin build` WASM bundle pipeline (`dx bundle` integration)
+- [ ] CSRF triple stack (SameSite=Strict + `X-Maahi-CSRF` custom header + Origin/Referer check)
+- [ ] Session rotation on login / password change / role change / tenant switch
+- [ ] Server-side write enforcement that rejects out-of-scope fields explicitly (not silent filter)
+
+### 10f: Approval Flow
+
+- [ ] `_admin_pending_actions` table with two v1 action kinds (`BulkDelete`, `InlineSave`) sharing queue + lifecycle + dual-control discipline
+- [ ] Magnitude-confirmation prompt on `BulkDelete` and `BulkUpdate` ("type the count to confirm")
+- [ ] Inline-bulk threshold (`[admin].inline_bulk_threshold`, default 25) routes mass-removal saves through the approval flow as `InlineSave`
+- [ ] Approver coverage rule: approver must hold every action permission the package execution requires (anti-piggyback)
+
+### 10g: System Permissions + Audit Access
+
+- [ ] `view_audit_log` (scope-filtered read of `_logs.{model}` tables), `manage_users` (single-rule upper-bound), `view_full_struct`, `write_full_struct` (requires `view_full_struct`) system permissions
+- [ ] `_logs.{model}` read access through Maahi UI for `view_audit_log` holders, scoped to their viewable fields and tenant
+
+**Deliverable:** Production-grade Maahi admin console with visage-RBAC, multi-tenancy, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave`, and the four v1 system permissions.
+
+---
+
+## Phase 10.5: Maahi Compliance & Delegation
+
+**Goal:** Layer compliance and delegation polish on Phase 10 v1 without breaking changes. Brings Maahi to enterprise-compliance grade and Django-parity feature breadth.
+
+Full deferral list at [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md).
+
+### 10.5a: Advanced Delegation
+
+- [ ] Multi-parent role inheritance with diamond resolution rules
+- [ ] `manage_roles` system permission with transitive upper-bound delegation (every grant ≤ granter's privileges, recursively through inheritance)
+- [ ] Frozen / locked roles for orgs sensitive to inheritance cascades
+
+### 10.5b: Broader Approval Workflows
+
+- [ ] Approval workflows beyond `BulkDelete` and `InlineSave` (configurable per action / per model)
+- [ ] Approval-queue UX polish: per-role notifications, bulk approval, queue search and triage
+
+### 10.5c: Audit Retention + Redaction
+
+- [ ] Scope-aware audit retention (different retention per source-model scope)
+- [ ] Scope-aware audit redaction (further restrict viewable fields in historical entries based on data-classification rules)
+
+### 10.5d: Django-Parity Features
+
+- [ ] `list_select_related` (FK eager-loading on list view; auto-detect from `admin_list_display`)
+- [ ] `raw_id_fields` equivalent (third FK widget tier above typeahead — no-widget-just-ID with popup search)
+- [ ] `fields` / `fieldsets` (explicit form-field ordering and grouped sections)
+- [ ] `AdminAction` extension trait for custom bulk actions (paralleling `AdminClean`, `AdminFkFilter`)
+- [ ] Per-row history view (audit-log drill-down for a single record)
+- [ ] `list_editable` (inline-edit columns from list view)
+- [ ] `prepopulated_fields` (auto-populate fields from other fields)
+- [ ] `date_hierarchy` (date drill-down on list views)
+- [ ] Inline polish: `extra`, `min_num`, `max_num`, per-relation `can_delete`
+- [ ] `view_on_site` (link from admin row to public URL — extension-trait or core)
+
+**Deliverable:** Maahi reaches Django-parity feature breadth and enterprise-compliance grade approval / delegation surface.
+
+---
+
+## Phase 11: CRUD Logging & Observability
 
 **Goal:** Automated audit trail plus concrete observability hooks (tracing, metrics, slow-query callbacks) that apps can integrate with standard Rust observability crates.
 
-### 10a: Audit Trail
+### 11a: Audit Trail
 
 - [ ] Three-database architecture: app, crud_logs, event_logs (pools already defined in Phase 0/1)
 - [ ] Profile-first logging config: `light`, `balanced`, `strict_audit`; advanced per-sink overrides only as escape hatches
@@ -686,42 +779,42 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Surface sink health and degraded mode clearly in metrics / CLI / tracing output
 - [ ] Document and enforce that strict audit means rejecting app writes when required CRUD audit cannot be satisfied, not cross-database atomic commit
 
-### 10b: Tracing Integration
+### 11b: Tracing Integration
 
 - [ ] Emit a `tracing::Span` per query with fields: `sql_text` (truncated, no bind values), `duration_ms`, `rows_affected`, `pool_wait_ms`, `model_name` (when derivable)
 - [ ] Span attachment to surrounding `atomic()` scope's span (so transactions appear as parent spans over their queries)
 - [ ] Opt-out per model via `#[model(trace = false)]` for hot-path tables
 
-### 10c: Slow-Query Callbacks
+### 11c: Slow-Query Callbacks
 
 - [ ] `djogi::observe::register_slow_query_handler(threshold: Duration, handler: impl Fn(&QueryTelemetry))`
 - [ ] `QueryTelemetry` carries: sql, duration, row count, backend pid, lock wait time, which connection pool
 - [ ] Guaranteed called after query completion (success or error); handler runs on the query task's executor
 
-### 10d: Metrics Emission
+### 11d: Metrics Emission
 
 - [ ] `metrics` crate integration: histograms for query duration, counters for rows affected, gauges for pool utilization + idle vs active connections
 - [ ] Per-model breakdown labels (opt-in via `#[model(metrics = true)]`)
 - [ ] Pool-level metrics per the three-pool architecture
 
-### 10e: Admin-UI Observability Views
+### 11e: Admin-UI Observability Views
 
-- [ ] Phase 9's admin layer surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 10b/10c/10d are wired
+- [ ] Phase 10's admin layer (Maahi) surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 11b/11c/11d are wired
 - [ ] Zero additional cost when the admin feature isn't enabled; the hooks stand alone
 - [ ] Per-request debug drawer (gated on `dev_mode = true` + `admin` feature flag): bottom panel on every `/_admin/` page showing queries issued during the request, per-query duration, originating `tracing` span, rows returned, and a SQL-text preview with binds inlined for readability
 - [ ] Click-to-EXPLAIN: each drawer row exposes an "Explain" action that runs `EXPLAIN (FORMAT JSON)` by default — pure planner inspection, no execution, zero side effects regardless of statement kind. An explicit "Explain with Analyze" opt-in is available for SELECTs only; for INSERT/UPDATE/DELETE the `ANALYZE` variant is disabled in the UI with a visible note that `EXPLAIN ANALYZE` executes the statement and that non-transactional effects (`nextval` advancement, `LISTEN/NOTIFY`, deferred trigger side-channels) are not reclaimed by a wrapping savepoint. Plans render as a collapsible tree with per-node cost and row-count estimates
 - [ ] Semantic N+1 flag: because Djogi knows the FK topology at compile time, the drawer annotates any relation fetched more than K times within a single request span with the exact model + FK name and the `.prefetch()` call that would collapse it — no pattern-matching heuristics, the detection is driven by declared structure
-- [ ] Dev-only scope: the drawer is feature-flagged out of release builds and has no staging/canary mode. Non-dev environments rely on §10b/10c/10d (tracing spans, slow-query callbacks, metrics) for query visibility. If a team wants drawer-like introspection in staging, that is a separate future item, not a Phase 10e deliverable
+- [ ] Dev-only scope: the drawer is feature-flagged out of release builds and has no staging/canary mode. Non-dev environments rely on §11b/11c/11d (tracing spans, slow-query callbacks, metrics) for query visibility. If a team wants drawer-like introspection in staging, that is a separate future item, not a Phase 11e deliverable
 - [ ] Optional middleware hook (shipped under each web-framework sub-feature flag — `axum`, `warp`, etc.) that injects the drawer into any HTML response in dev mode, not just admin pages. API-only apps get per-request correlation via a stable request ID — the middleware generates an ID per request and the response carries it in a compact `X-Djogi-Queries` header of the form `id=<token>; count=12; slow=2; total_ms=47`. Full per-query detail is retrieved (dev-mode only) by calling `GET /_djogi/debug/request/<id>`, which looks up the trace in a bounded in-memory ring buffer keyed by ID. This is correlation-safe under HTTP/1.1 keep-alive, HTTP/2 multiplexing, client-side connection pooling, and multi-instance deployments where "most recent on this connection" would be ambiguous or racy. Ring buffer size is configurable with a sensible default (128 entries, oldest-evicted); entries carry the full query list, per-query durations, binds, and the originating tracing span ID
 
-### 10f: Event Logging
+### 11f: Event Logging
 
 - [ ] Event logging via `tracing` subscriber layer writing to the event log database
 - [ ] Schema for events: timestamp, level, target, fields, parent span id
 - [ ] Retention policy opt-in (delete events older than N days)
 - [ ] Keep event logging best-effort in built-in profiles; expose dropped-event counters and sink-failure warnings
 
-### 10g: Log-Database Operations
+### 11g: Log-Database Operations
 
 - [ ] Unified operator workflow for app / CRUD-log / event-log migrations with explicit per-database labeling
 - [ ] `db reset` remains app-first; touching logging databases requires explicit flags
@@ -731,11 +824,11 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 10.5: Operational Tooling
+## Phase 11.5: Operational Tooling
 
 **Goal:** Turnkey solution for the boring-but-critical operational work every Postgres app needs — backups, vacuums, maintenance schedules, disaster recovery drills. Without this, teams hand-roll it inconsistently and find out in production it was wrong.
 
-### 9.5a: Scheduled Backups
+### 11.5a: Scheduled Backups
 
 - [ ] `cargo djogi ops backup setup --daily [--weekly] [--retention 14d]` — generates a platform-appropriate scheduler config (cron fragment, systemd timer unit, or launchd plist) + a backup script that wraps `pg_dump --format=custom` with sane defaults (parallelism, compression)
 - [ ] `cargo djogi ops backup now` — one-shot manual backup
@@ -743,23 +836,23 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Storage targets: local path, S3-compatible (via env-var-configured endpoint + credentials), optional `rclone` passthrough
 - [ ] Retention policy enforcement (prune backups older than configured retention)
 
-### 9.5b: Point-In-Time Recovery (opt-in)
+### 11.5b: Point-In-Time Recovery (opt-in)
 
 - [ ] `cargo djogi ops pitr setup` — configures WAL archiving to a specified target, generates `restore.conf` template
 - [ ] `cargo djogi ops pitr restore --target-time '...'` — restore drill runbook that produces a new database at a specific wall-clock time
 
-### 9.5c: Vacuum / Maintenance Scheduling
+### 11.5c: Vacuum / Maintenance Scheduling
 
-- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 7's migration generation pipeline. Phase 10.5 provides the policy vocabulary + CLI/ops surface; Phase 7 owns the DDL emission and phased execution
+- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 7's migration generation pipeline. Phase 11.5 provides the policy vocabulary + CLI/ops surface; Phase 7 owns the DDL emission and phased execution
 - [ ] `cargo djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
 - [ ] `cargo djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
 
-### 9.5d: Health Checks
+### 11.5d: Health Checks
 
 - [ ] `cargo djogi ops doctor` — checks pool utilization, long-running transactions (> N seconds), table bloat estimates, index bloat, replication lag if configured, `pg_stat_statements` top-N slow queries
 - [ ] Each check returns a pass/warn/fail with a suggested remediation
 
-### 9.5e: Operator Runbooks
+### 11.5e: Operator Runbooks
 
 - [ ] Generate opinionated Markdown runbooks under `docs/ops/` covering: "my backup failed", "restore from last night", "I accidentally dropped a table", "vacuum is blocked"
 - [ ] Runbooks reference the specific `cargo djogi ops` commands that resolve each scenario
@@ -768,7 +861,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 11: Distributed Topology & Residency
+## Phase 12: Distributed Topology & Residency
 
 **Goal:** Add descriptor-aware support for replicas, residency constraints, and topology-sensitive migration safety.
 
@@ -802,8 +895,10 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 | 8: Hooks & Composition | Medium | Lifecycle hooks, abstract models, proxy, computed properties |
 | 9: Shell & Admin | Medium | Interactive tools |
 | 9.5: Lifecycle | Medium | Governance and lifecycle planning (depends on 7.5) |
-| 10: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
-| 10.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
-| 11: Topology | Large | Residency, replica semantics, distributed guardrails |
+| 10: Maahi (Admin Console) | Large | Visage-RBAC, Dioxus full-stack, multi-tenancy, security floor, M2M with bulk threshold |
+| 10.5: Maahi Compliance & Delegation | Medium | Multi-parent inheritance, manage_roles, broader approvals, Django parity |
+| 11: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
+| 11.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
+| 12: Topology | Large | Residency, replica semantics, distributed guardrails |
 
-**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–11 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.
+**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–12 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.

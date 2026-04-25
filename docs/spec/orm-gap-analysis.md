@@ -52,7 +52,7 @@ This document maps every functional capability in Django's ORM, identifies what 
 | **`iterator()` / chunked evaluation** | Memory-efficient streaming without caching | Add — use Postgres cursors via sqlx `fetch()` stream |
 | **`earliest()` / `latest()`** | Get by ordering field | Add — convenience over `.order_by(...).first()` |
 | **`contains(obj)`** | Check if instance is in QuerySet | Add |
-| **`using()`** | Select database | Answered by `QuerySet::with_read_mode(ReadMode::...)` in Phase 10 — see [Distributed Topology & Residency](./topology.md). Djogi declares the hint; the pool-selection strategy configured by the application honors it. |
+| **`using()`** | Select database | Answered by `QuerySet::with_read_mode(ReadMode::...)` in Phase 12 — see [Distributed Topology & Residency](./topology.md). Djogi declares the hint; the pool-selection strategy configured by the application honors it. |
 
 ### Where Djogi Can Do Better
 
