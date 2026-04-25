@@ -779,8 +779,19 @@ fn build_projection_map_tokens(
     for scope in &spec.scalar_scopes {
         pairs.push((scope.clone(), column_name.to_string()));
     }
-    for (scope, peer) in &spec.relation_scopes {
-        pairs.push((scope.clone(), peer.clone()));
+    for (scope, exposure) in &spec.relation_scopes {
+        // Render the peer path as a string for descriptor consumers.
+        // `quote!` preserves the user-written path verbatim (including
+        // module prefixes); the surrounding whitespace is collapsed by
+        // `to_string()` into a stable canonical form (e.g. `crate :: visages :: DepartmentPublic`
+        // → trim_runs handled by callers / migration differ if needed).
+        let peer_path = &exposure.peer;
+        let rendered = quote::quote! { #peer_path }.to_string();
+        // Collapse any inserted whitespace around path separators so the
+        // emitted descriptor literal matches the user's original spelling
+        // for the common no-prefix case (e.g. `DepartmentPublic`).
+        let cleaned = rendered.replace(' ', "");
+        pairs.push((scope.clone(), cleaned));
     }
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
 

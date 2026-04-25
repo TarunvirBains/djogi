@@ -1,5 +1,5 @@
 error: `none` / `internal` cannot be combined with other scopes; omit them when declaring real scopes
- --> tests/compile_fail/expose_none_combined.rs:8:13
+ --> tests/compile_fail/expose_none_combined.rs:8:20
   |
 8 |     #[field(expose(none, public))]
-  |             ^^^^^^
+  |                    ^^^^
