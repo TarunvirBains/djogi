@@ -144,6 +144,22 @@ pub enum ProjectionError {
         /// The model that referenced it.
         model_table: String,
     },
+    /// A `ForeignKey<T>` / `OneToOneField<T>` references a model in
+    /// a different database target. Postgres FK constraints cannot
+    /// span databases; cross-database FK references must use
+    /// application-level joins or the outbox pattern instead.
+    CrossDatabaseForeignKey {
+        /// The bucket containing the FK source column.
+        source_bucket: BucketKey,
+        /// The source model's table.
+        source_table: String,
+        /// The source FK column.
+        source_column: String,
+        /// The bucket containing the FK target.
+        target_bucket: BucketKey,
+        /// The target model's table.
+        target_table: String,
+    },
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -191,6 +207,20 @@ impl std::fmt::Display for ProjectionError {
                  to label `{app_label}`, but no app with that label is registered \
                  via `djogi::apps!`. Either declare the app or fix the label."
             ),
+            ProjectionError::CrossDatabaseForeignKey {
+                source_bucket,
+                source_table,
+                source_column,
+                target_bucket,
+                target_table,
+            } => write!(
+                f,
+                "cross-database foreign key rejected: `{}.{source_table}.{source_column}` \
+                 (database `{}`) references `{target_table}` (database `{}`). \
+                 Postgres FK constraints cannot span databases. Use an application-\
+                 level join or the outbox pattern instead.",
+                source_bucket.app, source_bucket.database, target_bucket.database
+            ),
         }
     }
 }
@@ -204,6 +234,7 @@ impl std::error::Error for ProjectionError {}
 /// `inventory::iter::<EnumDescriptor>`, and [`AppRegistry::all`] —
 /// the production entry point. Use [`project_from_iters`] when you
 /// need to project from explicit iterables (tests).
+#[allow(clippy::result_large_err)]
 pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError> {
     project_from_iters(
         inventory::iter::<ModelDescriptor>(),
@@ -226,6 +257,7 @@ pub fn project_from_inventory() -> Result<BTreeMap<BucketKey, AppliedSchema>, Pr
 /// no models live in it. Apps in the input that have zero models
 /// also appear with empty `models` / `indexes` slots so the
 /// snapshot directory layout stays consistent.
+#[allow(clippy::result_large_err)]
 pub(crate) fn project_from_iters<'a, M, E, A>(
     models: M,
     enums: E,
@@ -272,8 +304,10 @@ where
     }
 
     // Second pass — group models by bucket. Validate the model's
-    // declared app exists.
+    // declared app exists, and build a parallel `type_name → bucket`
+    // map for the cross-database FK validation pass below.
     let mut bucket_models: BTreeMap<BucketKey, Vec<&ModelDescriptor>> = BTreeMap::new();
+    let mut type_to_bucket: BTreeMap<&str, BucketKey> = BTreeMap::new();
     for m in &models {
         let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
         let app = label_to_app
@@ -286,7 +320,49 @@ where
             database: app.database.to_string(),
             app: app.label.to_string(),
         };
+        type_to_bucket.insert(m.type_name, bucket.clone());
         bucket_models.entry(bucket).or_default().push(m);
+    }
+
+    // Cross-database FK validation (Codex T2 review B-3). Postgres
+    // FK constraints cannot span databases, so a model in
+    // `(main, billing)` referencing a model in
+    // `(crud_log, audit)` is structurally invalid. Reject at
+    // projection time so the differ never has to reason about
+    // cross-database FK transitions.
+    for m in &models {
+        let source_label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
+        let source_app = label_to_app[source_label];
+        let source_bucket = BucketKey {
+            database: source_app.database.to_string(),
+            app: source_app.label.to_string(),
+        };
+        for f in m.fields {
+            if f.relation_kind.is_none() {
+                continue;
+            }
+            let Some(target_type) = f.target_type_name else {
+                continue;
+            };
+            let Some(target_bucket) = type_to_bucket.get(target_type) else {
+                continue; // Unresolved target — falls through to the
+                // verbatim ref_table value handled by `project_column`.
+            };
+            if target_bucket.database != source_bucket.database {
+                let target_table = type_to_table
+                    .get(target_type)
+                    .copied()
+                    .unwrap_or(target_type)
+                    .to_string();
+                return Err(ProjectionError::CrossDatabaseForeignKey {
+                    source_bucket,
+                    source_table: m.table_name.to_string(),
+                    source_column: f.name.to_string(),
+                    target_bucket: target_bucket.clone(),
+                    target_table,
+                });
+            }
+        }
     }
 
     // Ensure every registered app has a bucket — even if it has no
@@ -1063,5 +1139,72 @@ mod tests {
             "must be UTC: {s}"
         );
         assert!(!s.contains('.'), "must not have sub-second precision: {s}");
+    }
+
+    #[test]
+    fn cross_database_fk_rejected_at_projection() {
+        // Codex T2 review B-3: an FK from a model in one database to
+        // a model in another database is structurally invalid
+        // (Postgres FKs cannot span databases). Projection rejects
+        // before producing a snapshot.
+        let main_app = AppDescriptor {
+            label: "billing",
+            database: "main",
+            renamed_from: None,
+            tombstone: false,
+        };
+        let crud_app = AppDescriptor {
+            label: "audit",
+            database: "crud_log",
+            renamed_from: None,
+            tombstone: false,
+        };
+        let target = ModelDescriptor {
+            app: Some("audit"),
+            ..synth_model("audit_rows", "AuditRow")
+        };
+        let source = ModelDescriptor {
+            app: Some("billing"),
+            fields: &[FieldDescriptor {
+                name: "audit_id",
+                sql_type: FieldSqlType::BigInt,
+                nullable: false,
+                unique: false,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: Some(RelationKind::ForeignKey),
+                on_delete: Some(OnDelete::Restrict),
+                target_type_name: Some("AuditRow"),
+                visage_map: &[],
+            }],
+            ..synth_model("invoices", "Invoice")
+        };
+        let err = project_from_iters(
+            [&target, &source],
+            std::iter::empty::<&EnumDescriptor>(),
+            [&main_app, &crud_app],
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect_err("must reject cross-DB FK");
+        match err {
+            ProjectionError::CrossDatabaseForeignKey {
+                source_table,
+                target_table,
+                source_bucket,
+                target_bucket,
+                ..
+            } => {
+                assert_eq!(source_table, "invoices");
+                assert_eq!(target_table, "audit_rows");
+                assert_eq!(source_bucket.database, "main");
+                assert_eq!(target_bucket.database, "crud_log");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 }

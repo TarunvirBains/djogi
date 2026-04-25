@@ -13,21 +13,27 @@
 //!
 //! # `format_version` policy
 //!
-//! See [`crate::migrate::schema::SNAPSHOT_FORMAT_VERSION`]. Loaders
-//! reject any value other than the current `"1"` with an error that
-//! names both the file's version and the expected version. Bump only
-//! on breaking shape changes; additive fields do not bump.
+//! See [`crate::migrate::schema::SNAPSHOT_FORMAT_VERSION`]. Every
+//! snapshot struct carries `#[serde(deny_unknown_fields)]`, so any
+//! shape change (additive, subtractive, or rename) requires a
+//! `format_version` bump. There is no silently-additive path.
+//!
+//! [`parse_snapshot_bytes`] inspects `format_version` **before**
+//! attempting full deserialization. A version mismatch surfaces as
+//! [`SnapshotError::UnsupportedFormatVersion`] with an actionable
+//! upgrade message; this prevents the user from seeing a generic
+//! `unknown field` parse error when the real issue is a Djogi
+//! version skew.
 //!
 //! # Robustness
 //!
 //! - The loader strips a UTF-8 BOM if the file starts with one.
 //!   Some editors silently insert a BOM into JSON files; we tolerate
 //!   that on read but never emit one ourselves.
-//! - The loader tolerates additive new fields via serde's default
-//!   deserialize behaviour — a snapshot written by an older Djogi
-//!   that lacks a field added in a newer release loads cleanly when
-//!   the field is `Option<...>` or has a serde default. Removing a
-//!   required field is a `format_version` bump.
+//! - The loader version-checks before structural deserialize so a
+//!   newer snapshot rejected by an older Djogi names the version
+//!   mismatch first, rather than failing on a `deny_unknown_fields`
+//!   trip on whatever new field landed in `"2"`.
 
 use std::fs;
 use std::io::{self, Write};
@@ -174,21 +180,49 @@ pub fn load_snapshot(path: &Path) -> Result<AppliedSchema, SnapshotError> {
 /// build-script usage) and the path-aware error variants degrade to
 /// path-less messages.
 ///
-/// Strips a leading UTF-8 BOM if present. After parse, validates
-/// `format_version` against [`SNAPSHOT_FORMAT_VERSION`] and rejects
-/// mismatches with [`SnapshotError::UnsupportedFormatVersion`].
+/// Strips a leading UTF-8 BOM if present. **Inspects
+/// `format_version` before full structural deserialization** so a
+/// newer snapshot read by an older Djogi surfaces
+/// [`SnapshotError::UnsupportedFormatVersion`] (actionable upgrade
+/// message) rather than a generic `deny_unknown_fields` parse error
+/// from a field that didn't exist when the older Djogi was built.
 pub fn parse_snapshot_bytes(
     bytes: &[u8],
     path: Option<std::path::PathBuf>,
 ) -> Result<AppliedSchema, SnapshotError> {
     let bytes = strip_utf8_bom(bytes);
 
+    // Stage 1 — peek at `format_version` only. Use a permissive
+    // `serde_json::Value` so the peek succeeds even when the rest of
+    // the document carries fields the strict struct deserializer
+    // doesn't recognise (the case that matters: an older Djogi
+    // reading a future version with new fields). If the document
+    // isn't even a JSON object, fall through to the structural
+    // parse so its error message is more specific.
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(bytes)
+        && let Some(serde_json::Value::String(found)) = map.get("format_version")
+        && found != SNAPSHOT_FORMAT_VERSION
+    {
+        return Err(SnapshotError::UnsupportedFormatVersion {
+            found: found.clone(),
+            expected: SNAPSHOT_FORMAT_VERSION,
+            path,
+        });
+    }
+
+    // Stage 2 — full strict deserialize. Reaching here means
+    // `format_version` is either absent (will fail strict deserialize
+    // because the field is required) or matches the expected
+    // version.
     let snapshot: AppliedSchema =
         serde_json::from_slice(bytes).map_err(|e| SnapshotError::Parse {
             path: path.clone(),
             source: e,
         })?;
 
+    // Defense-in-depth: re-check after the strict deserialize. The
+    // peek catches the common case (newer-version snapshot); this
+    // covers a malformed file that somehow passes both layers.
     if snapshot.format_version != SNAPSHOT_FORMAT_VERSION {
         return Err(SnapshotError::UnsupportedFormatVersion {
             found: snapshot.format_version,
@@ -320,6 +354,35 @@ mod tests {
             msg.contains("upgrade") || msg.contains("checkout") || msg.contains("check out"),
             "must suggest upgrade path: {msg}"
         );
+    }
+
+    #[test]
+    fn newer_snapshot_with_unknown_fields_surfaces_version_error_first() {
+        // Simulates an older Djogi reading a future snapshot whose
+        // `format_version = "2"` carries new fields the older Djogi
+        // doesn't recognise. With the format_version peek, we get
+        // UnsupportedFormatVersion (actionable) instead of a generic
+        // deny_unknown_fields parse error.
+        let blob = r#"{
+            "djogi_version": "0.2.0",
+            "enums": {},
+            "format_version": "2",
+            "future_field_added_in_v2": "some value",
+            "generated_at": "2027-01-01T00:00:00Z",
+            "indexes": [],
+            "models": {},
+            "registered_apps": []
+        }"#;
+        let err = parse_snapshot_bytes(blob.as_bytes(), None).expect_err("must fail");
+        match err {
+            SnapshotError::UnsupportedFormatVersion {
+                found, expected, ..
+            } => {
+                assert_eq!(found, "2");
+                assert_eq!(expected, "1");
+            }
+            other => panic!("expected UnsupportedFormatVersion (peek path), got {other:?}"),
+        }
     }
 
     #[test]
