@@ -2455,12 +2455,15 @@ mod tests {
         // bytes do not appear verbatim in this very test's source —
         // otherwise the scanner would match its own scan-target
         // string. Comment and docstring prose elsewhere in this file
-        // never carry the exact byte run `code: "D` because the
-        // verify.rs prose consistently writes the codes as plain
-        // identifiers (`D601`, `D621`) without the field-assignment
-        // form. Registry entries are formatted as `("D6...", "...")`
-        // — preceded by `(` not by `code: ` — so the registry itself
-        // does not match the emit-site prefix.
+        // never carry the exact eight-byte sequence consisting of
+        // the four letters `c`, `o`, `d`, `e`, then a colon, then a
+        // space, then a double-quote, then an uppercase letter `D`,
+        // because the verify.rs prose consistently writes the codes
+        // as plain identifiers (`D601`, `D621`) without the field-
+        // assignment form. Registry entries are formatted as
+        // `("D6...", "...")` — preceded by `(` rather than by the
+        // field-assignment prefix — so the registry itself does not
+        // match the emit-site prefix.
         let source = include_str!("verify.rs");
         let bytes = source.as_bytes();
         // Compose the prefix at runtime from two halves so the

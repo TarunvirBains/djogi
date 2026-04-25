@@ -861,10 +861,15 @@ async fn repair_partial_apply_rejects_already_applied(mut ctx: djogi::DjogiConte
 
 #[djogi::djogi_test]
 async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiContext) {
-    // B-12 (Codex round-2): the previous test only checked that the
-    // written snapshot contained ONE table name, which is too weak
-    // to prove correctness — a no-op write that emitted any file
-    // with the right key would pass. The strengthened version:
+    // B-12 (Codex round-3): the round-2 strengthening compared the
+    // rebuild output against a SECOND rebuild — that pinned
+    // determinism but not correctness. A deterministic-but-wrong
+    // projection would still pass. This round-3 version pins the
+    // rebuild against expected per-column / per-index VALUES, so a
+    // wrong projection (missing default, swapped type, wrong index
+    // column list, wrong uniqueness) fails the test loudly.
+    //
+    // The round-3 plan:
     //
     //   1. Apply a multi-table plan with varied shape (3 tables,
     //      different column types, an index, different PK column
@@ -873,12 +878,32 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     //      "snapshot was lost or corrupted").
     //   3. Run `repair_snapshot_rebuild`.
     //   4. Re-read the rebuilt snapshot via `load_snapshot`.
-    //   5. Re-project live via `verify::live_schema_for_repair`.
-    //   6. Assert the rebuilt snapshot is structurally equal to the
-    //      live projection (same `models` set, same `indexes` list).
+    //   5. Run `repair_snapshot_rebuild` a SECOND time into a
+    //      separate path (determinism cross-check — kept from
+    //      round-2 because it is cheap and catches a different
+    //      class of regression than the per-column assertions).
+    //   6. Per-column / per-index VALUE assertions:
+    //      - `t5_b12_alpha.id` is `int8` (the canonical lower-cased
+    //        rendering of `BIGINT` returned by `format_type`) and
+    //        NOT NULL.
+    //      - `t5_b12_beta.created_at` carries a NON-NONE
+    //        `default_sql` whose normalized form mentions `now`
+    //        (Postgres rewrites `DEFAULT now()` to `now()` in
+    //        `pg_get_expr`; the projection passes it through).
+    //      - `t5_b12_gamma.alpha_id` is `int8` NOT NULL.
+    //      - `t5_b12_gamma_alpha_id_idx` lives on `t5_b12_gamma`,
+    //        is NON-unique (`CREATE INDEX`, no `UNIQUE`), uses
+    //        `BTree`, and its column list is exactly `["alpha_id"]`.
     //
-    // This proves the rebuild matches reality, not just "some file
-    // with the right table name in it".
+    // Per-column / per-index VALUE assertions provably fail on a
+    // deterministic-but-wrong projection (e.g. swapping `int8` for
+    // `text`, dropping the default, returning the wrong column
+    // list). Codex round-3 B-1 picked this option (b) over the
+    // export-`live_schema_for_repair` path (option a) because the
+    // public-surface change is more invasive than is justified by
+    // the marginal coverage gain — the per-value assertions exhaust
+    // the "could a deterministic-but-wrong projection sneak past?"
+    // question already.
     let _guard = acquire_test_workspace_guard();
     bootstrap_ledger(&mut ctx).await.expect("bootstrap");
 
@@ -1017,14 +1042,140 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         "rebuild must project the gamma_alpha_id index; got {:?}",
         rebuilt.indexes.iter().map(|i| &i.name).collect::<Vec<_>>()
     );
-    // Per-table column metadata: `t5_b12_beta` carries the DEFAULT
-    // now() expression. The rebuild must capture the column.
-    let beta = rebuilt.models.get("t5_b12_beta").expect("beta in rebuild");
-    assert!(
-        beta.columns.iter().any(|c| c.name == "created_at"),
-        "beta.created_at must be projected; got columns {:?}",
-        beta.columns.iter().map(|c| &c.name).collect::<Vec<_>>()
+    // ── Round-3 B-1: per-column / per-index VALUE assertions ────────
+    // The rebuild is the only thing under test here; we read VALUES
+    // out of the loaded snapshot and compare them to what the live
+    // catalog should hold given the apply above. A deterministic-
+    // but-wrong projection (swapped type, dropped default, wrong
+    // index column list) fails these assertions.
+
+    // (1) `t5_b12_alpha.id` — BIGINT NOT NULL, PK column.
+    let alpha = rebuilt
+        .models
+        .get("t5_b12_alpha")
+        .expect("alpha in rebuild");
+    let alpha_id = alpha
+        .columns
+        .iter()
+        .find(|c| c.name == "id")
+        .expect("alpha.id must be projected");
+    assert_eq!(
+        alpha_id.sql_type.as_str(),
+        "int8",
+        "alpha.id must project as `int8` (canonical form of BIGINT); \
+         got sql_type {:?}",
+        alpha_id.sql_type
     );
+    assert!(
+        !alpha_id.nullable,
+        "alpha.id is the PK and must project as NOT NULL; got nullable={}",
+        alpha_id.nullable
+    );
+    assert_eq!(
+        alpha.primary_key.columns,
+        vec!["id".to_string()],
+        "alpha.primary_key must list exactly `id`; got {:?}",
+        alpha.primary_key.columns
+    );
+
+    // (2) `t5_b12_beta.created_at` — TIMESTAMPTZ NOT NULL DEFAULT now().
+    // The rebuild must round-trip the DEFAULT expression. Postgres
+    // returns `DEFAULT now()` as the literal string `now()` from
+    // `pg_get_expr`; the projection passes that through. We assert
+    // BOTH that `default_sql` is `Some(_)` (i.e. the rebuild did not
+    // silently drop the default) AND that the captured expression
+    // is a `now`-shaped expression (matches `now()` exactly, since
+    // that is the canonical Postgres rendering).
+    let beta = rebuilt.models.get("t5_b12_beta").expect("beta in rebuild");
+    let beta_created_at = beta
+        .columns
+        .iter()
+        .find(|c| c.name == "created_at")
+        .expect("beta.created_at must be projected");
+    assert_eq!(
+        beta_created_at.sql_type.as_str(),
+        "timestamptz",
+        "beta.created_at must project as `timestamptz`; got {:?}",
+        beta_created_at.sql_type
+    );
+    assert!(
+        !beta_created_at.nullable,
+        "beta.created_at was declared NOT NULL; must round-trip as such"
+    );
+    let beta_default = beta_created_at
+        .default_sql
+        .as_deref()
+        .expect("beta.created_at must carry a non-None default_sql");
+    let beta_default_lower: String = beta_default
+        .as_bytes()
+        .iter()
+        .map(|b| b.to_ascii_lowercase() as char)
+        .collect();
+    assert!(
+        beta_default_lower.contains("now()"),
+        "beta.created_at default must round-trip as a now() expression; got {:?}",
+        beta_default
+    );
+
+    // (3) `t5_b12_gamma.alpha_id` — BIGINT NOT NULL.
+    let gamma = rebuilt
+        .models
+        .get("t5_b12_gamma")
+        .expect("gamma in rebuild");
+    let gamma_alpha_id = gamma
+        .columns
+        .iter()
+        .find(|c| c.name == "alpha_id")
+        .expect("gamma.alpha_id must be projected");
+    assert_eq!(
+        gamma_alpha_id.sql_type.as_str(),
+        "int8",
+        "gamma.alpha_id must project as `int8`; got {:?}",
+        gamma_alpha_id.sql_type
+    );
+    assert!(
+        !gamma_alpha_id.nullable,
+        "gamma.alpha_id was declared NOT NULL; must round-trip as such"
+    );
+
+    // (4) `t5_b12_gamma_alpha_id_idx` — NON-unique BTree on `["alpha_id"]`,
+    //     owned by `t5_b12_gamma`.
+    use djogi::migrate::{IndexKindSchema, IndexTargetSchema, IndexTypeSchema};
+    let idx = rebuilt
+        .indexes
+        .iter()
+        .find(|i| i.name == "t5_b12_gamma_alpha_id_idx")
+        .expect("gamma index must be projected");
+    assert_eq!(
+        idx.table.as_str(),
+        "t5_b12_gamma",
+        "gamma index must claim `t5_b12_gamma` as its owning table; got {:?}",
+        idx.table
+    );
+    assert!(
+        matches!(idx.kind, IndexKindSchema::NonUnique),
+        "gamma index was created without UNIQUE; must round-trip as NonUnique; \
+         got {:?}",
+        idx.kind
+    );
+    assert!(
+        matches!(idx.index_type, IndexTypeSchema::BTree),
+        "gamma index uses default access method (BTree); got {:?}",
+        idx.index_type
+    );
+    match &idx.target {
+        IndexTargetSchema::Columns(cols) => {
+            let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+            assert_eq!(
+                names,
+                vec!["alpha_id"],
+                "gamma index column list must be exactly [alpha_id]; got {names:?}"
+            );
+        }
+        IndexTargetSchema::Expression(e) => {
+            panic!("gamma index was column-form; rebuild produced expression form: {e}")
+        }
+    }
 
     let _ = std::fs::remove_file(&snapshot_path);
     let _ = std::fs::remove_file(&snapshot_path_b);
@@ -1977,4 +2128,208 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
         RunnerError::BaselineSnapshotShouldNotBeProvided => (),
         other => panic!("expected BaselineSnapshotShouldNotBeProvided, got {other:?}"),
     }
+}
+
+// ── Round-3 A-1: two-bucket baseline scoping (named vs synthetic global) ──
+//
+// Codex round-3 A-1: the only B-11 live test (above) exercised a
+// SINGLE bucket. The B-11 contract is broader — each bucket's
+// baseline must project ONLY the tables that belong to that bucket,
+// so a named app does not pull in a peer app's tables and the
+// synthetic global bucket does not silently swallow a named app's
+// tables.
+//
+// We pick the round-3 Option B framing: without test-time
+// `inventory::submit!` to register synthetic descriptors, a named
+// bucket's projection is empty by construction (no descriptor
+// claims any of the freshly-created live tables for `phantom_bill`,
+// `phantom_users`, etc.). The synthetic global bucket projection,
+// by contrast, includes the live tables because no named-app
+// descriptor claims them either. The CLEAR difference between the
+// two snapshots — global has the tables, named does not — proves
+// the bucket parameter is being honoured at the projection layer.
+
+#[djogi::djogi_test]
+async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+
+    // Two adopter-owned tables created via raw DDL — no inventory
+    // descriptors claim them, so they live in the synthetic global
+    // bucket.
+    ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_alpha_table")
+        .await
+        .expect("clean alpha");
+    ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_beta_table")
+        .await
+        .expect("clean beta");
+    ctx.raw_ddl("CREATE TABLE t5_a1_alpha_table (id BIGINT PRIMARY KEY, label TEXT NOT NULL)")
+        .await
+        .expect("create alpha");
+    ctx.raw_ddl("CREATE TABLE t5_a1_beta_table (id BIGINT PRIMARY KEY, payload TEXT)")
+        .await
+        .expect("create beta");
+
+    // Bucket 1: synthetic global (`app == ""`). Baseline should
+    // include both tables.
+    let global_bucket = BucketKey {
+        database: "main".to_string(),
+        app: "".to_string(),
+    };
+    let global_path = temp_path("a1-global");
+    let global_runner_ctx = RunnerCtx {
+        bucket: global_bucket.clone(),
+        version: "V20260425010301__a1_global".to_string(),
+        description: "two-bucket scope test (global)".to_string(),
+        checksum_up: compute_checksum(["placeholder"]),
+        checksum_down: None,
+        snapshot: None,
+        snapshot_path: Some(global_path.clone()),
+        config: MigrateConfig::default(),
+    };
+    baseline_plan(
+        &mut ctx,
+        &global_bucket,
+        &global_runner_ctx,
+        &_guard,
+        "global bucket scope test",
+    )
+    .await
+    .expect("baseline global ok");
+    let global_snap = djogi::migrate::load_snapshot(&global_path).expect("load global");
+
+    // Bucket 2: named bucket (`app == "phantom_billing"`). No
+    // descriptor in inventory declares this app label, so the named
+    // bucket's projection MUST exclude every live table. The named
+    // bucket's snapshot must therefore contain neither
+    // `t5_a1_alpha_table` nor `t5_a1_beta_table`.
+    let named_bucket = BucketKey {
+        database: "main".to_string(),
+        app: "phantom_billing".to_string(),
+    };
+    let named_path = temp_path("a1-named");
+    let named_runner_ctx = RunnerCtx {
+        bucket: named_bucket.clone(),
+        version: "V20260425010302__a1_named".to_string(),
+        description: "two-bucket scope test (named)".to_string(),
+        checksum_up: compute_checksum(["placeholder"]),
+        checksum_down: None,
+        snapshot: None,
+        snapshot_path: Some(named_path.clone()),
+        config: MigrateConfig::default(),
+    };
+    baseline_plan(
+        &mut ctx,
+        &named_bucket,
+        &named_runner_ctx,
+        &_guard,
+        "named bucket scope test",
+    )
+    .await
+    .expect("baseline named ok");
+    let named_snap = djogi::migrate::load_snapshot(&named_path).expect("load named");
+
+    // Assertion 1 — the global bucket's projection includes BOTH
+    // adopter tables.
+    assert!(
+        global_snap.models.contains_key("t5_a1_alpha_table"),
+        "global bucket must include t5_a1_alpha_table; got {:?}",
+        global_snap.models.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        global_snap.models.contains_key("t5_a1_beta_table"),
+        "global bucket must include t5_a1_beta_table; got {:?}",
+        global_snap.models.keys().collect::<Vec<_>>()
+    );
+
+    // Assertion 2 — the named bucket's projection includes NEITHER
+    // adopter table (no descriptor claims either for `phantom_billing`).
+    assert!(
+        !named_snap.models.contains_key("t5_a1_alpha_table"),
+        "named bucket `phantom_billing` must NOT include t5_a1_alpha_table; \
+         got {:?}",
+        named_snap.models.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !named_snap.models.contains_key("t5_a1_beta_table"),
+        "named bucket `phantom_billing` must NOT include t5_a1_beta_table; \
+         got {:?}",
+        named_snap.models.keys().collect::<Vec<_>>()
+    );
+
+    // Assertion 3 — the two snapshots must DIFFER on these table
+    // names. (A trivially-broken projection that always returned
+    // every live table for every bucket would pass assertions 1 and
+    // 2 individually if you only checked the wrong bucket each time;
+    // this assertion forces the two snapshots' model sets to be
+    // genuinely different.)
+    let global_set: std::collections::BTreeSet<&str> =
+        global_snap.models.keys().map(String::as_str).collect();
+    let named_set: std::collections::BTreeSet<&str> =
+        named_snap.models.keys().map(String::as_str).collect();
+    assert_ne!(
+        global_set, named_set,
+        "round-3 A-1: global and named buckets must produce DIFFERENT \
+         projections; got identical model sets {global_set:?}"
+    );
+
+    // Cleanup.
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_alpha_table").await;
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_a1_beta_table").await;
+    let _ = std::fs::remove_file(&global_path);
+    let _ = std::fs::remove_file(&named_path);
+}
+
+// ── Round-3 A-2: verify does not exclude adopter `heer_orders` table ──
+//
+// Codex round-3 A-2: the round-2 A-1 fix landed in unit-test space
+// (`is_heeranjid_artifact_table("heer_orders")` returns false at the
+// allowlist function level), but the live integration suite carried
+// no test that proved the policy end-to-end against a real Postgres
+// catalog. A live test that creates `heer_orders` in the public
+// schema and runs `verify` against an empty snapshot is the only way
+// to prove the projection / verify pipeline does not silently drop
+// the table.
+//
+// The expected outcome: with an empty snapshot and a live
+// `heer_orders` table, verify must emit `D602` (live table not in
+// snapshot) for `heer_orders`. If the table were silently excluded
+// (the pre-A-1 LIKE-based behaviour), verify would emit nothing at
+// all for `heer_orders` — a silent data loss for the operator who
+// just adopted the framework.
+
+#[djogi::djogi_test]
+async fn verify_does_not_exclude_adopter_named_heer_orders_table(mut ctx: djogi::DjogiContext) {
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    ctx.raw_ddl("DROP TABLE IF EXISTS heer_orders")
+        .await
+        .expect("clean");
+    ctx.raw_ddl(
+        "CREATE TABLE heer_orders (\
+            id BIGINT PRIMARY KEY, \
+            customer TEXT NOT NULL, \
+            amount_cents BIGINT NOT NULL)",
+    )
+    .await
+    .expect("create heer_orders");
+
+    let snap = empty_snapshot();
+    let report = verify(&mut ctx, &snap).await.expect("verify ok");
+
+    // Round-3 A-2: `heer_orders` must surface as a `D602` (live
+    // table not in snapshot) diagnostic. If the projection silently
+    // excluded the table — the bug the round-2 A-1 fix targeted —
+    // verify would emit no diagnostic for `heer_orders` and the
+    // operator would have no way to learn the framework was
+    // ignoring their data.
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "D602" && d.location.as_deref() == Some("heer_orders")),
+        "round-3 A-2: verify must surface adopter `heer_orders` as D602 \
+         (live table not in snapshot); got diagnostics: {:?}",
+        report.diagnostics
+    );
+
+    let _ = ctx.raw_ddl("DROP TABLE IF EXISTS heer_orders").await;
 }
