@@ -73,11 +73,12 @@ pub use guard::{
     acquire as acquire_workspace_lock,
 };
 pub use ledger::{
-    CHECKSUM_LEN, CHECKSUM_PREFIX, ChecksumMismatch, ExecutionMode, LEDGER_TABLE_DDL, LedgerRow,
-    LedgerStatus, SHA256_HEX_LEN, bootstrap as bootstrap_ledger, compute_checksum,
+    CHECKSUM_LEN, CHECKSUM_PREFIX, ChecksumFormatError, ChecksumFormatErrorKind, ChecksumMismatch,
+    ChecksumSide, ExecutionMode, LEDGER_TABLE_DDL, LedgerRow, LedgerStatus, SHA256_HEX_LEN,
+    VerifyError, bootstrap as bootstrap_ledger, compute_checksum,
     insert_pending as insert_pending_ledger_row, mark_applied as mark_ledger_applied,
     mark_failed as mark_ledger_failed, mark_partial as mark_ledger_partial,
-    update_progress as update_ledger_progress, verify_checksum,
+    update_progress as update_ledger_progress, validate_checksum_format, verify_checksum,
 };
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use runner::{RunReport, RunnerCtx, RunnerError, advisory_lock_key, apply_plan};

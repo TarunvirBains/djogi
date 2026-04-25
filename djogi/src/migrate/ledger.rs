@@ -282,25 +282,214 @@ fn hex_digit(n: u8) -> char {
     }
 }
 
+/// Reason a checksum string failed [`validate_checksum_format`].
+///
+/// Surfaces the precise rule violated so the operator can correct the
+/// stored value (typically by re-running `compose` against the
+/// canonical SQL fragments).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChecksumFormatErrorKind {
+    /// String did not start with the literal [`CHECKSUM_PREFIX`]
+    /// (`V1:`). Bumping the prefix to `V2:` would be a breaking
+    /// change; until then any other prefix is malformed.
+    WrongPrefix,
+    /// Total length differed from [`CHECKSUM_LEN`] (67 bytes). A
+    /// well-formed checksum is `V1:` followed by exactly 64 hex
+    /// characters.
+    WrongLength { observed: usize },
+    /// One of the 64 hex bytes was not a lowercase ASCII hex
+    /// character (`0`..=`9` or `a`..=`f`). Uppercase hex is also
+    /// rejected — the canonical encoding is lowercase to match
+    /// `compute_checksum`'s output exactly so byte-comparisons are
+    /// total.
+    NonLowercaseHex { offset: usize, byte: u8 },
+}
+
+impl std::fmt::Display for ChecksumFormatErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WrongPrefix => write!(
+                f,
+                "checksum string does not start with the `{CHECKSUM_PREFIX}` prefix",
+            ),
+            Self::WrongLength { observed } => write!(
+                f,
+                "checksum string length is {observed} bytes; expected {CHECKSUM_LEN}",
+            ),
+            Self::NonLowercaseHex { offset, byte } => write!(
+                f,
+                "checksum hex byte at offset {offset} is 0x{byte:02x}; expected lowercase ASCII hex",
+            ),
+        }
+    }
+}
+
+/// A checksum string failed [`validate_checksum_format`]. The
+/// `side` field indicates which argument to [`verify_checksum`] was
+/// malformed so operators can pinpoint the bad value (a hand-edited
+/// ledger row vs. a runner that emitted a wrong-shape string).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksumFormatError {
+    /// Which side of the verification carried the malformed string.
+    pub side: ChecksumSide,
+    /// The offending checksum string.
+    pub value: String,
+    /// The exact rule violated.
+    pub kind: ChecksumFormatErrorKind,
+}
+
+/// Identifies which checksum argument failed format validation —
+/// the stored `expected` value (typically from the ledger row) or
+/// the freshly-computed `actual` value (from the runner).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksumSide {
+    /// The persisted / supplied `expected` checksum (typically
+    /// loaded from `djogi_schema_migrations.checksum_up`).
+    Expected,
+    /// The freshly-computed `actual` checksum produced by the
+    /// runner from the in-memory plan.
+    Actual,
+}
+
+impl std::fmt::Display for ChecksumSide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expected => f.write_str("expected"),
+            Self::Actual => f.write_str("actual"),
+        }
+    }
+}
+
+impl std::fmt::Display for ChecksumFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{side} checksum `{value}` is malformed: {kind}",
+            side = self.side,
+            value = self.value,
+            kind = self.kind,
+        )
+    }
+}
+
+impl std::error::Error for ChecksumFormatError {}
+
+/// Structurally validate a checksum string against the
+/// `V1:<sha256-hex>` shape.
+///
+/// Rules:
+///
+/// 1. Starts with the literal [`CHECKSUM_PREFIX`] (`V1:`). No other
+///    prefix is accepted; uppercase / lowercase variants are rejected.
+/// 2. Total byte length equals [`CHECKSUM_LEN`] (67).
+/// 3. The 64 bytes after the prefix are all lowercase ASCII hex —
+///    a digit `0`..=`9` or a lowercase letter `a`..=`f`. Uppercase
+///    hex is rejected because [`compute_checksum`] always emits
+///    lowercase, so an uppercase value cannot be a runner-produced
+///    checksum.
+///
+/// Used by [`verify_checksum`] on BOTH operands before string
+/// comparison so a malformed persisted value cannot accidentally
+/// pass a `==` check against another malformed value.
+///
+/// Implementation note: byte-level rules per the Djogi-wide
+/// no-regex policy. No allocation; constant-stack only.
+pub fn validate_checksum_format(s: &str) -> Result<(), ChecksumFormatErrorKind> {
+    let bytes = s.as_bytes();
+    if !s.starts_with(CHECKSUM_PREFIX) {
+        return Err(ChecksumFormatErrorKind::WrongPrefix);
+    }
+    if bytes.len() != CHECKSUM_LEN {
+        return Err(ChecksumFormatErrorKind::WrongLength {
+            observed: bytes.len(),
+        });
+    }
+    // Walk the 64-byte hex tail. Lowercase hex only — `0..=9`
+    // (0x30..=0x39) or `a..=f` (0x61..=0x66).
+    let prefix_len = CHECKSUM_PREFIX.len();
+    for (i, &b) in bytes[prefix_len..].iter().enumerate() {
+        let is_lower_hex = b.is_ascii_digit() || (b'a'..=b'f').contains(&b);
+        if !is_lower_hex {
+            return Err(ChecksumFormatErrorKind::NonLowercaseHex {
+                offset: prefix_len + i,
+                byte: b,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Verify that a stored checksum matches a freshly-computed one.
 /// Returns `Ok(())` on match; on mismatch returns the structured
 /// error variant the runner surfaces verbatim.
 ///
+/// **Format validation runs first.** Both operands are passed
+/// through [`validate_checksum_format`] BEFORE the string compare so
+/// a malformed-but-equal pair (e.g. two uppercase-hex strings) cannot
+/// accidentally verify clean. The format-failure path returns
+/// [`VerifyError::Format`] identifying which side was bad; only when
+/// both sides are well-formed does the function fall through to the
+/// hash-comparison path which yields [`VerifyError::Mismatch`] on
+/// disagreement.
+///
 /// Distinct from a plain `==` so the call site reads as a verification
 /// step rather than a generic equality check.
-pub fn verify_checksum(
-    version: &str,
-    expected: &str,
-    actual: &str,
-) -> Result<(), ChecksumMismatch> {
+pub fn verify_checksum(version: &str, expected: &str, actual: &str) -> Result<(), VerifyError> {
+    if let Err(kind) = validate_checksum_format(expected) {
+        return Err(VerifyError::Format(ChecksumFormatError {
+            side: ChecksumSide::Expected,
+            value: expected.to_string(),
+            kind,
+        }));
+    }
+    if let Err(kind) = validate_checksum_format(actual) {
+        return Err(VerifyError::Format(ChecksumFormatError {
+            side: ChecksumSide::Actual,
+            value: actual.to_string(),
+            kind,
+        }));
+    }
     if expected == actual {
         Ok(())
     } else {
-        Err(ChecksumMismatch {
+        Err(VerifyError::Mismatch(ChecksumMismatch {
             version: version.to_string(),
             expected: expected.to_string(),
             actual: actual.to_string(),
-        })
+        }))
+    }
+}
+
+/// Failure modes of [`verify_checksum`]. Either a malformed input
+/// (rejected before comparison) or a content mismatch between two
+/// well-formed checksums.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyError {
+    /// One of the two checksum strings did not pass
+    /// [`validate_checksum_format`]. The wrapped error carries the
+    /// offending side and the precise rule violated.
+    Format(ChecksumFormatError),
+    /// Both inputs were well-formed but the values differed. The
+    /// runner surfaces this verbatim as
+    /// `RunnerError::ChecksumMismatch`.
+    Mismatch(ChecksumMismatch),
+}
+
+impl std::fmt::Display for VerifyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyError::Format(e) => write!(f, "{e}"),
+            VerifyError::Mismatch(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for VerifyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            VerifyError::Format(e) => Some(e),
+            VerifyError::Mismatch(e) => Some(e),
+        }
     }
 }
 
@@ -520,12 +709,152 @@ mod tests {
         let a = compute_checksum(["x"]);
         let b = compute_checksum(["y"]);
         let err = verify_checksum("V_test", &a, &b).unwrap_err();
-        assert_eq!(err.version, "V_test");
-        assert_eq!(err.expected, a);
-        assert_eq!(err.actual, b);
-        let msg = err.to_string();
-        assert!(msg.contains("V_test"));
-        assert!(msg.contains("checksum mismatch"));
+        match err {
+            VerifyError::Mismatch(m) => {
+                assert_eq!(m.version, "V_test");
+                assert_eq!(m.expected, a);
+                assert_eq!(m.actual, b);
+                let msg = m.to_string();
+                assert!(msg.contains("V_test"));
+                assert!(msg.contains("checksum mismatch"));
+            }
+            other => panic!("expected Mismatch, got {other:?}"),
+        }
+    }
+
+    // ── validate_checksum_format ─────────────────────────────────────────
+
+    #[test]
+    fn validate_format_accepts_canonical_compute_checksum_output() {
+        let csum = compute_checksum(["foo"]);
+        validate_checksum_format(&csum).expect("canonical output is valid");
+    }
+
+    #[test]
+    fn validate_format_rejects_uppercase_v_prefix() {
+        // The canonical prefix is exactly `V1:` (capital V, digit 1,
+        // colon). An uppercase-V is fine; `v1:` lowercase must reject.
+        let bad = "v1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(bad.len(), CHECKSUM_LEN);
+        let err = validate_checksum_format(bad).unwrap_err();
+        assert!(matches!(err, ChecksumFormatErrorKind::WrongPrefix));
+    }
+
+    #[test]
+    fn validate_format_rejects_v2_prefix() {
+        let bad = "V2:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(bad.len(), CHECKSUM_LEN);
+        let err = validate_checksum_format(bad).unwrap_err();
+        assert!(matches!(err, ChecksumFormatErrorKind::WrongPrefix));
+    }
+
+    #[test]
+    fn validate_format_rejects_no_prefix() {
+        let bad = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let err = validate_checksum_format(bad).unwrap_err();
+        assert!(matches!(err, ChecksumFormatErrorKind::WrongPrefix));
+    }
+
+    #[test]
+    fn validate_format_rejects_short_length() {
+        let bad = "V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"; // 66 bytes
+        assert_eq!(bad.len(), CHECKSUM_LEN - 1);
+        let err = validate_checksum_format(bad).unwrap_err();
+        assert!(matches!(
+            err,
+            ChecksumFormatErrorKind::WrongLength { observed: 66 }
+        ));
+    }
+
+    #[test]
+    fn validate_format_rejects_long_length() {
+        let bad = "V1:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b8550"; // 68 bytes
+        assert_eq!(bad.len(), CHECKSUM_LEN + 1);
+        let err = validate_checksum_format(bad).unwrap_err();
+        assert!(matches!(
+            err,
+            ChecksumFormatErrorKind::WrongLength { observed: 68 }
+        ));
+    }
+
+    #[test]
+    fn validate_format_rejects_uppercase_hex() {
+        // Same length, valid prefix, but uppercase A in the hex tail.
+        let bad = "V1:ABC0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(bad.len(), CHECKSUM_LEN);
+        let err = validate_checksum_format(bad).unwrap_err();
+        match err {
+            ChecksumFormatErrorKind::NonLowercaseHex { offset, byte } => {
+                assert_eq!(offset, 3); // first byte after `V1:` prefix
+                assert_eq!(byte, b'A');
+            }
+            other => panic!("expected NonLowercaseHex, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_format_rejects_non_hex_letters() {
+        // `z` is past `f` — must reject.
+        let bad = "V1:zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+        assert_eq!(bad.len(), CHECKSUM_LEN);
+        let err = validate_checksum_format(bad).unwrap_err();
+        assert!(matches!(
+            err,
+            ChecksumFormatErrorKind::NonLowercaseHex {
+                offset: 3,
+                byte: b'z'
+            }
+        ));
+    }
+
+    #[test]
+    fn validate_format_rejects_uppercase_g() {
+        // `G` is also past `f` and uppercase — must reject.
+        let bad = "V1:GGG0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(bad.len(), CHECKSUM_LEN);
+        let err = validate_checksum_format(bad).unwrap_err();
+        assert!(matches!(
+            err,
+            ChecksumFormatErrorKind::NonLowercaseHex {
+                offset: 3,
+                byte: b'G'
+            }
+        ));
+    }
+
+    #[test]
+    fn verify_checksum_rejects_malformed_expected() {
+        let actual = compute_checksum(["x"]);
+        let err = verify_checksum("V_test", "V1:NOT_HEX", &actual).unwrap_err();
+        match err {
+            VerifyError::Format(f) => {
+                assert_eq!(f.side, ChecksumSide::Expected);
+            }
+            other => panic!("expected Format(Expected), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_checksum_rejects_malformed_actual() {
+        // Expected is well-formed, actual is malformed (uppercase hex).
+        let expected = compute_checksum(["x"]);
+        let bad_actual = "V1:ABC0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let err = verify_checksum("V_test", &expected, bad_actual).unwrap_err();
+        match err {
+            VerifyError::Format(f) => {
+                assert_eq!(f.side, ChecksumSide::Actual);
+            }
+            other => panic!("expected Format(Actual), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_checksum_runs_format_check_before_equality() {
+        // Two malformed-but-equal strings would pass a naive `==` check.
+        // The format gate must reject them first.
+        let bad = "V1:ABC0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let err = verify_checksum("V_test", bad, bad).unwrap_err();
+        assert!(matches!(err, VerifyError::Format(_)));
     }
 
     #[test]

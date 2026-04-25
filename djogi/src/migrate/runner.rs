@@ -49,18 +49,22 @@
 //! [`MigrateConfig::strict_concurrent_warnings`] the warn upgrades
 //! to a hard `RunnerError::RelpagesThresholdExceeded`.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
 use sha2::{Digest, Sha256};
+use time::OffsetDateTime;
 
 use crate::config::MigrateConfig;
 use crate::context::DjogiContext;
-use crate::error::DjogiError;
+use crate::error::{DbError, DjogiError};
 use crate::types::HeerId;
 
+use super::guard::WorkspaceGuard;
 use super::ledger::{
-    self, ChecksumMismatch, ExecutionMode, LedgerRow, LedgerStatus, compute_checksum,
+    self, ChecksumFormatError, ChecksumMismatch, ExecutionMode, LedgerRow, LedgerStatus,
+    VerifyError, compute_checksum,
 };
 use super::projection::BucketKey;
 use super::schema::SNAPSHOT_FORMAT_VERSION;
@@ -99,8 +103,36 @@ pub enum RunnerError {
     /// edited after it was committed.
     ChecksumMismatch(ChecksumMismatch),
 
+    /// One of the two checksum strings handed to the runner failed
+    /// [`super::ledger::validate_checksum_format`]. The wrapped error
+    /// identifies which side (expected vs. actual) was malformed and
+    /// the rule violated.
+    ChecksumFormat(ChecksumFormatError),
+
     /// A ledger row CRUD operation failed (INSERT, UPDATE).
     LedgerWriteFailed { version: String, source: DjogiError },
+
+    /// Insertion of the pending ledger row collided with an existing
+    /// row carrying the same `version`. Surfaces a typed error rather
+    /// than a raw `LedgerWriteFailed { source: 23505 }` so operators
+    /// re-running an already-applied migration get an actionable
+    /// message that names the prior `applied_at` timestamp.
+    VersionAlreadyApplied {
+        version: String,
+        applied_at: Option<OffsetDateTime>,
+    },
+
+    /// The relpages probe queried `pg_class` for a target table that
+    /// did NOT match any AddTable in the current plan and the table
+    /// was not present in the database. This catches typos / mis-
+    /// quoted identifiers — silently dropping to `relpages = 0` would
+    /// disable the strict-mode warning path for any mis-targeted
+    /// `CREATE INDEX`.
+    TargetTableNotFound {
+        bucket: BucketKey,
+        index_name: String,
+        target_table: String,
+    },
 
     /// A `CREATE INDEX` was about to run against a table whose
     /// `pg_class.relpages` exceeded the operator-configured
@@ -179,9 +211,39 @@ impl std::fmt::Display for RunnerError {
                 app = bucket.app,
             ),
             RunnerError::ChecksumMismatch(m) => write!(f, "{m}"),
+            RunnerError::ChecksumFormat(e) => write!(f, "{e}"),
             RunnerError::LedgerWriteFailed { version, source } => {
                 write!(f, "ledger write failed for version `{version}`: {source}")
             }
+            RunnerError::VersionAlreadyApplied {
+                version,
+                applied_at,
+            } => match applied_at {
+                Some(when) => write!(
+                    f,
+                    "migration version `{version}` was already applied at {when}; \
+                     re-running is rejected — use `djogi migrations status` to confirm",
+                ),
+                None => write!(
+                    f,
+                    "migration version `{version}` was already applied; \
+                     re-running is rejected — use `djogi migrations status` to confirm",
+                ),
+            },
+            RunnerError::TargetTableNotFound {
+                bucket,
+                index_name,
+                target_table,
+            } => write!(
+                f,
+                "relpages probe for `{index}` could not locate target table `{table}` \
+                 (bucket database={db} app={app}); the index plan does not create \
+                 this table either — check for a typo or a mis-quoted identifier",
+                index = index_name,
+                table = target_table,
+                db = bucket.database,
+                app = bucket.app,
+            ),
             RunnerError::RelpagesThresholdExceeded {
                 bucket,
                 index_name,
@@ -232,6 +294,7 @@ impl std::error::Error for RunnerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             RunnerError::ChecksumMismatch(e) => Some(e),
+            RunnerError::ChecksumFormat(e) => Some(e),
             RunnerError::GuardError(e) => Some(e),
             RunnerError::LedgerWriteFailed { source, .. } => Some(source),
             RunnerError::TransactionalSegmentFailed { source, .. } => Some(source),
@@ -302,11 +365,33 @@ pub struct RunReport {
 
 /// Apply a [`MigrationPlan`] against the runner's context.
 ///
-/// **Caller-managed locks.** This function does NOT acquire the
-/// workspace file lock — that is the responsibility of the outer
-/// orchestrator (T6 `apply` / T5 `repair`) which holds the lock for
-/// the entire CLI invocation. The runner DOES acquire and release
-/// the per-bucket Postgres advisory lock.
+/// **Witness-typed workspace lock.** The `_guard: &WorkspaceGuard`
+/// parameter is a compile-time witness that the caller already holds
+/// the workspace file lock — its mere presence at the type level
+/// proves the lock is alive for the duration of the call. The runner
+/// itself does not touch the guard; the parameter is named with a
+/// leading underscore to signal "consumed at the type level only".
+///
+/// Misuse — calling `apply_plan` without first acquiring the lock —
+/// is a compile error rather than a silent race window. Tests that
+/// only care about ledger semantics still go through the lock by
+/// asking the [`super::guard::acquire`] helper for a per-test path.
+///
+/// **Three-database awareness.** The runner currently routes every
+/// query through the supplied `&mut DjogiContext`'s pool. The
+/// `RunnerCtx::bucket.database` field is hashed into the advisory
+/// lock key and surfaced in operator-facing errors, but the actual
+/// query routing follows the context the caller supplied. Phase 4's
+/// `DjogiContext` is single-pool today; when the three-database
+/// `DjogiContext::pool_for(database)` API lands the runner will
+/// pull the right pool from `runner_ctx.bucket.database` here. The
+/// `BucketKey.database` channel exists today so the orchestrator
+/// (T6 `apply`) can construct one `DjogiContext` per database before
+/// invoking the runner.
+///
+/// **Per-bucket advisory lock.** The runner DOES acquire and
+/// release the per-bucket Postgres advisory lock around every
+/// segment dispatch.
 ///
 /// **Snapshot persistence.** Writes the snapshot file ONLY after
 /// the ledger row reaches `applied` and every segment succeeded.
@@ -315,6 +400,7 @@ pub async fn apply_plan(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
     runner_ctx: &RunnerCtx,
+    _guard: &WorkspaceGuard,
 ) -> Result<RunReport, RunnerError> {
     // 1. Bootstrap the ledger table.
     ledger::bootstrap(ctx)
@@ -350,10 +436,19 @@ async fn apply_plan_inner(
     // 4. Verify checksum BEFORE inserting the pending row. A
     // mismatch means the plan supplied to the runner does not
     // match the runner_ctx's `checksum_up` — most likely the SQL
-    // file was hand-edited.
+    // file was hand-edited. A FormatError means one of the inputs
+    // was not a well-formed `V1:<sha256-hex>` string and is also
+    // a hard error: we never want to fall through to the byte
+    // compare with malformed inputs.
     let computed_up = compute_checksum_for_plan_up(plan);
-    ledger::verify_checksum(&runner_ctx.version, &runner_ctx.checksum_up, &computed_up)
-        .map_err(RunnerError::ChecksumMismatch)?;
+    if let Err(e) =
+        ledger::verify_checksum(&runner_ctx.version, &runner_ctx.checksum_up, &computed_up)
+    {
+        return Err(match e {
+            VerifyError::Mismatch(m) => RunnerError::ChecksumMismatch(m),
+            VerifyError::Format(f) => RunnerError::ChecksumFormat(f),
+        });
+    }
 
     // Determine execution_mode + total_steps from the plan shape.
     // `total_steps` counts non-transactional steps (each of which is
@@ -395,12 +490,28 @@ async fn apply_plan_inner(
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
     };
-    let ledger_id = ledger::insert_pending(ctx, &ledger_row)
-        .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })?;
+    let ledger_id = match ledger::insert_pending(ctx, &ledger_row).await {
+        Ok(id) => id,
+        Err(e) => {
+            // SQLSTATE 23505 (unique_violation) on the
+            // `djogi_schema_migrations.version` column means the
+            // operator is re-running an already-applied migration.
+            // Lift the raw PG error into a typed
+            // `VersionAlreadyApplied` so the message names the prior
+            // `applied_at` rather than dumping a generic CRUD failure.
+            if is_unique_violation(&e) {
+                let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
+                return Err(RunnerError::VersionAlreadyApplied {
+                    version: runner_ctx.version.clone(),
+                    applied_at,
+                });
+            }
+            return Err(RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            });
+        }
+    };
 
     // 6. Walk segments. Track counts for the run report.
     let mut transactional_segments = 0usize;
@@ -408,20 +519,54 @@ async fn apply_plan_inner(
     let mut metadata_segments = 0usize;
     let mut applied_non_tx_steps: i32 = 0;
 
+    // Build the `AddTable` set from the plan. The relpages probe
+    // uses this to disambiguate "table being created in this same
+    // plan" (legit `relpages = None`) from "typo / mis-quoted
+    // identifier" (hard `TargetTableNotFound`).
+    let add_table_set = collect_add_table_targets(plan);
+
     for (seg_idx, segment) in plan.segments.iter().enumerate() {
         match segment.kind {
             SegmentKind::Transactional => {
-                if let Err(e) = run_transactional_segment(ctx, segment, runner_ctx).await {
-                    let label = match &e {
+                if let Err(e) =
+                    run_transactional_segment(ctx, segment, runner_ctx, &add_table_set).await
+                {
+                    // N-1: the relpages probe runs BEFORE BEGIN, so
+                    // a probe failure must NOT be reported as a
+                    // transactional-segment failure (the tx has not
+                    // even opened yet). Distinguish probe-side
+                    // failures from in-tx statement failures so the
+                    // operator-facing note matches the actual phase
+                    // that failed.
+                    let note = match &e {
+                        RunnerError::RelpagesThresholdExceeded {
+                            index_name,
+                            target_table,
+                            relpages,
+                            threshold,
+                            ..
+                        } => format!(
+                            "relpages-probe failed at AddIndex {index_name} on table \
+                             {target_table} (relpages={relpages} > threshold={threshold})",
+                        ),
+                        RunnerError::TargetTableNotFound {
+                            index_name,
+                            target_table,
+                            ..
+                        } => format!(
+                            "relpages-probe failed at AddIndex {index_name}: target table \
+                             `{target_table}` not found and not in plan's AddTable set",
+                        ),
                         RunnerError::TransactionalSegmentFailed {
-                            statement_label, ..
-                        } => statement_label.clone(),
-                        RunnerError::RelpagesThresholdExceeded { index_name, .. } => {
-                            format!("AddIndex {index_name}")
-                        }
-                        _ => "<unknown>".to_string(),
+                            statement_label,
+                            source,
+                            ..
+                        } => format!(
+                            "transactional segment {seg_idx} failed at `{statement_label}`: \
+                             {source}",
+                        ),
+                        other => format!("transactional segment {seg_idx} failed: {other}",),
                     };
-                    let note = format!("transactional segment {seg_idx} failed at `{label}`: {e}");
                     let _ = ledger::mark_failed(ctx, ledger_id, &note).await;
                     return Err(map_segment_error(e, seg_idx));
                 }
@@ -512,6 +657,7 @@ async fn run_transactional_segment(
     ctx: &mut DjogiContext,
     segment: &Segment,
     runner_ctx: &RunnerCtx,
+    add_table_set: &BTreeSet<String>,
 ) -> Result<(), RunnerError> {
     // Probe relpages for any AddIndex statement that does NOT
     // require out-of-transaction. The probe runs BEFORE BEGIN so
@@ -519,7 +665,7 @@ async fn run_transactional_segment(
     // an open transaction around.
     for stmt in &segment.statements {
         if let Some((index_name, target_table)) = parse_create_index_statement(stmt) {
-            relpages_probe(ctx, runner_ctx, &index_name, &target_table).await?;
+            relpages_probe(ctx, runner_ctx, &index_name, &target_table, add_table_set).await?;
         }
     }
 
@@ -613,9 +759,16 @@ async fn run_non_transactional_segment(
 /// SHA-256 truncated to the low 64 bits for a fixed-seed hash —
 /// stdlib `Hasher` is randomised per process and cannot be used.
 ///
-/// Format: `SHA256("djogi:" || database || "\0" || app)` then take
-/// the first 8 bytes interpreted as little-endian `u64`, then
-/// reinterpret as `i64` (Postgres `bigint`). The `djogi:` prefix
+/// **Byte order: big-endian.** The Phase 7 v3 contract pins
+/// big-endian decoding of the first 8 SHA-256 digest bytes so an
+/// alternate-language implementation following the same spec
+/// computes the identical `i64` and contends correctly with this
+/// runner. Network byte order is the spec; little-endian would key
+/// the same bucket to a different value across implementations.
+///
+/// Format: `SHA256("djogi:advisory_lock:" || database || "\0" || app)`,
+/// then take the first 8 digest bytes as a big-endian signed 64-bit
+/// integer (Postgres `bigint`). The `djogi:advisory_lock:` prefix
 /// scopes the keyspace so we cannot collide with adopter-side
 /// advisory locks that hash arbitrary identifiers.
 pub fn advisory_lock_key(bucket: &BucketKey) -> i64 {
@@ -627,7 +780,7 @@ pub fn advisory_lock_key(bucket: &BucketKey) -> i64 {
     let digest = hasher.finalize();
     let mut buf = [0u8; 8];
     buf.copy_from_slice(&digest[..8]);
-    i64::from_le_bytes(buf)
+    i64::from_be_bytes(buf)
 }
 
 /// Acquire a Postgres advisory lock on `key`. Postgres
@@ -692,11 +845,29 @@ async fn release_advisory_lock(ctx: &mut DjogiContext, key: i64) {
 /// On WARN path: emit `tracing::warn!` and continue. On strict path
 /// (`migrate.strict_concurrent_warnings = true`): surface
 /// `RunnerError::RelpagesThresholdExceeded`.
+///
+/// **`pg_class.relpages = None` disambiguation.** A `None` row from
+/// the probe means Postgres does not currently know about the table.
+/// Two legitimate cases produce that:
+///
+/// 1. The current plan creates the table in an earlier segment of
+///    THIS run (`AddTable` statement). The runner treats this as
+///    `relpages = 0` (a freshly-created empty table cannot exceed
+///    the threshold).
+/// 2. The table genuinely does not exist and is not being created.
+///    That is a typo / mis-quoted identifier — the index would fail
+///    inside `BEGIN` anyway, but the strict-mode probe catches it
+///    earlier with a clearer `TargetTableNotFound` diagnostic.
+///
+/// Silently dropping case 2 to `relpages = 0` would disable the
+/// strict warning path for any mis-targeted `CREATE INDEX`, which
+/// is exactly the failure mode strict-mode exists to catch.
 async fn relpages_probe(
     ctx: &mut DjogiContext,
     runner_ctx: &RunnerCtx,
     index_name: &str,
     target_table: &str,
+    add_table_set: &BTreeSet<String>,
 ) -> Result<(), RunnerError> {
     let row_opt = ctx
         .query_opt(
@@ -715,14 +886,25 @@ async fn relpages_probe(
                 version: index_name.to_string(),
                 source: DjogiError::from(e),
             })?,
-        // Table not found in pg_class — typically a CREATE INDEX on
-        // a table created by a preceding statement in the same
-        // segment that has not yet been committed. The relpages of a
-        // table not yet visible to this transaction is undefined; we
-        // pessimistically treat it as 0 (no warning) because the
-        // table is by definition new and has no existing rows that
-        // an ACCESS EXCLUSIVE lock would block.
-        None => 0,
+        // Table not found in pg_class — distinguish the two legitimate
+        // cases (see fn doc).
+        None => {
+            if add_table_set.contains(target_table) {
+                // Case 1: table is being CREATEd in this same plan;
+                // relpages of a yet-uncommitted CREATE TABLE is
+                // undefined. Treat as 0 so the warn path does not
+                // fire.
+                0
+            } else {
+                // Case 2: hard error. The plan does not create this
+                // table and Postgres does not know about it.
+                return Err(RunnerError::TargetTableNotFound {
+                    bucket: runner_ctx.bucket.clone(),
+                    index_name: index_name.to_string(),
+                    target_table: target_table.to_string(),
+                });
+            }
+        }
     };
     let threshold = runner_ctx.config.concurrent_warn_relpages;
     if (relpages as i64) > (threshold as i64) {
@@ -841,35 +1023,66 @@ async fn generate_run_id(ctx: &mut DjogiContext) -> Result<i64, RunnerError> {
             version: "<run_id>".to_string(),
             source: e,
         })?;
-    // HeerId is a 64-bit value; reinterpret its bytes as i64 for
-    // the BIGINT column. The wire encoding is identical because
-    // Postgres treats BIGINT as i64 and HeerId's ToSql impl writes
-    // the same 8 bytes either way.
-    Ok(heerid_to_i64(id))
-}
-
-/// Reinterpret a `HeerId` as an `i64` for the ledger's BIGINT
-/// column. The two values share the same wire bytes; we go via the
-/// 8-byte buffer to avoid depending on internal HeerId fields.
-fn heerid_to_i64(id: HeerId) -> i64 {
-    // HeerId::Display is the canonical decimal printing — we route
-    // through u64::from_str_radix on the unsigned form so leading
-    // bits map cleanly. heeranjid 0.3 exposes `as_i64` via the
-    // postgres-types ToSql impl; we cannot reach that helper from
-    // here without a workspace dependency change, so a parse from
-    // the canonical Display form keeps this self-contained.
-    //
-    // Display always emits the canonical signed-bigint form for
-    // HeerId, so parsing always succeeds for genuine values. A
-    // failure here means heeranjid changed its Display impl;
-    // surface a stable fallback (`0`) rather than panicking the
-    // runner.
-    let s = format!("{id}");
-    s.parse::<i64>().unwrap_or(0)
+    // HeerId exposes a direct `as_i64()` accessor (and an equivalent
+    // `From<HeerId> for i64` impl). Use the typed conversion rather
+    // than routing through `Display + parse + unwrap_or(0)` so a
+    // misbehaving Display impl cannot collapse a real ID to `0`.
+    Ok(id.as_i64())
 }
 
 fn elapsed_ms(t0: Instant) -> i64 {
     t0.elapsed().as_millis().min(i64::MAX as u128) as i64
+}
+
+/// Return `true` iff `e` carries Postgres SQLSTATE 23505
+/// (unique_violation). Used by `apply_plan` to lift the raw
+/// duplicate-version insert error into the typed
+/// `RunnerError::VersionAlreadyApplied` variant.
+fn is_unique_violation(e: &DjogiError) -> bool {
+    use tokio_postgres::error::SqlState;
+    match e {
+        DjogiError::Db(db) => db_code_matches(db, &SqlState::UNIQUE_VIOLATION),
+        _ => false,
+    }
+}
+
+/// Inspect a `DbError`'s SQLSTATE without reaching across the
+/// `DbError` opaque boundary directly. The accessor returns
+/// `Option<&SqlState>`; we compare by reference.
+fn db_code_matches(db: &DbError, target: &tokio_postgres::error::SqlState) -> bool {
+    db.code().map(|c| c == target).unwrap_or(false)
+}
+
+/// Read the `applied_at` timestamp of an existing row whose
+/// `version` we just collided with. Returns `None` if the lookup
+/// fails — the operator-facing message degrades gracefully because
+/// the message is informational only.
+async fn load_applied_at(ctx: &mut DjogiContext, version: &str) -> Option<OffsetDateTime> {
+    let row = ctx
+        .query_opt(
+            "SELECT applied_at FROM djogi_schema_migrations WHERE version = $1",
+            &[&version],
+        )
+        .await
+        .ok()??;
+    row.try_get::<_, OffsetDateTime>("applied_at").ok()
+}
+
+/// Walk the plan and collect the set of table names that an
+/// `AddTable` statement creates. The relpages probe uses this to
+/// disambiguate "table being created in this very plan" (legit
+/// `relpages = None`) from "typo / mis-quoted identifier"
+/// (`TargetTableNotFound`).
+fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for seg in &plan.segments {
+        for stmt in &seg.statements {
+            if let Some(table) = stmt.label.strip_prefix("AddTable ") {
+                out.insert(table.to_string());
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -914,12 +1127,39 @@ mod tests {
     #[test]
     fn advisory_lock_key_database_app_separator_prevents_collision() {
         // A naive concat would collide:
-        //   ("ab", "c")  →  "abc"
-        //   ("a", "bc")  →  "abc"
+        //   ("ab", "c")  ->  "abc"
+        //   ("a", "bc")  ->  "abc"
         // The `\0` separator means the two cannot collide.
         let a = advisory_lock_key(&bucket("ab", "c"));
         let b = advisory_lock_key(&bucket("a", "bc"));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn advisory_lock_key_pins_big_endian_byte_decode() {
+        // Spec-pinned reference value. The test exists to lock in the
+        // big-endian decode of the first 8 SHA-256 digest bytes per
+        // the Phase 7 v3 contract — an alternate-language
+        // implementation following the same spec must compute the
+        // same i64 for these inputs.
+        //
+        // Reference computation (also verified offline with Python):
+        //   d = sha256(b"djogi:advisory_lock:" + b"test_db" + b"\x00" + b"test_app")
+        //   bytes[..8] = 7d 01 ce 8f 30 91 ba 37
+        //   big-endian i64 = 0x7d01ce8f3091ba37 = 9_007_707_844_108_204_599
+        //   little-endian (the WRONG decode) would produce
+        //                                     4_015_681_655_511_318_909.
+        let bk = bucket("test_db", "test_app");
+        let key = advisory_lock_key(&bk);
+        assert_eq!(
+            key, 9_007_707_844_108_204_599_i64,
+            "advisory_lock_key must decode the first 8 SHA-256 bytes as big-endian"
+        );
+        // Negative-control: confirm we are NOT little-endian decoding.
+        assert_ne!(
+            key, 4_015_681_655_511_318_909_i64,
+            "advisory_lock_key must NOT decode bytes as little-endian"
+        );
     }
 
     // ── parse_create_index_statement ─────────────────────────────────────
@@ -1021,13 +1261,80 @@ mod tests {
         assert!(ms >= 0);
     }
 
-    // ── heerid_to_i64 ─────────────────────────────────────────────────────
+    // ── HeerId direct conversion ─────────────────────────────────────────
 
     #[test]
-    fn heerid_to_i64_zero_round_trips() {
+    fn heer_id_zero_converts_to_zero_i64_directly() {
+        // After A-3, run_id derivation goes through HeerId::as_i64
+        // / From<HeerId> for i64 — no Display + parse + unwrap_or
+        // detour. ZERO's i64 representation must be 0 by both paths.
         let z = HeerId::ZERO;
-        let v = heerid_to_i64(z);
-        // ZERO renders as "0" in canonical decimal form.
-        assert_eq!(v, 0);
+        assert_eq!(z.as_i64(), 0);
+        let via_from: i64 = i64::from(z);
+        assert_eq!(via_from, 0);
+    }
+
+    // ── collect_add_table_targets ────────────────────────────────────────
+
+    #[test]
+    fn collect_add_table_targets_walks_all_segments() {
+        let plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::Additive,
+            segments: vec![
+                Segment {
+                    kind: SegmentKind::Transactional,
+                    statements: vec![
+                        OperationSql {
+                            label: "AddTable users".to_string(),
+                            up: "CREATE TABLE users ()".to_string(),
+                            down: "DROP TABLE users".to_string(),
+                            lossy: None,
+                        },
+                        OperationSql {
+                            label: "AddIndex users_email_idx".to_string(),
+                            up: "CREATE INDEX...".to_string(),
+                            down: String::new(),
+                            lossy: None,
+                        },
+                    ],
+                },
+                Segment {
+                    kind: SegmentKind::Transactional,
+                    statements: vec![OperationSql {
+                        label: "AddTable orders".to_string(),
+                        up: "CREATE TABLE orders ()".to_string(),
+                        down: "DROP TABLE orders".to_string(),
+                        lossy: None,
+                    }],
+                },
+            ],
+        };
+        let set = collect_add_table_targets(&plan);
+        assert!(set.contains("users"));
+        assert!(set.contains("orders"));
+        assert!(!set.contains("users_email_idx")); // AddIndex is not AddTable
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn collect_add_table_targets_empty_plan_returns_empty_set() {
+        let plan = MigrationPlan {
+            bucket: bucket("main", ""),
+            classification: Classification::NoOp,
+            segments: vec![],
+        };
+        let set = collect_add_table_targets(&plan);
+        assert!(set.is_empty());
+    }
+
+    // ── is_unique_violation classifier ───────────────────────────────────
+
+    #[test]
+    fn is_unique_violation_rejects_non_db_errors() {
+        // Anything that is not a DjogiError::Db must classify as
+        // false — only a Db error carries a SQLSTATE.
+        let nf = DjogiError::not_found("users");
+        assert!(!is_unique_violation(&nf));
     }
 }

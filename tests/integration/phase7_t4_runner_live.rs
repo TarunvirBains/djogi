@@ -34,12 +34,13 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use djogi::config::MigrateConfig;
 use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, MigrationPlan, RunnerCtx, RunnerError,
-    SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, advisory_lock_key, apply_plan, bootstrap_ledger,
-    compute_checksum, load_snapshot,
+    SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, WorkspaceGuard, acquire_workspace_lock,
+    advisory_lock_key, apply_plan, bootstrap_ledger, compute_checksum, load_snapshot,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -62,6 +63,26 @@ fn temp_snapshot_path() -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.json"))
+}
+
+/// Per-test workspace lock path. Each test gets its own unique path
+/// so concurrent test runs do not contend.
+fn temp_workspace_lock_path() -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.lock"))
+}
+
+/// Acquire a per-test workspace `WorkspaceGuard`, satisfying the
+/// witness-typed `&WorkspaceGuard` argument that `apply_plan`
+/// requires. The Phase 7 v3 contract requires the file lock be held
+/// for the entire run; this helper produces one with a per-test
+/// path so two tests cannot collide.
+fn acquire_test_workspace_guard() -> WorkspaceGuard {
+    let path = temp_workspace_lock_path();
+    acquire_workspace_lock(&path, Duration::from_secs(2)).expect("acquire workspace lock")
 }
 
 fn op(label: &str, up: &str, down: &str) -> djogi::migrate::OperationSql {
@@ -159,6 +180,7 @@ async fn bootstrap_is_idempotent(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn transactional_apply_records_applied_status(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     let snapshot_path = temp_snapshot_path();
     let plan = transactional_plan(vec![op(
         "AddTable t4_users",
@@ -172,7 +194,7 @@ async fn transactional_apply_records_applied_status(mut ctx: djogi::DjogiContext
         Some(snapshot_path.clone()),
         MigrateConfig::default(),
     );
-    let report = apply_plan(&mut ctx, &plan, &runner_ctx)
+    let report = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect("apply ok");
     assert_eq!(report.transactional_segments, 1);
@@ -202,6 +224,7 @@ async fn transactional_apply_records_applied_status(mut ctx: djogi::DjogiContext
 
 #[djogi::djogi_test]
 async fn transactional_apply_failure_rolls_back_and_skips_snapshot(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     let snapshot_path = temp_snapshot_path();
     // First statement is fine. Second statement is invalid SQL — the
     // transaction must roll back, the table from the first statement
@@ -226,7 +249,7 @@ async fn transactional_apply_failure_rolls_back_and_skips_snapshot(mut ctx: djog
         Some(snapshot_path.clone()),
         MigrateConfig::default(),
     );
-    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect_err("apply must fail");
     assert!(
@@ -277,6 +300,7 @@ async fn transactional_apply_failure_rolls_back_and_skips_snapshot(mut ctx: djog
 
 #[djogi::djogi_test]
 async fn split_apply_records_non_tx_progress(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     let snapshot_path = temp_snapshot_path();
     // Transactional segment creates the table; non-transactional
     // segment creates two indexes via `CREATE INDEX` (no
@@ -316,7 +340,7 @@ async fn split_apply_records_non_tx_progress(mut ctx: djogi::DjogiContext) {
         Some(snapshot_path.clone()),
         MigrateConfig::default(),
     );
-    let report = apply_plan(&mut ctx, &plan, &runner_ctx)
+    let report = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect("split apply ok");
     assert_eq!(report.transactional_segments, 1);
@@ -361,6 +385,7 @@ async fn split_apply_records_non_tx_progress(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn split_apply_non_tx_failure_records_partial_state(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     let snapshot_path = temp_snapshot_path();
     // Transactional segment creates the table; non-transactional
     // segment runs two indexes — the first succeeds, the second
@@ -395,7 +420,7 @@ async fn split_apply_non_tx_failure_records_partial_state(mut ctx: djogi::DjogiC
         Some(snapshot_path.clone()),
         MigrateConfig::default(),
     );
-    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect_err("must fail");
     match err {
@@ -456,6 +481,7 @@ async fn split_apply_non_tx_failure_records_partial_state(mut ctx: djogi::DjogiC
 
 #[djogi::djogi_test]
 async fn relpages_probe_warns_when_threshold_exceeded(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     // Create the table and force its relpages high enough to trip
     // the probe by setting a tiny threshold via the runner_ctx
     // config. We don't need to actually pad the table — the probe
@@ -489,7 +515,7 @@ async fn relpages_probe_warns_when_threshold_exceeded(mut ctx: djogi::DjogiConte
     };
     let runner_ctx = make_runner_ctx(&plan, "V20260425000005__relpages_warn", None, None, config);
     // WARN path: runner returns Ok and only emits a tracing::warn!.
-    let report = apply_plan(&mut ctx, &plan, &runner_ctx)
+    let report = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect("warn path must succeed");
     assert_eq!(report.transactional_segments, 1);
@@ -499,6 +525,7 @@ async fn relpages_probe_warns_when_threshold_exceeded(mut ctx: djogi::DjogiConte
 
 #[djogi::djogi_test]
 async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     ctx.raw_ddl("CREATE TABLE t4_relpages_strict (id BIGINT, val TEXT)")
         .await
         .expect("create table");
@@ -530,7 +557,7 @@ async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
         None,
         config,
     );
-    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect_err("strict path must fail");
     match err {
@@ -575,6 +602,7 @@ async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn relpages_probe_silent_for_small_table(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     ctx.raw_ddl("CREATE TABLE t4_relpages_small (id BIGINT, val TEXT)")
         .await
         .expect("create table");
@@ -592,7 +620,7 @@ async fn relpages_probe_silent_for_small_table(mut ctx: djogi::DjogiContext) {
         None,
         MigrateConfig::default(),
     );
-    apply_plan(&mut ctx, &plan, &runner_ctx)
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect("must succeed silently");
 }
@@ -601,6 +629,7 @@ async fn relpages_probe_silent_for_small_table(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn run_id_is_unique_per_invocation(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     let plan_a = transactional_plan(vec![op(
         "AddTable t4_run_id_a",
         "CREATE TABLE \"t4_run_id_a\" (\"id\" BIGINT)",
@@ -625,8 +654,12 @@ async fn run_id_is_unique_per_invocation(mut ctx: djogi::DjogiContext) {
         None,
         MigrateConfig::default(),
     );
-    let r_a = apply_plan(&mut ctx, &plan_a, &ctx_a).await.expect("a");
-    let r_b = apply_plan(&mut ctx, &plan_b, &ctx_b).await.expect("b");
+    let r_a = apply_plan(&mut ctx, &plan_a, &ctx_a, &_guard)
+        .await
+        .expect("a");
+    let r_b = apply_plan(&mut ctx, &plan_b, &ctx_b, &_guard)
+        .await
+        .expect("b");
     assert_ne!(r_a.run_id, r_b.run_id, "run_id must differ per invocation");
 }
 
@@ -634,6 +667,7 @@ async fn run_id_is_unique_per_invocation(mut ctx: djogi::DjogiContext) {
 
 #[djogi::djogi_test]
 async fn checksum_mismatch_aborts_before_apply(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
     let plan = transactional_plan(vec![op(
         "AddTable t4_checksum",
         "CREATE TABLE \"t4_checksum\" (\"id\" BIGINT)",
@@ -650,7 +684,7 @@ async fn checksum_mismatch_aborts_before_apply(mut ctx: djogi::DjogiContext) {
     );
     runner_ctx.checksum_up =
         "V1:0000000000000000000000000000000000000000000000000000000000000000".to_string();
-    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
         .await
         .expect_err("must fail on checksum");
     assert!(
@@ -678,6 +712,166 @@ async fn checksum_mismatch_aborts_before_apply(mut ctx: djogi::DjogiContext) {
         .await
         .expect("count");
     assert_eq!(count, 0, "no ledger row on checksum mismatch");
+}
+
+// ── MetadataOnly segment accounting (live PG) ─────────────────────────────
+
+#[djogi::djogi_test]
+async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    // Build a plan with one transactional segment (creates a table)
+    // and one metadata-only segment (RenameApp). The runner must:
+    //   - run the transactional DDL,
+    //   - skip the metadata-only DDL (placeholder SQL comment text),
+    //   - count the metadata segment in `RunReport.metadata_segments`,
+    //   - record `applied_steps_count` correctly (0, since
+    //     metadata-only segments produce no non-transactional steps),
+    //   - mark the ledger row applied.
+    let plan = MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        },
+        classification: Classification::Additive,
+        segments: vec![
+            Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![op(
+                    "AddTable t4_metadata_table",
+                    "CREATE TABLE \"t4_metadata_table\" (\"id\" BIGINT PRIMARY KEY)",
+                    "DROP TABLE \"t4_metadata_table\"",
+                )],
+            },
+            Segment {
+                kind: SegmentKind::MetadataOnly,
+                statements: vec![op(
+                    "RenameApp old_app -> new_app",
+                    "-- METADATA-ONLY: rename app `old_app` to `new_app`.",
+                    "-- METADATA-ONLY: reverse rename `new_app` -> `old_app`.",
+                )],
+            },
+        ],
+    };
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000011__metadata_only",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    let report = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("metadata-only path must succeed");
+
+    // Accounting: 1 tx, 0 non-tx, 1 metadata segment.
+    assert_eq!(report.transactional_segments, 1);
+    assert_eq!(report.non_transactional_segments, 0);
+    assert_eq!(report.metadata_segments, 1);
+
+    // Ledger row must be applied with applied_steps_count = 0
+    // (metadata-only does not contribute non-tx steps).
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status select");
+    assert_eq!(status, "applied");
+
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("applied_steps_count select");
+    assert_eq!(applied_steps, 0);
+
+    // The metadata-only segment's "SQL" was a comment placeholder —
+    // the table created by the transactional segment exists, but the
+    // runner did NOT execute any DDL for the metadata segment (the
+    // operation is purely a folder + ledger.app_label rename per T6).
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 't4_metadata_table' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists check");
+    assert!(exists);
+}
+
+// ── Duplicate-version surface as VersionAlreadyApplied (live PG) ──────────
+
+#[djogi::djogi_test]
+async fn duplicate_version_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    // Apply once successfully.
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_dup",
+        "CREATE TABLE \"t4_dup\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t4_dup\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000012__duplicate",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("first apply");
+
+    // Re-running with a different plan body but the SAME version
+    // label must surface `VersionAlreadyApplied`. The unique-violation
+    // is on `version`, independent of the SQL contents.
+    let plan2 = transactional_plan(vec![op(
+        "DropTable t4_dup",
+        "DROP TABLE \"t4_dup\"",
+        "CREATE TABLE \"t4_dup\" (\"id\" BIGINT PRIMARY KEY)",
+    )]);
+    let mut runner_ctx2 = make_runner_ctx(
+        &plan2,
+        // SAME version label triggers the unique-violation path.
+        "V20260425000012__duplicate",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    // Recompute checksum for plan2's SQL — the verification step
+    // runs before the insert so the plan needs a valid checksum.
+    let frags2: Vec<&str> = plan2
+        .segments
+        .iter()
+        .flat_map(|s| s.statements.iter())
+        .map(|s| s.up.as_str())
+        .collect();
+    runner_ctx2.checksum_up = compute_checksum(frags2);
+
+    let err = apply_plan(&mut ctx, &plan2, &runner_ctx2, &_guard)
+        .await
+        .expect_err("second apply must fail");
+    match err {
+        RunnerError::VersionAlreadyApplied { version, .. } => {
+            assert_eq!(version, "V20260425000012__duplicate");
+        }
+        other => panic!("expected VersionAlreadyApplied, got {other:?}"),
+    }
+
+    // The first apply's table must still exist — the duplicate-version
+    // attempt was rejected at the ledger insert and never ran any DDL.
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 't4_dup' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists check");
+    assert!(exists, "DROP TABLE from second plan must NOT have run");
 }
 
 // ── Advisory-lock key determinism (live PG smoke) ─────────────────────────
