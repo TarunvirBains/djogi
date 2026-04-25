@@ -17,20 +17,47 @@
 //! `&mut DjogiContext`, never a raw pool. The context dispatches to the
 //! pool or the active transaction without the caller caring which.
 //!
-//! # `sentinel()` is non-const
+//! # Const-position sentinels via heeranjid 0.3.5+
 //!
-//! The Phase 7-Zero-2 plan originally called for a `pub const SENTINEL:
-//! Self` associated item so that `const _ZERO: HeerId = HeerId::SENTINEL;`
-//! compiled. HeeRanjId 0.3 ships `HeerId::new` / `HeerId::from_i64` as
-//! non-const fns and exposes no public const constructor (the inner
-//! `i64` field is private). Exposing a `const SENTINEL` from `djogi`
-//! would require either a foreign-type inherent const (forbidden by the
-//! orphan rule) or `mem::transmute` through the `#[repr(transparent)]`
-//! layout (brittle — a future `#[repr(Rust)]` change silently breaks
-//! us). The plan's documented fallback is a non-const factory method;
-//! that is what ships here. Macro-emitted `Default` impls call
-//! `<T as ::djogi::primary_key::PrimaryKey>::sentinel()` at runtime
-//! instead of a const-context read.
+//! The trait function `<T as PrimaryKey>::sentinel()` is the
+//! polymorphic-context entry point. When the caller knows the concrete
+//! PK type, **prefer the upstream `T::ZERO` const** (added in heeranjid
+//! 0.3.5):
+//!
+//! ```ignore
+//! // Inside #[model(no_default)] constructor helpers:
+//! Widget {
+//!     id: HeerId::ZERO,                         // const-position OK
+//!     created_at: DateTime::UNIX_EPOCH,
+//!     // ...
+//! }
+//! ```
+//!
+//! `T::ZERO` is the wire-zero bit pattern, declared `pub const` on each
+//! of HeerId / HeerIdDesc / RanjId / RanjIdDesc upstream. The
+//! `PrimaryKey::sentinel()` impls in this crate delegate to that const,
+//! so the trait fn returns the same wire bytes the const exposes.
+//!
+//! Use the trait fn when writing code polymorphic over PK type
+//! (e.g. inside macro expansions or generic helpers); reach for the
+//! const directly otherwise.
+//!
+//! See [`sentinel`] for the bit-pattern note documenting why the
+//! 0.3.5 adoption changed the sentinel value (vs. the pre-0.3.5
+//! `T::new(0, 0, 0)` form) on three of the four PK types and why
+//! that change is safe.
+//!
+//! # Historical note
+//!
+//! The Phase 7-Zero-2 plan originally called for a djogi-side `pub
+//! const SENTINEL: Self` associated item. Heeranjid 0.3.0–0.3.4
+//! exposed neither `pub const ZERO` nor a `const fn` constructor (the
+//! inner field is private), so a djogi-side const would have required
+//! either a foreign-type inherent const (forbidden by the orphan rule)
+//! or `mem::transmute` through the `#[repr(transparent)]` layout
+//! (brittle). The fallback was the non-const `sentinel()` factory.
+//! Heeranjid 0.3.5 (closing heeranjid#30) added the `pub const ZERO`
+//! upstream, which is now the canonical const-position sentinel.
 
 use crate::context::DjogiContext;
 use crate::descriptor::PkType;
@@ -58,7 +85,7 @@ pub trait PrimaryKey: Sized + 'static {
 
     /// Zero-valued instance used by the macro-emitted `Default` impl's
     /// `id` initialiser. The value is never written to the database:
-    /// `create()` replaces it via `RETURNING id` before the row lands.
+    /// `create()` replaces it via `RETURNING *` before the row lands.
     fn sentinel() -> Self;
 }
 

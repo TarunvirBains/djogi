@@ -336,12 +336,10 @@ without touching the database.
 Users set framework fields (`id`, `created_at`, `updated_at`) to any value; `create()` ignores them and the database populates the real values via column defaults + `RETURNING *`:
 
 ```rust
-use djogi::PrimaryKey;
-
 let article = Article::create(&mut ctx, Article {
-    id: <HeerId as PrimaryKey>::sentinel(),  // ignored — DB generates
-    created_at: DateTime::UNIX_EPOCH,        // ignored — DB generates
-    updated_at: DateTime::UNIX_EPOCH,        // ignored — DB generates
+    id: HeerId::ZERO,                  // ignored — DB generates
+    created_at: DateTime::UNIX_EPOCH,  // ignored — DB generates
+    updated_at: DateTime::UNIX_EPOCH,  // ignored — DB generates
     title: "Hello".into(),
     slug: "hello".into(),
     body: "World".into(),
@@ -349,10 +347,16 @@ let article = Article::create(&mut ctx, Article {
 }).await?;
 ```
 
-`PrimaryKey::sentinel()` returns a placeholder value of the PK type
-that all built-ins recognise as "DB will generate the real value on
-INSERT". Use it instead of poking inside the PK newtype directly — the
-inner integer is private.
+`HeerId::ZERO` (and equivalents on `HeerIdDesc` / `RanjId` /
+`RanjIdDesc`) is the canonical sentinel — declared `pub const` upstream
+in heeranjid 0.3.5+ as the wire-zero bit pattern. It's safe in
+const-position contexts and matches the stdlib precedent
+(`Duration::ZERO`, `OffsetDateTime::UNIX_EPOCH`).
+
+For code that's polymorphic over PK type (generic helpers, macro
+expansions), use the trait function `<T as djogi::PrimaryKey>::sentinel()`
+instead — it returns the same value but works without naming the
+concrete PK type.
 
 For models whose user fields all implement `Default`, struct-update shorthand works:
 

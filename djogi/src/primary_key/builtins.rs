@@ -26,7 +26,7 @@ use crate::context::DjogiContext;
 use crate::descriptor::PkType;
 use crate::error::DjogiError;
 use crate::primary_key::{PrimaryKey, PrimaryKeyDbGen};
-use crate::types::{HeerId, HeerIdDesc, RanjId, RanjIdDesc, RanjPrecision};
+use crate::types::{HeerId, HeerIdDesc, RanjId, RanjIdDesc};
 
 /// Clamp `usize` to `i32` for the Postgres `INTEGER` parameter on the
 /// `generate_ids` / `generate_ranjids` functions.
@@ -50,10 +50,16 @@ impl PrimaryKey for HeerId {
     const DEFAULT_SQL: Option<&'static str> = Some("heerid_next()");
 
     fn sentinel() -> Self {
-        // `HeerId(0,0,0)` is always valid — timestamp/node/sequence all
-        // fit in their bit-widths — and matches the pre-T1
-        // `__heerid_default()` helper exactly.
-        HeerId::new(0, 0, 0).expect("HeerId(0,0,0) is always valid as a sentinel")
+        // Phase 7-Zero-2 polish: heeranjid 0.3.5 added `pub const ZERO`
+        // on each ID type. Delegate to the upstream constant rather
+        // than reconstructing the all-zero pattern via `HeerId::new(0,
+        // 0, 0)` — they produce the same wire bytes, but the constant
+        // form is shorter, infallible (no `.expect`), and lets adopter
+        // code written against the trait `sentinel()` interoperate
+        // freely with code that uses `HeerId::ZERO` directly. Closes
+        // djogi#24 by anchoring on the upstream stdlib-idiomatic
+        // `Type::ZERO` pattern.
+        HeerId::ZERO
     }
 }
 
@@ -97,7 +103,9 @@ impl PrimaryKey for HeerIdDesc {
     const DEFAULT_SQL: Option<&'static str> = Some("heerid_next_desc()");
 
     fn sentinel() -> Self {
-        HeerIdDesc::new(0, 0, 0).expect("HeerIdDesc(0,0,0) is always valid as a sentinel")
+        // Delegates to heeranjid 0.3.5's `pub const ZERO`. See HeerId
+        // above for the rationale.
+        HeerIdDesc::ZERO
     }
 }
 
@@ -137,8 +145,11 @@ impl PrimaryKey for RanjId {
     const DEFAULT_SQL: Option<&'static str> = Some("ranjid_next()");
 
     fn sentinel() -> Self {
-        RanjId::new(0, RanjPrecision::Microseconds, 0, 0)
-            .expect("RanjId all-zero sentinel is always valid")
+        // Delegates to heeranjid 0.3.5's `pub const ZERO`. The all-
+        // zero UUID pattern is the RFC 4122 §4.1.7 nil UUID — never
+        // produced by `generate_ranj_id()` (UUIDv8 generators reject
+        // the nil pattern), so it's a safe sentinel.
+        RanjId::ZERO
     }
 }
 
@@ -173,8 +184,9 @@ impl PrimaryKey for RanjIdDesc {
     const DEFAULT_SQL: Option<&'static str> = Some("ranjid_next_desc()");
 
     fn sentinel() -> Self {
-        RanjIdDesc::new(0, RanjPrecision::Microseconds, 0, 0)
-            .expect("RanjIdDesc all-zero sentinel is always valid")
+        // Delegates to heeranjid 0.3.5's `pub const ZERO`. See RanjId
+        // above for the rationale.
+        RanjIdDesc::ZERO
     }
 }
 
