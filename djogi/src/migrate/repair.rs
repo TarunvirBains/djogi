@@ -792,7 +792,11 @@ pub async fn repair_snapshot_rebuild(
     // Always re-project from live. The verify-side helper is the
     // single source of truth for the live-DB projection so verify and
     // baseline / repair-rebuild agree by construction.
-    let projected = super::verify::live_schema_for_repair(ctx)
+    //
+    // Bucket-scoped (Codex round-2 B-11): the projection only
+    // captures tables that belong to this bucket's app, so an app's
+    // rebuild does not pick up another app's tables.
+    let projected = super::verify::live_schema_for_repair(ctx, bucket)
         .await
         .map_err(|e| RepairError::LedgerIo {
             // Re-using LedgerIo's source channel would conflate two

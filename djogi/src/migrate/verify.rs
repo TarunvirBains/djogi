@@ -117,6 +117,7 @@ use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
 use super::ledger::{LedgerRow, LedgerStatus};
+use super::projection::BucketKey;
 use super::schema::{
     AppliedSchema, ColumnSchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
     IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, PrimaryKeySchema,
@@ -1392,11 +1393,14 @@ fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
 /// **Strategy.** Postgres typically renders defaults with explicit
 /// type casts (`'foo'::text`, `now()::timestamp with time zone`).
 /// Operators authoring snapshots often write the bare form
-/// (`'foo'`, `now()`). We strip trailing `::<type>` casts on both
-/// sides so equivalent expressions compare equal:
+/// (`'foo'`, `now()`). We strip ALL trailing `::<type>` casts on
+/// both sides so equivalent expressions compare equal:
 ///
 /// - `'foo'` vs `'foo'::text` → match
 /// - `now()` vs `now()::timestamptz` → match
+/// - `'foo'::text::varchar` → `'foo'` (nested casts collapsed in a
+///   loop — Codex round-2 B-5 fix; Postgres renders nested casts
+///   unchanged on `pg_get_expr`, so the comparator must peel them)
 /// - `42` vs `43` → mismatch (different value)
 /// - `now()` vs `current_timestamp` → mismatch (different func — T8
 ///   may add an alias map)
@@ -1413,43 +1417,61 @@ fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
     if raw.is_empty() {
         return None;
     }
-    // Strip a trailing `::<type>` cast. We scan forward through the
-    // bytes tracking the LAST `::` that is not inside a quoted
-    // string, then trim from there to the end. The simple heuristic
-    // — find the rightmost `::` and trim it plus everything after —
-    // is adequate for the canonical Postgres rendering, which always
-    // places the cast at the tail. Implementation is an explicit
-    // byte-level forward scan with a single-quote toggle to skip
-    // over `::` sequences inside quoted strings; no pattern-matching
-    // engine is involved.
-    let bytes = raw.as_bytes();
-    let mut in_string = false;
-    let mut last_double_colon: Option<usize> = None;
-    let mut i = 0usize;
-    while i + 1 < bytes.len() {
-        let b = bytes[i];
-        if b == b'\'' {
-            // SQL strings escape a literal single-quote by doubling
-            // it. The toggle below treats `''` as a same-state
-            // sequence: enter the inner state on the first quote,
-            // immediately leave on the second — net result: still
-            // outside the string.
-            in_string = !in_string;
-        } else if !in_string && b == b':' && bytes[i + 1] == b':' {
-            last_double_colon = Some(i);
-            i += 2;
-            continue;
+    // Strip ALL trailing `::<type>` casts. We loop, peeling one
+    // trailing cast per iteration, until the expression no longer
+    // ends with a cast. Each iteration scans the current expression
+    // forward, tracking the LAST `::` that is not inside a quoted
+    // string. The byte-level forward scan with a single-quote
+    // toggle skips over `::` sequences inside quoted strings; no
+    // pattern-matching engine is involved.
+    //
+    // Loop termination: each iteration either strips at least one
+    // byte (`raw[..idx]` where `idx < raw.len()`) or breaks. The
+    // length monotonically decreases, so the loop terminates.
+    let mut current = raw.to_string();
+    loop {
+        let bytes = current.as_bytes();
+        let mut in_string = false;
+        let mut last_double_colon: Option<usize> = None;
+        let mut i = 0usize;
+        while i + 1 < bytes.len() {
+            let b = bytes[i];
+            if b == b'\'' {
+                // SQL strings escape a literal single-quote by doubling
+                // it. The toggle below treats `''` as a same-state
+                // sequence: enter the inner state on the first quote,
+                // immediately leave on the second — net result: still
+                // outside the string.
+                in_string = !in_string;
+            } else if !in_string && b == b':' && bytes[i + 1] == b':' {
+                last_double_colon = Some(i);
+                i += 2;
+                continue;
+            }
+            i += 1;
         }
-        i += 1;
+        match last_double_colon {
+            Some(idx) => {
+                let trimmed = current[..idx].trim_end();
+                if trimmed.is_empty() {
+                    return None;
+                }
+                let next = trimmed.to_string();
+                if next == current {
+                    // Defensive: zero-length strip should be impossible
+                    // here (`idx < bytes.len()` and `trim_end` only
+                    // shrinks), but break rather than spin.
+                    break;
+                }
+                current = next;
+            }
+            None => break,
+        }
     }
-    let trimmed = match last_double_colon {
-        Some(idx) => raw[..idx].trim_end(),
-        None => raw,
-    };
-    if trimmed.is_empty() {
+    if current.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(current)
     }
 }
 
@@ -1569,10 +1591,94 @@ fn render_type_for_compare(s: &str) -> String {
 /// [`super::runner::baseline_plan`] (B-11) and
 /// [`super::repair::repair_snapshot_rebuild`] (B-12); reserved for
 /// T8's tightened verify diagnostics.
+///
+/// **Bucket scoping (Codex round-2 B-11).** The projection is scoped
+/// to the supplied [`BucketKey`] so an app's baseline / rebuild does
+/// not pull in another app's tables. Postgres has no per-app schema
+/// concept (every app's tables live in `public`), so the scoping is
+/// driven from the inventory's `ModelDescriptor::app` field:
+///
+/// - **Synthetic global bucket** (`bucket.app == ""`,
+///   [`crate::AppDescriptor::GLOBAL_LABEL`]): every live table is
+///   included EXCEPT those whose `ModelDescriptor` declares a
+///   non-global app. The empty-label bucket is the catch-all for
+///   tables that pre-date Djogi's apps subsystem (legacy / baseline
+///   adoption) plus any model that omitted `#[model(app = ...)]`.
+/// - **Named bucket** (`bucket.app == "billing"`, etc.): only tables
+///   whose `ModelDescriptor` declares this exact app label are
+///   projected. Live tables that have no inventory descriptor are
+///   excluded — they belong to either the global bucket or another
+///   app's baseline, never to a named app's projection.
+///
+/// **Where the bucket database flows.** The `database` component is
+/// already routed by the caller via `DjogiContext::switch_to(...)`
+/// before calling this function — `ctx` is always pointing at the
+/// right pool. The projection itself only ever queries the
+/// connection it is given; the bucket database is advisory at this
+/// layer (it is checked in the caller against the routed pool).
+///
+/// **Why inventory and not the ledger.** The ledger only records
+/// migration versions, not the tables those migrations touched. A
+/// bucket-scoped projection driven from `app_label` history would
+/// require a per-migration table-touch index that does not exist
+/// today. Inventory-driven scoping is the project-wide convention
+/// the migration substrate already uses (see
+/// [`super::projection::project_from_inventory`]); reusing it keeps
+/// the two projection paths in lockstep.
 pub(super) async fn live_schema_for_repair(
     ctx: &mut DjogiContext,
+    bucket: &BucketKey,
 ) -> Result<AppliedSchema, VerifyRunError> {
-    project_live_schema(ctx).await
+    let mut full = project_live_schema(ctx).await?;
+
+    // Build the set of table names declared in inventory, grouped by
+    // app label. We only walk inventory once and produce two sets:
+    //   - this_bucket_tables: tables whose descriptor declares the
+    //     supplied bucket's app label.
+    //   - all_app_tables: tables whose descriptor declares ANY
+    //     non-global app label.
+    // Both sets compare on Postgres table name (`ModelDescriptor::
+    // table_name`) so the live projection's BTreeMap key lines up.
+    use crate::AppDescriptor;
+    use crate::descriptor::ModelDescriptor;
+    let mut this_bucket_tables: std::collections::BTreeSet<&str> =
+        std::collections::BTreeSet::new();
+    let mut all_app_tables: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for m in inventory::iter::<ModelDescriptor> {
+        let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
+        if label == bucket.app.as_str() {
+            this_bucket_tables.insert(m.table_name);
+        }
+        if label != AppDescriptor::GLOBAL_LABEL {
+            all_app_tables.insert(m.table_name);
+        }
+    }
+
+    let is_global_bucket = bucket.app.as_str() == AppDescriptor::GLOBAL_LABEL;
+    full.models.retain(|table_name, _| {
+        if is_global_bucket {
+            // Global bucket: include the table unless an inventory
+            // descriptor explicitly assigns it to a different app.
+            !all_app_tables.contains(table_name.as_str())
+        } else {
+            // Named bucket: include only tables whose descriptor
+            // matches this app label.
+            this_bucket_tables.contains(table_name.as_str())
+        }
+    });
+
+    // Indexes are flat-listed; filter to those whose `table` is still
+    // in the (post-filter) models set so the projection stays
+    // self-consistent.
+    let kept_tables: std::collections::BTreeSet<String> = full.models.keys().cloned().collect();
+    full.indexes.retain(|i| kept_tables.contains(&i.table));
+
+    // Record the bucket's app label as the sole `registered_apps`
+    // entry so a downstream consumer that re-runs the differ against
+    // this projection sees the same bucket boundary.
+    full.registered_apps = vec![bucket.app.clone()];
+
+    Ok(full)
 }
 
 #[cfg(test)]
@@ -1995,6 +2101,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn normalize_default_strips_nested_casts() {
+        // Codex round-2 B-5 follow-up: the previous implementation
+        // peeled exactly ONE trailing `::TYPE`. For nested casts —
+        // legitimate when an adopter writes `'foo'::text::varchar`
+        // and Postgres renders it back unchanged — only the outermost
+        // cast was stripped, leaving `'foo'::text` and producing a
+        // spurious D607. The fix loops the strip step until the
+        // expression no longer ends with a cast.
+        assert_eq!(
+            normalize_default_expr(Some("'foo'::text::varchar")),
+            Some("'foo'".to_string())
+        );
+        assert_eq!(
+            normalize_default_expr(Some("123::int::bigint::numeric")),
+            Some("123".to_string())
+        );
+        // Whitespace between the casts is also tolerated — Postgres
+        // does not emit it but the comparator should not be brittle.
+        assert_eq!(
+            normalize_default_expr(Some("'x'::text  ::  varchar")),
+            Some("'x'".to_string())
+        );
+    }
+
     // ── diff_primary_key (B-6) ──────────────────────────────────────────
 
     #[test]
@@ -2246,48 +2377,155 @@ mod tests {
     fn heeranjid_allowlist_does_not_match_adopter_heer_prefix_tables() {
         // The previous LIKE-based exclusion swallowed adopter-owned
         // tables that legitimately started with `heer_`. Confirm the
-        // allowlist does not.
+        // allowlist does not. (Codex round-2 A-1: the spec example
+        // names this table `heer_orders` — an adopter's "orders"
+        // table that legitimately carries the `heer_` prefix.)
         assert!(!is_heeranjid_artifact_table("heer_user"));
-        assert!(!is_heeranjid_artifact_table("heer_order"));
+        assert!(!is_heeranjid_artifact_table("heer_orders"));
         assert!(!is_heeranjid_artifact_table("heer"));
         assert!(!is_heeranjid_artifact_table(""));
     }
 
     // ── D6xx code-uniqueness audit (A-2) ─────────────────────────────────
 
+    /// Master table of every D6xx diagnostic code that can be emitted
+    /// from this module. The audit test below walks the verify.rs
+    /// source at compile time and asserts every emitted code literal
+    /// appears here (and that each entry is unique). Adding a new
+    /// emit site without updating this table is a hard test failure.
+    ///
+    /// Codex round-2 A-2: the previous test inspected this hand-typed
+    /// array directly, which left a hole — a new code emitted in the
+    /// module body but absent from the array escaped the uniqueness
+    /// check. The audit test now closes that hole by cross-checking
+    /// the table against the source file's emit-site literals.
+    const D6XX_CODE_REGISTRY: &[(&str, &str)] = &[
+        ("D601", "snapshot table missing in live"),
+        ("D602", "live table not in snapshot"),
+        ("D603", "snapshot column missing in live"),
+        ("D604", "live column not in snapshot"),
+        ("D605", "nullability drift"),
+        ("D606", "type-string drift (advisory)"),
+        ("D607", "default value drift"),
+        ("D608", "primary key column list drift"),
+        ("D610", "snapshot index missing in live"),
+        ("D611", "live index not in snapshot (advisory)"),
+        ("D612", "index columns differ"),
+        ("D613", "index uniqueness differs"),
+        ("D614", "index method drift (advisory)"),
+        ("D615", "index lives on wrong table"),
+        ("D621", "ledger table not found"),
+        ("D690", "FTS not yet checked (info)"),
+        ("D691", "partition not yet checked (info)"),
+        ("D692", "enums not yet checked (info)"),
+        ("D693", "INCLUDE / partial-predicate not yet checked (info)"),
+        ("D699", "ledger reports applied but DB has no tables"),
+    ];
+
     #[test]
     fn d6xx_codes_have_unique_meanings() {
         // Pin the current code -> meaning mapping. If a new diagnostic
         // is added that re-uses an existing code, this test should be
         // updated (and the duplicate refused via review).
-        let codes_and_meanings: &[(&str, &str)] = &[
-            ("D601", "snapshot table missing in live"),
-            ("D602", "live table not in snapshot"),
-            ("D603", "snapshot column missing in live"),
-            ("D604", "live column not in snapshot"),
-            ("D605", "nullability drift"),
-            ("D606", "type-string drift (advisory)"),
-            ("D607", "default value drift"),
-            ("D608", "primary key column list drift"),
-            ("D610", "snapshot index missing in live"),
-            ("D611", "live index not in snapshot (advisory)"),
-            ("D612", "index columns differ"),
-            ("D613", "index uniqueness differs"),
-            ("D614", "index method drift (advisory)"),
-            ("D615", "index lives on wrong table"),
-            ("D621", "ledger table not found"),
-            ("D690", "FTS not yet checked (info)"),
-            ("D691", "partition not yet checked (info)"),
-            ("D692", "enums not yet checked (info)"),
-            ("D693", "INCLUDE / partial-predicate not yet checked (info)"),
-            ("D699", "ledger reports applied but DB has no tables"),
-        ];
         let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
-        for (code, meaning) in codes_and_meanings {
+        for (code, meaning) in D6XX_CODE_REGISTRY {
             assert!(
                 seen.insert(code, meaning).is_none(),
                 "duplicate D6xx code {code}",
             );
+        }
+    }
+
+    #[test]
+    fn d6xx_emit_sites_all_covered_by_registry() {
+        // Codex round-2 A-2: walk the verify.rs source for every
+        // VerifyDiagnostic emit site's code literal and assert each
+        // one appears in the master registry above. A new emit site
+        // that adds a code without listing it in
+        // `D6XX_CODE_REGISTRY` fails this test.
+        //
+        // Implementation: `include_str!` pulls the source text in at
+        // compile time. We forward-scan for the canonical emit-site
+        // byte sequence — the field-assignment `code` followed by
+        // colon-space-quote-D — and read the four-character code that
+        // follows. A byte-level scan keeps us inside the no-regex rule.
+        //
+        // False-positive guard. The prefix is composed at runtime
+        // from a plain string and a uppercase-D byte so the prefix
+        // bytes do not appear verbatim in this very test's source —
+        // otherwise the scanner would match its own scan-target
+        // string. Comment and docstring prose elsewhere in this file
+        // never carry the exact byte run `code: "D` because the
+        // verify.rs prose consistently writes the codes as plain
+        // identifiers (`D601`, `D621`) without the field-assignment
+        // form. Registry entries are formatted as `("D6...", "...")`
+        // — preceded by `(` not by `code: ` — so the registry itself
+        // does not match the emit-site prefix.
+        let source = include_str!("verify.rs");
+        let bytes = source.as_bytes();
+        // Compose the prefix at runtime from two halves so the
+        // verbatim bytes never appear in this source file. This
+        // prevents the scanner from matching its own scan-target
+        // when it walks itself.
+        let mut prefix_buf = Vec::with_capacity(8);
+        prefix_buf.extend_from_slice(b"code: ");
+        prefix_buf.push(b'"');
+        prefix_buf.push(b'D');
+        let prefix: &[u8] = &prefix_buf;
+        let mut scan = 0usize;
+        let mut emitted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        while scan + prefix.len() + 3 <= bytes.len() {
+            if &bytes[scan..scan + prefix.len()] == prefix {
+                let code_start = scan + prefix.len() - 1; // points at 'D'
+                let code_end = code_start + 4;
+                if code_end < bytes.len() && bytes[code_end] == b'"' {
+                    // Validate the next three bytes are ASCII alphanumerics
+                    // (the D6xx codes are uppercase 'D' followed by three
+                    // ASCII digits / letters in practice).
+                    let body_ok = bytes[code_start + 1..code_end]
+                        .iter()
+                        .all(|b| b.is_ascii_alphanumeric());
+                    if body_ok {
+                        let s = String::from_utf8_lossy(&bytes[code_start..code_end]).into_owned();
+                        emitted.insert(s);
+                    }
+                }
+                scan += prefix.len();
+                continue;
+            }
+            scan += 1;
+        }
+        assert!(
+            !emitted.is_empty(),
+            "scanner found zero D6xx emit sites in verify.rs — \
+             the byte pattern probably drifted; investigate before \
+             trusting this test",
+        );
+        let registry: std::collections::BTreeSet<&str> =
+            D6XX_CODE_REGISTRY.iter().map(|(c, _)| *c).collect();
+        for code in &emitted {
+            assert!(
+                registry.contains(code.as_str()),
+                "emit site for {code} found in verify.rs but {code} is \
+                 missing from D6XX_CODE_REGISTRY — add it (with a \
+                 unique meaning) to keep the central registry honest",
+            );
+        }
+        // Reverse direction: every registry entry should have at
+        // least one emit site. (A registry-only entry is fine in
+        // principle — e.g. a code reserved for a future emit site —
+        // but in practice every current entry SHOULD be emitted, so
+        // we surface the gap as a soft `eprintln!` rather than a
+        // hard assertion to keep the test focused on the duplicate-
+        // and-missing failure mode.)
+        for (code, _) in D6XX_CODE_REGISTRY {
+            if !emitted.contains(*code) {
+                eprintln!(
+                    "note: D6xx code {code} is in the registry but has \
+                     no emit site in verify.rs — either remove it from \
+                     the registry or add the corresponding emit site"
+                );
+            }
         }
     }
 }

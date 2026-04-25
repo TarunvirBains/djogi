@@ -1175,12 +1175,22 @@ async fn fake_apply_inner(
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
     let note = format!("faked at {timestamp}; reason: {reason}");
     let run_id = generate_run_id(ctx).await?;
-    // B-4: insert_pending writes status='pending' regardless of the
+    // B-4 (Codex round-2): the previous arrangement issued
+    // `insert_pending` and the `UPDATE ... SET status='faked'` as two
+    // separate statements with no enclosing transaction. A crash —
+    // process kill, network blip, signal — between them left the row
+    // stranded at `pending` forever, with no Djogi-side machinery
+    // distinguishing "still in flight" from "operator faked it,
+    // status-flip lost". Wrap both writes in one Postgres tx so the
+    // ledger row is either present-and-faked or absent. On any error,
+    // ROLLBACK explicitly (best-effort; the typed error propagates
+    // regardless) and surface the typed RunnerError variant.
+    //
+    // `insert_pending` writes status='pending' regardless of the
     // value carried on the LedgerRow struct (the typed CRUD helper is
     // intentionally narrow — see ledger::insert_pending). The fake-
     // apply path therefore has to flip the row to 'faked' explicitly
-    // after insertion. Without this UPDATE the row sits at 'pending'
-    // forever and a future verify run sees "applied but not really".
+    // after insertion; both writes now sit inside one tx.
     let row = LedgerRow {
         version: runner_ctx.version.clone(),
         description: runner_ctx.description.clone(),
@@ -1197,9 +1207,20 @@ async fn fake_apply_inner(
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
     };
+
+    ctx.raw_ddl("BEGIN")
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })?;
+
     let ledger_id = match ledger::insert_pending(ctx, &row).await {
         Ok(id) => id,
         Err(e) => {
+            // Best-effort rollback — surface the original error
+            // regardless of whether the rollback succeeds.
+            let _ = ctx.raw_ddl("ROLLBACK").await;
             if is_unique_violation(&e) {
                 let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
                 return Err(RunnerError::VersionAlreadyApplied {
@@ -1216,16 +1237,28 @@ async fn fake_apply_inner(
 
     // Flip status pending -> faked. partial_apply_note already carries
     // the operator's reason from the insert above; this UPDATE is
-    // status-only so we do not double-write the note.
-    ctx.execute(
-        "UPDATE djogi_schema_migrations SET status = 'faked' WHERE id = $1",
-        &[&ledger_id],
-    )
-    .await
-    .map_err(|e| RunnerError::LedgerWriteFailed {
-        version: runner_ctx.version.clone(),
-        source: e,
-    })?;
+    // status-only so we do not double-write the note. Inside the same
+    // tx as `insert_pending` so both writes commit atomically (B-4).
+    if let Err(e) = ctx
+        .execute(
+            "UPDATE djogi_schema_migrations SET status = 'faked' WHERE id = $1",
+            &[&ledger_id],
+        )
+        .await
+    {
+        let _ = ctx.raw_ddl("ROLLBACK").await;
+        return Err(RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        });
+    }
+
+    ctx.raw_ddl("COMMIT")
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })?;
 
     // Snapshot moves forward, when supplied.
     if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
@@ -1319,7 +1352,11 @@ async fn baseline_inner(
     // same machinery internally. Failures here surface as the typed
     // BaselineProjectionFailed variant so the operator sees that the
     // projection (not the ledger) was the failing step.
-    let projected = super::verify::live_schema_for_repair(ctx)
+    //
+    // Bucket-scoped (Codex round-2 B-11): the projection only includes
+    // tables that match this bucket's app boundary, so an app's
+    // baseline does not capture another app's tables.
+    let projected = super::verify::live_schema_for_repair(ctx, bucket)
         .await
         .map_err(|e| RunnerError::BaselineProjectionFailed {
             source: Box::new(e),
