@@ -183,9 +183,20 @@ pub enum SchemaOperation {
         ///    new variant immediately before that anchor.
         /// 2. `Some(EnumVariantAnchor { kind: After, variant: pre })`
         ///    when there is no usable post-anchor but a pre-anchor
-        ///    exists in both old and new lists.
-        /// 3. `None` when the new variant is at the tail of the new
-        ///    list and no other anchor would be useful.
+        ///    exists in both old and new lists. This is the case for
+        ///    a tail-append onto an enum that already has variants
+        ///    from the old list — the new variant lands `AFTER` the
+        ///    last existing one. (`ALTER TYPE ... ADD VALUE 'x' AFTER
+        ///    'y'` is deterministic Postgres DDL, so anchoring beats
+        ///    bare append even though both produce the same physical
+        ///    ordering.)
+        /// 3. `None` only when no anchor in the old list is reachable
+        ///    in either direction — e.g. every old variant has been
+        ///    concurrently dropped (which the differ would already
+        ///    have rejected as `Unsupported` upstream). In practice
+        ///    [`pick_enum_variant_anchor`] returns `None` exclusively
+        ///    on this degenerate input; tail-appends with prior real
+        ///    variants always land in case (2).
         ///
         /// Codex T3 review B-2 fixed an earlier bug where the
         /// emitter unconditionally appended (no `BEFORE`/`AFTER`
@@ -193,7 +204,9 @@ pub enum SchemaOperation {
         /// Carrying an anchor variant name (rather than a positional
         /// integer) makes the emission self-contained — the emitter
         /// no longer needs the full new-variant list to resolve a
-        /// position.
+        /// position. Codex T3 round-2 review N-1 tightened the
+        /// description here to match the helper's actual behaviour
+        /// for tail-appends onto a non-empty enum.
         anchor: Option<EnumVariantAnchor>,
     },
 
@@ -1983,13 +1996,18 @@ mod tests {
     }
 
     #[test]
-    fn enum_variant_inserted_at_tail_carries_no_anchor() {
-        // Old: ["a", "b"]. New: ["a", "b", "c"]. New "c" at tail; no
-        // post-anchor exists. Pre-anchor "b" is in old, but the
-        // priority rule prefers None for tail appends. Wait — re-read
-        // the priority: post-anchor first, then pre-anchor, then
-        // None. Since there's no post-anchor for a tail insert, the
-        // pre-anchor wins: After "b". Document the convention.
+    fn enum_variant_inserted_at_tail_anchors_after_last_existing() {
+        // Old: ["a", "b"]. New: ["a", "b", "c"]. New "c" lands at the
+        // tail of the new list. No post-anchor exists (nothing follows
+        // "c"), so per the priority rule on `pick_enum_variant_anchor`
+        // the helper falls back to the nearest pre-anchor — "b", the
+        // immediate predecessor that is also in the old set. The
+        // emitted DDL is `ALTER TYPE "status" ADD VALUE 'c' AFTER 'b'`.
+        //
+        // Codex T3 round-2 review N-1: the previous test name
+        // (`..._carries_no_anchor`) contradicted the assertion. Pinned
+        // the test name to the helper's actual contract — see the
+        // doc-comment on `SchemaOperation::AddEnumVariant.anchor`.
         let before = schema_with_enum("status", &["a", "b"]);
         let after = schema_with_enum("status", &["a", "b", "c"]);
         let delta = diff_schemas(&before, &after, empty_global());
@@ -2003,10 +2021,6 @@ mod tests {
                 _ => None,
             })
             .expect("AddEnumVariant for `c`");
-        // Per the priority rule documented on
-        // `pick_enum_variant_anchor`: when no post-anchor exists,
-        // the nearest pre-anchor is used. "b" is the immediate
-        // predecessor and is in the old set.
         assert_eq!(
             anchor,
             Some(EnumVariantAnchor {

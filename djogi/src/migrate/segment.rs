@@ -244,8 +244,8 @@ pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
 /// | Phase | Operations |
 /// |-------|------------|
 /// |  0    | `AddEnum` |
-/// |  1    | `AddTable` |
-/// |  2    | `RenameTable` |
+/// |  1    | `RenameTable` |
+/// |  2    | `AddTable` |
 /// |  3    | `AddColumn`, `RenameColumn`, `AlterColumn`, `AddForeignKey` |
 /// |  4    | `AddEnumVariant` |
 /// |  5    | `AddIndex` (transactional) |
@@ -258,15 +258,31 @@ pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
 /// | 11    | `RenameApp`, `MoveModelBetweenApps` (metadata) |
 /// | 12    | `Unsupported`, `PkTypeFlip` (will error during lowering) |
 ///
+/// **Why `RenameTable` precedes `AddTable`.** A rename is always a
+/// "make existing table available under its new name" op. Once renames
+/// are applied, every subsequent op (including an `AddTable` whose
+/// inline FK targets the post-rename name) can refer to the renamed
+/// table without ordering tricks. Codex T3 round-2 review B-1 flagged
+/// the prior layout (RenameTable in phase 2, AddTable in phase 1):
+/// when a delta carried `RenameTable users → members` together with
+/// `AddTable comments` whose `comments.user_id REFERENCES "members"`,
+/// the toposort treated `"members"` as external (not in the AddTable
+/// batch) and the emitter wrote the `CREATE TABLE comments` —
+/// inlining `REFERENCES "members"` — BEFORE the rename ran. Postgres
+/// rejected with "relation does not exist". Hoisting `RenameTable`
+/// ahead of `AddTable` removes rename-awareness from the toposort
+/// entirely; the new name is just there by the time the inlining
+/// resolves.
+///
 /// The phasing keeps adds before drops, structural changes before
 /// index changes, and metadata at the end. Within a phase, input
 /// order is preserved — the differ already grouped per-table column
 /// changes together, and the planner does not break that grouping.
 ///
-/// **Phase 1 — `AddTable` toposort.** The `CREATE TABLE` emitter
+/// **Phase 2 — `AddTable` toposort.** The `CREATE TABLE` emitter
 /// inlines `REFERENCES` clauses for FK columns, so a table that
 /// references another table must be created AFTER its target.
-/// Within phase 1 the planner runs Kahn's algorithm over the
+/// Within phase 2 the planner runs Kahn's algorithm over the
 /// FK-dependency graph (edges: `T1 -> T2` when `T1` has an inline FK
 /// pointing at `T2`) and emits tables in the resulting topo order
 /// instead of input / alphabetical order. **Cycles** (rare —
@@ -291,16 +307,18 @@ fn order_operations(ops: &[SchemaOperation]) -> Vec<SchemaOperation> {
         .collect();
     tagged.sort_by_key(|(phase, idx, _)| (*phase, *idx));
 
-    // Split the sorted stream so we can reorder phase 1 (`AddTable`)
+    // Split the sorted stream so we can reorder phase 2 (`AddTable`)
     // through the topo-sort. Other phases are already in deterministic
-    // order from the stable sort above.
+    // order from the stable sort above. Phase 0 (`AddEnum`) and phase
+    // 1 (`RenameTable`) flow into `head` so renames apply before any
+    // `CREATE TABLE` that may inline a `REFERENCES <renamed>` clause.
     let mut head: Vec<SchemaOperation> = Vec::with_capacity(tagged.len());
     let mut add_tables: Vec<TableSchema> = Vec::new();
     let mut tail: Vec<SchemaOperation> = Vec::with_capacity(tagged.len());
     for (phase, _, op) in tagged {
         match (phase, op) {
-            (1, SchemaOperation::AddTable(t)) => add_tables.push(t),
-            (p, op) if p < 1 => head.push(op),
+            (2, SchemaOperation::AddTable(t)) => add_tables.push(t),
+            (p, op) if p < 2 => head.push(op),
             (_, op) => tail.push(op),
         }
     }
@@ -484,8 +502,12 @@ fn toposort_add_tables(tables: Vec<TableSchema>) -> (Vec<TableSchema>, Vec<Schem
 fn operation_phase(op: &SchemaOperation) -> usize {
     match op {
         SchemaOperation::AddEnum(_) => 0,
-        SchemaOperation::AddTable(_) => 1,
-        SchemaOperation::RenameTable { .. } => 2,
+        // RenameTable runs BEFORE AddTable so `CREATE TABLE` payloads
+        // that inline `REFERENCES <new_name>` resolve cleanly. See
+        // Codex T3 round-2 B-1 in `order_operations` for the full
+        // rationale.
+        SchemaOperation::RenameTable { .. } => 1,
+        SchemaOperation::AddTable(_) => 2,
         SchemaOperation::AddColumn { .. }
         | SchemaOperation::RenameColumn { .. }
         | SchemaOperation::AlterColumn { .. }
@@ -1208,5 +1230,133 @@ mod tests {
             .map(|s| s.label.as_str())
             .collect();
         assert_eq!(labels, vec!["AddTable widgets"]);
+    }
+
+    // ── RenameTable hoisted ahead of AddTable (Codex T3 round-2 B-1) ─
+
+    #[test]
+    fn rename_table_runs_before_add_table_referencing_post_rename_name() {
+        // The classic round-2 B-1 hazard: `RenameTable users → members`
+        // pairs with `AddTable comments` where `comments.user_id`
+        // points at the post-rename name `"members"`. With RenameTable
+        // hoisted to phase 1 (ahead of AddTable in phase 2), the
+        // rename runs first; the inline `REFERENCES "members"` then
+        // resolves at apply time.
+        //
+        // The toposort still treats `"members"` as out-of-batch (it
+        // is not in the AddTable set), so the FK is inlined in the
+        // CREATE TABLE — exactly the path the bug originally broke.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![
+                // Note: AddTable listed BEFORE RenameTable in input
+                // order, to confirm the phase ordering — not the
+                // input order — drives the result.
+                SchemaOperation::AddTable(table_with_fk("comments", &[("user_id", "members")])),
+                SchemaOperation::RenameTable {
+                    from: "users".to_string(),
+                    to: "members".to_string(),
+                },
+            ],
+            classification: Classification::Reversible,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        let labels: Vec<&str> = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.label.as_str())
+            .collect();
+        let rename_pos = labels
+            .iter()
+            .position(|l| l.starts_with("RenameTable"))
+            .expect("RenameTable in plan");
+        let add_pos = labels
+            .iter()
+            .position(|l| *l == "AddTable comments")
+            .expect("AddTable comments in plan");
+        assert!(
+            rename_pos < add_pos,
+            "RenameTable must precede AddTable; labels: {labels:?}"
+        );
+        // Confirm the inline FK survived in the CREATE TABLE.
+        let create_stmt = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .find(|s| s.label == "AddTable comments")
+            .expect("AddTable comments stmt");
+        assert!(
+            create_stmt.up.contains("REFERENCES \"members\" (\"id\")"),
+            "inline FK must point at post-rename target; got: {}",
+            create_stmt.up
+        );
+    }
+
+    #[test]
+    fn rename_table_runs_before_add_table_alphabetical_determinism() {
+        // Multiple RenameTables + AddTables in one delta. Within each
+        // phase the stable sort preserves input order (the differ
+        // already feeds alphabetical input via BTreeMap iteration), so
+        // emit order is alphabetical within renames, then alphabetical
+        // within adds — and renames as a whole precede adds as a
+        // whole.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![
+                // Input alphabetical, mixed across phases.
+                SchemaOperation::RenameTable {
+                    from: "alpha_old".to_string(),
+                    to: "alpha".to_string(),
+                },
+                SchemaOperation::AddTable(synth_table("apples")),
+                SchemaOperation::RenameTable {
+                    from: "beta_old".to_string(),
+                    to: "beta".to_string(),
+                },
+                SchemaOperation::AddTable(synth_table("bananas")),
+            ],
+            classification: Classification::Reversible,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        let labels: Vec<&str> = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.label.as_str())
+            .collect();
+        // Expected: RenameTable alpha_old → alpha, RenameTable
+        // beta_old → beta, AddTable apples, AddTable bananas. The
+        // helper formats RenameTable labels via lower_operation; we
+        // assert the relative order rather than the exact label
+        // strings to keep this test resilient to label tweaks.
+        let rename_alpha = labels
+            .iter()
+            .position(|l| l.contains("alpha_old"))
+            .expect("rename alpha");
+        let rename_beta = labels
+            .iter()
+            .position(|l| l.contains("beta_old"))
+            .expect("rename beta");
+        let add_apples = labels
+            .iter()
+            .position(|l| *l == "AddTable apples")
+            .expect("add apples");
+        let add_bananas = labels
+            .iter()
+            .position(|l| *l == "AddTable bananas")
+            .expect("add bananas");
+        assert!(
+            rename_alpha < rename_beta,
+            "renames keep alphabetical order; labels: {labels:?}"
+        );
+        assert!(
+            rename_beta < add_apples,
+            "all renames precede all adds; labels: {labels:?}"
+        );
+        assert!(
+            add_apples < add_bananas,
+            "adds keep alphabetical order; labels: {labels:?}"
+        );
     }
 }

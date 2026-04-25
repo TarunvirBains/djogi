@@ -52,28 +52,17 @@
 //!
 //! # Diff-shape notes
 //!
-//! Two diff variants carry less detail than would let the emitter
-//! produce a fully-clean output, and the emitter handles each by
-//! documenting the limitation in the generated SQL:
-//!
-//! - [`SchemaOperation::AddForeignKey`] does not carry the column's
-//!   `on_delete` discipline — the emitter defaults to
-//!   `ON DELETE RESTRICT` (the project-wide default per `CLAUDE.md`).
-//!   For clean cascade emission, the FK must be added at table-
-//!   creation time via `AddTable` (where the [`ColumnSchema`]
-//!   carries `on_delete` directly) or the operator hand-edits the
-//!   migration.
-//! - [`SchemaOperation::DropForeignKey`] carries only `(table,
-//!   column)` — no FK target / cascade — so the rollback comment
-//!   notes that the original `REFERENCES ... ON DELETE ...` clause
-//!   must be hand-written.
-//!
-//! Neither limitation is unsafe: forward SQL is always correct;
-//! only the rollback path needs operator attention. Refining the
-//! diff variant to carry the full FK descriptor would lift the
-//! limitation, and is worth doing if FK churn becomes common — but
-//! it is **out of scope for T3** because shape-shifting `diff.rs` is
-//! disallowed under the T3 charter.
+//! Both [`SchemaOperation::AddForeignKey`] and
+//! [`SchemaOperation::DropForeignKey`] now carry the full
+//! [`crate::migrate::schema::ForeignKeySchema`] — target table,
+//! target column, and `on_delete` cascade — so forward and rollback
+//! SQL are both fully recoverable. Earlier T3 review rounds
+//! (round-1 B-3) fixed an inversion where the emitter silently
+//! lowered every FK as `ON DELETE RESTRICT`; round-2 A-1
+//! consolidated the inline-FK path on `ForeignKeySchema.on_delete`
+//! so all SQL emit sites read the same field. There is no longer a
+//! lossy / hand-edit fallback for FK ops; the migration round-trips
+//! cleanly.
 //!
 //! # No regex
 //!
@@ -141,6 +130,16 @@ pub struct LossyRollbackWarning {
 }
 
 /// Why a rollback is lossy.
+///
+/// `DropForeignKey` is **not** in this enum: the diff carries the
+/// full [`ForeignKeySchema`] through to
+/// [`emit_drop_foreign_key`], so the rollback recreates the
+/// constraint with the original target + cascade and never produces a
+/// lossy marker. Codex T3 round-2 review A-2 removed an earlier
+/// reserved variant that the emitter never produced — pre-publish
+/// stage, no compat shim, the variant is gone. A future shape that
+/// strips FK metadata before reaching the emitter would re-add the
+/// variant at that point with the same name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LossyRollbackKind {
     /// `DropColumn` — column shape and row data are gone.
@@ -154,14 +153,6 @@ pub enum LossyRollbackKind {
     /// `DropIndex` — the index definition is gone; queries that
     /// relied on the index will go back to sequential scans.
     DropIndex,
-    /// `DropForeignKey` — the constraint definition is gone; data
-    /// remains. **Reserved variant.** Today's `DropForeignKey` rollback
-    /// is structurally lossless (the diff carries the full
-    /// [`ForeignKeySchema`]) so the emitter does not produce this
-    /// kind. Kept here for forward-compatibility: a future shape
-    /// where the FK metadata is stripped before reaching the emitter
-    /// would re-introduce the marker.
-    DropForeignKey,
 }
 
 /// Errors the SQL emitter surfaces.
@@ -975,12 +966,21 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema) {
         let _ = write!(out, " CHECK ({check})");
     }
     if let Some(fk) = &col.foreign_key {
+        // Cascade source-of-truth lives on `ForeignKeySchema.on_delete`
+        // — the standalone `AddForeignKey` / `DropForeignKey` paths
+        // already read it from there. Codex T3 round-2 review A-1
+        // flagged that the inline-FK path was reading `ColumnSchema
+        // .on_delete` instead, splitting the SQL emitter across two
+        // sources for the same value. Both fields are populated from
+        // the same descriptor input today, but two read sites invite
+        // future drift; consolidating on `fk.on_delete` removes that
+        // hazard. The mirrored `ColumnSchema.on_delete` field stays
+        // for adopters that walk columns directly — only the SQL
+        // emitter no longer reads it.
         let qref_t = quote_ident(&fk.ref_table);
         let qref_c = quote_ident(&fk.ref_column);
         let _ = write!(out, " REFERENCES {qref_t} ({qref_c})");
-        if let Some(od) = col.on_delete {
-            let _ = write!(out, " ON DELETE {}", on_delete_sql(od));
-        }
+        let _ = write!(out, " ON DELETE {}", on_delete_sql(fk.on_delete));
     }
 }
 
@@ -1310,6 +1310,51 @@ mod tests {
             "got: {}",
             sql.up
         );
+    }
+
+    #[test]
+    fn add_table_inline_fk_propagates_cascade_kind() {
+        // Codex T3 round-2 review A-1: the inline-FK path inside
+        // `CREATE TABLE` must read the cascade from
+        // `ForeignKeySchema.on_delete` — the same source the
+        // standalone `AddForeignKey` / `DropForeignKey` paths use.
+        // Round-trip every variant. To exercise the precise contract,
+        // we leave `ColumnSchema.on_delete` set to something different
+        // from `ForeignKeySchema.on_delete` and assert that the FK's
+        // value wins. (Today's projection populates both fields from
+        // the same descriptor input; this test pins the SQL emitter
+        // to the FK-side source so a future descriptor change that
+        // splits the two cannot silently rewrite cascades.)
+        for (cascade, expected) in [
+            (OnDeleteSchema::Restrict, "ON DELETE RESTRICT"),
+            (OnDeleteSchema::Cascade, "ON DELETE CASCADE"),
+            (OnDeleteSchema::SetNull, "ON DELETE SET NULL"),
+            (OnDeleteSchema::SetDefault, "ON DELETE SET DEFAULT"),
+            (OnDeleteSchema::NoAction, "ON DELETE NO ACTION"),
+        ] {
+            let fk_col = ColumnSchema {
+                foreign_key: Some(ForeignKeySchema {
+                    on_delete: cascade,
+                    ref_column: "id".to_string(),
+                    ref_table: "users".to_string(),
+                }),
+                // Intentional mismatch: prove the emitter ignores the
+                // column-level mirror. `Restrict` here would have been
+                // the silently-wrong cascade under the prior code path.
+                on_delete: Some(OnDeleteSchema::Restrict),
+                relation_kind: Some(RelationKindSchema::ForeignKey),
+                ..col("user_id", "BIGINT", false)
+            };
+            let mut t = synth_table("posts");
+            t.columns = vec![id_column_heerid(), fk_col];
+            let sql = emit_add_table(&t);
+            assert!(
+                sql.up.contains(expected),
+                "inline FK cascade {cascade:?} must emit `{expected}`; \
+                 got: {}",
+                sql.up
+            );
+        }
     }
 
     // ── DropTable + lossy ──────────────────────────────────────────────
