@@ -407,7 +407,7 @@ Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfVie
 - [x] SELECT narrowing: visage-scoped QuerySets emit SELECT with only the visage's exposed columns, not the full model. This is the headline performance win — visages stop being only an output shape and start paying off at the query side
 - [x] Mutation scope: visage-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a visage emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
 - [ ] Prefetch composition: an API for declaring a prefetch into a specific peer visage so chained traversals inherit the same boundary. Exact shape deferred to v2/v3 spec; leading candidates include a dedicated `prefetch_as::<PeerProjection>(model::relation)` terminal on the QuerySet and a generated `model::relation::as_public()`-style relation-path variant surfaced under each visage scope *(deferred — visage querysets are read-only in v1; cross-visage prefetch composition revisits in a later phase)*
-- [ ] Interaction with §9c: Phase 9c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`" *(belongs to Phase 9c; left unchecked here as forward-reference)*
+- [ ] Interaction with §9b: Phase 9b's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`" *(belongs to Phase 9b; left unchecked here as forward-reference)*
 
 **Deliverable:** The pre-Phase-7 PK substrate is frozen, and visages become first-class query entities with compile-time FK / reverse-FK / M2M boundary enforcement and SELECT narrowing.
 
@@ -582,11 +582,11 @@ Protected-data support should extend the typed field story rather than replace i
 
 ---
 
-## Phase 9: Shell & Admin
+## Phase 9: Shell, Analyzer & djqry
 
-**Goal:** Interactive Rhai REPL and auto-generated admin panel.
+**Goal:** Interactive Rhai REPL, static query analyzer, and the djqry SQL override registry.
 
-These surfaces are intentionally downstream of the core ORM/runtime. They are useful operational tools, but they must remain feature-gated adapters over the model/query layer rather than redefining the core identity of the crate.
+These surfaces are intentionally downstream of the core ORM/runtime. They are useful operational tools, but they must remain feature-gated adapters over the model/query layer rather than redefining the core identity of the crate. (The admin console is its own phase — see Phase 10 / Maahi.)
 
 ### 9a: Shell (Rhai REPL)
 
@@ -596,24 +596,13 @@ These surfaces are intentionally downstream of the core ORM/runtime. They are us
 - [ ] Error handling: one-liner + full traceback to `.djogi_shell_errors/`
 - [ ] `.export` / `.import` / `.bookmark` for session scripts
 - [ ] `cargo djogi shell --run script.rhai` for headless execution
-- [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§9d). Workflow: *test → optimize → compile → deploy*. Shell commands:
+- [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§9c). Workflow: *test → optimize → compile → deploy*. Shell commands:
   - `djqry.export(<last_query>, "<name>")` — writes `djqry/<name>.sql` with frontmatter pre-populated from the last executed macro-query: `@name` set, `@on` inferred from the query's target models, `@replaces` captured verbatim, `@signature` computed, `@returns` inferred from the QuerySet's declared return type, `@binds` inferred from the filter closures, and the macro-generated SQL placed in the body as the starting point the author can optimize against
   - `djqry.import("<name>")` — loads an existing `djqry/<name>.sql`, parses its frontmatter + SQL, binds the override into the shell session as a callable, and runs it alongside the macro-query form for side-by-side comparison (row count, first-row diff, timing)
   - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `cargo djogi djqry verify`
   - `djqry.sign("<name>")` — re-computes the fingerprint from the current `@replaces` and updates `@signature`, asserting the author has re-verified. Prompts for confirmation before overwriting
 
-### 9b: Admin Panel (HTMX + Askama)
-
-- [ ] Auto-generate list view from `ModelDescriptor` with pagination, sorting, search
-- [ ] Auto-generate CRUD forms from field metadata
-- [ ] HTMX-driven: partial page updates for pagination, filtering, inline editing
-- [ ] `admin` feature flag — opt-in dependency
-- [ ] Annotation-driven customization: `#[admin(list_display = [...])]`
-- [ ] Trait-based advanced customization: `impl AdminConfig for T`
-
-Admin integration may be Axum-oriented in practice, but that coupling should live in the feature-gated admin layer. Core model/query/runtime APIs should not require Axum types or assumptions.
-
-### 9c: Static Query Analyzer
+### 9b: Static Query Analyzer
 
 The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is mainline and intended for CI gating by default. Tier 2 is experimental and best-effort — surfaced as warnings, never as `--deny` targets unless explicitly requested.
 
@@ -630,7 +619,7 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 **Tier 2 — experimental, opt-in, best-effort graph-aware analysis:**
 
 - [ ] Graph-aware repeat-node detection: the descriptor registry's FK topology (from `target/djogi_models.json`) is a directed graph of tables-as-nodes and FKs-as-edges. Within a scope (function body, `async` block, `atomic()` closure), the analyzer attempts to track the set of `(model, filter_fingerprint)` pairs reached by terminals. Where receiver types resolve cleanly via `syn`, repeat visits to the same node — whether from independent call sites, through different FK traversals, or across prefetch chains that partially overlap — are flagged with a suggestion to hoist the fetch, fold the filters, or cover both accesses with a unified `select_related` / `prefetch_related` chain
-- [ ] Honest caveat: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection. When the analyzer cannot resolve a receiver, it silently skips rather than guessing. Coverage is documented as "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path — rustc/HIR or `rust-analyzer`-as-a-library — is named in the follow-up list but not a Phase 9c deliverable
+- [ ] Honest caveat: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection. When the analyzer cannot resolve a receiver, it silently skips rather than guessing. Coverage is documented as "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path — rustc/HIR or `rust-analyzer`-as-a-library — is named in the follow-up list but not a Phase 9b deliverable
 
 **Output + gating:**
 
@@ -638,14 +627,14 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 - [ ] Severity gating: `--deny <lint>` turns a Tier 1 warning into a non-zero exit code for CI. Tier 2 lints default to warn-only; `--deny experimental` is an explicit opt-in for teams willing to accept Tier 2 false-positive risk
 - [ ] Scope: pure static analysis beyond what a `cargo build` already produces. No database connection, no query execution. The pre-existing `target/djogi_models.json` build artifact is the only runtime input
 
-### 9d: `djqry` SQL Override Registry
+### 9c: `djqry` SQL Override Registry
 
 When a multi-hop macro-query compiles to a plan that is significantly worse than a hand-written query, the escape hatch today is `ctx.raw_query::<T>(...)` — which fragments the codebase visually and decouples the site from descriptor-aware tooling (static analyzer, admin surface, observability labels). `djqry` keeps the hand-tuned SQL in its own file while surfacing it as a typed method on the relevant models, preserving the declarative call-site shape elsewhere and giving the override the same type-safety, tracing, and analyzer treatment as macro-generated queries.
 
 - [ ] `djqry/` directory at repo root holds `.sql` files; each file declares one override via frontmatter header comments
 - [ ] Frontmatter schema: `@name` (method name, snake_case), `@on` (comma-separated list of models and / or visages; `_global` for non-model-scoped overrides), `@returns` (Rust type implementing `FromPgRow`), `@binds` (positional bind types — `()` for none), `@replaces` (multi-line canonical macro-query the override optimizes — documentation plus drift-check source), `@signature` (fingerprint hash bumped on manual re-verification)
 - [ ] Build-time generation: a new stage in the existing `build.rs` pipeline (alongside `target/djogi_models.json` emission) parses every `.sql` file, validates frontmatter against descriptor metadata, and emits a generated `{Model}Djqry` zero-sized type per owner with one associated async function per override. Call site reads `VehicleDjqry::expired_registrations(&mut ctx).await?` — parallel to Phase 2's `{Model}Filter` and Phase 3's `{Model}Related` generated types, which is the established convention for per-model namespaced helpers. The `Djqry` suffix is distinctive, grep-able, and zero collision risk. For `@on: _global` overrides the parallel type is `GlobalDjqry`: `GlobalDjqry::fleet_stats(&mut ctx).await?`
-- [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9c uses the `@on:` list to reason about which node-visits the override covers
+- [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9b uses the `@on:` list to reason about which node-visits the override covers
 - [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
 - [ ] Drift detection — opt-in: `cargo djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
 - [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 11b / 11e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
@@ -653,7 +642,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Scope limits: v1 is read-only (SELECT-shaped overrides). `UPDATE` / `DELETE` / `INSERT` overrides deferred until a concrete use case surfaces — raw `ctx.execute_raw` remains available in the interim
 - [ ] Authoring loop lives in the shell (§9a): `djqry.export`, `djqry.import`, `djqry.diff`, `djqry.sign` close the *test → optimize → compile → deploy* cycle inside the REPL. Authoring a new override never requires leaving the shell to hand-craft frontmatter — `export` captures the canonical macro-query, infers `@returns` / `@binds` from the QuerySet's declared types, computes the initial `@signature`, and seeds the SQL body with the macro-generated query as the baseline for optimization
 
-**Deliverable:** Working shell, admin panel, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop.
+**Deliverable:** Working shell, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop. (Admin console — Maahi — is Phase 10.)
 
 ---
 
@@ -893,7 +882,7 @@ Full deferral list at [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md).
 | 7: Migrations | Large | Full migration system including online / zero-downtime patterns |
 | 7.5: Protected Data | Medium | Sensitive-field metadata and codecs |
 | 8: Hooks & Composition | Medium | Lifecycle hooks, abstract models, proxy, computed properties |
-| 9: Shell & Admin | Medium | Interactive tools |
+| 9: Shell, Analyzer & djqry | Medium | Interactive tools (admin console split out to Phase 10 / Maahi) |
 | 9.5: Lifecycle | Medium | Governance and lifecycle planning (depends on 7.5) |
 | 10: Maahi (Admin Console) | Large | Visage-RBAC, Dioxus full-stack, multi-tenancy, security floor, M2M with bulk threshold |
 | 10.5: Maahi Compliance & Delegation | Medium | Multi-parent inheritance, manage_roles, broader approvals, Django parity |

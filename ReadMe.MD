@@ -42,7 +42,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 **Coming** — design-locked but not yet implemented:
 
-- Phase 7+ — `cargo djogi migrate` (schema differ + transactional DDL + `CREATE INDEX CONCURRENTLY` split), Rhai shell, admin panel.
+- Phase 7+ — `cargo djogi migrate` (schema differ + transactional DDL + `CREATE INDEX CONCURRENTLY` split), Rhai shell, Maahi admin console (Phase 10).
 
 ## What Djogi Owns
 

@@ -41,7 +41,7 @@
 | Cross-database logging semantics | Djogi does not promise distributed atomic commit across app, CRUD-log, and event-log databases; stricter audit behavior is enforced by policy, not by pretending the databases commit atomically together |
 | CRUD log failure policy | `light` = best-effort, `balanced` = durable bounded retry with health warnings, `strict_audit` = fail-closed for required audit writes |
 | Event log failure policy | Best-effort by default under all built-in profiles; outages surface as warnings and metrics, not retroactive app-write failure |
-| Admin panel | Optional HTMX + Askama; `admin` feature flag; mounted at `/_admin/` |
+| Admin console | Maahi — Dioxus full-stack on Axum, shipped as the `djogi-maahi` workspace crate behind the `admin` feature flag, mounted at `/_admin/` (see [`docs/spec/maahi/`](./maahi/index.md); HTMX + Askama was an earlier draft direction superseded by Phase 10 design) |
 | Admin form generation | Auto-generated from `ModelDescriptor` — zero per-model UI code required |
 | Admin validation | Auto-generated from field annotations + optional `impl AdminClean` hook |
 | Admin M2M inlines | Auto-rendered from `impl ManyToMany<T>`; paginated, searchable, configurable |
