@@ -179,6 +179,15 @@ pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
         "i16" => Some("::int2"),
         "i32" => Some("::int4"),
         "i64" => Some("::int8"),
+        // Narrow integers (Phase 7-Zero-2 polish, GH issue #29). Each
+        // narrow type widens to the smallest signed Postgres type that
+        // fits its full range. Mirrors the `IntoFilterValue` impls in
+        // `query::field`. `u64` is deliberately absent because its
+        // range exceeds `int8`; bind via `numeric` (`rust_decimal::Decimal`).
+        "i8" => Some("::int2"),
+        "u8" => Some("::int2"),
+        "u16" => Some("::int4"),
+        "u32" => Some("::int8"),
         // Floating-point types.
         "f32" => Some("::float4"),
         "f64" => Some("::float8"),
@@ -480,6 +489,34 @@ mod tests {
     #[test]
     fn sql_cast_for_i64() {
         assert_eq!(sql_cast_for_type("i64"), Some("::int8"));
+    }
+
+    // Narrow-integer JSONB casts (Phase 7-Zero-2 polish, GH issue #29).
+    // Each maps to the smallest signed Postgres type that fits the
+    // narrow Rust type's full range. Mirrors the IntoFilterValue
+    // widening in `query::field`.
+    #[test]
+    fn sql_cast_for_i8() {
+        // i8 fits in int2 directly.
+        assert_eq!(sql_cast_for_type("i8"), Some("::int2"));
+    }
+
+    #[test]
+    fn sql_cast_for_u8() {
+        // u8 max 255 fits in int2's 32_767 budget.
+        assert_eq!(sql_cast_for_type("u8"), Some("::int2"));
+    }
+
+    #[test]
+    fn sql_cast_for_u16() {
+        // u16 max 65_535 exceeds i16 max 32_767, so widen to int4.
+        assert_eq!(sql_cast_for_type("u16"), Some("::int4"));
+    }
+
+    #[test]
+    fn sql_cast_for_u32() {
+        // u32 max ~4.3B exceeds i32 max ~2.1B, so widen to int8.
+        assert_eq!(sql_cast_for_type("u32"), Some("::int8"));
     }
 
     #[test]

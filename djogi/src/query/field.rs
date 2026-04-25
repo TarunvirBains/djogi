@@ -388,6 +388,42 @@ impl IntoFilterValue for i64 {
         FilterValue::I64(self)
     }
 }
+// Narrow integer widening (Phase 7-Zero-2 polish, GH issue #29).
+//
+// Postgres has no native unsigned-integer types and no `i8`. Adopters
+// who model fields as `u8` / `u16` / `u32` / `i8` (port numbers, small
+// counts, signed-byte audio samples, etc.) need to compare against
+// those values without manually upcasting. Each narrow type widens to
+// the smallest signed Postgres type that fits its full range:
+//
+// - `i8`  → `I16` (smallint)   — i8 fits in int2 directly.
+// - `u8`  → `I16` (smallint)   — u8 max 255 fits in int2's 32_767.
+// - `u16` → `I32` (integer)    — u16 max 65_535 exceeds i16's 32_767.
+// - `u32` → `I64` (bigint)     — u32 max ~4.3B exceeds i32's ~2.1B.
+//
+// `u64` deliberately has no impl: u64 max (~18.4 quintillion) exceeds
+// i64 max (~9.2 quintillion). Adopters who genuinely need `u64`
+// values bind via `numeric` through `rust_decimal::Decimal` instead.
+impl IntoFilterValue for i8 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I16(i16::from(self))
+    }
+}
+impl IntoFilterValue for u8 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I16(i16::from(self))
+    }
+}
+impl IntoFilterValue for u16 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I32(i32::from(self))
+    }
+}
+impl IntoFilterValue for u32 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I64(i64::from(self))
+    }
+}
 impl IntoFilterValue for f32 {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::F32(self)
@@ -2182,5 +2218,60 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
         // Type annotation is the compile-time assertion.
         let _expr: crate::expr::Expr<f64> = field.distance_to(&center);
+    }
+
+    // Narrow-integer IntoFilterValue widening (Phase 7-Zero-2 polish,
+    // GH issue #29). Each narrow type widens to the smallest signed
+    // FilterValue variant that fits its full range. Mirrors the
+    // sql_cast_for_type table in `jsonb::path`.
+    #[test]
+    fn into_filter_value_i8_widens_to_i16() {
+        match (-1i8).into_filter_value() {
+            FilterValue::I16(v) => assert_eq!(v, -1),
+            other => panic!("expected I16, got {other:?}"),
+        }
+        match i8::MAX.into_filter_value() {
+            FilterValue::I16(v) => assert_eq!(v, 127),
+            other => panic!("expected I16, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_filter_value_u8_widens_to_i16() {
+        match 0u8.into_filter_value() {
+            FilterValue::I16(v) => assert_eq!(v, 0),
+            other => panic!("expected I16, got {other:?}"),
+        }
+        match u8::MAX.into_filter_value() {
+            // u8 max 255 fits in i16 without overflow.
+            FilterValue::I16(v) => assert_eq!(v, 255),
+            other => panic!("expected I16, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_filter_value_u16_widens_to_i32() {
+        match 0u16.into_filter_value() {
+            FilterValue::I32(v) => assert_eq!(v, 0),
+            other => panic!("expected I32, got {other:?}"),
+        }
+        match u16::MAX.into_filter_value() {
+            // u16 max 65535 exceeds i16 max 32767, so widen to i32.
+            FilterValue::I32(v) => assert_eq!(v, 65_535),
+            other => panic!("expected I32, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_filter_value_u32_widens_to_i64() {
+        match 0u32.into_filter_value() {
+            FilterValue::I64(v) => assert_eq!(v, 0),
+            other => panic!("expected I64, got {other:?}"),
+        }
+        match u32::MAX.into_filter_value() {
+            // u32 max ~4.3B exceeds i32 max ~2.1B, so widen to i64.
+            FilterValue::I64(v) => assert_eq!(v, 4_294_967_295),
+            other => panic!("expected I64, got {other:?}"),
+        }
     }
 }

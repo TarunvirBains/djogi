@@ -557,8 +557,24 @@ fn unwrap_option(ty: &Type) -> Option<Type> {
 /// forms (`time::OffsetDateTime`) and short forms (`OffsetDateTime`) are both
 /// listed because users may import with a `use` statement or not.
 ///
-/// Sorted alphabetically so `binary_search` works; this is enforced by the
-/// static assertion in the unit tests below.
+/// Kept alphabetical for readability when scanning the matrix; the
+/// runtime lookup uses `iter().any(...)` (in `is_scalar_type`), not
+/// `binary_search`, so the ordering is convention-only.
+// Phase 7-Zero-2 polish (GH issue #29): added narrow-integer entries
+// (`u8`, `u16`, `u32`, `i8`) so `#[derive(JsonbSchema)]` accepts these
+// Rust-idiomatic types as scalar fields. Each narrow type widens at
+// the filter-binding boundary via `IntoFilterValue` (see
+// `djogi::query::field`), and the path emitter casts to the smallest
+// Postgres int type that fits its full range (see `sql_cast_for_type`
+// in `djogi::jsonb::path`).
+//
+// `u64` was already in this list pre-#29 but does NOT have a working
+// path-cast (no Postgres type fits the full u64 range). Adopters who
+// land on `u64` in JSONB get a derive-accepted scalar accessor whose
+// runtime cast falls back to text comparison; for correctness, use
+// `i64` instead, or `rust_decimal::Decimal` for the full unsigned
+// range. Keeping the entry preserves backward compatibility while we
+// document the gap.
 const SCALAR_TYPE_PATTERNS: &[&str] = &[
     "&str",
     "Date",
@@ -572,12 +588,16 @@ const SCALAR_TYPE_PATTERNS: &[&str] = &[
     "i16",
     "i32",
     "i64",
+    "i8",
     "rust_decimal::Decimal",
     "serde_json::Value",
     "str",
     "time::Date",
     "time::OffsetDateTime",
+    "u16",
+    "u32",
     "u64",
+    "u8",
     "uuid::Uuid",
     "::djogi::types::HeerId",
     "::djogi::types::RanjId",
