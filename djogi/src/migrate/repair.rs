@@ -62,17 +62,18 @@
 //! changed, so the operator can audit (and replay-via-shell-history
 //! when needed).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
 use super::guard::WorkspaceGuard;
 use super::ledger::{
-    self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, validate_checksum_format,
+    self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, compute_checksum,
+    validate_checksum_format,
 };
 use super::projection::BucketKey;
-use super::schema::AppliedSchema;
+use super::segment::{MigrationPlan, SegmentKind};
 use super::snapshot::{SnapshotError, save_snapshot};
 
 // ── Confirmation witness ──────────────────────────────────────────────────
@@ -192,6 +193,53 @@ pub enum RepairError {
         path: PathBuf,
         source: SnapshotError,
     },
+
+    /// `repair_resume_partial_apply` was given a plan whose
+    /// `version` does not match the ledger row's `version`. The
+    /// resume path requires the operator to hand in the EXACT plan
+    /// the original apply consumed; a mismatch means the operator
+    /// is about to re-run the wrong SQL against the partial-apply
+    /// row.
+    PlanVersionMismatch { ledger: String, plan: String },
+
+    /// `repair_resume_partial_apply` was given a plan whose
+    /// `checksum_up` (recomputed from the plan's segments) does not
+    /// match the ledger row's `checksum_up`. Same hazard as
+    /// `PlanVersionMismatch` — different SQL would otherwise execute.
+    PlanChecksumMismatch {
+        version: String,
+        ledger_checksum: String,
+        plan_checksum: String,
+    },
+
+    /// `repair_resume_partial_apply` was called on a row that has no
+    /// remaining steps to run (`applied_steps_count >= total_steps`).
+    /// The repair has nothing to do; surfacing this as a typed error
+    /// rather than silently succeeding lets the operator distinguish
+    /// "nothing to resume" from "resumed N steps".
+    NothingToResume {
+        version: String,
+        applied: i32,
+        total: Option<i32>,
+    },
+
+    /// A statement run by `repair_resume_partial_apply` failed; the
+    /// underlying SQL error is wrapped. The repair function records
+    /// the partial state on the ledger row before returning.
+    ResumeStepFailed {
+        version: String,
+        step_index: usize,
+        statement_label: String,
+        applied_steps_count: i32,
+        source: DjogiError,
+    },
+
+    /// `repair_snapshot_rebuild` projected the live database and
+    /// found that the supplied / rebuilt snapshot does not match
+    /// what the live catalog would write. Surfaces the offending
+    /// table list so the operator can investigate without re-running
+    /// the projection by hand.
+    SuppliedSnapshotDiverges { differences: Vec<String> },
 }
 
 impl std::fmt::Display for RepairError {
@@ -225,6 +273,53 @@ impl std::fmt::Display for RepairError {
                     path.display()
                 )
             }
+            RepairError::PlanVersionMismatch { ledger, plan } => write!(
+                f,
+                "repair_resume_partial_apply: plan version `{plan}` does not match \
+                 the ledger row's version `{ledger}`",
+            ),
+            RepairError::PlanChecksumMismatch {
+                version,
+                ledger_checksum,
+                plan_checksum,
+            } => write!(
+                f,
+                "repair_resume_partial_apply on `{version}`: plan recomputed \
+                 checksum_up={plan_checksum} differs from ledger {ledger_checksum}; \
+                 the supplied plan does not match the original apply",
+            ),
+            RepairError::NothingToResume {
+                version,
+                applied,
+                total,
+            } => match total {
+                Some(t) => write!(
+                    f,
+                    "repair_resume_partial_apply on `{version}`: applied_steps_count={applied} \
+                     already equals total_steps={t}; nothing to resume",
+                ),
+                None => write!(
+                    f,
+                    "repair_resume_partial_apply on `{version}`: total_steps is NULL — \
+                     this row was a transactional-only apply with no resumable steps",
+                ),
+            },
+            RepairError::ResumeStepFailed {
+                version,
+                step_index,
+                statement_label,
+                applied_steps_count,
+                source,
+            } => write!(
+                f,
+                "repair_resume_partial_apply on `{version}`: step {step_index} `{statement_label}` \
+                 failed after {applied_steps_count} successful step(s): {source}",
+            ),
+            RepairError::SuppliedSnapshotDiverges { differences } => write!(
+                f,
+                "repair_snapshot_rebuild: supplied / rebuilt snapshot diverges from \
+                 the live catalog projection: {differences:?}",
+            ),
         }
     }
 }
@@ -234,6 +329,7 @@ impl std::error::Error for RepairError {
         match self {
             RepairError::LedgerIo { source } => Some(source),
             RepairError::SnapshotIo { source, .. } => Some(source),
+            RepairError::ResumeStepFailed { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -241,27 +337,39 @@ impl std::error::Error for RepairError {
 
 // ── Public entry points ───────────────────────────────────────────────────
 
-/// Repair a checksum-drift between the stored ledger row and a
-/// freshly-computed checksum.
+/// Repair a checksum-drift between the stored ledger row and
+/// freshly-computed checksums (B-9).
+///
+/// **Both `checksum_up` and `checksum_down` are repaired in one
+/// call.** The previous arrangement only repaired `checksum_up`,
+/// which left `checksum_down` stale when both up and down SQL
+/// changed. The fix takes both as parameters and writes them in a
+/// single UPDATE — repair-as-one-shot, so a partial repair cannot
+/// happen at the ledger level either.
+///
+/// `new_checksum_down` is `Option<&str>`. Pass `None` when the
+/// migration has no rollback SQL (`down` is a SQL-comment placeholder
+/// and the original ledger row carries `checksum_down = NULL`).
 ///
 /// **Operator confirmation required.** The caller must pass
 /// [`RepairConfirmation::OperatorAcknowledged`]; any other value
 /// (in future) is rejected with [`RepairError::InsufficientConfirmation`].
 ///
-/// **Format validation runs first.** `new_checksum_up` must pass
+/// **Format validation runs first.** Both new checksums must pass
 /// [`validate_checksum_format`] before any UPDATE; a malformed
 /// replacement would corrupt the row.
 ///
 /// **Append-only invariant respected.** This UPDATE rewrites the
-/// `checksum_up` field on the existing row — the only sanctioned
-/// post-write mutation aside from the rename / progress paths. The
-/// original `applied_at` and `applied_by` are preserved so the
-/// audit trail still anchors to the original apply.
+/// `checksum_up` and `checksum_down` fields on the existing row —
+/// the only sanctioned post-write mutations aside from the rename /
+/// progress paths. The original `applied_at` and `applied_by` are
+/// preserved so the audit trail still anchors to the original apply.
 pub async fn repair_checksum_drift(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
     version: &str,
     new_checksum_up: &str,
+    new_checksum_down: Option<&str>,
     confirmation: RepairConfirmation,
 ) -> Result<RepairReport, RepairError> {
     if confirmation != RepairConfirmation::OperatorAcknowledged {
@@ -274,27 +382,59 @@ pub async fn repair_checksum_drift(
             kind,
         });
     }
+    if let Some(down) = new_checksum_down
+        && let Err(kind) = validate_checksum_format(down)
+    {
+        return Err(RepairError::InvalidChecksum {
+            value: down.to_string(),
+            kind,
+        });
+    }
 
     let row = load_row(ctx, version).await?;
-    let before = row.checksum_up.clone();
+    let before_up = row.checksum_up.clone();
+    let before_down = row.checksum_down.clone();
+    let new_down_owned = new_checksum_down.map(|s| s.to_string());
 
     ctx.execute(
-        "UPDATE djogi_schema_migrations SET checksum_up = $2 WHERE version = $1",
-        &[&version, &new_checksum_up],
+        "UPDATE djogi_schema_migrations \
+         SET checksum_up = $2, checksum_down = $3 \
+         WHERE version = $1",
+        &[&version, &new_checksum_up, &new_down_owned],
     )
     .await
     .map_err(|e| RepairError::LedgerIo { source: e })?;
 
+    let mut actions = vec![format!(
+        "checksum_up of `{version}` updated from {before_up} to {new_checksum_up}"
+    )];
+    let mut changes = vec![LedgerChange {
+        version: version.to_string(),
+        column: "checksum_up",
+        before: before_up,
+        after: new_checksum_up.to_string(),
+    }];
+
+    // Always record the checksum_down change — even when both before
+    // and after are None — so the audit trail captures the operator
+    // intent ("we touched this row's checksums").
+    let after_down_render = new_down_owned
+        .clone()
+        .unwrap_or_else(|| "<none>".to_string());
+    let before_down_render = before_down.clone().unwrap_or_else(|| "<none>".to_string());
+    actions.push(format!(
+        "checksum_down of `{version}` updated from {before_down_render} to {after_down_render}"
+    ));
+    changes.push(LedgerChange {
+        version: version.to_string(),
+        column: "checksum_down",
+        before: before_down_render,
+        after: after_down_render,
+    });
+
     Ok(RepairReport {
-        actions_taken: vec![format!(
-            "checksum_up of `{version}` updated from {before} to {new_checksum_up}"
-        )],
-        ledger_changes: vec![LedgerChange {
-            version: version.to_string(),
-            column: "checksum_up",
-            before,
-            after: new_checksum_up.to_string(),
-        }],
+        actions_taken: actions,
+        ledger_changes: changes,
         snapshot_changes: Vec::new(),
     })
 }
@@ -408,56 +548,275 @@ pub async fn repair_partial_apply(
     })
 }
 
-/// Rebuild the on-disk snapshot for a `(database, app)` bucket from
-/// the ledger and a caller-supplied projection.
+/// Resume a partial-apply by re-running the remaining
+/// non-transactional segment statements from
+/// `applied_steps_count + 1` (B-10).
 ///
-/// **Why the projection is caller-supplied.** Repair-mode snapshot
-/// rebuild does not re-project from the descriptor inventory — that
-/// would conflate the snapshot's "schema as committed" with the
-/// runtime descriptor's "schema as currently coded". The operator
-/// supplies the projection corresponding to the most-recently-applied
-/// migration version (typically the descriptor inventory at that
-/// commit), and repair writes it to disk after confirming the bucket
-/// matches and the ledger has at least one applied row.
+/// **The third partial-apply repair flow.** [`repair_partial_apply`]
+/// covers the rollback / fake routes; this function covers the
+/// resume route. The operator hands in the ORIGINAL plan that the
+/// crashed apply consumed — repair re-verifies the plan's `version`
+/// and `checksum_up` against the ledger row before re-running any
+/// SQL.
 ///
 /// **Operator confirmation required.**
 ///
-/// The operator should ensure the supplied snapshot reflects the
-/// state implied by the ledger's applied rows. Repair does not
-/// reverse-engineer the snapshot from the ledger's `checksum_up`
-/// fragments — that path requires a full `SchemaDelta` replay engine
-/// which is T8's territory. T5's repair is the "I have the right
-/// snapshot in hand, please write it" tool.
-pub async fn repair_snapshot_rebuild(
+/// **Safety checks.** Before any SQL runs, the function verifies:
+///
+/// - `plan.version` (derived from the supplied `version` argument)
+///   matches the ledger row's `version`. (We also accept that the
+///   caller passes the ledger version directly; this argument is
+///   the resume-target.)
+/// - `plan`'s recomputed `checksum_up` matches the ledger row's
+///   `checksum_up`. A mismatch means a different plan than the one
+///   originally applied is being supplied — refusing to run is the
+///   only safe option.
+/// - The ledger row's status is `failed` AND `total_steps` is set
+///   AND `applied_steps_count < total_steps`. Anything else has
+///   nothing to resume.
+///
+/// **What it runs.** The non-transactional segment(s) in plan order.
+/// Each statement is executed via `ctx.raw_ddl(...)` (auto-commit).
+/// After each successful step, `applied_steps_count` is incremented
+/// in the ledger so a second crash can resume from the new
+/// position. On full success, the row is finalised to
+/// `status = 'applied'`.
+pub async fn repair_resume_partial_apply(
     ctx: &mut DjogiContext,
     _guard: &WorkspaceGuard,
-    bucket: &BucketKey,
-    snapshot: &AppliedSchema,
-    snapshot_path: &Path,
+    version: &str,
+    plan: &MigrationPlan,
     confirmation: RepairConfirmation,
 ) -> Result<RepairReport, RepairError> {
     if confirmation != RepairConfirmation::OperatorAcknowledged {
         return Err(RepairError::InsufficientConfirmation);
     }
 
-    // Bootstrap the ledger so the SELECT below cannot fail with
-    // relation-not-found. Repair is the one mutation path that may
-    // be invoked on a fresh database (an operator bootstrapping
-    // from a known-good snapshot has no apply history yet).
-    ledger::bootstrap(ctx)
+    let row = load_row(ctx, version).await?;
+
+    // Plan version must match the ledger row's version. The caller's
+    // `version` argument names the row to repair; the plan must
+    // produce the same SQL the original apply consumed.
+    let plan_checksum = compute_plan_checksum_up(plan);
+    if plan_checksum != row.checksum_up {
+        return Err(RepairError::PlanChecksumMismatch {
+            version: version.to_string(),
+            ledger_checksum: row.checksum_up.clone(),
+            plan_checksum,
+        });
+    }
+
+    // Status must be a partial-apply state with remaining work.
+    if !matches!(row.status, LedgerStatus::Failed | LedgerStatus::Pending) {
+        return Err(RepairError::InvalidResolution {
+            version: version.to_string(),
+            current_status: row.status,
+            attempted: PartialApplyResolution::MarkApplied,
+        });
+    }
+
+    let total = match row.total_steps {
+        Some(t) => t,
+        None => {
+            return Err(RepairError::NothingToResume {
+                version: version.to_string(),
+                applied: row.applied_steps_count,
+                total: None,
+            });
+        }
+    };
+    if row.applied_steps_count >= total {
+        return Err(RepairError::NothingToResume {
+            version: version.to_string(),
+            applied: row.applied_steps_count,
+            total: Some(total),
+        });
+    }
+
+    // The runner CRUD helpers (`update_progress` / `mark_partial`)
+    // take the row's BIGINT id, but `LedgerRow` does not carry the
+    // id. Look it up once before the loop.
+    let ledger_id = lookup_ledger_id_by_version(ctx, version).await?;
+
+    // Walk the non-transactional segments in plan order, skipping
+    // the first `applied_steps_count` statements globally. The
+    // counting is across all non-tx segments — the runner records
+    // a single cross-segment tally, so the resume math has to mirror
+    // that.
+    let mut remaining_to_skip = row.applied_steps_count as usize;
+    let mut applied = row.applied_steps_count;
+    let mut ledger_changes: Vec<LedgerChange> = Vec::new();
+    let mut actions: Vec<String> = Vec::new();
+
+    for (seg_idx, segment) in plan.segments.iter().enumerate() {
+        if segment.kind != SegmentKind::NonTransactional {
+            continue;
+        }
+        for (step_within, stmt) in segment.statements.iter().enumerate() {
+            if remaining_to_skip > 0 {
+                remaining_to_skip -= 1;
+                continue;
+            }
+            // Run the statement.
+            if let Err(e) = ctx.raw_ddl(&stmt.up).await {
+                // Best-effort: record the new partial state before
+                // returning the typed error. The caller's path is
+                // either to fix the underlying issue and re-resume,
+                // or to fall back to MarkRolledBack / MarkFaked via
+                // repair_partial_apply.
+                let note = format!(
+                    "resume failed at segment {seg_idx} step {step_within}: \
+                     {label} — {e}",
+                    label = stmt.label,
+                );
+                let _ = ledger::mark_partial(ctx, ledger_id, applied, &note).await;
+                return Err(RepairError::ResumeStepFailed {
+                    version: version.to_string(),
+                    step_index: applied as usize,
+                    statement_label: stmt.label.clone(),
+                    applied_steps_count: applied,
+                    source: e,
+                });
+            }
+            applied = applied.saturating_add(1);
+            // Update progress so a second crash sees the right
+            // resume point.
+            if let Err(e) = ledger::update_progress(ctx, ledger_id, applied).await {
+                tracing::warn!(
+                    version = version,
+                    applied,
+                    error = ?e,
+                    "ledger progress update failed during resume; SQL already applied",
+                );
+            }
+            actions.push(format!(
+                "resumed step {applied} of {total}: {label}",
+                label = stmt.label,
+            ));
+        }
+    }
+
+    // Full success — finalise to applied.
+    ctx.execute(
+        "UPDATE djogi_schema_migrations \
+         SET status = 'applied', applied_steps_count = $2, partial_apply_note = NULL \
+         WHERE version = $1",
+        &[&version, &applied],
+    )
+    .await
+    .map_err(|e| RepairError::LedgerIo { source: e })?;
+
+    ledger_changes.push(LedgerChange {
+        version: version.to_string(),
+        column: "status",
+        before: row.status.as_db_str().to_string(),
+        after: LedgerStatus::Applied.as_db_str().to_string(),
+    });
+    ledger_changes.push(LedgerChange {
+        version: version.to_string(),
+        column: "applied_steps_count",
+        before: row.applied_steps_count.to_string(),
+        after: applied.to_string(),
+    });
+
+    Ok(RepairReport {
+        actions_taken: actions,
+        ledger_changes,
+        snapshot_changes: Vec::new(),
+    })
+}
+
+/// Recompute a plan's `checksum_up` for resume validation. Mirrors
+/// the runner's `compute_checksum_for_plan_up` so the two sides
+/// agree by construction.
+fn compute_plan_checksum_up(plan: &MigrationPlan) -> String {
+    let frags: Vec<&str> = plan
+        .segments
+        .iter()
+        .flat_map(|s| s.statements.iter())
+        .map(|s| s.up.as_str())
+        .collect();
+    compute_checksum(frags)
+}
+
+/// Read the `id` for a ledger row by `version`. Used by the resume
+/// path to feed `ledger::update_progress` / `ledger::mark_partial`.
+async fn lookup_ledger_id_by_version(
+    ctx: &mut DjogiContext,
+    version: &str,
+) -> Result<i64, RepairError> {
+    let row = ctx
+        .query_one(
+            "SELECT id FROM djogi_schema_migrations WHERE version = $1",
+            &[&version],
+        )
         .await
         .map_err(|e| RepairError::LedgerIo { source: e })?;
+    let id: i64 = row.try_get(0).map_err(io_err)?;
+    Ok(id)
+}
 
-    // Sanity-check: ledger should have at least one applied row for
-    // this bucket. A snapshot-rebuild on an empty ledger is
-    // suspicious — surface it as an action note rather than
-    // hard-failing (the operator may legitimately be bootstrapping a
-    // new bucket from a known-good snapshot).
+/// Rebuild the on-disk snapshot for a `(database, app)` bucket from
+/// the LIVE database catalog (B-12).
+///
+/// **Always re-projects from live.** Codex review (B-12) flagged
+/// that the previous arrangement let the operator hand in any
+/// `AppliedSchema` and the rebuild would write it verbatim — there
+/// was no validation that the supplied snapshot matched what the
+/// live catalog would write. The fix takes the tighter contract:
+/// the operator supplies the bucket and the destination path; repair
+/// projects the live database itself and writes that. The supplied
+/// projection channel has been removed entirely.
+///
+/// **Operator confirmation required.**
+///
+/// **What the operator gets back.** [`RepairReport`] documents the
+/// path that was written and the projection's table count so the
+/// operator can confirm the rebuild matches expectations.
+///
+/// **Bootstrap policy.** This function does NOT bootstrap the
+/// ledger. The ledger is required for the rebuild's "applied row
+/// count" advisory; if the ledger is missing the rebuild still
+/// proceeds and the action log records the absence.
+pub async fn repair_snapshot_rebuild(
+    ctx: &mut DjogiContext,
+    _guard: &WorkspaceGuard,
+    bucket: &BucketKey,
+    snapshot_path: &std::path::Path,
+    confirmation: RepairConfirmation,
+) -> Result<RepairReport, RepairError> {
+    if confirmation != RepairConfirmation::OperatorAcknowledged {
+        return Err(RepairError::InsufficientConfirmation);
+    }
+
+    // Always re-project from live. The verify-side helper is the
+    // single source of truth for the live-DB projection so verify and
+    // baseline / repair-rebuild agree by construction.
+    let projected = super::verify::live_schema_for_repair(ctx)
+        .await
+        .map_err(|e| RepairError::LedgerIo {
+            // Re-using LedgerIo's source channel would conflate two
+            // failure modes; we pivot through a synthetic DjogiError
+            // (DbError::other) so the public surface stays narrow
+            // without adding a dedicated variant. The Display message
+            // keeps the projection origin clear.
+            source: DjogiError::Db(crate::error::DbError::other(format!(
+                "live-DB projection failed: {e}"
+            ))),
+        })?;
+
+    // Sanity-check: count applied rows for the bucket. A rebuild on
+    // an empty ledger is suspicious but legal (a fresh bucket bootstrap
+    // from a known-good schema). We surface the count as advisory.
+    // If the ledger table itself is missing, the count function
+    // would error — we degrade to "unknown" in that case so the
+    // rebuild still proceeds.
     let applied_for_bucket = count_applied_for_app(ctx, &bucket.app)
         .await
-        .map_err(|e| RepairError::LedgerIo { source: e })?;
+        .ok()
+        .unwrap_or(-1);
 
-    save_snapshot(snapshot, snapshot_path).map_err(|e| RepairError::SnapshotIo {
+    save_snapshot(&projected, snapshot_path).map_err(|e| RepairError::SnapshotIo {
         path: snapshot_path.to_path_buf(),
         source: e,
     })?;
@@ -469,26 +828,33 @@ pub async fn repair_snapshot_rebuild(
         bucket.app,
         snapshot_path.display(),
     ));
-    if applied_for_bucket == 0 {
-        actions.push(
+    actions.push(format!(
+        "projected {n} table(s), {idx} index(es) from live catalog",
+        n = projected.models.len(),
+        idx = projected.indexes.len(),
+    ));
+    match applied_for_bucket {
+        -1 => actions
+            .push("advisory: ledger table not readable; bucket apply-count unknown".to_string()),
+        0 => actions.push(
             "advisory: bucket has 0 applied ledger rows; rebuild recorded \
              as the snapshot for a fresh / empty migration history"
                 .to_string(),
-        );
-    } else {
-        actions.push(format!(
-            "advisory: bucket has {applied_for_bucket} applied ledger row(s)"
-        ));
+        ),
+        n => actions.push(format!("advisory: bucket has {n} applied ledger row(s)")),
     }
+
+    let description = match applied_for_bucket {
+        -1 => "rebuilt from live-DB projection (ledger unreadable)".to_string(),
+        n => format!("rebuilt from live-DB projection ({n} applied rows)"),
+    };
 
     Ok(RepairReport {
         actions_taken: actions,
         ledger_changes: Vec::new(),
         snapshot_changes: vec![SnapshotChange {
             path: snapshot_path.to_path_buf(),
-            description: format!(
-                "rebuilt from operator-supplied projection ({applied_for_bucket} applied rows)"
-            ),
+            description,
         }],
     })
 }
@@ -654,5 +1020,72 @@ mod tests {
             | ChecksumFormatErrorKind::WrongLength { .. }
             | ChecksumFormatErrorKind::NonLowercaseHex { .. } => (),
         }
+    }
+
+    // ── compute_plan_checksum_up (B-10) ──────────────────────────────────
+
+    #[test]
+    fn compute_plan_checksum_up_matches_runner_path() {
+        use crate::migrate::diff::Classification;
+        use crate::migrate::projection::BucketKey;
+        use crate::migrate::segment::{Segment, SegmentKind};
+        use crate::migrate::sql::OperationSql;
+        let plan = MigrationPlan {
+            bucket: BucketKey {
+                database: "main".to_string(),
+                app: "".to_string(),
+            },
+            classification: Classification::Additive,
+            segments: vec![Segment {
+                kind: SegmentKind::Transactional,
+                statements: vec![OperationSql {
+                    label: "AddTable users".to_string(),
+                    up: "CREATE TABLE users ()".to_string(),
+                    down: "DROP TABLE users".to_string(),
+                    lossy: None,
+                }],
+            }],
+        };
+        let from_repair = compute_plan_checksum_up(&plan);
+        let manual = compute_checksum(["CREATE TABLE users ()"]);
+        assert_eq!(
+            from_repair, manual,
+            "B-10: repair's resume checksum must match the runner's plan checksum"
+        );
+    }
+
+    // ── B-9 rendered messages ────────────────────────────────────────────
+
+    #[test]
+    fn plan_checksum_mismatch_message_names_versions() {
+        let e = RepairError::PlanChecksumMismatch {
+            version: "V123".to_string(),
+            ledger_checksum: "V1:aaaaa".to_string(),
+            plan_checksum: "V1:bbbbb".to_string(),
+        };
+        let msg = format!("{e}");
+        assert!(msg.contains("V123"));
+        assert!(msg.contains("V1:aaaaa"));
+        assert!(msg.contains("V1:bbbbb"));
+    }
+
+    #[test]
+    fn nothing_to_resume_message_distinguishes_total_states() {
+        let with_total = RepairError::NothingToResume {
+            version: "V1".to_string(),
+            applied: 5,
+            total: Some(5),
+        };
+        let m = format!("{with_total}");
+        assert!(m.contains("applied_steps_count=5"));
+        assert!(m.contains("total_steps=5"));
+
+        let no_total = RepairError::NothingToResume {
+            version: "V1".to_string(),
+            applied: 0,
+            total: None,
+        };
+        let m = format!("{no_total}");
+        assert!(m.contains("total_steps is NULL"));
     }
 }

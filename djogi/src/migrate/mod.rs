@@ -85,7 +85,8 @@ pub use ledger::{
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use repair::{
     LedgerChange, PartialApplyResolution, RepairConfirmation, RepairError, RepairReport,
-    SnapshotChange, repair_checksum_drift, repair_partial_apply, repair_snapshot_rebuild,
+    SnapshotChange, repair_checksum_drift, repair_partial_apply, repair_resume_partial_apply,
+    repair_snapshot_rebuild,
 };
 pub use runner::{
     LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,

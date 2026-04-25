@@ -179,6 +179,21 @@ pub enum RunnerError {
         path: PathBuf,
         source: SnapshotError,
     },
+
+    /// `baseline_plan` was called with `runner_ctx.snapshot.is_some()`.
+    /// Baseline derives the canonical snapshot from a fresh live-DB
+    /// projection (B-11) so the operator-supplied channel is rejected
+    /// up-front to prevent stale-snapshot baselines from poisoning
+    /// future diffs.
+    BaselineSnapshotShouldNotBeProvided,
+
+    /// The live-DB projection underpinning `baseline_plan` failed
+    /// before the ledger row could be inserted. Distinct from
+    /// `LedgerWriteFailed` so the operator-facing message names the
+    /// projection step (not the ledger) as the failing phase.
+    BaselineProjectionFailed {
+        source: Box<super::verify::VerifyRunError>,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -286,6 +301,14 @@ impl std::fmt::Display for RunnerError {
             RunnerError::SnapshotPersistFailed { path, source } => {
                 write!(f, "snapshot persist failed at {}: {source}", path.display(),)
             }
+            RunnerError::BaselineSnapshotShouldNotBeProvided => f.write_str(
+                "baseline_plan rejects caller-supplied snapshots: baseline projects the \
+                 live database itself; pass `runner_ctx.snapshot = None`",
+            ),
+            RunnerError::BaselineProjectionFailed { source } => write!(
+                f,
+                "baseline live-DB projection failed before ledger insert: {source}",
+            ),
         }
     }
 }
@@ -301,6 +324,7 @@ impl std::error::Error for RunnerError {
             RunnerError::NonTransactionalSegmentFailed { source, .. } => Some(source),
             RunnerError::ConfigLoadFailed { source } => Some(source),
             RunnerError::SnapshotPersistFailed { source, .. } => Some(source),
+            RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
             _ => None,
         }
     }
@@ -826,6 +850,17 @@ pub async fn rollback_plan(
     lossy_policy: LossyRollbackPolicy,
     prior_snapshot: Option<&super::schema::AppliedSchema>,
 ) -> Result<RollbackReport, RollbackError> {
+    // B-3: hoist the PriorSnapshotMissing check to the very top —
+    // before any ledger bootstrap, before any DDL, before any ledger
+    // mutation. The previous arrangement only caught the
+    // missing-snapshot condition AFTER down SQL had run and the
+    // ledger row had been flipped to `rolled_back`, leaving the
+    // database in a half-rolled-back state on what should be a
+    // pure-validation error.
+    if prior_snapshot.is_none() && runner_ctx.snapshot_path.is_some() {
+        return Err(RollbackError::PriorSnapshotMissing);
+    }
+
     // 1. Bootstrap the ledger so the SELECT below cannot fail with
     //    relation-not-found.
     ledger::bootstrap(ctx).await.map_err(|e| {
@@ -891,6 +926,14 @@ pub async fn rollback_plan(
 
 /// Internal rollback path — split out so the advisory-lock release
 /// runs on every exit branch.
+///
+/// **Atomicity contract (B-1).** The transactional segments share ONE
+/// Postgres transaction, opened before the first segment's down SQL
+/// runs and committed after the last. A failure mid-walk rolls back
+/// the entire compound — no transactional segment commits in
+/// isolation while a peer fails. Non-transactional segments are
+/// inherently auto-committed and run before the compound transaction
+/// (per the apply-order inversion the v3 plan calls for in T4).
 async fn rollback_inner(
     ctx: &mut DjogiContext,
     plan: &MigrationPlan,
@@ -898,33 +941,84 @@ async fn rollback_inner(
     prior_snapshot: Option<&super::schema::AppliedSchema>,
     allow_reason: Option<String>,
 ) -> Result<RollbackReport, RollbackError> {
-    // 5. Walk segments in reverse list order. Within each segment,
-    //    run statements in reverse so the last-applied statement is
-    //    the first to revert. Non-transactional segments revert
-    //    autocommitted; transactional segments wrap in BEGIN/COMMIT.
+    // 5. Walk segments in reverse list order. Apply runs
+    //    transactional segments first then non-transactional. Rollback
+    //    inverts that:
+    //      a. Non-transactional segments first (auto-committed,
+    //         REVERSE statement order per segment, REVERSE segment
+    //         order across the plan).
+    //      b. Transactional segments second, ALL inside a SINGLE
+    //         compound Postgres transaction (REVERSE statement order
+    //         per segment, REVERSE segment order across the plan).
+    //         A failure inside the compound tx aborts the whole tx.
     let mut transactional_undone = 0usize;
     let mut non_transactional_undone = 0usize;
 
+    // Phase a — non-transactional segments, in reverse plan order.
     for (rev_idx, segment) in plan.segments.iter().enumerate().rev() {
-        match segment.kind {
-            SegmentKind::Transactional => {
-                rollback_transactional_segment(ctx, segment, rev_idx).await?;
-                transactional_undone += 1;
-            }
-            SegmentKind::NonTransactional => {
-                rollback_non_transactional_segment(ctx, segment, rev_idx).await?;
-                non_transactional_undone += 1;
-            }
-            SegmentKind::MetadataOnly => {
-                // Metadata-only segments do not run DDL; rollback is a
-                // no-op at the SQL level. T6's metadata path owns
-                // any folder rename undo.
-            }
+        if segment.kind == SegmentKind::NonTransactional {
+            rollback_non_transactional_segment(ctx, segment, rev_idx).await?;
+            non_transactional_undone += 1;
         }
+    }
+
+    // Phase b — every transactional segment inside ONE Postgres
+    // transaction. Open BEGIN once; walk segments in reverse plan
+    // order, statements in reverse per segment; ROLLBACK on any
+    // failure; COMMIT at the end.
+    let has_transactional = plan
+        .segments
+        .iter()
+        .any(|s| s.kind == SegmentKind::Transactional);
+    if has_transactional {
+        ctx.raw_ddl("BEGIN")
+            .await
+            .map_err(|e| RollbackError::DownStatementFailed {
+                segment_index: usize::MAX,
+                statement_label: "<BEGIN compound rollback tx>".to_string(),
+                source: e,
+            })?;
+
+        for (rev_idx, segment) in plan.segments.iter().enumerate().rev() {
+            if segment.kind != SegmentKind::Transactional {
+                continue;
+            }
+            for stmt in segment.statements.iter().rev() {
+                if stmt.down.is_empty() {
+                    continue;
+                }
+                if let Err(e) = ctx.raw_ddl(&stmt.down).await {
+                    // Best-effort ROLLBACK of the whole compound tx —
+                    // surface the original error verbatim.
+                    let _ = ctx.raw_ddl("ROLLBACK").await;
+                    return Err(RollbackError::DownStatementFailed {
+                        segment_index: rev_idx,
+                        statement_label: stmt.label.clone(),
+                        source: e,
+                    });
+                }
+            }
+            transactional_undone += 1;
+        }
+
+        ctx.raw_ddl("COMMIT")
+            .await
+            .map_err(|e| RollbackError::DownStatementFailed {
+                segment_index: usize::MAX,
+                statement_label: "<COMMIT compound rollback tx>".to_string(),
+                source: e,
+            })?;
     }
 
     // 6. Update the ledger row to `rolled_back`. The note records the
     //    rollback timestamp and (when applicable) the lossy reason.
+    //
+    //    B-2: clear `total_steps` to NULL so a rolled-back row no
+    //    longer advertises stale progress. The columns we touch are:
+    //      - status              -> 'rolled_back'
+    //      - applied_steps_count -> 0
+    //      - total_steps         -> NULL
+    //      - partial_apply_note  -> rollback record
     let timestamp = OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
@@ -934,7 +1028,10 @@ async fn rollback_inner(
     };
     ctx.execute(
         "UPDATE djogi_schema_migrations \
-         SET status = 'rolled_back', applied_steps_count = 0, partial_apply_note = $2 \
+         SET status = 'rolled_back', \
+             applied_steps_count = 0, \
+             total_steps = NULL, \
+             partial_apply_note = $2 \
          WHERE version = $1",
         &[&runner_ctx.version, &note],
     )
@@ -948,6 +1045,11 @@ async fn rollback_inner(
 
     // 7. Persist the prior snapshot, if supplied. The caller maintains
     //    snapshot history; T5 only writes whatever was handed in.
+    //
+    // The `prior_snapshot.is_none() && snapshot_path.is_some()` case
+    // is rejected at the TOP of `rollback_plan` (B-3) — by the time
+    // we reach this branch the invariant is "either both are present
+    // or `prior_snapshot` is None and `snapshot_path` is also None".
     let mut snapshot_reverted = false;
     if let (Some(snap), Some(path)) = (prior_snapshot, &runner_ctx.snapshot_path) {
         save_snapshot(snap, path).map_err(|e| RollbackError::SnapshotPersistFailed {
@@ -955,12 +1057,6 @@ async fn rollback_inner(
             source: e,
         })?;
         snapshot_reverted = true;
-    } else if prior_snapshot.is_none() && runner_ctx.snapshot_path.is_some() {
-        // Caller has a snapshot path but did not supply the prior
-        // snapshot — surface as a soft error so test paths that pass
-        // `snapshot_path: None` are unaffected but production callers
-        // get told.
-        return Err(RollbackError::PriorSnapshotMissing);
     }
 
     Ok(RollbackReport {
@@ -969,46 +1065,6 @@ async fn rollback_inner(
         snapshot_reverted,
         lossy_reason: allow_reason,
     })
-}
-
-/// Run every `down` statement in a transactional segment, in REVERSE
-/// statement order, inside a single Postgres transaction.
-async fn rollback_transactional_segment(
-    ctx: &mut DjogiContext,
-    segment: &Segment,
-    segment_index: usize,
-) -> Result<(), RollbackError> {
-    ctx.raw_ddl("BEGIN")
-        .await
-        .map_err(|e| RollbackError::DownStatementFailed {
-            segment_index,
-            statement_label: "<BEGIN>".to_string(),
-            source: e,
-        })?;
-
-    for stmt in segment.statements.iter().rev() {
-        if stmt.down.is_empty() {
-            continue;
-        }
-        if let Err(e) = ctx.raw_ddl(&stmt.down).await {
-            let _ = ctx.raw_ddl("ROLLBACK").await;
-            return Err(RollbackError::DownStatementFailed {
-                segment_index,
-                statement_label: stmt.label.clone(),
-                source: e,
-            });
-        }
-    }
-
-    ctx.raw_ddl("COMMIT")
-        .await
-        .map_err(|e| RollbackError::DownStatementFailed {
-            segment_index,
-            statement_label: "<COMMIT>".to_string(),
-            source: e,
-        })?;
-
-    Ok(())
 }
 
 /// Run every `down` statement in a non-transactional segment, in
@@ -1119,6 +1175,12 @@ async fn fake_apply_inner(
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
     let note = format!("faked at {timestamp}; reason: {reason}");
     let run_id = generate_run_id(ctx).await?;
+    // B-4: insert_pending writes status='pending' regardless of the
+    // value carried on the LedgerRow struct (the typed CRUD helper is
+    // intentionally narrow — see ledger::insert_pending). The fake-
+    // apply path therefore has to flip the row to 'faked' explicitly
+    // after insertion. Without this UPDATE the row sits at 'pending'
+    // forever and a future verify run sees "applied but not really".
     let row = LedgerRow {
         version: runner_ctx.version.clone(),
         description: runner_ctx.description.clone(),
@@ -1130,7 +1192,7 @@ async fn fake_apply_inner(
         out_of_order_flag: false,
         applied_steps_count: 0,
         total_steps: None,
-        partial_apply_note: Some(note),
+        partial_apply_note: Some(note.clone()),
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
@@ -1151,6 +1213,19 @@ async fn fake_apply_inner(
             });
         }
     };
+
+    // Flip status pending -> faked. partial_apply_note already carries
+    // the operator's reason from the insert above; this UPDATE is
+    // status-only so we do not double-write the note.
+    ctx.execute(
+        "UPDATE djogi_schema_migrations SET status = 'faked' WHERE id = $1",
+        &[&ledger_id],
+    )
+    .await
+    .map_err(|e| RunnerError::LedgerWriteFailed {
+        version: runner_ctx.version.clone(),
+        source: e,
+    })?;
 
     // Snapshot moves forward, when supplied.
     if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
@@ -1174,12 +1249,22 @@ async fn fake_apply_inner(
 /// Establish a baseline ledger row for an existing database that was
 /// created without Djogi (or by an earlier Djogi version).
 ///
-/// **What it does.** Inserts a single ledger row with
-/// `status = 'baseline'`, the operator-supplied `version`, and a
-/// `description` that includes a `<baseline>` marker. No SQL runs;
-/// the schema is whatever Postgres currently holds. The supplied
-/// `snapshot` is written to disk as the canonical baseline so future
-/// migrations diff against it.
+/// **What it does (B-11).** Projects the LIVE database catalog into
+/// an [`AppliedSchema`] using the verify-side projection helper, then
+/// inserts a single ledger row with `status = 'baseline'`,
+/// `checksum_up` derived from the projected schema, and a
+/// `description` that includes a `<baseline>` marker. No SQL runs
+/// against user tables; the schema is whatever Postgres currently
+/// holds, captured exactly. The projection is then persisted to
+/// `runner_ctx.snapshot_path` (when provided) as the canonical
+/// baseline so future migrations diff against it.
+///
+/// **The runner DOES NOT trust a caller-supplied snapshot.** Codex
+/// review (B-11) flagged that the previous arrangement let an
+/// operator baseline an existing schema with a stale snapshot —
+/// future diffs then started from the wrong state. To prevent that
+/// failure mode, the runner now refuses any caller that pre-fills
+/// `runner_ctx.snapshot` and instead always projects fresh.
 ///
 /// **One baseline per bucket.** A bucket should carry at most one
 /// `baseline` row in its history. The unique-violation on `version`
@@ -1197,6 +1282,15 @@ pub async fn baseline_plan(
     _guard: &WorkspaceGuard,
     reason: &str,
 ) -> Result<RunReport, RunnerError> {
+    // B-11: refuse caller-supplied snapshots — baseline projects the
+    // live DB itself. The pre-existing channel was a footgun: a
+    // caller could pass a known-stale snapshot and the runner would
+    // happily write it as the baseline. The structurally-typed
+    // refusal forces the caller to set both fields to None.
+    if runner_ctx.snapshot.is_some() {
+        return Err(RunnerError::BaselineSnapshotShouldNotBeProvided);
+    }
+
     ledger::bootstrap(ctx)
         .await
         .map_err(|e| RunnerError::LedgerWriteFailed {
@@ -1219,6 +1313,25 @@ async fn baseline_inner(
     reason: &str,
 ) -> Result<RunReport, RunnerError> {
     let started = Instant::now();
+
+    // B-11: project the live DB into an AppliedSchema. The projection
+    // helper is reserved for repair / baseline use — verify uses the
+    // same machinery internally. Failures here surface as the typed
+    // BaselineProjectionFailed variant so the operator sees that the
+    // projection (not the ledger) was the failing step.
+    let projected = super::verify::live_schema_for_repair(ctx)
+        .await
+        .map_err(|e| RunnerError::BaselineProjectionFailed {
+            source: Box::new(e),
+        })?;
+
+    // Compute `checksum_up` over a deterministic rendering of the
+    // projected schema. Baseline rows do not carry SQL fragments to
+    // hash, so we hash the JSON serialization of the projection
+    // itself — a content-addressed marker the operator can later
+    // re-derive from the same DB state.
+    let checksum_up = checksum_for_baseline_snapshot(&projected);
+
     let timestamp = OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
@@ -1231,7 +1344,7 @@ async fn baseline_inner(
     let row = LedgerRow {
         version: runner_ctx.version.clone(),
         description: format!("<baseline> {}", runner_ctx.description),
-        checksum_up: runner_ctx.checksum_up.clone(),
+        checksum_up: checksum_up.clone(),
         checksum_down: None,
         execution_mode: ExecutionMode::Transactional,
         status: LedgerStatus::Baseline,
@@ -1274,8 +1387,11 @@ async fn baseline_inner(
         source: e,
     })?;
 
-    if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
-        save_snapshot(snapshot, path).map_err(|e| RunnerError::SnapshotPersistFailed {
+    // Persist the projected schema as the canonical baseline snapshot
+    // when a path was supplied. (Tests that only care about ledger
+    // semantics pass `snapshot_path: None`.)
+    if let Some(path) = &runner_ctx.snapshot_path {
+        save_snapshot(&projected, path).map_err(|e| RunnerError::SnapshotPersistFailed {
             path: path.clone(),
             source: e,
         })?;
@@ -1290,6 +1406,22 @@ async fn baseline_inner(
         metadata_segments: 0,
         execution_time_ms: elapsed,
     })
+}
+
+/// Compute a `V1:<sha256-hex>` checksum over the canonical JSON
+/// rendering of an [`AppliedSchema`]. Baseline rows hash the
+/// projection itself (no SQL fragments exist for a baseline) so the
+/// stored checksum is content-addressed: re-projecting the same DB
+/// later must yield the same checksum. Used by `baseline_plan`
+/// (B-11) and `repair_snapshot_rebuild` (B-12).
+pub(crate) fn checksum_for_baseline_snapshot(schema: &super::schema::AppliedSchema) -> String {
+    // serde_json with sorted keys gives a deterministic byte stream;
+    // BTreeMap fields in AppliedSchema already serialize alphabetically.
+    // Failure here is impossible in practice (in-memory schema -> JSON)
+    // but we degrade gracefully to an empty-input checksum if it ever
+    // fires so the function stays total.
+    let json = serde_json::to_string(schema).unwrap_or_default();
+    compute_checksum([json])
 }
 
 /// Read a ledger row for a given version. Used by the rollback path
@@ -1653,7 +1785,8 @@ fn compute_checksum_for_plan_up(plan: &MigrationPlan) -> String {
 /// The label format is set by the SQL emitter — `AddIndex <name>`
 /// for new indexes (see `sql.rs::emit_add_index`). The table name is
 /// recovered from the SQL's `ON "<table>"` clause via byte-level
-/// scanning (no regex).
+/// scanning — explicit forward scan over the bytes, no
+/// pattern-matching engine.
 fn parse_create_index_statement(stmt: &OperationSql) -> Option<(String, String)> {
     // Only AddIndex labels are eligible. The DropIndex labels start
     // with "DropIndex" so they cannot collide.
@@ -1663,7 +1796,7 @@ fn parse_create_index_statement(stmt: &OperationSql) -> Option<(String, String)>
     // Extract the table name by scanning for the literal ` ON "`
     // marker followed by the quoted table name. Postgres `CREATE
     // INDEX` SQL always emits `ON "<table>"` — see emit_add_index.
-    // No regex; byte-level forward scan.
+    // Byte-level forward scan; no pattern-matching engine.
     let bytes = stmt.up.as_bytes();
     let needle = b" ON \"";
     let mut i = 0usize;
@@ -2050,5 +2183,56 @@ mod tests {
         // false — only a Db error carries a SQLSTATE.
         let nf = DjogiError::not_found("users");
         assert!(!is_unique_violation(&nf));
+    }
+
+    // ── checksum_for_baseline_snapshot (B-11) ────────────────────────────
+
+    #[test]
+    fn checksum_for_baseline_snapshot_is_deterministic() {
+        use crate::migrate::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
+        use std::collections::BTreeMap;
+        let snap = AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models: BTreeMap::new(),
+            registered_apps: vec!["".to_string()],
+        };
+        let a = checksum_for_baseline_snapshot(&snap);
+        let b = checksum_for_baseline_snapshot(&snap);
+        assert_eq!(a, b, "same input must produce same checksum");
+        assert!(a.starts_with(super::ledger::CHECKSUM_PREFIX));
+        assert_eq!(a.len(), super::ledger::CHECKSUM_LEN);
+    }
+
+    #[test]
+    fn checksum_for_baseline_snapshot_changes_on_schema_change() {
+        use crate::migrate::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
+        use std::collections::BTreeMap;
+        let mut a = AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models: BTreeMap::new(),
+            registered_apps: vec!["".to_string()],
+        };
+        let cs_a = checksum_for_baseline_snapshot(&a);
+        a.registered_apps.push("billing".to_string());
+        let cs_b = checksum_for_baseline_snapshot(&a);
+        assert_ne!(cs_a, cs_b, "schema change must yield different checksum");
+    }
+
+    // ── BaselineSnapshotShouldNotBeProvided guard (B-11) ─────────────────
+
+    #[test]
+    fn baseline_snapshot_should_not_be_provided_renders_message() {
+        let e = RunnerError::BaselineSnapshotShouldNotBeProvided;
+        let msg = format!("{e}");
+        assert!(msg.contains("baseline_plan rejects caller-supplied snapshots"));
+        assert!(msg.contains("snapshot = None"));
     }
 }

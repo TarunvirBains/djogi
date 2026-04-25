@@ -16,9 +16,12 @@
 //!    should carry a checksum that re-validates against the snapshot's
 //!    declared format version. Format errors surface as `D6xx`.
 //!
-//! Verify never mutates anything — it is read-only against the live
-//! database and the snapshot file. Mutations belong to
-//! [`super::repair`].
+//! Verify never mutates anything — it is strictly read-only against
+//! the live database and the snapshot file. The previous T5 entry
+//! point bootstrapped the ledger table on the way in, which violated
+//! the "verify never writes" contract on a fresh DB; that has been
+//! removed and a missing ledger now surfaces as a typed `D621`
+//! Error diagnostic instead. Mutations belong to [`super::repair`].
 //!
 //! # Minimum viable verify (T5)
 //!
@@ -27,20 +30,58 @@
 //!
 //! - **Tables.** Name + column list (name, rendered SQL type,
 //!   nullability, default expression).
-//! - **Primary keys.** Column list (kind detection deferred to T8).
-//! - **Indexes.** Name + table + uniqueness + column list.
+//! - **Primary keys.** Column list — diffed (B-6). Kind detection
+//!   stays deferred to T8.
+//! - **Indexes.** Name + table + columns (in order) + uniqueness +
+//!   method — diffed (B-7). `INCLUDE` and partial-predicate surface
+//!   as `Info` (T5 stop condition).
 //! - **Foreign keys.** Name + source `(table, column)` + target
-//!   `(table, column)` + cascade.
+//!   `(table, column)` + cascade — projection ready, diff deferred to
+//!   T8.
 //!
 //! Other fields ([`crate::migrate::schema::TableSchema::fts`],
 //! [`crate::migrate::schema::TableSchema::partition`],
-//! [`crate::migrate::schema::TableSchema::tenant_key`], enum types,
-//! `INCLUDE` columns, partial-index predicates) surface as advisory
-//! `Info` diagnostics for Phase 7 — T8 can tighten them to `Error`
-//! once the live-DB projection grows. The deferral is intentional:
-//! the v3 plan's stop condition explicitly says ">500 LOC of catalog
-//! SQL is a sign you should narrow scope and surface it for review".
-//! Any tightening lands in T8 alongside the `migrations status` work.
+//! [`crate::migrate::schema::TableSchema::tenant_key`], enum types)
+//! surface as advisory `Info` diagnostics for Phase 7 — T8 can
+//! tighten them to `Error` once the live-DB projection grows. The
+//! deferral is intentional: the v3 plan's stop condition explicitly
+//! says ">500 LOC of catalog SQL is a sign you should narrow scope
+//! and surface it for review". Any tightening lands in T8 alongside
+//! the `migrations status` work.
+//!
+//! # Diagnostic codes (D6xx range)
+//!
+//! Verify's diagnostic codes live in the `D6xx` namespace (D025 is
+//! T4's guard, D004 is build-rs folder drift). Each code has a stable
+//! meaning — re-using a code for a different condition is a hard
+//! reviewer ding. Current assignments:
+//!
+//! | Code | Severity | Meaning |
+//! |------|----------|---------|
+//! | D601 | Error    | Snapshot table missing from live DB. |
+//! | D602 | Error    | Live table not present in snapshot. |
+//! | D603 | Error    | Snapshot column missing from live DB. |
+//! | D604 | Error    | Live column not present in snapshot. |
+//! | D605 | Error    | Nullability drift between snapshot and live. |
+//! | D606 | Warning  | SQL-type rendering drift (advisory). |
+//! | D607 | Error    | Column DEFAULT differs between snapshot and live. |
+//! | D608 | Error    | Primary key column list differs. |
+//! | D610 | Error    | Snapshot index missing from live DB. |
+//! | D611 | Warning  | Live index not present in snapshot. |
+//! | D612 | Error    | Index columns differ (shape mismatch). |
+//! | D613 | Error    | Index uniqueness differs. |
+//! | D614 | Warning  | Index method (btree / gin / ...) differs. |
+//! | D615 | Error    | Index is on the wrong table. |
+//! | D621 | Error    | Ledger table is missing — run apply / baseline first. |
+//! | D690 | Info     | FTS configuration declared but not yet checked. |
+//! | D691 | Info     | Partition strategy declared but not yet checked. |
+//! | D692 | Info     | Enum types declared but not yet checked. |
+//! | D693 | Info     | Index `INCLUDE` columns / predicate not yet checked. |
+//! | D699 | Error    | Ledger reports applied rows but DB has no tables. |
+//!
+//! Every `D6xx` code is unique. Adding a new code goes at the end of
+//! whichever sub-range matches the topic (60x for table, 61x for index,
+//! 62x for ledger lifecycle, 69x for advisory).
 //!
 //! # Determinism
 //!
@@ -49,6 +90,16 @@
 //! powers the projection uses an explicit `ORDER BY` clause so the
 //! comparison surface is reproducible. No `HashMap` / `HashSet` in
 //! the public path.
+//!
+//! # HeeRanjID artifact tables
+//!
+//! Some Postgres tables belong to the HeeRanjID substrate and must
+//! never surface as drift even when an adopter declares a
+//! legitimately-named table starting with `heer_`. To avoid the
+//! prefix-exclusion footgun the verify projection uses an explicit
+//! sorted allowlist of HeeRanjID table names — see
+//! [`HEERANJID_ARTIFACT_TABLES`]. Adding a new HeeRanjID table goes
+//! through the HeeRanjID workspace; Djogi only mirrors the names.
 //!
 //! # Postgres-only
 //!
@@ -59,14 +110,46 @@
 //! not surface through `information_schema` (e.g. `pg_attribute.atttypmod`
 //! for `VARCHAR(N)` length).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
 use super::ledger::{LedgerRow, LedgerStatus};
-use super::schema::{AppliedSchema, ColumnSchema, IndexSchema, TableSchema};
+use super::schema::{
+    AppliedSchema, ColumnSchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
+    IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, PrimaryKeySchema,
+    TableSchema,
+};
+
+/// Sorted allowlist of HeeRanjID artifact table names. Verify
+/// excludes these from the live-DB projection so HeeRanjID's
+/// substrate tables do not show up as "extra live tables" during
+/// drift checks.
+///
+/// **Adopter-owned tables that legitimately start with `heer_` are
+/// preserved.** The previous arrangement used `NOT LIKE 'heer\\_%'`
+/// which silently dropped any adopter-owned table whose name began
+/// with `heer_`. The allowlist is the precise fix (A-1): only
+/// HeeRanjID's own tables are excluded.
+///
+/// Source of truth: HeeRanjID's `sql/postgres/schema.sql`. Update
+/// this list whenever HeeRanjID adds or removes a substrate table.
+/// Sorted alphabetically so binary_search works.
+pub(crate) const HEERANJID_ARTIFACT_TABLES: &[&str] = &[
+    "heer_config",
+    "heer_node_state",
+    "heer_nodes",
+    "heer_ranj_node_state",
+];
+
+/// `true` when `name` is a HeeRanjID substrate table that verify
+/// must exclude from drift comparisons. Uses `binary_search` against
+/// the sorted [`HEERANJID_ARTIFACT_TABLES`] allowlist.
+pub(crate) fn is_heeranjid_artifact_table(name: &str) -> bool {
+    HEERANJID_ARTIFACT_TABLES.binary_search(&name).is_ok()
+}
 
 // ── Public output shapes ──────────────────────────────────────────────────
 
@@ -209,10 +292,15 @@ impl std::error::Error for VerifyRunError {
 /// Run verify against the live database, comparing the supplied
 /// snapshot to the live catalog and the ledger.
 ///
-/// **Read-only.** Verify never writes — repair lives in
-/// [`super::repair`]. Failure to read the catalog or ledger surfaces
-/// as a [`VerifyRunError`]; mismatches surface as `D6xx`
-/// [`VerifyDiagnostic`] entries inside the returned [`VerifyReport`].
+/// **Read-only (B-8).** Verify never writes. The previous T5 arrangement
+/// called `ledger::bootstrap` on the way in, which created
+/// `djogi_schema_migrations` on a fresh DB — a hard violation of the
+/// "verify never mutates" contract. The fix: verify probes for the
+/// ledger via a `pg_class` lookup, and a missing ledger surfaces as a
+/// typed `D621` Error diagnostic ("ledger table not found — run
+/// `djogi migrations apply` or `djogi migrations baseline` first").
+/// Verify returns successfully (with the diagnostic) instead of
+/// mutating state.
 ///
 /// **Determinism.** `diagnostics` is sorted by `(code, location)`.
 /// Iteration over the live catalog uses ordered queries so a re-run
@@ -223,49 +311,75 @@ pub async fn verify(
 ) -> Result<VerifyReport, VerifyRunError> {
     let mut diagnostics: Vec<VerifyDiagnostic> = Vec::new();
 
-    // Read the ledger first so we can correlate with catalog state
-    // even if the snapshot is missing tables.
-    let ledger_rows = read_applied_ledger(ctx).await?;
-    let applied_count = ledger_rows
-        .iter()
-        .filter(|r| r.status == LedgerStatus::Applied)
-        .count();
-    let unfinished_count = ledger_rows
-        .iter()
-        .filter(|r| matches!(r.status, LedgerStatus::Pending | LedgerStatus::Failed))
-        .count();
-    let latest_applied_version = ledger_rows
-        .iter()
-        .rev()
-        .find(|r| r.status == LedgerStatus::Applied)
-        .map(|r| r.version.clone());
+    // B-8: probe for the ledger without bootstrapping it. Verify is
+    // read-only; on a fresh DB we surface D621 and leave the ledger
+    // un-created. The probe uses pg_class so the SELECT below can
+    // never fail with relation-not-found.
+    let ledger_present = ledger_table_exists(ctx).await?;
+
+    let (applied_count, unfinished_count, latest_applied_version) = if ledger_present {
+        let ledger_rows = read_applied_ledger(ctx).await?;
+        let applied_count = ledger_rows
+            .iter()
+            .filter(|r| r.status == LedgerStatus::Applied)
+            .count();
+        let unfinished_count = ledger_rows
+            .iter()
+            .filter(|r| matches!(r.status, LedgerStatus::Pending | LedgerStatus::Failed))
+            .count();
+        let latest_applied_version = ledger_rows
+            .iter()
+            .rev()
+            .find(|r| r.status == LedgerStatus::Applied)
+            .map(|r| r.version.clone());
+
+        // D699: ledger reports applied migrations but the live DB has
+        // zero user tables — the schema was likely dropped out-of-band.
+        // (This used to share `D610` with the index-missing diagnostic;
+        // A-2 split them so each code carries one stable meaning.)
+        let live_for_ledger_check = project_live_schema(ctx).await?;
+        if !ledger_rows.is_empty()
+            && live_for_ledger_check.models.is_empty()
+            && !snapshot.models.is_empty()
+        {
+            diagnostics.push(VerifyDiagnostic {
+                code: "D699".to_string(),
+                severity: VerifySeverity::Error,
+                message: format!(
+                    "ledger reports {applied_count} applied migration(s) but the \
+                     live database contains zero tables; the schema may have been \
+                     dropped out-of-band",
+                ),
+                location: None,
+            });
+        }
+
+        (applied_count, unfinished_count, latest_applied_version)
+    } else {
+        diagnostics.push(VerifyDiagnostic {
+            code: "D621".to_string(),
+            severity: VerifySeverity::Error,
+            message: "ledger table `djogi_schema_migrations` not found — run \
+                      `djogi migrations apply` or `djogi migrations baseline` \
+                      first; verify is read-only and will not bootstrap the ledger"
+                .to_string(),
+            location: None,
+        });
+        (0, 0, None)
+    };
 
     // Project the live catalog. Any catalog read failure is fatal —
     // we cannot produce useful diagnostics from a partial read.
     let live = project_live_schema(ctx).await?;
 
-    // Compare snapshot tables to live tables.
+    // Compare snapshot tables to live tables (includes per-column
+    // default + nullability + type comparison; PK comparison from B-6).
     diff_tables(snapshot, &live, &mut diagnostics);
 
-    // Compare snapshot indexes to live indexes.
+    // Compare snapshot indexes to live indexes — name + table +
+    // columns + uniqueness + method (B-7). INCLUDE / partial
+    // predicate surface as Info per the T5 stop condition.
     diff_indexes(snapshot, &live, &mut diagnostics);
-
-    // Compare ledger expectations: every `applied` row should have
-    // its target tables in the live catalog. We approximate this by
-    // checking that every snapshot table exists live; a fully-correct
-    // version-by-version replay belongs to T8.
-    if !ledger_rows.is_empty() && live.models.is_empty() && !snapshot.models.is_empty() {
-        diagnostics.push(VerifyDiagnostic {
-            code: "D610".to_string(),
-            severity: VerifySeverity::Error,
-            message: format!(
-                "ledger reports {applied_count} applied migration(s) but the \
-                 live database contains zero tables; the schema may have been \
-                 dropped out-of-band",
-            ),
-            location: None,
-        });
-    }
 
     // Surface advisory diagnostics for fields the projection does not
     // yet exercise so operators know the limit of T5's verify scope.
@@ -279,6 +393,35 @@ pub async fn verify(
         applied_count,
         unfinished_count,
     })
+}
+
+/// Returns `true` when `djogi_schema_migrations` exists in the
+/// `public` schema. Used by verify to gate the ledger read without
+/// bootstrapping (B-8).
+async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, VerifyRunError> {
+    let row = ctx
+        .query_one(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE n.nspname = 'public' \
+                   AND c.relname = 'djogi_schema_migrations' \
+                   AND c.relkind = 'r' \
+             )",
+            &[],
+        )
+        .await
+        .map_err(|e| VerifyRunError::CatalogQueryFailed {
+            query_label: "ledger_present_probe",
+            source: e,
+        })?;
+    let exists: bool = row
+        .try_get(0)
+        .map_err(|e| VerifyRunError::CatalogQueryFailed {
+            query_label: "ledger_present_probe.bool",
+            source: DjogiError::from(e),
+        })?;
+    Ok(exists)
 }
 
 // ── Live-DB projection (read-only) ────────────────────────────────────────
@@ -315,13 +458,17 @@ async fn project_live_schema(ctx: &mut DjogiContext) -> Result<AppliedSchema, Ve
 /// columns. Excludes framework-internal bookkeeping tables:
 ///
 /// - `djogi_schema_migrations` — the ledger.
-/// - `heer_*` — HeeRanjId's internal node-state / config tables,
-///   created by the HeeRanjId Postgres schema; they are framework
-///   substrate, not user schema, and must not surface as drift.
+/// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
+///   Adopter-owned tables that legitimately start with `heer_` are
+///   preserved (A-1 fix).
 async fn read_tables(ctx: &mut DjogiContext) -> Result<Vec<TableSchema>, VerifyRunError> {
     // Step 1 — table names. Postgres 18 only; we rely on
     // `pg_class.relkind = 'r'` for ordinary tables and filter out
-    // the framework-internal bookkeeping tables.
+    // the ledger here. HeeRanjID artifact tables are filtered in
+    // Rust against the [`HEERANJID_ARTIFACT_TABLES`] allowlist after
+    // the query (A-1) — the previous LIKE 'heer\\_%' silently
+    // dropped adopter-owned tables that legitimately start with
+    // `heer_`.
     let table_rows = ctx
         .query_all(
             "SELECT c.relname::text \
@@ -330,7 +477,6 @@ async fn read_tables(ctx: &mut DjogiContext) -> Result<Vec<TableSchema>, VerifyR
              WHERE c.relkind = 'r' \
                AND n.nspname = 'public' \
                AND c.relname <> 'djogi_schema_migrations' \
-               AND c.relname NOT LIKE 'heer\\_%' ESCAPE '\\' \
              ORDER BY c.relname",
             &[],
         )
@@ -348,6 +494,9 @@ async fn read_tables(ctx: &mut DjogiContext) -> Result<Vec<TableSchema>, VerifyR
                     query_label: "tables.relname",
                     source: DjogiError::from(e),
                 })?;
+        if is_heeranjid_artifact_table(&table_name) {
+            continue;
+        }
         let columns = read_columns(ctx, &table_name).await?;
         let primary_key_columns = read_primary_key_columns(ctx, &table_name).await?;
 
@@ -500,26 +649,38 @@ async fn read_primary_key_columns(
     Ok(out)
 }
 
-/// Read every non-PK index in `public`. Skips:
+/// Read every non-PK index in `public` along with its shape (B-7) —
+/// columns in order, uniqueness, method (btree / gin / ...).
+///
+/// Skips:
 ///
 /// - PK indexes (the column list lives on the table's
 ///   [`super::schema::PrimaryKeySchema`]).
-/// - UNIQUE indexes auto-created from `UNIQUE` constraints (those
-///   land on the column shape, not the index list).
+/// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
+/// - The ledger table.
+///
+/// `INCLUDE(...)` columns and partial-predicate `WHERE` clauses are
+/// deliberately NOT projected here — the T5 stop condition keeps
+/// those at advisory `Info` level for now (D693). T8 will tighten.
 async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, VerifyRunError> {
+    // Step 1 — one row per index with name + table + uniqueness +
+    // access method. The follow-up read_index_columns query produces
+    // the per-column list. Two queries (instead of one ORDER BY +
+    // array_agg) keeps the column type erasure off the result row.
     let rows = ctx
         .query_all(
             "SELECT i.relname::text, \
                     t.relname::text, \
-                    ix.indisunique \
+                    ix.indisunique, \
+                    am.amname::text \
              FROM pg_index ix \
              JOIN pg_class i ON i.oid = ix.indexrelid \
              JOIN pg_class t ON t.oid = ix.indrelid \
              JOIN pg_namespace n ON n.oid = t.relnamespace \
+             JOIN pg_am am ON am.oid = i.relam \
              WHERE n.nspname = 'public' \
                AND ix.indisprimary = false \
                AND t.relname <> 'djogi_schema_migrations' \
-               AND t.relname NOT LIKE 'heer\\_%' ESCAPE '\\' \
              ORDER BY i.relname",
             &[],
         )
@@ -540,47 +701,118 @@ async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, Verify
         let table: String = row
             .try_get(1)
             .map_err(|e| VerifyRunError::CatalogQueryFailed {
-                query_label: "indexes.relkind",
+                query_label: "indexes.table",
                 source: DjogiError::from(e),
             })?;
+        if is_heeranjid_artifact_table(&table) {
+            continue;
+        }
         let is_unique: bool = row
             .try_get(2)
             .map_err(|e| VerifyRunError::CatalogQueryFailed {
                 query_label: "indexes.indisunique",
                 source: DjogiError::from(e),
             })?;
+        let amname: String = row
+            .try_get(3)
+            .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                query_label: "indexes.amname",
+                source: DjogiError::from(e),
+            })?;
+
+        let index_columns = read_index_columns(ctx, &name).await?;
 
         out.push(IndexSchema {
             extension_dependency: None,
             include: Vec::new(),
-            index_type: super::schema::IndexTypeSchema::BTree,
+            index_type: pg_amname_to_index_type(&amname),
             kind: if is_unique {
-                super::schema::IndexKindSchema::UniqueIndex
+                IndexKindSchema::UniqueIndex
             } else {
-                super::schema::IndexKindSchema::NonUnique
+                IndexKindSchema::NonUnique
             },
             name,
             nulls_not_distinct: false,
             predicate: None,
             requires_out_of_transaction: false,
             table,
-            target: super::schema::IndexTargetSchema::Columns(Vec::new()),
+            target: IndexTargetSchema::Columns(index_columns),
         });
     }
     Ok(out)
 }
 
+/// Read the per-column list for one index, in `pg_index.indkey`
+/// order. Each entry is an [`IndexColumnSchema`] with default sort
+/// direction / nulls policy / opclass — the live catalog read
+/// stops short of opclass detection (T8 territory) so the snapshot's
+/// own knobs are the comparison ground truth.
+async fn read_index_columns(
+    ctx: &mut DjogiContext,
+    index_name: &str,
+) -> Result<Vec<IndexColumnSchema>, VerifyRunError> {
+    let rows = ctx
+        .query_all(
+            "SELECT a.attname::text \
+             FROM pg_index ix \
+             JOIN pg_class i ON i.oid = ix.indexrelid \
+             JOIN pg_namespace n ON n.oid = i.relnamespace \
+             JOIN unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE \
+             JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
+             WHERE n.nspname = 'public' \
+               AND i.relname = $1 \
+               AND a.attnum > 0 \
+             ORDER BY k.ord",
+            &[&index_name],
+        )
+        .await
+        .map_err(|e| VerifyRunError::CatalogQueryFailed {
+            query_label: "index_columns",
+            source: e,
+        })?;
+    let mut out: Vec<IndexColumnSchema> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let name: String = row
+            .try_get(0)
+            .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                query_label: "index_columns.attname",
+                source: DjogiError::from(e),
+            })?;
+        out.push(IndexColumnSchema {
+            name,
+            nulls: IndexNullsOrderSchema::Default,
+            opclass: None,
+            order: IndexOrderSchema::Asc,
+        });
+    }
+    Ok(out)
+}
+
+/// Map a Postgres `pg_am.amname` string to the corresponding
+/// [`IndexTypeSchema`] variant. Unknown methods fall back to
+/// `BTree`; T8 will surface that as a warning, but T5 keeps the
+/// projection forgiving so the diff path can still proceed.
+fn pg_amname_to_index_type(amname: &str) -> IndexTypeSchema {
+    match amname {
+        "btree" => IndexTypeSchema::BTree,
+        "hash" => IndexTypeSchema::Hash,
+        "gin" => IndexTypeSchema::Gin,
+        "gist" => IndexTypeSchema::Gist,
+        "spgist" => IndexTypeSchema::Spgist,
+        "brin" => IndexTypeSchema::Brin,
+        _ => IndexTypeSchema::BTree,
+    }
+}
+
 /// Read the ledger rows we use for verification. Returns rows in
 /// `applied_at` order so iteration is chronological.
+///
+/// **Caller must confirm the ledger exists (B-8).** Verify probes for
+/// the ledger via [`ledger_table_exists`] before calling this helper;
+/// running it without that check would surface a relation-not-found
+/// from the SELECT below. The verify entry point handles the missing
+/// ledger by emitting `D621` and skipping this read entirely.
 async fn read_applied_ledger(ctx: &mut DjogiContext) -> Result<Vec<LedgerRow>, VerifyRunError> {
-    // The ledger may not exist yet (fresh database). Bootstrap it
-    // first so the SELECT below cannot fail with relation-not-found
-    // — verify is read-only against user schema, but it owns the
-    // ledger table by definition.
-    super::ledger::bootstrap(ctx)
-        .await
-        .map_err(|e| VerifyRunError::LedgerQueryFailed { source: e })?;
-
     let rows = ctx
         .query_all(
             "SELECT version, description, checksum_up, checksum_down, execution_mode, \
@@ -720,7 +952,6 @@ async fn read_foreign_keys(
                                   AND ra.attnum = ANY(con.confkey) \
              WHERE n.nspname = 'public' \
                AND con.contype = 'f' \
-               AND c.relname NOT LIKE 'heer\\_%' ESCAPE '\\' \
                AND array_position(con.conkey, a.attnum) \
                    = array_position(con.confkey, ra.attnum) \
              ORDER BY c.relname, a.attname",
@@ -758,6 +989,11 @@ async fn read_foreign_keys(
                     query_label: "foreign_keys.ref_column",
                     source: DjogiError::from(e),
                 })?;
+        // A-1: filter HeeRanjID artifact tables in Rust against the
+        // sorted allowlist rather than via SQL prefix matching.
+        if is_heeranjid_artifact_table(&table) || is_heeranjid_artifact_table(&ref_table) {
+            continue;
+        }
         out.push((table, column, ref_table, ref_column));
     }
     Ok(out)
@@ -767,6 +1003,14 @@ async fn read_foreign_keys(
 
 /// Compare every snapshot table to its live counterpart and emit
 /// drift diagnostics.
+///
+/// Diagnostics emitted:
+/// - D601 / D602 — table presence mismatch (Error).
+/// - D603 / D604 — column presence mismatch (Error).
+/// - D605       — column nullability differs (Error).
+/// - D606       — column type-string drift (Warning).
+/// - D607       — column DEFAULT differs (Error, B-5).
+/// - D608       — primary key column list differs (Error, B-6).
 fn diff_tables(
     snapshot: &AppliedSchema,
     live: &AppliedSchema,
@@ -805,7 +1049,8 @@ fn diff_tables(
         }
     }
 
-    // D603 / D604 — per-column drift for tables present on both sides.
+    // D603 / D604 / D605 / D606 / D607 — per-column drift for tables
+    // present on both sides. D608 — PK shape comparison.
     for (name, snap_table) in &snapshot.models {
         let Some(live_table) = live.models.get(name) else {
             continue;
@@ -851,14 +1096,13 @@ fn diff_tables(
             }
         }
 
-        // D605 — nullability drift on shared columns. The rendered
-        // SQL types diverge often enough between snapshot ("BIGINT")
-        // and live catalog ("bigint") that we keep type comparison
-        // advisory; nullability is a clean Boolean.
+        // D605 / D606 / D607 — per-column shape comparison on shared
+        // columns.
         for (col_name, snap_col) in &snap_cols {
             let Some(live_col) = live_cols.get(col_name) else {
                 continue;
             };
+            // D605 — nullability drift.
             if snap_col.nullable != live_col.nullable {
                 diagnostics.push(VerifyDiagnostic {
                     code: "D605".to_string(),
@@ -895,22 +1139,106 @@ fn diff_tables(
                     location: Some(format!("{name}.{col_name}")),
                 });
             }
+
+            // D607 — column DEFAULT drift (B-5). Both sides compare
+            // through `normalize_default_expr` — Postgres canonicalises
+            // string defaults as `'foo'::text` even when the operator
+            // wrote `'foo'`, so we strip trailing `::TYPE` casts on
+            // both sides before equality. Empty `None` on both sides
+            // is a clean match. The normalisation strategy is
+            // documented on `normalize_default_expr`.
+            let snap_default = normalize_default_expr(snap_col.default_sql.as_deref());
+            let live_default = normalize_default_expr(live_col.default_sql.as_deref());
+            if snap_default != live_default {
+                diagnostics.push(VerifyDiagnostic {
+                    code: "D607".to_string(),
+                    severity: VerifySeverity::Error,
+                    message: format!(
+                        "column `{name}.{col_name}` DEFAULT differs: \
+                         snapshot {s}, live {l}",
+                        s = render_default_for_message(&snap_default),
+                        l = render_default_for_message(&live_default),
+                    ),
+                    location: Some(format!("{name}.{col_name}")),
+                });
+            }
         }
+
+        // D608 — PK column list differs (B-6). Compares the snapshot's
+        // declared PK columns against the live PK projection. Cases:
+        //   - snapshot has PK, live does not → Error
+        //   - snapshot has no PK, live does → Error
+        //   - both have PKs but column list (in order) differs → Error
+        diff_primary_key(
+            name,
+            &snap_table.primary_key,
+            &live_table.primary_key,
+            diagnostics,
+        );
+    }
+}
+
+/// Compare snapshot vs. live primary-key column lists for one table
+/// and emit `D608` on any drift. Order-sensitive — composite PKs on
+/// `(a, b)` are not equal to PKs on `(b, a)`.
+fn diff_primary_key(
+    table_name: &str,
+    snap_pk: &PrimaryKeySchema,
+    live_pk: &PrimaryKeySchema,
+    diagnostics: &mut Vec<VerifyDiagnostic>,
+) {
+    // Both empty column lists is the "no PK on either side" case —
+    // a clean match. The live-DB projection populates `columns` with
+    // the actual PK column names when a PK exists, and an empty
+    // vector when no PK constraint is found.
+    let snap_empty = snap_pk.columns.is_empty();
+    let live_empty = live_pk.columns.is_empty();
+
+    if snap_empty && live_empty {
+        return;
+    }
+    if snap_empty != live_empty || snap_pk.columns != live_pk.columns {
+        diagnostics.push(VerifyDiagnostic {
+            code: "D608".to_string(),
+            severity: VerifySeverity::Error,
+            message: format!(
+                "table `{table_name}` primary key differs: \
+                 snapshot {snap:?}, live {live:?}",
+                snap = snap_pk.columns,
+                live = live_pk.columns,
+            ),
+            location: Some(format!("{table_name}.<pk>")),
+        });
     }
 }
 
 /// Compare the snapshot's index list to the live projection.
+///
+/// Diagnostics emitted:
+/// - D610 — snapshot index missing in live DB (Error).
+/// - D611 — live index not in snapshot (Warning — may be a
+///   constraint-backed auto-index).
+/// - D612 — index columns differ (Error, B-7).
+/// - D613 — index uniqueness differs (Error, B-7).
+/// - D614 — index method differs (Warning, B-7).
+/// - D615 — index lives on a different table (Error, B-7).
+/// - D693 — `INCLUDE` / partial-predicate not yet checked (Info).
 fn diff_indexes(
     snapshot: &AppliedSchema,
     live: &AppliedSchema,
     diagnostics: &mut Vec<VerifyDiagnostic>,
 ) {
-    let snap_names: BTreeSet<&str> = snapshot.indexes.iter().map(|i| i.name.as_str()).collect();
-    let live_names: BTreeSet<&str> = live.indexes.iter().map(|i| i.name.as_str()).collect();
+    let snap_by_name: BTreeMap<&str, &IndexSchema> = snapshot
+        .indexes
+        .iter()
+        .map(|i| (i.name.as_str(), i))
+        .collect();
+    let live_by_name: BTreeMap<&str, &IndexSchema> =
+        live.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
 
     // D610 — snapshot index missing in live DB.
-    for name in &snap_names {
-        if !live_names.contains(name) {
+    for name in snap_by_name.keys() {
+        if !live_by_name.contains_key(name) {
             diagnostics.push(VerifyDiagnostic {
                 code: "D610".to_string(),
                 severity: VerifySeverity::Error,
@@ -928,8 +1256,8 @@ fn diff_indexes(
     // surface as `Warning` because Postgres legitimately creates
     // these for snapshot-declared `UNIQUE` columns / constraints
     // and the snapshot does not record them as separate indexes.
-    for name in &live_names {
-        if !snap_names.contains(name) {
+    for name in live_by_name.keys() {
+        if !snap_by_name.contains_key(name) {
             diagnostics.push(VerifyDiagnostic {
                 code: "D611".to_string(),
                 severity: VerifySeverity::Warning,
@@ -941,6 +1269,197 @@ fn diff_indexes(
                 location: Some(format!("index:{name}")),
             });
         }
+    }
+
+    // D612 / D613 / D614 / D615 — shape comparison on shared names
+    // (B-7). For every name present on both sides we compare table,
+    // columns (in order), uniqueness, and access method.
+    for (name, snap_idx) in &snap_by_name {
+        let Some(live_idx) = live_by_name.get(name) else {
+            continue;
+        };
+
+        // D615 — index is on the wrong table. A name match with a
+        // table mismatch is a hard inconsistency: drop+create with
+        // matching name is the operator's path.
+        if snap_idx.table != live_idx.table {
+            diagnostics.push(VerifyDiagnostic {
+                code: "D615".to_string(),
+                severity: VerifySeverity::Error,
+                message: format!(
+                    "index `{name}` is on table `{l}` in the live database \
+                     but the snapshot declares it on `{s}`",
+                    s = snap_idx.table,
+                    l = live_idx.table,
+                ),
+                location: Some(format!("index:{name}")),
+            });
+        }
+
+        // D612 — column-list drift. We compare the raw column-name
+        // sequence; opclass / order / nulls are not yet projected
+        // from live (T8 territory) so we narrow the comparison to
+        // the column names in order.
+        let snap_cols = index_target_column_names(&snap_idx.target);
+        let live_cols = index_target_column_names(&live_idx.target);
+        if snap_cols != live_cols {
+            diagnostics.push(VerifyDiagnostic {
+                code: "D612".to_string(),
+                severity: VerifySeverity::Error,
+                message: format!(
+                    "index `{name}` columns differ: snapshot {s:?}, live {l:?}",
+                    s = snap_cols,
+                    l = live_cols,
+                ),
+                location: Some(format!("index:{name}")),
+            });
+        }
+
+        // D613 — uniqueness drift. The snapshot's `UniqueConstraint`
+        // and `UniqueIndex` both project to "unique" when read from
+        // the live catalog (`pg_index.indisunique = true`); we treat
+        // them as the same uniqueness class for the comparison.
+        let snap_unique = matches!(
+            snap_idx.kind,
+            IndexKindSchema::UniqueIndex | IndexKindSchema::UniqueConstraint
+        );
+        let live_unique = matches!(
+            live_idx.kind,
+            IndexKindSchema::UniqueIndex | IndexKindSchema::UniqueConstraint
+        );
+        if snap_unique != live_unique {
+            diagnostics.push(VerifyDiagnostic {
+                code: "D613".to_string(),
+                severity: VerifySeverity::Error,
+                message: format!(
+                    "index `{name}` uniqueness differs: snapshot {s}, live {l}",
+                    s = snap_unique,
+                    l = live_unique,
+                ),
+                location: Some(format!("index:{name}")),
+            });
+        }
+
+        // D614 — access method drift, advisory. A method change
+        // (e.g. btree vs gin) is meaningful but the snapshot's
+        // declaration is the operator's source of truth — surface
+        // as Warning so the operator can investigate without
+        // failing CI.
+        if snap_idx.index_type != live_idx.index_type {
+            diagnostics.push(VerifyDiagnostic {
+                code: "D614".to_string(),
+                severity: VerifySeverity::Warning,
+                message: format!(
+                    "index `{name}` method differs: snapshot {s:?}, live {l:?}",
+                    s = snap_idx.index_type,
+                    l = live_idx.index_type,
+                ),
+                location: Some(format!("index:{name}")),
+            });
+        }
+
+        // D693 — INCLUDE columns / partial-predicate are not yet
+        // projected from live. Surface as Info so the operator sees
+        // exactly what is and is not covered. T8 tightens this.
+        if !snap_idx.include.is_empty() || snap_idx.predicate.is_some() {
+            diagnostics.push(VerifyDiagnostic {
+                code: "D693".to_string(),
+                severity: VerifySeverity::Info,
+                message: format!(
+                    "index `{name}` declares INCLUDE / partial-predicate; T5 \
+                     verify does not yet project these from the live catalog \
+                     (deferred to T8)",
+                ),
+                location: Some(format!("index:{name}")),
+            });
+        }
+    }
+}
+
+/// Extract the column-name sequence from an [`IndexTargetSchema`].
+/// Expression-form indexes return an empty Vec — those compare
+/// equal only when both sides are expression-form, which is fine for
+/// T5's coarse-grained comparison.
+fn index_target_column_names(target: &IndexTargetSchema) -> Vec<&str> {
+    match target {
+        IndexTargetSchema::Columns(cols) => cols.iter().map(|c| c.name.as_str()).collect(),
+        IndexTargetSchema::Expression(_) => Vec::new(),
+    }
+}
+
+/// Canonicalise a column DEFAULT expression for comparison (B-5).
+///
+/// **Strategy.** Postgres typically renders defaults with explicit
+/// type casts (`'foo'::text`, `now()::timestamp with time zone`).
+/// Operators authoring snapshots often write the bare form
+/// (`'foo'`, `now()`). We strip trailing `::<type>` casts on both
+/// sides so equivalent expressions compare equal:
+///
+/// - `'foo'` vs `'foo'::text` → match
+/// - `now()` vs `now()::timestamptz` → match
+/// - `42` vs `43` → mismatch (different value)
+/// - `now()` vs `current_timestamp` → mismatch (different func — T8
+///   may add an alias map)
+///
+/// Trim is whitespace-only on both ends; other whitespace inside
+/// the expression is preserved (Postgres preserves it on the way
+/// back to the catalog).
+///
+/// `None` and the empty string are normalised to `None` so a column
+/// declared with `DEFAULT NULL` (which Postgres collapses to "no
+/// default") matches a snapshot that omits the field entirely.
+fn normalize_default_expr(expr: Option<&str>) -> Option<String> {
+    let raw = expr?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // Strip a trailing `::<type>` cast. We scan forward through the
+    // bytes tracking the LAST `::` that is not inside a quoted
+    // string, then trim from there to the end. The simple heuristic
+    // — find the rightmost `::` and trim it plus everything after —
+    // is adequate for the canonical Postgres rendering, which always
+    // places the cast at the tail. Implementation is an explicit
+    // byte-level forward scan with a single-quote toggle to skip
+    // over `::` sequences inside quoted strings; no pattern-matching
+    // engine is involved.
+    let bytes = raw.as_bytes();
+    let mut in_string = false;
+    let mut last_double_colon: Option<usize> = None;
+    let mut i = 0usize;
+    while i + 1 < bytes.len() {
+        let b = bytes[i];
+        if b == b'\'' {
+            // SQL strings escape a literal single-quote by doubling
+            // it. The toggle below treats `''` as a same-state
+            // sequence: enter the inner state on the first quote,
+            // immediately leave on the second — net result: still
+            // outside the string.
+            in_string = !in_string;
+        } else if !in_string && b == b':' && bytes[i + 1] == b':' {
+            last_double_colon = Some(i);
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    let trimmed = match last_double_colon {
+        Some(idx) => raw[..idx].trim_end(),
+        None => raw,
+    };
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Render a normalised default expression for inclusion in a
+/// diagnostic message. `None` shows as `<no default>` so the
+/// operator-facing message is unambiguous.
+fn render_default_for_message(d: &Option<String>) -> String {
+    match d {
+        Some(s) => format!("`{s}`"),
+        None => "<no default>".to_string(),
     }
 }
 
@@ -1012,8 +1531,11 @@ fn diff_advisory_fields(snapshot: &AppliedSchema, diagnostics: &mut Vec<VerifyDi
 /// (`bigint`, `text`, `character varying(255)`). We normalise to
 /// lowercase + map the well-known aliases.
 ///
-/// **No regex** — uses byte-level lowercasing and explicit alias
-/// substitution.
+/// **Implementation: byte-level lowercasing followed by explicit
+/// substring substitution against a fixed alias table.** No
+/// pattern-matching engine is involved — every comparison is
+/// either an exact byte-equality check or a fixed-string `replace`
+/// call.
 fn render_type_for_compare(s: &str) -> String {
     let lower: String = s
         .as_bytes()
@@ -1040,14 +1562,13 @@ fn render_type_for_compare(s: &str) -> String {
     out
 }
 
-// ── Internal accessors reserved for T8's tightened diagnostics ────────────
+// ── Internal accessors used by repair / baseline / T8 ────────────────────
 
-/// Live-DB projection accessor reserved for the T8 verify-tightening
-/// path. Today T5's `verify` calls `project_live_schema` directly;
-/// the public-but-`pub(super)` accessor exists so T8 can layer
-/// additional comparisons (e.g. constraint-vs-snapshot UNIQUE
-/// detection) without re-deriving the projection.
-#[allow(dead_code)]
+/// Live-DB projection accessor — entry point for code paths that
+/// need the projection without the verify-side diff. Used by
+/// [`super::runner::baseline_plan`] (B-11) and
+/// [`super::repair::repair_snapshot_rebuild`] (B-12); reserved for
+/// T8's tightened verify diagnostics.
 pub(super) async fn live_schema_for_repair(
     ctx: &mut DjogiContext,
 ) -> Result<AppliedSchema, VerifyRunError> {
@@ -1423,5 +1944,350 @@ mod tests {
         let mut diagnostics = Vec::new();
         diff_advisory_fields(&snap, &mut diagnostics);
         assert!(diagnostics.iter().any(|d| d.code == "D692"));
+    }
+
+    // ── normalize_default_expr (B-5) ─────────────────────────────────────
+
+    #[test]
+    fn normalize_default_strips_trailing_text_cast() {
+        // 'foo'::text round-trips to 'foo' so a snapshot that wrote
+        // 'foo' compares equal to a live catalog that rendered it
+        // with the cast.
+        assert_eq!(
+            normalize_default_expr(Some("'foo'::text")),
+            Some("'foo'".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_default_strips_trailing_timestamptz_cast() {
+        assert_eq!(
+            normalize_default_expr(Some("now()::timestamp with time zone")),
+            Some("now()".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_default_preserves_unsuffixed_expr() {
+        assert_eq!(
+            normalize_default_expr(Some("now()")),
+            Some("now()".to_string())
+        );
+        assert_eq!(normalize_default_expr(Some("42")), Some("42".to_string()));
+    }
+
+    #[test]
+    fn normalize_default_treats_none_and_empty_as_no_default() {
+        assert_eq!(normalize_default_expr(None), None);
+        assert_eq!(normalize_default_expr(Some("")), None);
+        assert_eq!(normalize_default_expr(Some("   ")), None);
+    }
+
+    #[test]
+    fn normalize_default_preserves_double_colons_inside_string() {
+        // The double-colon scanner toggles `in_string` on each single
+        // quote so a literal `::` inside a quoted string is preserved.
+        // This test pins the canonical case: a default like
+        // `'a::b'::text` should normalise to `'a::b'`.
+        assert_eq!(
+            normalize_default_expr(Some("'a::b'::text")),
+            Some("'a::b'".to_string())
+        );
+    }
+
+    // ── diff_primary_key (B-6) ──────────────────────────────────────────
+
+    #[test]
+    fn diff_pk_match_emits_no_diagnostic() {
+        let mut diagnostics = Vec::new();
+        let snap = PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: PkKindSchema::HeerId,
+        };
+        let live = PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: PkKindSchema::HeerId,
+        };
+        diff_primary_key("users", &snap, &live, &mut diagnostics);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn diff_pk_snapshot_has_pk_live_does_not_emits_d608() {
+        let mut diagnostics = Vec::new();
+        let snap = PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: PkKindSchema::HeerId,
+        };
+        let live = PrimaryKeySchema {
+            columns: Vec::new(),
+            kind: PkKindSchema::None,
+        };
+        diff_primary_key("users", &snap, &live, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "D608");
+        assert_eq!(diagnostics[0].severity, VerifySeverity::Error);
+    }
+
+    #[test]
+    fn diff_pk_live_has_pk_snapshot_does_not_emits_d608() {
+        let mut diagnostics = Vec::new();
+        let snap = PrimaryKeySchema {
+            columns: Vec::new(),
+            kind: PkKindSchema::None,
+        };
+        let live = PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: PkKindSchema::HeerId,
+        };
+        diff_primary_key("users", &snap, &live, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "D608");
+    }
+
+    #[test]
+    fn diff_pk_column_list_mismatch_emits_d608() {
+        let mut diagnostics = Vec::new();
+        let snap = PrimaryKeySchema {
+            columns: vec!["a".to_string(), "b".to_string()],
+            kind: PkKindSchema::Composite,
+        };
+        let live = PrimaryKeySchema {
+            columns: vec!["b".to_string(), "a".to_string()],
+            kind: PkKindSchema::Composite,
+        };
+        diff_primary_key("t", &snap, &live, &mut diagnostics);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "D608");
+    }
+
+    // ── diff_indexes shape mismatch (B-7) ────────────────────────────────
+
+    fn idx_with_columns(name: &str, table: &str, cols: &[&str]) -> IndexSchema {
+        IndexSchema {
+            extension_dependency: None,
+            include: Vec::new(),
+            index_type: IndexTypeSchema::BTree,
+            kind: IndexKindSchema::NonUnique,
+            name: name.to_string(),
+            nulls_not_distinct: false,
+            predicate: None,
+            requires_out_of_transaction: false,
+            table: table.to_string(),
+            target: IndexTargetSchema::Columns(
+                cols.iter()
+                    .map(|c| super::super::schema::IndexColumnSchema {
+                        name: c.to_string(),
+                        nulls: super::super::schema::IndexNullsOrderSchema::Default,
+                        opclass: None,
+                        order: super::super::schema::IndexOrderSchema::Asc,
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn diff_indexes_wrong_table_is_d615_error() {
+        let mut snap = empty_snapshot();
+        let mut live = empty_snapshot();
+        snap.indexes
+            .push(idx_with_columns("idx_x", "users", &["email"]));
+        live.indexes
+            .push(idx_with_columns("idx_x", "orders", &["email"]));
+        let mut diagnostics = Vec::new();
+        diff_indexes(&snap, &live, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "D615" && d.severity == VerifySeverity::Error)
+        );
+    }
+
+    #[test]
+    fn diff_indexes_wrong_columns_is_d612_error() {
+        let mut snap = empty_snapshot();
+        let mut live = empty_snapshot();
+        snap.indexes
+            .push(idx_with_columns("idx_x", "users", &["email"]));
+        live.indexes
+            .push(idx_with_columns("idx_x", "users", &["name"]));
+        let mut diagnostics = Vec::new();
+        diff_indexes(&snap, &live, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "D612" && d.severity == VerifySeverity::Error)
+        );
+    }
+
+    #[test]
+    fn diff_indexes_wrong_uniqueness_is_d613_error() {
+        let mut snap = empty_snapshot();
+        let mut live = empty_snapshot();
+        let mut s = idx_with_columns("idx_x", "users", &["email"]);
+        s.kind = IndexKindSchema::UniqueIndex;
+        snap.indexes.push(s);
+        live.indexes
+            .push(idx_with_columns("idx_x", "users", &["email"]));
+        let mut diagnostics = Vec::new();
+        diff_indexes(&snap, &live, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "D613" && d.severity == VerifySeverity::Error)
+        );
+    }
+
+    #[test]
+    fn diff_indexes_method_drift_is_d614_warning() {
+        let mut snap = empty_snapshot();
+        let mut live = empty_snapshot();
+        let mut s = idx_with_columns("idx_x", "users", &["email"]);
+        s.index_type = IndexTypeSchema::Gin;
+        snap.indexes.push(s);
+        live.indexes
+            .push(idx_with_columns("idx_x", "users", &["email"]));
+        let mut diagnostics = Vec::new();
+        diff_indexes(&snap, &live, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "D614" && d.severity == VerifySeverity::Warning)
+        );
+    }
+
+    #[test]
+    fn diff_indexes_clean_match_emits_no_shape_diagnostic() {
+        let mut snap = empty_snapshot();
+        let mut live = empty_snapshot();
+        snap.indexes
+            .push(idx_with_columns("idx_x", "users", &["email"]));
+        live.indexes
+            .push(idx_with_columns("idx_x", "users", &["email"]));
+        let mut diagnostics = Vec::new();
+        diff_indexes(&snap, &live, &mut diagnostics);
+        // No D612 / D613 / D614 / D615 diagnostics on a clean match.
+        for code in ["D612", "D613", "D614", "D615"] {
+            assert!(
+                !diagnostics.iter().any(|d| d.code == code),
+                "unexpected {code} on clean match: {diagnostics:?}"
+            );
+        }
+    }
+
+    // ── diff_tables D607 (B-5) ──────────────────────────────────────────
+
+    #[test]
+    fn diff_tables_default_drift_emits_d607() {
+        let mut snap = empty_snapshot();
+        let mut snap_col = col("created_at", "TIMESTAMPTZ", false);
+        snap_col.default_sql = Some("now()".to_string());
+        snap.models
+            .insert("users".to_string(), table("users", vec![snap_col]));
+        let mut live = empty_snapshot();
+        let live_col = col("created_at", "timestamptz", false);
+        // No default.
+        live.models
+            .insert("users".to_string(), table("users", vec![live_col]));
+        let mut diagnostics = Vec::new();
+        diff_tables(&snap, &live, &mut diagnostics);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.code == "D607" && d.severity == VerifySeverity::Error),
+            "expected D607 on default drift; got {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn diff_tables_default_canonicalisation_treats_text_cast_as_match() {
+        // Snapshot wrote "'active'", live catalog rendered it as
+        // "'active'::text" — equivalent after normalisation, no D607.
+        let mut snap = empty_snapshot();
+        let mut snap_col = col("status", "TEXT", false);
+        snap_col.default_sql = Some("'active'".to_string());
+        snap.models
+            .insert("users".to_string(), table("users", vec![snap_col]));
+        let mut live = empty_snapshot();
+        let mut live_col = col("status", "text", false);
+        live_col.default_sql = Some("'active'::text".to_string());
+        live.models
+            .insert("users".to_string(), table("users", vec![live_col]));
+        let mut diagnostics = Vec::new();
+        diff_tables(&snap, &live, &mut diagnostics);
+        assert!(
+            !diagnostics.iter().any(|d| d.code == "D607"),
+            "no D607 expected on canonicalised default; got {diagnostics:?}"
+        );
+    }
+
+    // ── HeeRanjID artifact allowlist (A-1) ──────────────────────────────
+
+    #[test]
+    fn heeranjid_allowlist_is_sorted() {
+        // binary_search requires sorted input; pin that invariant.
+        let mut sorted = HEERANJID_ARTIFACT_TABLES.to_vec();
+        sorted.sort();
+        assert_eq!(sorted.as_slice(), HEERANJID_ARTIFACT_TABLES);
+    }
+
+    #[test]
+    fn heeranjid_allowlist_recognises_known_substrate_tables() {
+        for name in HEERANJID_ARTIFACT_TABLES {
+            assert!(
+                is_heeranjid_artifact_table(name),
+                "{name} should be in allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn heeranjid_allowlist_does_not_match_adopter_heer_prefix_tables() {
+        // The previous LIKE-based exclusion swallowed adopter-owned
+        // tables that legitimately started with `heer_`. Confirm the
+        // allowlist does not.
+        assert!(!is_heeranjid_artifact_table("heer_user"));
+        assert!(!is_heeranjid_artifact_table("heer_order"));
+        assert!(!is_heeranjid_artifact_table("heer"));
+        assert!(!is_heeranjid_artifact_table(""));
+    }
+
+    // ── D6xx code-uniqueness audit (A-2) ─────────────────────────────────
+
+    #[test]
+    fn d6xx_codes_have_unique_meanings() {
+        // Pin the current code -> meaning mapping. If a new diagnostic
+        // is added that re-uses an existing code, this test should be
+        // updated (and the duplicate refused via review).
+        let codes_and_meanings: &[(&str, &str)] = &[
+            ("D601", "snapshot table missing in live"),
+            ("D602", "live table not in snapshot"),
+            ("D603", "snapshot column missing in live"),
+            ("D604", "live column not in snapshot"),
+            ("D605", "nullability drift"),
+            ("D606", "type-string drift (advisory)"),
+            ("D607", "default value drift"),
+            ("D608", "primary key column list drift"),
+            ("D610", "snapshot index missing in live"),
+            ("D611", "live index not in snapshot (advisory)"),
+            ("D612", "index columns differ"),
+            ("D613", "index uniqueness differs"),
+            ("D614", "index method drift (advisory)"),
+            ("D615", "index lives on wrong table"),
+            ("D621", "ledger table not found"),
+            ("D690", "FTS not yet checked (info)"),
+            ("D691", "partition not yet checked (info)"),
+            ("D692", "enums not yet checked (info)"),
+            ("D693", "INCLUDE / partial-predicate not yet checked (info)"),
+            ("D699", "ledger reports applied but DB has no tables"),
+        ];
+        let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+        for (code, meaning) in codes_and_meanings {
+            assert!(
+                seen.insert(code, meaning).is_none(),
+                "duplicate D6xx code {code}",
+            );
+        }
     }
 }
