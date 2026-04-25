@@ -34,12 +34,11 @@
 //!   inverse is the symmetric rename). The runner treats reversible
 //!   deltas the same as destructive but the down-migration is
 //!   well-defined.
-//! - `Destructive { allow_destructive }` — at least one operation
-//!   removes data structurally (`DropTable`, `DropColumn`,
-//!   `DropEnum`). The `allow_destructive` flag tracks whether the
-//!   operator has explicitly opted in via `--allow-destructive`; a
-//!   destructive delta without the opt-in is rejected at runner
-//!   entry.
+//! - `Destructive` — at least one operation removes data
+//!   structurally (`DropTable`, `DropColumn`, `DropEnum`,
+//!   `DropIndex`, `DropForeignKey`). The runner gates these behind
+//!   `--allow-destructive`; the gate is runner-side state, not
+//!   differ output, so the variant carries no payload.
 //! - `Lossy` — a destructive op that would also lose row data with
 //!   no recovery path (e.g. dropping a non-nullable column that has
 //!   no default). Stricter than `Destructive`.
@@ -703,12 +702,17 @@ fn emit_alter_column(
 /// surface it cleanly. Non-flip transitions handled here include:
 ///
 /// - kind changes outside the flip pairs (e.g. `HeerId → Serial`)
-/// - column-set changes (composite ↔ single, or composite reshape)
+/// - column-set changes (composite ↔ single, or composite reshape
+///   that survives column-rename normalisation)
 /// - custom PK shape changes
-/// - PK column renames (the `renamed_from` map shows the column
-///   identity continuity but the differ defers PK column renames
-///   to operator-authored migrations because the rename + flip
-///   composition needs T9's full orchestration)
+///
+/// **PK column rename + supported flip** is recognised as a flip:
+/// the `column_renames` map is applied to `before.primary_key.columns`
+/// before comparing against `after.primary_key.columns`, so a single
+/// `RenameColumn` op + a kind flip together still produce
+/// `SchemaOperation::PkTypeFlip` rather than `Unsupported`. The
+/// `RenameColumn` was already emitted by `diff_columns_in_table`
+/// before this fn runs.
 fn diff_pk_in_table(
     before: &TableSchema,
     after: &TableSchema,
@@ -1008,7 +1012,7 @@ mod tests {
         IndexTarget, IndexType, ModelDescriptor, PkType,
     };
     use crate::migrate::projection::project_from_iters;
-    use crate::migrate::schema::IndexTypeSchema;
+    use crate::migrate::schema::{IndexTypeSchema, PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION};
 
     fn synth_app(label: &'static str, database: &'static str) -> AppDescriptor {
         AppDescriptor {
@@ -1670,40 +1674,127 @@ mod tests {
     }
 
     #[test]
-    fn pk_column_rename_normalised_before_flip_detection() {
-        // Codex T2 review B-2: a PK column renamed concurrently with
-        // an asc→desc flip should still be recognised as a flip
-        // because the column-rename map normalises the PK column
-        // name comparison. Since framework-injected `id` is not
-        // currently renameable, this test exercises a custom PK
-        // column rename to prove the normalisation works.
-        const ID_OLD: FieldDescriptor = FieldDescriptor {
-            name: "old_id",
-            sql_type: FieldSqlType::BigInt,
-            nullable: false,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
+    fn pk_column_rename_normalises_under_kind_flip() {
+        // Codex T2 review B-2 + fixup advisory: a PK column rename
+        // concurrent with a kind flip must be recognised as a
+        // PkTypeFlip, not Unsupported. The differ runs
+        // `diff_columns_in_table` first (which emits `RenameColumn`
+        // and returns the rename map) and then `diff_pk_in_table`
+        // with that map, normalising the before-PK columns through
+        // the rename so the column-list comparison succeeds.
+        //
+        // We construct two synthetic schemas DIRECTLY (bypassing
+        // `project_*`) so we can pin a `Composite(["old_id"])` PK
+        // shape on the before side and `Composite(["new_id"])` on
+        // the after side with a column rename annotation in
+        // between. `project_from_iters` would always synthesise
+        // single-column `id` PKs from the descriptor inventory,
+        // which doesn't exercise the normalisation code path.
+        let bucket = empty_global();
+
+        let mut before = AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models: BTreeMap::new(),
+            registered_apps: vec!["".to_string()],
         };
-        const ID_NEW: FieldDescriptor = FieldDescriptor {
-            renamed_from: Some("old_id"),
-            ..ID_OLD
-        };
-        // (In practice composite-PK models would benefit most from
-        // this — but the rename normalisation is the same
-        // mechanism. The framework `id` column is special-cased and
-        // not renameable, so this is the simplest fixture exercising
-        // the normalisation path: a PK declared via Composite([col])
-        // where the column is renamed.)
-        let _ = ID_NEW; // silence dead_code while the const exists for documentation.
+        before.models.insert(
+            "widgets".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "old_id".to_string(),
+                    nullable: false,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                }],
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["old_id".to_string()],
+                    kind: PkKindSchema::HeerId,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "widgets".to_string(),
+                tenant_key: None,
+            },
+        );
+
+        let mut after = before.clone();
+        after.models.insert(
+            "widgets".to_string(),
+            TableSchema {
+                app: None,
+                columns: vec![ColumnSchema {
+                    name: "new_id".to_string(),
+                    renamed_from: Some("old_id".to_string()),
+                    ..before.models["widgets"].columns[0].clone()
+                }],
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["new_id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                ..before.models["widgets"].clone()
+            },
+        );
+
+        let delta = diff_schemas(&before, &after, bucket);
+
+        assert!(
+            delta.operations.iter().any(|op| matches!(
+                op,
+                SchemaOperation::RenameColumn { from, to, .. }
+                    if from == "old_id" && to == "new_id"
+            )),
+            "RenameColumn must be emitted before the PK comparison"
+        );
+        assert!(
+            delta.operations.iter().any(|op| matches!(
+                op,
+                SchemaOperation::PkTypeFlip {
+                    from: PkKindSchema::HeerId,
+                    to: PkKindSchema::HeerIdRecencyBiased,
+                    ..
+                }
+            )),
+            "PK rename + kind flip must classify as PkTypeFlip, not Unsupported. \
+             Operations were: {:?}",
+            delta.operations
+        );
+        assert!(
+            !delta
+                .operations
+                .iter()
+                .any(|op| matches!(op, SchemaOperation::Unsupported { .. })),
+            "PK rename + kind flip must NOT emit Unsupported"
+        );
+        // Headline classification is PkTypeFlip (with a co_destructive
+        // co-flag of false because no drops are happening).
+        assert!(matches!(
+            delta.classification,
+            Classification::PkTypeFlip {
+                co_destructive: false,
+                co_lossy: false
+            }
+        ));
     }
 }
