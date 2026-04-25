@@ -251,9 +251,26 @@ pub struct ColumnSchema {
 }
 
 /// Foreign-key declaration on a column.
+///
+/// The `on_delete` field is the FK's authoritative cascade discipline.
+/// [`ColumnSchema::on_delete`] mirrors it so adopters can still ask the
+/// column what its cascade is without traversing the FK, but the
+/// snapshot's source of truth for the cascade lives here — the
+/// projection populates both fields from the same descriptor input,
+/// and the differ / SQL emitter read this one when lowering FK ops.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForeignKeySchema {
+    /// Cascade discipline on delete of the referenced row. Mirrors
+    /// the column-level [`ColumnSchema::on_delete`] but lives here so
+    /// the FK-only operations ([`crate::migrate::diff::SchemaOperation::AddForeignKey`]
+    /// / [`crate::migrate::diff::SchemaOperation::DropForeignKey`])
+    /// can carry the cascade through to the SQL emitter without
+    /// needing the full `ColumnSchema`. Codex T3 review B-3 fixed an
+    /// earlier bug where the emitter unconditionally lowered `ON
+    /// DELETE RESTRICT` regardless of the declared cascade.
+    pub on_delete: OnDeleteSchema,
+
     /// Target column. Always `"id"` in current Djogi (FKs reference
     /// the parent's PK), but stored explicitly so future column-
     /// targeting FKs round-trip cleanly.

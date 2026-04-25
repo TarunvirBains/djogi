@@ -51,8 +51,11 @@
 //!
 //! The full ordering is implemented in [`order_operations`].
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::diff::{Classification, SchemaDelta, SchemaOperation};
 use super::projection::BucketKey;
+use super::schema::TableSchema;
 use super::sql::{OperationSql, SqlEmitError, lower_operation};
 
 /// Top-level migration plan for one bucket.
@@ -166,7 +169,7 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
     let mut current_kind: Option<SegmentKind> = None;
     let mut current_stmts: Vec<OperationSql> = Vec::new();
 
-    for op in ordered {
+    for op in &ordered {
         let kind = classify_operation(op);
         let lowered = lower_operation(op)?;
         match current_kind {
@@ -259,14 +262,223 @@ pub(crate) fn classify_operation(op: &SchemaOperation) -> SegmentKind {
 /// index changes, and metadata at the end. Within a phase, input
 /// order is preserved — the differ already grouped per-table column
 /// changes together, and the planner does not break that grouping.
-fn order_operations(ops: &[SchemaOperation]) -> Vec<&SchemaOperation> {
-    let mut tagged: Vec<(usize, usize, &SchemaOperation)> = ops
+///
+/// **Phase 1 — `AddTable` toposort.** The `CREATE TABLE` emitter
+/// inlines `REFERENCES` clauses for FK columns, so a table that
+/// references another table must be created AFTER its target.
+/// Within phase 1 the planner runs Kahn's algorithm over the
+/// FK-dependency graph (edges: `T1 -> T2` when `T1` has an inline FK
+/// pointing at `T2`) and emits tables in the resulting topo order
+/// instead of input / alphabetical order. **Cycles** (rare —
+/// mutually-referencing tables) are broken by emitting every cycle
+/// member's `AddTable` *without* its inline FKs and following up
+/// with standalone `AddForeignKey` operations after the table batch.
+/// This matches the Phase 7-Zero v3 plan's "fail loudly when we
+/// can't, but never silently produce DDL Postgres rejects" stance.
+/// Codex T3 review B-1 flagged that the prior phase-only sort would
+/// emit cross-referencing tables in alphabetical order (because the
+/// differ feeds them via `BTreeMap`), causing Postgres to reject
+/// the migration with "relation does not exist".
+///
+/// Returned ops are owned because the cycle-breaking path needs to
+/// rewrite `AddTable` payloads (strip inline FKs) and synthesise new
+/// `AddForeignKey` ops; the slice-of-refs shape would not allow that.
+fn order_operations(ops: &[SchemaOperation]) -> Vec<SchemaOperation> {
+    let mut tagged: Vec<(usize, usize, SchemaOperation)> = ops
         .iter()
         .enumerate()
-        .map(|(i, op)| (operation_phase(op), i, op))
+        .map(|(i, op)| (operation_phase(op), i, op.clone()))
         .collect();
     tagged.sort_by_key(|(phase, idx, _)| (*phase, *idx));
-    tagged.into_iter().map(|(_, _, op)| op).collect()
+
+    // Split the sorted stream so we can reorder phase 1 (`AddTable`)
+    // through the topo-sort. Other phases are already in deterministic
+    // order from the stable sort above.
+    let mut head: Vec<SchemaOperation> = Vec::with_capacity(tagged.len());
+    let mut add_tables: Vec<TableSchema> = Vec::new();
+    let mut tail: Vec<SchemaOperation> = Vec::with_capacity(tagged.len());
+    for (phase, _, op) in tagged {
+        match (phase, op) {
+            (1, SchemaOperation::AddTable(t)) => add_tables.push(t),
+            (p, op) if p < 1 => head.push(op),
+            (_, op) => tail.push(op),
+        }
+    }
+
+    let (toposorted, follow_up_fks) = toposort_add_tables(add_tables);
+
+    let mut out =
+        Vec::with_capacity(head.len() + toposorted.len() + follow_up_fks.len() + tail.len());
+    out.extend(head);
+    out.extend(toposorted.into_iter().map(SchemaOperation::AddTable));
+    out.extend(follow_up_fks);
+    out.extend(tail);
+    out
+}
+
+/// Topo-sort a batch of `AddTable` operations by their inline FK
+/// dependencies.
+///
+/// Returns `(ordered_tables, follow_up_fk_ops)`:
+///
+/// - `ordered_tables` — the input tables, ordered so each table
+///   emits AFTER every table its inline FKs reference. Tables with
+///   no inline FKs (and no reverse references from cycle-breaking)
+///   keep their alphabetical order from the input.
+/// - `follow_up_fk_ops` — `AddForeignKey` operations synthesised when
+///   a cycle was broken. Empty in the common acyclic case.
+///
+/// Algorithm: Kahn's. We build an adjacency map keyed by table name,
+/// with edges `dependent -> dependency`, plus reverse edges so we
+/// can decrement in-degrees. We pop tables with zero in-degree in
+/// **alphabetical order** for determinism (tied nodes in Kahn's
+/// algorithm are arbitrary; pinning to alphabetical keeps the same
+/// input always producing the same output).
+///
+/// When a cycle is detected (some tables remain with non-zero
+/// in-degree after processing all zero-in-degree starts), we break
+/// it surgically: every cycle-member table emits without its inline
+/// FK columns, and the stripped FKs become standalone
+/// `AddForeignKey` ops that run AFTER all `CREATE TABLE` statements.
+/// Cycle members emit in alphabetical order; non-cycle tables that
+/// happen to land in `tail` because they were starved of in-degree
+/// also emit in alphabetical order (a structural property of Kahn's
+/// when ties are broken alphabetically).
+///
+/// Ignored edges:
+/// - **Self-references.** A table whose FK points at itself is
+///   admissible Postgres DDL — the inline `REFERENCES same_table`
+///   is fine because the table exists by the time the constraint
+///   check runs. We drop these edges so they never trigger the
+///   cycle-breaker.
+/// - **External references.** An FK pointing at a table NOT in this
+///   batch (e.g., a table that already exists in the live schema)
+///   cannot constrain ordering within the batch — drop the edge.
+fn toposort_add_tables(tables: Vec<TableSchema>) -> (Vec<TableSchema>, Vec<SchemaOperation>) {
+    if tables.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    // Build name → table map (alphabetical iteration via BTreeMap).
+    let mut by_name: BTreeMap<String, TableSchema> = BTreeMap::new();
+    for t in tables {
+        by_name.insert(t.table.clone(), t);
+    }
+    let in_batch: BTreeSet<String> = by_name.keys().cloned().collect();
+
+    // Edges: dependent → set of dependencies (tables that must be
+    // created before `dependent`). Self-loops and out-of-batch
+    // references are filtered out.
+    let mut deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (name, t) in &by_name {
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        for col in &t.columns {
+            if let Some(fk) = &col.foreign_key
+                && fk.ref_table != *name
+                && in_batch.contains(&fk.ref_table)
+            {
+                set.insert(fk.ref_table.clone());
+            }
+        }
+        deps.insert(name.clone(), set);
+    }
+
+    // Reverse adjacency for in-degree decrementing — `reverse[T]` is
+    // every table that depends on `T`.
+    let mut reverse: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for name in by_name.keys() {
+        reverse.insert(name.clone(), BTreeSet::new());
+    }
+    for (dependent, deps_of) in &deps {
+        for dependency in deps_of {
+            reverse
+                .get_mut(dependency)
+                .expect("reverse entry exists for every batch table")
+                .insert(dependent.clone());
+        }
+    }
+
+    // Kahn's queue, deterministic via BTreeSet iteration order.
+    // Initialise with every table whose in-degree is zero — i.e.
+    // every table with an empty deps set.
+    let mut ready: BTreeSet<String> = deps
+        .iter()
+        .filter_map(|(n, ds)| if ds.is_empty() { Some(n.clone()) } else { None })
+        .collect();
+
+    let mut ordered: Vec<TableSchema> = Vec::with_capacity(by_name.len());
+    while let Some(next) = ready.iter().next().cloned() {
+        ready.remove(&next);
+        // Move the table out of by_name into the ordered list.
+        let t = by_name
+            .remove(&next)
+            .expect("ready entries are always still in by_name");
+        ordered.push(t);
+        // Decrement in-degree of every dependent of `next`. The
+        // dependent's deps set holds `next`; remove it. If the
+        // dependent's deps set becomes empty, queue it.
+        let dependents: Vec<String> = reverse
+            .get(&next)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        for dependent in dependents {
+            let Some(d) = deps.get_mut(&dependent) else {
+                continue;
+            };
+            d.remove(&next);
+            if d.is_empty() {
+                ready.insert(dependent);
+            }
+        }
+    }
+
+    // Acyclic case: by_name is empty, no follow-up FKs needed.
+    if by_name.is_empty() {
+        return (ordered, Vec::new());
+    }
+
+    // Cycle case: every table left in by_name participates in (or is
+    // downstream of) a cycle. Strip their inline FKs that point at
+    // any other table still in by_name, emit them in alphabetical
+    // order, and synthesise standalone AddForeignKey follow-ups.
+    let cycle_members: BTreeSet<String> = by_name.keys().cloned().collect();
+    let mut follow_up_fks: Vec<SchemaOperation> = Vec::new();
+
+    // Drain by_name in alphabetical order (BTreeMap iteration is
+    // sorted). Mutate each table to strip cycle-internal inline FKs
+    // and capture the stripped FKs as follow-up AddForeignKey ops.
+    for (name, mut t) in std::mem::take(&mut by_name) {
+        let owning_table = t.table.clone();
+        for col in t.columns.iter_mut() {
+            let strip = col
+                .foreign_key
+                .as_ref()
+                .map(|fk| cycle_members.contains(&fk.ref_table))
+                .unwrap_or(false);
+            if strip {
+                let fk = col
+                    .foreign_key
+                    .take()
+                    .expect("strip implies foreign_key.is_some()");
+                // Mirror the column's relation_kind / on_delete back
+                // out — they no longer apply to the inlined column,
+                // but the FK schema carries on_delete on its own
+                // field for the standalone constraint emission.
+                follow_up_fks.push(SchemaOperation::AddForeignKey {
+                    table: owning_table.clone(),
+                    column: col.name.clone(),
+                    fk,
+                });
+            }
+        }
+        ordered.push(t);
+        // Suppress an unused-variable warning if the loop body never
+        // touches `name` directly (it's the BTreeMap key we already
+        // consumed via `t.table`).
+        let _ = name;
+    }
+
+    (ordered, follow_up_fks)
 }
 
 fn operation_phase(op: &SchemaOperation) -> usize {
@@ -301,9 +513,9 @@ mod tests {
     use crate::migrate::diff::{ColumnChange, SchemaDelta};
     use crate::migrate::projection::BucketKey;
     use crate::migrate::schema::{
-        ColumnSchema, EnumSchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
-        IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, PkKindSchema,
-        PrimaryKeySchema, TableSchema,
+        ColumnSchema, EnumSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
+        IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
+        OnDeleteSchema, PkKindSchema, PrimaryKeySchema, TableSchema,
     };
 
     fn bucket() -> BucketKey {
@@ -620,6 +832,11 @@ mod tests {
                 SchemaOperation::DropForeignKey {
                     table: "posts".to_string(),
                     column: "author_id".to_string(),
+                    fk: ForeignKeySchema {
+                        on_delete: OnDeleteSchema::Restrict,
+                        ref_column: "id".to_string(),
+                        ref_table: "users".to_string(),
+                    },
                 },
             ],
             classification: Classification::Destructive,
@@ -743,5 +960,253 @@ mod tests {
         assert_eq!(plan.segments[0].kind, SegmentKind::NonTransactional);
         assert_eq!(plan.segments[0].statements.len(), 2);
         assert_eq!(plan.segments[1].kind, SegmentKind::MetadataOnly);
+    }
+
+    // ── AddTable toposort (Codex T3 review B-1) ─────────────────────
+
+    /// Build a column carrying an inline FK pointing at `target` with
+    /// the project-default `Restrict` cascade.
+    fn fk_col(name: &str, target: &str) -> ColumnSchema {
+        ColumnSchema {
+            check: None,
+            default_sql: None,
+            foreign_key: Some(ForeignKeySchema {
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: target.to_string(),
+            }),
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: name.to_string(),
+            nullable: false,
+            on_delete: Some(OnDeleteSchema::Restrict),
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: Some(crate::migrate::schema::RelationKindSchema::ForeignKey),
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+        }
+    }
+
+    fn table_with_fk(name: &str, fk_to: &[(&str, &str)]) -> TableSchema {
+        let mut cols = vec![id_column_heerid()];
+        for (col_name, target) in fk_to {
+            cols.push(fk_col(col_name, target));
+        }
+        TableSchema {
+            app: None,
+            columns: cols,
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerId,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: name.to_string(),
+            tenant_key: None,
+        }
+    }
+
+    /// Position of the first `AddTable` for `name` in a plan's
+    /// flattened statement labels. Helper to keep the toposort tests
+    /// readable.
+    fn add_table_pos(plan: &MigrationPlan, name: &str) -> Option<usize> {
+        plan.segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .position(|s| s.label == format!("AddTable {name}"))
+    }
+
+    #[test]
+    fn fk_chain_two_tables_orders_target_before_dependent() {
+        // `accounts` (depends on `users`) must be created AFTER
+        // `users`. The differ feeds `AddTable` ops via BTreeMap so
+        // alphabetical input order is `accounts`, `users` — without
+        // toposort we'd hit "relation users does not exist" at
+        // apply time.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![
+                SchemaOperation::AddTable(table_with_fk("accounts", &[("user_id", "users")])),
+                SchemaOperation::AddTable(synth_table("users")),
+            ],
+            classification: Classification::Additive,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        let users_pos = add_table_pos(&plan, "users").expect("users emitted");
+        let accounts_pos = add_table_pos(&plan, "accounts").expect("accounts emitted");
+        assert!(
+            users_pos < accounts_pos,
+            "users must precede accounts; users={users_pos}, accounts={accounts_pos}"
+        );
+    }
+
+    #[test]
+    fn fk_chain_three_tables_orders_deepest_target_first() {
+        // C → B → A. Expect A, B, C.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![
+                SchemaOperation::AddTable(table_with_fk("c", &[("b_id", "b")])),
+                SchemaOperation::AddTable(table_with_fk("b", &[("a_id", "a")])),
+                SchemaOperation::AddTable(synth_table("a")),
+            ],
+            classification: Classification::Additive,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        let a = add_table_pos(&plan, "a").expect("a");
+        let b = add_table_pos(&plan, "b").expect("b");
+        let c = add_table_pos(&plan, "c").expect("c");
+        assert!(
+            a < b && b < c,
+            "expected a < b < c; got a={a}, b={b}, c={c}"
+        );
+    }
+
+    #[test]
+    fn fk_cycle_breaks_inline_fks_and_emits_follow_up_add_foreign_key() {
+        // `a` has FK to `b`; `b` has FK to `a`. Tables emit without
+        // their inline FKs (alphabetical: a, b). Two `AddForeignKey`
+        // ops follow.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![
+                SchemaOperation::AddTable(table_with_fk("a", &[("b_id", "b")])),
+                SchemaOperation::AddTable(table_with_fk("b", &[("a_id", "a")])),
+            ],
+            classification: Classification::Additive,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        let labels: Vec<_> = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.label.as_str())
+            .collect();
+
+        let a_pos = labels
+            .iter()
+            .position(|l| *l == "AddTable a")
+            .expect("AddTable a");
+        let b_pos = labels
+            .iter()
+            .position(|l| *l == "AddTable b")
+            .expect("AddTable b");
+        assert!(a_pos < b_pos, "alphabetical: a before b");
+
+        let fk_a_pos = labels
+            .iter()
+            .position(|l| *l == "AddForeignKey a.b_id")
+            .expect("AddForeignKey a.b_id");
+        let fk_b_pos = labels
+            .iter()
+            .position(|l| *l == "AddForeignKey b.a_id")
+            .expect("AddForeignKey b.a_id");
+        assert!(b_pos < fk_a_pos, "AddTable b before AddForeignKey a.b_id");
+        assert!(b_pos < fk_b_pos, "AddTable b before AddForeignKey b.a_id");
+
+        // Sanity: the `CREATE TABLE a` statement should not contain
+        // `REFERENCES "b"` because the FK was stripped out.
+        let create_a = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .find(|s| s.label == "AddTable a")
+            .expect("AddTable a statement");
+        assert!(
+            !create_a.up.contains("REFERENCES \"b\""),
+            "cycle-breaking must strip inline FK; got: {}",
+            create_a.up
+        );
+    }
+
+    #[test]
+    fn independent_tables_keep_alphabetical_order_for_determinism() {
+        // No FKs at all — toposort starts with all three tables in
+        // the ready set and pops alphabetically. Output order is
+        // `a`, `b`, `c`.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![
+                SchemaOperation::AddTable(synth_table("c")),
+                SchemaOperation::AddTable(synth_table("a")),
+                SchemaOperation::AddTable(synth_table("b")),
+            ],
+            classification: Classification::Additive,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        let a = add_table_pos(&plan, "a").expect("a");
+        let b = add_table_pos(&plan, "b").expect("b");
+        let c = add_table_pos(&plan, "c").expect("c");
+        assert!(
+            a < b && b < c,
+            "alphabetical determinism: a < b < c; got a={a}, b={b}, c={c}"
+        );
+    }
+
+    #[test]
+    fn self_referencing_table_does_not_trigger_cycle_break() {
+        // A table whose FK points at itself is fine in Postgres
+        // (the inline `REFERENCES same_table` succeeds because the
+        // table exists by the time the constraint check runs). The
+        // toposort drops self-edges so the table emits with its
+        // inline FK intact — no follow-up AddForeignKey op.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![SchemaOperation::AddTable(table_with_fk(
+                "tree",
+                &[("parent_id", "tree")],
+            ))],
+            classification: Classification::Additive,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        let stmts: Vec<&str> = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.label.as_str())
+            .collect();
+        assert_eq!(stmts, vec!["AddTable tree"]);
+        // The CREATE TABLE statement should still carry the inline
+        // REFERENCES clause for the self-FK.
+        let stmt = &plan.segments[0].statements[0];
+        assert!(
+            stmt.up.contains("REFERENCES \"tree\""),
+            "self-FK must remain inline; got: {}",
+            stmt.up
+        );
+    }
+
+    #[test]
+    fn external_fk_target_does_not_constrain_batch_ordering() {
+        // `widgets` references `external_users` which is NOT in this
+        // batch (it already exists in the live schema). The FK is
+        // emitted inline; the toposort drops the out-of-batch edge
+        // so no false dependency forms.
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![SchemaOperation::AddTable(table_with_fk(
+                "widgets",
+                &[("owner_id", "external_users")],
+            ))],
+            classification: Classification::Additive,
+        };
+        let plan = plan_delta(&delta).expect("plan");
+        // Single AddTable, no follow-ups, no cycle break.
+        let labels: Vec<&str> = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["AddTable widgets"]);
     }
 }

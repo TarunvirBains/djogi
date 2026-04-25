@@ -84,7 +84,10 @@
 
 use std::fmt::Write as _;
 
-use super::diff::{Classification, ColumnChange, SchemaDelta, SchemaOperation};
+use super::diff::{
+    Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
+    SchemaOperation,
+};
 use super::projection::BucketKey;
 use super::schema::{
     ColumnSchema, EnumSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
@@ -152,7 +155,12 @@ pub enum LossyRollbackKind {
     /// relied on the index will go back to sequential scans.
     DropIndex,
     /// `DropForeignKey` — the constraint definition is gone; data
-    /// remains.
+    /// remains. **Reserved variant.** Today's `DropForeignKey` rollback
+    /// is structurally lossless (the diff carries the full
+    /// [`ForeignKeySchema`]) so the emitter does not produce this
+    /// kind. Kept here for forward-compatibility: a future shape
+    /// where the FK metadata is stripped before reaching the emitter
+    /// would re-introduce the marker.
     DropForeignKey,
 }
 
@@ -276,8 +284,8 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
         SchemaOperation::AddForeignKey { table, column, fk } => {
             Ok(emit_add_foreign_key(table, column, fk))
         }
-        SchemaOperation::DropForeignKey { table, column } => {
-            Ok(emit_drop_foreign_key(table, column))
+        SchemaOperation::DropForeignKey { table, column, fk } => {
+            Ok(emit_drop_foreign_key(table, column, fk))
         }
         SchemaOperation::AddIndex(idx) => Ok(emit_add_index(idx)),
         SchemaOperation::DropIndex(idx) => Ok(emit_drop_index(idx)),
@@ -286,8 +294,8 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
         SchemaOperation::AddEnumVariant {
             enum_name,
             variant,
-            index,
-        } => Ok(emit_add_enum_variant(enum_name, variant, *index)),
+            anchor,
+        } => Ok(emit_add_enum_variant(enum_name, variant, anchor.as_ref())),
         SchemaOperation::PkTypeFlip { table, from, to } => {
             Err(SqlEmitError::PkTypeFlipMustRouteToT9 {
                 table: table.clone(),
@@ -577,26 +585,10 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
 }
 
 fn emit_add_foreign_key(table: &str, column: &str, fk: &ForeignKeySchema) -> OperationSql {
+    let up = render_add_fk(table, column, fk);
     let constraint = fk_constraint_name(table, column);
     let qcons = quote_ident(&constraint);
     let qt = quote_ident(table);
-    let qc = quote_ident(column);
-    let qref_t = quote_ident(&fk.ref_table);
-    let qref_c = quote_ident(&fk.ref_column);
-    // The `ColumnSchema.on_delete` field carries the cascade for the
-    // FK. The differ emits `AddForeignKey` only when the column
-    // already has its `relation_kind` set, so the projection should
-    // have populated `on_delete` already. We don't have the column
-    // shape here — only the FK target. Emit `ON DELETE RESTRICT`
-    // (the project-wide default per CLAUDE.md) and document the
-    // limitation. A future descriptor change that piped the cascade
-    // into the FK variant would let the emitter pick up the actual
-    // discipline.
-    let up = format!(
-        "ALTER TABLE {qt} ADD CONSTRAINT {qcons} \
-         FOREIGN KEY ({qc}) REFERENCES {qref_t} ({qref_c}) \
-         ON DELETE RESTRICT;"
-    );
     let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qcons};");
     OperationSql {
         label: format!("AddForeignKey {table}.{column}"),
@@ -606,31 +598,46 @@ fn emit_add_foreign_key(table: &str, column: &str, fk: &ForeignKeySchema) -> Ope
     }
 }
 
-fn emit_drop_foreign_key(table: &str, column: &str) -> OperationSql {
+fn emit_drop_foreign_key(table: &str, column: &str, fk: &ForeignKeySchema) -> OperationSql {
     let constraint = fk_constraint_name(table, column);
     let qcons = quote_ident(&constraint);
     let qt = quote_ident(table);
     let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qcons};");
-    // The down side cannot reconstruct the FK target / cascade
-    // discipline from the diff — DropForeignKey carries only `{
-    // table, column }`. Surface that.
-    let down = format!(
-        "-- NOTE: target table and ON DELETE discipline for the dropped FK\n\
-         -- on `{table}.{column}` are not in the diff. Rollback must hand-write\n\
-         -- the original `FOREIGN KEY ... REFERENCES ... ON DELETE ...` clause."
-    );
+    // Down side reconstructs the FK from the carried schema — the
+    // cascade discipline + target round-trip cleanly so rollback is
+    // structurally lossless. Codex T3 review B-3 fixed an earlier
+    // bug where the rollback was a SQL comment because `DropForeignKey`
+    // carried only `(table, column)`.
+    let down = render_add_fk(table, column, fk);
     OperationSql {
         label: format!("DropForeignKey {table}.{column}"),
         up,
         down,
-        lossy: Some(LossyRollbackWarning {
-            kind: LossyRollbackKind::DropForeignKey,
-            detail: format!(
-                "FK on `{table}.{column}` dropped — target / cascade discipline \
-                 not recoverable from the diff"
-            ),
-        }),
+        // No `lossy` warning — the FK definition is fully recoverable
+        // from the carried schema. A future change that loses
+        // information from the diff payload would have to re-introduce
+        // this marker.
+        lossy: None,
     }
+}
+
+/// Render a single `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY
+/// ... REFERENCES ... ON DELETE ...;` statement. Shared between
+/// [`emit_add_foreign_key`] and [`emit_drop_foreign_key`]'s rollback
+/// path so the two cannot drift.
+fn render_add_fk(table: &str, column: &str, fk: &ForeignKeySchema) -> String {
+    let constraint = fk_constraint_name(table, column);
+    let qcons = quote_ident(&constraint);
+    let qt = quote_ident(table);
+    let qc = quote_ident(column);
+    let qref_t = quote_ident(&fk.ref_table);
+    let qref_c = quote_ident(&fk.ref_column);
+    let cascade = on_delete_sql(fk.on_delete);
+    format!(
+        "ALTER TABLE {qt} ADD CONSTRAINT {qcons} \
+         FOREIGN KEY ({qc}) REFERENCES {qref_t} ({qref_c}) \
+         ON DELETE {cascade};"
+    )
 }
 
 fn emit_add_index(idx: &IndexSchema) -> OperationSql {
@@ -762,24 +769,33 @@ fn emit_drop_enum(name: &str) -> OperationSql {
     }
 }
 
-fn emit_add_enum_variant(enum_name: &str, variant: &str, index: usize) -> OperationSql {
+fn emit_add_enum_variant(
+    enum_name: &str,
+    variant: &str,
+    anchor: Option<&EnumVariantAnchor>,
+) -> OperationSql {
     let qname = quote_ident(enum_name);
     let lit = quote_string_literal(variant);
-    // `BEFORE` / `AFTER` placement is meaningful when the new
-    // variant should sort earlier than an existing one. The differ
-    // gives us the absolute position; we translate that into a
-    // BEFORE clause when index == 0 (prepend) and an AFTER clause
-    // otherwise. Postgres will reject the operation if the anchor
-    // doesn't exist, but the differ always derives `index` from the
-    // same variant list it walks, so the anchor always exists.
-    //
-    // To keep emission deterministic without re-deriving the anchor
-    // here, we emit no positional clause. Postgres appends to the
-    // end by default — which matches how the differ reports new
-    // variants in declaration order anyway. If a future descriptor
-    // grows ordered-variant insertion semantics, this is the seam.
-    let _ = index;
-    let up = format!("ALTER TYPE {qname} ADD VALUE {lit};");
+    // The differ resolves the anchor variant against the new
+    // variant list, picking BEFORE when a post-anchor exists and
+    // AFTER when only a pre-anchor exists, else None for tail
+    // appends. Codex T3 review B-2 fixed an earlier bug where the
+    // emitter unconditionally appended (no positional clause)
+    // regardless of where the differ placed the variant.
+    let up = match anchor {
+        None => format!("ALTER TYPE {qname} ADD VALUE {lit};"),
+        Some(EnumVariantAnchor {
+            variant: anchor_variant,
+            kind,
+        }) => {
+            let anchor_lit = quote_string_literal(anchor_variant);
+            let direction = match kind {
+                EnumVariantAnchorKind::Before => "BEFORE",
+                EnumVariantAnchorKind::After => "AFTER",
+            };
+            format!("ALTER TYPE {qname} ADD VALUE {lit} {direction} {anchor_lit};")
+        }
+    };
     // Postgres has no `DROP VALUE`. Rollback is lossy in the same
     // structural sense as DropEnum — mark accordingly.
     let down = format!(
@@ -1277,6 +1293,7 @@ mod tests {
     fn add_table_with_fk_column_inlines_references_clause() {
         let fk_col = ColumnSchema {
             foreign_key: Some(ForeignKeySchema {
+                on_delete: OnDeleteSchema::Cascade,
                 ref_column: "id".to_string(),
                 ref_table: "users".to_string(),
             }),
@@ -1403,11 +1420,12 @@ mod tests {
     // ── Foreign keys ───────────────────────────────────────────────────
 
     #[test]
-    fn add_foreign_key_emits_named_constraint() {
+    fn add_foreign_key_emits_named_constraint_with_default_restrict() {
         let sql = emit_add_foreign_key(
             "posts",
             "author_id",
             &ForeignKeySchema {
+                on_delete: OnDeleteSchema::Restrict,
                 ref_column: "id".to_string(),
                 ref_table: "users".to_string(),
             },
@@ -1415,16 +1433,77 @@ mod tests {
         assert!(sql.up.contains("ADD CONSTRAINT \"posts_author_id_fkey\""));
         assert!(sql.up.contains("FOREIGN KEY (\"author_id\")"));
         assert!(sql.up.contains("REFERENCES \"users\" (\"id\")"));
+        assert!(
+            sql.up.contains("ON DELETE RESTRICT"),
+            "default cascade must round-trip as RESTRICT, got: {}",
+            sql.up
+        );
     }
 
     #[test]
-    fn drop_foreign_key_marks_lossy() {
-        let sql = emit_drop_foreign_key("posts", "author_id");
+    fn add_foreign_key_propagates_cascade_kind() {
+        // Codex T3 review B-3: AddForeignKey must NOT silently rewrite
+        // the declared cascade as RESTRICT. Round-trip every variant.
+        for (cascade, expected) in [
+            (OnDeleteSchema::Restrict, "ON DELETE RESTRICT"),
+            (OnDeleteSchema::Cascade, "ON DELETE CASCADE"),
+            (OnDeleteSchema::SetNull, "ON DELETE SET NULL"),
+            (OnDeleteSchema::SetDefault, "ON DELETE SET DEFAULT"),
+            (OnDeleteSchema::NoAction, "ON DELETE NO ACTION"),
+        ] {
+            let sql = emit_add_foreign_key(
+                "posts",
+                "author_id",
+                &ForeignKeySchema {
+                    on_delete: cascade,
+                    ref_column: "id".to_string(),
+                    ref_table: "users".to_string(),
+                },
+            );
+            assert!(
+                sql.up.contains(expected),
+                "cascade {cascade:?} must emit `{expected}`; got: {}",
+                sql.up
+            );
+        }
+    }
+
+    #[test]
+    fn drop_foreign_key_rollback_recreates_constraint_with_cascade() {
+        // Codex T3 review B-3: DropForeignKey now carries the full
+        // ForeignKeySchema so the rollback recreates the FK with the
+        // original `ON DELETE ...` clause — no comment-only down side.
+        let sql = emit_drop_foreign_key(
+            "posts",
+            "author_id",
+            &ForeignKeySchema {
+                on_delete: OnDeleteSchema::Cascade,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            },
+        );
         assert!(sql.up.contains("DROP CONSTRAINT \"posts_author_id_fkey\""));
-        assert!(matches!(
-            sql.lossy.as_ref().map(|w| w.kind),
-            Some(LossyRollbackKind::DropForeignKey)
-        ));
+        assert!(
+            sql.down.contains("ADD CONSTRAINT \"posts_author_id_fkey\""),
+            "rollback must recreate the constraint, got: {}",
+            sql.down
+        );
+        assert!(
+            sql.down.contains("REFERENCES \"users\" (\"id\")"),
+            "rollback must restore the target, got: {}",
+            sql.down
+        );
+        assert!(
+            sql.down.contains("ON DELETE CASCADE"),
+            "rollback must restore the cascade, got: {}",
+            sql.down
+        );
+        // Now lossless — no warning needed because the diff carries
+        // the full FK shape.
+        assert!(
+            sql.lossy.is_none(),
+            "DropForeignKey rollback is structurally clean now; no lossy marker expected"
+        );
     }
 
     // ── Indexes ────────────────────────────────────────────────────────
@@ -1576,11 +1655,57 @@ mod tests {
     }
 
     #[test]
-    fn add_enum_variant_emits_alter_type_add_value() {
-        let sql = emit_add_enum_variant("status", "archived", 2);
+    fn add_enum_variant_without_anchor_appends() {
+        // Codex T3 review B-2: when the differ supplies no anchor,
+        // emit a tail-append (no positional clause).
+        let sql = emit_add_enum_variant("status", "archived", None);
         assert_eq!(sql.up, "ALTER TYPE \"status\" ADD VALUE 'archived';");
         // Postgres has no DROP VALUE — rollback is lossy.
         assert!(sql.down.contains("no `ALTER TYPE ... DROP VALUE`"));
+    }
+
+    #[test]
+    fn add_enum_variant_with_before_anchor_emits_before_clause() {
+        // Codex T3 review B-2: an anchor in `Before` direction must
+        // produce `ALTER TYPE ... ADD VALUE 'new' BEFORE 'anchor';`.
+        let anchor = EnumVariantAnchor {
+            variant: "deleted".to_string(),
+            kind: EnumVariantAnchorKind::Before,
+        };
+        let sql = emit_add_enum_variant("status", "archived", Some(&anchor));
+        assert_eq!(
+            sql.up,
+            "ALTER TYPE \"status\" ADD VALUE 'archived' BEFORE 'deleted';"
+        );
+    }
+
+    #[test]
+    fn add_enum_variant_with_after_anchor_emits_after_clause() {
+        let anchor = EnumVariantAnchor {
+            variant: "active".to_string(),
+            kind: EnumVariantAnchorKind::After,
+        };
+        let sql = emit_add_enum_variant("status", "archived", Some(&anchor));
+        assert_eq!(
+            sql.up,
+            "ALTER TYPE \"status\" ADD VALUE 'archived' AFTER 'active';"
+        );
+    }
+
+    #[test]
+    fn add_enum_variant_with_apostrophe_anchor_quotes_correctly() {
+        // Anchor variant strings go through quote_string_literal so
+        // embedded `'` doubles correctly.
+        let anchor = EnumVariantAnchor {
+            variant: "it's complicated".to_string(),
+            kind: EnumVariantAnchorKind::Before,
+        };
+        let sql = emit_add_enum_variant("title", "settled", Some(&anchor));
+        assert!(
+            sql.up.contains("BEFORE 'it''s complicated'"),
+            "got: {}",
+            sql.up
+        );
     }
 
     // ── Routing errors ─────────────────────────────────────────────────

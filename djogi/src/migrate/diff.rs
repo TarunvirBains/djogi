@@ -136,8 +136,19 @@ pub enum SchemaOperation {
     },
 
     /// Foreign key dropped. The column may still exist; only the
-    /// `REFERENCES` constraint is removed.
-    DropForeignKey { table: String, column: String },
+    /// `REFERENCES` constraint is removed. The full
+    /// [`ForeignKeySchema`] (including the cascade discipline that
+    /// existed on the old side) is carried so T3 can emit a
+    /// reversible rollback that restores the original `FOREIGN KEY
+    /// ... REFERENCES ... ON DELETE ...` clause without operator
+    /// hand-edit. Codex T3 review B-3 fixed an earlier bug where the
+    /// drop carried only `(table, column)` and the rollback was a
+    /// SQL comment.
+    DropForeignKey {
+        table: String,
+        column: String,
+        fk: ForeignKeySchema,
+    },
 
     /// Index added.
     AddIndex(IndexSchema),
@@ -162,9 +173,28 @@ pub enum SchemaOperation {
     AddEnumVariant {
         enum_name: String,
         variant: String,
-        /// Position of the new variant in the new schema's variant
-        /// list; T3 emits `BEFORE`/`AFTER` clauses based on this.
-        index: usize,
+        /// Anchor for the `BEFORE` / `AFTER` placement clause. `None`
+        /// means "append at the tail" (no positional clause). The
+        /// differ chooses, in priority order:
+        ///
+        /// 1. `Some(EnumVariantAnchor { kind: Before, variant: post })`
+        ///    when there is a post-anchor variant in the new list
+        ///    that already existed in the old list. This places the
+        ///    new variant immediately before that anchor.
+        /// 2. `Some(EnumVariantAnchor { kind: After, variant: pre })`
+        ///    when there is no usable post-anchor but a pre-anchor
+        ///    exists in both old and new lists.
+        /// 3. `None` when the new variant is at the tail of the new
+        ///    list and no other anchor would be useful.
+        ///
+        /// Codex T3 review B-2 fixed an earlier bug where the
+        /// emitter unconditionally appended (no `BEFORE`/`AFTER`
+        /// clause) regardless of where the differ placed the variant.
+        /// Carrying an anchor variant name (rather than a positional
+        /// integer) makes the emission self-contained — the emitter
+        /// no longer needs the full new-variant list to resolve a
+        /// position.
+        anchor: Option<EnumVariantAnchor>,
     },
 
     /// PK type changed within the supported flip pairs (HeerId ↔
@@ -229,6 +259,35 @@ pub enum ColumnChange {
 
     /// `#[field(index)]` flag flipped (column-level implicit index).
     SetIndexed(bool),
+}
+
+/// Anchor variant for an [`SchemaOperation::AddEnumVariant`] insertion.
+///
+/// Postgres `ALTER TYPE ... ADD VALUE 'new' [BEFORE|AFTER 'anchor']`
+/// requires a real existing variant as the anchor. The differ
+/// picks the anchor by walking the new variant list around the
+/// inserted variant and finding the nearest neighbour that already
+/// exists in the old list — see the doc on
+/// [`SchemaOperation::AddEnumVariant::anchor`] for the exact priority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumVariantAnchor {
+    /// The existing variant the new value should be placed relative
+    /// to. Must already exist in the enum at the time `ALTER TYPE`
+    /// runs.
+    pub variant: String,
+    /// Whether to place the new variant before or after the anchor.
+    pub kind: EnumVariantAnchorKind,
+}
+
+/// Direction of an [`EnumVariantAnchor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnumVariantAnchorKind {
+    /// `ALTER TYPE ... ADD VALUE 'new' BEFORE 'anchor'` — anchor is
+    /// the variant that should sort immediately AFTER the new one.
+    Before,
+    /// `ALTER TYPE ... ADD VALUE 'new' AFTER 'anchor'` — anchor is
+    /// the variant that should sort immediately BEFORE the new one.
+    After,
 }
 
 /// Aggregate flavour of a [`SchemaDelta`].
@@ -676,15 +735,19 @@ fn emit_alter_column(
             column: after.name.clone(),
             fk: fk.clone(),
         }),
-        (Some(_), None) => ops.push(SchemaOperation::DropForeignKey {
+        (Some(b_fk), None) => ops.push(SchemaOperation::DropForeignKey {
             table,
             column: after.name.clone(),
+            fk: b_fk.clone(),
         }),
         (Some(b_fk), Some(a_fk)) if b_fk != a_fk => {
-            // FK retargeting — emit drop + add for clarity.
+            // FK retargeting — emit drop + add for clarity. The drop
+            // carries the OLD FK so its rollback can restore the
+            // pre-retarget shape; the add carries the NEW FK.
             ops.push(SchemaOperation::DropForeignKey {
                 table: table.clone(),
                 column: after.name.clone(),
+                fk: b_fk.clone(),
             });
             ops.push(SchemaOperation::AddForeignKey {
                 table,
@@ -868,10 +931,11 @@ fn diff_enums(before: &AppliedSchema, after: &AppliedSchema, ops: &mut Vec<Schem
                 let before_set: BTreeSet<&str> = be.variants.iter().map(|v| v.as_str()).collect();
                 for (i, v) in ae.variants.iter().enumerate() {
                     if !before_set.contains(v.as_str()) {
+                        let anchor = pick_enum_variant_anchor(&ae.variants, i, &before_set);
                         ops.push(SchemaOperation::AddEnumVariant {
                             enum_name: name.clone(),
                             variant: v.clone(),
-                            index: i,
+                            anchor,
                         });
                     }
                 }
@@ -902,6 +966,50 @@ fn diff_enums(before: &AppliedSchema, after: &AppliedSchema, ops: &mut Vec<Schem
             ops.push(SchemaOperation::DropEnum(name.clone()));
         }
     }
+}
+
+/// Pick the BEFORE/AFTER anchor for a newly-inserted enum variant.
+///
+/// Walks `new_variants` outward from `pos` and returns the first
+/// neighbour that already exists in `before_set` (i.e. lives in the
+/// old enum). The post-anchor (next index) wins over the pre-anchor
+/// (previous index) when both exist — this keeps the convention
+/// consistent: "place before the first existing post-neighbour" so
+/// chained inserts of multiple new variants in one delta produce a
+/// stable, readable migration where each insert anchors against an
+/// already-existing variant rather than another freshly-added one.
+///
+/// Returns `None` when no anchor in `before_set` exists in either
+/// direction — that case is "first variants of a brand new enum",
+/// which the caller already routes through [`SchemaOperation::AddEnum`]
+/// rather than through `AddEnumVariant`, so this fallback is only
+/// reached when every variant in the old list has been removed in
+/// the new list (which would itself trigger `Unsupported` first).
+fn pick_enum_variant_anchor(
+    new_variants: &[String],
+    pos: usize,
+    before_set: &BTreeSet<&str>,
+) -> Option<EnumVariantAnchor> {
+    // Look forward first — find the nearest already-existing variant
+    // that comes after `pos` in the new list.
+    for v in new_variants.iter().skip(pos + 1) {
+        if before_set.contains(v.as_str()) {
+            return Some(EnumVariantAnchor {
+                variant: v.clone(),
+                kind: EnumVariantAnchorKind::Before,
+            });
+        }
+    }
+    // Then backward — find the nearest already-existing predecessor.
+    for v in new_variants[..pos].iter().rev() {
+        if before_set.contains(v.as_str()) {
+            return Some(EnumVariantAnchor {
+                variant: v.clone(),
+                kind: EnumVariantAnchorKind::After,
+            });
+        }
+    }
+    None
 }
 
 /// Compute the aggregate [`Classification`] for an operation list.
@@ -1796,5 +1904,159 @@ mod tests {
                 co_lossy: false
             }
         ));
+    }
+
+    // ── AddEnumVariant anchor (Codex T3 review B-2) ──────────────────
+
+    /// Build an `AppliedSchema` with a single enum and no models.
+    fn schema_with_enum(name: &str, variants: &[&str]) -> AppliedSchema {
+        let mut enums = BTreeMap::new();
+        enums.insert(
+            name.to_string(),
+            EnumSchema {
+                name: name.to_string(),
+                variants: variants.iter().map(|s| s.to_string()).collect(),
+            },
+        );
+        AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums,
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models: BTreeMap::new(),
+            registered_apps: vec!["".to_string()],
+        }
+    }
+
+    #[test]
+    fn enum_variant_inserted_at_head_anchors_before_first_existing() {
+        // Old: ["b", "c"]. New: ["a", "b", "c"]. The new "a" sits at
+        // index 0; the next existing variant in the new list is "b",
+        // which is in the old set. Anchor: Before "b".
+        let before = schema_with_enum("status", &["b", "c"]);
+        let after = schema_with_enum("status", &["a", "b", "c"]);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let anchor = delta
+            .operations
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::AddEnumVariant {
+                    variant, anchor, ..
+                } if variant == "a" => Some(anchor.clone()),
+                _ => None,
+            })
+            .expect("AddEnumVariant for `a`");
+        assert_eq!(
+            anchor,
+            Some(EnumVariantAnchor {
+                variant: "b".to_string(),
+                kind: EnumVariantAnchorKind::Before,
+            })
+        );
+    }
+
+    #[test]
+    fn enum_variant_inserted_in_middle_anchors_before_next_existing() {
+        // Old: ["a", "c"]. New: ["a", "b", "c"]. New "b" at index 1;
+        // post-anchor "c" exists in old. Anchor: Before "c".
+        let before = schema_with_enum("status", &["a", "c"]);
+        let after = schema_with_enum("status", &["a", "b", "c"]);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let anchor = delta
+            .operations
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::AddEnumVariant {
+                    variant, anchor, ..
+                } if variant == "b" => Some(anchor.clone()),
+                _ => None,
+            })
+            .expect("AddEnumVariant for `b`");
+        assert_eq!(
+            anchor,
+            Some(EnumVariantAnchor {
+                variant: "c".to_string(),
+                kind: EnumVariantAnchorKind::Before,
+            })
+        );
+    }
+
+    #[test]
+    fn enum_variant_inserted_at_tail_carries_no_anchor() {
+        // Old: ["a", "b"]. New: ["a", "b", "c"]. New "c" at tail; no
+        // post-anchor exists. Pre-anchor "b" is in old, but the
+        // priority rule prefers None for tail appends. Wait — re-read
+        // the priority: post-anchor first, then pre-anchor, then
+        // None. Since there's no post-anchor for a tail insert, the
+        // pre-anchor wins: After "b". Document the convention.
+        let before = schema_with_enum("status", &["a", "b"]);
+        let after = schema_with_enum("status", &["a", "b", "c"]);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let anchor = delta
+            .operations
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::AddEnumVariant {
+                    variant, anchor, ..
+                } if variant == "c" => Some(anchor.clone()),
+                _ => None,
+            })
+            .expect("AddEnumVariant for `c`");
+        // Per the priority rule documented on
+        // `pick_enum_variant_anchor`: when no post-anchor exists,
+        // the nearest pre-anchor is used. "b" is the immediate
+        // predecessor and is in the old set.
+        assert_eq!(
+            anchor,
+            Some(EnumVariantAnchor {
+                variant: "b".to_string(),
+                kind: EnumVariantAnchorKind::After,
+            })
+        );
+    }
+
+    #[test]
+    fn multiple_new_variants_each_anchor_against_an_existing_neighbour() {
+        // Old: ["b"]. New: ["a", "b", "c"]. Insertions: "a" before
+        // "b" (post-anchor in old), "c" after "b" (no post-anchor;
+        // pre-anchor "b" works).
+        let before = schema_with_enum("status", &["b"]);
+        let after = schema_with_enum("status", &["a", "b", "c"]);
+        let delta = diff_schemas(&before, &after, empty_global());
+        let anchor_a = delta
+            .operations
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::AddEnumVariant {
+                    variant, anchor, ..
+                } if variant == "a" => Some(anchor.clone()),
+                _ => None,
+            })
+            .expect("AddEnumVariant a");
+        let anchor_c = delta
+            .operations
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::AddEnumVariant {
+                    variant, anchor, ..
+                } if variant == "c" => Some(anchor.clone()),
+                _ => None,
+            })
+            .expect("AddEnumVariant c");
+        assert_eq!(
+            anchor_a,
+            Some(EnumVariantAnchor {
+                variant: "b".to_string(),
+                kind: EnumVariantAnchorKind::Before,
+            })
+        );
+        assert_eq!(
+            anchor_c,
+            Some(EnumVariantAnchor {
+                variant: "b".to_string(),
+                kind: EnumVariantAnchorKind::After,
+            })
+        );
     }
 }

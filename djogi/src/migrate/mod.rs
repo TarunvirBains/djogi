@@ -59,7 +59,10 @@ pub mod segment;
 pub mod snapshot;
 pub mod sql;
 
-pub use diff::{Classification, ColumnChange, SchemaDelta, SchemaOperation, diff_bucket_maps};
+pub use diff::{
+    Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
+    SchemaOperation, diff_bucket_maps,
+};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,

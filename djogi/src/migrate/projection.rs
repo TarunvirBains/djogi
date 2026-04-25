@@ -504,6 +504,12 @@ fn project_column(
     parent: &ModelDescriptor,
     type_to_table: &BTreeMap<&str, &str>,
 ) -> ColumnSchema {
+    let projected_on_delete = if f.relation_kind.is_some() {
+        Some(project_on_delete(f.on_delete.unwrap_or(OnDelete::Restrict)))
+    } else {
+        None
+    };
+
     let foreign_key = if f.relation_kind.is_some() {
         f.target_type_name.map(|target| {
             let ref_table = type_to_table
@@ -512,6 +518,12 @@ fn project_column(
                 .unwrap_or(target)
                 .to_string();
             ForeignKeySchema {
+                // FK and column carry the same cascade — the
+                // projection is the single source feeding both. Once
+                // a future descriptor change moves `on_delete` off
+                // the column, this is the only field that has to
+                // survive.
+                on_delete: projected_on_delete.unwrap_or(OnDeleteSchema::Restrict),
                 ref_column: "id".to_string(),
                 ref_table,
             }
@@ -535,11 +547,7 @@ fn project_column(
         max_length: f.max_length,
         name: f.name.to_string(),
         nullable: f.nullable,
-        on_delete: if f.relation_kind.is_some() {
-            Some(project_on_delete(f.on_delete.unwrap_or(OnDelete::Restrict)))
-        } else {
-            None
-        },
+        on_delete: projected_on_delete,
         outbox_exclude: f.outbox_exclude,
         rationale: f.rationale.map(|s| s.to_string()),
         relation_kind: f.relation_kind.map(project_relation_kind),
@@ -987,6 +995,79 @@ mod tests {
         let owner_id = &global.models["vehicles"].columns[0];
         let fk = owner_id.foreign_key.as_ref().expect("fk present");
         assert_eq!(fk.ref_table, "owners");
+    }
+
+    /// Helper for the FK-cascade round-trip test — `'static`
+    /// FieldDescriptor slices must come from a real `static` slot
+    /// because `ModelDescriptor.fields: &'static [FieldDescriptor]`.
+    const fn fk_field_descriptor(on_delete: OnDelete) -> FieldDescriptor {
+        FieldDescriptor {
+            name: "owner_id",
+            sql_type: FieldSqlType::BigInt,
+            nullable: false,
+            unique: false,
+            indexed: true,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(on_delete),
+            target_type_name: Some("Owner"),
+            visage_map: &[],
+        }
+    }
+
+    #[test]
+    fn fk_cascade_round_trips_through_foreign_key_schema() {
+        // Codex T3 review B-3: the column's declared `OnDelete` must
+        // populate `ForeignKeySchema.on_delete` so the SQL emitter
+        // can render the right `ON DELETE ...` clause without
+        // silently coercing to RESTRICT.
+        const RESTRICT: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::Restrict)];
+        const CASCADE: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::Cascade)];
+        const SET_NULL: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::SetNull)];
+        const SET_DEFAULT: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::SetDefault)];
+        const DO_NOTHING: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::DoNothing)];
+        const PROTECT: &[FieldDescriptor] = &[fk_field_descriptor(OnDelete::Protect)];
+
+        let owner = synth_model("owners", "Owner");
+        for (slice, expected_label, expected) in [
+            (RESTRICT, "Restrict", OnDeleteSchema::Restrict),
+            (CASCADE, "Cascade", OnDeleteSchema::Cascade),
+            (SET_NULL, "SetNull", OnDeleteSchema::SetNull),
+            (SET_DEFAULT, "SetDefault", OnDeleteSchema::SetDefault),
+            (
+                DO_NOTHING,
+                "DoNothing -> NoAction",
+                OnDeleteSchema::NoAction,
+            ),
+            // Protect maps to Restrict (per `project_on_delete`).
+            (PROTECT, "Protect -> Restrict", OnDeleteSchema::Restrict),
+        ] {
+            let vehicle = ModelDescriptor {
+                fields: slice,
+                ..synth_model("vehicles", "Vehicle")
+            };
+            let buckets = project_from_iters(
+                [&owner, &vehicle],
+                [],
+                [],
+                "2026-04-25T00:00:00Z".to_string(),
+            )
+            .expect("ok");
+            let owner_id = &buckets[&empty_global()].models["vehicles"].columns[0];
+            let fk = owner_id.foreign_key.as_ref().expect("fk");
+            assert_eq!(
+                fk.on_delete, expected,
+                "{expected_label} must project to {expected:?}; got {:?}",
+                fk.on_delete
+            );
+            // Column's `on_delete` field mirrors the FK's.
+            assert_eq!(owner_id.on_delete, Some(expected));
+        }
     }
 
     #[test]
