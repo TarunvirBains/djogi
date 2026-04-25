@@ -1084,8 +1084,13 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     // `pg_get_expr`; the projection passes that through. We assert
     // BOTH that `default_sql` is `Some(_)` (i.e. the rebuild did not
     // silently drop the default) AND that the captured expression
-    // is a `now`-shaped expression (matches `now()` exactly, since
-    // that is the canonical Postgres rendering).
+    // equals exactly `now()` (case-insensitive, whitespace-trimmed).
+    //
+    // Codex round-4 B-13: a `.contains("now()")` check would admit
+    // `nope_now()` or `timezone('utc', now())` — both are legitimate
+    // Postgres defaults, but neither is what we declared. The exact
+    // form is the safe assertion because `pg_get_expr` canonicalises
+    // `DEFAULT now()` to the literal `now()`.
     let beta = rebuilt.models.get("t5_b12_beta").expect("beta in rebuild");
     let beta_created_at = beta
         .columns
@@ -1106,18 +1111,20 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         .default_sql
         .as_deref()
         .expect("beta.created_at must carry a non-None default_sql");
-    let beta_default_lower: String = beta_default
+    let beta_default_canonical: String = beta_default
+        .trim()
         .as_bytes()
         .iter()
         .map(|b| b.to_ascii_lowercase() as char)
         .collect();
-    assert!(
-        beta_default_lower.contains("now()"),
-        "beta.created_at default must round-trip as a now() expression; got {:?}",
+    assert_eq!(
+        beta_default_canonical, "now()",
+        "beta.created_at default must round-trip as exactly `now()` \
+         (trim + lowercase); got {:?}",
         beta_default
     );
 
-    // (3) `t5_b12_gamma.alpha_id` — BIGINT NOT NULL.
+    // (3) `t5_b12_gamma.alpha_id` — BIGINT NOT NULL with FK → t5_b12_alpha(id).
     let gamma = rebuilt
         .models
         .get("t5_b12_gamma")
@@ -1136,6 +1143,23 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
     assert!(
         !gamma_alpha_id.nullable,
         "gamma.alpha_id was declared NOT NULL; must round-trip as such"
+    );
+    // TODO(T8): when `verify::project_live_schema` populates FK
+    // metadata from `pg_constraint`, assert here that
+    // `gamma_alpha_id.foreign_key == Some(ForeignKeySchema {
+    // ref_table: "t5_b12_alpha", ref_column: "id", on_delete: ... })`.
+    // Today's projection leaves `column.foreign_key: None` because FK
+    // catalog reads were deferred to T8 per the v3 stop condition;
+    // the test cannot assert the FK round-trip until that lands. The
+    // declared FK in the migration plan IS exercised by the apply
+    // path (the table is created with the constraint in PG), so the
+    // gap is in the projection, not in apply or rebuild.
+    assert!(
+        gamma_alpha_id.foreign_key.is_none(),
+        "T8 will populate gamma.alpha_id.foreign_key; today the \
+         projection must leave it None — getting a populated value here \
+         means T8 has shipped and this assertion should flip to a \
+         positive check (delete the assert + add the TODO'd check)"
     );
 
     // (4) `t5_b12_gamma_alpha_id_idx` — NON-unique BTree on `["alpha_id"]`,
