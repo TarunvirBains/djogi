@@ -17,6 +17,7 @@ pub mod outer_ref;
 pub mod relations;
 pub mod stubs;
 pub mod visage_fields;
+pub mod visage_query;
 pub mod visages;
 
 use attrs::ModelAttrs;

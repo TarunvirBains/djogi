@@ -315,6 +315,21 @@ fn emit_projection_for_scope(
         n_framework,
     );
 
+    // Phase 7-Zero-2 T10 — emit the visage's `::filter(...)` queryset
+    // entry block + the visage's narrow `FromPgRow` impl. The emitter
+    // bails out for relation-embed visages (the SELECT projection
+    // can't represent an embedded peer as a single column) and for
+    // `pk = None` source models (no `Model::table_name()` to reach).
+    let queryset_entry = crate::model::visage_query::expand(
+        source,
+        &proj_name,
+        scope,
+        struct_item,
+        field_attrs,
+        model_attrs,
+        n_framework,
+    );
+
     quote! {
         #derive_path
         pub struct #proj_name {
@@ -325,6 +340,8 @@ fn emit_projection_for_scope(
         #conv_impl
 
         #fields_filter_seal
+
+        #queryset_entry
     }
 }
 

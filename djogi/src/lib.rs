@@ -179,7 +179,7 @@ pub use fts_query::FtsFieldRef;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
     IntoFilterValue, Lookup, ModelCursorStream, ModelFilter, OrderExpr, QuerySet, RawCursorStream,
-    UpdateAssignment, UpdateStmt,
+    UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
@@ -213,7 +213,7 @@ pub mod prelude {
     };
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
-        IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
+        IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, VisageQuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
     // transaction scope + retry helper.
