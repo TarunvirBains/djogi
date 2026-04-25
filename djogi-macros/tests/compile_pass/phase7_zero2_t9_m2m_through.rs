@@ -68,15 +68,15 @@ fn _model_scoped_accessor_preserved<'a>(
     person.groups(ctx)
 }
 
-// T9 acceptance — visage-scoped accessor on `PersonPublic` returns
-// `Vec<GroupPublic>`. Function coercion pins the method signature
-// without needing a live Postgres pool.
+// T9 acceptance (post-T13b) — visage-scoped accessor on `PersonPublic`
+// returns a SELECT-narrowed `VisageQuerySet<GroupPublic>` that lowers
+// to an `EXISTS (...)` correlated subquery. Function coercion pins the
+// method signature without needing a live Postgres pool.
 #[allow(dead_code)]
-fn _visage_scoped_accessor_returns_peer_visage<'a>(
-    person_public: &'a PersonPublic,
-    ctx: &'a mut DjogiContext,
-) -> impl std::future::Future<Output = Result<Vec<GroupPublic>, DjogiError>> + Send + 'a {
-    person_public.groups(ctx)
+fn _visage_scoped_accessor_returns_peer_visage(
+    person_public: &PersonPublic,
+) -> djogi::query::VisageQuerySet<GroupPublic> {
+    person_public.groups()
 }
 
 fn main() {

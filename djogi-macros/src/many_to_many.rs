@@ -711,20 +711,28 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 .map(|s| s.ident.to_string())
                 .unwrap_or_default();
 
+            let target_outer_ref_ident = format_ident!("{}OuterRef", target_type);
+
             let visage_doc = format!(
-                "Visage-scoped many-to-many accessor — returns every `{peer_name}` \
-                 associated with this `{source_visage}` via the `{through_type}` \
-                 junction. Delegates to the model-scoped `{source_type}::{relation_lit}` \
-                 for fetching and projects through `<{peer_name} as TryFrom<&{target_type}>>::try_from`. \
-                 The through-row visage (`{through_visage}`) must exist at the `{scope_lit}` scope; \
-                 otherwise the projection check inside the body fails to compile.",
+                "Visage-scoped many-to-many accessor — returns a SELECT-narrowed \
+                 `VisageQuerySet<{peer_name}>` containing every `{peer_name}` associated \
+                 with this `{source_visage}` via the `{through_type}` junction. Phase \
+                 7-Zero-2 T13b emits an EXISTS-correlated subquery against the \
+                 `{through_type}` table: the outer query SELECTs only `{peer_name}`'s \
+                 exposed columns from `{target_type}` and the EXISTS predicate ties \
+                 each peer row to a junction row whose `{this_fk}` matches this \
+                 `{source_visage}`. Chain `.filter(...)`, `.order_by(...)`, \
+                 `.limit(n)`, `.count(ctx)`, `.exists(ctx)`, etc. before \
+                 `.fetch_all(ctx)`. The through-row visage (`{through_visage}`) \
+                 must exist at the `{scope_lit}` scope — the macro-emitted \
+                 zero-runtime existence probe forces a compile error if it \
+                 doesn't.",
                 peer_name = peer_name,
                 source_visage = source_visage,
                 through_type = through_type,
-                source_type = source_type,
-                relation_lit = relation_lit,
                 target_type = target_type,
                 through_visage = through_visage,
+                this_fk = this_fk,
                 scope_lit = scope_lit,
             );
 
@@ -733,69 +741,62 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 impl #source_visage {
                     #[doc = #visage_doc]
                     #[inline]
-                    pub fn #relation_ident<'ctx>(
-                        &'ctx self,
-                        ctx: &'ctx mut ::djogi::context::DjogiContext,
-                    ) -> impl ::std::future::Future<
-                        Output = ::std::result::Result<
-                            ::std::vec::Vec<#peer>,
-                            ::djogi::DjogiError,
-                        >,
-                    > + ::std::marker::Send + 'ctx
-                    {
-                        // Visages carry a framework `id` column typed as
-                        // the source model's PK. Cloning it mirrors the
-                        // reverse-FK visage-scoped emitter in
-                        // `reverse_relation.rs` — keep the two sites
-                        // symmetric.
-                        let pk = ::std::clone::Clone::clone(&self.id);
-                        async move {
-                            // Through-row exposure gate — the plan's
-                            // "both endpoints + through-row" rule
-                            // enforces itself through this zero-runtime
-                            // probe: if `{Through}{Suffix}` does not
-                            // exist, the `TryFrom<&Through>` bound
-                            // below fails to resolve and the macro
-                            // call site sees a clean diagnostic. The
-                            // `as T: TryFrom<...>` bound never executes
-                            // — only the type-existence check matters.
-                            fn __djogi_through_visage_exists<T>() where
-                                T: for<'__a> ::std::convert::TryFrom<&'__a #through_type>
-                            {}
-                            __djogi_through_visage_exists::<#through_visage>();
+                    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+                    pub fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer> {
+                        // Through-row exposure gate — the plan's
+                        // "both endpoints + through-row" rule enforces
+                        // itself through this zero-runtime probe: if
+                        // `{Through}{Suffix}` does not exist, the
+                        // `TryFrom<&Through>` bound fails to resolve and
+                        // the macro call site sees a clean diagnostic.
+                        // The `as T: TryFrom<...>` bound never executes
+                        // — only the type-existence check matters.
+                        fn __djogi_through_visage_exists<T>() where
+                            T: for<'__a> ::std::convert::TryFrom<&'__a #through_type>
+                        {}
+                        __djogi_through_visage_exists::<#through_visage>();
 
-                            // Fetch through-rows + project peers via the
-                            // existing `ManyToMany::related` body (single
-                            // source of truth for the query shape). Each
-                            // peer row then folds through the peer
-                            // visage's fallible conversion.
-                            let __djogi_through_rows: ::std::vec::Vec<#through_type> =
-                                <#through_type as ::djogi::model::Model>::objects()
-                                    .filter(move |f| {
-                                        f.#this_fk().eq(
-                                            ::djogi::relation::ForeignKey::<#source_type>::new(
-                                                ::std::clone::Clone::clone(&pk),
-                                            ),
-                                        )
-                                    })
-                                    .fetch_all(&mut *ctx)
-                                    .await?;
-                            let mut __djogi_out: ::std::vec::Vec<#peer> =
-                                ::std::vec::Vec::with_capacity(__djogi_through_rows.len());
-                            for __djogi_row in &__djogi_through_rows {
-                                let __djogi_target = <#target_type as ::djogi::model::Model>::get(
-                                    &mut *ctx,
-                                    __djogi_row.#that_fk.key().clone(),
+                        // Visages carry a framework `id` column typed as
+                        // the source model's PK. Cloning it once is
+                        // cheap (every PK type bounds `Clone`); the
+                        // owned value flows into the inner queryset's
+                        // FK predicate as a bind parameter.
+                        let pk = ::std::clone::Clone::clone(&self.id);
+
+                        // Phase 7-Zero-2 T13b — build the EXISTS
+                        // correlated subquery via Phase 4's typed
+                        // surface so the predicate stays type-checked
+                        // end-to-end:
+                        //
+                        //   EXISTS (
+                        //     SELECT 1 FROM <through_table>
+                        //     WHERE <this_fk>     = $source_pk
+                        //       AND <that_fk>     = <target_table>.id
+                        //   )
+                        //
+                        // The correlated `<target_table>.id` reference
+                        // uses `OuterRef::as_qualified_expr` (rather
+                        // than `as_expr`) because the inner through
+                        // table also has an `id` column — bare `id`
+                        // would raise `42702 column reference is
+                        // ambiguous`. The qualifier is `M::table_name()`,
+                        // which Djogi validates at `#[model]` expansion.
+                        let __djogi_inner = <#through_type as ::djogi::model::Model>::objects()
+                            .filter(move |f| {
+                                f.#this_fk().eq(
+                                    ::djogi::relation::ForeignKey::<#source_type>::new(pk),
                                 )
-                                .await?;
-                                __djogi_out.push(
-                                    <#peer as ::std::convert::TryFrom<&#target_type>>::try_from(
-                                        &__djogi_target,
-                                    )?
-                                );
-                            }
-                            ::std::result::Result::Ok(__djogi_out)
-                        }
+                            })
+                            .filter_expr(|f| {
+                                ::djogi::expr::Expr::eq(
+                                    f.#that_fk().as_pk_expr(),
+                                    #target_outer_ref_ident::id().as_qualified_expr(),
+                                )
+                            });
+                        let __djogi_exists =
+                            ::djogi::expr::Exists::new(__djogi_inner).as_expr();
+                        let __djogi_cond = ::djogi::Condition::Expr(__djogi_exists);
+                        <#peer>::__filter_with_initial_condition(__djogi_cond)
                     }
                 }
             }

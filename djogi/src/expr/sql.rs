@@ -411,8 +411,8 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // trigger `42702 column reference "X" is ambiguous`; the
             // typed surface flags this limitation on
             // [`super::subquery::OuterRef`]. The qualified form is
-            // deferred alongside the `parent_table` threading for
-            // `select_related + filter_expr` composition.
+            // available via [`ExprNode::OuterRefColumn`] for callers
+            // that need to disambiguate.
             //
             // Column strings reach this arm only via the sealed macro
             // entry point
@@ -422,6 +422,21 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // helpers) — both run through
             // [`crate::ident::assert_plain_ident`] before the value
             // lands here. Safe to push as a raw SQL token.
+            acc.push_sql(column);
+        }
+        ExprNode::OuterRefColumn { table, column } => {
+            // Table-qualified outer-scope column reference — emits
+            // `<table>.<column>` to disambiguate same-named columns
+            // across the inner and outer scopes (every Djogi model
+            // carries `id` / `created_at` / `updated_at`, so framework
+            // columns collide on every M2M correlation).
+            //
+            // Both strings come from [`crate::ident::assert_plain_ident`]-
+            // validated identifiers (table from `Model::table_name()`
+            // declarations, column from sealed macro entry points).
+            // Safe to push as raw SQL tokens.
+            acc.push_sql(table);
+            acc.push_sql(".");
             acc.push_sql(column);
         }
         ExprNode::IntervalLiteral { microseconds } => {

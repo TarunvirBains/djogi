@@ -441,13 +441,33 @@ async fn m2m_visage_accessor_returns_peer_visage(mut ctx: DjogiContext) {
     .await
     .expect("join Ada → Reviewers");
 
-    // Drive the visage-scoped M2M accessor. The return type is
-    // `Vec<M2mGroupPublic>`, proving the emitted body walked the
-    // through table and converted each resolved peer row through
-    // `<M2mGroupPublic as TryFrom<&M2mGroup>>::try_from`.
+    // Drive the visage-scoped M2M accessor. Phase 7-Zero-2 T13b returns
+    // a SELECT-narrowed `VisageQuerySet<M2mGroupPublic>` that lowers to
+    // an `EXISTS (...)` correlated subquery against the through table.
     let ada_public = M2mPersonPublic::from(&ada);
-    let mut groups: Vec<M2mGroupPublic> = ada_public
-        .groups(&mut ctx)
+    let groups_qs = ada_public.groups();
+
+    // SELECT narrowing witness — the M2M predicate must NOT cause the
+    // outer SELECT to project full-model columns. Postgres `EXISTS`
+    // keeps the outer projection unchanged, so the narrowed `columns`
+    // slice on `M2mGroupPublic` should still drive the SELECT list.
+    let sql = groups_qs.__sql_for_test();
+    assert!(
+        sql.contains("name") && sql.starts_with("SELECT id"),
+        "outer SELECT must list M2mGroupPublic's exposed columns — got: {sql}",
+    );
+    assert!(
+        sql.contains("EXISTS"),
+        "M2M predicate must lower to an EXISTS correlated subquery — got: {sql}",
+    );
+    assert!(
+        sql.contains("phase7_zero2_t9_live_m2m_groups.id"),
+        "EXISTS predicate must qualify the outer table reference (otherwise \
+         42702 'column reference id is ambiguous' fires at runtime) — got: {sql}",
+    );
+
+    let mut groups: Vec<M2mGroupPublic> = groups_qs
+        .fetch_all(&mut ctx)
         .await
         .expect("m2m visage accessor");
     groups.sort_by(|a, b| a.name.cmp(&b.name));

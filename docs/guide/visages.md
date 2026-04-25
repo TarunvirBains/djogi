@@ -275,28 +275,51 @@ VehiclePublic::filter(|v| v.optional_owner().map_filter(|o| o.display_name().eq(
 // Emits: WHERE optional_owner_id IS NOT NULL AND optional_owner.display_name = $1
 ```
 
-**Reverse-FK and M2M boundaries hold at the type layer.** From a
-peer visage, the reverse accessor returns a `Vec<ChildVisage>` (or
-`Option<ChildVisage>` for one-to-one), with projection from the
-underlying model rows handled internally via
-`<ChildVisage as TryFrom<&ChildModel>>::try_from`:
+**Reverse-FK and M2M boundaries hold at the SQL level too.** From
+a peer visage, the reverse accessor returns a SELECT-narrowed
+`VisageQuerySet<ChildVisage>`. Chain `.filter(...)` /
+`.order_by(...)` / `.limit(n)` / `.count(ctx)` / `.exists(ctx)` /
+`.stream(ctx)` and the queryset pushes everything down to Postgres:
 
 ```rust
-let public_address: AddressPublic = /* ... */;
-let owners: Vec<PublicRegisteredOwner> = public_address
-    .public_registered_owners(&mut ctx)
+let address_public: AddressPublic = /* ... */;
+let owners: Vec<PublicRegisteredOwner> = address_public
+    .public_registered_owners()
+    .filter(|o| o.display_name().eq("Ada".to_string()))
+    .limit(50)
+    .fetch_all(&mut ctx)
     .await?;
 ```
 
-M2M stitching now goes through visage-scoped accessor methods on
-the through model, filling the Phase 4.5 deferral. Through-model
-fields can opt into their own visage with `#[field(expose(...))]`.
+The emitted SQL projects only `PublicRegisteredOwner`'s exposed
+columns, applies the FK predicate (`address_id = $1`) at the SQL
+level, and anchors the additional filter / limit at the queryset
+layer.
 
-Note: the reverse / M2M traversal path currently fetches the full
-`ChildModel` row from Postgres and projects to the visage in Rust —
-**SELECT narrowing applies to direct visage querysets
-(`{Visage}::filter(...)`) only.** Pushing the column-narrowing into
-the reverse / M2M SQL is a follow-up enhancement.
+M2M stitching uses the same shape, lowering to an `EXISTS (...)`
+correlated subquery against the through table:
+
+```rust
+let person_public: PersonPublic = /* ... */;
+let groups_qs = person_public.groups();   // VisageQuerySet<GroupPublic>
+// Emits roughly:
+//   SELECT id, created_at, updated_at, name FROM groups
+//   WHERE EXISTS (
+//     SELECT 1 FROM person_groups
+//     WHERE person_groups.person_id = $1
+//       AND person_groups.group_id  = groups.id
+//   )
+let groups: Vec<GroupPublic> = groups_qs.fetch_all(&mut ctx).await?;
+```
+
+The outer table reference inside `EXISTS` is qualified
+(`groups.id`, not bare `id`) because the through table also has an
+`id` column — the qualified `OuterRef` form sidesteps Postgres's
+`42702 column reference is ambiguous` error.
+
+Through-model fields can opt into their own visage with
+`#[field(expose(...))]`; through-model visages participate in the
+same boundary enforcement.
 
 **Visage querysets are read-only.** `save` / `delete` /
 `update_or_create` on a visage emit a compile error pointing at the
@@ -325,11 +348,12 @@ The Phase 7-Zero-2 grammar covers the boundary-enforcement and
 SELECT-narrowing surface. The following remain non-goals for the
 visage layer:
 
-- **Reverse / M2M SELECT narrowing** — direct visage querysets
-  (`{Visage}::filter(...)`) emit narrowed SELECTs today; reverse / M2M
-  traversal still fetches the full child model row and projects to
-  the visage in Rust. Pushing the narrowing into the traversal SQL
-  is a follow-up enhancement.
+- **`VisageQuerySet<V>` subquery embedding** — `VisageQuerySet<V>`
+  is not yet usable as a sub-expression inside another query (e.g. as
+  the right-hand side of `IN` / `EXISTS` predicates authored at the
+  call site). The macro-emitted reverse-FK / M2M paths build their
+  own subquery predicates internally; lifting subquery embedding to
+  adopter code is captured as roadmap §4.7 for Phase 8+.
 - **Nested `expose(scope -> Peer { ... })` brace traversal** — the
   parser rejects this grammar today with an actionable compile error.
   Reserved for a follow-up phase.

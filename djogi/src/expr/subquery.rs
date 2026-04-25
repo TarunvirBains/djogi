@@ -360,6 +360,29 @@ impl<M: Model, V> OuterRef<M, V> {
             column: self.column,
         })
     }
+
+    /// Promote this outer-scope column ref to a typed [`Expr<V>`] that
+    /// emits as `<M::table_name()>.<column>` instead of the bare column
+    /// name.
+    ///
+    /// Use this whenever the inner subquery and outer scope share a
+    /// column name (every Djogi model carries `id` / `created_at` /
+    /// `updated_at`, so M2M correlations always collide). The qualified
+    /// form lets Postgres resolve the reference unambiguously, sidestepping
+    /// the `42702 column reference is ambiguous` failure that the bare
+    /// [`Self::as_expr`] form falls into.
+    ///
+    /// `M::table_name()` is the source of the qualifier — every
+    /// `Model::table_name()` is validated by Djogi's identifier rules at
+    /// `#[model]` expansion time, so the resulting SQL token is safe to
+    /// push without re-validation.
+    #[must_use = "OuterRef is inert unless promoted to Expr<V>"]
+    pub fn as_qualified_expr(self) -> Expr<V> {
+        Expr::from_node(ExprNode::OuterRefColumn {
+            table: M::table_name(),
+            column: self.column,
+        })
+    }
 }
 
 // ── Condition → Option<Condition> helper ──────────────────────────────
