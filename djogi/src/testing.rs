@@ -180,12 +180,32 @@ pub async fn setup_test_db_with_extensions(
         }
     });
 
-    // Install HeeRanjID schema (CREATE EXTENSION + functions) via heeranjid 0.2.1.
+    // Install the base HeeRanjID schema (generate_ids / generate_ranj_ids
+    // / heer-node tables). This does NOT include the Desc flip primitives
+    // and `*_next_desc` generators — those live in the v0.3 opt-in helper
+    // `install_all_desc_support` below.
     heeranjid::postgres_schema::install_schema(&test_client)
         .await
         .map_err(|e| {
             DjogiError::Db(DbError::other(format!(
                 "heeranjid install_schema failed: {e}"
+            )))
+        })?;
+
+    // Phase 7-Zero-2 T1 fixup — install the Desc flip primitives
+    // (`heerid_to_desc` / `ranjid_to_desc` / `heerid_flip_mask`), the
+    // `heerid_next` / `ranjid_next` single-row wrappers, the `*_next_desc`
+    // generators, and the bulk-backfill helper. heeranjid 0.3 moved these
+    // out of `install_schema` into this opt-in group; every PK family the
+    // framework ships depends on them, so the test harness must install
+    // them unconditionally. Without this, `HeerIdDesc::generate_many` and
+    // `RanjIdDesc::generate_many` fail with "function heerid_to_desc does
+    // not exist".
+    heeranjid::postgres_schema::install_all_desc_support(&test_client)
+        .await
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "heeranjid install_all_desc_support failed: {e}"
             )))
         })?;
 
