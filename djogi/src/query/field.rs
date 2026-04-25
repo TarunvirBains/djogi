@@ -1042,6 +1042,74 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     }
 }
 
+// ── Spatial operators on Option<GeoPoint> fields (#16 closure) ──────────────
+//
+// Mirrors the `FieldRef<M, GeoPoint>` block above for the nullable
+// variant. Adopters who model location as `Option<GeoPoint>` (the
+// natural Rust shape for "may not be located yet") can call the same
+// `.within_km` / `.order_by_distance` methods directly:
+//
+// - `within_km` gates the spatial predicate behind a sibling
+//   `IS NOT NULL` check, AND-combined with the existing
+//   `ST_DWithin(...)` predicate. Postgres also drops NULL-geo rows
+//   via three-valued logic on `ST_DWithin` (NULL ⇒ false in WHERE),
+//   but the explicit guard makes the contract loud at the emission
+//   layer and matches the issue's "raw SQL with hand-written IS NOT
+//   NULL" workaround pattern adopters were using.
+// - `order_by_distance` delegates directly to the non-Option impl.
+//   Postgres's default `NULL` handling for ASC ordering is `NULLS
+//   LAST`, so NULL-geo rows already sink to the end of the result
+//   without needing an explicit `NULLS LAST` clause. PK tiebreak
+//   still applies after distance for deterministic equidistant
+//   ordering.
+//
+// SQL parity with the non-nullable variant means callers can swap
+// `GeoPoint` for `Option<GeoPoint>` at the schema level without
+// changing the query call sites — exactly the ergonomic the issue
+// asked for.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, ::std::option::Option<crate::geo::GeoPoint>> {
+    /// Filter rows where this nullable geography column is within
+    /// `km` kilometers of `center`. Rows whose column is NULL are
+    /// excluded by an explicit `IS NOT NULL` guard AND-combined
+    /// with the underlying `ST_DWithin(...)` predicate.
+    ///
+    /// SQL: `<col> IS NOT NULL AND ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`.
+    ///
+    /// See [`FieldRef<M, GeoPoint>::within_km`] for the non-nullable
+    /// variant and the parameter-binding details — the inner
+    /// `ST_DWithin` shape is identical.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within_km(self, center: crate::geo::GeoPoint, km: f64) -> Condition {
+        // Build the typed `IS NOT NULL` guard via the generic helper
+        // available on every FieldRef.
+        let guard: FieldRef<M, ::std::option::Option<crate::geo::GeoPoint>> =
+            FieldRef::new(self.column);
+        let is_not_null = guard.is_not_null();
+        // Lift the column into a non-Option FieldRef so we reuse the
+        // same SpatialExpr emission as the non-nullable path.
+        let inner: FieldRef<M, crate::geo::GeoPoint> = FieldRef::new(self.column);
+        Condition::and(is_not_null, inner.within_km(center, km))
+    }
+
+    /// Order rows by ascending distance from `center`. NULL-geo rows
+    /// fall to the end of the result via Postgres's default ASC NULL
+    /// handling (`NULLS LAST` is the documented default — no explicit
+    /// clause emitted). PK tiebreak still applies after distance for
+    /// deterministic equidistant ordering.
+    ///
+    /// SQL:
+    /// ```sql
+    /// ST_Distance(<col>, ST_Point($lon, $lat)::geography) ASC, id ASC
+    /// ```
+    #[must_use = "order expressions are inert until passed to `order_by`"]
+    pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
+        let inner: FieldRef<M, crate::geo::GeoPoint> = FieldRef::new(self.column);
+        inner.order_by_distance(center)
+    }
+}
+
 // ── Spatial shape predicates on any GeographyValue field (T9) ────────────────
 //
 // Gated on `#[cfg(feature = "spatial")]`. Generic over `G: GeographyValue` so
