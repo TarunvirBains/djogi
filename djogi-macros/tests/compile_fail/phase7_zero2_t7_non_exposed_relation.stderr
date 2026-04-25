@@ -6,3 +6,12 @@ error[E0599]: no function or associated item named `department` found for struct
 ...
 30 |     let _bad = EmpPublicFields::department();
    |                                 ^^^^^^^^^^ function or associated item not found in `EmpPublicFields`
+   |
+note: if you're trying to build a new `EmpPublicFields` consider using one of the following associated functions:
+      EmpPublicFields::new
+      EmpPublicFields::with_path
+  --> tests/compile_fail/phase7_zero2_t7_non_exposed_relation.rs:17:1
+   |
+17 | #[model(table = "emps_t7_non_exposed_relation", no_default)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -175,6 +175,52 @@ pub mod __macro_support {
         FieldRef::new(column)
     }
 
+    /// Construct a [`FieldRef<M, V>`] with a SQL alias path prefix —
+    /// e.g. `prefix = "department"` + `column = "name"` produces a
+    /// `FieldRef` whose column string is `"department.name"`.
+    ///
+    /// # Why a single owned `&'static str`?
+    ///
+    /// The Phase 2 `Leaf::column` slot is `&'static str`; every SQL
+    /// emission site downstream pushes that string verbatim into the
+    /// `SqlAccumulator`. Keeping the composed path as one string means
+    /// every existing emitter (`query::sql::emit_leaf`, `DISTINCT ON`,
+    /// `ORDER BY`, `UPDATE … SET`) handles traversal paths with zero
+    /// changes — the dot-qualified column name is just another plain
+    /// column from its POV.
+    ///
+    /// # Identifier validation
+    ///
+    /// Both `prefix` and `column` are routed through
+    /// [`crate::ident::assert_plain_ident`] before the composed
+    /// `"prefix.column"` is built. This keeps the
+    /// identifier-smuggling seal the same strength as
+    /// [`__make_field_ref`] — a hostile path that carried SQL
+    /// metacharacters in either segment is rejected before the string
+    /// ever reaches the accumulator.
+    ///
+    /// # `Box::leak` rationale
+    ///
+    /// Runtime path composition produces a `String`; Djogi's emission
+    /// contract demands `&'static str`. The leak is one-time per
+    /// distinct `(prefix, column)` combination, bounded by the
+    /// application's schema (not by request traffic) — an app filtering
+    /// through `department.name` leaks at most a few tens of bytes,
+    /// once, for the lifetime of the process. A caching map would
+    /// eliminate the leak but add sync overhead on every filter call;
+    /// the leak is the simpler trade. T8 documents this explicitly;
+    /// future phases may revisit if the shape evolves.
+    #[doc(hidden)]
+    pub fn __make_field_ref_with_path<M: Model, V>(
+        prefix: &'static str,
+        column: &'static str,
+    ) -> FieldRef<M, V> {
+        assert_plain_ident(prefix, "field_path_prefix");
+        assert_plain_ident(column, "field_column");
+        let composed: &'static str = Box::leak(format!("{prefix}.{column}").into_boxed_str());
+        FieldRef::new(composed)
+    }
+
     #[cfg(test)]
     #[allow(clippy::manual_async_fn)]
     // The `Model` trait's CRUD methods return `impl Future + Send` rather
@@ -1189,6 +1235,171 @@ impl Condition {
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn or_with(self, other: Condition) -> Condition {
         Condition::or(self, other)
+    }
+}
+
+// ── Phase 7-Zero-2 T8: forward traversal over an optional FK / O2O ──────
+//
+// `OptionalRelationRef<V>` is the return type of the macro-emitted accessor
+// for a nullable relation field (`Option<ForeignKey<T>>` /
+// `Option<OneToOneField<T>>`) on a visage-scoped `{Visage}Fields` struct.
+// It keeps the nullability honest at the type level: the caller cannot
+// reach into the peer's `Fields` without first opting in to the SQL
+// IS-NOT-NULL guard through [`OptionalRelationRef::map_filter`].
+//
+// # Design rationale — why a wrapper type (not `Option<Fields>`)?
+//
+// Returning `Option<PeerFields>` would force the macro to embed a runtime
+// branch in emitted code (`if self.path.is_some() { Some(PeerFields { … }) }
+// else { None }`). But at filter-build time the FK column may be NULL
+// on zero rows, some rows, or every row — the `Option` lens lives in the
+// result set, not in the filter tree. The correct shape is "compose a
+// condition as if the FK is set, but guard the whole thing with
+// `author_id IS NOT NULL`". That's exactly what `map_filter` emits.
+//
+// The nullability marker also drives the boundary symbol inspection that
+// later tasks (T9 / T10) will use to reject mixing a required-FK accessor
+// with an optional-FK accessor under the same visage scope.
+
+/// Traversal handle for an optional forward relation (`Option<ForeignKey<T>>` or
+/// `Option<OneToOneField<T>>`) from a visage-scoped `{Visage}Fields`.
+///
+/// # Why `OptionalRelationRef<V>` over `Option<V>`?
+///
+/// The nullability lives in the row shape, not in the filter tree. A
+/// filter closure may compose a condition that "would" apply if the FK
+/// is set — `OptionalRelationRef::map_filter` lifts that closure into a
+/// `Condition` that first asserts the FK is non-NULL, then AND-s the
+/// inner closure's output. The caller never sees `None` — the SQL guard
+/// is automatic.
+///
+/// # SQL shape
+///
+/// `map_filter(|a| a.name().eq("Ada"))` on a wrapper over the `author_id`
+/// FK emits:
+///
+/// ```sql
+/// author_id IS NOT NULL AND author.name = $1
+/// ```
+///
+/// The `author_id IS NOT NULL` clause keeps SQL three-valued logic
+/// aligned with Rust's `Option` semantics: rows where the FK is NULL
+/// are excluded from the match set, matching the user-level mental model
+/// of "filter over author when author is set".
+///
+/// # Use from macro-emitted code only
+///
+/// Constructed through [`__macro_support::__make_optional_relation_ref`].
+/// The field `fk_column` is the owning side's FK column (e.g.
+/// `"author_id"`), and `peer_fields` is the path-threaded peer `Fields`
+/// handle returned by the macro's traversal accessor.
+pub struct OptionalRelationRef<V> {
+    fk_column: &'static str,
+    peer_fields: V,
+}
+
+impl<V> OptionalRelationRef<V> {
+    /// Compose a predicate that applies to the peer only when the FK is
+    /// non-NULL.
+    ///
+    /// The `f` closure receives the peer `Fields` handle by value (it's
+    /// `Copy` on the macro-emitted shape) and must return a `Condition`.
+    /// The returned `Condition` is equivalent to
+    /// `Condition::and(fk IS NOT NULL, f(peer_fields))`.
+    ///
+    /// # Consuming `self`
+    ///
+    /// `map_filter` consumes the wrapper by value. `V: Clone` lets the
+    /// closure receive an owned handle without forcing the wrapper's
+    /// owner to pre-clone. For the `{Visage}Fields` case the peer handle
+    /// is a plain ZST-shaped struct with a `&'static str` path, so
+    /// `Clone` is trivially cheap.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn map_filter<F>(self, f: F) -> Condition
+    where
+        F: FnOnce(V) -> Condition,
+    {
+        let inner = f(self.peer_fields);
+        let not_null = Condition::Leaf(Leaf {
+            column: self.fk_column,
+            op: LookupOp::IsNotNull,
+            value: FilterValue::Null,
+        });
+        Condition::and(not_null, inner)
+    }
+
+    /// Emit a standalone `fk_column IS NULL` predicate. Use from a
+    /// closure when the caller wants to flip the guard — "match rows
+    /// where the FK is absent".
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn is_none(self) -> Condition {
+        Condition::Leaf(Leaf {
+            column: self.fk_column,
+            op: LookupOp::IsNull,
+            value: FilterValue::Null,
+        })
+    }
+
+    /// Emit a standalone `fk_column IS NOT NULL` predicate. The
+    /// complement of [`is_none`](Self::is_none).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn is_some(self) -> Condition {
+        Condition::Leaf(Leaf {
+            column: self.fk_column,
+            op: LookupOp::IsNotNull,
+            value: FilterValue::Null,
+        })
+    }
+}
+
+impl<V: Copy> Copy for OptionalRelationRef<V> {}
+impl<V: Clone> Clone for OptionalRelationRef<V> {
+    fn clone(&self) -> Self {
+        Self {
+            fk_column: self.fk_column,
+            peer_fields: self.peer_fields.clone(),
+        }
+    }
+}
+
+impl<V: std::fmt::Debug> std::fmt::Debug for OptionalRelationRef<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OptionalRelationRef")
+            .field("fk_column", &self.fk_column)
+            .field("peer_fields", &self.peer_fields)
+            .finish()
+    }
+}
+
+#[doc(hidden)]
+pub mod optional_relation_support {
+    //! Sealed constructor for [`OptionalRelationRef`]. Only
+    //! macro-emitted code reaches in here; downstream callers are
+    //! blocked by the `#[doc(hidden)]` marker and the
+    //! double-underscore prefix on [`__make_optional_relation_ref`].
+    use super::OptionalRelationRef;
+    use crate::ident::assert_plain_ident;
+
+    /// Construct an [`OptionalRelationRef<V>`]. The macro emits
+    /// `__make_optional_relation_ref("author_id", UserPublicFields::with_path("author"))`
+    /// for a `#[field(expose(public -> UserPublic))]` on
+    /// `author: Option<ForeignKey<User>>`.
+    ///
+    /// `fk_column` is validated against [`assert_plain_ident`] before
+    /// storage; the `peer_fields` is passed through by value (the
+    /// macro already routed the peer's path through the shared
+    /// identifier validator in
+    /// `FieldRef::__macro_support::__make_field_ref_with_path`).
+    #[doc(hidden)]
+    pub fn __make_optional_relation_ref<V>(
+        fk_column: &'static str,
+        peer_fields: V,
+    ) -> OptionalRelationRef<V> {
+        assert_plain_ident(fk_column, "optional_fk_column");
+        OptionalRelationRef {
+            fk_column,
+            peer_fields,
+        }
     }
 }
 

@@ -6,3 +6,12 @@ error[E0599]: no function or associated item named `email` found for struct `Use
 ...
 21 |     let _bad = UserPublicFields::email();
    |                                  ^^^^^ function or associated item not found in `UserPublicFields`
+   |
+note: if you're trying to build a new `UserPublicFields` consider using one of the following associated functions:
+      UserPublicFields::new
+      UserPublicFields::with_path
+  --> tests/compile_fail/phase7_zero2_t7_non_exposed_field.rs:10:1
+   |
+10 | #[model(table = "users_t7_non_exposed_field")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)

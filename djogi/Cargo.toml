@@ -198,3 +198,8 @@ harness = true
 name = "phase7_zero2_bulk_allocation_live"
 path = "../tests/integration/phase7_zero2_bulk_allocation_live.rs"
 harness = true
+
+[[test]]
+name = "phase7_zero2_visage_traversal_live"
+path = "../tests/integration/phase7_zero2_visage_traversal_live.rs"
+harness = true

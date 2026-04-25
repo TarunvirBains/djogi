@@ -41,7 +41,7 @@ pub mod update;
 pub use aggregate::AggregateQuery;
 pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
 pub use condition::Condition;
-pub use field::{FieldRef, IntoFilterValue};
+pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};

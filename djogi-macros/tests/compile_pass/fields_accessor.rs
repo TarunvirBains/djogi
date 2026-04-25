@@ -50,7 +50,7 @@ struct Lookup {
 }
 
 fn _framework_accessors_typecheck() {
-    let f = UserFields;
+    let f = UserFields::default();
     // Framework columns: `id` is HeerId (default pk), timestamps are DateTime.
     let _id: FieldRef<User, HeerId> = f.id();
     let _created: FieldRef<User, DateTime> = f.created_at();
@@ -58,7 +58,7 @@ fn _framework_accessors_typecheck() {
 }
 
 fn _user_accessors_typecheck() {
-    let f = UserFields;
+    let f = UserFields::default();
     let _name: FieldRef<User, String> = f.name();
     let _email: FieldRef<User, String> = f.email();
     let _age: FieldRef<User, i32> = f.age();
