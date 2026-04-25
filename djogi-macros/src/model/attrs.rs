@@ -335,6 +335,19 @@ impl ModelAttrs {
                                 "duplicate `table` key in #[model(...)]",
                             ));
                         }
+                        // Phase 7-Zero-2 T13b safety: the table name flows
+                        // into `Model::table_name()` which is pushed as a
+                        // raw SQL token by the SQL emitter (e.g.
+                        // `OuterRef::as_qualified_expr` → `<table>.<col>`,
+                        // and historically by every `FROM <table>`
+                        // emission). Without validation a `table = "foo;
+                        // DROP TABLE x; --"` would land arbitrary SQL into
+                        // emission. Run the same Postgres unquoted-
+                        // identifier classifier the column-name validator
+                        // uses — non-empty, ≤ 63 bytes, ASCII letter or
+                        // underscore first, alphanumeric or underscore
+                        // after, never a fully-reserved keyword.
+                        crate::ident::check_table_name(&s.value(), s.span())?;
                         table = Some(s.value());
                     } else if path.is_ident("idempotency_key") {
                         if idempotency_key.is_some() {
