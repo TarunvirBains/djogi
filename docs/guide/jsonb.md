@@ -93,6 +93,10 @@ at most 63 bytes). The path is validated at construction time and **panics in
 both debug and release** if any segment is invalid. Keep path strings as
 compile-time literals — do not interpolate user input into path strings.
 
+> **`&'static str` only.** The path argument is `&'static str` — a
+> runtime-constructed `String` cannot be passed. Path keys must be
+> literals so the JSONB traversal is fully fixed at compile time.
+
 ```rust
 // Single-level
 User::objects()

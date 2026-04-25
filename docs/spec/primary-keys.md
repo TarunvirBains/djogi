@@ -196,6 +196,60 @@ ON CONFLICT (id) DO NOTHING;
 This is documented as a first-class Djogi idiom — idempotent writes with
 pre-generated IDs.
 
+### 3.5b Custom Primary-Key Types (`djogi::primary_key!`)
+
+Adopters integrate any external ID scheme (UUIDv4, ULID, Snowflake,
+`uuid::Uuid`, bespoke BIGSERIAL variants, …) via the `djogi::primary_key!`
+declarative macro. The macro emits a transparent newtype that
+implements `PrimaryKey` (always), `PrimaryKeyDbGen` (DB-sourced
+generation, all built-ins + opt-in custom), and / or `PrimaryKeyClientGen`
+(client-side generation, custom-only — built-ins never generate
+client-side).
+
+```rust
+use djogi::prelude::*;
+
+djogi::primary_key! {
+    pub struct ULID(uuid::Uuid);
+
+    sql_type     = "UUID";
+    default_sql  = "gen_random_uuid()";    // emitted in CREATE TABLE
+    bulk_sql     = "SELECT gen_random_uuid() FROM generate_series(1, $1)";
+    generate     = || ULID(uuid::Uuid::new_v4());
+}
+
+#[model(table = "events", pk = ULID)]
+pub struct Event {
+    pub kind: String,
+}
+```
+
+Attribute grammar:
+
+| Attribute      | Required           | Purpose                                                                 |
+|----------------|--------------------|-------------------------------------------------------------------------|
+| `sql_type`     | always             | Postgres column type used in `CREATE TABLE`                             |
+| `default_sql`  | always             | column `DEFAULT` expression (used as the bulk-allocation fallback too)  |
+| `bulk_sql`     | optional           | bulk pre-allocation query — `$1` is the requested count                 |
+| `generate`     | optional           | client-side generation closure — enables `PrimaryKeyClientGen`          |
+
+Emission rules:
+
+- `bulk_sql` present → `PrimaryKeyDbGen::generate_many` runs the user
+  SQL and asserts the row count matches the requested count.
+- `bulk_sql` absent + `generate` present → `generate_many` falls back
+  to a per-row client-side loop using the closure.
+- both absent → `generate_many` synthesises
+  `SELECT (<default_sql>) FROM generate_series(1, $1)`, so every
+  custom PK is usable with `bulk_create` out of the box without a
+  dummy patch.
+
+Beyond the four built-ins (`HeerId` / `HeerIdRecencyBiased` / `RanjId` /
+`RanjIdRecencyBiased`) and the opt-in `Serial` variant, custom PK kinds
+register as `PrimaryKeyKind::Custom(CustomPrimaryKeyKind { type_name,
+sql_type, default_sql })` so descriptors stay self-describing for the
+migration engine.
+
 ### 3.5a Public naming vs internal desc types
 
 Djogi's public surface names the newest-first variants

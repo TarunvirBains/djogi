@@ -336,16 +336,23 @@ without touching the database.
 Users set framework fields (`id`, `created_at`, `updated_at`) to any value; `create()` ignores them and the database populates the real values via column defaults + `RETURNING *`:
 
 ```rust
+use djogi::PrimaryKey;
+
 let article = Article::create(&mut ctx, Article {
-    id: HeerId::from_i64(0).unwrap(), // ignored — DB generates
-    created_at: DateTime::UNIX_EPOCH, // ignored — DB generates
-    updated_at: DateTime::UNIX_EPOCH, // ignored — DB generates
+    id: <HeerId as PrimaryKey>::sentinel(),  // ignored — DB generates
+    created_at: DateTime::UNIX_EPOCH,        // ignored — DB generates
+    updated_at: DateTime::UNIX_EPOCH,        // ignored — DB generates
     title: "Hello".into(),
     slug: "hello".into(),
     body: "World".into(),
     published: true,
 }).await?;
 ```
+
+`PrimaryKey::sentinel()` returns a placeholder value of the PK type
+that all built-ins recognise as "DB will generate the real value on
+INSERT". Use it instead of poking inside the PK newtype directly — the
+inner integer is private.
 
 For models whose user fields all implement `Default`, struct-update shorthand works:
 
