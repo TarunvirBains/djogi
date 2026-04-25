@@ -1088,7 +1088,71 @@ pub fn expand(
         }
     };
 
-    // bulk_create / bulk_upsert are elided for zero-user-field models.
+    // Per-row bind emission that prepends an explicit id bind ahead of
+    // the user-column binds. Shared by the post-T5 `bulk_create` dispatch
+    // (for every PK kind except `Serial`) and by `bulk_upsert` (which
+    // has always taken caller-supplied ids). Hoisted above both
+    // emitters so the bulk_create path can reference it — TokenStream
+    // interpolation is single-use but re-cloning the same source
+    // definition keeps the emitted shapes byte-identical.
+    //
+    // HeerId needs `.as_i64()` to encode as BIGINT; RanjId and i32 bind
+    // as-is. Custom PKs delegate ToSql to the inner type, so `row.id`
+    // binds directly — the macro-emitted impl handles the wire
+    // encoding.
+    let pk_bind_for_id_first = match &model_attrs.pk {
+        PkStrategy::HeerId => quote! { __acc.push_bind(row.id.as_i64()); },
+        PkStrategy::HeerIdDesc => quote! { __acc.push_bind(row.id.as_i64()); },
+        PkStrategy::RanjId => quote! { __acc.push_bind(row.id); },
+        PkStrategy::RanjIdDesc => quote! { __acc.push_bind(row.id); },
+        PkStrategy::Serial => quote! { __acc.push_bind(row.id); },
+        PkStrategy::None => unreachable!("handled by early return"),
+        PkStrategy::Custom(_) => quote! { __acc.push_bind(row.id); },
+    };
+    let id_first_per_row_binds: TokenStream = if n_user == 0 {
+        // Zero-user-field models never reach either bulk_create /
+        // bulk_upsert via this path (they early-return with a
+        // Validation error), but we still emit a stub expression so
+        // quoting the tree is valid.
+        quote! {}
+    } else {
+        let all_fields_iter = user_fields.iter();
+        quote! {
+            __acc.push_sql("(");
+            #pk_bind_for_id_first
+            #(
+                __acc.push_sql(", ");
+                __acc.push_bind(row.#all_fields_iter);
+            )*
+            __acc.push_sql(")");
+        }
+    };
+
+    // Phase 7-Zero-2 T5 — `bulk_create` dispatches on `pk_kind`.
+    //
+    // Pre-T5 emission inserted rows with per-row `DEFAULT` for `id`,
+    // which forced Postgres to invoke `heerid_next()` / `ranjid_next()`
+    // / custom `default_sql` once per row — N separate allocations per
+    // batch. Post-T5, every PK kind that implements `PrimaryKeyDbGen`
+    // pre-allocates the full batch of ids in **one** round-trip through
+    // `<T as PrimaryKeyDbGen>::generate_many(ctx, n)` and then issues
+    // the INSERT with explicit `id` values.
+    //
+    // `Serial` (`i32`) deliberately does not implement
+    // `PrimaryKeyDbGen` — its sequence is per-row by construction, and
+    // there is no bulk allocator to call. Serial models keep the
+    // pre-T5 per-row-`DEFAULT` path; the generic dispatch arm is
+    // unreachable for them.
+    //
+    // `None` is handled by the early return at the top of `expand`, so
+    // we never reach this block.
+    //
+    // Every PK except Serial takes the pre-allocation path. The
+    // upsert-shaped SQL (explicit `id` column + id-first per-row binds)
+    // was already emitted for `bulk_upsert`; we reuse the same
+    // `id_first_per_row_binds` / `insert_prefix_with_id` tokens here to
+    // keep the two emitters structurally aligned.
+    let pk_is_serial = matches!(model_attrs.pk, PkStrategy::Serial);
     let bulk_create_impl = if n_user == 0 {
         quote! {
             /// Not supported for zero-user-field models.
@@ -1108,31 +1172,25 @@ pub fn expand(
                 ))
             }
         }
-    } else {
+    } else if pk_is_serial {
+        // `pk = Serial` keeps the per-row `DEFAULT` path — the
+        // underlying `INTEGER` sequence is not bulk-allocatable and
+        // `i32` deliberately does not implement `PrimaryKeyDbGen`.
         let insert_prefix = format!("INSERT INTO {table} ({bulk_insert_col_list}) VALUES ");
         let bulk_returning_suffix = format!(" RETURNING {column_list}");
         quote! {
             /// Bulk-insert every row in `rows` and return the rehydrated
             /// results.
             ///
-            /// One `INSERT` round trip emitting
-            /// `INSERT INTO <table> (<user-cols>) VALUES (...), (...) RETURNING <column_list>`.
-            /// Framework columns (`id`, `created_at`, `updated_at`) are
-            /// populated by their column defaults and surface in the
-            /// returned rows.
+            /// `pk = Serial` models insert with per-row `DEFAULT` on
+            /// `id` — Postgres advances the backing sequence once per
+            /// row, exactly as row-by-row [`create`] does. There is no
+            /// bulk-allocation path for `Serial` because the sequence
+            /// is owned by the database and has no `generate_many`
+            /// primitive.
             ///
             /// Empty `rows` short-circuits to `Ok(Vec::new())` without
             /// SQL — an empty `VALUES ()` clause is invalid Postgres.
-            ///
-            /// Postgres caps bound parameters at 65_535. With `N` user
-            /// columns per model, the effective cap is `65_535 / N`
-            /// rows per call. Chunk larger batches at the call site.
-            ///
-            /// When the model has `#[model(events)]`, outbox rows are
-            /// written per inserted row **after** rehydration (so the
-            /// outbox payload reflects DB-truth column defaults and
-            /// trigger mutations). Runs inside the caller's
-            /// transaction / atomic scope when `ctx` holds one.
             pub async fn bulk_create(
                 ctx: &mut ::djogi::context::DjogiContext,
                 rows: ::std::vec::Vec<Self>,
@@ -1147,6 +1205,89 @@ pub fn expand(
                     for row in rows.into_iter() {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
                         #per_row_binds
+                    }
+                }
+                __acc.push_sql(#bulk_returning_suffix);
+                let (__sql, __binds) = __acc.into_parts();
+                let __params: ::std::vec::Vec<&(dyn ::djogi::__private::postgres_types::ToSql + Sync)> =
+                    __binds.iter().map(|b| b.as_ref() as &(dyn ::djogi::__private::postgres_types::ToSql + Sync)).collect();
+                let __raw_rows = ctx.__query_all_for_macros(&__sql, &__params).await?;
+                let created: ::std::vec::Vec<Self> = __raw_rows
+                    .iter()
+                    .map(|r| <Self as ::djogi::__private::pg::FromPgRow>::from_pg_row(r))
+                    .collect::<::std::result::Result<::std::vec::Vec<Self>, _>>()?;
+                #emit_outbox_bulk_create
+                ::std::result::Result::Ok(created)
+            }
+        }
+    } else {
+        // Every other PK kind — HeerId / HeerIdDesc / RanjId /
+        // RanjIdDesc / custom DB-gen — takes the pre-allocation path.
+        // The insert prefix lists `id` first so the per-row tuple
+        // provides an explicit id bind ahead of the user-column binds.
+        let insert_prefix_with_id =
+            format!("INSERT INTO {table} (id, {bulk_insert_col_list}) VALUES ");
+        let bulk_returning_suffix = format!(" RETURNING {column_list}");
+        quote! {
+            /// Bulk-insert every row in `rows` and return the rehydrated
+            /// results.
+            ///
+            /// Two round trips per call: one
+            /// `<Self::Pk as PrimaryKeyDbGen>::generate_many(ctx, n)`
+            /// to pre-allocate every row's primary key, followed by the
+            /// main
+            /// `INSERT INTO <table> (id, <user-cols>) VALUES (...) RETURNING <column_list>`.
+            /// The pre-allocation round trip replaces N separate
+            /// per-row `DEFAULT` calls with a single batched
+            /// `generate_ids` / `generate_ranjids` / custom `bulk_sql`
+            /// invocation — a hard scalability win on tables larger
+            /// than a few hundred rows.
+            ///
+            /// Caller-supplied `row.id` values are overwritten by the
+            /// pre-allocated ids. Row-by-row [`create`] is the
+            /// escape hatch when a specific id must be preserved;
+            /// [`bulk_upsert`] also preserves caller-supplied ids by
+            /// construction.
+            ///
+            /// Empty `rows` short-circuits to `Ok(Vec::new())` without
+            /// SQL — an empty `VALUES ()` clause is invalid Postgres.
+            ///
+            /// Postgres caps bound parameters at 65_535. With `N` user
+            /// columns per model plus the `id` column, the effective
+            /// cap is `65_535 / (N + 1)` rows per call. Chunk larger
+            /// batches at the call site.
+            ///
+            /// When the model has `#[model(events)]`, outbox rows are
+            /// written per inserted row **after** rehydration (so the
+            /// outbox payload reflects DB-truth column defaults and
+            /// trigger mutations). Runs inside the caller's
+            /// transaction / atomic scope when `ctx` holds one.
+            pub async fn bulk_create(
+                ctx: &mut ::djogi::context::DjogiContext,
+                mut rows: ::std::vec::Vec<Self>,
+            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                if rows.is_empty() {
+                    return ::std::result::Result::Ok(::std::vec::Vec::new());
+                }
+                #auto_set_tenant
+                // Pre-allocate N ids in one round trip. The allocated
+                // ids are written onto each row's `id` field in order,
+                // overwriting whatever sentinel / caller-supplied value
+                // was there.
+                let __n = rows.len();
+                let __ids = <#pk_type_tokens as ::djogi::primary_key::PrimaryKeyDbGen>::generate_many(
+                    ctx,
+                    __n,
+                ).await?;
+                for (row, id) in rows.iter_mut().zip(__ids.into_iter()) {
+                    row.id = id;
+                }
+                let mut __acc = ::djogi::__private::pg::SqlAccumulator::new(#insert_prefix_with_id);
+                {
+                    let mut __first = true;
+                    for row in rows.into_iter() {
+                        if __first { __first = false; } else { __acc.push_sql(", "); }
+                        #id_first_per_row_binds
                     }
                 }
                 __acc.push_sql(#bulk_returning_suffix);
@@ -1188,35 +1329,9 @@ pub fn expand(
         let do_update_set_clause =
             format!(" DO UPDATE SET {bulk_upsert_set_list} RETURNING {column_list}");
 
-        // For bulk_upsert the id column is included up front so
-        // callers can upsert with pre-allocated ids. Per-row bind tail
-        // needs the id bind before the user-field binds.
-        // Uses SqlAccumulator::push_bind — emits `$n` placeholders and
-        // stores bind values by move (rows consumed via into_iter).
-        // HeerId needs `.as_i64()` to encode as BIGINT; RanjId and i32 bind as-is.
-        // Custom PKs delegate ToSql to the inner type, so `row.id` binds
-        // directly — the macro-emitted impl handles the wire encoding.
-        let pk_bind_for_upsert = match &model_attrs.pk {
-            PkStrategy::HeerId => quote! { __acc.push_bind(row.id.as_i64()); },
-            PkStrategy::HeerIdDesc => quote! { __acc.push_bind(row.id.as_i64()); },
-            PkStrategy::RanjId => quote! { __acc.push_bind(row.id); },
-            PkStrategy::RanjIdDesc => quote! { __acc.push_bind(row.id); },
-            PkStrategy::Serial => quote! { __acc.push_bind(row.id); },
-            PkStrategy::None => unreachable!("handled by early return"),
-            PkStrategy::Custom(_) => quote! { __acc.push_bind(row.id); },
-        };
-        let upsert_per_row_binds: TokenStream = {
-            let all_fields_iter = user_fields.iter();
-            quote! {
-                __acc.push_sql("(");
-                #pk_bind_for_upsert
-                #(
-                    __acc.push_sql(", ");
-                    __acc.push_bind(row.#all_fields_iter);
-                )*
-                __acc.push_sql(")");
-            }
-        };
+        // `id_first_per_row_binds` (hoisted above `bulk_create_impl`)
+        // emits the id-first per-row tuple bindings — same shape the
+        // post-T5 `bulk_create` uses after `PrimaryKeyDbGen::generate_many`.
 
         quote! {
             /// Bulk-upsert — `INSERT ... ON CONFLICT (<cols>) DO UPDATE SET ...`.
@@ -1277,7 +1392,7 @@ pub fn expand(
                     let mut __first = true;
                     for row in rows.into_iter() {
                         if __first { __first = false; } else { __acc.push_sql(", "); }
-                        #upsert_per_row_binds
+                        #id_first_per_row_binds
                     }
                 }
                 __acc.push_sql(" ON CONFLICT (");

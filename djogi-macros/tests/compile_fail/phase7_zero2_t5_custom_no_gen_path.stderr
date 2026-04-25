@@ -1,0 +1,55 @@
+error[E0277]: the trait bound `Orphan: PrimaryKeyDbGen` is not satisfied
+  --> tests/compile_fail/phase7_zero2_t5_custom_no_gen_path.rs:23:33
+   |
+23 | #[model(table = "orphans", pk = Orphan)]
+   |                                 ^^^^^^ unsatisfied trait bound
+   |
+help: the trait `PrimaryKeyDbGen` is not implemented for `Orphan`
+  --> tests/compile_fail/phase7_zero2_t5_custom_no_gen_path.rs:15:1
+   |
+15 | / djogi::primary_key! {
+16 | |     pub struct Orphan(i64);
+   | |_____________________^
+help: the following other types implement trait `PrimaryKeyDbGen`
+  --> $WORKSPACE/djogi/src/primary_key/builtins.rs
+   |
+   | impl PrimaryKeyDbGen for HeerId {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `djogi::HeerId`
+...
+   | impl PrimaryKeyDbGen for HeerIdDesc {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `HeerIdRecencyBiased`
+...
+   | impl PrimaryKeyDbGen for RanjId {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `djogi::RanjId`
+...
+   | impl PrimaryKeyDbGen for RanjIdDesc {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `RanjIdRecencyBiased`
+   = note: this error originates in the macro `djogi::primary_key` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `Orphan: PrimaryKeyDbGen` is not satisfied
+  --> tests/compile_fail/phase7_zero2_t5_custom_no_gen_path.rs:23:1
+   |
+23 | #[model(table = "orphans", pk = Orphan)]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `PrimaryKeyDbGen` is not implemented for `Orphan`
+  --> tests/compile_fail/phase7_zero2_t5_custom_no_gen_path.rs:15:1
+   |
+15 | / djogi::primary_key! {
+16 | |     pub struct Orphan(i64);
+   | |_____________________^
+help: the following other types implement trait `PrimaryKeyDbGen`
+  --> $WORKSPACE/djogi/src/primary_key/builtins.rs
+   |
+   | impl PrimaryKeyDbGen for HeerId {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `djogi::HeerId`
+...
+   | impl PrimaryKeyDbGen for HeerIdDesc {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `HeerIdRecencyBiased`
+...
+   | impl PrimaryKeyDbGen for RanjId {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `djogi::RanjId`
+...
+   | impl PrimaryKeyDbGen for RanjIdDesc {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `RanjIdRecencyBiased`
+   = note: this error originates in the attribute macro `model` which comes from the expansion of the macro `djogi::primary_key` (in Nightly builds, run with -Z macro-backtrace for more info)
