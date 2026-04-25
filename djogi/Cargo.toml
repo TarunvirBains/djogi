@@ -208,3 +208,8 @@ harness = true
 name = "phase7_zero2_select_narrowing_live"
 path = "../tests/integration/phase7_zero2_select_narrowing_live.rs"
 harness = true
+
+[[test]]
+name = "phase7_zero2_ensure_enum_type_live"
+path = "../tests/integration/phase7_zero2_ensure_enum_type_live.rs"
+harness = true
