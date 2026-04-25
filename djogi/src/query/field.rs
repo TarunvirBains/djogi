@@ -199,17 +199,24 @@ pub mod __macro_support {
     /// metacharacters in either segment is rejected before the string
     /// ever reaches the accumulator.
     ///
-    /// # `Box::leak` rationale
+    /// # Composed-path interning
     ///
     /// Runtime path composition produces a `String`; Djogi's emission
-    /// contract demands `&'static str`. The leak is one-time per
-    /// distinct `(prefix, column)` combination, bounded by the
-    /// application's schema (not by request traffic) — an app filtering
-    /// through `department.name` leaks at most a few tens of bytes,
-    /// once, for the lifetime of the process. A caching map would
-    /// eliminate the leak but add sync overhead on every filter call;
-    /// the leak is the simpler trade. T8 documents this explicitly;
-    /// future phases may revisit if the shape evolves.
+    /// contract demands `&'static str`. The original T8 shape
+    /// `Box::leak`ed per call, which leaked memory proportional to
+    /// `QuerySet::filter` traffic — a steady-state production leak,
+    /// not the schema-bounded one the doc claimed. The T8 Codex
+    /// review flagged that as a P0.
+    ///
+    /// T8 fixup intern-caches each distinct composed path through
+    /// [`intern_composed_path`] below: the first `(prefix, column)`
+    /// pair triggers one `Box::leak`; every subsequent call for the
+    /// same pair returns the already-leaked `&'static str`. Bound is
+    /// now `O(distinct (prefix, column) in the adopter's schema)` — a
+    /// few dozen entries for a real app, regardless of request load.
+    /// The intern map is `OnceLock<Mutex<HashSet<&'static str>>>`;
+    /// lookups are O(1) and the lock is uncontended in the steady
+    /// state.
     #[doc(hidden)]
     pub fn __make_field_ref_with_path<M: Model, V>(
         prefix: &'static str,
@@ -217,8 +224,32 @@ pub mod __macro_support {
     ) -> FieldRef<M, V> {
         assert_plain_ident(prefix, "field_path_prefix");
         assert_plain_ident(column, "field_column");
-        let composed: &'static str = Box::leak(format!("{prefix}.{column}").into_boxed_str());
+        let composed = intern_composed_path(prefix, column);
         FieldRef::new(composed)
+    }
+
+    /// Intern a freshly-composed `"{prefix}.{column}"` path and return
+    /// the cached `&'static str` handle. First observation of a given
+    /// `(prefix, column)` pair `Box::leak`s the composite; every later
+    /// call returns the same reference. Thread-safe.
+    fn intern_composed_path(prefix: &'static str, column: &'static str) -> &'static str {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+
+        static INTERN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+
+        let set_mutex = INTERN.get_or_init(|| Mutex::new(HashSet::new()));
+        // Build the candidate composite on the heap. The allocation is
+        // unavoidable — we need a `String` to hash against the set. The
+        // leak only happens when the candidate is a first observation.
+        let candidate = format!("{prefix}.{column}");
+        let mut set = set_mutex.lock().expect("field-path intern mutex poisoned");
+        if let Some(existing) = set.get(candidate.as_str()) {
+            return existing;
+        }
+        let leaked: &'static str = Box::leak(candidate.into_boxed_str());
+        set.insert(leaked);
+        leaked
     }
 
     #[cfg(test)]
