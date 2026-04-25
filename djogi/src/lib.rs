@@ -258,6 +258,14 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
+    // T11 / issue #30 — re-export the serde derives so `use djogi::prelude::*`
+    // is sufficient for any `JsonbSchema`-deriving or `DjogiEnum`-deriving
+    // type. The macro emits `#[derive(Serialize, Deserialize)]` paths through
+    // `::djogi::__private::serde`, but adopter-side typed JSONB schemas
+    // (`Jsonb<MyShape>`) derive serde directly on `MyShape`, and asking
+    // adopters to add a `serde` line to their `Cargo.toml` and a separate
+    // `use serde::*` clause is friction the framework can absorb.
+    pub use ::serde::{Deserialize, Serialize};
     // Spatial primitive — gated behind the `spatial` feature flag.
     #[cfg(feature = "spatial")]
     pub use crate::geo::GeoPoint;
