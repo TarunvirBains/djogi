@@ -61,16 +61,36 @@ pub struct GeoPoint {
 }
 
 impl GeoPoint {
+    /// Latitude lower bound (south pole) in decimal degrees per WGS 84 /
+    /// ISO 6709. Exposed so adopters can validate inputs against the
+    /// same range `GeoPoint::new` enforces without re-typing the magic
+    /// number. Mirrors the bounds-as-const idiom upstream `HeerId` uses
+    /// (`HeerId::MAX_TIMESTAMP_MS`, `MAX_NODE_ID`, `MAX_SEQUENCE`).
+    pub const MIN_LAT: f64 = -90.0;
+
+    /// Latitude upper bound (north pole) in decimal degrees per WGS 84 /
+    /// ISO 6709.
+    pub const MAX_LAT: f64 = 90.0;
+
+    /// Longitude lower bound (antimeridian, west) in decimal degrees per
+    /// WGS 84 / ISO 6709.
+    pub const MIN_LON: f64 = -180.0;
+
+    /// Longitude upper bound (antimeridian, east) in decimal degrees per
+    /// WGS 84 / ISO 6709.
+    pub const MAX_LON: f64 = 180.0;
+
     /// Construct a new `GeoPoint`, validating coordinate ranges.
     ///
     /// Returns `Err(GeoError::InvalidLatitude)` if `lat` is not finite or
-    /// is outside `-90.0..=90.0`. Returns `Err(GeoError::InvalidLongitude)`
-    /// if `lon` is not finite or is outside `-180.0..=180.0`.
+    /// is outside [`Self::MIN_LAT`]..=[`Self::MAX_LAT`]. Returns
+    /// `Err(GeoError::InvalidLongitude)` if `lon` is not finite or is
+    /// outside [`Self::MIN_LON`]..=[`Self::MAX_LON`].
     pub fn new(lat: f64, lon: f64) -> Result<Self, GeoError> {
-        if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+        if !lat.is_finite() || !(Self::MIN_LAT..=Self::MAX_LAT).contains(&lat) {
             return Err(GeoError::InvalidLatitude(lat));
         }
-        if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
+        if !lon.is_finite() || !(Self::MIN_LON..=Self::MAX_LON).contains(&lon) {
             return Err(GeoError::InvalidLongitude(lon));
         }
         Ok(Self { lat, lon })
