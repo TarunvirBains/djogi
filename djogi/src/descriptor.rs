@@ -1381,7 +1381,14 @@ pub enum PkType {
 /// `fields` contains the **complete** column set: framework-injected columns
 /// (`id`, `created_at`, `updated_at`) appear before user-declared fields in
 /// injection order. See [`FieldDescriptor`] for the exact ordering contract.
-#[derive(Debug)]
+///
+/// `Clone` was added in Phase 7 T2 because the migrate module's
+/// differ-test fixtures need to construct multiple variants of a
+/// descriptor via struct-update syntax (`..base.clone()`); the
+/// derived implementation does a deep copy of the `Option<PartitionSpec>`
+/// and `Option<FtsDescriptor>` fields and a shallow copy of the
+/// `&'static` references.
+#[derive(Debug, Clone)]
 pub struct ModelDescriptor {
     pub type_name: &'static str,
     pub table_name: &'static str,

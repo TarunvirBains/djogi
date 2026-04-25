@@ -37,10 +37,14 @@
 //! and exists for tests + the T10 `#[djogi_test(sync_models)]`
 //! helper. External consumers use [`project_from_inventory`].
 
+pub mod diff;
 pub mod projection;
 pub mod schema;
 pub mod snapshot;
 
+pub use diff::{
+    Classification, ColumnChange, SchemaDelta, SchemaOperation, diff_bucket_maps, diff_schemas,
+};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
