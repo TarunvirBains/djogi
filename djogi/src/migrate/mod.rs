@@ -12,10 +12,12 @@
 //! | [`diff`] | Schema differ — produces `SchemaDelta` from two `AppliedSchema`. |
 //! | [`sql`] | Lowers `SchemaDelta` operations into reviewable up / down SQL pairs. |
 //! | [`segment`] | Plans `SchemaDelta` into transactional / non-transactional / metadata-only segments. |
+//! | [`guard`] | File-level workspace lock primitive used by `compose` / `attune` / `apply` / `repair` / `baseline`. |
+//! | [`ledger`] | `djogi_schema_migrations` DDL bootstrap, row CRUD, and `V1:<sha256-hex>` checksum format. |
+//! | [`runner`] | Apply orchestration — advisory lock, transactional / non-transactional segment dispatch, partial-state recording, snapshot persist on success. |
 //!
-//! Subsequent Phase 7 tasks add `rename`, `ledger`, `runner`,
-//! `guard`, `naming`, `target`, `docs` per the v3 plan §5 file
-//! structure.
+//! Subsequent Phase 7 tasks add `rename`, `naming`, `target`, `docs`
+//! per the v3 plan §5 file structure.
 //!
 //! # Public surface
 //!
@@ -53,7 +55,10 @@
 //! group of statements.
 
 pub mod diff;
+pub mod guard;
+pub mod ledger;
 pub mod projection;
+pub mod runner;
 pub mod schema;
 pub mod segment;
 pub mod snapshot;
@@ -63,7 +68,19 @@ pub use diff::{
     Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
     SchemaOperation, diff_bucket_maps,
 };
+pub use guard::{
+    DEFAULT_TIMEOUT as GUARD_DEFAULT_TIMEOUT, GuardError, LOCK_FILE_NAME, WorkspaceGuard,
+    acquire as acquire_workspace_lock,
+};
+pub use ledger::{
+    CHECKSUM_LEN, CHECKSUM_PREFIX, ChecksumMismatch, ExecutionMode, LEDGER_TABLE_DDL, LedgerRow,
+    LedgerStatus, SHA256_HEX_LEN, bootstrap as bootstrap_ledger, compute_checksum,
+    insert_pending as insert_pending_ledger_row, mark_applied as mark_ledger_applied,
+    mark_failed as mark_ledger_failed, mark_partial as mark_ledger_partial,
+    update_progress as update_ledger_progress, verify_checksum,
+};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
+pub use runner::{RunReport, RunnerCtx, RunnerError, advisory_lock_key, apply_plan};
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
     IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema,

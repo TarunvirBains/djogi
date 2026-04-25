@@ -71,6 +71,21 @@ async-trait = "0.1"
 # the surface minimal — we only consume `catch_unwind`.
 futures = { version = "0.3", default-features = false, features = ["std"] }
 
+# Hashing — SHA-256 for migration checksum (`V1:<64-hex>`) and stable
+# 64-bit hashing of `BucketKey { database, app }` into a Postgres
+# advisory-lock key. SHA-256 is already in the transitive dep tree
+# via `password-hash` / `argon2`; promoting it to a direct dep keeps the
+# migration runner's public contract from depending on a transitive
+# upgrade path.
+sha2 = "0.11"
+
+# libc — file-level workspace lock primitive in `migrate::guard`.
+# Uses `flock(LOCK_EX | LOCK_NB)` directly for the 30-second bounded-retry
+# acquire path. Already in the transitive dep tree via `tokio` and
+# `deadpool`; promoting to a direct dep makes the file-lock implementation
+# self-contained.
+libc = "0.2"
+
 # Testing
 trybuild = { version = "1", features = ["diff"] }
 

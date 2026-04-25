@@ -66,6 +66,8 @@ thiserror.workspace = true
 tracing.workspace = true
 futures.workspace = true
 async-trait.workspace = true
+sha2.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
@@ -212,4 +214,9 @@ harness = true
 [[test]]
 name = "phase7_zero2_ensure_enum_type_live"
 path = "../tests/integration/phase7_zero2_ensure_enum_type_live.rs"
+harness = true
+
+[[test]]
+name = "phase7_t4_runner_live"
+path = "../tests/integration/phase7_t4_runner_live.rs"
 harness = true

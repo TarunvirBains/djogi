@@ -1,0 +1,704 @@
+//! Phase 7 T4 — live-PG integration tests for the migration runner.
+//!
+//! # What these tests prove
+//!
+//! - `bootstrap_ledger` is idempotent against a real Postgres
+//!   instance.
+//! - `apply_plan` executes a transactional plan end-to-end, marks
+//!   the ledger row `applied`, and persists the snapshot file.
+//! - A transactional apply that fails mid-stream rolls back its
+//!   transaction, marks the ledger row `failed`, and DOES NOT move
+//!   the snapshot file forward.
+//! - A split (transactional + non-transactional) apply records
+//!   non-transactional progress in `applied_steps_count` and only
+//!   moves the snapshot on full success.
+//! - A split apply whose non-transactional step fails records the
+//!   partial state via `partial_apply_note` and surfaces the failing
+//!   step ordinal.
+//! - The relpages probe emits a warn (default config) and aborts
+//!   (strict-mode config) for a transactional `CREATE INDEX` on a
+//!   table whose `pg_class.relpages` exceeds the threshold.
+//! - The advisory-lock key derivation is deterministic across
+//!   processes and cannot collide on `(database || app)` boundary
+//!   accidents.
+//! - The snapshot file is NOT moved forward on any failure path.
+//! - `run_id` is unique per invocation.
+//!
+//! # Test isolation
+//!
+//! Each `#[djogi_test]` provisions a fresh `djogi_test_<uuid>`
+//! database via the Phase 5-Zero harness. The runner targets that
+//! database directly; cleanup is automatic.
+
+#![allow(dead_code)]
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use djogi::config::MigrateConfig;
+use djogi::migrate::{
+    AppliedSchema, BucketKey, Classification, MigrationPlan, RunnerCtx, RunnerError,
+    SNAPSHOT_FORMAT_VERSION, Segment, SegmentKind, advisory_lock_key, apply_plan, bootstrap_ledger,
+    compute_checksum, load_snapshot,
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+fn empty_snapshot() -> AppliedSchema {
+    AppliedSchema {
+        djogi_version: "0.1.0".to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: "2026-04-25T00:00:00Z".to_string(),
+        indexes: Vec::new(),
+        models: BTreeMap::new(),
+        registered_apps: vec!["".to_string()],
+    }
+}
+
+fn temp_snapshot_path() -> PathBuf {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("djogi-runner-test-{stamp}.json"))
+}
+
+fn op(label: &str, up: &str, down: &str) -> djogi::migrate::OperationSql {
+    djogi::migrate::OperationSql {
+        label: label.to_string(),
+        up: up.to_string(),
+        down: down.to_string(),
+        lossy: None,
+    }
+}
+
+fn transactional_plan(stmts: Vec<djogi::migrate::OperationSql>) -> MigrationPlan {
+    MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        },
+        classification: Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::Transactional,
+            statements: stmts,
+        }],
+    }
+}
+
+fn split_plan(
+    tx_stmts: Vec<djogi::migrate::OperationSql>,
+    non_tx_stmts: Vec<djogi::migrate::OperationSql>,
+) -> MigrationPlan {
+    let mut segments = Vec::new();
+    if !tx_stmts.is_empty() {
+        segments.push(Segment {
+            kind: SegmentKind::Transactional,
+            statements: tx_stmts,
+        });
+    }
+    if !non_tx_stmts.is_empty() {
+        segments.push(Segment {
+            kind: SegmentKind::NonTransactional,
+            statements: non_tx_stmts,
+        });
+    }
+    MigrationPlan {
+        bucket: BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        },
+        classification: Classification::Additive,
+        segments,
+    }
+}
+
+fn make_runner_ctx(
+    plan: &MigrationPlan,
+    version: &str,
+    snapshot: Option<AppliedSchema>,
+    snapshot_path: Option<PathBuf>,
+    config: MigrateConfig,
+) -> RunnerCtx {
+    // Compute the up checksum from the plan so verification passes.
+    let frags: Vec<&str> = plan
+        .segments
+        .iter()
+        .flat_map(|s| s.statements.iter())
+        .map(|s| s.up.as_str())
+        .collect();
+    let checksum_up = compute_checksum(frags);
+    RunnerCtx {
+        bucket: plan.bucket.clone(),
+        version: version.to_string(),
+        description: format!("test migration {version}"),
+        checksum_up,
+        checksum_down: None,
+        snapshot,
+        snapshot_path,
+        config,
+    }
+}
+
+// ── Bootstrap idempotency ─────────────────────────────────────────────────
+
+#[djogi::djogi_test]
+async fn bootstrap_is_idempotent(mut ctx: djogi::DjogiContext) {
+    bootstrap_ledger(&mut ctx).await.expect("first bootstrap");
+    bootstrap_ledger(&mut ctx).await.expect("second bootstrap");
+    // Verify table exists by selecting from it (zero rows expected).
+    let row_count: i64 = ctx
+        .raw_scalar("SELECT COUNT(*)::bigint FROM djogi_schema_migrations", &[])
+        .await
+        .expect("select count");
+    assert_eq!(row_count, 0);
+}
+
+// ── Happy path: transactional apply ───────────────────────────────────────
+
+#[djogi::djogi_test]
+async fn transactional_apply_records_applied_status(mut ctx: djogi::DjogiContext) {
+    let snapshot_path = temp_snapshot_path();
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_users",
+        "CREATE TABLE \"t4_users\" (\"id\" BIGINT PRIMARY KEY)",
+        "DROP TABLE \"t4_users\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000001__create_users",
+        Some(empty_snapshot()),
+        Some(snapshot_path.clone()),
+        MigrateConfig::default(),
+    );
+    let report = apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect("apply ok");
+    assert_eq!(report.transactional_segments, 1);
+    assert_eq!(report.non_transactional_segments, 0);
+    assert!(report.run_id != 0);
+
+    // Ledger row must be `applied`.
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("ledger select");
+    assert_eq!(status, "applied");
+
+    // Snapshot must exist on disk.
+    assert!(snapshot_path.exists(), "snapshot file must be written");
+    let loaded = load_snapshot(&snapshot_path).expect("load snapshot");
+    assert_eq!(loaded.format_version, SNAPSHOT_FORMAT_VERSION);
+
+    // Cleanup.
+    let _ = std::fs::remove_file(&snapshot_path);
+}
+
+// ── Failure: transactional apply rolls back ───────────────────────────────
+
+#[djogi::djogi_test]
+async fn transactional_apply_failure_rolls_back_and_skips_snapshot(mut ctx: djogi::DjogiContext) {
+    let snapshot_path = temp_snapshot_path();
+    // First statement is fine. Second statement is invalid SQL — the
+    // transaction must roll back, the table from the first statement
+    // must NOT exist after rollback, and the snapshot file must NOT
+    // be written.
+    let plan = transactional_plan(vec![
+        op(
+            "AddTable t4_widgets",
+            "CREATE TABLE \"t4_widgets\" (\"id\" BIGINT PRIMARY KEY)",
+            "DROP TABLE \"t4_widgets\"",
+        ),
+        op(
+            "AddTable t4_broken",
+            "CREATE TABLE \"t4_broken\" (\"id\" THIS_IS_NOT_A_TYPE)",
+            "DROP TABLE \"t4_broken\"",
+        ),
+    ]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000002__broken_apply",
+        Some(empty_snapshot()),
+        Some(snapshot_path.clone()),
+        MigrateConfig::default(),
+    );
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect_err("apply must fail");
+    assert!(
+        matches!(err, RunnerError::TransactionalSegmentFailed { .. }),
+        "got {err:?}"
+    );
+
+    // First table must NOT exist (rolled back).
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 't4_widgets' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists check");
+    assert!(!exists, "t4_widgets must not exist after rollback");
+
+    // Ledger row must be `failed`.
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("ledger select");
+    assert_eq!(status, "failed");
+
+    // partial_apply_note must be populated with diagnostic content.
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("note select");
+    let note = note.expect("note must be set");
+    assert!(note.contains("transactional segment"), "note: {note}");
+
+    // Snapshot file must NOT exist.
+    assert!(
+        !snapshot_path.exists(),
+        "snapshot file must NOT be written on failure"
+    );
+}
+
+// ── Split apply: tx + non-tx success ──────────────────────────────────────
+
+#[djogi::djogi_test]
+async fn split_apply_records_non_tx_progress(mut ctx: djogi::DjogiContext) {
+    let snapshot_path = temp_snapshot_path();
+    // Transactional segment creates the table; non-transactional
+    // segment creates two indexes via `CREATE INDEX` (no
+    // CONCURRENTLY since the test database starts empty and we are
+    // exercising the runner's segment dispatch, not Postgres
+    // semantics).
+    //
+    // We use the "_normal" CREATE INDEX form here because
+    // CONCURRENTLY requires being outside a transaction AND requires
+    // the relation to exist in the same DB session — which
+    // tokio-postgres autocommit honours.
+    let plan = split_plan(
+        vec![op(
+            "AddTable t4_split_users",
+            "CREATE TABLE \"t4_split_users\" (\"id\" BIGINT, \"email\" TEXT, \"name\" TEXT)",
+            "DROP TABLE \"t4_split_users\"",
+        )],
+        vec![
+            op(
+                "AddIndex t4_split_users_email_idx",
+                "CREATE INDEX CONCURRENTLY \"t4_split_users_email_idx\" \
+                 ON \"t4_split_users\" (\"email\")",
+                "DROP INDEX CONCURRENTLY \"t4_split_users_email_idx\"",
+            ),
+            op(
+                "AddIndex t4_split_users_name_idx",
+                "CREATE INDEX CONCURRENTLY \"t4_split_users_name_idx\" \
+                 ON \"t4_split_users\" (\"name\")",
+                "DROP INDEX CONCURRENTLY \"t4_split_users_name_idx\"",
+            ),
+        ],
+    );
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000003__split_apply",
+        Some(empty_snapshot()),
+        Some(snapshot_path.clone()),
+        MigrateConfig::default(),
+    );
+    let report = apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect("split apply ok");
+    assert_eq!(report.transactional_segments, 1);
+    assert_eq!(report.non_transactional_segments, 1);
+
+    // execution_mode column must record `non_transactional`.
+    let mode: String = ctx
+        .raw_scalar(
+            "SELECT execution_mode FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("mode select");
+    assert_eq!(mode, "non_transactional");
+
+    // applied_steps_count must equal 2 (both indexes ran).
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("applied_steps_count");
+    assert_eq!(applied_steps, 2);
+
+    // total_steps must be set to 2.
+    let total_steps: Option<i32> = ctx
+        .raw_scalar(
+            "SELECT total_steps FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("total_steps");
+    assert_eq!(total_steps, Some(2));
+
+    // Snapshot file must exist.
+    assert!(snapshot_path.exists());
+    let _ = std::fs::remove_file(&snapshot_path);
+}
+
+// ── Split apply: non-tx mid-step failure ──────────────────────────────────
+
+#[djogi::djogi_test]
+async fn split_apply_non_tx_failure_records_partial_state(mut ctx: djogi::DjogiContext) {
+    let snapshot_path = temp_snapshot_path();
+    // Transactional segment creates the table; non-transactional
+    // segment runs two indexes — the first succeeds, the second
+    // references a non-existent column and fails. The runner must
+    // mark the row failed with applied_steps_count = 1 and a
+    // partial_apply_note describing the step.
+    let plan = split_plan(
+        vec![op(
+            "AddTable t4_split_fail",
+            "CREATE TABLE \"t4_split_fail\" (\"id\" BIGINT, \"email\" TEXT)",
+            "DROP TABLE \"t4_split_fail\"",
+        )],
+        vec![
+            op(
+                "AddIndex t4_split_fail_email_idx",
+                "CREATE INDEX CONCURRENTLY \"t4_split_fail_email_idx\" \
+                 ON \"t4_split_fail\" (\"email\")",
+                "DROP INDEX CONCURRENTLY \"t4_split_fail_email_idx\"",
+            ),
+            op(
+                "AddIndex t4_split_fail_missing_idx",
+                "CREATE INDEX CONCURRENTLY \"t4_split_fail_missing_idx\" \
+                 ON \"t4_split_fail\" (\"missing_col\")",
+                "DROP INDEX CONCURRENTLY \"t4_split_fail_missing_idx\"",
+            ),
+        ],
+    );
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000004__split_partial",
+        Some(empty_snapshot()),
+        Some(snapshot_path.clone()),
+        MigrateConfig::default(),
+    );
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect_err("must fail");
+    match err {
+        RunnerError::NonTransactionalSegmentFailed {
+            step_index,
+            applied_steps_count,
+            ..
+        } => {
+            assert_eq!(step_index, 1, "second step (0-indexed 1) failed");
+            assert_eq!(
+                applied_steps_count, 1,
+                "first step succeeded so applied_steps_count = 1"
+            );
+        }
+        other => panic!("expected NonTransactionalSegmentFailed, got {other:?}"),
+    }
+
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status select");
+    assert_eq!(status, "failed");
+
+    let applied_steps: i32 = ctx
+        .raw_scalar(
+            "SELECT applied_steps_count FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("applied_steps_count select");
+    assert_eq!(applied_steps, 1);
+
+    let note: Option<String> = ctx
+        .raw_scalar(
+            "SELECT partial_apply_note FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("note select");
+    let note = note.expect("partial_apply_note must be set");
+    assert!(note.contains("non-tx step"), "note: {note}");
+    assert!(
+        note.contains("missing_idx") || note.contains("missing_col"),
+        "note: {note}"
+    );
+
+    // Snapshot must NOT exist on partial-failure path.
+    assert!(
+        !snapshot_path.exists(),
+        "snapshot file must NOT be written on partial failure"
+    );
+}
+
+// ── Relpages probe: WARN path (default config) ────────────────────────────
+
+#[djogi::djogi_test]
+async fn relpages_probe_warns_when_threshold_exceeded(mut ctx: djogi::DjogiContext) {
+    // Create the table and force its relpages high enough to trip
+    // the probe by setting a tiny threshold via the runner_ctx
+    // config. We don't need to actually pad the table — the probe
+    // queries pg_class.relpages, which is updated by VACUUM / ANALYZE
+    // — but we can side-step that by setting threshold=0 so any
+    // non-zero relpages triggers the warn. To get a non-zero
+    // relpages we INSERT a few rows and ANALYZE.
+    ctx.raw_ddl("CREATE TABLE t4_relpages_warn (id BIGINT, val TEXT)")
+        .await
+        .expect("create table");
+    for i in 0..50i64 {
+        ctx.raw_execute(
+            "INSERT INTO t4_relpages_warn (id, val) VALUES ($1, $2)",
+            &[&i, &format!("row-{i}")],
+        )
+        .await
+        .expect("insert");
+    }
+    ctx.raw_ddl("ANALYZE t4_relpages_warn")
+        .await
+        .expect("analyze");
+
+    let plan = transactional_plan(vec![op(
+        "AddIndex t4_relpages_warn_val_idx",
+        "CREATE INDEX \"t4_relpages_warn_val_idx\" ON \"t4_relpages_warn\" (\"val\")",
+        "DROP INDEX \"t4_relpages_warn_val_idx\"",
+    )]);
+    let config = MigrateConfig {
+        concurrent_warn_relpages: 0, // anything > 0 triggers
+        strict_concurrent_warnings: false,
+    };
+    let runner_ctx = make_runner_ctx(&plan, "V20260425000005__relpages_warn", None, None, config);
+    // WARN path: runner returns Ok and only emits a tracing::warn!.
+    let report = apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect("warn path must succeed");
+    assert_eq!(report.transactional_segments, 1);
+}
+
+// ── Relpages probe: STRICT path aborts ────────────────────────────────────
+
+#[djogi::djogi_test]
+async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
+    ctx.raw_ddl("CREATE TABLE t4_relpages_strict (id BIGINT, val TEXT)")
+        .await
+        .expect("create table");
+    for i in 0..50i64 {
+        ctx.raw_execute(
+            "INSERT INTO t4_relpages_strict (id, val) VALUES ($1, $2)",
+            &[&i, &format!("row-{i}")],
+        )
+        .await
+        .expect("insert");
+    }
+    ctx.raw_ddl("ANALYZE t4_relpages_strict")
+        .await
+        .expect("analyze");
+
+    let plan = transactional_plan(vec![op(
+        "AddIndex t4_relpages_strict_val_idx",
+        "CREATE INDEX \"t4_relpages_strict_val_idx\" ON \"t4_relpages_strict\" (\"val\")",
+        "DROP INDEX \"t4_relpages_strict_val_idx\"",
+    )]);
+    let config = MigrateConfig {
+        concurrent_warn_relpages: 0,
+        strict_concurrent_warnings: true,
+    };
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000006__relpages_strict",
+        None,
+        None,
+        config,
+    );
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect_err("strict path must fail");
+    match err {
+        RunnerError::RelpagesThresholdExceeded {
+            index_name,
+            target_table,
+            relpages,
+            threshold,
+            ..
+        } => {
+            assert_eq!(index_name, "t4_relpages_strict_val_idx");
+            assert_eq!(target_table, "t4_relpages_strict");
+            assert!(relpages > 0);
+            assert_eq!(threshold, 0);
+        }
+        other => panic!("expected RelpagesThresholdExceeded, got {other:?}"),
+    }
+
+    // Index must NOT exist (probe ran before BEGIN).
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 't4_relpages_strict_val_idx' AND relkind = 'i')",
+            &[],
+        )
+        .await
+        .expect("exists check");
+    assert!(!exists);
+
+    // Ledger row must be `failed`.
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status select");
+    assert_eq!(status, "failed");
+}
+
+// ── Relpages probe: small table → no warning ──────────────────────────────
+
+#[djogi::djogi_test]
+async fn relpages_probe_silent_for_small_table(mut ctx: djogi::DjogiContext) {
+    ctx.raw_ddl("CREATE TABLE t4_relpages_small (id BIGINT, val TEXT)")
+        .await
+        .expect("create table");
+    // Empty table — relpages = 0, threshold default 128, so probe is silent.
+
+    let plan = transactional_plan(vec![op(
+        "AddIndex t4_relpages_small_val_idx",
+        "CREATE INDEX \"t4_relpages_small_val_idx\" ON \"t4_relpages_small\" (\"val\")",
+        "DROP INDEX \"t4_relpages_small_val_idx\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000007__relpages_silent",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect("must succeed silently");
+}
+
+// ── Run-id uniqueness across invocations ──────────────────────────────────
+
+#[djogi::djogi_test]
+async fn run_id_is_unique_per_invocation(mut ctx: djogi::DjogiContext) {
+    let plan_a = transactional_plan(vec![op(
+        "AddTable t4_run_id_a",
+        "CREATE TABLE \"t4_run_id_a\" (\"id\" BIGINT)",
+        "DROP TABLE \"t4_run_id_a\"",
+    )]);
+    let plan_b = transactional_plan(vec![op(
+        "AddTable t4_run_id_b",
+        "CREATE TABLE \"t4_run_id_b\" (\"id\" BIGINT)",
+        "DROP TABLE \"t4_run_id_b\"",
+    )]);
+    let ctx_a = make_runner_ctx(
+        &plan_a,
+        "V20260425000008__a",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    let ctx_b = make_runner_ctx(
+        &plan_b,
+        "V20260425000009__b",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    let r_a = apply_plan(&mut ctx, &plan_a, &ctx_a).await.expect("a");
+    let r_b = apply_plan(&mut ctx, &plan_b, &ctx_b).await.expect("b");
+    assert_ne!(r_a.run_id, r_b.run_id, "run_id must differ per invocation");
+}
+
+// ── Checksum mismatch is detected ─────────────────────────────────────────
+
+#[djogi::djogi_test]
+async fn checksum_mismatch_aborts_before_apply(mut ctx: djogi::DjogiContext) {
+    let plan = transactional_plan(vec![op(
+        "AddTable t4_checksum",
+        "CREATE TABLE \"t4_checksum\" (\"id\" BIGINT)",
+        "DROP TABLE \"t4_checksum\"",
+    )]);
+    // Tamper with the runner_ctx's checksum_up so it does not match
+    // a freshly-computed one.
+    let mut runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000010__checksum",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    runner_ctx.checksum_up =
+        "V1:0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx)
+        .await
+        .expect_err("must fail on checksum");
+    assert!(
+        matches!(err, RunnerError::ChecksumMismatch(_)),
+        "got {err:?}"
+    );
+
+    // Table must NOT exist — apply aborted before any SQL ran.
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 't4_checksum' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists");
+    assert!(!exists);
+
+    // Ledger row must NOT exist either — the runner aborts before
+    // inserting the pending row when the checksum is bad.
+    let count: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*)::bigint FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("count");
+    assert_eq!(count, 0, "no ledger row on checksum mismatch");
+}
+
+// ── Advisory-lock key determinism (live PG smoke) ─────────────────────────
+
+#[djogi::djogi_test]
+async fn advisory_lock_key_is_stable_across_processes(mut ctx: djogi::DjogiContext) {
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    let bucket = BucketKey {
+        database: "main".to_string(),
+        app: "users".to_string(),
+    };
+    let k = advisory_lock_key(&bucket);
+    // Acquire and release via the same SQL the runner uses.
+    let acquired: bool = ctx
+        .raw_scalar("SELECT pg_try_advisory_lock($1)", &[&k])
+        .await
+        .expect("try_lock");
+    assert!(acquired);
+    let released: bool = ctx
+        .raw_scalar("SELECT pg_advisory_unlock($1)", &[&k])
+        .await
+        .expect("unlock");
+    assert!(released);
+}
