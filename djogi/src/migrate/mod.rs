@@ -9,10 +9,13 @@
 //! | [`schema`] | Owned snapshot data types — what `schema_snapshot.json` round-trips through. |
 //! | [`snapshot`] | Snapshot file I/O — `save_snapshot` / `load_snapshot` with `format_version` validation. |
 //! | [`projection`] | Bridges static-lifetime descriptors → owned `AppliedSchema`. |
+//! | [`diff`] | Schema differ — produces `SchemaDelta` from two `AppliedSchema`. |
+//! | [`sql`] | Lowers `SchemaDelta` operations into reviewable up / down SQL pairs. |
+//! | [`segment`] | Plans `SchemaDelta` into transactional / non-transactional / metadata-only segments. |
 //!
-//! Subsequent Phase 7 tasks add `diff`, `rename`, `sql`, `segment`,
-//! `ledger`, `runner`, `guard`, `naming`, `target`, `docs` per the
-//! v3 plan §5 file structure.
+//! Subsequent Phase 7 tasks add `rename`, `ledger`, `runner`,
+//! `guard`, `naming`, `target`, `docs` per the v3 plan §5 file
+//! structure.
 //!
 //! # Public surface
 //!
@@ -41,11 +44,20 @@
 //! which correctly handles cross-bucket moves. The per-bucket
 //! `diff_schemas` is `pub(crate)` and only used by the bucket-walk
 //! worker.
+//!
+//! SQL + segment entry points: external consumers use
+//! [`plan_delta`] (typically) or [`lower_delta`] (when only the
+//! per-operation SQL pairs are needed without segment grouping).
+//! [`MigrationPlan`] is the canonical T3 output the runner T4 will
+//! consume; segment kinds tell the runner how to dispatch each
+//! group of statements.
 
 pub mod diff;
 pub mod projection;
 pub mod schema;
+pub mod segment;
 pub mod snapshot;
+pub mod sql;
 
 pub use diff::{Classification, ColumnChange, SchemaDelta, SchemaOperation, diff_bucket_maps};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
@@ -55,6 +67,8 @@ pub use schema::{
     IndexTargetSchema, IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema,
     PrimaryKeySchema, RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
 };
+pub use segment::{MigrationPlan, Segment, SegmentKind, plan_delta};
 pub use snapshot::{
     SnapshotError, load_snapshot, parse_snapshot_bytes, save_snapshot, serialize_snapshot,
 };
+pub use sql::{LossyRollbackKind, LossyRollbackWarning, OperationSql, SqlEmitError, lower_delta};
