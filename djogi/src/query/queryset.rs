@@ -1386,6 +1386,7 @@ mod tests {
                 fts: None,
                 app: None,
                 moved_from_app: None,
+                renamed_from: None,
             };
             &DESC
         }
@@ -1564,6 +1565,7 @@ mod tests {
                 fts: None,
                 app: None,
                 moved_from_app: None,
+                renamed_from: None,
             };
             &DESC
         }

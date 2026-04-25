@@ -169,6 +169,18 @@ pub struct ModelAttrs {
     /// that's the intended lifecycle shape for retirements. Resolved
     /// via `<Path as ::djogi::App>::LABEL` same as `app`.
     pub moved_from_app: Option<syn::Path>,
+
+    /// Prior table name when the model has been renamed via
+    /// `#[model(table = "...", renamed_from = "old_table")]` —
+    /// Phase 7 T2.
+    ///
+    /// String literal value. The differ uses this to emit
+    /// `ALTER TABLE old_table RENAME TO new_table` rather than the
+    /// destructive DROP+CREATE pair. The macro validates the string
+    /// against the same Postgres identifier grammar that `table = "..."`
+    /// uses (ASCII letter/underscore start, ASCII alphanumerics/
+    /// underscores after, ≤63 bytes).
+    pub renamed_from: Option<String>,
 }
 
 /// Parsed `pk = X` value.
@@ -248,6 +260,7 @@ impl ModelAttrs {
         let mut seen_indexes = false;
         let mut app: Option<syn::Path> = Option::None;
         let mut moved_from_app: Option<syn::Path> = Option::None;
+        let mut renamed_from: Option<String> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -401,12 +414,25 @@ impl ModelAttrs {
                             ));
                         }
                         tenant_key = Some(key_val);
+                    } else if path.is_ident("renamed_from") {
+                        // Phase 7 T2 — `#[model(renamed_from = "old_table")]`
+                        // table-rename hint. Same Postgres identifier
+                        // grammar that `table = "..."` enforces.
+                        if renamed_from.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `renamed_from` key in #[model(...)]",
+                            ));
+                        }
+                        crate::ident::check_table_name(&s.value(), s.span())?;
+                        renamed_from = Some(s.value());
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
-                                 `idempotency_key`, `tenant_key`, `fts`, `no_default`, `through`, or `events`",
+                                 `idempotency_key`, `tenant_key`, `renamed_from`, `fts`, \
+                                 `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -525,6 +551,7 @@ impl ModelAttrs {
             indexes,
             app,
             moved_from_app,
+            renamed_from,
         })
     }
 }

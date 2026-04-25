@@ -340,6 +340,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         }
     }
 

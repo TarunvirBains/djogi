@@ -23,17 +23,25 @@
 //! - [`SNAPSHOT_FORMAT_VERSION`] — the current snapshot version
 //!   string (loaders reject anything else).
 //! - [`save_snapshot`] / [`load_snapshot`] / [`parse_snapshot_bytes`]
-//!   — file I/O helpers.
+//!   / [`serialize_snapshot`] — file I/O helpers.
 //! - [`SnapshotError`] — error variants surfaced by I/O paths.
-//! - [`project_from_inventory`] — convenience entry point that walks
-//!   the `inventory::iter` collectors.
-//! - [`project_from_iters`] — lower-level entry point used by tests.
+//! - [`BucketKey`] — `(database, app)` identity that keys per-bucket
+//!   snapshots.
+//! - [`ProjectionError`] — error variants surfaced when projecting
+//!   the descriptor inventory.
+//! - [`project_from_inventory`] — production entry point; walks the
+//!   global `inventory::iter` collectors and produces one
+//!   [`AppliedSchema`] per [`BucketKey`].
+//!
+//! The lower-level [`projection::project_from_iters`] is `pub(crate)`
+//! and exists for tests + the T10 `#[djogi_test(sync_models)]`
+//! helper. External consumers use [`project_from_inventory`].
 
 pub mod projection;
 pub mod schema;
 pub mod snapshot;
 
-pub use projection::{project_from_inventory, project_from_iters, rfc3339_now_seconds};
+pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
     IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema,

@@ -931,6 +931,7 @@ mod tests {
                 fts: None,
                 app: None,
                 moved_from_app: None,
+                renamed_from: None,
             };
             assert_eq!(desc.pk_column(), Some("id"));
         }
@@ -1007,6 +1008,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
 
         let shape = MigrationShape::from_descriptor(&desc);
@@ -1136,6 +1138,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             desc.has_gist_on_geography(),
@@ -1162,6 +1165,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1189,6 +1193,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1215,6 +1220,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1477,6 +1483,20 @@ pub struct ModelDescriptor {
     /// app may be tombstoned — that's the expected retirement flow
     /// (see `docs/guide/apps.md`).
     pub moved_from_app: Option<&'static str>,
+
+    /// Prior table name when the model has been renamed via
+    /// `#[model(table = "...", renamed_from = "old_table")]`. Phase
+    /// 7's migration differ uses this to emit
+    /// `ALTER TABLE old_table RENAME TO new_table` rather than a
+    /// destructive DROP+CREATE pair.
+    ///
+    /// Carries the old **string** table name, not a type — old
+    /// model types may no longer exist in source after a sweep that
+    /// renamed many tables in one pass.
+    ///
+    /// `None` for every model that has not been renamed (the common
+    /// case).
+    pub renamed_from: Option<&'static str>,
 }
 
 impl ModelDescriptor {

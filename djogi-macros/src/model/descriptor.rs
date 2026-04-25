@@ -612,6 +612,12 @@ pub fn expand(
         },
         None => quote! { ::core::option::Option::None },
     };
+    // Phase 7 T2 — `#[model(renamed_from = "old_table")]` carries the
+    // prior table name as a string literal. None for unrenamed models.
+    let renamed_from_tokens = match &model_attrs.renamed_from {
+        Some(s) => quote! { ::core::option::Option::Some(#s) },
+        None => quote! { ::core::option::Option::None },
+    };
 
     quote! {
         #tombstone_guard_tokens
@@ -646,6 +652,8 @@ pub fn expand(
                 // Phase 7-Zero v3 T8 — apps subsystem linkage.
                 app: #app_tokens,
                 moved_from_app: #moved_from_app_tokens,
+                // Phase 7 T2 — table-rename hint.
+                renamed_from: #renamed_from_tokens,
             }
         }
     }

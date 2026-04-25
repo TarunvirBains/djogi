@@ -42,9 +42,16 @@ use std::collections::BTreeMap;
 /// Loaders compare against this exact string. A snapshot whose
 /// `format_version` is not equal to this value is rejected with an
 /// error directing the operator to upgrade Djogi or check out an
-/// older revision. Additive fields on existing structures do not
-/// require a bump (serde tolerates unknown fields by default; the
-/// loader keeps that behaviour).
+/// older revision.
+///
+/// **Bump policy.** Every snapshot struct carries
+/// `#[serde(deny_unknown_fields)]`, so any structural change — adding
+/// a field, removing a field, renaming a field — requires a
+/// `format_version` bump because old loaders no longer accept the
+/// new shape and new loaders no longer accept the old shape. There
+/// is no "additive only" silent path; the loader fails loudly when
+/// the shape drifts. A future version migration would land via a
+/// dedicated phase with a parallel-read compatibility window.
 pub const SNAPSHOT_FORMAT_VERSION: &str = "1";
 
 /// Top-level snapshot — the committed source of truth for what the
@@ -58,6 +65,7 @@ pub const SNAPSHOT_FORMAT_VERSION: &str = "1";
 /// The fields are declared alphabetically so serde emits them in
 /// alphabetical order — see the module-level "Determinism" docs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppliedSchema {
     /// Djogi version that wrote this snapshot. Informational only —
     /// the loader does not gate on it. Useful for forensics when a
@@ -77,9 +85,9 @@ pub struct AppliedSchema {
     /// precision. Informational only.
     pub generated_at: String,
 
-    /// Indexes — flat list, sorted by `name` for determinism. Each
-    /// entry carries its `table` so the differ can group by table
-    /// without a separate index registry.
+    /// Indexes — flat list, sorted by `(table, name)` for
+    /// determinism. Each entry carries its `table` so the differ
+    /// can group by table without a separate index registry.
     pub indexes: Vec<IndexSchema>,
 
     /// Models in this `(target, app)` bucket, keyed by Postgres
@@ -98,6 +106,7 @@ pub struct AppliedSchema {
 /// Per-table snapshot. Mirrors the runtime [`crate::descriptor::
 /// ModelDescriptor`], translated to owned data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TableSchema {
     /// App label this table belongs to. `None` for the synthetic
     /// global bucket, `Some(label)` for `#[model(app = SomeApp)]`.
@@ -162,6 +171,7 @@ pub struct TableSchema {
 
 /// Per-column snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ColumnSchema {
     /// Optional `CHECK (...)` constraint expression — raw SQL,
     /// emitted verbatim. The differ compares by string equality.
@@ -242,6 +252,7 @@ pub struct ColumnSchema {
 
 /// Foreign-key declaration on a column.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForeignKeySchema {
     /// Target column. Always `"id"` in current Djogi (FKs reference
     /// the parent's PK), but stored explicitly so future column-
@@ -293,6 +304,7 @@ pub enum IndexTypeSchema {
 
 /// Per-column knobs inside an [`IndexTargetSchema::Columns`] list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexColumnSchema {
     /// Column name. Order in the parent `Vec` is significant — an
     /// index on `(a, b)` accelerates a different set of queries
@@ -354,6 +366,7 @@ pub enum IndexKindSchema {
 
 /// Index snapshot — fields declared alphabetically.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IndexSchema {
     /// Postgres extension required before the index can be created
     /// (e.g. `"postgis"`). `None` for stock BTree / GIN / ... indexes.
@@ -405,6 +418,7 @@ pub enum PartitionSchema {
 /// Full-text search configuration. Mirrors
 /// [`crate::fts::FtsDescriptor`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FtsSchema {
     /// The generated tsvector column name.
     pub column: String,
@@ -419,6 +433,7 @@ pub struct FtsSchema {
 
 /// Primary-key shape and identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PrimaryKeySchema {
     /// PK column names in order. For the default single-column
     /// `id` shape this is `vec!["id"]`. Composite PKs (rare,
@@ -459,6 +474,7 @@ pub enum PkKindSchema {
 
 /// Snapshot form of [`crate::descriptor::CustomPrimaryKeyKind`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CustomPkKindSchema {
     /// Column DEFAULT — empty string when client-generated (no
     /// server-side default).
@@ -474,6 +490,7 @@ pub struct CustomPkKindSchema {
 
 /// Enum snapshot. One entry per `#[derive(DjogiEnum)]` registration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnumSchema {
     /// Postgres `CREATE TYPE` name. Redundant with the `enums` map
     /// key for self-containment — same pattern as `TableSchema.table`.
