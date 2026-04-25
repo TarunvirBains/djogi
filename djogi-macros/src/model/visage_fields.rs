@@ -91,12 +91,25 @@ pub fn expand(
 ) -> TokenStream {
     let fields_ident = format_ident!("{visage_ident}Fields");
     let filter_ident = format_ident!("{visage_ident}Filter");
+    let filter_doc = format!(
+        "Placeholder filter builder for the `{visage_ident}` visage. \
+         The closure-based entry point (`{visage_ident}::filter(|f| …)`) \
+         and programmatic setters land in a later task (T10)."
+    );
 
-    // `pk = None` gate — `FieldRef<M, V>` carries `M: Model`, and
-    // `crud::expand` does NOT emit `impl Model` for `pk = None` models.
-    // Suppress `{Visage}Fields` / `{Visage}Filter` / seal for those.
+    // `pk = None` gate — `FieldRef<M, V>` carries `M: Model` and
+    // `DjogiVisageOf<M>` likewise bounds `M: Model`. `crud::expand` does
+    // not emit `impl Model` for `pk = None` models, so the `{Visage}Fields`
+    // accessors and the seal cannot reference the source type. Emit only
+    // the placeholder `{Visage}Filter` ZST for those models — it carries
+    // no `M: Model` bound and the T10 closure-based builder may still
+    // want the name to exist on pk = none surfaces.
     if matches!(model_attrs.pk, PkStrategy::None) {
-        return TokenStream::new();
+        return quote! {
+            #[doc = #filter_doc]
+            #[derive(Debug, Clone, Copy, Default)]
+            pub struct #filter_ident;
+        };
     }
 
     let id_ty = pk_type_tokens(&model_attrs.pk);
@@ -332,11 +345,6 @@ pub fn expand(
          (`__djogi_path`) so traversal chains (`a.department().name()`) \
          compose into dot-qualified column names at emission time. \
          See `DjogiVisageOf<{source}>` for the visage ↔ model seal."
-    );
-    let filter_doc = format!(
-        "Placeholder filter builder for the `{visage_ident}` visage. \
-         The closure-based entry point (`{visage_ident}::filter(|f| …)`) \
-         and programmatic setters land in a later task (T10)."
     );
 
     quote! {

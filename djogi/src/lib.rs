@@ -67,6 +67,13 @@ pub mod types;
 pub mod visage;
 pub mod visage_boundary;
 
+// T7 fixup — re-export `DjogiVisageOf` at crate root so adopter code that
+// bounds generics on "something that projects model M" can spell the
+// trait as `djogi::DjogiVisageOf<M>` rather than reaching into the
+// internal `visage_boundary` module. The trait itself is stable public
+// API; only the module it lives in is implementation-detail.
+pub use visage_boundary::DjogiVisageOf;
+
 /// Private re-exports used only by macro-generated code.
 ///
 /// These are `#[doc(hidden)]` because they are an implementation detail of the
@@ -229,6 +236,11 @@ pub mod prelude {
         Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
         RanjIdRecencyBiased,
     };
+    // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every
+    // `{Visage}` type to its source model `M`. Adopter code that writes
+    // generic bounds over "any projection of M" names this trait, so it
+    // belongs in the default prelude alongside `Model`.
+    pub use crate::visage_boundary::DjogiVisageOf;
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.
     pub use djogi_macros::model;
