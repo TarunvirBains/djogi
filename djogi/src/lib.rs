@@ -65,6 +65,7 @@ pub mod tracked;
 pub mod transaction;
 pub mod types;
 pub mod visage;
+pub mod visage_boundary;
 
 /// Private re-exports used only by macro-generated code.
 ///
@@ -119,6 +120,17 @@ pub mod __private {
     /// guarantee.
     pub trait SameAs<T: ?Sized> {}
     impl<T: ?Sized> SameAs<T> for T {}
+
+    /// Visage boundary marker + its seal.
+    ///
+    /// Proc-macro-emitted visages impl `Sealed<M>` and `DjogiVisageOf<M>`
+    /// for their source model `M`. Downstream code cannot satisfy the
+    /// sealed supertrait, so no hostile `impl DjogiVisageOf<OtherModel>`
+    /// can slip in. The re-export through `__private` keeps the macro
+    /// output routed through `::djogi::*` paths per
+    /// `feedback_macro_path_routing.md`.
+    pub use crate::visage_boundary::DjogiVisageOf;
+    pub use crate::visage_boundary::private::Sealed as VisageSealed;
 
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     ///

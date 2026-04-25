@@ -301,6 +301,20 @@ fn emit_projection_for_scope(
         }
     };
 
+    // Phase 7-Zero-2 T7 — emit the visage's sibling `Fields` + `Filter`
+    // types plus the `DjogiVisageOf<Source>` seal. The emitter mirrors the
+    // same scope gate used above so the accessor set on `{Visage}Fields`
+    // matches the field set on the visage struct exactly.
+    let fields_filter_seal = crate::model::visage_fields::expand(
+        source,
+        &proj_name,
+        scope,
+        struct_item,
+        field_attrs,
+        model_attrs,
+        n_framework,
+    );
+
     quote! {
         #derive_path
         pub struct #proj_name {
@@ -309,6 +323,8 @@ fn emit_projection_for_scope(
         }
 
         #conv_impl
+
+        #fields_filter_seal
     }
 }
 

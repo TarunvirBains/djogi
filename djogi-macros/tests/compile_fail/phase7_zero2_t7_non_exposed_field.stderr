@@ -1,0 +1,8 @@
+error[E0599]: no function or associated item named `email` found for struct `UserPublicFields` in the current scope
+  --> tests/compile_fail/phase7_zero2_t7_non_exposed_field.rs:21:34
+   |
+10 | #[model(table = "users_t7_non_exposed_field")]
+   | ---------------------------------------------- function or associated item `email` not found for this struct
+...
+21 |     let _bad = UserPublicFields::email();
+   |                                  ^^^^^ function or associated item not found in `UserPublicFields`
