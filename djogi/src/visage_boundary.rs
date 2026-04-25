@@ -44,14 +44,27 @@ pub trait DjogiVisageOf<M: crate::model::Model>: private::Sealed<M> {}
 impl<M: crate::model::Model> DjogiVisageOf<M> for M {}
 
 /// Closed-world seal. Re-exported through `::djogi::__private::VisageSealed`
-/// so macro-emitted visage code can satisfy the bound; not part of the
-/// public API surface. The module is `#[doc(hidden)] pub` because the
+/// so macro-emitted visage code can satisfy the bound; **not part of the
+/// public API surface.** The module is `#[doc(hidden)] pub` because the
 /// proc macro emits a cross-crate path through it; downstream code must
 /// reach the trait only via the `__private` re-export.
+///
+/// # Do not implement this trait
+///
+/// This seal is enforced by convention, not by the compiler — Rust has no
+/// way to mark a trait "implementable only inside this crate" when its
+/// supertrait must be reachable from a separate proc-macro-emitting
+/// crate. Any code that hand-implements `djogi::__private::VisageSealed`
+/// (or `djogi::visage_boundary::private::Sealed`) for a type outside the
+/// `#[model]` macro's emission is breaking the contract; we reserve the
+/// right to break that code in any future release without notice. The
+/// existing `apps::__DJOGI_APPS_SEAL_TOKEN` and `model::__sealed::Sealed`
+/// surfaces follow the same convention.
 #[doc(hidden)]
 pub mod private {
     /// Seal marker — only `#[model]`-emitted code and the reflexive
-    /// blanket below satisfy this trait.
+    /// blanket below are expected to satisfy this trait. See the parent
+    /// module's "Do not implement this trait" note.
     pub trait Sealed<M> {}
 
     // Reflexive: every Model is sealed for itself.
