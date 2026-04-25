@@ -1141,16 +1141,25 @@ impl ExposeSpec {
         _inside_nested_block: bool,
     ) -> syn::Result<RelationExposure> {
         let peer: syn::Path = input.parse()?;
-        let nested = if input.peek(syn::token::Brace) {
-            let body;
-            syn::braced!(body in input);
-            Self::parse_nested_block(&body)?
-        } else {
-            Vec::new()
-        };
+        // T6 fixup — the nested-brace grammar (`-> Peer { field -> Peer2 }`)
+        // is parseable in principle and the structural types
+        // (`NestedRelationExposure`, `Self::parse_nested_block`) are
+        // ready for a later task to consume, but T6 does not yet lower
+        // it into the visage emitter. Silently parsing and discarding
+        // nested traversal would be a partial-feature trap, so reject
+        // any brace with an actionable compile error until the emitter
+        // consumes it. The T6 Codex review flagged the original
+        // parse-and-discard shape as a P0.
+        if input.peek(syn::token::Brace) {
+            return Err(input.error(
+                "nested traversal `{ ... }` inside `expose(scope -> Peer { ... })` \
+                 is not yet implemented by the visage emitter — ships in a later \
+                 phase task. Use `scope -> PeerPath` (no braces) for now.",
+            ));
+        }
         Ok(RelationExposure {
             peer,
-            nested,
+            nested: Vec::new(),
             from_string_form: false,
         })
     }
@@ -1158,6 +1167,15 @@ impl ExposeSpec {
     /// Parse the body of a nested `{ ... }` block — comma-separated
     /// `field_ident -> Peer` entries, each with an optional further
     /// `{ ... }` recursion.
+    ///
+    /// Kept structurally alongside [`NestedRelationExposure`] even
+    /// though the T6 parser now rejects any brace at the entry site
+    /// (the emitter does not yet consume nested traversal — see the
+    /// T6 fixup rejection in `parse_relation_exposure`). The function
+    /// is unreachable from the current public parser; when a later
+    /// task wires nested consumption through the visage emitter, the
+    /// rejection falls away and this helper becomes live again.
+    #[allow(dead_code)]
     fn parse_nested_block(input: ParseStream<'_>) -> syn::Result<Vec<NestedRelationExposure>> {
         let mut out: Vec<NestedRelationExposure> = Vec::new();
         let mut first = true;
