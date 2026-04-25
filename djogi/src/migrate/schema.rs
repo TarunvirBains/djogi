@@ -212,6 +212,16 @@ pub struct ColumnSchema {
     /// Always `Some(_)` when `foreign_key.is_some()`. The
     /// projection fills the `Restrict` default when the descriptor
     /// declares no explicit cascade.
+    ///
+    /// **Substrate-mirror field — not consumed by the SQL emitter.**
+    /// T3's SQL emitter reads [`ForeignKeySchema::on_delete`]
+    /// (the conceptual home for cascade) for both inline and
+    /// standalone FK paths. This field is retained on the column for
+    /// future non-SQL consumers (e.g. `cargo djogi inspect`,
+    /// descriptor-level diagnostics) and as a snapshot record of the
+    /// per-column declaration. Removing it would be a substrate
+    /// change beyond T3's charter; see Codex T3 review A-1 for the
+    /// dual-source-of-truth rationale.
     pub on_delete: Option<OnDeleteSchema>,
 
     /// `#[field(outbox = "ignore")]` — exclude from outbox payload.

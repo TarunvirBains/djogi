@@ -190,13 +190,17 @@ pub enum SchemaOperation {
         ///    'y'` is deterministic Postgres DDL, so anchoring beats
         ///    bare append even though both produce the same physical
         ///    ordering.)
-        /// 3. `None` only when no anchor in the old list is reachable
-        ///    in either direction — e.g. every old variant has been
-        ///    concurrently dropped (which the differ would already
-        ///    have rejected as `Unsupported` upstream). In practice
-        ///    [`pick_enum_variant_anchor`] returns `None` exclusively
-        ///    on this degenerate input; tail-appends with prior real
-        ///    variants always land in case (2).
+        /// 3. `None` only on degenerate or malformed inputs where no
+        ///    anchor exists in the old list in either direction —
+        ///    e.g. every old variant has been concurrently dropped
+        ///    (`Unsupported` upstream) OR a malformed snapshot where
+        ///    the existing enum's variant list is empty (Postgres
+        ///    rejects an empty-variant enum at `CREATE TYPE`, so this
+        ///    is malformed-snapshot territory only — the runtime
+        ///    enum-creation path also rejects it). In practice
+        ///    [`pick_enum_variant_anchor`] returns `None` only on
+        ///    these inputs; tail-appends with prior real variants
+        ///    always land in case (2).
         ///
         /// Codex T3 review B-2 fixed an earlier bug where the
         /// emitter unconditionally appended (no `BEFORE`/`AFTER`

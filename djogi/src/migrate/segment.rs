@@ -1291,6 +1291,31 @@ mod tests {
             "inline FK must point at post-rename target; got: {}",
             create_stmt.up
         );
+        // SQL-string-level proof: the apply-time `up` stream must show
+        // `ALTER TABLE ... RENAME TO "members"` strictly before
+        // `CREATE TABLE "comments"`. Operation-label ordering above is
+        // necessary but not sufficient — Postgres sees the SQL stream,
+        // not the label list. Concatenate every segment's `up` text in
+        // emit order and assert byte positions.
+        let up_stream: String = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.up.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rename_sql_pos = up_stream
+            .find("RENAME TO \"members\"")
+            .expect("RENAME TO members in up stream");
+        let create_sql_pos = up_stream
+            .find("CREATE TABLE \"comments\"")
+            .expect("CREATE TABLE comments in up stream");
+        assert!(
+            rename_sql_pos < create_sql_pos,
+            "ALTER TABLE ... RENAME TO must precede CREATE TABLE in up stream; \
+             rename_sql_pos={rename_sql_pos}, create_sql_pos={create_sql_pos}, \
+             stream:\n{up_stream}"
+        );
     }
 
     #[test]
@@ -1357,6 +1382,42 @@ mod tests {
         assert!(
             add_apples < add_bananas,
             "adds keep alphabetical order; labels: {labels:?}"
+        );
+        // SQL-string-level proof: same as the single-pair test, but
+        // sweeping the multi-rename / multi-add case. Both
+        // `RENAME TO "alpha"` and `RENAME TO "beta"` must precede
+        // `CREATE TABLE "apples"` and `CREATE TABLE "bananas"` in the
+        // concatenated up stream.
+        let up_stream: String = plan
+            .segments
+            .iter()
+            .flat_map(|s| s.statements.iter())
+            .map(|s| s.up.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rename_alpha_sql = up_stream
+            .find("RENAME TO \"alpha\"")
+            .expect("RENAME TO alpha in up stream");
+        let rename_beta_sql = up_stream
+            .find("RENAME TO \"beta\"")
+            .expect("RENAME TO beta in up stream");
+        let create_apples_sql = up_stream
+            .find("CREATE TABLE \"apples\"")
+            .expect("CREATE TABLE apples in up stream");
+        let create_bananas_sql = up_stream
+            .find("CREATE TABLE \"bananas\"")
+            .expect("CREATE TABLE bananas in up stream");
+        assert!(
+            rename_alpha_sql < rename_beta_sql,
+            "RENAME alpha must precede RENAME beta in up stream"
+        );
+        assert!(
+            rename_beta_sql < create_apples_sql,
+            "all RENAME TO must precede all CREATE TABLE in up stream"
+        );
+        assert!(
+            create_apples_sql < create_bananas_sql,
+            "CREATE apples must precede CREATE bananas in up stream"
         );
     }
 }
