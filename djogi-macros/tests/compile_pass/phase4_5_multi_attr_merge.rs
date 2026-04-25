@@ -9,7 +9,10 @@
 //! compiling and trybuild surfaces it.
 use djogi::prelude::*;
 
-#[model(table = "users_multi_attr_merge")]
+// Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`;
+// explicit `pk = HeerId` keeps the `HeerId::from_i64(1)` construction
+// below type-compatible with the injected `id` field.
+#[model(table = "users_multi_attr_merge", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct User {
     // Two attrs, disjoint scope sets — should merge into {public, admin}.

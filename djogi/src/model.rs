@@ -67,12 +67,14 @@ pub mod __sealed {
 
 pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// Primary key Rust type.
-    /// - `pk = "heerid"` (default) → `HeerId`
-    /// - `pk = "serial"` → `i32`
-    /// - `pk = "ranjid"` → `RanjId` (heeranjid's UUIDv8 newtype)
-    /// - `pk = "none"` → NO `impl Model`. `()` cannot satisfy the
+    /// - `pk = HeerIdRecencyBiased` (default, Phase 7-Zero-2 T2) → `HeerIdDesc`
+    /// - `pk = HeerId` → `HeerId` (ascending 64-bit)
+    /// - `pk = RanjIdRecencyBiased` → `RanjIdDesc`
+    /// - `pk = RanjId` → `RanjId` (heeranjid's UUIDv8 newtype)
+    /// - `pk = Serial` → `i32`
+    /// - `pk = None` → NO `impl Model`. `()` cannot satisfy the
     ///   `postgres_types::ToSql` bound below, and a dummy newtype
-    ///   would misrepresent the model's actual key shape. pk=none models
+    ///   would misrepresent the model's actual key shape. `pk = None` models
     ///   still get struct injection, `FromRow`, and descriptor registration
     ///   — they just don't get CRUD methods. A future phase will introduce
     ///   a separate trait for composite/user-managed PKs.

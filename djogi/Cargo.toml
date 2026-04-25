@@ -178,3 +178,38 @@ harness = true
 name = "phase7_zero_apps"
 path = "../tests/integration/phase7_zero_apps.rs"
 harness = true
+
+[[test]]
+name = "phase7_zero2_primary_key_generate"
+path = "../tests/integration/phase7_zero2_primary_key_generate.rs"
+harness = true
+
+[[test]]
+name = "phase7_zero2_custom_pk_live"
+path = "../tests/integration/phase7_zero2_custom_pk_live.rs"
+harness = true
+
+[[test]]
+name = "phase7_zero2_ambient_pk_live"
+path = "../tests/integration/phase7_zero2_ambient_pk_live.rs"
+harness = true
+
+[[test]]
+name = "phase7_zero2_bulk_allocation_live"
+path = "../tests/integration/phase7_zero2_bulk_allocation_live.rs"
+harness = true
+
+[[test]]
+name = "phase7_zero2_visage_traversal_live"
+path = "../tests/integration/phase7_zero2_visage_traversal_live.rs"
+harness = true
+
+[[test]]
+name = "phase7_zero2_select_narrowing_live"
+path = "../tests/integration/phase7_zero2_select_narrowing_live.rs"
+harness = true
+
+[[test]]
+name = "phase7_zero2_ensure_enum_type_live"
+path = "../tests/integration/phase7_zero2_ensure_enum_type_live.rs"
+harness = true

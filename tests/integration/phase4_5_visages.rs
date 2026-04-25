@@ -12,7 +12,9 @@
 
 use djogi::prelude::*;
 
-#[model(table = "users_phase4_5_task3")]
+// Phase 7-Zero-2 T2 default flip — pin HeerId for the visage-roundtrip
+// tests that construct `User` instances with explicit HeerId values.
+#[model(table = "users_phase4_5_task3", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct User {
     #[field(expose(public, self_view, admin, export))]
@@ -168,14 +170,14 @@ fn descriptor_projection_map_scalar_entries() {
 // Task 5 — relation-nesting visages
 // ─────────────────────────────────────────────────────────────────
 
-#[model(table = "owners_phase4_5_task5")]
+#[model(table = "owners_phase4_5_task5", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Owner {
     #[field(expose(public, self_view, admin, export))]
     pub name: String,
 }
 
-#[model(table = "vehicles_phase4_5_task5", no_default)]
+#[model(table = "vehicles_phase4_5_task5", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     #[field(expose(public, self_view, admin, export))]

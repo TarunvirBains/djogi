@@ -53,7 +53,9 @@ use djogi::prelude::*;
 /// `user_id` for COUNT(DISTINCT). The table name is suffixed `_p65` to avoid
 /// colliding with Phase 4's `accounts` fixture if both files ever land in the
 /// same test binary.
-#[model(table = "orders_p65")]
+// Phase 7-Zero-2 T2 default flip — pin HeerId; grouped-aggregation tests
+// rely on HeerId construction via `Order { id: HeerId::..., .. }`.
+#[model(table = "orders_p65", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Order {
     pub org_id: i64,
@@ -66,7 +68,7 @@ pub struct Order {
 /// `partition_id` groups rows into partitions; `seq` is the in-partition
 /// ordering key (integer monotone — avoids the flakiness that would come
 /// from relying on `created_at` millisecond resolution).
-#[model(table = "runs_p65")]
+#[model(table = "runs_p65", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Run {
     pub partition_id: i64,

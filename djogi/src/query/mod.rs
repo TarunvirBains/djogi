@@ -37,11 +37,12 @@ pub mod sql;
 pub mod stream;
 pub mod terminal;
 pub mod update;
+pub mod visage_queryset;
 
 pub use aggregate::AggregateQuery;
 pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
 pub use condition::Condition;
-pub use field::{FieldRef, IntoFilterValue};
+pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
@@ -49,6 +50,7 @@ pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
 pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
 pub use update::{IntoAssignments, UpdateAssignment, UpdateStmt};
+pub use visage_queryset::VisageQuerySet;
 
 /// Raw Condition-AST surface — not peer public API with `Condition`.
 ///

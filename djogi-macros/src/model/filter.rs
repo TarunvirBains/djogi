@@ -115,15 +115,15 @@
 //! `Lookup<T>` for the `Eq` / `Neq` variants specifically; that is
 //! purely additive and does not need a change to this module.)
 //!
-//! # `pk = "none"` gate
+//! # `pk = None` gate
 //!
-//! `crud::expand` does not emit `impl Model` for `pk = "none"` models
+//! `crud::expand` does not emit `impl Model` for `pk = None` models
 //! (`Model::Pk: Encode` cannot be satisfied without a real PK — see
 //! `crud.rs` for the rationale). `{Model}Filter` does not depend on the
 //! `Model` trait — the clauses are erased `FilterClause` records, not
 //! `FieldRef<M, V>` handles — so it compiles for every pk strategy.
 //! There is no gate here; the user-field setter emission works the same
-//! for `pk = "none"` structs as for the others. Skipping framework
+//! for `pk = None` structs as for the others. Skipping framework
 //! fields is parametric on `model_attrs.pk`, matching `descriptor::expand`.
 //!
 //! # Path routing
@@ -167,12 +167,12 @@ pub fn expand(
     let filter_name = format_ident!("{}Filter", name);
 
     // Framework-field skip count — mirrors `descriptor::expand`. For
-    // `pk = "none"` models, `inject::expand` only prepends `created_at`
+    // `pk = None` models, `inject::expand` only prepends `created_at`
     // and `updated_at`; everything else prepends `id`, `created_at`,
     // `updated_at`. A mismatch here would emit a `.id(...)` setter that
     // shadows the PK and disagrees with the descriptor — the single
     // source of truth for the schema contract.
-    let n_framework = match model_attrs.pk {
+    let n_framework = match &model_attrs.pk {
         PkStrategy::None => 2,
         _ => 3,
     };

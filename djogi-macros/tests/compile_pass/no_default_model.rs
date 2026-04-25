@@ -7,7 +7,10 @@
 // `time` as a direct dep — `djogi` already re-exports it via `djogi::types`.
 use djogi::prelude::*;
 
-#[model(table = "products", no_default)]
+// Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`;
+// explicit `pk = HeerId` keeps this fixture on the ascending-HeerId path
+// that its `HeerId::from_i64(0)` construction exercises.
+#[model(table = "products", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Product {
     pub name: String,

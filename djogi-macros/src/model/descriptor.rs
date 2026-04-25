@@ -8,7 +8,7 @@
 //! generator) iterate `descriptor.fields` as the single schema source and
 //! never synthesize framework columns out-of-band.
 //!
-//! For `pk = "none"`, `id` is omitted from the framework prefix (the user's
+//! For `pk = None`, `id` is omitted from the framework prefix (the user's
 //! own PK field appears as a regular user field in declared order).
 //!
 //! The emitted submission uses Phase 1 defaults for every amended field
@@ -34,19 +34,27 @@ pub fn expand(
     let type_name = struct_item.ident.to_string();
     let table_name = &model_attrs.table;
 
-    let pk_type_tokens = match model_attrs.pk {
+    // Exhaustive over `PkStrategy`. `Custom(path)` reads the user type's
+    // `KIND` associated-const at registration time so the descriptor
+    // snapshot carries the full `CustomPrimaryKeyKind { type_name, sql_type,
+    // default_sql }` the `djogi::primary_key!` macro emits — no separate
+    // translation from Rust path to discriminant lives here.
+    let pk_type_tokens = match &model_attrs.pk {
         PkStrategy::HeerId => quote! { ::djogi::PkType::HeerId },
         PkStrategy::RanjId => quote! { ::djogi::PkType::RanjId },
         PkStrategy::HeerIdDesc => quote! { ::djogi::PkType::HeerIdDesc },
         PkStrategy::RanjIdDesc => quote! { ::djogi::PkType::RanjIdDesc },
         PkStrategy::Serial => quote! { ::djogi::PkType::Serial },
         PkStrategy::None => quote! { ::djogi::PkType::None },
+        PkStrategy::Custom(path) => quote! {
+            <#path as ::djogi::primary_key::PrimaryKey>::KIND
+        },
     };
 
     // field_attrs was collected BEFORE injection (user fields only, 0-indexed).
     // struct_item.fields now has framework fields at the front — skip them so
     // zip() aligns field_attrs[0] with the first USER field, not id.
-    let n_framework = match model_attrs.pk {
+    let n_framework = match &model_attrs.pk {
         PkStrategy::None => 2, // created_at, updated_at only
         _ => 3,                // id, created_at, updated_at
     };
@@ -61,10 +69,10 @@ pub fn expand(
     // Phase 1.5: framework columns are emitted FIRST so `descriptor.fields` is
     // the complete schema contract. `id` varies by pk strategy; `created_at`
     // and `updated_at` are always Timestamptz, non-null, not unique/indexed.
-    // For `pk = "none"`, skip `id` entirely — the user's own PK appears as a
+    // For `pk = None`, skip `id` entirely — the user's own PK appears as a
     // regular user field in declared order.
 
-    let id_framework_desc: Option<TokenStream> = match model_attrs.pk {
+    let id_framework_desc: Option<TokenStream> = match &model_attrs.pk {
         PkStrategy::HeerId => Some(quote! {
             ::djogi::FieldDescriptor {
                 name: "id",
@@ -193,6 +201,37 @@ pub fn expand(
             }
         }),
         PkStrategy::None => None,
+        // Custom PK types delegate every schema-level string through the
+        // user type's `PrimaryKey` associated consts. `FieldSqlType::Custom`
+        // stores the column type verbatim — the migration differ compares
+        // by string equality, which matches how custom types flow through
+        // the rest of the pipeline.
+        PkStrategy::Custom(path) => Some(quote! {
+            ::djogi::FieldDescriptor {
+                name: "id",
+                sql_type: ::djogi::FieldSqlType::Custom(
+                    <#path as ::djogi::primary_key::PrimaryKey>::SQL_TYPE,
+                ),
+                nullable: false,
+                unique: true,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[
+                    ("admin", "id"),
+                    ("export", "id"),
+                    ("public", "id"),
+                    ("self_view", "id"),
+                ],
+            }
+        }),
     };
 
     let created_at_desc = quote! {
@@ -740,8 +779,19 @@ fn build_projection_map_tokens(
     for scope in &spec.scalar_scopes {
         pairs.push((scope.clone(), column_name.to_string()));
     }
-    for (scope, peer) in &spec.relation_scopes {
-        pairs.push((scope.clone(), peer.clone()));
+    for (scope, exposure) in &spec.relation_scopes {
+        // Render the peer path as a string for descriptor consumers.
+        // `quote!` preserves the user-written path verbatim (including
+        // module prefixes); the surrounding whitespace is collapsed by
+        // `to_string()` into a stable canonical form (e.g. `crate :: visages :: DepartmentPublic`
+        // → trim_runs handled by callers / migration differ if needed).
+        let peer_path = &exposure.peer;
+        let rendered = quote::quote! { #peer_path }.to_string();
+        // Collapse any inserted whitespace around path separators so the
+        // emitted descriptor literal matches the user's original spelling
+        // for the common no-prefix case (e.g. `DepartmentPublic`).
+        let cleaned = rendered.replace(' ', "");
+        pairs.push((scope.clone(), cleaned));
     }
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
 

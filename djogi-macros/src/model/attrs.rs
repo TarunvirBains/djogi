@@ -1,5 +1,9 @@
-//! Attribute parsing for `#[model(table = "...", pk = "...")]`
+//! Attribute parsing for `#[model(table = "...", pk = X)]`
 //! and `#[field(unique, index, max_length = N, renamed_from = "...", on_delete = "...")]`.
+//!
+//! `pk` takes a bare identifier (Phase 7-Zero-2 T2) — `HeerId`,
+//! `HeerIdRecencyBiased`, `RanjId`, etc. The pre-T2 string-literal form
+//! (`pk = "heerid"`) is rejected with a span-carrying diagnostic.
 //!
 //! `ModelAttrs` keeps a hand-rolled parser: the surface is three keys, the
 //! error messages from `syn::Error::new_spanned` already carry precise
@@ -13,7 +17,7 @@
 //! `Meta::NameValue` match arm.
 
 use darling::{FromField, FromMeta};
-use syn::parse::Parser;
+use syn::parse::{ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Expr, ExprLit, Lit, Meta, MetaNameValue, Token};
@@ -32,7 +36,7 @@ pub struct FtsSpec {
     pub dictionary: String,
 }
 
-/// Options extracted from `#[model(table = "...", pk = "...")]`.
+/// Options extracted from `#[model(table = "...", pk = X)]`.
 // Fields are read by Tasks 4–9 (inject, crud, descriptor, stubs). The
 // dead-code lint fires now because those callers are stubs — suppress it.
 #[allow(dead_code)]
@@ -167,25 +171,61 @@ pub struct ModelAttrs {
     pub moved_from_app: Option<syn::Path>,
 }
 
-/// Parsed `pk = "..."` value.
+/// Parsed `pk = X` value.
+///
+/// Grammar is a bare identifier (Phase 7-Zero-2 T2). The pre-T2
+/// string-literal grammar (`pk = "heerid"`) is rejected with a
+/// span-carrying diagnostic directing callers at the new form. The
+/// accepted identifier set:
+///
+/// - `HeerId` — ascending 64-bit HeerId (historical default).
+/// - `RanjId` — ascending UUIDv8 RanjId.
+/// - `HeerIdRecencyBiased` / `HeerIdDesc` — reverse-chronological
+///   HeerId; both identifiers lower to the same
+///   [`PkStrategy::HeerIdDesc`] internal variant. `HeerIdRecencyBiased`
+///   is the adopter-facing name per `docs/spec/primary-keys.md` §3.5a;
+///   `HeerIdDesc` is kept as a secondary alias for callers who read
+///   migration internals.
+/// - `RanjIdRecencyBiased` / `RanjIdDesc` — reverse-chronological
+///   RanjId; same dual-name treatment.
+/// - `Serial` — `SERIAL` / `INTEGER` PK for lookup tables.
+/// - `None` — no framework-injected `id`; adopter manages the PK.
+///
+/// Phase 7-Zero-2 T2 flipped the attribute's default: omitted `pk` now
+/// resolves to [`PkStrategy::HeerIdDesc`] (recency-biased), not
+/// [`PkStrategy::HeerId`].
+///
+/// Phase 7-Zero-2 T3 adds [`PkStrategy::Custom`] — the attribute parser's
+/// fall-through bucket for any identifier that is not one of the built-in
+/// aliases. Carries the full `syn::Path` so the descriptor emitter can
+/// reference the user's newtype via `<Path as ::djogi::primary_key::PrimaryKey>::KIND`,
+/// which lowers to `PkType::Custom(CustomPrimaryKeyKind { .. })` at
+/// `inventory::submit!` registration time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PkStrategy {
     HeerId,
     RanjId,
-    /// `pk = "heerid_desc"` — reverse-chronological HeerId variant added in
-    /// Phase 7-Zero v3. Lowers to `PkType::HeerIdDesc`; injects `id:
-    /// HeerIdDesc` into the struct.
+    /// `pk = HeerIdRecencyBiased` (canonical) or `pk = HeerIdDesc`
+    /// (internal-name alias) — reverse-chronological HeerId variant
+    /// added in Phase 7-Zero v3. Lowers to `PkType::HeerIdDesc`;
+    /// injects `id: HeerIdDesc` into the struct.
     HeerIdDesc,
-    /// `pk = "ranjid_desc"` — reverse-chronological RanjId variant added in
-    /// Phase 7-Zero v3. Lowers to `PkType::RanjIdDesc`; injects `id:
-    /// RanjIdDesc` into the struct.
+    /// `pk = RanjIdRecencyBiased` (canonical) or `pk = RanjIdDesc`
+    /// (internal-name alias) — reverse-chronological RanjId variant
+    /// added in Phase 7-Zero v3. Lowers to `PkType::RanjIdDesc`;
+    /// injects `id: RanjIdDesc` into the struct.
     RanjIdDesc,
     Serial,
     None,
+    /// `pk = MyAppId` — adopter-declared custom PK, typically emitted by
+    /// the `djogi::primary_key!` helper macro. The inner path is the
+    /// user's type; injection and descriptor emission route trait impls
+    /// through it.
+    Custom(syn::Path),
 }
 
 impl ModelAttrs {
-    /// Parse `#[model(table = "posts", pk = "heerid")]` from the attribute token stream.
+    /// Parse `#[model(table = "posts", pk = HeerId)]` from the attribute token stream.
     ///
     /// Duplicate keys are rejected with a span-carrying error pointing at the
     /// second occurrence — last-write-wins silently is a footgun in proc-macro
@@ -244,6 +284,42 @@ impl ModelAttrs {
                     seen_events = true;
                     events = true;
                 }
+                // `pk = X` bare-identifier form (Phase 7-Zero-2 T2). Accepts
+                // only single-segment paths matching the alias set in
+                // `PkStrategy::from_path`. Multi-segment paths and unknown
+                // identifiers are rejected so that custom PK types (a T3
+                // feature) can't sneak through the T2 parser.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Path(expr_path),
+                    ..
+                }) if path.is_ident("pk") => {
+                    if pk.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `pk` key in #[model(...)]",
+                        ));
+                    }
+                    pk = Some(PkStrategy::from_path(&expr_path.path)?);
+                }
+                // `pk = "…"` — the pre-T2 string-literal form. Dedicated
+                // diagnostic so callers get a clear migration message; the
+                // span points at the `pk` key so the underline isolates the
+                // offender rather than the whole attribute.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value:
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Str(_), ..
+                        }),
+                    ..
+                }) if path.is_ident("pk") => {
+                    return Err(syn::Error::new_spanned(
+                        path,
+                        "`pk = \"…\"` string-literal form is removed; use bare identifier, \
+                         e.g. `pk = HeerIdRecencyBiased` / `pk = HeerId` / `pk = Serial`",
+                    ));
+                }
                 Meta::NameValue(MetaNameValue {
                     path,
                     value:
@@ -259,18 +335,20 @@ impl ModelAttrs {
                                 "duplicate `table` key in #[model(...)]",
                             ));
                         }
+                        // Phase 7-Zero-2 T13b safety: the table name flows
+                        // into `Model::table_name()` which is pushed as a
+                        // raw SQL token by the SQL emitter (e.g.
+                        // `OuterRef::as_qualified_expr` → `<table>.<col>`,
+                        // and historically by every `FROM <table>`
+                        // emission). Without validation a `table = "foo;
+                        // DROP TABLE x; --"` would land arbitrary SQL into
+                        // emission. Run the same Postgres unquoted-
+                        // identifier classifier the column-name validator
+                        // uses — non-empty, ≤ 63 bytes, ASCII letter or
+                        // underscore first, alphanumeric or underscore
+                        // after, never a fully-reserved keyword.
+                        crate::ident::check_table_name(&s.value(), s.span())?;
                         table = Some(s.value());
-                    } else if path.is_ident("pk") {
-                        if pk.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                path,
-                                "duplicate `pk` key in #[model(...)]",
-                            ));
-                        }
-                        pk = Some(
-                            PkStrategy::from_str(&s.value())
-                                .map_err(|msg| syn::Error::new_spanned(s, msg))?,
-                        );
                     } else if path.is_ident("idempotency_key") {
                         if idempotency_key.is_some() {
                             return Err(syn::Error::new_spanned(
@@ -427,7 +505,13 @@ impl ModelAttrs {
                 "#[model] requires `table = \"...\"`",
             )
         })?;
-        let pk = pk.unwrap_or(PkStrategy::HeerId);
+        // Phase 7-Zero-2 T2 flipped the default: omitted `pk` now resolves
+        // to `HeerIdDesc` (recency-biased), not `HeerId`. Models that still
+        // want ascending PK ordering must declare `pk = HeerId` explicitly.
+        // See `docs/spec/primary-keys.md` §3.5a for the recency-biased
+        // default rationale (covering-index scans land on the most-recent
+        // rows first without a secondary descending index).
+        let pk = pk.unwrap_or(PkStrategy::HeerIdDesc);
 
         Ok(ModelAttrs {
             table,
@@ -446,19 +530,40 @@ impl ModelAttrs {
 }
 
 impl PkStrategy {
-    fn from_str(s: &str) -> Result<Self, String> {
-        match s {
-            "heerid" => Ok(PkStrategy::HeerId),
-            "ranjid" => Ok(PkStrategy::RanjId),
-            "heerid_desc" => Ok(PkStrategy::HeerIdDesc),
-            "ranjid_desc" => Ok(PkStrategy::RanjIdDesc),
-            "serial" => Ok(PkStrategy::Serial),
-            "none" => Ok(PkStrategy::None),
-            other => Err(format!(
-                "unknown pk strategy `{other}`; expected one of: heerid, ranjid, \
-                 heerid_desc, ranjid_desc, serial, none"
-            )),
+    /// Lower a `pk = X` path expression to a `PkStrategy`.
+    ///
+    /// Accepts the single-segment identifier set documented on
+    /// [`PkStrategy`]. The two recency-biased identifiers carry
+    /// public-facing and internal-facing spellings:
+    ///
+    /// - `HeerIdRecencyBiased` and `HeerIdDesc` both lower to
+    ///   [`PkStrategy::HeerIdDesc`].
+    /// - `RanjIdRecencyBiased` and `RanjIdDesc` both lower to
+    ///   [`PkStrategy::RanjIdDesc`].
+    ///
+    /// Any identifier that is not one of the built-in aliases is treated
+    /// as an adopter-declared custom PK type (`djogi::primary_key!` or
+    /// hand-rolled). Multi-segment paths (e.g. `crate::ids::UserId`) are
+    /// also accepted as Custom — the descriptor emitter routes through
+    /// `<Path as ::djogi::primary_key::PrimaryKey>::KIND` either way, so
+    /// the only constraint is that the path resolves to a type that
+    /// implements `PrimaryKey`. That bound is checked at `#[model]`
+    /// expansion time by the emitted trait impl lookups; a path pointing
+    /// at a non-PK type surfaces a type-error at the const-lookup site,
+    /// not here.
+    fn from_path(path: &syn::Path) -> syn::Result<Self> {
+        if let Some(ident) = path.get_ident() {
+            return Ok(match ident.to_string().as_str() {
+                "HeerId" => PkStrategy::HeerId,
+                "RanjId" => PkStrategy::RanjId,
+                "HeerIdRecencyBiased" | "HeerIdDesc" => PkStrategy::HeerIdDesc,
+                "RanjIdRecencyBiased" | "RanjIdDesc" => PkStrategy::RanjIdDesc,
+                "Serial" => PkStrategy::Serial,
+                "None" => PkStrategy::None,
+                _ => PkStrategy::Custom(path.clone()),
+            });
         }
+        Ok(PkStrategy::Custom(path.clone()))
     }
 }
 
@@ -774,8 +879,12 @@ pub struct FieldAttrs {
     /// Grammar summary:
     /// - Scalar form: `expose(public, self_view, admin, export)` — the
     ///   field appears in each listed scope under its column name.
-    /// - Relation form: `expose(public = "UserSummary", ...)` — the field
-    ///   is the named peer visage in each listed scope.
+    /// - Relation form (T6+): `expose(public -> UserPublic)` —
+    ///   narrow peer visage; `expose(public -> User)` — full peer model
+    ///   embed; `expose(public -> User { manager_id -> ManagerPublic })`
+    ///   — nested traversal (structural metadata only at this time).
+    /// - Deprecated relation form: `expose(public = "UserSummary", ...)`
+    ///   — string-literal shape kept for transitional backward compat.
     /// - Sentinels: `expose(none)` / `expose(internal)` — accepted no-op
     ///   sentinels, identical to an absent `expose` annotation; mutually
     ///   exclusive with real scopes on the same field.
@@ -798,27 +907,89 @@ pub struct FieldAttrs {
 ///
 /// The parser stores BOTH the scalar set and the relation map because a
 /// field CAN carry both across multiple attrs — e.g.
-/// `#[field(expose(public))] #[field(expose(admin = "OwnerDetail"))]` marks
+/// `#[field(expose(public))] #[field(expose(admin -> OwnerDetail))]` marks
 /// the field scalar in `public` and relation-nested in `admin`. At codegen
-/// time (Phase 4.5 Task 3 / Task 5) the scope membership is the union; the
-/// emitter looks up the relation map to decide if the visage entry is
-/// a column name or a peer-visage type.
+/// time the emitter looks up the relation map to decide if the visage entry
+/// is a column name or a peer-visage type.
 ///
 /// `none` / `internal` set [`Self::suppressed`] and are mutually exclusive
 /// with any other scope (per Q11 in the Phase 4.5 v3 plan). They mean
 /// "this field does not appear in any transport visage" — same
 /// semantics as omitting the `expose` annotation.
+///
+/// Phase 7-Zero-2 T6 introduced the `->` traversal grammar as the new canonical
+/// form; the prior `expose(scope = "Peer")` string-literal form continues to
+/// parse for backward compatibility (with a `#[deprecated]` advisory).
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct ExposeSpec {
     /// Scopes this field appears in via the scalar form.
     pub scalar_scopes: std::collections::HashSet<String>,
-    /// Scopes this field appears in via the relation form; value is the
-    /// peer visage type name.
-    pub relation_scopes: std::collections::HashMap<String, String>,
+    /// Scopes this field appears in via the relation form; value carries
+    /// the peer visage path plus any nested per-field exposures.
+    pub relation_scopes: std::collections::HashMap<String, RelationExposure>,
     /// `true` when the user wrote `expose(none)` or `expose(internal)`.
     /// Semantically identical to an absent `expose` annotation.
     pub suppressed: bool,
+}
+
+/// One scope's relation-form exposure — parsed from
+/// `expose(scope -> Peer)` or `expose(scope -> Peer { nested -> ... })`.
+///
+/// `peer` is the full `syn::Path` the user wrote after `->`. The visage
+/// emitter inspects the path's last segment to decide between two embed
+/// shapes:
+///
+/// - **Narrow visage** — last segment looks like `<ModelIdent><Scope>` (e.g.
+///   `DepartmentPublic`). The peer field in the visage is typed `peer` and
+///   constructed via `<peer as TryFrom<&Target>>::try_from(...)`.
+/// - **Full peer model** — last segment equals the relation's target model
+///   ident (e.g. `Department`). The peer field carries the full `Target`
+///   value cloned out of the resolved relation.
+///
+/// The deprecated `expose(scope = "Peer")` string form lowers to the same
+/// `RelationExposure` with `peer` parsed from the literal and `nested = []`.
+///
+/// `nested` is recursive — each entry carries the same `peer + nested`
+/// shape rooted at a named field of the parent's peer model. Nested
+/// exposures are STRUCTURAL METADATA only at this point; query-surface
+/// machinery that consumes them lands in later T7+ work.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct RelationExposure {
+    /// Peer visage / model path the user wrote after `->` (or inside the
+    /// deprecated string literal). Preserved verbatim so module-prefixed
+    /// peers like `crate::visages::DepartmentPublic` resolve at the
+    /// macro-call site without an extra `use` import.
+    pub peer: syn::Path,
+    /// Nested per-field exposures declared in the optional `{ ... }`
+    /// block following the peer path. Empty when no block was written.
+    pub nested: Vec<NestedRelationExposure>,
+    /// `true` when this entry came from the deprecated
+    /// `expose(scope = "Peer")` string-literal form. Reserved for future
+    /// `#[deprecated]` advisory wiring; structurally identical to the
+    /// `->` form for emit purposes.
+    pub from_string_form: bool,
+}
+
+/// One nested-block entry — `field_ident -> Peer` or
+/// `field_ident -> Peer { ... }` inside an outer relation exposure's
+/// `{ ... }` group.
+///
+/// Carries the parent-side field identifier alongside the recursive
+/// [`RelationExposure`] payload. The field identifier is always a bare
+/// identifier (no path), naming a column / relation on the parent peer
+/// model. The visage emitter does not currently consume `nested`
+/// (T6 freezes the grammar without wiring nested embed); later tasks
+/// will lower it.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct NestedRelationExposure {
+    /// Field name on the parent peer model (e.g. `manager_id`).
+    pub field: syn::Ident,
+    /// Recursive payload — same `peer + nested` grammar as the outer
+    /// [`RelationExposure`].
+    pub exposure: RelationExposure,
 }
 
 impl ExposeSpec {
@@ -839,126 +1010,233 @@ impl ExposeSpec {
     /// `#[field(expose(...))]` attribute. Returns a fresh [`ExposeSpec`]
     /// covering just that attribute's tokens; cross-attribute merging
     /// lives in [`FieldAttrs::parse`].
+    ///
+    /// Phase 7-Zero-2 T6 — the parser is hand-rolled over `ParseStream`
+    /// rather than going through `syn::Meta`, because the new arrow
+    /// grammar (`scope -> PeerPath { nested -> ... }`) is not a valid
+    /// `Meta` shape. The deprecated `scope = "Peer"` string-literal form
+    /// is also recognised here for backward compatibility — see
+    /// [`RelationExposure::from_string_form`].
     fn parse_list(list: &syn::MetaList) -> syn::Result<Self> {
-        let mut spec = ExposeSpec::default();
-        let nested = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
-
-        if nested.is_empty() {
+        let parser = |input: ParseStream<'_>| Self::parse_entries(input);
+        let spec = list.parse_args_with(parser)?;
+        if spec.scalar_scopes.is_empty() && spec.relation_scopes.is_empty() && !spec.suppressed {
             return Err(syn::Error::new_spanned(
                 list,
                 "`expose(...)` requires at least one scope; \
                  write `expose(public)` / `expose(none)` / etc.",
             ));
         }
+        Ok(spec)
+    }
 
-        let mut saw_suppressor = false;
-        for meta in &nested {
-            match meta {
-                Meta::Path(path) => {
-                    let ident = path.get_ident().ok_or_else(|| {
-                        syn::Error::new_spanned(path, "expected a scope name (identifier)")
-                    })?;
-                    let name = ident.to_string();
-
-                    if Self::is_suppressor(&name) {
-                        saw_suppressor = true;
-                        spec.suppressed = true;
-                        continue;
-                    }
-                    if !Self::is_builtin_scope(&name) {
-                        return Err(syn::Error::new_spanned(
-                            path,
-                            format!(
-                                "unknown scope `{name}`; expected one of: \
-                                 public, self_view, admin, export, none, internal"
-                            ),
-                        ));
-                    }
-                    if spec.relation_scopes.contains_key(&name) {
-                        return Err(syn::Error::new_spanned(
-                            path,
-                            format!(
-                                "scope `{name}` already declared with a peer \
-                                 visage name; pick one form per scope"
-                            ),
-                        ));
-                    }
-                    if !spec.scalar_scopes.insert(name.clone()) {
-                        return Err(syn::Error::new_spanned(
-                            path,
-                            format!("scope `{name}` listed more than once"),
-                        ));
-                    }
+    /// Hand-rolled parser for the `expose(...)` body. Accepts a
+    /// comma-separated list of one of:
+    ///
+    /// - bare scope ident → `expose(public, admin)`
+    /// - suppressor `none` / `internal` (mutually exclusive with real scopes)
+    /// - deprecated `scope = "Peer"` string-literal form
+    /// - new `scope -> Peer` arrow form (with optional `{ nested }`)
+    ///
+    /// Per-attr duplicate detection runs here; cross-attr merge lives in
+    /// [`FieldAttrs::parse`].
+    fn parse_entries(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut spec = ExposeSpec::default();
+        let mut suppressor_span: Option<syn::Ident> = None;
+        let mut saw_real_scope = false;
+        let mut first = true;
+        while !input.is_empty() {
+            if !first {
+                input.parse::<Token![,]>()?;
+                if input.is_empty() {
+                    break; // trailing comma
                 }
-                Meta::NameValue(MetaNameValue {
-                    path,
-                    value:
-                        Expr::Lit(ExprLit {
-                            lit: Lit::Str(s), ..
-                        }),
-                    ..
-                }) => {
-                    let ident = path.get_ident().ok_or_else(|| {
-                        syn::Error::new_spanned(path, "expected a scope name (identifier)")
-                    })?;
-                    let name = ident.to_string();
+            }
+            first = false;
 
-                    if Self::is_suppressor(&name) {
-                        return Err(syn::Error::new_spanned(
-                            path,
-                            format!(
-                                "the `{name}` scope does not accept a nested \
-                                 visage name; write `expose({name})` alone"
-                            ),
-                        ));
-                    }
-                    if !Self::is_builtin_scope(&name) {
-                        return Err(syn::Error::new_spanned(
-                            path,
-                            format!(
-                                "unknown scope `{name}`; expected one of: \
-                                 public, self_view, admin, export"
-                            ),
-                        ));
-                    }
-                    if spec.scalar_scopes.contains(&name) {
-                        return Err(syn::Error::new_spanned(
-                            path,
-                            format!(
-                                "scope `{name}` already declared as bare scope; \
-                                 pick one form per scope"
-                            ),
-                        ));
-                    }
-                    if spec
-                        .relation_scopes
-                        .insert(name.clone(), s.value())
-                        .is_some()
-                    {
-                        return Err(syn::Error::new_spanned(
-                            path,
-                            format!("scope `{name}` listed more than once"),
-                        ));
-                    }
-                }
-                other => {
+            let scope_ident: syn::Ident = input.parse()?;
+            let scope_name = scope_ident.to_string();
+
+            // Suppressor sentinel → bare ident, no `=` or `->` follows.
+            if Self::is_suppressor(&scope_name) {
+                if input.peek(Token![=]) || input.peek(Token![->]) {
                     return Err(syn::Error::new_spanned(
-                        other,
-                        "expected `scope` or `scope = \"PeerProjection\"`",
+                        &scope_ident,
+                        format!(
+                            "the `{scope_name}` scope does not accept a nested \
+                             visage name; write `expose({scope_name})` alone"
+                        ),
+                    ));
+                }
+                if suppressor_span.is_none() {
+                    suppressor_span = Some(scope_ident.clone());
+                }
+                spec.suppressed = true;
+                continue;
+            }
+
+            if !Self::is_builtin_scope(&scope_name) {
+                return Err(syn::Error::new_spanned(
+                    &scope_ident,
+                    format!(
+                        "unknown scope `{scope_name}`; expected one of: \
+                         public, self_view, admin, export, none, internal"
+                    ),
+                ));
+            }
+
+            saw_real_scope = true;
+
+            // Three follow-on forms:
+            //   1. `,` or end → bare-scope (scalar) form
+            //   2. `= "Peer"` → deprecated string-literal relation form
+            //   3. `-> Peer { nested? }` → new arrow relation form
+            if input.peek(Token![=]) {
+                input.parse::<Token![=]>()?;
+                let peer_lit: syn::LitStr = input.parse()?;
+                let peer_path: syn::Path = syn::parse_str(&peer_lit.value())
+                    .map_err(|e| syn::Error::new_spanned(&peer_lit, format!(
+                        "deprecated `expose({scope_name} = \"...\")` form requires a valid path: {e}"
+                    )))?;
+                Self::insert_relation(
+                    &mut spec,
+                    &scope_ident,
+                    scope_name,
+                    RelationExposure {
+                        peer: peer_path,
+                        nested: Vec::new(),
+                        from_string_form: true,
+                    },
+                )?;
+            } else if input.peek(Token![->]) {
+                input.parse::<Token![->]>()?;
+                let exposure = Self::parse_relation_exposure(input, false)?;
+                Self::insert_relation(&mut spec, &scope_ident, scope_name, exposure)?;
+            } else {
+                // Bare scope — scalar form.
+                if spec.relation_scopes.contains_key(&scope_name) {
+                    return Err(syn::Error::new_spanned(
+                        &scope_ident,
+                        format!(
+                            "scope `{scope_name}` already declared with a peer \
+                             visage name; pick one form per scope"
+                        ),
+                    ));
+                }
+                if !spec.scalar_scopes.insert(scope_name.clone()) {
+                    return Err(syn::Error::new_spanned(
+                        &scope_ident,
+                        format!("scope `{scope_name}` listed more than once"),
                     ));
                 }
             }
         }
 
-        if saw_suppressor && (!spec.scalar_scopes.is_empty() || !spec.relation_scopes.is_empty()) {
+        if let Some(supp) = &suppressor_span
+            && saw_real_scope
+        {
             return Err(syn::Error::new_spanned(
-                list,
+                supp,
                 "`none` / `internal` cannot be combined with other scopes; \
                  omit them when declaring real scopes",
             ));
         }
 
         Ok(spec)
+    }
+
+    /// Parse `Peer` or `Peer { nested -> ... }` after the `->` token has
+    /// already been consumed. `inside_nested_block` is currently always
+    /// `false` at the top level; nested block parsing recurses through
+    /// [`Self::parse_nested_block`].
+    fn parse_relation_exposure(
+        input: ParseStream<'_>,
+        _inside_nested_block: bool,
+    ) -> syn::Result<RelationExposure> {
+        let peer: syn::Path = input.parse()?;
+        // T6 fixup — the nested-brace grammar (`-> Peer { field -> Peer2 }`)
+        // is parseable in principle and the structural types
+        // (`NestedRelationExposure`, `Self::parse_nested_block`) are
+        // ready for a later task to consume, but T6 does not yet lower
+        // it into the visage emitter. Silently parsing and discarding
+        // nested traversal would be a partial-feature trap, so reject
+        // any brace with an actionable compile error until the emitter
+        // consumes it. The T6 Codex review flagged the original
+        // parse-and-discard shape as a P0.
+        if input.peek(syn::token::Brace) {
+            return Err(input.error(
+                "nested traversal `{ ... }` inside `expose(scope -> Peer { ... })` \
+                 is not yet implemented by the visage emitter — ships in a later \
+                 phase task. Use `scope -> PeerPath` (no braces) for now.",
+            ));
+        }
+        Ok(RelationExposure {
+            peer,
+            nested: Vec::new(),
+            from_string_form: false,
+        })
+    }
+
+    /// Parse the body of a nested `{ ... }` block — comma-separated
+    /// `field_ident -> Peer` entries, each with an optional further
+    /// `{ ... }` recursion.
+    ///
+    /// Kept structurally alongside [`NestedRelationExposure`] even
+    /// though the T6 parser now rejects any brace at the entry site
+    /// (the emitter does not yet consume nested traversal — see the
+    /// T6 fixup rejection in `parse_relation_exposure`). The function
+    /// is unreachable from the current public parser; when a later
+    /// task wires nested consumption through the visage emitter, the
+    /// rejection falls away and this helper becomes live again.
+    #[allow(dead_code)]
+    fn parse_nested_block(input: ParseStream<'_>) -> syn::Result<Vec<NestedRelationExposure>> {
+        let mut out: Vec<NestedRelationExposure> = Vec::new();
+        let mut first = true;
+        while !input.is_empty() {
+            if !first {
+                input.parse::<Token![,]>()?;
+                if input.is_empty() {
+                    break;
+                }
+            }
+            first = false;
+            let field: syn::Ident = input.parse()?;
+            // Field name is followed by `->` Peer, with optional nested.
+            // A name-value `=` form is NOT supported inside nested blocks —
+            // the new grammar uses `->` exclusively at this level.
+            input.parse::<Token![->]>()?;
+            let exposure = Self::parse_relation_exposure(input, true)?;
+            out.push(NestedRelationExposure { field, exposure });
+        }
+        Ok(out)
+    }
+
+    fn insert_relation(
+        spec: &mut ExposeSpec,
+        span_src: &syn::Ident,
+        scope_name: String,
+        exposure: RelationExposure,
+    ) -> syn::Result<()> {
+        if spec.scalar_scopes.contains(&scope_name) {
+            return Err(syn::Error::new_spanned(
+                span_src,
+                format!(
+                    "scope `{scope_name}` already declared as bare scope; \
+                     pick one form per scope"
+                ),
+            ));
+        }
+        if spec
+            .relation_scopes
+            .insert(scope_name.clone(), exposure)
+            .is_some()
+        {
+            return Err(syn::Error::new_spanned(
+                span_src,
+                format!("scope `{scope_name}` listed more than once"),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -992,7 +1270,7 @@ impl FieldAttrs {
     /// to recover the literal's `Span`, so the error underlines the bad
     /// value rather than the entire field declaration. Matches the pre-
     /// darling hand-rolled behaviour; keeps the surface consistent with
-    /// how `pk = "..."` span-points at its own literal in `ModelAttrs`.
+    /// how `pk = X` span-points at its own path in `ModelAttrs`.
     pub fn parse(field: &syn::Field) -> syn::Result<Self> {
         // `darling::Error` carries source spans from the originating
         // attribute tokens; `From<darling::Error> for syn::Error` preserves
@@ -1272,9 +1550,12 @@ impl FieldAttrs {
                             ));
                         }
                     }
-                    for (scope, peer) in parsed.relation_scopes {
+                    for (scope, exposure) in parsed.relation_scopes {
                         if expose.scalar_scopes.contains(&scope)
-                            || expose.relation_scopes.insert(scope.clone(), peer).is_some()
+                            || expose
+                                .relation_scopes
+                                .insert(scope.clone(), exposure)
+                                .is_some()
                         {
                             return Err(syn::Error::new_spanned(
                                 list,
@@ -1409,8 +1690,12 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
 /// Called by `descriptor::expand` and `inject::expand` starting in Tasks 4–6.
 #[allow(dead_code)]
 pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
+    // Normalise whitespace and strip an optional leading `::` so absolute
+    // paths (`::djogi::types::HeerId`) match the same arms as their
+    // relative counterparts (`djogi::types::HeerId`).
     let s = quote::quote!(#ty).to_string().replace(' ', "");
-    match s.as_str() {
+    let s = s.strip_prefix("::").unwrap_or(&s);
+    match s {
         "String" => Some("TEXT"),
         "i16" => Some("SMALLINT"),
         "i32" => Some("INTEGER"),
@@ -1422,6 +1707,31 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "Date" | "time::Date" => Some("DATE"),
         "Decimal" | "rust_decimal::Decimal" => Some("NUMERIC"),
         "Uuid" | "uuid::Uuid" => Some("UUID"),
+        // Phase 7-Zero-2 T4 — built-in PK types (HeerId / RanjId family) are
+        // usable as ambient fields outside the framework-injected `id` slot.
+        // Map each name (bare, `djogi::types::*`, and `djogi::*` forms) to the
+        // column type the matching `PrimaryKey::SQL_TYPE` advertises.
+        // `HeerIdRecencyBiased` / `RanjIdRecencyBiased` are Djogi-side aliases
+        // over heeranjid's `HeerIdDesc` / `RanjIdDesc` (spec §3.5a public
+        // naming); both surface the same underlying SQL shape.
+        "HeerId"
+        | "HeerIdDesc"
+        | "HeerIdRecencyBiased"
+        | "djogi::types::HeerId"
+        | "djogi::types::HeerIdDesc"
+        | "djogi::types::HeerIdRecencyBiased"
+        | "djogi::HeerId"
+        | "djogi::HeerIdDesc"
+        | "djogi::HeerIdRecencyBiased" => Some("BIGINT"),
+        "RanjId"
+        | "RanjIdDesc"
+        | "RanjIdRecencyBiased"
+        | "djogi::types::RanjId"
+        | "djogi::types::RanjIdDesc"
+        | "djogi::types::RanjIdRecencyBiased"
+        | "djogi::RanjId"
+        | "djogi::RanjIdDesc"
+        | "djogi::RanjIdRecencyBiased" => Some("UUID"),
         "serde_json::Value" | "Value" => Some("JSONB"),
         "Vec<String>" => Some("TEXT[]"),
         "Vec<i32>" => Some("INTEGER[]"),

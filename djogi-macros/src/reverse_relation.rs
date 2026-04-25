@@ -97,13 +97,29 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, Result, Token};
+use syn::{Ident, Path, Result, Token};
 
-/// Parsed form of `reverse_one_to_many!(Receiver, method -> Returned by via)`.
+/// Parsed form of
+/// `reverse_one_to_many!(Receiver, method -> Returned by via [, expose(scope -> PeerVisage)...])`.
 ///
 /// Shared between both reverse-accessor macros; the only difference is
 /// the terminal (`.fetch_all` vs `.first`) and the return type
 /// (`Vec<Returned>` vs `Option<Returned>`), so parsing is identical.
+///
+/// # Phase 7-Zero-2 T9 — `expose(scope -> PeerVisage)` clauses
+///
+/// Zero or more `expose(scope -> PeerVisage)` entries may appear after
+/// the required `... by via_column` segment, each separated by a comma.
+/// Each entry asks the macro to emit an additional inherent method on
+/// the receiver's `{scope}` visage (e.g. `DeptPublic`) that returns
+/// `Vec<PeerVisage>` (or `Option<PeerVisage>` for the O2O variant). The
+/// method delegates to the model-scoped accessor under the hood and
+/// converts each fetched row via `<PeerVisage as TryFrom<&Returned>>::try_from`.
+///
+/// When no `expose(...)` clauses are supplied the emitter behaves exactly
+/// like the pre-T9 form: one method on the receiver model, no visage
+/// surface. The clause is additive — the model-scoped accessor is always
+/// emitted.
 pub struct ReverseRelationInput {
     /// The type the accessor method is attached to (e.g. `Owner`).
     pub receiver_type: Ident,
@@ -114,6 +130,25 @@ pub struct ReverseRelationInput {
     /// The column on `returned_type` that carries the FK pointing
     /// back at `receiver_type` (e.g. `owner_id`).
     pub via_column: Ident,
+    /// Visage exposures declared alongside the reverse relation.
+    /// Empty when no `expose(...)` clause is written.
+    pub exposures: Vec<ReverseExposure>,
+}
+
+/// One `expose(scope -> PeerVisage)` entry on a reverse relation.
+///
+/// The `scope` is an identifier naming the built-in visage scope
+/// (`public` / `self_view` / `admin` / `export`). The receiver's
+/// matching visage (`{Receiver}{Suffix}` with `Suffix` derived from
+/// `scope`) is the type the additional inherent method is attached to.
+/// `peer` is the full path to the peer visage returned from the accessor
+/// (e.g. `EmpPublic` or `crate::visages::EmpPublic`).
+#[derive(Clone)]
+pub struct ReverseExposure {
+    /// Scope identifier — lowered to the matching visage suffix at emit time.
+    pub scope: Ident,
+    /// Peer visage path the accessor returns collections of.
+    pub peer: Path,
 }
 
 impl Parse for ReverseRelationInput {
@@ -140,11 +175,48 @@ impl Parse for ReverseRelationInput {
             ));
         }
         let via_column: Ident = input.parse()?;
+
+        // T9 — optional `, expose(scope -> PeerVisage)` clauses, zero or
+        // more. Each clause is introduced by a leading comma, followed
+        // by the `expose` keyword and a parenthesised body of the form
+        // `scope -> PeerPath`. Parsing here lives alongside the core
+        // reverse-accessor grammar so the user can scan the whole
+        // declaration in one line.
+        let mut exposures: Vec<ReverseExposure> = Vec::new();
+        while input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            // Trailing comma is accepted (matches the looseness used
+            // elsewhere in this module and in `many_to_many!`).
+            if input.is_empty() {
+                break;
+            }
+            let expose_kw: Ident = input.parse()?;
+            if expose_kw != "expose" {
+                return Err(syn::Error::new(
+                    expose_kw.span(),
+                    "expected `expose(scope -> PeerVisage)` after the comma in \
+                     `reverse_one_to_many!(..., expose(...))`; found a different keyword",
+                ));
+            }
+            let body;
+            syn::parenthesized!(body in input);
+            let scope: Ident = body.parse()?;
+            body.parse::<Token![->]>()?;
+            let peer: Path = body.parse()?;
+            if !body.is_empty() {
+                return Err(body.error(
+                    "expected exactly `scope -> PeerVisage` inside the `expose(...)` body",
+                ));
+            }
+            exposures.push(ReverseExposure { scope, peer });
+        }
+
         Ok(ReverseRelationInput {
             receiver_type,
             method,
             returned_type,
             via_column,
+            exposures,
         })
     }
 }
@@ -199,6 +271,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         method,
         returned_type,
         via_column,
+        exposures,
     } = parsed;
 
     // Literals for the inventory marker. Stringify the idents to feed
@@ -341,5 +414,154 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         }
     };
 
-    expanded
+    // Phase 7-Zero-2 T9 — visage-scoped reverse accessors.
+    //
+    // For every `expose(scope -> PeerVisage)` clause, emit an additional
+    // inherent method on `{Receiver}{Suffix}` (the receiver's visage at
+    // that scope) that delegates to the model-scoped accessor above and
+    // converts each fetched row through `<PeerVisage as TryFrom<&Returned>>::try_from`.
+    //
+    // The method is named the same as the model-scoped accessor — the
+    // user never sees two different names for the same relation — and
+    // differs only in the scope it lives on and the element type of the
+    // returned collection. Boundary semantics fall out naturally: no
+    // `expose(...)` clause → no method emitted → `no method named ...`
+    // at the call site.
+    //
+    // The receiver-visage ident is computed by appending the
+    // scope-specific suffix to the receiver ident. The mapping mirrors
+    // `djogi-macros/src/model/visages.rs::SCOPES` — keep these two
+    // sites in sync when either grows a new scope.
+    let visage_impls: Vec<TokenStream> = exposures
+        .iter()
+        .map(|exposure| {
+            let scope_ident = &exposure.scope;
+            let scope_lit = scope_ident.to_string();
+            let suffix = match scope_lit.as_str() {
+                "public" => "Public",
+                "self_view" => "SelfView",
+                "admin" => "Admin",
+                "export" => "Export",
+                other => {
+                    return syn::Error::new(
+                        scope_ident.span(),
+                        format!(
+                            "unknown visage scope `{other}` in `expose({other} -> ...)`; \
+                             valid scopes are `public`, `self_view`, `admin`, `export`"
+                        ),
+                    )
+                    .to_compile_error();
+                }
+            };
+            let receiver_visage = format_ident!("{receiver_type}{suffix}");
+            let peer = &exposure.peer;
+
+            // Phase 7-Zero-2 T13a — visage-scoped reverse accessors
+            // return a narrowed `VisageQuerySet<Peer>` synchronously
+            // instead of awaiting a `Vec<Peer>` / `Option<Peer>` over
+            // a full-model SELECT and projecting in Rust. Two payoffs:
+            //
+            // 1. SQL-level SELECT narrowing — the queryset bakes in the
+            //    peer visage's `columns` slice, so emitted SQL projects
+            //    only exposed columns. Fewer wire bytes, smaller heap
+            //    fetches, possible index-only scans.
+            // 2. Lazy composition — callers can append `.filter(...)`,
+            //    `.order_by(...)`, `.limit(n)`, `.count(ctx)`,
+            //    `.exists(ctx)`, or `.stream(ctx)` on top of the reverse
+            //    accessor instead of materialising every reverse row.
+            //
+            // The FK predicate is built via the source model's typed
+            // `Model::Fields` accessor (`{Returned}Fields::{filter_method}()`)
+            // so column-name typos are compile errors at macro-emission
+            // time, not runtime SQL bugs. The resulting `Condition`
+            // hands off to the visage's hidden
+            // `__filter_with_initial_condition` constructor.
+            //
+            // OneToMany returns `VisageQuerySet<Peer>` and the caller
+            // chains `.fetch_all(ctx)`. OneToOne also returns
+            // `VisageQuerySet<Peer>` — the caller chains `.first(ctx)`
+            // for `Option<Peer>` semantics.
+            let _ = kind; // kind no longer differentiates the body shape.
+
+            let visage_doc = match kind {
+                AccessorKind::OneToMany => format!(
+                    "Visage-scoped reverse one-to-many accessor — returns a \
+                     SELECT-narrowed `VisageQuerySet<{peer_name}>`. The queryset \
+                     emits SQL that projects only `{peer_name}`'s exposed columns \
+                     and applies `{via} = <this {receiver}'s pk>` as the root \
+                     predicate. Chain `.filter(...)`, `.order_by(...)`, \
+                     `.limit(n)`, etc. and finish with `.fetch_all(ctx)` / \
+                     `.count(ctx)` / `.stream(ctx)`. Declared with \
+                     `djogi::reverse_one_to_many!({receiver}, {m} -> {returned} by {via}, \
+                     expose({scope} -> {peer_name}));`.",
+                    receiver = receiver_lit,
+                    returned = returned_lit,
+                    via = via_lit,
+                    m = method_lit,
+                    scope = scope_lit,
+                    peer_name = peer
+                        .segments
+                        .last()
+                        .map(|s| s.ident.to_string())
+                        .unwrap_or_default(),
+                ),
+                AccessorKind::OneToOne => format!(
+                    "Visage-scoped reverse one-to-one accessor — returns a \
+                     SELECT-narrowed `VisageQuerySet<{peer_name}>` whose root \
+                     predicate is `{via} = <this {receiver}'s pk>`. Chain \
+                     `.first(ctx)` for `Option<{peer_name}>` semantics. Declared with \
+                     `djogi::reverse_one_to_one!({receiver}, {m} -> {returned} by {via}, \
+                     expose({scope} -> {peer_name}));`.",
+                    receiver = receiver_lit,
+                    returned = returned_lit,
+                    via = via_lit,
+                    m = method_lit,
+                    scope = scope_lit,
+                    peer_name = peer
+                        .segments
+                        .last()
+                        .map(|s| s.ident.to_string())
+                        .unwrap_or_default(),
+                ),
+            };
+
+            quote! {
+                #[automatically_derived]
+                impl #receiver_visage {
+                    #[doc = #visage_doc]
+                    #[inline]
+                    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+                    pub fn #method(&self) -> ::djogi::query::VisageQuerySet<#peer> {
+                        // Every scope-emitted visage carries an `id`
+                        // framework column whose type mirrors the source
+                        // model's PK (see `visages::framework_field_decls`).
+                        // Cloning it is cheap — every PK type bounds
+                        // `Clone` — and the queryset captures the owned
+                        // value as a bind parameter via the typed FK
+                        // predicate below.
+                        let pk = ::std::clone::Clone::clone(&self.id);
+                        // Build the FK predicate via the SOURCE MODEL's
+                        // typed `Model::Fields` accessor. A typo in the
+                        // FK column name would surface as a compile
+                        // error here (`no method named 'foo' on type ...
+                        // {Returned}Fields`), not a runtime SQL bug.
+                        let __cond = ::djogi::query::field::FieldRef::<#returned_type, _>::eq(
+                            <
+                                <#returned_type as ::djogi::model::Model>::Fields
+                                as ::core::default::Default
+                            >::default()
+                            .#filter_method(),
+                            #wrapper_ctor,
+                        );
+                        <#peer>::__filter_with_initial_condition(__cond)
+                    }
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        #expanded
+        #(#visage_impls)*
+    }
 }

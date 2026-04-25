@@ -1,7 +1,10 @@
 // Verifies that #[model] compiles and injects id/created_at/updated_at.
+// Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`; this
+// fixture pins the ascending-HeerId injection path via an explicit
+// `pk = HeerId` so the type checks below exercise the historical shape.
 use djogi::prelude::*;
 
-#[model(table = "posts")]
+#[model(table = "posts", pk = HeerId)]
 #[derive(Debug, Clone)]
 struct Post {
     pub title: String,

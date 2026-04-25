@@ -26,13 +26,13 @@
 ### HeeRanjId Integration
 - Installing HeeRanjId SQL functions and tables via `cargo djogi init` and `db reset`
 - Startup validation: `NODE_ID` env var → `heer_nodes` check → fail fast if missing
-- Rust wrappers: `HeerId::generate(&pool)` and `HeerId::generate_many(&pool, n)` calling `generate_id()` / `generate_ids(n)`
-- RanjId wrappers: `RanjId::generate(&pool)` calling `generate_ranjid()`
+- Rust wrappers: `<HeerId as PrimaryKeyDbGen>::generate(&mut ctx)` / `generate_many(&mut ctx, n)` calling `heerid_next()` / `generate_ids(n)`. The runtime dispatch goes through `DjogiContext` (Phase 4 retrofit) — pool-or-transaction is selected internally.
+- RanjId wrappers: `<RanjId as PrimaryKeyDbGen>::generate(&mut ctx)` calling `ranjid_next()`. Same `DjogiContext` shape as HeerId.
 - `create_with_id()`: explicit ID INSERT with `ON CONFLICT (id) DO NOTHING`
 - Shell bindings: synchronous `HeerId::generate()`, `HeerId::generate_many(n)`, and `RanjId::generate()` in Rhai
 - HeerId serde impl: `i64` internally, `String` in JSON — no per-field annotation needed
 - RanjId serde impl: `Uuid` internally, standard UUID string in JSON
-- Migration path: `#[model(pk = "ranjid")]` for models that need higher capacity
+- Migration path: `#[model(pk = RanjId)]` for models that need higher capacity
 
 ### Proc Macro Design
 - Struct field injection (`id`, `created_at`, `updated_at`) via `#[model(table = "...")]` attribute macro (`#[derive(Model)]` exists only as a no-op stub; attribute macros are required for field injection)

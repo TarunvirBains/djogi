@@ -1,0 +1,473 @@
+//! `VisageQuerySet<V>` — read-only queryset over a visage projection.
+//!
+//! # What
+//!
+//! Phase 7-Zero-2 T10 introduces a queryset entry point on each emitted
+//! visage struct: `UserPublic::filter(|f| ...)`. Because visages are
+//! projections, not tables, they do not implement [`Model`] (the existing
+//! `QuerySet<T: Model>` carries a `T: Model` bound that visages cannot
+//! satisfy without misrepresenting the column shape). Instead, the
+//! `#[model]` macro emits per-visage entry points that build a
+//! [`VisageQuerySet<V>`] — a sibling type that mirrors the read-only
+//! subset of [`QuerySet`]'s surface and emits a SELECT narrowed to the
+//! visage's exposed column list.
+//!
+//! # Why a sibling type instead of relaxing `QuerySet<T>`'s bound
+//!
+//! `QuerySet<T: Model>` participates in dozens of code paths (`prefetch`,
+//! `select_related`, `for_update`, `annotate`, JSONB / spatial / FTS
+//! emitters) that all assume `T::table_name()`, `T::Pk`, and `T::Fields`
+//! are available. Generalising the struct over both shapes would either
+//! force every helper to dispatch on whether `T` is a model or a visage
+//! (an open-ended split that grows every time a new visage-only feature
+//! lands) or require visages to fake a `Model` impl with non-matching
+//! column shape — which is exactly the leak this task is meant to plug.
+//! `VisageQuerySet<V>` keeps the read-only path narrow and the model
+//! path unchanged.
+//!
+//! # Read-only surface (no `bulk_create` / `save` / `delete`)
+//!
+//! Visages are **projections**: they discard non-exposed columns and may
+//! embed peer projections for relations. A round-trip insert from a
+//! visage cannot reconstruct the source row faithfully (the dropped
+//! columns are irrecoverable, and embedded peers may themselves be
+//! lossy). Visage-side write methods would therefore either silently
+//! corrupt rows or require complex re-hydration logic that defeats the
+//! point. Compile-time enforcement falls out of method absence: the
+//! visage struct has no `bulk_create` / `save` / `delete` methods, and
+//! `VisageQuerySet<V>` only exposes read terminals.
+//!
+//! # SQL narrowing
+//!
+//! `VisageQuerySet<V>` carries an explicit `&'static [&'static str]`
+//! column list — the macro emits exactly the narrowed visage columns,
+//! in the same order the visage struct declares them, so the
+//! `FromPgRow` impl on the visage decodes positionally without
+//! re-walking the source model's `ModelDescriptor::fields`. The
+//! narrowed list is the load-bearing detail: dropped columns
+//! (`password_hash`, `email` on the `public` scope) are absent from
+//! the SELECT projection and from any `RETURNING` shape — they cannot
+//! leak through this surface.
+//!
+//! # Why RPITIT (not `async fn`)
+//!
+//! Every terminal returns `impl Future<Output = ...> + Send` rather
+//! than using bare `async fn`. The explicit `+ Send` bound matches the
+//! model-side `QuerySet` terminals and guarantees the returned future
+//! can be `.await`ed across task boundaries. `clippy::manual_async_fn`
+//! fires on this pattern; the lint is allowed at the module level
+//! because the explicit-bound form is the deliberate choice.
+#![allow(clippy::manual_async_fn)]
+
+use crate::DjogiError;
+use crate::context::DjogiContext;
+use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::decode::{FromPgRow, try_get_scalar};
+use crate::query::condition::Condition;
+use crate::query::order::OrderExpr;
+use crate::query::sql::emit_condition;
+use postgres_types::ToSql;
+use std::future::Future;
+use std::marker::PhantomData;
+
+/// Read-only queryset over a visage projection.
+///
+/// Constructed by the `#[model]`-emitted `V::filter(...)` entry point.
+/// Builder methods (`order_by`, `limit`, `offset`) consume `self` and
+/// return `Self`, mirroring [`QuerySet`]'s immutable-by-convention
+/// composition style. Terminal methods (`fetch_all`, `fetch_one`,
+/// `first`, `count`, `exists`) consume the queryset and execute SQL
+/// against a caller-supplied `&mut DjogiContext`.
+///
+/// `V` is the visage type. The macro pairs each visage with its source
+/// model via the `DjogiVisageOf<M>` seal; `VisageQuerySet<V>` does not
+/// expose that pairing because the read path doesn't need it — the
+/// table name and column list are already baked into the queryset
+/// state at construction time.
+///
+/// [`QuerySet`]: crate::query::QuerySet
+pub struct VisageQuerySet<V> {
+    /// Source-model SQL table name. Captured from the macro at
+    /// construction time so the queryset has no `T: Model` bound.
+    pub(crate) table: &'static str,
+    /// Narrowed projection column list, in the visage struct's
+    /// declaration order. Used both to emit the `SELECT` projection and
+    /// (implicitly, via `FromPgRow for V`) to drive the positional
+    /// decoder.
+    pub(crate) columns: &'static [&'static str],
+    /// Accumulated filter tree. Starts as [`Condition::True`].
+    pub(crate) condition: Condition,
+    /// Ordering expressions in emission order. `order_by` appends.
+    pub(crate) ordering: Vec<OrderExpr>,
+    /// SQL `LIMIT` — `None` means no limit.
+    pub(crate) limit: Option<i64>,
+    /// SQL `OFFSET` — `None` means no offset.
+    pub(crate) offset: Option<i64>,
+    /// Covariant `V` tag; never owns or borrows a `V`.
+    _visage: PhantomData<fn() -> V>,
+}
+
+impl<V> Clone for VisageQuerySet<V> {
+    fn clone(&self) -> Self {
+        VisageQuerySet {
+            table: self.table,
+            columns: self.columns,
+            condition: self.condition.clone(),
+            ordering: self.ordering.clone(),
+            limit: self.limit,
+            offset: self.offset,
+            _visage: PhantomData,
+        }
+    }
+}
+
+impl<V> std::fmt::Debug for VisageQuerySet<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VisageQuerySet")
+            .field("table", &self.table)
+            .field("columns", &self.columns)
+            .field("condition", &self.condition)
+            .field("ordering", &self.ordering)
+            .field("limit", &self.limit)
+            .field("offset", &self.offset)
+            .finish()
+    }
+}
+
+impl<V> VisageQuerySet<V> {
+    /// Construct a `VisageQuerySet` with the given table, narrowed
+    /// column list, and root filter condition.
+    ///
+    /// Called by the `#[model]`-emitted `V::filter(...)` / `V::order_by(...)`
+    /// / `V::limit(...)` entry points; not part of the user-visible API.
+    /// The `columns` slice must match the visage struct's declared field
+    /// order so the positional `FromPgRow for V` decoder lines up with
+    /// the SELECT projection.
+    #[doc(hidden)]
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn new_for_visage(
+        table: &'static str,
+        columns: &'static [&'static str],
+        condition: Condition,
+    ) -> Self {
+        VisageQuerySet {
+            table,
+            columns,
+            condition,
+            ordering: Vec::new(),
+            limit: None,
+            offset: None,
+            _visage: PhantomData,
+        }
+    }
+
+    /// AND another condition onto the accumulated filter tree.
+    ///
+    /// Method-name parity with [`QuerySet::filter`] keeps adopters who
+    /// switch between model-side and visage-side querysets in muscle
+    /// memory; both `Model::filter(...)` and `Visage::filter(...)` enter
+    /// via a closure on the model's / visage's `Fields` handle, and the
+    /// chained form `qs.filter(cond)` extends the predicate identically
+    /// on either surface. The macro-emitted `V::filter(|f| …)` entry
+    /// constructs the initial `VisageQuerySet` and threads the closure's
+    /// `Condition` through this method; downstream chaining uses the
+    /// same name.
+    ///
+    /// [`QuerySet::filter`]: crate::query::QuerySet::filter
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn filter(mut self, cond: Condition) -> Self {
+        self.condition = Condition::and(self.condition, cond);
+        self
+    }
+
+    /// Append an ordering expression.
+    ///
+    /// Mirrors [`QuerySet::order_by`]'s append semantics — repeated
+    /// calls accumulate rather than replace, so library code can add a
+    /// stable tiebreaker without clobbering the caller's primary
+    /// ordering.
+    ///
+    /// [`QuerySet::order_by`]: crate::query::QuerySet::order_by
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn order_by<I: Into<Vec<OrderExpr>>>(mut self, orderings: I) -> Self {
+        self.ordering.extend(orderings.into());
+        self
+    }
+
+    /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn limit(mut self, n: u64) -> Self {
+        debug_assert!(
+            n <= i64::MAX as u64,
+            "VisageQuerySet::limit(n = {n}) overflows i64 — Postgres bind type is BIGINT"
+        );
+        self.limit = Some(n as i64);
+        self
+    }
+
+    /// Apply SQL `OFFSET n`. Replaces any prior `offset` value.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn offset(mut self, n: u64) -> Self {
+        debug_assert!(
+            n <= i64::MAX as u64,
+            "VisageQuerySet::offset(n = {n}) overflows i64 — Postgres bind type is BIGINT"
+        );
+        self.offset = Some(n as i64);
+        self
+    }
+
+    /// Render the SQL string this queryset would send to Postgres.
+    ///
+    /// **This is internal-test plumbing — never call this from adopter
+    /// code.** The emitted SQL is implementation-detail and has no
+    /// stability guarantee across phases. Tests that pin SELECT
+    /// narrowing use this hook to assert the textual shape directly
+    /// without needing `pg_stat_statements` server-side configuration
+    /// (which is unavailable on most Postgres test environments).
+    ///
+    /// The double-underscore prefix is the framework's
+    /// `feedback_macro_path_routing` convention for "macro-internal
+    /// public-by-necessity surface, do not depend on" — same as
+    /// `__make_field_ref_with_path` and friends. The method stays
+    /// `pub` (cross-crate test access requires it) but `#[doc(hidden)]`
+    /// keeps it out of rustdoc.
+    #[doc(hidden)]
+    pub fn __sql_for_test(&self) -> String {
+        let acc = build_visage_select(self);
+        let (sql, _binds) = acc.into_parts();
+        sql
+    }
+}
+
+/// Build `SELECT col1, col2, ... FROM <table> [WHERE ...] [ORDER BY ...]
+/// [LIMIT $n] [OFFSET $n]` for a visage queryset.
+///
+/// The projection comes from the visage's narrowed `columns` slice, NOT
+/// from a model descriptor walk. This is the load-bearing difference
+/// from the model-side `build_select`: dropped columns never appear in
+/// the SELECT regardless of the source model's full column count.
+pub(crate) fn build_visage_select<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("");
+    acc.push_sql("SELECT ");
+    for (i, col) in qs.columns.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql(col);
+    }
+    acc.push_sql(" FROM ");
+    acc.push_sql(qs.table);
+    push_visage_tail(&mut acc, qs);
+    acc
+}
+
+/// Build `SELECT COUNT(*) FROM <table> [WHERE ...]` for a visage queryset.
+///
+/// Ignores `ordering`, `limit`, and `offset` — count is invariant under
+/// those clauses. Mirrors the model-side `build_count` shape so the
+/// emitted statement is the simplest predicate-matching count Postgres
+/// can plan.
+pub(crate) fn build_visage_count<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("");
+    acc.push_sql("SELECT COUNT(*) FROM ");
+    acc.push_sql(qs.table);
+    push_visage_where(&mut acc, qs);
+    acc
+}
+
+/// Build `SELECT EXISTS (SELECT 1 FROM <table> [WHERE ...] LIMIT 1)` for
+/// a visage queryset. Mirrors the model-side `build_exists` shape.
+pub(crate) fn build_visage_exists<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
+    let mut acc = SqlAccumulator::new("");
+    acc.push_sql("SELECT EXISTS (SELECT 1 FROM ");
+    acc.push_sql(qs.table);
+    push_visage_where(&mut acc, qs);
+    acc.push_sql(" LIMIT 1)");
+    acc
+}
+
+/// Emit the `WHERE ...` clause for a visage queryset, if non-vacuous.
+fn push_visage_where<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
+    if !is_vacuously_true(&qs.condition) {
+        acc.push_sql(" WHERE ");
+        emit_condition(acc, qs.condition.clone(), None);
+    }
+}
+
+/// Tail clauses shared by SELECT variants: `WHERE`, `ORDER BY`, `LIMIT`,
+/// `OFFSET`. Visage querysets do not carry select_related / prefetch /
+/// row-lock state, so this is shorter than the model-side
+/// `push_tail_qualified`.
+fn push_visage_tail<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
+    push_visage_where(acc, qs);
+
+    if !qs.ordering.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in qs.ordering.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(acc, None);
+        }
+    }
+
+    if let Some(n) = qs.limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n);
+    }
+    if let Some(n) = qs.offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n);
+    }
+}
+
+/// Mirror of `query::sql::is_vacuously_true` — duplicated so this
+/// module does not depend on a private model-side helper.
+fn is_vacuously_true(c: &Condition) -> bool {
+    match c {
+        Condition::True => true,
+        Condition::And(xs) => xs.iter().all(is_vacuously_true),
+        Condition::Not(inner) => matches!(inner.as_ref(), Condition::Or(xs) if xs.is_empty()),
+        _ => false,
+    }
+}
+
+// ── Row-returning terminals (require `V: FromPgRow`) ───────────────────────
+
+impl<V> VisageQuerySet<V>
+where
+    V: FromPgRow + Send + Unpin + 'static,
+{
+    /// Execute the query and collect every matching row into a `Vec<V>`.
+    ///
+    /// Mirrors [`QuerySet::fetch_all`] but with a narrow SELECT and the
+    /// visage's own positional `FromPgRow` decoder.
+    ///
+    /// [`QuerySet::fetch_all`]: crate::query::QuerySet::fetch_all
+    pub fn fetch_all<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<V>, DjogiError>> + Send + 'ctx
+    where
+        V: 'ctx,
+    {
+        async move {
+            let acc = build_visage_select(&self);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows = ctx.query_all(&sql, &params).await?;
+            rows.iter().map(|r| V::from_pg_row(r)).collect()
+        }
+    }
+
+    /// Execute the query and require **exactly one** matching row.
+    ///
+    /// - Zero rows → [`DjogiError::NotFound`].
+    /// - Two or more rows → [`DjogiError::MultipleObjects`].
+    pub fn fetch_one<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<V, DjogiError>> + Send + 'ctx
+    where
+        V: 'ctx,
+    {
+        async move {
+            // Force LIMIT 2 so we can distinguish single-row success from
+            // multi-row failure without a separate COUNT round trip.
+            let table = self.table;
+            let mut qs = self;
+            qs.limit = Some(2);
+            let acc = build_visage_select(&qs);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows = ctx.query_all(&sql, &params).await?;
+            match rows.len() {
+                0 => Err(DjogiError::not_found(table)),
+                1 => {
+                    let row = rows
+                        .into_iter()
+                        .next()
+                        .expect("rows.len() == 1 was just matched");
+                    V::from_pg_row(&row)
+                }
+                n => Err(DjogiError::multiple_objects(table, n)),
+            }
+        }
+    }
+
+    /// Execute the query and return the first matching row, or `None` if
+    /// no rows match.
+    pub fn first<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Option<V>, DjogiError>> + Send + 'ctx
+    where
+        V: 'ctx,
+    {
+        async move {
+            let mut qs = self;
+            qs.limit = Some(1);
+            let acc = build_visage_select(&qs);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let rows = ctx.query_all(&sql, &params).await?;
+            match rows.into_iter().next() {
+                None => Ok(None),
+                Some(r) => V::from_pg_row(&r).map(Some),
+            }
+        }
+    }
+}
+
+// ── Aggregate terminals (no V: FromPgRow bound) ────────────────────────────
+
+impl<V> VisageQuerySet<V> {
+    /// Return the count of rows matching the queryset's predicate.
+    pub fn count<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<i64, DjogiError>> + Send + 'ctx
+    where
+        V: 'ctx,
+    {
+        async move {
+            let acc = build_visage_count(&self);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let row = ctx.query_one(&sql, &params).await?;
+            try_get_scalar::<i64>(&row, 0)
+        }
+    }
+
+    /// Return `true` if at least one row matches the queryset's predicate.
+    pub fn exists<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<bool, DjogiError>> + Send + 'ctx
+    where
+        V: 'ctx,
+    {
+        async move {
+            let acc = build_visage_exists(&self);
+            let (sql, binds) = acc.into_parts();
+            let params: Vec<&(dyn ToSql + Sync)> = binds
+                .iter()
+                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                .collect();
+            let row = ctx.query_one(&sql, &params).await?;
+            try_get_scalar::<bool>(&row, 0)
+        }
+    }
+}

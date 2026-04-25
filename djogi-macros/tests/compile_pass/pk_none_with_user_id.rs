@@ -1,11 +1,11 @@
-// Under `pk = "none"` the macro does not inject an `id` field, so the user
+// Under `pk = None` the macro does not inject an `id` field, so the user
 // is free to declare their own. This test verifies:
-// - the user's `id` field survives (the name is NOT reserved under pk="none")
+// - the user's `id` field survives (the name is NOT reserved under pk = None)
 // - the generated Default impl includes the user's `id` via Default::default()
 // - struct-update syntax still works
 use djogi::prelude::*;
 
-#[model(table = "custom_pk", pk = "none")]
+#[model(table = "custom_pk", pk = None)]
 #[derive(Debug, Clone)]
 struct Custom {
     pub id: String,

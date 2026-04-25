@@ -1,11 +1,12 @@
-// Phase 7-Zero v3 T1 — `pk = "ranjid_desc"` compiles cleanly.
+// Phase 7-Zero v3 T1 + Phase 7-Zero-2 T2 — `pk = RanjIdDesc` compiles cleanly.
 //
 // Mirrors `phase7_zero_pk_heerid_desc.rs` for the UUID variant. Pins
 // `PkStrategy::RanjIdDesc` → `PkType::RanjIdDesc` → injected
-// `id: RanjIdDesc` field.
+// `id: RanjIdDesc` field. 7-Zero-2 T2 switched the grammar from the string
+// literal (`pk = "ranjid_desc"`) to the bare identifier (`pk = RanjIdDesc`).
 use djogi::prelude::*;
 
-#[model(table = "posts_desc_u", pk = "ranjid_desc")]
+#[model(table = "posts_desc_u", pk = RanjIdDesc)]
 #[derive(Debug, Clone)]
 struct Post {
     pub title: String,

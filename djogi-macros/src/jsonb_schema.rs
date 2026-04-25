@@ -139,7 +139,22 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
             // json_key_str is a &str borrow of json_key for quote! interpolation.
             let json_key_str: &str = &json_key;
 
-            if is_scalar_type(field_ty) {
+            // Phase 7-Zero-2 polish (#28): peel `Option<...>` off at the
+            // macro layer so `Option<i32>` / `Option<NestedSchema>` work
+            // exactly like the bare inner type. Postgres JSONB `->>`
+            // returns NULL for missing-key, JSON-null, and
+            // non-stringifiable values identically — users wanting the
+            // explicit absence check call `.is_null()` / `.is_not_null()`
+            // on the resulting `JsonbPathRef` (already in the typed
+            // surface). Without this peeling, `#[derive(JsonbSchema)]`
+            // on a struct with `Option<T>` fields fails to compile
+            // because no blanket `impl<T: JsonbSchema> JsonbSchema for
+            // Option<T>` exists and one cannot be added without
+            // running into orphan-rule and trait-resolution surprises.
+            let effective_ty: Type =
+                unwrap_option(field_ty).unwrap_or_else(|| field_ty.clone());
+
+            if is_scalar_type(&effective_ty) {
                 // Scalar leaf: return JsonbPathRef<M, FieldType>.
                 // The path is base_path + [json_key_str], joined as dotted string.
                 // json_key_str is the serde rename if present, otherwise the Rust
@@ -150,9 +165,13 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
                     /// Returns a [`JsonbPathRef`](::djogi::jsonb::JsonbPathRef) that
                     /// exposes `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in_list`,
                     /// `is_null`, `is_not_null` comparisons emitting the correct
-                    /// Postgres cast for the field's type.
+                    /// Postgres cast for the field's type. `Option<T>` fields use
+                    /// the inner type as the cast target — Postgres JSONB returns
+                    /// NULL identically for missing keys, JSON `null`, and
+                    /// non-stringifiable values, so use `.is_null()` /
+                    /// `.is_not_null()` for the explicit absence check.
                     #[must_use = "JsonbPathRef is lazy — dropping one silently omits the filter"]
-                    pub fn #field_ident(self) -> ::djogi::jsonb::JsonbPathRef<M, #field_ty> {
+                    pub fn #field_ident(self) -> ::djogi::jsonb::JsonbPathRef<M, #effective_ty> {
                         // Build the full segment list: base segments + JSON key.
                         let mut segments: ::std::vec::Vec<&'static str> =
                             ::std::vec::Vec::from(self.base_path);
@@ -164,14 +183,18 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
             } else {
                 // Nested JsonbSchema: return <FieldType as JsonbSchema>::Path<M>
                 // with the path extended by the JSON key (serde rename or Rust ident).
+                // `Option<NestedSchema>` peels to `NestedSchema` per the comment
+                // above — traversal semantics are identical at the JSONB layer.
                 Some(quote! {
                     /// Typed JSONB path accessor for this nested schema field.
                     ///
                     /// Returns the nested type's `Path<M>` with the path accumulator
                     /// extended by the JSON key for this field. Further field accesses
-                    /// descend into the nested schema.
+                    /// descend into the nested schema. `Option<NestedSchema>` is
+                    /// transparent at the JSONB layer — the `->`/`->>` chain returns
+                    /// NULL when the key is absent or the value is JSON null.
                     #[must_use = "path handles are lazy — dropping one silently omits the filter"]
-                    pub fn #field_ident(self) -> <#field_ty as ::djogi::jsonb::JsonbSchema>::Path<M> {
+                    pub fn #field_ident(self) -> <#effective_ty as ::djogi::jsonb::JsonbSchema>::Path<M> {
                         // Extend the base path by the JSON key for this field.
                         let mut extended: ::std::vec::Vec<&'static str> =
                             ::std::vec::Vec::from(self.base_path);
@@ -180,7 +203,7 @@ pub fn expand(input: TokenStream) -> Result<TokenStream, Error> {
                         // never leaks per call (Fix 1: path-slice interning).
                         let interned_slice =
                             ::djogi::jsonb::schema::intern_path_slice(&extended);
-                        <#field_ty as ::djogi::jsonb::JsonbSchema>::__new_from_slice::<M>(
+                        <#effective_ty as ::djogi::jsonb::JsonbSchema>::__new_from_slice::<M>(
                             self.base_column,
                             interned_slice,
                         )
@@ -464,14 +487,94 @@ fn is_scalar_type(ty: &Type) -> bool {
     SCALAR_TYPE_PATTERNS.iter().any(|&pat| rendered == pat)
 }
 
+/// If `ty` is `Option<Inner>` (or `std::option::Option<Inner>` /
+/// `core::option::Option<Inner>`), return `Inner`; otherwise return `None`.
+///
+/// Closes GH issue #28: `#[derive(JsonbSchema)]` previously rejected
+/// `Option<T>` fields because it tried to resolve `Option<T>: JsonbSchema`
+/// as a trait bound, which fails (no blanket impl exists). The fix is to
+/// peel `Option` off at macro-expansion time and treat the inner `T` as
+/// the field's effective type. This matches Postgres JSONB semantics:
+/// `(col->>'key')` returns NULL whether the key is missing, the JSON
+/// value is `null`, or the value is non-stringifiable. Users who need
+/// to distinguish those cases call `.is_null()` / `.is_not_null()` on
+/// the resulting `JsonbPathRef`.
+///
+/// Recognised forms (matched by rendered token-string equality —
+/// matches the same byte-level discipline `is_scalar_type` uses):
+///
+/// - `Option<T>` (the common case)
+/// - `std::option::Option<T>`
+/// - `core::option::Option<T>`
+/// - `::std::option::Option<T>`
+/// - `::core::option::Option<T>`
+fn unwrap_option(ty: &Type) -> Option<Type> {
+    use syn::{GenericArgument, PathArguments};
+
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    if type_path.qself.is_some() {
+        return None;
+    }
+    let segments = &type_path.path.segments;
+    let last = segments.last()?;
+    if last.ident != "Option" {
+        return None;
+    }
+    // Reject paths whose head is anything other than `option` /
+    // `core::option` / `std::option` / leaf `Option`. This avoids
+    // accidentally peeling, say, `my_module::Option<T>`.
+    let prefix: Vec<String> = segments
+        .iter()
+        .take(segments.len().saturating_sub(1))
+        .map(|s| s.ident.to_string())
+        .collect();
+    let prefix_ok = prefix.is_empty()
+        || matches!(prefix.as_slice(), [a] if a == "option")
+        || matches!(
+            prefix.as_slice(),
+            [a, b] if (a == "std" || a == "core") && b == "option"
+        );
+    if !prefix_ok {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    if args.args.len() != 1 {
+        return None;
+    }
+    let GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    Some(inner.clone())
+}
+
 /// Scalar type name strings as they appear in rendered token streams.
 ///
 /// The list mirrors `sql_cast_for_type` in `djogi::jsonb::path`. Qualified
 /// forms (`time::OffsetDateTime`) and short forms (`OffsetDateTime`) are both
 /// listed because users may import with a `use` statement or not.
 ///
-/// Sorted alphabetically so `binary_search` works; this is enforced by the
-/// static assertion in the unit tests below.
+/// Kept alphabetical for readability when scanning the matrix; the
+/// runtime lookup uses `iter().any(...)` (in `is_scalar_type`), not
+/// `binary_search`, so the ordering is convention-only.
+// Phase 7-Zero-2 polish (GH issue #29): added narrow-integer entries
+// (`u8`, `u16`, `u32`, `i8`) so `#[derive(JsonbSchema)]` accepts these
+// Rust-idiomatic types as scalar fields. Each narrow type widens at
+// the filter-binding boundary via `IntoFilterValue` (see
+// `djogi::query::field`), and the path emitter casts to the smallest
+// Postgres int type that fits its full range (see `sql_cast_for_type`
+// in `djogi::jsonb::path`).
+//
+// `u64` was already in this list pre-#29 but does NOT have a working
+// path-cast (no Postgres type fits the full u64 range). Adopters who
+// land on `u64` in JSONB get a derive-accepted scalar accessor whose
+// runtime cast falls back to text comparison; for correctness, use
+// `i64` instead, or `rust_decimal::Decimal` for the full unsigned
+// range. Keeping the entry preserves backward compatibility while we
+// document the gap.
 const SCALAR_TYPE_PATTERNS: &[&str] = &[
     "&str",
     "Date",
@@ -485,12 +588,16 @@ const SCALAR_TYPE_PATTERNS: &[&str] = &[
     "i16",
     "i32",
     "i64",
+    "i8",
     "rust_decimal::Decimal",
     "serde_json::Value",
     "str",
     "time::Date",
     "time::OffsetDateTime",
+    "u16",
+    "u32",
     "u64",
+    "u8",
     "uuid::Uuid",
     "::djogi::types::HeerId",
     "::djogi::types::RanjId",
@@ -661,5 +768,74 @@ mod tests {
     fn extract_serde_rename_none_when_absent() {
         let attr: syn::Attribute = syn::parse_quote! { #[serde(skip)] };
         assert_eq!(extract_serde_rename(&attr), None);
+    }
+
+    fn unwrap_option_string(input: &str) -> Option<String> {
+        let ty: Type = syn::parse_str(input).unwrap();
+        let inner = unwrap_option(&ty)?;
+        Some(quote!(#inner).to_string().replace(' ', ""))
+    }
+
+    #[test]
+    fn unwrap_option_strips_bare_option_wrapper() {
+        assert_eq!(unwrap_option_string("Option<i32>"), Some("i32".to_string()));
+        assert_eq!(
+            unwrap_option_string("Option<String>"),
+            Some("String".to_string())
+        );
+        assert_eq!(
+            unwrap_option_string("Option<Profile>"),
+            Some("Profile".to_string())
+        );
+        assert_eq!(
+            unwrap_option_string("Option<my_module::Profile>"),
+            Some("my_module::Profile".to_string())
+        );
+    }
+
+    #[test]
+    fn unwrap_option_strips_qualified_option_wrappers() {
+        assert_eq!(
+            unwrap_option_string("std::option::Option<i32>"),
+            Some("i32".to_string())
+        );
+        assert_eq!(
+            unwrap_option_string("core::option::Option<i32>"),
+            Some("i32".to_string())
+        );
+        assert_eq!(
+            unwrap_option_string("::std::option::Option<i32>"),
+            Some("i32".to_string())
+        );
+        assert_eq!(
+            unwrap_option_string("::core::option::Option<i32>"),
+            Some("i32".to_string())
+        );
+        // Relative-path form `option::Option<T>` — accepted because some
+        // module-scoped imports reach Option through the `option`
+        // sibling-module spelling. Codex re-review pass noted this
+        // prefix had no dedicated test even though the matcher already
+        // covered it.
+        assert_eq!(
+            unwrap_option_string("option::Option<i32>"),
+            Some("i32".to_string())
+        );
+    }
+
+    #[test]
+    fn unwrap_option_returns_none_for_non_option() {
+        assert_eq!(unwrap_option_string("i32"), None);
+        assert_eq!(unwrap_option_string("Vec<i32>"), None);
+        assert_eq!(unwrap_option_string("HashMap<String, i32>"), None);
+    }
+
+    #[test]
+    fn unwrap_option_rejects_lookalike_paths() {
+        // Non-canonical `Option` shadows are not peeled — the user's
+        // local `my_module::Option<T>` could be a different type
+        // entirely. Conservative: only the canonical `Option` /
+        // `core::option::Option` / `std::option::Option` are stripped.
+        assert_eq!(unwrap_option_string("my_module::Option<i32>"), None);
+        assert_eq!(unwrap_option_string("foo::bar::Option<i32>"), None);
     }
 }

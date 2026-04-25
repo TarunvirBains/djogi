@@ -5,9 +5,9 @@
 //! A ZST whose inherent methods return [`FieldRef<Self, V>`] for every column,
 //! framework and user alike. The emission order mirrors `descriptor::expand`:
 //!
-//! 1. `id` — present for `pk = heerid | ranjid | serial`; omitted for `pk =
-//!    "none"` (matches the descriptor's framework-prefix gating, keeping the
-//!    single schema contract consistent).
+//! 1. `id` — present for `pk = HeerId | RanjId | HeerIdDesc | RanjIdDesc |
+//!    Serial`; omitted for `pk = None` (matches the descriptor's
+//!    framework-prefix gating, keeping the single schema contract consistent).
 //! 2. `created_at`, `updated_at` — always emitted, typed as
 //!    `::djogi::types::DateTime`.
 //! 3. User-declared columns in struct source order.
@@ -19,14 +19,14 @@
 //! string columns; any other column gets a compile error citing the method's
 //! absence. That's the feature.
 //!
-//! # `pk = "none"`
+//! # `pk = None`
 //!
 //! `FieldRef<M, V>` has `M: Model` as a trait bound, and `crud::expand` does
-//! **not** emit `impl Model` for `pk = "none"` models (the `Pk: Encode` bound
+//! **not** emit `impl Model` for `pk = None` models (the `Pk: Encode` bound
 //! can't be honestly satisfied without a real PK — see `crud.rs` for the
 //! rationale). So emitting accessors here for those models would fail at
 //! E0277 the moment the user's struct is parsed. This module mirrors
-//! `crud.rs`'s gate: `pk = "none"` keeps the Phase-1 empty-stub behaviour
+//! `crud.rs`'s gate: `pk = None` keeps the Phase-1 empty-stub behaviour
 //! unchanged, so everything else (struct injection, `FromRow`, descriptor
 //! registration) still compiles. A future phase introducing a
 //! composite/user-managed PK trait will unlock accessors for them.
@@ -68,14 +68,14 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
     // ── Per-column accessor emission ─────────────────────────────────────────
     //
     // `FieldRef<M, V>` is bounded `M: Model`. `crud::expand` does NOT emit
-    // `impl Model` for `pk = "none"` models (the trait's `Pk: Encode` bound
+    // `impl Model` for `pk = None` models (the trait's `Pk: Encode` bound
     // can't be honestly satisfied without a real PK), so emitting accessor
     // methods here for those models would fail to compile with E0277 the
     // moment the user's struct is parsed — which breaks Phase 1's contract
     // that pk=none models still get struct injection, `FromRow`, and
     // descriptor registration.
     //
-    // Resolution: mirror `crud::expand`'s gate exactly. `pk = "none"` keeps
+    // Resolution: mirror `crud::expand`'s gate exactly. `pk = None` keeps
     // the Phase-1 empty-stub behavior; when the future phase introduces a
     // composite/user-managed PK trait, this branch can emit accessors keyed
     // on that trait instead.
@@ -103,6 +103,11 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                 let raw = ident.to_string();
                 let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
                 let ty = &field.ty;
+                // Phase 7-Zero-2 T8: honour the optional `__djogi_path`
+                // SQL-alias prefix if set (traversal chains embed the
+                // full-peer `Fields` via `with_path(parent_fk_column)`).
+                // The `None` arm keeps byte-for-byte compatibility with
+                // the pre-T8 emission.
                 Some(quote! {
                     /// Typed handle for this column.
                     ///
@@ -116,10 +121,20 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                     /// [`Condition`]: ::djogi::query::Condition
                     #[inline]
                     pub fn #ident(&self) -> ::djogi::query::FieldRef<#name, #ty> {
-                        ::djogi::query::field::__macro_support::__make_field_ref::<
-                            #name,
-                            #ty,
-                        >(#column)
+                        match self.__djogi_path {
+                            ::core::option::Option::Some(prefix) => {
+                                ::djogi::query::field::__macro_support::__make_field_ref_with_path::<
+                                    #name,
+                                    #ty,
+                                >(prefix, #column)
+                            }
+                            ::core::option::Option::None => {
+                                ::djogi::query::field::__macro_support::__make_field_ref::<
+                                    #name,
+                                    #ty,
+                                >(#column)
+                            }
+                        }
                     }
                 })
             })
@@ -127,6 +142,33 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
 
         quote! {
             impl #fields_name {
+                /// Construct a root-scope `Fields` handle with no SQL-alias
+                /// path. Equivalent to the `Default` impl.
+                ///
+                /// Phase 7-Zero-2 T8 introduced the optional path slot so
+                /// relation-traversal chains on visage-scoped `Fields`
+                /// could embed the full-peer model uniformly. The slot
+                /// defaults to `None` for the plain `{Model}Fields` used
+                /// directly by `QuerySet::filter`.
+                #[doc(hidden)]
+                #[inline]
+                pub const fn new() -> Self {
+                    Self { __djogi_path: ::core::option::Option::None }
+                }
+
+                /// Construct a traversal-scope `Fields` handle threaded
+                /// with the given SQL-alias path. Reached from
+                /// macro-emitted visage traversal accessors when the
+                /// relation form names the full peer model (e.g.
+                /// `expose(public -> Department)`) — the peer's scalar
+                /// accessors then produce `FieldRef`s whose column path
+                /// is `"{prefix}.{col}"`.
+                #[doc(hidden)]
+                #[inline]
+                pub const fn with_path(path: &'static str) -> Self {
+                    Self { __djogi_path: ::core::option::Option::Some(path) }
+                }
+
                 #(#accessors)*
             }
         }
@@ -163,6 +205,36 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         TokenStream::new()
     };
 
+    // Phase 7-Zero-2 T8: the `{Model}Fields` struct carries an optional
+    // SQL-alias path prefix so visage-scoped traversal chains
+    // (`.department().name()`) compose into dot-qualified column names
+    // at emission time. Default (`None`) mirrors the pre-T8 zero-cost
+    // ZST surface — `QuerySet::filter(|f| …)` still gets a plain-column
+    // closure handle.
+    //
+    // For `pk = None` models the struct is empty (no path slot); the
+    // trait surface is suppressed anyway by the gate above, so no
+    // accessor methods are emitted regardless.
+    let struct_decl = if matches!(model_attrs.pk, PkStrategy::None) {
+        quote! {
+            #[derive(Debug, Clone, Copy, Default)]
+            pub struct #fields_name;
+        }
+    } else {
+        quote! {
+            #[derive(Debug, Clone, Copy, Default)]
+            pub struct #fields_name {
+                /// SQL-alias path prefix threaded through traversal
+                /// chains. `None` for the root-scope handle used by
+                /// `QuerySet::filter(|f| …)`; `Some("parent_fk_col")` on
+                /// handles produced by visage-scoped traversal
+                /// accessors (Phase 7-Zero-2 T8).
+                #[doc(hidden)]
+                pub __djogi_path: ::core::option::Option<&'static str>,
+            }
+        }
+    };
+
     quote! {
         /// Typed field accessors for QuerySet filter closures.
         ///
@@ -172,10 +244,13 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         ///
         /// `Default` is required by the `Model::Fields` associated type
         /// (`Copy + Default + Send + Sync + 'static`) so that
-        /// `QuerySet::filter(|f| …)` can construct the ZST handle from
+        /// `QuerySet::filter(|f| …)` can construct the handle from
         /// inside the closure without the caller naming the type.
-        #[derive(Debug, Clone, Copy, Default)]
-        pub struct #fields_name;
+        ///
+        /// Phase 7-Zero-2 T8 extended the struct with an optional
+        /// `__djogi_path` slot so relation-traversal accessors can
+        /// embed this handle as a peer in a visage-scoped chain.
+        #struct_decl
 
         #accessor_impl
 

@@ -699,6 +699,118 @@ impl DjogiContext {
         self.batch_execute(sql).await
     }
 
+    /// Idempotently create a Postgres enum type.
+    ///
+    /// Postgres does not support `CREATE TYPE … IF NOT EXISTS` for enum
+    /// types, so the standard idempotent form is a `DO $$ BEGIN CREATE
+    /// TYPE … EXCEPTION WHEN duplicate_object THEN NULL; END $$` block.
+    /// This helper builds and runs that block for you.
+    ///
+    /// # Validation
+    ///
+    /// `name` is validated as a plain Postgres identifier (ASCII letter
+    /// or underscore first, alphanumerics or underscores after, ≤ 63
+    /// bytes, never a reserved Postgres keyword). Each variant string
+    /// may carry any text (single quotes are escaped per Postgres rules)
+    /// but must be ≤ 63 bytes. Empty `variants` is rejected — Postgres
+    /// requires at least one label.
+    ///
+    /// # Idempotency
+    ///
+    /// Re-invoking `ensure_enum_type` with the same name and variants
+    /// is a no-op (the inner `CREATE TYPE` raises `42710 duplicate_object`,
+    /// the `EXCEPTION` arm catches it, the outer block returns
+    /// successfully). Re-invoking with the **same name but different
+    /// variants** is also a no-op — Postgres does not compare variant
+    /// lists; the `42710` arm fires regardless. Variant evolution
+    /// (add / drop / rename) belongs to a real migration, not this
+    /// helper.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DjogiError::Db` for invalid identifiers (framework-side
+    /// validation) or any underlying execution failure (network,
+    /// permissions, transaction-state mismatch, etc.).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.ensure_enum_type("color", &["red", "green", "blue"]).await?;
+    /// ```
+    pub async fn ensure_enum_type(
+        &mut self,
+        name: &str,
+        variants: &[&str],
+    ) -> Result<(), DjogiError> {
+        validate_runtime_plain_ident(name, "enum type name")?;
+        if variants.is_empty() {
+            return Err(DjogiError::Db(crate::error::DbError::other(
+                "ensure_enum_type requires at least one variant; Postgres rejects \
+                 `CREATE TYPE … AS ENUM ()` with no labels",
+            )));
+        }
+        for v in variants {
+            if v.len() > 63 {
+                return Err(DjogiError::Db(crate::error::DbError::other(format!(
+                    "enum variant {v:?} is {len} bytes; Postgres enum labels are \
+                     limited to 63 bytes (NAMEDATALEN - 1)",
+                    len = v.len(),
+                ))));
+            }
+            // Reject `$` in variants. The wrapping DO block uses
+            // dollar-quoting (see `TAG` below); Postgres scans the
+            // dollar-quoted body for the next matching tag regardless
+            // of single-quote context inside it. A variant containing
+            // the tag string would close the body early — a SQL-
+            // injection surface for adopters who accept variant names
+            // from external input. The simplest defence is to reject
+            // `$` entirely; real-world enum labels (`'red'`,
+            // `'pending'`, `'approved'`, etc.) never need it. Adopters
+            // who genuinely need `$` in a label can call
+            // `ctx.raw_ddl(...)` directly with their own escape
+            // discipline.
+            if v.as_bytes().contains(&b'$') {
+                return Err(DjogiError::Db(crate::error::DbError::other(format!(
+                    "enum variant {v:?} contains `$`; ensure_enum_type rejects \
+                     `$` in variants because the wrapping DO block uses \
+                     dollar-quoted strings whose terminator could be smuggled \
+                     by hostile input. If you genuinely need `$` in a label, \
+                     write the DDL with `ctx.raw_ddl(...)` directly.",
+                ))));
+            }
+        }
+        let mut sql =
+            String::with_capacity(96 + variants.iter().map(|v| v.len() + 4).sum::<usize>());
+        // Use a uniquely-named dollar-quote tag rather than the bare
+        // `$$` form. Combined with the per-variant `$` rejection above,
+        // this gives belt-and-suspenders protection: even if a future
+        // change accidentally relaxes the variant validator, the tag
+        // name is specific enough that an attacker would have to
+        // smuggle it exactly. Two layers, two failure modes blocked.
+        const TAG: &str = "$djogi_ensure_enum$";
+        sql.push_str("DO ");
+        sql.push_str(TAG);
+        sql.push_str(" BEGIN CREATE TYPE ");
+        sql.push_str(name);
+        sql.push_str(" AS ENUM (");
+        for (i, v) in variants.iter().enumerate() {
+            if i > 0 {
+                sql.push_str(", ");
+            }
+            sql.push('\'');
+            for c in v.chars() {
+                if c == '\'' {
+                    sql.push('\'');
+                }
+                sql.push(c);
+            }
+            sql.push('\'');
+        }
+        sql.push_str("); EXCEPTION WHEN duplicate_object THEN NULL; END ");
+        sql.push_str(TAG);
+        self.batch_execute(&sql).await
+    }
+
     /// Stream rows from an ad-hoc SQL query using a Postgres named cursor.
     ///
     /// Returns a [`RawCursorStream`] that yields
@@ -856,6 +968,51 @@ impl DjogiContext {
     }
 }
 
+/// Runtime plain-identifier validator for user-facing helpers like
+/// [`DjogiContext::ensure_enum_type`]. Mirrors the macro-time validator
+/// in `djogi-macros::ident::check_one` (which panics) and the runtime
+/// const-side validator in `djogi::ident::assert_plain_ident` (which
+/// also panics) — a third entry point is needed because user-supplied
+/// runtime strings should error rather than panic.
+///
+/// Rules: non-empty, ≤ 63 bytes, ASCII letter or underscore first,
+/// alphanumerics or underscores after the first byte. Reserved-keyword
+/// rejection is intentionally **not** applied here because some runtime
+/// helpers (e.g. enum-type names that match a reserved word like
+/// `interval`) are fine when wrapped in `DO`-block context. Keeping
+/// the check minimal matches Postgres's actual identifier-acceptance
+/// gradient.
+fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Err(DjogiError::Db(crate::error::DbError::other(format!(
+            "{role} cannot be empty"
+        ))));
+    }
+    if bytes.len() > 63 {
+        return Err(DjogiError::Db(crate::error::DbError::other(format!(
+            "{role} {value:?} is {len} bytes; Postgres limits identifiers to 63 bytes (NAMEDATALEN - 1)",
+            len = bytes.len(),
+        ))));
+    }
+    let first = bytes[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return Err(DjogiError::Db(crate::error::DbError::other(format!(
+            "{role} {value:?} must start with an ASCII letter or underscore",
+        ))));
+    }
+    for &byte in &bytes[1..] {
+        if !(byte.is_ascii_alphanumeric() || byte == b'_') {
+            return Err(DjogiError::Db(crate::error::DbError::other(format!(
+                "{role} {value:?} contains a character that is not a valid \
+                 unquoted Postgres identifier byte; only ASCII alphanumerics \
+                 and underscores are permitted after the first character",
+            ))));
+        }
+    }
+    Ok(())
+}
+
 /// Drain a batch of on-commit callbacks panic-safely.
 ///
 /// Wraps each callback future in `AssertUnwindSafe(..).catch_unwind()`
@@ -898,5 +1055,58 @@ mod tests {
         // The pool tests will be covered in integration tests with #[tokio::test].
         // For now, we document the constraint in CLAUDE.md notes and verify
         // compilation + clippy + fmt at the unit test level.
+    }
+
+    fn err_msg(role: &str, value: &str) -> String {
+        match validate_runtime_plain_ident(value, role) {
+            Err(e) => e.to_string(),
+            Ok(()) => panic!("expected validate_runtime_plain_ident({role:?}, {value:?}) to error"),
+        }
+    }
+
+    #[test]
+    fn validate_runtime_plain_ident_accepts_letter_first() {
+        assert!(validate_runtime_plain_ident("color", "enum type name").is_ok());
+        assert!(validate_runtime_plain_ident("_priv", "enum type name").is_ok());
+        assert!(validate_runtime_plain_ident("a1_b2_c3", "enum type name").is_ok());
+    }
+
+    #[test]
+    fn validate_runtime_plain_ident_rejects_empty() {
+        let m = err_msg("enum type name", "");
+        assert!(m.contains("cannot be empty"), "got: {m}");
+    }
+
+    #[test]
+    fn validate_runtime_plain_ident_rejects_leading_digit() {
+        let m = err_msg("enum type name", "9color");
+        assert!(m.contains("ASCII letter or underscore"), "got: {m}");
+    }
+
+    #[test]
+    fn validate_runtime_plain_ident_rejects_non_ascii() {
+        let m = err_msg("enum type name", "color-hyphen");
+        assert!(
+            m.contains("not a valid unquoted Postgres identifier byte"),
+            "got: {m}",
+        );
+        let m = err_msg("enum type name", "café");
+        assert!(
+            m.contains("not a valid unquoted Postgres identifier byte"),
+            "got: {m}",
+        );
+    }
+
+    #[test]
+    fn validate_runtime_plain_ident_rejects_oversized() {
+        let big = "a".repeat(64);
+        let m = err_msg("enum type name", &big);
+        assert!(m.contains("63 bytes (NAMEDATALEN - 1)"), "got: {m}",);
+    }
+
+    #[test]
+    fn validate_runtime_plain_ident_accepts_exact_max_length() {
+        let exact = "a".repeat(63);
+        assert!(validate_runtime_plain_ident(&exact, "enum type name").is_ok());
     }
 }

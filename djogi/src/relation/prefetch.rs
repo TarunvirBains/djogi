@@ -479,7 +479,7 @@ where
             // every supported PK type (HeerId/BIGINT, RanjId/UUID,
             // i32/SERIAL). An earlier spelling decoded as `Option<i64>`,
             // which silently dropped every prefetched target on models
-            // with `pk = "ranjid"` (UUID cannot decode to `i64`) because
+            // with `pk = RanjId` (UUID cannot decode to `i64`) because
             // the decode error was swallowed with `unwrap_or(true)`.
             //
             // The Model trait already bounds `Pk: FromSql<'a>`, so no

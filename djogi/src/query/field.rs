@@ -175,6 +175,83 @@ pub mod __macro_support {
         FieldRef::new(column)
     }
 
+    /// Construct a [`FieldRef<M, V>`] with a SQL alias path prefix —
+    /// e.g. `prefix = "department"` + `column = "name"` produces a
+    /// `FieldRef` whose column string is `"department.name"`.
+    ///
+    /// # Why a single owned `&'static str`?
+    ///
+    /// The Phase 2 `Leaf::column` slot is `&'static str`; every SQL
+    /// emission site downstream pushes that string verbatim into the
+    /// `SqlAccumulator`. Keeping the composed path as one string means
+    /// every existing emitter (`query::sql::emit_leaf`, `DISTINCT ON`,
+    /// `ORDER BY`, `UPDATE … SET`) handles traversal paths with zero
+    /// changes — the dot-qualified column name is just another plain
+    /// column from its POV.
+    ///
+    /// # Identifier validation
+    ///
+    /// Both `prefix` and `column` are routed through
+    /// [`crate::ident::assert_plain_ident`] before the composed
+    /// `"prefix.column"` is built. This keeps the
+    /// identifier-smuggling seal the same strength as
+    /// [`__make_field_ref`] — a hostile path that carried SQL
+    /// metacharacters in either segment is rejected before the string
+    /// ever reaches the accumulator.
+    ///
+    /// # Composed-path interning
+    ///
+    /// Runtime path composition produces a `String`; Djogi's emission
+    /// contract demands `&'static str`. The original T8 shape
+    /// `Box::leak`ed per call, which leaked memory proportional to
+    /// `QuerySet::filter` traffic — a steady-state production leak,
+    /// not the schema-bounded one the doc claimed. The T8 Codex
+    /// review flagged that as a P0.
+    ///
+    /// T8 fixup intern-caches each distinct composed path through
+    /// [`intern_composed_path`] below: the first `(prefix, column)`
+    /// pair triggers one `Box::leak`; every subsequent call for the
+    /// same pair returns the already-leaked `&'static str`. Bound is
+    /// now `O(distinct (prefix, column) in the adopter's schema)` — a
+    /// few dozen entries for a real app, regardless of request load.
+    /// The intern map is `OnceLock<Mutex<HashSet<&'static str>>>`;
+    /// lookups are O(1) and the lock is uncontended in the steady
+    /// state.
+    #[doc(hidden)]
+    pub fn __make_field_ref_with_path<M: Model, V>(
+        prefix: &'static str,
+        column: &'static str,
+    ) -> FieldRef<M, V> {
+        assert_plain_ident(prefix, "field_path_prefix");
+        assert_plain_ident(column, "field_column");
+        let composed = intern_composed_path(prefix, column);
+        FieldRef::new(composed)
+    }
+
+    /// Intern a freshly-composed `"{prefix}.{column}"` path and return
+    /// the cached `&'static str` handle. First observation of a given
+    /// `(prefix, column)` pair `Box::leak`s the composite; every later
+    /// call returns the same reference. Thread-safe.
+    fn intern_composed_path(prefix: &'static str, column: &'static str) -> &'static str {
+        use std::collections::HashSet;
+        use std::sync::{Mutex, OnceLock};
+
+        static INTERN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+
+        let set_mutex = INTERN.get_or_init(|| Mutex::new(HashSet::new()));
+        // Build the candidate composite on the heap. The allocation is
+        // unavoidable — we need a `String` to hash against the set. The
+        // leak only happens when the candidate is a first observation.
+        let candidate = format!("{prefix}.{column}");
+        let mut set = set_mutex.lock().expect("field-path intern mutex poisoned");
+        if let Some(existing) = set.get(candidate.as_str()) {
+            return existing;
+        }
+        let leaked: &'static str = Box::leak(candidate.into_boxed_str());
+        set.insert(leaked);
+        leaked
+    }
+
     #[cfg(test)]
     #[allow(clippy::manual_async_fn)]
     // The `Model` trait's CRUD methods return `impl Future + Send` rather
@@ -309,6 +386,42 @@ impl IntoFilterValue for i32 {
 impl IntoFilterValue for i64 {
     fn into_filter_value(self) -> FilterValue {
         FilterValue::I64(self)
+    }
+}
+// Narrow integer widening (Phase 7-Zero-2 polish, GH issue #29).
+//
+// Postgres has no native unsigned-integer types and no `i8`. Adopters
+// who model fields as `u8` / `u16` / `u32` / `i8` (port numbers, small
+// counts, signed-byte audio samples, etc.) need to compare against
+// those values without manually upcasting. Each narrow type widens to
+// the smallest signed Postgres type that fits its full range:
+//
+// - `i8`  → `I16` (smallint)   — i8 fits in int2 directly.
+// - `u8`  → `I16` (smallint)   — u8 max 255 fits in int2's 32_767.
+// - `u16` → `I32` (integer)    — u16 max 65_535 exceeds i16's 32_767.
+// - `u32` → `I64` (bigint)     — u32 max ~4.3B exceeds i32's ~2.1B.
+//
+// `u64` deliberately has no impl: u64 max (~18.4 quintillion) exceeds
+// i64 max (~9.2 quintillion). Adopters who genuinely need `u64`
+// values bind via `numeric` through `rust_decimal::Decimal` instead.
+impl IntoFilterValue for i8 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I16(i16::from(self))
+    }
+}
+impl IntoFilterValue for u8 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I16(i16::from(self))
+    }
+}
+impl IntoFilterValue for u16 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I32(i32::from(self))
+    }
+}
+impl IntoFilterValue for u32 {
+    fn into_filter_value(self) -> FilterValue {
+        FilterValue::I64(i64::from(self))
     }
 }
 impl IntoFilterValue for f32 {
@@ -917,8 +1030,8 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
         //
         // The `unwrap_or(self.column())` fallback path is defensive-only and
         // unreachable from the public API: `FieldRef<M, GeoPoint>` requires
-        // `M: Model`, and `#[model(pk = "none")]` models do not receive a
-        // `Model` impl from the macro (only `pk = "none"` with no ordering
+        // `M: Model`, and `#[model(pk = None)]` models do not receive a
+        // `Model` impl from the macro (only `pk = None` with no ordering
         // semantics), so they cannot reach the spatial query surface at all.
         let pk_column = M::descriptor().pk_column().unwrap_or(self.column());
         crate::query::order::OrderExpr::spatial_distance_with_pk_tiebreak(
@@ -926,6 +1039,74 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
             center,
             pk_column,
         )
+    }
+}
+
+// ── Spatial operators on Option<GeoPoint> fields (#16 closure) ──────────────
+//
+// Mirrors the `FieldRef<M, GeoPoint>` block above for the nullable
+// variant. Adopters who model location as `Option<GeoPoint>` (the
+// natural Rust shape for "may not be located yet") can call the same
+// `.within_km` / `.order_by_distance` methods directly:
+//
+// - `within_km` gates the spatial predicate behind a sibling
+//   `IS NOT NULL` check, AND-combined with the existing
+//   `ST_DWithin(...)` predicate. Postgres also drops NULL-geo rows
+//   via three-valued logic on `ST_DWithin` (NULL ⇒ false in WHERE),
+//   but the explicit guard makes the contract loud at the emission
+//   layer and matches the issue's "raw SQL with hand-written IS NOT
+//   NULL" workaround pattern adopters were using.
+// - `order_by_distance` delegates directly to the non-Option impl.
+//   Postgres's default `NULL` handling for ASC ordering is `NULLS
+//   LAST`, so NULL-geo rows already sink to the end of the result
+//   without needing an explicit `NULLS LAST` clause. PK tiebreak
+//   still applies after distance for deterministic equidistant
+//   ordering.
+//
+// SQL parity with the non-nullable variant means callers can swap
+// `GeoPoint` for `Option<GeoPoint>` at the schema level without
+// changing the query call sites — exactly the ergonomic the issue
+// asked for.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, ::std::option::Option<crate::geo::GeoPoint>> {
+    /// Filter rows where this nullable geography column is within
+    /// `km` kilometers of `center`. Rows whose column is NULL are
+    /// excluded by an explicit `IS NOT NULL` guard AND-combined
+    /// with the underlying `ST_DWithin(...)` predicate.
+    ///
+    /// SQL: `<col> IS NOT NULL AND ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`.
+    ///
+    /// See [`FieldRef<M, GeoPoint>::within_km`] for the non-nullable
+    /// variant and the parameter-binding details — the inner
+    /// `ST_DWithin` shape is identical.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn within_km(self, center: crate::geo::GeoPoint, km: f64) -> Condition {
+        // Build the typed `IS NOT NULL` guard via the generic helper
+        // available on every FieldRef.
+        let guard: FieldRef<M, ::std::option::Option<crate::geo::GeoPoint>> =
+            FieldRef::new(self.column);
+        let is_not_null = guard.is_not_null();
+        // Lift the column into a non-Option FieldRef so we reuse the
+        // same SpatialExpr emission as the non-nullable path.
+        let inner: FieldRef<M, crate::geo::GeoPoint> = FieldRef::new(self.column);
+        Condition::and(is_not_null, inner.within_km(center, km))
+    }
+
+    /// Order rows by ascending distance from `center`. NULL-geo rows
+    /// fall to the end of the result via Postgres's default ASC NULL
+    /// handling (`NULLS LAST` is the documented default — no explicit
+    /// clause emitted). PK tiebreak still applies after distance for
+    /// deterministic equidistant ordering.
+    ///
+    /// SQL:
+    /// ```sql
+    /// ST_Distance(<col>, ST_Point($lon, $lat)::geography) ASC, id ASC
+    /// ```
+    #[must_use = "order expressions are inert until passed to `order_by`"]
+    pub fn order_by_distance(self, center: crate::geo::GeoPoint) -> crate::query::order::OrderExpr {
+        let inner: FieldRef<M, crate::geo::GeoPoint> = FieldRef::new(self.column);
+        inner.order_by_distance(center)
     }
 }
 
@@ -1189,6 +1370,171 @@ impl Condition {
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn or_with(self, other: Condition) -> Condition {
         Condition::or(self, other)
+    }
+}
+
+// ── Phase 7-Zero-2 T8: forward traversal over an optional FK / O2O ──────
+//
+// `OptionalRelationRef<V>` is the return type of the macro-emitted accessor
+// for a nullable relation field (`Option<ForeignKey<T>>` /
+// `Option<OneToOneField<T>>`) on a visage-scoped `{Visage}Fields` struct.
+// It keeps the nullability honest at the type level: the caller cannot
+// reach into the peer's `Fields` without first opting in to the SQL
+// IS-NOT-NULL guard through [`OptionalRelationRef::map_filter`].
+//
+// # Design rationale — why a wrapper type (not `Option<Fields>`)?
+//
+// Returning `Option<PeerFields>` would force the macro to embed a runtime
+// branch in emitted code (`if self.path.is_some() { Some(PeerFields { … }) }
+// else { None }`). But at filter-build time the FK column may be NULL
+// on zero rows, some rows, or every row — the `Option` lens lives in the
+// result set, not in the filter tree. The correct shape is "compose a
+// condition as if the FK is set, but guard the whole thing with
+// `author_id IS NOT NULL`". That's exactly what `map_filter` emits.
+//
+// The nullability marker also drives the boundary symbol inspection that
+// later tasks (T9 / T10) will use to reject mixing a required-FK accessor
+// with an optional-FK accessor under the same visage scope.
+
+/// Traversal handle for an optional forward relation (`Option<ForeignKey<T>>` or
+/// `Option<OneToOneField<T>>`) from a visage-scoped `{Visage}Fields`.
+///
+/// # Why `OptionalRelationRef<V>` over `Option<V>`?
+///
+/// The nullability lives in the row shape, not in the filter tree. A
+/// filter closure may compose a condition that "would" apply if the FK
+/// is set — `OptionalRelationRef::map_filter` lifts that closure into a
+/// `Condition` that first asserts the FK is non-NULL, then AND-s the
+/// inner closure's output. The caller never sees `None` — the SQL guard
+/// is automatic.
+///
+/// # SQL shape
+///
+/// `map_filter(|a| a.name().eq("Ada"))` on a wrapper over the `author_id`
+/// FK emits:
+///
+/// ```sql
+/// author_id IS NOT NULL AND author.name = $1
+/// ```
+///
+/// The `author_id IS NOT NULL` clause keeps SQL three-valued logic
+/// aligned with Rust's `Option` semantics: rows where the FK is NULL
+/// are excluded from the match set, matching the user-level mental model
+/// of "filter over author when author is set".
+///
+/// # Use from macro-emitted code only
+///
+/// Constructed through [`__macro_support::__make_optional_relation_ref`].
+/// The field `fk_column` is the owning side's FK column (e.g.
+/// `"author_id"`), and `peer_fields` is the path-threaded peer `Fields`
+/// handle returned by the macro's traversal accessor.
+pub struct OptionalRelationRef<V> {
+    fk_column: &'static str,
+    peer_fields: V,
+}
+
+impl<V> OptionalRelationRef<V> {
+    /// Compose a predicate that applies to the peer only when the FK is
+    /// non-NULL.
+    ///
+    /// The `f` closure receives the peer `Fields` handle by value (it's
+    /// `Copy` on the macro-emitted shape) and must return a `Condition`.
+    /// The returned `Condition` is equivalent to
+    /// `Condition::and(fk IS NOT NULL, f(peer_fields))`.
+    ///
+    /// # Consuming `self`
+    ///
+    /// `map_filter` consumes the wrapper by value. `V: Clone` lets the
+    /// closure receive an owned handle without forcing the wrapper's
+    /// owner to pre-clone. For the `{Visage}Fields` case the peer handle
+    /// is a plain ZST-shaped struct with a `&'static str` path, so
+    /// `Clone` is trivially cheap.
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn map_filter<F>(self, f: F) -> Condition
+    where
+        F: FnOnce(V) -> Condition,
+    {
+        let inner = f(self.peer_fields);
+        let not_null = Condition::Leaf(Leaf {
+            column: self.fk_column,
+            op: LookupOp::IsNotNull,
+            value: FilterValue::Null,
+        });
+        Condition::and(not_null, inner)
+    }
+
+    /// Emit a standalone `fk_column IS NULL` predicate. Use from a
+    /// closure when the caller wants to flip the guard — "match rows
+    /// where the FK is absent".
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn is_none(self) -> Condition {
+        Condition::Leaf(Leaf {
+            column: self.fk_column,
+            op: LookupOp::IsNull,
+            value: FilterValue::Null,
+        })
+    }
+
+    /// Emit a standalone `fk_column IS NOT NULL` predicate. The
+    /// complement of [`is_none`](Self::is_none).
+    #[must_use = "conditions are lazy — dropping one silently omits the filter"]
+    pub fn is_some(self) -> Condition {
+        Condition::Leaf(Leaf {
+            column: self.fk_column,
+            op: LookupOp::IsNotNull,
+            value: FilterValue::Null,
+        })
+    }
+}
+
+impl<V: Copy> Copy for OptionalRelationRef<V> {}
+impl<V: Clone> Clone for OptionalRelationRef<V> {
+    fn clone(&self) -> Self {
+        Self {
+            fk_column: self.fk_column,
+            peer_fields: self.peer_fields.clone(),
+        }
+    }
+}
+
+impl<V: std::fmt::Debug> std::fmt::Debug for OptionalRelationRef<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OptionalRelationRef")
+            .field("fk_column", &self.fk_column)
+            .field("peer_fields", &self.peer_fields)
+            .finish()
+    }
+}
+
+#[doc(hidden)]
+pub mod optional_relation_support {
+    //! Sealed constructor for [`OptionalRelationRef`]. Only
+    //! macro-emitted code reaches in here; downstream callers are
+    //! blocked by the `#[doc(hidden)]` marker and the
+    //! double-underscore prefix on [`__make_optional_relation_ref`].
+    use super::OptionalRelationRef;
+    use crate::ident::assert_plain_ident;
+
+    /// Construct an [`OptionalRelationRef<V>`]. The macro emits
+    /// `__make_optional_relation_ref("author_id", UserPublicFields::with_path("author"))`
+    /// for a `#[field(expose(public -> UserPublic))]` on
+    /// `author: Option<ForeignKey<User>>`.
+    ///
+    /// `fk_column` is validated against [`assert_plain_ident`] before
+    /// storage; the `peer_fields` is passed through by value (the
+    /// macro already routed the peer's path through the shared
+    /// identifier validator in
+    /// `FieldRef::__macro_support::__make_field_ref_with_path`).
+    #[doc(hidden)]
+    pub fn __make_optional_relation_ref<V>(
+        fk_column: &'static str,
+        peer_fields: V,
+    ) -> OptionalRelationRef<V> {
+        assert_plain_ident(fk_column, "optional_fk_column");
+        OptionalRelationRef {
+            fk_column,
+            peer_fields,
+        }
     }
 }
 
@@ -1940,5 +2286,60 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
         // Type annotation is the compile-time assertion.
         let _expr: crate::expr::Expr<f64> = field.distance_to(&center);
+    }
+
+    // Narrow-integer IntoFilterValue widening (Phase 7-Zero-2 polish,
+    // GH issue #29). Each narrow type widens to the smallest signed
+    // FilterValue variant that fits its full range. Mirrors the
+    // sql_cast_for_type table in `jsonb::path`.
+    #[test]
+    fn into_filter_value_i8_widens_to_i16() {
+        match (-1i8).into_filter_value() {
+            FilterValue::I16(v) => assert_eq!(v, -1),
+            other => panic!("expected I16, got {other:?}"),
+        }
+        match i8::MAX.into_filter_value() {
+            FilterValue::I16(v) => assert_eq!(v, 127),
+            other => panic!("expected I16, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_filter_value_u8_widens_to_i16() {
+        match 0u8.into_filter_value() {
+            FilterValue::I16(v) => assert_eq!(v, 0),
+            other => panic!("expected I16, got {other:?}"),
+        }
+        match u8::MAX.into_filter_value() {
+            // u8 max 255 fits in i16 without overflow.
+            FilterValue::I16(v) => assert_eq!(v, 255),
+            other => panic!("expected I16, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_filter_value_u16_widens_to_i32() {
+        match 0u16.into_filter_value() {
+            FilterValue::I32(v) => assert_eq!(v, 0),
+            other => panic!("expected I32, got {other:?}"),
+        }
+        match u16::MAX.into_filter_value() {
+            // u16 max 65535 exceeds i16 max 32767, so widen to i32.
+            FilterValue::I32(v) => assert_eq!(v, 65_535),
+            other => panic!("expected I32, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn into_filter_value_u32_widens_to_i64() {
+        match 0u32.into_filter_value() {
+            FilterValue::I64(v) => assert_eq!(v, 0),
+            other => panic!("expected I64, got {other:?}"),
+        }
+        match u32::MAX.into_filter_value() {
+            // u32 max ~4.3B exceeds i32 max ~2.1B, so widen to i64.
+            FilterValue::I64(v) => assert_eq!(v, 4_294_967_295),
+            other => panic!("expected I64, got {other:?}"),
+        }
     }
 }

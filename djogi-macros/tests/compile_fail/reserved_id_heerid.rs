@@ -1,6 +1,8 @@
-// Under the default `pk = "heerid"` strategy, the macro injects `id` as
-// HeerId, so a user `id` field collides and must be rejected with a targeted
-// macro diagnostic that points at the offending field.
+// Under the default `pk = HeerIdRecencyBiased` strategy (Phase 7-Zero-2 T2
+// flip), the macro injects `id` as HeerIdDesc, so a user `id` field
+// collides and must be rejected with a targeted macro diagnostic that
+// points at the offending field. The same error also fires under
+// `pk = HeerId` / `pk = RanjId` etc. — any strategy that injects `id`.
 use djogi::prelude::*;
 
 #[model(table = "posts")]

@@ -57,6 +57,7 @@ pub mod jsonb;
 pub mod model;
 pub mod outbox;
 pub mod pg;
+pub mod primary_key;
 pub mod query;
 pub mod relation;
 pub mod testing;
@@ -64,6 +65,14 @@ pub mod tracked;
 pub mod transaction;
 pub mod types;
 pub mod visage;
+pub mod visage_boundary;
+
+// T7 fixup — re-export `DjogiVisageOf` at crate root so adopter code that
+// bounds generics on "something that projects model M" can spell the
+// trait as `djogi::DjogiVisageOf<M>` rather than reaching into the
+// internal `visage_boundary` module. The trait itself is stable public
+// API; only the module it lives in is implementation-detail.
+pub use visage_boundary::DjogiVisageOf;
 
 /// Private re-exports used only by macro-generated code.
 ///
@@ -119,6 +128,17 @@ pub mod __private {
     pub trait SameAs<T: ?Sized> {}
     impl<T: ?Sized> SameAs<T> for T {}
 
+    /// Visage boundary marker + its seal.
+    ///
+    /// Proc-macro-emitted visages impl `Sealed<M>` and `DjogiVisageOf<M>`
+    /// for their source model `M`. Downstream code cannot satisfy the
+    /// sealed supertrait, so no hostile `impl DjogiVisageOf<OtherModel>`
+    /// can slip in. The re-export through `__private` keeps the macro
+    /// output routed through `::djogi::*` paths per
+    /// `feedback_macro_path_routing.md`.
+    pub use crate::visage_boundary::DjogiVisageOf;
+    pub use crate::visage_boundary::private::Sealed as VisageSealed;
+
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     ///
     /// Routing through `::djogi::__private::tracing` keeps user crates from
@@ -138,12 +158,14 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    DjogiEnum, JsonbSchema, apps, many_to_many, reverse_one_to_many, reverse_one_to_one,
+    DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
+    reverse_one_to_one,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
 pub use jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
 pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
+pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
 // *runtime helper* it calls (`::djogi::testing::setup_test_db`) is gated on
@@ -157,14 +179,17 @@ pub use fts_query::FtsFieldRef;
 pub use query::{
     AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
     IntoFilterValue, Lookup, ModelCursorStream, ModelFilter, OrderExpr, QuerySet, RawCursorStream,
-    UpdateAssignment, UpdateStmt,
+    UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
     ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
     OneToOneFieldResolved, PrefetchedRow,
 };
 pub use tracked::Tracked;
-pub use types::{Date, DateTime, HeerId, HeerIdDesc, RanjId, RanjIdDesc};
+pub use types::{
+    Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+    RanjIdRecencyBiased,
+};
 pub use visage::VisageError;
 
 pub mod prelude {
@@ -188,7 +213,7 @@ pub mod prelude {
     };
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
-        IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet,
+        IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, VisageQuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
     // transaction scope + retry helper.
@@ -201,18 +226,30 @@ pub mod prelude {
     // five belong in the prelude because a model defining any relation
     // needs the unresolved wrapper, and any handler consuming a
     // prefetched row needs the resolved wrapper.
+    pub use crate::primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
     pub use crate::relation::{
         ForeignKey, ForeignKeyResolved, JoinedRow, ManyToMany, OnDelete, OneToOneField,
         OneToOneFieldResolved, PrefetchedRow,
     };
     pub use crate::tracked::Tracked;
-    pub use crate::types::{Date, DateTime, HeerId, HeerIdDesc, RanjId, RanjIdDesc};
+    pub use crate::types::{
+        Date, DateTime, HeerId, HeerIdDesc, HeerIdRecencyBiased, RanjId, RanjIdDesc,
+        RanjIdRecencyBiased,
+    };
+    // T7 fixup — `DjogiVisageOf<M>` is the seal trait bounding every
+    // `{Visage}` type to its source model `M`. Adopter code that writes
+    // generic bounds over "any projection of M" names this trait, so it
+    // belongs in the default prelude alongside `Model`.
+    pub use crate::visage_boundary::DjogiVisageOf;
     // Re-export the `#[model]` attribute macro so that `use djogi::prelude::*`
     // is the only import a model definition needs.
     pub use djogi_macros::model;
     // Re-export the `djogi::apps!` function-like macro — required to declare
     // compile-time schema ownership domains (Phase 7-Zero v3 T7).
     pub use djogi_macros::apps;
+    // Re-export the `djogi::primary_key!` function-like macro — lets
+    // adopters declare custom PK newtypes (Phase 7-Zero-2 T3).
+    pub use djogi_macros::primary_key;
     // Re-export the `#[djogi_test]` attribute macro for test functions.
     // The macro generates code that calls `::djogi::testing::setup_test_db`;
     // use only in test binaries.
@@ -221,6 +258,14 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
+    // T11 / issue #30 — re-export the serde derives so `use djogi::prelude::*`
+    // is sufficient for any `JsonbSchema`-deriving or `DjogiEnum`-deriving
+    // type. The macro emits `#[derive(Serialize, Deserialize)]` paths through
+    // `::djogi::__private::serde`, but adopter-side typed JSONB schemas
+    // (`Jsonb<MyShape>`) derive serde directly on `MyShape`, and asking
+    // adopters to add a `serde` line to their `Cargo.toml` and a separate
+    // `use serde::*` clause is friction the framework can absorb.
+    pub use ::serde::{Deserialize, Serialize};
     // Spatial primitive — gated behind the `spatial` feature flag.
     #[cfg(feature = "spatial")]
     pub use crate::geo::GeoPoint;

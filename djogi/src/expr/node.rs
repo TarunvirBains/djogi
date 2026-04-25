@@ -240,6 +240,25 @@ pub(crate) enum ExprNode {
         column: &'static str,
     },
 
+    /// Table-qualified outer-scope column reference inside a correlated
+    /// subquery — emits `<table>.<column>` rather than the unqualified
+    /// [`Self::OuterRef`] form.
+    ///
+    /// Phase 7-Zero-2 T13b introduced this variant for the macro-emitted
+    /// M2M EXISTS predicate, where the inner through table and the outer
+    /// peer table both carry framework `id` / `created_at` / `updated_at`
+    /// columns. The unqualified form would raise `42702 column reference
+    /// "id" is ambiguous`; emitting `<peer_table>.id` disambiguates.
+    ///
+    /// Both fields are `&'static str` validated at construction time via
+    /// [`crate::ident::assert_plain_ident`]; safe to push as raw SQL.
+    OuterRefColumn {
+        /// Outer-scope table name (e.g. `"groups"`). Validated.
+        table: &'static str,
+        /// Column on that outer table (e.g. `"id"`). Validated.
+        column: &'static str,
+    },
+
     /// `<col> @@ to_tsquery('<dictionary>', $n)` — full-text search match.
     ///
     /// Produced by `FtsFieldRef::matches(query)`. The column name is the

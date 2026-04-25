@@ -1,0 +1,5 @@
+error[E0599]: no method named `employees` found for reference `&'a DeptPublic` in the current scope
+  --> tests/compile_fail/phase7_zero2_t9_reverse_fk_no_exposure.rs:34:17
+   |
+34 |     dept_public.employees(ctx)
+   |                 ^^^^^^^^^ method not found in `&'a DeptPublic`

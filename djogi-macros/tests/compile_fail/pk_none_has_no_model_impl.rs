@@ -9,7 +9,7 @@
 // Model-trait methods through compile-time resolution only.
 use djogi::prelude::*;
 
-#[model(table = "custom_pk", pk = "none")]
+#[model(table = "custom_pk", pk = None)]
 #[derive(Debug, Clone)]
 pub struct Custom {
     pub custom_id: String,

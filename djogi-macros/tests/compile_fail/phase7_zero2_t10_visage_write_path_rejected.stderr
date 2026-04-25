@@ -1,0 +1,8 @@
+error[E0599]: no function or associated item named `bulk_create` found for struct `XPublic` in the current scope
+  --> tests/compile_fail/phase7_zero2_t10_visage_write_path_rejected.rs:27:22
+   |
+14 | #[model(table = "x")]
+   | --------------------- function or associated item `bulk_create` not found for this struct
+...
+27 |     let _ = XPublic::bulk_create(ctx, ::std::vec![]).await;
+   |                      ^^^^^^^^^^^ function or associated item not found in `XPublic`

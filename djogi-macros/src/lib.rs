@@ -21,6 +21,7 @@ mod ident;
 mod jsonb_schema;
 mod many_to_many;
 mod model;
+mod primary_key_macro;
 mod reverse_relation;
 mod testing;
 
@@ -403,4 +404,33 @@ pub fn djogi_test(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn apps(input: TokenStream) -> TokenStream {
     apps::expand(input.into()).into()
+}
+
+/// Declarative-style macro for declaring custom primary-key types.
+///
+/// Emits a `pub struct <Name>(<Inner>);` newtype plus the trait impls the
+/// `#[model(pk = <Name>)]` attribute relies on — `PrimaryKey` (with its
+/// `KIND` / `SQL_TYPE` / `DEFAULT_SQL` associated consts), `ToSql` /
+/// `FromSql` delegation to the inner type, and optionally
+/// `PrimaryKeyDbGen` (when `bulk_sql = "..."` is set) or
+/// `PrimaryKeyClientGen` (when `generate = |...| expr` is set).
+///
+/// ```ignore
+/// djogi::primary_key! {
+///     pub struct MyAppId(i64);
+///     sql_type = "BIGINT";
+///     default_sql = "my_app_id_next()";
+///     bulk_sql = "SELECT id FROM my_app_id_next_many($1)";
+/// }
+///
+/// #[model(table = "orders", pk = MyAppId)]
+/// pub struct Order { /* ... */ }
+/// ```
+///
+/// See `djogi_macros::primary_key_macro` for the full grammar and
+/// `docs/guide/primary-keys.md#custom-pk-types` for the user-facing
+/// narrative.
+#[proc_macro]
+pub fn primary_key(input: TokenStream) -> TokenStream {
+    primary_key_macro::expand(input.into()).into()
 }

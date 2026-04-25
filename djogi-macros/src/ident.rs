@@ -181,24 +181,48 @@ pub fn validate_field_column_names(struct_item: &syn::ItemStruct) -> syn::Result
 /// aliases, renamed_from targets, etc.) can exercise the classifier
 /// without constructing a full `ItemStruct`.
 pub fn check_one(column: &str, span: proc_macro2::Span) -> syn::Result<()> {
-    let bytes = column.as_bytes();
+    check_ident("field name", column, span)
+}
+
+/// Run the same four-rule validator on a `#[model(table = "...")]`
+/// value. Phase 7-Zero-2 T13b's `OuterRef::as_qualified_expr` pushes
+/// `Model::table_name()` directly into emitted SQL as `<table>.<col>`;
+/// every historical `FROM <table>` emission does the same. Without
+/// parse-time validation, a hostile `table = "foo; DROP TABLE x; --"`
+/// would smuggle arbitrary SQL into rendered output. Reusing the
+/// column-name validator keeps the rules identical (the SQL emitter's
+/// safety contract is the same on both sides) while differentiating
+/// the diagnostic wording so errors point at the correct attribute.
+pub fn check_table_name(table: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    check_ident("table name", table, span)
+}
+
+fn check_ident(kind: &str, value: &str, span: proc_macro2::Span) -> syn::Result<()> {
+    let bytes = value.as_bytes();
 
     if bytes.is_empty() {
         return Err(syn::Error::new(
             span,
-            "#[model] field name resolves to an empty SQL column name \
-             — this is a framework bug; please report it",
+            format!(
+                "#[model] {kind} resolves to an empty SQL identifier \
+                 — this is a framework bug; please report it"
+            ),
         ));
     }
 
     if bytes.len() > MAX_IDENT_LEN {
+        let rename_hint = match kind {
+            "field name" => {
+                " Rename the field or use `#[field(renamed_from = \"…\")]` to map to a shorter column name."
+            }
+            _ => " Use a shorter name.",
+        };
         return Err(syn::Error::new(
             span,
             format!(
-                "#[model] field name {column:?} is {len} bytes as a SQL column, \
+                "#[model] {kind} {value:?} is {len} bytes as a SQL identifier, \
                  exceeding Postgres's {max}-byte usable identifier length \
-                 (NAMEDATALEN - 1). Rename the field or use `#[field(renamed_from = \"…\")]` \
-                 to map to a shorter column name.",
+                 (NAMEDATALEN - 1).{rename_hint}",
                 len = bytes.len(),
                 max = MAX_IDENT_LEN,
             ),
@@ -210,7 +234,7 @@ pub fn check_one(column: &str, span: proc_macro2::Span) -> syn::Result<()> {
         return Err(syn::Error::new(
             span,
             format!(
-                "#[model] field name {column:?} starts with a character that cannot \
+                "#[model] {kind} {value:?} starts with a character that cannot \
                  appear at the start of an unquoted Postgres identifier. Use an ASCII \
                  letter or underscore as the first character."
             ),
@@ -222,7 +246,7 @@ pub fn check_one(column: &str, span: proc_macro2::Span) -> syn::Result<()> {
             return Err(syn::Error::new(
                 span,
                 format!(
-                    "#[model] field name {column:?} contains a character that is not \
+                    "#[model] {kind} {value:?} contains a character that is not \
                      a valid unquoted Postgres identifier byte. Only ASCII alphanumerics \
                      and underscores are permitted after the first character."
                 ),
@@ -234,16 +258,21 @@ pub fn check_one(column: &str, span: proc_macro2::Span) -> syn::Result<()> {
     // ASCII alnum or `_`, so an in-place lowercase and a sorted
     // `binary_search` suffice. Heap allocation for the lowercased
     // form is acceptable at macro-expansion time — this runs once
-    // per field at compile time.
-    let lowered = column.to_ascii_lowercase();
+    // per identifier at compile time.
+    let lowered = value.to_ascii_lowercase();
     if RESERVED_KEYWORDS.binary_search(&lowered.as_str()).is_ok() {
+        let rename_hint = match kind {
+            "field name" => {
+                "Rename the field, or use `#[field(renamed_from = \"…\")]` to map to a non-reserved column name."
+            }
+            _ => "Use a non-reserved name.",
+        };
         return Err(syn::Error::new(
             span,
             format!(
-                "#[model] field name {column:?} is a reserved Postgres keyword and \
-                 cannot appear unquoted in generated SQL. Rename the field, or use \
-                 `#[field(renamed_from = \"…\")]` to map to a non-reserved column \
-                 name. (Note: Rust raw-identifier escapes like `r#select` still \
+                "#[model] {kind} {value:?} is a reserved Postgres keyword and \
+                 cannot appear unquoted in generated SQL. {rename_hint} \
+                 (Note: Rust raw-identifier escapes like `r#select` still \
                  produce the reserved SQL column name `select`.)"
             ),
         ));

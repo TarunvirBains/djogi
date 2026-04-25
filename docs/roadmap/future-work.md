@@ -205,4 +205,18 @@ EWKB codec reads the SRID from the wire and errors if it doesn't match the const
 
 **Out of scope even when scheduled.** GEOMETRY (planar) columns alongside GEOGRAPHY (geodetic) — the `GEOGRAPHY` lock is separate from the SRID lock and stays. Custom/user-defined SRIDs registered via `spatial_ref_sys` manipulation — outside framework scope; users can still use any SRID PostGIS supports, they just go through raw SQL.
 
+### 4.7 VisageQuerySet subquery embedding — Phase 8+ generalization
+
+Phase 7-Zero-2 T13 ships `VisageQuerySet<V>` as a first-class queryset return for direct visage entry, reverse-FK, and M2M traversal. The narrowing applies to the queryset's own SELECT and to predicates the caller composes onto it. What it does **not** yet support is using a `VisageQuerySet<V>` as a sub-expression inside another query — e.g. `WHERE x IN <peer queryset>`, or as the right-hand side of an `EXISTS (...)` predicate authored at the call site rather than emitted by the macro.
+
+`QuerySet<T>` already supports this through Phase 4's `Exists::new(qs)` and `Subquery<T, V>::new(qs)` typed surfaces (see `djogi/src/expr/subquery.rs`). Lifting those surfaces to accept `VisageQuerySet<V>` as well requires:
+
+1. A typed bridge from `VisageQuerySet<V>` into the `SubqueryNode` shape — table + condition tree + (for `Subquery<T, V>`) a single SELECT column.
+2. A decision about how the visage's narrowed columns slice interacts with `Subquery::new`'s requirement that the inner queryset project exactly one column. Three options: (a) require an explicit `.select::<&'static str>("col")` on the visage queryset before `Subquery::new` accepts it; (b) emit a typed `{Visage}::select_id() -> Subquery<#source, #pk_ty>` helper for the common "id in (...)" case; (c) generalize `Subquery::new` to take a column-name argument when the inner queryset has more than one column.
+3. A test surface covering visage subqueries inside both the QuerySet IR (where most predicates land) and the typed Expr IR (where the Phase 4 surface lives).
+
+Out of scope for Phase 7-Zero-2: the macro-emitted reverse-FK / M2M paths build their own predicates and never consult adopter code. Lifting subquery embedding becomes interesting once adopters write predicates like `User::filter(|u| u.id().in_subquery(PublicVerifiedAccount::filter(...).select_id()))` — a Phase 8+ surface.
+
+**Why deferred.** Phase 7-Zero-2's job was to make visages first-class for the queryset entry, traversal, and SELECT-narrowing axes. Subquery embedding is an additional axis that primarily benefits advanced query composition (the kind that already reaches for `ctx.raw_query` today); shipping it would have grown the phase scope past its v0.1.0-blocker remit. Captured here so the design doesn't get lost in the Phase 7-Zero-2 commit history.
+
 ---

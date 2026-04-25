@@ -10,20 +10,23 @@
 
 use djogi::prelude::*;
 
-#[model(table = "t4_chain_c")]
+// Phase 7-Zero-2 T2 default flip — pin HeerId across the three linked
+// models; the joined-decode test uses BIGINT `generate_id()` DDL and
+// explicit HeerId wiring through FK columns.
+#[model(table = "t4_chain_c", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct ChainC {
     pub label: String,
 }
 
-#[model(table = "t4_chain_b", no_default)]
+#[model(table = "t4_chain_b", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct ChainB {
     pub label: String,
     pub chain_c_id: ForeignKey<ChainC>,
 }
 
-#[model(table = "t4_chain_a", no_default)]
+#[model(table = "t4_chain_a", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct ChainA {
     pub label: String,
@@ -72,7 +75,7 @@ async fn setup_tables(ctx: &mut djogi::DjogiContext) {
 
 fn chain_b_for_insert(label: &str, chain_c: &ChainC) -> ChainB {
     ChainB {
-        id: djogi::types::__heerid_default(),
+        id: <djogi::types::HeerId as djogi::PrimaryKey>::sentinel(),
         created_at: djogi::types::DateTime::UNIX_EPOCH,
         updated_at: djogi::types::DateTime::UNIX_EPOCH,
         label: label.into(),
@@ -82,7 +85,7 @@ fn chain_b_for_insert(label: &str, chain_c: &ChainC) -> ChainB {
 
 fn chain_a_for_insert(label: &str, chain_b: &ChainB) -> ChainA {
     ChainA {
-        id: djogi::types::__heerid_default(),
+        id: <djogi::types::HeerId as djogi::PrimaryKey>::sentinel(),
         created_at: djogi::types::DateTime::UNIX_EPOCH,
         updated_at: djogi::types::DateTime::UNIX_EPOCH,
         label: label.into(),

@@ -82,10 +82,10 @@ Generated types must:
 `{Model}Internal` struct is generated. The model struct itself IS the
 internal form.
 
-`Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` in relation-form
-`expose` is rejected with a loud compile error in Phase 4.5 — cross-model
-dispatch of `Option<&T>` → peer visage is a follow-up-phase
-extension.
+Phase 7-Zero-2 lifted the Phase 4.5 deferral on optional FK / O2O
+visages: `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` now
+project as `Option<PeerVisage>` and participate in traversal under
+the `->` grammar. Phase 4.5's compile-rejection no longer applies.
 
 Anything beyond that is additive and should not block the first spec closure.
 
@@ -217,20 +217,38 @@ Rules:
 - related fields included in a visage must point to a named visage for the related model
 - relation loading semantics remain explicit; visage generation does not imply lazy loading
 
-Relation fields reuse the same `expose(...)` attribute as scalars, with a key-value form that names the nested visage per scope:
+Relation fields reuse the same `expose(...)` attribute as scalars under
+the Phase 7-Zero-2 `->` grammar:
 
 ```rust
-#[field(expose(public = "UserSummary", self_view = "UserDetail"))]
+// Narrow peer visage per scope.
+#[field(expose(public -> UserSummary, self_view -> UserDetail))]
+pub owner: ForeignKey<User>,
+
+// ID-only on `public` (no `->`); narrow peer visage on `admin`.
+#[field(expose(public, admin -> UserAdmin))]
+pub owner: ForeignKey<User>,
+
+// Full-struct embedding — emit the full model where you need it.
+#[field(expose(self_view -> User))]
 pub owner: ForeignKey<User>,
 ```
 
 Form semantics:
 
 - `expose(scope)` on a scalar field — include as the native type in `scope`.
-- `expose(scope = "ProjType")` on a relation field — include in `scope` rendered as the named nested visage. The macro rejects this form on scalar fields.
-- `expose(scope)` on a relation field — **compile error** in Phase 4.5. The nested transport shape must always be named explicitly; there is no fallback to the raw persistence model.
+- `expose(scope)` on a relation field — include the FK column in `scope`
+  as an ID-only projection.
+- `expose(scope -> Peer)` on a relation field — include in `scope`
+  rendered as the named peer visage (or as the model struct itself
+  when `Peer` names the model). The macro rejects the `->` form on
+  scalar fields.
+- `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` follow the same
+  grammar and project as `Option<PeerVisage>`.
 
-The exact syntax may evolve, but the contract is stable: nested transport shapes must remain visage-based, and the attribute name stays `expose` so scope membership lives in one place.
+The contract is stable: nested transport shapes must remain visage- or
+model-based, and the attribute name stays `expose` so scope membership
+lives in one place.
 
 ---
 

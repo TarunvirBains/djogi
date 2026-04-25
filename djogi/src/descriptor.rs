@@ -1232,7 +1232,7 @@ mod tests {
 /// `descriptor.fields` as the single schema source and never
 /// synthesize framework columns out-of-band.
 ///
-/// Field order: `id` (omitted for `pk = "none"`), then `created_at`,
+/// Field order: `id` (omitted for `pk = None`), then `created_at`,
 /// then `updated_at`, then user fields in source order.
 #[derive(Debug, Clone)]
 pub struct FieldDescriptor {
@@ -1303,12 +1303,37 @@ pub struct FieldDescriptor {
     pub visage_map: &'static [(&'static str, &'static str)],
 }
 
+/// Describes an adopter-declared custom PK type.
+///
+/// Named struct (not bare enum-variant fields) so future fields can be
+/// added without rewriting every `PkType::Custom` match arm in the
+/// codebase. Added in Phase 7-Zero-2 T1 alongside the
+/// [`PrimaryKey`](crate::primary_key::PrimaryKey) trait substrate; Task 3
+/// wires the attribute-parse + macro emission path that populates the
+/// fields from `#[model(pk = MyCustomId)]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CustomPrimaryKeyKind {
+    /// Fully-qualified type name of the custom PK — e.g. `"crate::ids::UserId"`.
+    pub type_name: &'static str,
+    /// Postgres column type emitted into DDL — e.g. `"UUID"` / `"BIGINT"`.
+    pub sql_type: &'static str,
+    /// Column `DEFAULT` SQL — e.g. `"gen_random_uuid()"`. Empty string
+    /// denotes no default (client-generated).
+    pub default_sql: &'static str,
+}
+
 /// Primary key strategy.
 ///
 /// The six leaf variants (`HeerId`, `RanjId`, `HeerIdDesc`, `RanjIdDesc`,
-/// `Serial`, `None`) map 1:1 to the `#[model(pk = "...")]` attribute values.
+/// `Serial`, `None`) map 1:1 to the `#[model(pk = X)]` attribute identifiers
+/// (`HeerId`, `RanjId`, `HeerIdRecencyBiased` | `HeerIdDesc`,
+/// `RanjIdRecencyBiased` | `RanjIdDesc`, `Serial`, `None`).
 /// `Composite` is emitted for models that declare multiple PK columns —
 /// rare, mostly join tables — and carries the ordered list of column names.
+/// `Custom` is emitted for adopter-declared PK types registered through
+/// [`PrimaryKey`](crate::primary_key::PrimaryKey) + `djogi::primary_key!`
+/// (wiring lands in Task 3; the variant exists from T1 so match sites
+/// across the crate freeze their exhaustiveness contract now).
 ///
 /// `HeerIdDesc` / `RanjIdDesc` (added in Phase 7-Zero v3) store the same
 /// logical identity as their ascending siblings but with timestamp + sequence
@@ -1318,7 +1343,12 @@ pub struct FieldDescriptor {
 /// Phase 7-Zero plan §4.1 for the full indexing trade-off. The ascending ↔
 /// descending PK migration itself lands in Phase 7; 7-Zero only freezes the
 /// variant additions, attribute-parse paths, and descriptor shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `#[non_exhaustive]` guards the enum so future PK shapes (sharded IDs,
+/// app-scoped IDs, etc.) can be added without breaking downstream match
+/// sites — callers must include a wildcard arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PkType {
     HeerId,
     RanjId,
@@ -1327,6 +1357,7 @@ pub enum PkType {
     Serial,
     None,
     Composite(&'static [&'static str]),
+    Custom(CustomPrimaryKeyKind),
 }
 
 /// Full descriptor for a registered model — collected via `inventory::submit!`.
@@ -1506,7 +1537,7 @@ impl ModelDescriptor {
     ///
     /// Returns `Some("id")` for the five standard PK types (`HeerId`,
     /// `RanjId`, `HeerIdDesc`, `RanjIdDesc`, `Serial`) and `None` for
-    /// `pk = "none"` models. `Composite` PKs are uncommon; this method
+    /// `pk = None` models. `Composite` PKs are uncommon; this method
     /// returns the first column in the composite list on the assumption
     /// that it is the most natural tiebreak candidate.
     ///
@@ -1521,6 +1552,10 @@ impl ModelDescriptor {
             | PkType::Serial => Some("id"),
             PkType::None => None,
             PkType::Composite(cols) => cols.first().copied(),
+            // Custom-PK models inject an `id` column the same way the
+            // built-in variants do; the custom payload is what names
+            // the Rust type, not the column.
+            PkType::Custom(_) => Some("id"),
         }
     }
 

@@ -94,7 +94,7 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 - [ ] Generate `impl sqlx::FromRow for T`
 - [ ] Generate `ModelDescriptor` and register via `inventory::submit!`
 - [ ] Minimal Phase 1 slice: support the default HeerId primary key path first
-- [ ] Defer `#[model(pk = "serial")]`, `#[model(pk = "ranjid")]`, `#[model(pk = "none")]`, and composite keys until the default path is stable
+- [ ] Defer `#[model(pk = Serial)]`, `#[model(pk = RanjId)]`, `#[model(pk = None)]`, and composite keys until the default path is stable
   - [ ] For `0.1.0`, interpret this as: composite **primary** keys remain deferred, while composite **unique constraints/indexes** are expected to ship through the migration/index metadata path
 
 ### 1b: Field Types
@@ -380,34 +380,34 @@ This phase is also where Djogi should prefer typed value wrappers and closed int
 - [ ] `ts_rank` / `ts_rank_cd` as aggregate helpers for ranking result ordering
 - [ ] Dictionary choice surfaced in migration diffs (so dictionary changes show up as an alteration)
 
-## Phase 7-Zero-2: Visage Query Surface + PK Refinements
+## Phase 7-Zero-2: Visage Query Surface + PK Refinements *(shipped)*
 
 **Goal:** Freeze the PK substrate and make visages first-class query
 entities before the Phase 7 migration engine and later consumer phases
 build on those contracts.
 
-- [ ] Default PK flip: `#[model]` with no `pk` attribute now yields `HeerIdRecencyBiased`
-- [ ] Djogi-side naming surface: `HeerIdDesc` / `RanjIdDesc` re-exported publicly as `HeerIdRecencyBiased` / `RanjIdRecencyBiased`
-- [ ] `PrimaryKeyKind` + `pk_kind` descriptor contract
-- [ ] `PrimaryKey`, `PrimaryKeyDbGen`, `PrimaryKeyClientGen` trait split for built-in and custom PK kinds
-- [ ] `djogi::primary_key!` helper macro for custom PK definitions
-- [ ] Ambient PK usability: all built-in and custom PK kinds usable outside the PK slot
-- [ ] `bulk_create` pre-allocation retrofit via PK-kind dispatch and `generate_many`
+- [x] Default PK flip: `#[model]` with no `pk` attribute now yields `HeerIdRecencyBiased`
+- [x] Djogi-side naming surface: `HeerIdDesc` / `RanjIdDesc` re-exported publicly as `HeerIdRecencyBiased` / `RanjIdRecencyBiased`
+- [x] `PrimaryKeyKind` + `pk_kind` descriptor contract
+- [x] `PrimaryKey`, `PrimaryKeyDbGen`, `PrimaryKeyClientGen` trait split for built-in and custom PK kinds
+- [x] `djogi::primary_key!` helper macro for custom PK definitions
+- [x] Ambient PK usability: all built-in and custom PK kinds usable outside the PK slot
+- [x] `bulk_create` pre-allocation retrofit via PK-kind dispatch and `generate_many`
 
-### 7-Zero-2a: Visage Query Surface + Boundary Enforcement
+### 7-Zero-2a: Visage Query Surface + Boundary Enforcement *(shipped)*
 
 Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfView` / `Admin` / `Export` carry `impl TryFrom<&Model>` for conversion but have no query-side surface. Phase 7-Zero-2 makes visages first-class query entities with compile-time scope enforcement, filling Phase 4.5's explicit M2M visage deferral in the process.
 
-- [ ] Visage as query entry point: `PublicRegisteredOwner::filter(|o| o.display_name.eq("Ada")).fetch_all(&mut ctx).await?` — every visage type gets the full QuerySet surface (filter, order, limit, fetch terminals) that models already have
-- [ ] Per-visage generated field-accessor types: alongside `{Model}Fields`, each visage emits `{Visage}Fields` surfacing only the fields the visage exposes. Attempting to reference a non-exposed field in a closure is a compile error, not a runtime omission
-- [ ] Forward-FK boundary enforcement: relation fields in the visage's accessor type point to visage-scoped peer accessors. `PublicRegisteredOwner::filter(|o| o.address.city.eq("Toronto"))` compiles; `.address.street` does not compile when `AddressPublic` exposes only `.city`. Enforcement is compile-time via the type system — zero runtime cost
-- [ ] Optional forward-FK / O2O relation-form visages: `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` participate in the same boundary enforcement instead of remaining deferred
-- [ ] Reverse-FK boundary enforcement: symmetrical. From `AddressPublic`, the reverse accessor to owners returns `QuerySet<PublicRegisteredOwner>` where the closure receiver is `PublicRegisteredOwnerFields`
-- [ ] M2M boundary enforcement: visage-scoped M2M accessor methods return visage-scoped QuerySets. Through-model fields can opt into their own visage via `#[field(expose(...))]` on through-model fields, producing e.g. `UserInterestPublic`. Through-model visages participate in the same boundary enforcement. Fills the Phase 4.5 deferral "M2M visages — visages nest only through `ForeignKey<T>` / `OneToOneField<T>`; M2M stitching is manual"
-- [ ] SELECT narrowing: visage-scoped QuerySets emit SELECT with only the visage's exposed columns, not the full model. This is the headline performance win — visages stop being only an output shape and start paying off at the query side
-- [ ] Mutation scope: visage-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a visage emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
-- [ ] Prefetch composition: an API for declaring a prefetch into a specific peer visage so chained traversals inherit the same boundary. Exact shape deferred to v2/v3 spec; leading candidates include a dedicated `prefetch_as::<PeerProjection>(model::relation)` terminal on the QuerySet and a generated `model::relation::as_public()`-style relation-path variant surfaced under each visage scope
-- [ ] Interaction with §9c: Phase 9c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`"
+- [x] Visage as query entry point: `PublicRegisteredOwner::filter(|o| o.display_name.eq("Ada")).fetch_all(&mut ctx).await?` — every visage type gets the full QuerySet surface (filter, order, limit, fetch terminals) that models already have
+- [x] Per-visage generated field-accessor types: alongside `{Model}Fields`, each visage emits `{Visage}Fields` surfacing only the fields the visage exposes. Attempting to reference a non-exposed field in a closure is a compile error, not a runtime omission
+- [x] Forward-FK boundary enforcement: relation fields in the visage's accessor type point to visage-scoped peer accessors. `PublicRegisteredOwner::filter(|o| o.address.city.eq("Toronto"))` compiles; `.address.street` does not compile when `AddressPublic` exposes only `.city`. Enforcement is compile-time via the type system — zero runtime cost
+- [x] Optional forward-FK / O2O relation-form visages: `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>` participate in the same boundary enforcement instead of remaining deferred
+- [x] Reverse-FK boundary enforcement: symmetrical. From `AddressPublic`, the reverse accessor to owners returns `QuerySet<PublicRegisteredOwner>` where the closure receiver is `PublicRegisteredOwnerFields`
+- [x] M2M boundary enforcement: visage-scoped M2M accessor methods return visage-scoped QuerySets. Through-model fields can opt into their own visage via `#[field(expose(...))]` on through-model fields, producing e.g. `UserInterestPublic`. Through-model visages participate in the same boundary enforcement. Fills the Phase 4.5 deferral "M2M visages — visages nest only through `ForeignKey<T>` / `OneToOneField<T>`; M2M stitching is manual"
+- [x] SELECT narrowing: visage-scoped QuerySets emit SELECT with only the visage's exposed columns, not the full model. This is the headline performance win — visages stop being only an output shape and start paying off at the query side
+- [x] Mutation scope: visage-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a visage emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
+- [ ] Prefetch composition: an API for declaring a prefetch into a specific peer visage so chained traversals inherit the same boundary. Exact shape deferred to v2/v3 spec; leading candidates include a dedicated `prefetch_as::<PeerProjection>(model::relation)` terminal on the QuerySet and a generated `model::relation::as_public()`-style relation-path variant surfaced under each visage scope *(deferred — visage querysets are read-only in v1; cross-visage prefetch composition revisits in a later phase)*
+- [ ] Interaction with §9c: Phase 9c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`" *(belongs to Phase 9c; left unchecked here as forward-reference)*
 
 **Deliverable:** The pre-Phase-7 PK substrate is frozen, and visages become first-class query entities with compile-time FK / reverse-FK / M2M boundary enforcement and SELECT narrowing.
 

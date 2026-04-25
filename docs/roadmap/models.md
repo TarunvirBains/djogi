@@ -189,7 +189,7 @@ pub struct AuditEntry {
 Opt-in Redis cache TTL in seconds. When set, `get()` and `fetch_one()` results are cached and invalidated on `save()` or `delete()`. Requires the `cache` feature flag and a Redis connection configured in `Djogi.toml`.
 
 ```rust
-#[model(table = "country_codes", pk = "serial", cache_ttl = 3600)]
+#[model(table = "country_codes", pk = Serial, cache_ttl = 3600)]
 #[derive(Debug, Clone)]
 pub struct CountryCode {
     pub iso_alpha2: String,

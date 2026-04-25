@@ -46,7 +46,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 // Test models
 // ---------------------------------------------------------------------------
 
-#[model(table = "accounts")]
+// Phase 7-Zero-2 T2 default flip — pin ascending HeerId across these
+// models so HeerId-typed construction and cross-model FK relations
+// (`ledger_id: ForeignKey<Ledger>` etc.) stay homogeneous.
+#[model(table = "accounts", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Account {
     pub balance: i64,
@@ -66,13 +69,13 @@ pub struct Account {
 
 // Parent / child pair for the prefetch-inside-atomic test. The `_p4`
 // suffix keeps these isolated from the Phase 3 prefetch fixtures.
-#[model(table = "ledgers_p4")]
+#[model(table = "ledgers_p4", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Ledger {
     pub name: String,
 }
 
-#[model(table = "entries_p4", no_default)]
+#[model(table = "entries_p4", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub ledger_id: ForeignKey<Ledger>,
@@ -84,7 +87,7 @@ pub struct Entry {
 // via `#[field(outbox = "ignore")]`. Kept separate from `Account` so
 // Tasks 1-5 assertions that count rows in `accounts_outbox` stay
 // unaffected (non-events models write nothing there).
-#[model(table = "notifications", events)]
+#[model(table = "notifications", pk = HeerId, events)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Notification {
     pub kind: String,
@@ -144,7 +147,7 @@ async fn setup_phase4(ctx: &mut djogi::DjogiContext) {
 
 fn entry_for_insert(memo: &str, ledger: &Ledger) -> Entry {
     Entry {
-        id: ::djogi::types::__heerid_default(),
+        id: <::djogi::types::HeerId as ::djogi::PrimaryKey>::sentinel(),
         created_at: ::djogi::types::DateTime::UNIX_EPOCH,
         updated_at: ::djogi::types::DateTime::UNIX_EPOCH,
         ledger_id: ForeignKey::new(ledger.id),

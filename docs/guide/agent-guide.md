@@ -59,8 +59,9 @@ These three fields are real struct fields after expansion. You must use
 | Attribute | Example | Effect |
 |---|---|---|
 | `table` | `table = "posts"` | Sets the Postgres table name (required) |
-| `pk` | `pk = "serial"` | Use `SERIAL` PK (default is `HeerId` / BIGINT) |
-| `pk` | `pk = "ranjid"` | Use `UUID` PK via `generate_ranjid()` |
+| `pk` | `pk = Serial` | Use `SERIAL` PK (default is `HeerIdRecencyBiased` / BIGINT descending) |
+| `pk` | `pk = RanjId` | Use `UUID` PK via `generate_ranjid()` |
+| `pk` | `pk = HeerId` | Use ascending BIGINT HeerId (historical default) |
 | `no_default` | `no_default` | Suppress generated `Default` impl (needed when fields lack `Default`) |
 | `rationale` | `rationale = "..."` | Documents behavioral constraints — read before writing code |
 
@@ -234,10 +235,11 @@ foreign key reference — HeerId carries type safety.
 
 **Step 1: Identify the table name and PK type.**
 
-Default PK is `HeerId` (64-bit BIGINT via `generate_id()`). Use
-`pk = "ranjid"` for UUIDv8 PKs. Use `pk = "serial"` for small reference
-tables (lookup codes, status types) where a simple autoincrement is
-appropriate.
+Default PK is `HeerIdRecencyBiased` (64-bit BIGINT via `generate_id()`,
+reverse-chronological sort order; Phase 7-Zero-2 T2). Use
+`pk = HeerId` for ascending BIGINT, `pk = RanjId` for UUIDv8 PKs,
+or `pk = Serial` for small reference tables (lookup codes, status
+types) where a simple autoincrement is appropriate.
 
 **Step 2: Write the struct with developer-owned fields only.**
 

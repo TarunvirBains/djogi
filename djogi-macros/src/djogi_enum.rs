@@ -265,6 +265,25 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
     let postgres_type_str = postgres_type.as_str();
     let type_name_str = enum_name_str.as_str();
 
+    // ── Emit IntoFilterValue match arms (Phase 7-Zero-2 T7, Step 8) ─────────
+    //
+    // A `DjogiEnum` round-trips as a Postgres enum column (backed by a
+    // wire string), so for filter-closure use it converts into
+    // `FilterValue::String(<wire>)`. This lets users write
+    // `f.status().eq(VehicleStatus::Active)` in a filter closure and have
+    // the clause encode the enum variant as its wire label.
+    //
+    // The match mirrors the `ToSql` arms — same `(variant, wire)` pairs,
+    // re-emitted as an owned `String`. Keeping a dedicated match (rather
+    // than delegating to `variants()[self as usize]`) avoids taking a
+    // dependency on discriminant ordering and keeps the encoding
+    // branch-free at the call site.
+    let into_filter_value_arms = variant_pairs.iter().map(|(ident, wire)| {
+        quote! {
+            #enum_name::#ident => #wire,
+        }
+    });
+
     let expanded = quote! {
         impl ::djogi::__private::postgres_types::ToSql for #enum_name {
             fn to_sql(
@@ -335,6 +354,23 @@ pub fn expand(input: TokenStream) -> syn::Result<TokenStream> {
                 type_name: #type_name_str,
                 postgres_type: #postgres_type_str,
                 variants: #variants_array,
+            }
+        }
+
+        // Phase 7-Zero-2 T7 — filter-closure support. Encoding the enum
+        // variant as its Postgres wire string (`FilterValue::String`)
+        // matches how the `ToSql` impl sends it over the wire, so
+        // `.eq(MyEnum::Variant)` / `.neq(...)` / `.in_list([...])` in a
+        // filter closure produce the same bind shape the SELECT emitter
+        // itself uses for the column. No ordinal coupling — the match
+        // arms enumerate the same `(variant, wire)` pairs as the
+        // `ToSql` branch above.
+        impl ::djogi::IntoFilterValue for #enum_name {
+            fn into_filter_value(self) -> ::djogi::query::internal::FilterValue {
+                let wire: &'static str = match self {
+                    #(#into_filter_value_arms)*
+                };
+                ::djogi::query::internal::FilterValue::String(::std::string::String::from(wire))
             }
         }
     };

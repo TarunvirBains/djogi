@@ -30,7 +30,7 @@
 //! - **Reserved names.** A user field named `created_at` or `updated_at` is
 //!   rejected unconditionally (the macro always injects those). A user field
 //!   named `id` is rejected for every `pk` strategy except `"none"` — under
-//!   `pk = "none"` the user is *expected* to declare their own `id` (or other
+//!   `pk = None` the user is *expected* to declare their own `id` (or other
 //!   PK-carrying field) and the filter below preserves it.
 //!
 //! # Default impl
@@ -66,7 +66,7 @@ const ALWAYS_RESERVED: &[&str] = &["created_at", "updated_at"];
 /// Returns `syn::Error` if:
 /// - the struct is not `Fields::Named` (tuple / unit shape), or
 /// - the user declared a reserved field name (`created_at` / `updated_at`
-///   always; `id` except under `pk = "none"`).
+///   always; `id` except under `pk = None`).
 ///
 /// When `model_attrs.no_default` is `true`, the `Default` impl is omitted.
 /// This is required for models that contain field types that do not implement
@@ -108,7 +108,7 @@ fn validate_shape(struct_item: &ItemStruct) -> syn::Result<()> {
 /// Reject user fields whose names collide with framework-injected fields.
 ///
 /// `created_at` / `updated_at` are always reserved. `id` is reserved except
-/// for `pk = "none"`, where the user is expected to declare their own PK
+/// for `pk = None`, where the user is expected to declare their own PK
 /// field (which may or may not be called `id`).
 fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<()> {
     let id_is_reserved = reserved_for_pk(model_attrs);
@@ -123,7 +123,7 @@ fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> s
                     field.span(),
                     format!(
                         "#[model] reserves the field name `{name}` — the macro injects it automatically. \
-                         Rename your field or, if you need to control the primary key yourself, set `#[model(pk = \"none\")]`."
+                         Rename your field or, if you need to control the primary key yourself, set `#[model(pk = None)]`."
                     ),
                 ));
             }
@@ -133,7 +133,7 @@ fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> s
 }
 
 /// `true` when the current `pk` strategy injects an `id` field, making `id`
-/// reserved. Only `pk = "none"` lets users declare their own `id`.
+/// reserved. Only `pk = None` lets users declare their own `id`.
 fn reserved_for_pk(model_attrs: &ModelAttrs) -> bool {
     !matches!(model_attrs.pk, PkStrategy::None)
 }
@@ -149,13 +149,18 @@ fn reserved_for_pk(model_attrs: &ModelAttrs) -> bool {
 /// error — `djogi` re-exports `HeerId`, `RanjId`, `DateTime`, etc. via its
 /// `types` module, so a single dependency is all the user ever needs.
 fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
-    let id_field: Option<syn::Field> = match model_attrs.pk {
+    let id_field: Option<syn::Field> = match &model_attrs.pk {
         PkStrategy::HeerId => Some(parse_quote! { pub id: ::djogi::types::HeerId }),
         PkStrategy::RanjId => Some(parse_quote! { pub id: ::djogi::types::RanjId }),
         PkStrategy::HeerIdDesc => Some(parse_quote! { pub id: ::djogi::types::HeerIdDesc }),
         PkStrategy::RanjIdDesc => Some(parse_quote! { pub id: ::djogi::types::RanjIdDesc }),
         PkStrategy::Serial => Some(parse_quote! { pub id: i32 }),
         PkStrategy::None => None,
+        // Custom PK: inject the user-provided path verbatim. The macro's
+        // downstream trait impls (`PrimaryKey::sentinel`, `ToSql`/`FromSql`
+        // delegation) are emitted by `djogi::primary_key!` at the path's
+        // definition site.
+        PkStrategy::Custom(path) => Some(parse_quote! { pub id: #path }),
     };
 
     let created_at_field: syn::Field = parse_quote! { pub created_at: ::djogi::types::DateTime };
@@ -178,14 +183,16 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
 /// Generate `impl Default for <Struct>` with sentinel values for framework fields.
 ///
 /// Sentinel values:
-/// - `HeerId` → `::djogi::types::__heerid_default()` (HeerId(0), always valid)
-/// - `RanjId` → `::djogi::types::__ranjid_default()` (minimum valid RanjId sentinel)
-/// - `i32` (serial) → `0i32`
+/// - `HeerId` / `HeerIdDesc` / `RanjId` / `RanjIdDesc` →
+///   `<T as ::djogi::primary_key::PrimaryKey>::sentinel()` — zero-valued
+///   instance the trait factory produces. Replaces the pre-Phase-7-Zero-2
+///   `::djogi::types::__*_default()` hidden helpers.
+/// - `i32` (serial) → `0i32` (matches `<i32 as PrimaryKey>::sentinel()`)
 /// - `created_at` / `updated_at` → `::djogi::types::DateTime::UNIX_EPOCH`
 /// - User fields → `Default::default()` (user types must implement `Default`)
 ///
 /// The `user_field_defaults` filter operates on the struct's field list
-/// *after* `inject_fields` has prepended framework fields. For `pk = "none"`,
+/// *after* `inject_fields` has prepended framework fields. For `pk = None`,
 /// no `id` is injected, so a user's own `id` field (if present) survives the
 /// filter and gets a `Default::default()` entry like any other user field.
 fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream {
@@ -209,17 +216,51 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
         })
         .map(|f| {
             let fname = &f.ident;
-            quote! { #fname: ::std::default::Default::default() }
+            // Phase 7-Zero-2 T4 — built-in PK-shaped types (HeerId family,
+            // RanjId family, including the `HeerIdRecencyBiased` /
+            // `RanjIdRecencyBiased` spec-§3.5a aliases) do not implement
+            // `Default`: the `PrimaryKey::sentinel()` factory is the
+            // canonical zero value and lives on the trait, not on the type
+            // itself. When such a type appears as an ambient (non-`id`)
+            // field, route its default through `sentinel()` so the
+            // generated `Default` impl still compiles.
+            //
+            // Non-PK user fields keep the `Default::default()` path — that
+            // contract is unchanged. Custom PK types emitted by
+            // `djogi::primary_key!` ship their own `impl Default` that
+            // also delegates to `sentinel()`, so they fall through here
+            // without needing a name match.
+            if is_builtin_pk_type(&f.ty) {
+                let ty = &f.ty;
+                quote! {
+                    #fname: <#ty as ::djogi::primary_key::PrimaryKey>::sentinel()
+                }
+            } else {
+                quote! { #fname: ::std::default::Default::default() }
+            }
         })
         .collect();
 
-    let id_part = match model_attrs.pk {
-        PkStrategy::HeerId => quote! { id: ::djogi::types::__heerid_default(), },
-        PkStrategy::RanjId => quote! { id: ::djogi::types::__ranjid_default(), },
-        PkStrategy::HeerIdDesc => quote! { id: ::djogi::types::__heerid_desc_default(), },
-        PkStrategy::RanjIdDesc => quote! { id: ::djogi::types::__ranjid_desc_default(), },
-        PkStrategy::Serial => quote! { id: 0i32, },
+    let id_part = match &model_attrs.pk {
+        PkStrategy::HeerId => quote! {
+            id: <::djogi::types::HeerId as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::RanjId => quote! {
+            id: <::djogi::types::RanjId as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::HeerIdDesc => quote! {
+            id: <::djogi::types::HeerIdDesc as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::RanjIdDesc => quote! {
+            id: <::djogi::types::RanjIdDesc as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
+        PkStrategy::Serial => quote! {
+            id: <i32 as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
         PkStrategy::None => quote! {},
+        PkStrategy::Custom(path) => quote! {
+            id: <#path as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        },
     };
 
     let timestamp_defaults = quote! {
@@ -238,4 +279,53 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
             }
         }
     }
+}
+
+/// Phase 7-Zero-2 T4 — recognise the built-in PK-shaped types (HeerId
+/// family, RanjId family, plus the spec-§3.5a `HeerIdRecencyBiased` /
+/// `RanjIdRecencyBiased` public aliases) when they appear as user-declared
+/// ambient fields.
+///
+/// These types live in `heeranjid` and are re-exported from `djogi::types`;
+/// because they come from an upstream crate, Djogi cannot add `impl Default`
+/// for them directly (orphan rule). The macro's generated `Default` impl
+/// works around that by routing such fields through
+/// `<T as PrimaryKey>::sentinel()` — the trait factory that produces the
+/// canonical zero value for every PK type.
+///
+/// Custom PK types emitted by `djogi::primary_key!` already carry their own
+/// `impl Default` (delegating to `sentinel()`), so they do not need a name
+/// match here — any user type with `Default` is handled by the default
+/// branch in `generate_default_impl`.
+///
+/// Path forms accepted: bare ident, `djogi::types::T`, and `djogi::T`. The
+/// match strips whitespace so token-tree spacing never foils the lookup.
+fn is_builtin_pk_type(ty: &syn::Type) -> bool {
+    // Normalise the type-token string: strip whitespace, and strip a leading
+    // `::` if the user wrote the absolute path form (`::djogi::types::HeerId`).
+    // Both `djogi::types::HeerId` and `::djogi::types::HeerId` name the same
+    // type; the match table stores the non-prefixed form.
+    let s = quote::quote!(#ty).to_string().replace(' ', "");
+    let normalised = s.strip_prefix("::").unwrap_or(&s);
+    matches!(
+        normalised,
+        "HeerId"
+            | "HeerIdDesc"
+            | "HeerIdRecencyBiased"
+            | "djogi::types::HeerId"
+            | "djogi::types::HeerIdDesc"
+            | "djogi::types::HeerIdRecencyBiased"
+            | "djogi::HeerId"
+            | "djogi::HeerIdDesc"
+            | "djogi::HeerIdRecencyBiased"
+            | "RanjId"
+            | "RanjIdDesc"
+            | "RanjIdRecencyBiased"
+            | "djogi::types::RanjId"
+            | "djogi::types::RanjIdDesc"
+            | "djogi::types::RanjIdRecencyBiased"
+            | "djogi::RanjId"
+            | "djogi::RanjIdDesc"
+            | "djogi::RanjIdRecencyBiased"
+    )
 }

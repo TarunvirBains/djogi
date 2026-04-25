@@ -1,0 +1,10 @@
+error: djogi::primary_key! requires `default_sql = "..."`
+ --> tests/compile_fail/phase7_zero2_t3_missing_default_sql.rs:6:1
+  |
+6 | / djogi::primary_key! {
+7 | |     pub struct Bad(i64);
+8 | |     sql_type = "BIGINT";
+9 | | }
+  | |_^
+  |
+  = note: this error originates in the macro `djogi::primary_key` (in Nightly builds, run with -Z macro-backtrace for more info)
