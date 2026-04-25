@@ -61,16 +61,27 @@
 //!
 //! # Column qualification
 //!
-//! `OuterRef::as_expr()` emits the column name **unqualified**. Postgres
-//! resolves an unqualified name against the enclosing query scope when
-//! the inner `FROM` list has no matching column, which covers the common
-//! case. When both tables expose a same-named column (every Djogi model
-//! has `id`, `created_at`, `updated_at`, so this is real), the emission
-//! is ambiguous and Postgres raises `42702`. Workaround: correlate on
-//! tables whose bare column names do not collide, or use `ctx.raw_execute`
-//! for explicitly-aliased correlations. The qualified form is deferred
-//! alongside the broader `parent_table` threading needed for
-//! `select_related + filter_expr` composition.
+//! `OuterRef` exposes two emission modes:
+//!
+//! - [`OuterRef::as_expr`] — emits the column name **unqualified**. Postgres
+//!   resolves an unqualified name against the enclosing query scope when
+//!   the inner `FROM` list has no matching column, which covers the common
+//!   case. When both tables expose a same-named column (every Djogi model
+//!   has `id`, `created_at`, `updated_at`, so this is real), the emission
+//!   is ambiguous and Postgres raises `42702`. Use this form when you've
+//!   verified the inner / outer scopes share no column names.
+//! - [`OuterRef::as_qualified_expr`] — emits `<M::table_name()>.<column>`
+//!   so the reference disambiguates to the outer scope unconditionally.
+//!   Phase 7-Zero-2 T13b's macro-emitted M2M `EXISTS` predicates use this
+//!   form because the through-table and target-table always collide on
+//!   framework-column names. Adopters writing correlated subqueries by
+//!   hand should reach for this whenever the inner / outer column-name
+//!   sets are not provably disjoint.
+//!
+//! Generalised `parent_table` threading for `select_related + filter_expr`
+//! composition (where the outer FROM may be aliased rather than literal
+//! `M::table_name()`) is the next step on this surface and remains a
+//! Phase 8+ enhancement. See `docs/roadmap/future-work.md` §4.7.
 
 use crate::expr::Expr;
 use crate::expr::node::{ExprNode, SubqueryNode};

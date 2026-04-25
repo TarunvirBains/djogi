@@ -158,6 +158,25 @@ must satisfy the policy. `set_tenant` activates the policy; an unset GUC causes
 Postgres to reject the query (the `current_setting(..., true)` call returns
 `NULL`, and `NULL = col` evaluates to `FALSE`, so no rows pass the policy).
 
+> **Note on superusers.** `FORCE ROW LEVEL SECURITY` covers the **owner**
+> bypass but does NOT cover Postgres **superusers** — superuser bypass is a
+> Postgres-level guarantee, not a djogi one. If your test harness connects
+> as a superuser (common when the test-DB owner is also a cluster superuser
+> in local dev / CI environments), RLS is silently bypassed regardless of
+> `FORCE ROW LEVEL SECURITY`, and tenant-isolation tests can pass with all
+> rows visible — a false-positive green.
+>
+> Two safe paths:
+>
+> - **Production:** connect the application pool as a non-owner, non-superuser
+>   role per the "Restricted roles" subsection below. RLS is always active for
+>   such roles.
+> - **Test harness:** if connecting as the owner is unavoidable, drop privilege
+>   inside the test scope with `SET LOCAL ROLE <restricted_role>` issued via
+>   `ctx.raw_execute(...)` before the `set_tenant(...)` call. The `LOCAL`
+>   keyword scopes the role change to the current transaction, so it
+>   automatically reverts at commit / rollback.
+
 ### Restricted roles (recommended production setup)
 
 For tighter isolation, create a restricted database role that does not own the
