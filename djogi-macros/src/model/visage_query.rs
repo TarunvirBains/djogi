@@ -217,7 +217,7 @@ pub fn expand(
 
             /// Append an ordering expression to a fresh visage queryset.
             ///
-            /// Equivalent to `V::filter(|_| Condition::True).push_ordering(...)`,
+            /// Equivalent to `V::filter(|_| Condition::True).order_by(...)`,
             /// shaped as a top-level entry so visage call sites that
             /// only care about ordering (e.g. listing pages) can skip
             /// the dummy filter closure.
@@ -235,7 +235,7 @@ pub fn expand(
                     #cs_order,
                     ::djogi::Condition::True,
                 )
-                .push_ordering(__exprs)
+                .order_by(__exprs)
             }
 
             /// Apply `LIMIT n` to a fresh visage queryset.

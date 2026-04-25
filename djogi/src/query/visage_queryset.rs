@@ -163,12 +163,19 @@ impl<V> VisageQuerySet<V> {
 
     /// AND another condition onto the accumulated filter tree.
     ///
-    /// The caller passes a closure that constructs a [`Condition`] from
-    /// the visage's `Fields` handle. The macro-emitted `V::filter` entry
-    /// uses this internally; user code reaches it via the chained form
-    /// `V::filter(..).filter(..)` if needed.
+    /// Method-name parity with [`QuerySet::filter`] keeps adopters who
+    /// switch between model-side and visage-side querysets in muscle
+    /// memory; both `Model::filter(...)` and `Visage::filter(...)` enter
+    /// via a closure on the model's / visage's `Fields` handle, and the
+    /// chained form `qs.filter(cond)` extends the predicate identically
+    /// on either surface. The macro-emitted `V::filter(|f| …)` entry
+    /// constructs the initial `VisageQuerySet` and threads the closure's
+    /// `Condition` through this method; downstream chaining uses the
+    /// same name.
+    ///
+    /// [`QuerySet::filter`]: crate::query::QuerySet::filter
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn and(mut self, cond: Condition) -> Self {
+    pub fn filter(mut self, cond: Condition) -> Self {
         self.condition = Condition::and(self.condition, cond);
         self
     }
@@ -182,7 +189,7 @@ impl<V> VisageQuerySet<V> {
     ///
     /// [`QuerySet::order_by`]: crate::query::QuerySet::order_by
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn push_ordering<I: Into<Vec<OrderExpr>>>(mut self, orderings: I) -> Self {
+    pub fn order_by<I: Into<Vec<OrderExpr>>>(mut self, orderings: I) -> Self {
         self.ordering.extend(orderings.into());
         self
     }
@@ -211,14 +218,21 @@ impl<V> VisageQuerySet<V> {
 
     /// Render the SQL string this queryset would send to Postgres.
     ///
-    /// `#[doc(hidden)]` — the emitted SQL is implementation-detail and
-    /// has no stability guarantee across phases. Tests that pin SELECT
+    /// **This is internal-test plumbing — never call this from adopter
+    /// code.** The emitted SQL is implementation-detail and has no
+    /// stability guarantee across phases. Tests that pin SELECT
     /// narrowing use this hook to assert the textual shape directly
     /// without needing `pg_stat_statements` server-side configuration
     /// (which is unavailable on most Postgres test environments).
-    /// External callers should not depend on the exact string.
+    ///
+    /// The double-underscore prefix is the framework's
+    /// `feedback_macro_path_routing` convention for "macro-internal
+    /// public-by-necessity surface, do not depend on" — same as
+    /// `__make_field_ref_with_path` and friends. The method stays
+    /// `pub` (cross-crate test access requires it) but `#[doc(hidden)]`
+    /// keeps it out of rustdoc.
     #[doc(hidden)]
-    pub fn to_sql_for_test(&self) -> String {
+    pub fn __sql_for_test(&self) -> String {
         let acc = build_visage_select(self);
         let (sql, _binds) = acc.into_parts();
         sql

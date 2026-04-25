@@ -11,7 +11,7 @@
 //! configuration that is not available on every test environment, and the
 //! "last call" semantics around statement normalisation are too fragile to
 //! anchor a correctness test on. Instead, the visage queryset exposes its
-//! emitted SQL via the `#[doc(hidden)]` `VisageQuerySet::to_sql_for_test`
+//! emitted SQL via the `#[doc(hidden)]` `VisageQuerySet::__sql_for_test`
 //! method — the test inspects the exact string the runtime would send to
 //! Postgres, which is the most direct evidence we can collect.
 //!
@@ -68,7 +68,7 @@ async fn visage_queryset_emits_narrowed_select(mut ctx: DjogiContext) {
 
     // Step 1: assert the SQL the visage queryset emits is column-narrowed.
     let qs = UserPublic::filter(|_| Condition::True);
-    let sql = qs.to_sql_for_test();
+    let sql = qs.__sql_for_test();
     assert!(
         sql.contains("display_name"),
         "narrowed SELECT must include exposed column `display_name` — got: {sql}",
