@@ -1274,6 +1274,22 @@ mod tests {
         assert_eq!(via_from, 0);
     }
 
+    #[test]
+    fn heer_id_non_zero_round_trips_directly() {
+        // Codex round-2 noted that the ZERO test alone does not exercise
+        // the real conversion logic — every implementation maps zero to
+        // zero. Pin a non-trivial bit pattern through both paths to
+        // catch a future Display-vs-as_i64 drift that the zero case
+        // would silently pass. HeerId only exposes a fallible
+        // `TryFrom<i64>` (positive 64-bit values only); pick a
+        // representative positive bit pattern.
+        let v: i64 = 0x0123_4567_89AB_CDEF_i64;
+        let id = HeerId::try_from(v).expect("positive i64 round-trips through HeerId");
+        assert_eq!(id.as_i64(), v);
+        let via_from: i64 = i64::from(id);
+        assert_eq!(via_from, v);
+    }
+
     // ── collect_add_table_targets ────────────────────────────────────────
 
     #[test]

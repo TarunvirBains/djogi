@@ -625,6 +625,71 @@ async fn relpages_probe_silent_for_small_table(mut ctx: djogi::DjogiContext) {
         .expect("must succeed silently");
 }
 
+// ── Relpages probe: target table missing AND not in plan's AddTable set ───
+//
+// Codex round-2 A-2 polish: the probe's `None` branch must hard-error
+// when the target_table doesn't exist in pg_class AND isn't being
+// created by the same plan. The unit tests cover the predicate
+// (`collect_add_table_targets`); this live test exercises the full
+// runner path against real Postgres so a regression in the probe's
+// branch logic surfaces here.
+
+#[djogi::djogi_test]
+async fn relpages_probe_hard_errors_when_target_missing(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    // Plan creates an index on a table that does NOT exist in the DB
+    // and is NOT in the plan's AddTable set. The relpages probe must
+    // surface `TargetTableNotFound` before any segment runs.
+    let plan = transactional_plan(vec![op(
+        "AddIndex t4_relpages_missing_idx",
+        "CREATE INDEX \"t4_relpages_missing_idx\" ON \"t4_relpages_missing_table\" (\"val\")",
+        "DROP INDEX \"t4_relpages_missing_idx\"",
+    )]);
+    let runner_ctx = make_runner_ctx(
+        &plan,
+        "V20260425000013__relpages_missing",
+        None,
+        None,
+        MigrateConfig::default(),
+    );
+    let err = apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect_err("missing target table must hard-error before BEGIN");
+    match err {
+        RunnerError::TargetTableNotFound {
+            index_name,
+            target_table,
+            ..
+        } => {
+            assert_eq!(index_name, "t4_relpages_missing_idx");
+            assert_eq!(target_table, "t4_relpages_missing_table");
+        }
+        other => panic!("expected TargetTableNotFound, got {other:?}"),
+    }
+
+    // The index must NOT exist (probe ran before BEGIN, so no DDL ran).
+    let exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 't4_relpages_missing_idx' AND relkind = 'i')",
+            &[],
+        )
+        .await
+        .expect("exists check");
+    assert!(!exists);
+
+    // Ledger row must be `failed` — apply was attempted, the probe
+    // rejected before the segment-apply path.
+    let status: String = ctx
+        .raw_scalar(
+            "SELECT status::text FROM djogi_schema_migrations WHERE version = $1",
+            &[&runner_ctx.version],
+        )
+        .await
+        .expect("status select");
+    assert_eq!(status, "failed");
+}
+
 // ── Run-id uniqueness across invocations ──────────────────────────────────
 
 #[djogi::djogi_test]
@@ -727,6 +792,13 @@ async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiCont
     //   - record `applied_steps_count` correctly (0, since
     //     metadata-only segments produce no non-transactional steps),
     //   - mark the ledger row applied.
+    // Codex round-2 A-5 polish: the metadata segment's `up` SQL is a
+    // *real DDL canary* — `CREATE TABLE "t4_metadata_canary"`. If the
+    // runner accidentally executes a metadata segment (the regression
+    // we are guarding against), the canary table will exist after the
+    // apply. A SQL-comment placeholder cannot detect that regression
+    // because both "executed" and "skipped" produce the same observable
+    // state (no error, no side effect).
     let plan = MigrationPlan {
         bucket: BucketKey {
             database: "main".to_string(),
@@ -746,8 +818,8 @@ async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiCont
                 kind: SegmentKind::MetadataOnly,
                 statements: vec![op(
                     "RenameApp old_app -> new_app",
-                    "-- METADATA-ONLY: rename app `old_app` to `new_app`.",
-                    "-- METADATA-ONLY: reverse rename `new_app` -> `old_app`.",
+                    "CREATE TABLE \"t4_metadata_canary\" (\"id\" BIGINT PRIMARY KEY)",
+                    "DROP TABLE \"t4_metadata_canary\"",
                 )],
             },
         ],
@@ -788,19 +860,35 @@ async fn metadata_only_segment_accounted_in_run_report(mut ctx: djogi::DjogiCont
         .expect("applied_steps_count select");
     assert_eq!(applied_steps, 0);
 
-    // The metadata-only segment's "SQL" was a comment placeholder —
-    // the table created by the transactional segment exists, but the
-    // runner did NOT execute any DDL for the metadata segment (the
-    // operation is purely a folder + ledger.app_label rename per T6).
-    let exists: bool = ctx
+    // The transactional segment's table must exist (proves the runner
+    // did execute that segment's DDL).
+    let table_exists: bool = ctx
         .raw_scalar(
             "SELECT EXISTS (SELECT 1 FROM pg_class \
              WHERE relname = 't4_metadata_table' AND relkind = 'r')",
             &[],
         )
         .await
-        .expect("exists check");
-    assert!(exists);
+        .expect("transactional-segment exists check");
+    assert!(table_exists);
+
+    // The metadata segment's canary CREATE TABLE must NOT have run —
+    // metadata segments are filesystem + ledger-row mutations only
+    // (RenameApp / MoveModelBetweenApps per T6). If the canary table
+    // exists, the runner accidentally executed metadata-segment DDL,
+    // which is the bug A-5 is guarding against.
+    let canary_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_class \
+             WHERE relname = 't4_metadata_canary' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("metadata-canary exists check");
+    assert!(
+        !canary_exists,
+        "metadata segments must NOT execute DDL — canary table was created"
+    );
 }
 
 // ── Duplicate-version surface as VersionAlreadyApplied (live PG) ──────────
@@ -855,8 +943,21 @@ async fn duplicate_version_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
         .await
         .expect_err("second apply must fail");
     match err {
-        RunnerError::VersionAlreadyApplied { version, .. } => {
+        RunnerError::VersionAlreadyApplied {
+            version,
+            applied_at,
+        } => {
             assert_eq!(version, "V20260425000012__duplicate");
+            // The first apply finalised the row to `applied`, which the
+            // ledger writes with a non-NULL `applied_at`. The typed
+            // error must surface that timestamp so operators see when
+            // the duplicate was first applied — `None` would be a
+            // regression of the A-4 fix where the orchestrator falls
+            // back to a generic message.
+            assert!(
+                applied_at.is_some(),
+                "VersionAlreadyApplied must carry the original applied_at timestamp"
+            );
         }
         other => panic!("expected VersionAlreadyApplied, got {other:?}"),
     }
