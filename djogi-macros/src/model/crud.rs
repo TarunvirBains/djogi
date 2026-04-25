@@ -1279,6 +1279,23 @@ pub fn expand(
                     ctx,
                     __n,
                 ).await?;
+                // Length-check before the zip. Built-ins uphold the
+                // `len() == n` contract by construction, but custom PKs
+                // drive the batch via user-supplied SQL (or a synthesised
+                // `SELECT … FROM generate_series(1, $1)` when only
+                // `default_sql` is set), and either can legally return
+                // fewer rows. Zipping silently would leave trailing rows
+                // pointing at stale sentinel ids and the INSERT would
+                // commit duplicates or nulls. Fail loudly instead.
+                if __ids.len() != __n {
+                    return ::std::result::Result::Err(::djogi::DjogiError::Db(
+                        ::djogi::DbError::other(::std::format!(
+                            "bulk_create: PrimaryKeyDbGen::generate_many returned {} ids for n={}",
+                            __ids.len(),
+                            __n
+                        )),
+                    ));
+                }
                 for (row, id) in rows.iter_mut().zip(__ids.into_iter()) {
                     row.id = id;
                 }

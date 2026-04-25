@@ -170,54 +170,142 @@ pub fn expand(input: TokenStream) -> TokenStream {
     } = decl;
     let name_str = name.to_string();
 
-    // DB-backed generator. `generate_many` runs `bulk_sql` with `$1` bound
-    // to the count as `i32` — matches the built-in `generate_ids` /
-    // `generate_ranjids` call shape. `generate` dispatches to
-    // `generate_many(ctx, 1)` and takes the first element; one code path,
-    // one query shape to audit.
-    let db_gen_impl = bulk_sql.as_ref().map(|sql| {
+    // `#[model]`'s post-T5 `bulk_create` binds every non-Serial custom PK
+    // on `PrimaryKeyDbGen`, so every flavor of `primary_key!` (DB-bulk,
+    // client-gen, or default-SQL-only) must produce that impl. The body
+    // picks a per-batch allocation strategy from the attrs that were
+    // actually supplied:
+    //
+    //   * `bulk_sql` present  → run the user's SQL, bind `$1 = count::i32`,
+    //                           length-check the result.
+    //   * `generate` present  → loop `PrimaryKeyClientGen::generate_client`
+    //                           once per row; zero DB round-trips.
+    //   * otherwise           → synthesise
+    //                           `SELECT <default_sql> FROM generate_series(1, $1)`
+    //                           so the column DEFAULT's generator runs N
+    //                           times in one query. Adopters whose
+    //                           `default_sql` is a constant literal will
+    //                           get N duplicate ids at runtime; they need
+    //                           to supply `bulk_sql` or `generate` for
+    //                           real `bulk_create` traffic.
+    //
+    // `generate(ctx)` funnels through `generate_many(ctx, 1)` in all three
+    // shapes so there is one code path to audit per flavor, not two.
+    let bulk_sql_body = if let Some(sql) = bulk_sql.as_ref() {
         quote! {
-            impl ::djogi::primary_key::PrimaryKeyDbGen for #name {
-                async fn generate(
-                    ctx: &mut ::djogi::DjogiContext,
-                ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
-                    let mut batch = <Self as ::djogi::primary_key::PrimaryKeyDbGen>::generate_many(ctx, 1).await?;
-                    batch
-                        .pop()
-                        .ok_or_else(|| ::djogi::DjogiError::Db(
-                            ::djogi::DbError::other(
-                                "djogi::primary_key!: bulk_sql returned zero rows for n=1",
-                            ),
-                        ))
-                }
+            if n == 0 {
+                return ::std::result::Result::Ok(::std::vec::Vec::new());
+            }
+            let count: i32 = ::std::convert::TryFrom::try_from(n).map_err(|_| {
+                ::djogi::DjogiError::Db(::djogi::DbError::other(
+                    ::std::format!(
+                        "djogi::primary_key!: bulk generate rejected — count {} exceeds i32::MAX",
+                        n
+                    ),
+                ))
+            })?;
+            let rows = ctx
+                .__query_all_for_macros(#sql, &[&count])
+                .await?;
+            let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
+                .into_iter()
+                .map(|row| {
+                    ::djogi::try_get_scalar::<#inner>(&row, 0).map(Self)
+                })
+                .collect();
+            let out = out?;
+            if out.len() != n {
+                return ::std::result::Result::Err(::djogi::DjogiError::Db(
+                    ::djogi::DbError::other(::std::format!(
+                        "djogi::primary_key!: bulk_sql returned {} rows for n={}",
+                        out.len(),
+                        n
+                    )),
+                ));
+            }
+            ::std::result::Result::Ok(out)
+        }
+    } else if generate.is_some() {
+        quote! {
+            // Client-gen loop: `generate_client()` wraps the `generate = |...|`
+            // expression (anchored by the `PrimaryKeyClientGen` impl below,
+            // so there is exactly one type-checking site for the closure /
+            // fn item) and produces a single value per call. No DB traffic
+            // from the helper macro's side.
+            let _ = ctx; // ctx unused on the client path; suppress the lint.
+            let mut out: ::std::vec::Vec<Self> = ::std::vec::Vec::with_capacity(n);
+            for _ in 0..n {
+                out.push(<Self as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client());
+            }
+            ::std::result::Result::Ok(out)
+        }
+    } else {
+        // Default-SQL-only path. `generate_series(1, $1)` yields N rows and
+        // the scalar subquery re-evaluates the adopter's `default_sql` per
+        // row — the same semantics Postgres applies to a column DEFAULT, just
+        // reached via an explicit query so the macro can bind N values.
+        let synthesised_sql = format!(
+            "SELECT ({default_sql}) AS id FROM generate_series(1, $1)",
+            default_sql = default_sql.value(),
+        );
+        quote! {
+            if n == 0 {
+                return ::std::result::Result::Ok(::std::vec::Vec::new());
+            }
+            let count: i32 = ::std::convert::TryFrom::try_from(n).map_err(|_| {
+                ::djogi::DjogiError::Db(::djogi::DbError::other(
+                    ::std::format!(
+                        "djogi::primary_key!: bulk generate rejected — count {} exceeds i32::MAX",
+                        n
+                    ),
+                ))
+            })?;
+            let rows = ctx
+                .__query_all_for_macros(#synthesised_sql, &[&count])
+                .await?;
+            let out: ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> = rows
+                .into_iter()
+                .map(|row| {
+                    ::djogi::try_get_scalar::<#inner>(&row, 0).map(Self)
+                })
+                .collect();
+            let out = out?;
+            if out.len() != n {
+                return ::std::result::Result::Err(::djogi::DjogiError::Db(
+                    ::djogi::DbError::other(::std::format!(
+                        "djogi::primary_key!: synthesised default_sql batch returned {} rows for n={}",
+                        out.len(),
+                        n
+                    )),
+                ));
+            }
+            ::std::result::Result::Ok(out)
+        }
+    };
+    let db_gen_impl = quote! {
+        impl ::djogi::primary_key::PrimaryKeyDbGen for #name {
+            async fn generate(
+                ctx: &mut ::djogi::DjogiContext,
+            ) -> ::std::result::Result<Self, ::djogi::DjogiError> {
+                let mut batch = <Self as ::djogi::primary_key::PrimaryKeyDbGen>::generate_many(ctx, 1).await?;
+                batch
+                    .pop()
+                    .ok_or_else(|| ::djogi::DjogiError::Db(
+                        ::djogi::DbError::other(
+                            "djogi::primary_key!: generate_many returned zero rows for n=1",
+                        ),
+                    ))
+            }
 
-                async fn generate_many(
-                    ctx: &mut ::djogi::DjogiContext,
-                    n: usize,
-                ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
-                    if n == 0 {
-                        return ::std::result::Result::Ok(::std::vec::Vec::new());
-                    }
-                    let count: i32 = ::std::convert::TryFrom::try_from(n).map_err(|_| {
-                        ::djogi::DjogiError::Db(::djogi::DbError::other(
-                            ::std::format!(
-                                "djogi::primary_key!: bulk generate rejected — count {} exceeds i32::MAX",
-                                n
-                            ),
-                        ))
-                    })?;
-                    let rows = ctx
-                        .__query_all_for_macros(#sql, &[&count])
-                        .await?;
-                    rows.into_iter()
-                        .map(|row| {
-                            ::djogi::try_get_scalar::<#inner>(&row, 0).map(Self)
-                        })
-                        .collect()
-                }
+            async fn generate_many(
+                ctx: &mut ::djogi::DjogiContext,
+                n: usize,
+            ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
+                #bulk_sql_body
             }
         }
-    });
+    };
+    let db_gen_impl = Some(db_gen_impl);
 
     // Client-backed generator. The `generate = |…| expr` attribute carries
     // a callable expression — typically a closure or a fn item. We call it

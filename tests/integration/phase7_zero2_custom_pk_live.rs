@@ -16,12 +16,12 @@ djogi::primary_key! {
     pub struct MyLiveId(i64);
     sql_type = "BIGINT";
     default_sql = "nextval('live_custom_pk_seq')";
-    // Phase 7-Zero-2 T5 makes `#[model]`'s post-T5 `bulk_create`
-    // emission bind every non-Serial PK on `PrimaryKeyDbGen`. Wire
-    // `bulk_sql` so the model compiles; this fixture's T3 contract
-    // (custom PK round-trip via `default_sql`) is unchanged.
-    bulk_sql = "SELECT nextval('live_custom_pk_seq') AS id \
-                FROM generate_series(1, $1)";
+    // Phase 7-Zero-2 T5 fixup: when neither `bulk_sql` nor `generate` is
+    // supplied, `primary_key!` now synthesises a batch query from
+    // `default_sql` — `SELECT (nextval('live_custom_pk_seq')) FROM
+    // generate_series(1, $1)` — so `#[model]`'s post-T5 bulk_create still
+    // binds. The adopter does not need to repeat `default_sql` in a
+    // `bulk_sql` clause.
 }
 
 #[model(table = "live_custom_pk_rows", pk = MyLiveId)]
