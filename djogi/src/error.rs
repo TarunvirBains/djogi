@@ -245,6 +245,21 @@ pub enum DjogiError {
     #[error("JSON serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// Visage projection failure — raised when a `TryFrom<&Model>` impl on
+    /// a generated visage cannot convert the row. Today's sole trigger is
+    /// [`VisageError::UnresolvedRelation`](crate::visage::VisageError), raised
+    /// when a relation-nesting visage is projected from a model whose
+    /// relation fields were not `prefetch()`-ed or `select_related()`-ed.
+    ///
+    /// Phase 7-Zero-2 T9 introduces this variant so the visage-scoped
+    /// reverse-FK / M2M accessors can flow a fallible peer-visage conversion
+    /// through `?` without losing the VisageError structure. The
+    /// `#[from]` shorthand on the inner type produces the
+    /// `impl From<VisageError> for DjogiError` conversion the emitted
+    /// accessors rely on.
+    #[error("visage error: {0}")]
+    Visage(#[from] crate::visage::VisageError),
+
     /// A DDD-style aggregate was hard-deleted mid-operation,
     /// invalidating any further work against its id. Phase 4 Task
     /// 7.7 introduces this variant as the canonical terminal signal
@@ -401,6 +416,21 @@ pub enum DjogiError {
 impl From<tokio_postgres::Error> for DjogiError {
     fn from(e: tokio_postgres::Error) -> Self {
         map_pg_err(e)
+    }
+}
+
+/// Phase 7-Zero-2 T9 — `Infallible` → `DjogiError` coercion.
+///
+/// `Infallible` has no inhabitants, so `match never {}` is exhaustive.
+/// The impl exists so macro-emitted chains that invoke
+/// `<Visage as TryFrom<&Model>>::try_from(row)?` propagate through `?`
+/// uniformly regardless of whether the visage is scalar-only (the
+/// stdlib blanket returns `Infallible`) or relation-nesting (returns
+/// `VisageError`). Without this impl the scalar-only path fails
+/// compilation with "`?` couldn't convert the error to `DjogiError`".
+impl From<std::convert::Infallible> for DjogiError {
+    fn from(never: std::convert::Infallible) -> Self {
+        match never {}
     }
 }
 

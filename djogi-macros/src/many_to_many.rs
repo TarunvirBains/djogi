@@ -159,9 +159,9 @@
 //!   collision fixture.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, LitStr, Result, Token};
+use syn::{Ident, LitStr, Path, Result, Token};
 
 /// Parsed form of a `many_to_many!` invocation.
 ///
@@ -178,10 +178,22 @@ use syn::{Ident, LitStr, Result, Token};
 /// );
 /// ```
 ///
-/// Both positional types are required first; the three keyword
+/// Both positional types are required first; the four keyword
 /// arguments can appear in any order after. Each keyword is consumed
 /// once — duplicates produce a parse error so a late-bound mistaken
 /// override cannot silently pick the wrong value.
+///
+/// # Phase 7-Zero-2 T9 — `expose(scope -> PeerVisage)` clauses
+///
+/// Zero or more `expose(scope -> PeerVisage)` entries may appear
+/// alongside the keyword arguments (comma-separated like the keywords).
+/// Each clause asks the emitter to stamp an additional inherent method
+/// on the source's `{scope}` visage that returns `Vec<PeerVisage>`. The
+/// visage-scoped method fires only when visages at that scope exist on
+/// all three participants (source, peer, through-row) — the emitter
+/// does not verify this at parse time; the three-way requirement is
+/// enforced by rustc at the macro-call site when the emitted body
+/// references missing visage methods.
 struct ManyToManyInput {
     /// The type carrying the accessor and the `impl ManyToMany<Target>`.
     source_type: Ident,
@@ -197,6 +209,25 @@ struct ManyToManyInput {
     /// Relation name — becomes both the inherent accessor method name on
     /// `source_type` and the `RELATION` const on the `ManyToMany` impl.
     relation: LitStr,
+    /// Visage exposures declared alongside the M2M declaration.
+    /// Empty when no `expose(...)` clause was written.
+    exposures: Vec<ManyToManyExposure>,
+}
+
+/// One `expose(scope -> PeerVisage)` entry on a M2M relation.
+///
+/// `scope` selects which of the four built-in visage scopes
+/// (`public` / `self_view` / `admin` / `export`) gets a stamped-out
+/// accessor. `peer` is the peer visage path returned from that
+/// accessor. The source's matching visage (`{Source}{Suffix}`) is the
+/// type the method is attached to; the through model's matching
+/// visage is referenced indirectly through `TryFrom<&Through>` in the
+/// emitted body so its absence surfaces as a compile error at the
+/// call site (the three-way check per the plan's conservative rule).
+#[derive(Clone)]
+struct ManyToManyExposure {
+    scope: Ident,
+    peer: Path,
 }
 
 impl Parse for ManyToManyInput {
@@ -217,59 +248,81 @@ impl Parse for ManyToManyInput {
         let mut this_fk: Option<Ident> = None;
         let mut that_fk: Option<Ident> = None;
         let mut relation: Option<LitStr> = None;
+        let mut exposures: Vec<ManyToManyExposure> = Vec::new();
 
         // Parse keyword arguments until we hit the end-of-input. A
         // trailing comma is accepted to match the style used elsewhere
         // in the codebase (e.g. `reverse_one_to_many!`).
         while !input.is_empty() {
             let key: Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
             let key_str = key.to_string();
-            match key_str.as_str() {
-                "through" => {
-                    if through_type.is_some() {
-                        return Err(syn::Error::new(
-                            key.span(),
-                            "duplicate `through = ...` argument in many_to_many!",
-                        ));
-                    }
-                    through_type = Some(input.parse()?);
-                }
-                "this_fk" => {
-                    if this_fk.is_some() {
-                        return Err(syn::Error::new(
-                            key.span(),
-                            "duplicate `this_fk = ...` argument in many_to_many!",
-                        ));
-                    }
-                    this_fk = Some(input.parse()?);
-                }
-                "that_fk" => {
-                    if that_fk.is_some() {
-                        return Err(syn::Error::new(
-                            key.span(),
-                            "duplicate `that_fk = ...` argument in many_to_many!",
-                        ));
-                    }
-                    that_fk = Some(input.parse()?);
-                }
-                "relation" => {
-                    if relation.is_some() {
-                        return Err(syn::Error::new(
-                            key.span(),
-                            "duplicate `relation = ...` argument in many_to_many!",
-                        ));
-                    }
-                    relation = Some(input.parse()?);
-                }
-                other => {
-                    return Err(syn::Error::new(
-                        key.span(),
-                        format!(
-                            "unknown `many_to_many!` argument `{other}` — \
-                             expected one of `through`, `this_fk`, `that_fk`, `relation`"
-                        ),
+
+            // `expose(...)` is a special clause — it does NOT take an
+            // `=` separator (follows the same bare-call shape as on
+            // `#[field(expose(...))]` and `reverse_one_to_many!`). All
+            // other keys take `key = value`; destructure on the key's
+            // grammar shape rather than one pre-emptive `=` parse so
+            // the two shapes coexist.
+            if key_str == "expose" {
+                let body;
+                syn::parenthesized!(body in input);
+                let scope: Ident = body.parse()?;
+                body.parse::<Token![->]>()?;
+                let peer: Path = body.parse()?;
+                if !body.is_empty() {
+                    return Err(body.error(
+                        "expected exactly `scope -> PeerVisage` inside the `expose(...)` body",
                     ));
+                }
+                exposures.push(ManyToManyExposure { scope, peer });
+            } else {
+                input.parse::<Token![=]>()?;
+                match key_str.as_str() {
+                    "through" => {
+                        if through_type.is_some() {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                "duplicate `through = ...` argument in many_to_many!",
+                            ));
+                        }
+                        through_type = Some(input.parse()?);
+                    }
+                    "this_fk" => {
+                        if this_fk.is_some() {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                "duplicate `this_fk = ...` argument in many_to_many!",
+                            ));
+                        }
+                        this_fk = Some(input.parse()?);
+                    }
+                    "that_fk" => {
+                        if that_fk.is_some() {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                "duplicate `that_fk = ...` argument in many_to_many!",
+                            ));
+                        }
+                        that_fk = Some(input.parse()?);
+                    }
+                    "relation" => {
+                        if relation.is_some() {
+                            return Err(syn::Error::new(
+                                key.span(),
+                                "duplicate `relation = ...` argument in many_to_many!",
+                            ));
+                        }
+                        relation = Some(input.parse()?);
+                    }
+                    other => {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            format!(
+                                "unknown `many_to_many!` argument `{other}` — \
+                                 expected one of `through`, `this_fk`, `that_fk`, `relation`, `expose`"
+                            ),
+                        ));
+                    }
                 }
             }
             // Consume the optional trailing comma between keywords; if
@@ -315,6 +368,7 @@ impl Parse for ManyToManyInput {
             this_fk,
             that_fk,
             relation,
+            exposures,
         })
     }
 }
@@ -343,6 +397,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
         this_fk,
         that_fk,
         relation,
+        exposures,
     } = parsed;
 
     // The relation name's string form drives both the inventory
@@ -602,8 +657,153 @@ pub fn expand(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Glue the three emissions together. Keeping the three blocks as
-    // independent `quote!` invocations makes diff review easier — a
+    // Phase 7-Zero-2 T9 — visage-scoped M2M accessors.
+    //
+    // For every `expose(scope -> PeerVisage)` clause, emit an inherent
+    // method on `{Source}{Suffix}` (the source's visage at that scope)
+    // that walks the through table, converts the fetched peer rows
+    // through `<PeerVisage as TryFrom<&Target>>::try_from`, and returns
+    // `Vec<PeerVisage>`. The through-row visage is required because the
+    // query pattern `Through::objects().filter(|f| f.this_fk().eq(...))`
+    // returns `Vec<Through>`, and we convert each row's resolved peer
+    // through the peer visage — but the three-way guard the plan asks
+    // for is achieved more tightly by requiring the through model to
+    // expose a scope visage too (the emitted body references
+    // `<ThroughVisage as TryFrom<&Through>>::try_from` to prove every
+    // junction row also admits projection at the named scope before
+    // fetching the peer).
+    //
+    // Conservative choice: if the peer or through visage is missing,
+    // the emitted body fails to compile with a clean `no method named`
+    // or `trait TryFrom<&...> is not implemented` error at the
+    // `many_to_many!` call site. We do NOT try to predict the scope
+    // suffix conventions or probe for the visage at parse time — that
+    // would require a whole new kind of proc-macro introspection.
+    // Letting rustc do the check at expansion time keeps the emitter
+    // simple and keeps the error message honest.
+    let visage_impls: Vec<TokenStream> = exposures
+        .iter()
+        .map(|exposure| {
+            let scope_ident = &exposure.scope;
+            let scope_lit = scope_ident.to_string();
+            let suffix = match scope_lit.as_str() {
+                "public" => "Public",
+                "self_view" => "SelfView",
+                "admin" => "Admin",
+                "export" => "Export",
+                other => {
+                    return syn::Error::new(
+                        scope_ident.span(),
+                        format!(
+                            "unknown visage scope `{other}` in `expose({other} -> ...)`; \
+                             valid scopes are `public`, `self_view`, `admin`, `export`"
+                        ),
+                    )
+                    .to_compile_error();
+                }
+            };
+            let source_visage = format_ident!("{source_type}{suffix}");
+            let through_visage = format_ident!("{through_type}{suffix}");
+            let peer = &exposure.peer;
+            let peer_name = peer
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+
+            let visage_doc = format!(
+                "Visage-scoped many-to-many accessor — returns every `{peer_name}` \
+                 associated with this `{source_visage}` via the `{through_type}` \
+                 junction. Delegates to the model-scoped `{source_type}::{relation_lit}` \
+                 for fetching and projects through `<{peer_name} as TryFrom<&{target_type}>>::try_from`. \
+                 The through-row visage (`{through_visage}`) must exist at the `{scope_lit}` scope; \
+                 otherwise the projection check inside the body fails to compile.",
+                peer_name = peer_name,
+                source_visage = source_visage,
+                through_type = through_type,
+                source_type = source_type,
+                relation_lit = relation_lit,
+                target_type = target_type,
+                through_visage = through_visage,
+                scope_lit = scope_lit,
+            );
+
+            quote! {
+                #[automatically_derived]
+                impl #source_visage {
+                    #[doc = #visage_doc]
+                    #[inline]
+                    pub fn #relation_ident<'ctx>(
+                        &'ctx self,
+                        ctx: &'ctx mut ::djogi::context::DjogiContext,
+                    ) -> impl ::std::future::Future<
+                        Output = ::std::result::Result<
+                            ::std::vec::Vec<#peer>,
+                            ::djogi::DjogiError,
+                        >,
+                    > + ::std::marker::Send + 'ctx
+                    {
+                        // Visages carry a framework `id` column typed as
+                        // the source model's PK. Cloning it mirrors the
+                        // reverse-FK visage-scoped emitter in
+                        // `reverse_relation.rs` — keep the two sites
+                        // symmetric.
+                        let pk = ::std::clone::Clone::clone(&self.id);
+                        async move {
+                            // Through-row exposure gate — the plan's
+                            // "both endpoints + through-row" rule
+                            // enforces itself through this zero-runtime
+                            // probe: if `{Through}{Suffix}` does not
+                            // exist, the `TryFrom<&Through>` bound
+                            // below fails to resolve and the macro
+                            // call site sees a clean diagnostic. The
+                            // `as T: TryFrom<...>` bound never executes
+                            // — only the type-existence check matters.
+                            fn __djogi_through_visage_exists<T>() where
+                                T: for<'__a> ::std::convert::TryFrom<&'__a #through_type>
+                            {}
+                            __djogi_through_visage_exists::<#through_visage>();
+
+                            // Fetch through-rows + project peers via the
+                            // existing `ManyToMany::related` body (single
+                            // source of truth for the query shape). Each
+                            // peer row then folds through the peer
+                            // visage's fallible conversion.
+                            let __djogi_through_rows: ::std::vec::Vec<#through_type> =
+                                <#through_type as ::djogi::model::Model>::objects()
+                                    .filter(move |f| {
+                                        f.#this_fk().eq(
+                                            ::djogi::relation::ForeignKey::<#source_type>::new(
+                                                ::std::clone::Clone::clone(&pk),
+                                            ),
+                                        )
+                                    })
+                                    .fetch_all(&mut *ctx)
+                                    .await?;
+                            let mut __djogi_out: ::std::vec::Vec<#peer> =
+                                ::std::vec::Vec::with_capacity(__djogi_through_rows.len());
+                            for __djogi_row in &__djogi_through_rows {
+                                let __djogi_target = <#target_type as ::djogi::model::Model>::get(
+                                    &mut *ctx,
+                                    __djogi_row.#that_fk.key().clone(),
+                                )
+                                .await?;
+                                __djogi_out.push(
+                                    <#peer as ::std::convert::TryFrom<&#target_type>>::try_from(
+                                        &__djogi_target,
+                                    )?
+                                );
+                            }
+                            ::std::result::Result::Ok(__djogi_out)
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    // Glue the four/five emissions together. Keeping each block as a
+    // separate `quote!` invocation makes diff review easier — a
     // reviewer can scroll to the exact emission block instead of
     // parsing one giant TokenStream — and matches the reverse-relation
     // macro's internal structure.
@@ -612,5 +812,6 @@ pub fn expand(input: TokenStream) -> TokenStream {
         #trait_impl
         #accessor_impl
         #inventory_submit
+        #(#visage_impls)*
     }
 }

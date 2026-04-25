@@ -1,0 +1,9 @@
+error[E0599]: no method named `groups` found for reference `&'a PersonAdmin` in the current scope
+  --> tests/compile_fail/phase7_zero2_t9_m2m_missing_through_visage.rs:75:18
+   |
+75 |     person_admin.groups(ctx)
+   |                  ^^^^^^ method not found in `&'a PersonAdmin`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+   = note: the following trait defines an item `groups`, perhaps you need to implement it:
+           candidate #1: `std::os::unix::process::CommandExt`
