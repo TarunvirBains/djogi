@@ -456,70 +456,42 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
             let receiver_visage = format_ident!("{receiver_type}{suffix}");
             let peer = &exposure.peer;
 
-            // Match the model-scoped accessor's per-kind return shape,
-            // converting `Returned` rows to `PeerVisage` through the
-            // peer's `TryFrom<&Returned>` impl. Visage projection errors
-            // flow through `DjogiError::Visage` (Phase 7-Zero-2 T9
-            // introduces the `#[from] VisageError` variant) so callers
-            // propagate with `?` uniformly.
-            let visage_inner_ty: TokenStream = match kind {
-                AccessorKind::OneToMany => quote! { ::std::vec::Vec<#peer> },
-                AccessorKind::OneToOne => quote! { ::std::option::Option<#peer> },
-            };
-            // Body is PK-kind agnostic because the wrapper_ctor
-            // (`ForeignKey::<Receiver>::new(pk)` / `OneToOneField::...`)
-            // is parameterised over the source model, not the visage.
-            // `#returned_type::objects()` fetches model rows; the
-            // projection loop maps each row through `TryFrom<&Returned>`
-            // into the peer visage.
-            let project_body: TokenStream = match kind {
-                AccessorKind::OneToMany => quote! {
-                    let __djogi_rows = <#returned_type as ::djogi::model::Model>::objects()
-                        .filter(move |f| f.#filter_method().eq(#wrapper_ctor))
-                        .fetch_all(ctx)
-                        .await?;
-                    let mut __djogi_out: ::std::vec::Vec<#peer> =
-                        ::std::vec::Vec::with_capacity(__djogi_rows.len());
-                    for __djogi_row in &__djogi_rows {
-                        __djogi_out.push(
-                            <#peer as ::std::convert::TryFrom<&#returned_type>>::try_from(__djogi_row)?
-                        );
-                    }
-                    ::std::result::Result::Ok(__djogi_out)
-                },
-                AccessorKind::OneToOne => quote! {
-                    let __djogi_row = <#returned_type as ::djogi::model::Model>::objects()
-                        .filter(move |f| f.#filter_method().eq(#wrapper_ctor))
-                        .first(ctx)
-                        .await?;
-                    match __djogi_row {
-                        ::std::option::Option::Some(ref __djogi_v) => ::std::result::Result::Ok(
-                            ::std::option::Option::Some(
-                                <#peer as ::std::convert::TryFrom<&#returned_type>>::try_from(__djogi_v)?
-                            )
-                        ),
-                        ::std::option::Option::None => ::std::result::Result::Ok(::std::option::Option::None),
-                    }
-                },
-            };
-            // The visage-scoped method lives on `{Receiver}{Suffix}`, a
-            // projection type that does NOT impl `Model`. We cannot
-            // reach the source `Model::pk_value(...)` via `Self` here;
-            // instead, we rely on the framework-column `id` every scope-
-            // emitted visage carries (see
-            // `visages::framework_field_decls`) whose type mirrors the
-            // source model's PK. Cloning it is cheap (every PK type
-            // bounds `Clone`) and the closure below captures the owned
-            // value so the future doesn't borrow `self` past `'ctx`.
-            let visage_pk_hook = quote! {
-                let pk = ::std::clone::Clone::clone(&self.id);
-            };
+            // Phase 7-Zero-2 T13a — visage-scoped reverse accessors
+            // return a narrowed `VisageQuerySet<Peer>` synchronously
+            // instead of awaiting a `Vec<Peer>` / `Option<Peer>` over
+            // a full-model SELECT and projecting in Rust. Two payoffs:
+            //
+            // 1. SQL-level SELECT narrowing — the queryset bakes in the
+            //    peer visage's `columns` slice, so emitted SQL projects
+            //    only exposed columns. Fewer wire bytes, smaller heap
+            //    fetches, possible index-only scans.
+            // 2. Lazy composition — callers can append `.filter(...)`,
+            //    `.order_by(...)`, `.limit(n)`, `.count(ctx)`,
+            //    `.exists(ctx)`, or `.stream(ctx)` on top of the reverse
+            //    accessor instead of materialising every reverse row.
+            //
+            // The FK predicate is built via the source model's typed
+            // `Model::Fields` accessor (`{Returned}Fields::{filter_method}()`)
+            // so column-name typos are compile errors at macro-emission
+            // time, not runtime SQL bugs. The resulting `Condition`
+            // hands off to the visage's hidden
+            // `__filter_with_initial_condition` constructor.
+            //
+            // OneToMany returns `VisageQuerySet<Peer>` and the caller
+            // chains `.fetch_all(ctx)`. OneToOne also returns
+            // `VisageQuerySet<Peer>` — the caller chains `.first(ctx)`
+            // for `Option<Peer>` semantics.
+            let _ = kind; // kind no longer differentiates the body shape.
 
             let visage_doc = match kind {
                 AccessorKind::OneToMany => format!(
-                    "Visage-scoped reverse one-to-many accessor — delegates to the \
-                     model-scoped `{receiver}::{m}` and projects each row through \
-                     `<{peer_name} as TryFrom<&{returned}>>::try_from`. Declared with \
+                    "Visage-scoped reverse one-to-many accessor — returns a \
+                     SELECT-narrowed `VisageQuerySet<{peer_name}>`. The queryset \
+                     emits SQL that projects only `{peer_name}`'s exposed columns \
+                     and applies `{via} = <this {receiver}'s pk>` as the root \
+                     predicate. Chain `.filter(...)`, `.order_by(...)`, \
+                     `.limit(n)`, etc. and finish with `.fetch_all(ctx)` / \
+                     `.count(ctx)` / `.stream(ctx)`. Declared with \
                      `djogi::reverse_one_to_many!({receiver}, {m} -> {returned} by {via}, \
                      expose({scope} -> {peer_name}));`.",
                     receiver = receiver_lit,
@@ -527,13 +499,17 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                     via = via_lit,
                     m = method_lit,
                     scope = scope_lit,
-                    peer_name = peer.segments.last().map(|s| s.ident.to_string()).unwrap_or_default(),
+                    peer_name = peer
+                        .segments
+                        .last()
+                        .map(|s| s.ident.to_string())
+                        .unwrap_or_default(),
                 ),
                 AccessorKind::OneToOne => format!(
-                    "Visage-scoped reverse one-to-one accessor — returns `Some(peer)` \
-                     when exactly one `{returned}` row has its `{via}` column pointing at \
-                     this `{receiver}` visage, projected through `<{peer_name} as \
-                     TryFrom<&{returned}>>::try_from`. Declared with \
+                    "Visage-scoped reverse one-to-one accessor — returns a \
+                     SELECT-narrowed `VisageQuerySet<{peer_name}>` whose root \
+                     predicate is `{via} = <this {receiver}'s pk>`. Chain \
+                     `.first(ctx)` for `Option<{peer_name}>` semantics. Declared with \
                      `djogi::reverse_one_to_one!({receiver}, {m} -> {returned} by {via}, \
                      expose({scope} -> {peer_name}));`.",
                     receiver = receiver_lit,
@@ -541,7 +517,11 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                     via = via_lit,
                     m = method_lit,
                     scope = scope_lit,
-                    peer_name = peer.segments.last().map(|s| s.ident.to_string()).unwrap_or_default(),
+                    peer_name = peer
+                        .segments
+                        .last()
+                        .map(|s| s.ident.to_string())
+                        .unwrap_or_default(),
                 ),
             };
 
@@ -550,26 +530,30 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                 impl #receiver_visage {
                     #[doc = #visage_doc]
                     #[inline]
-                    pub fn #method<'ctx>(
-                        &'ctx self,
-                        ctx: &'ctx mut ::djogi::context::DjogiContext,
-                    ) -> impl ::std::future::Future<
-                        Output = ::std::result::Result<
-                            #visage_inner_ty,
-                            ::djogi::DjogiError,
-                        >,
-                    > + ::std::marker::Send + 'ctx
-                    {
+                    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+                    pub fn #method(&self) -> ::djogi::query::VisageQuerySet<#peer> {
                         // Every scope-emitted visage carries an `id`
                         // framework column whose type mirrors the source
-                        // model's PK. Cloning it is cheap (every PK type
-                        // bounds `Clone`), and the closure below captures
-                        // the owned value so the future doesn't borrow
-                        // `self` past `'ctx`.
-                        #visage_pk_hook
-                        async move {
-                            #project_body
-                        }
+                        // model's PK (see `visages::framework_field_decls`).
+                        // Cloning it is cheap — every PK type bounds
+                        // `Clone` — and the queryset captures the owned
+                        // value as a bind parameter via the typed FK
+                        // predicate below.
+                        let pk = ::std::clone::Clone::clone(&self.id);
+                        // Build the FK predicate via the SOURCE MODEL's
+                        // typed `Model::Fields` accessor. A typo in the
+                        // FK column name would surface as a compile
+                        // error here (`no method named 'foo' on type ...
+                        // {Returned}Fields`), not a runtime SQL bug.
+                        let __cond = ::djogi::query::field::FieldRef::<#returned_type, _>::eq(
+                            <
+                                <#returned_type as ::djogi::model::Model>::Fields
+                                as ::core::default::Default
+                            >::default()
+                            .#filter_method(),
+                            #wrapper_ctor,
+                        );
+                        <#peer>::__filter_with_initial_condition(__cond)
                     }
                 }
             }

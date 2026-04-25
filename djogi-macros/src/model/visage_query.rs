@@ -185,6 +185,7 @@ pub fn expand(
     let cs_order = columns_slice.clone();
     let cs_limit = columns_slice.clone();
     let cs_offset = columns_slice.clone();
+    let cs_initial = columns_slice.clone();
     let cs_const = columns_slice.clone();
 
     quote! {
@@ -258,6 +259,38 @@ pub fn expand(
                     ::djogi::Condition::True,
                 )
                 .offset(n)
+            }
+
+            /// Internal seam — build a [`VisageQuerySet`] over the source
+            /// model's table with this visage's narrowed column projection
+            /// and the supplied `Condition` as the queryset's root.
+            ///
+            /// Used by macro-emitted reverse-FK and M2M visage accessors
+            /// (Phase 7-Zero-2 T13). The accessors construct the
+            /// FK / EXISTS predicate via the source model's typed
+            /// [`Model::Fields`] / [`Exists`] surface and hand the
+            /// resulting [`Condition`] to this constructor; the visage's
+            /// baked-in `columns` slice ensures the emitted SELECT stays
+            /// narrowed to the visage's exposed columns.
+            ///
+            /// `#[doc(hidden)]` — adopter code should reach the visage
+            /// query surface through [`Self::filter`], [`Self::order_by`],
+            /// [`Self::limit`], and [`Self::offset`]. This entry point
+            /// exists for macro-emission cross-crate paths only and may
+            /// be reshaped without notice.
+            ///
+            /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
+            /// [`Condition`]: ::djogi::Condition
+            #[doc(hidden)]
+            #[must_use = "querysets are lazy — dropping one silently omits the query"]
+            pub fn __filter_with_initial_condition(
+                cond: ::djogi::Condition,
+            ) -> ::djogi::query::VisageQuerySet<#visage_ident> {
+                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
+                    <#source as ::djogi::prelude::Model>::table_name(),
+                    #cs_initial,
+                    cond,
+                )
             }
         }
 

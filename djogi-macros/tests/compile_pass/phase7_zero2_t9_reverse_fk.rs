@@ -58,15 +58,16 @@ fn _model_scoped_accessor<'a>(
     dept.employees(ctx)
 }
 
-// Visage-scoped accessor emits on `DeptPublic` and returns `Vec<EmpPublic>`.
-// This is the T9 acceptance shape — typechecking this function pointer
-// pins the method signature at compile time without requiring a pool.
+// Visage-scoped accessor emits on `DeptPublic` and returns a
+// SELECT-narrowed `VisageQuerySet<EmpPublic>` (Phase 7-Zero-2 T13a).
+// The caller chains `.fetch_all(ctx)` for `Vec<EmpPublic>`. Typechecking
+// this function pointer pins the method signature at compile time
+// without requiring a pool.
 #[allow(dead_code)]
-fn _visage_scoped_accessor<'a>(
-    dept_public: &'a DeptPublic,
-    ctx: &'a mut DjogiContext,
-) -> impl std::future::Future<Output = Result<Vec<EmpPublic>, DjogiError>> + Send + 'a {
-    dept_public.employees(ctx)
+fn _visage_scoped_accessor(
+    dept_public: &DeptPublic,
+) -> djogi::query::VisageQuerySet<EmpPublic> {
+    dept_public.employees()
 }
 
 fn main() {

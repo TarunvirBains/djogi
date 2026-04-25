@@ -272,12 +272,30 @@ async fn reverse_fk_visage_accessor_projects_to_peer_visage(mut ctx: DjogiContex
     .expect("create Grace");
 
     // Drive the visage-scoped reverse accessor through the DeptPublic
-    // visage. The return type is `Vec<RevEmpPublic>`, proving the
-    // macro-emitted body fetched `RevEmp` rows and projected each one
-    // through `<RevEmpPublic as TryFrom<&RevEmp>>::try_from`.
+    // visage. Phase 7-Zero-2 T13a returns a SELECT-narrowed
+    // `VisageQuerySet<RevEmpPublic>`; the caller chains `.fetch_all(ctx)`
+    // and the emitted SQL projects only `RevEmpPublic`'s exposed columns.
     let dept_public = RevDeptPublic::from(&dept);
-    let employees: Vec<RevEmpPublic> = dept_public
-        .employees(&mut ctx)
+    let employees_qs = dept_public.employees();
+
+    // SELECT narrowing witness — `RevEmp.department` is a FK column not
+    // exposed on `RevEmpPublic`, so the queryset's emitted SQL must
+    // include only the visage's exposed columns + framework triple,
+    // never the FK column itself in the projection list.
+    let sql = employees_qs.__sql_for_test();
+    assert!(
+        sql.contains("display_name"),
+        "narrowed SELECT must include exposed `display_name` — got: {sql}",
+    );
+    assert!(
+        !sql.contains("SELECT department,")
+            && !sql.contains(", department,")
+            && !sql.contains(", department FROM"),
+        "narrowed SELECT must NOT project `department` (not exposed on RevEmpPublic) — got: {sql}",
+    );
+
+    let employees: Vec<RevEmpPublic> = employees_qs
+        .fetch_all(&mut ctx)
         .await
         .expect("visage reverse accessor must succeed");
 
