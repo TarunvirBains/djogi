@@ -37,8 +37,8 @@ State storage: single-instance deployments may use process-local in-memory state
 
 Every Update and Create server function performs the following pipeline before any database write:
 
-1. Resolve the requesting user's effective `(scope, actions)` for the target model — including parent-chain resolution and per-model overrides.
-2. Compute the **writable field set**: fields exposed to scope, not marked `admin_readonly`, not `expose(none)`.
+1. Resolve the requesting user's effective `(visibility, actions)` for the target model — visage grants resolved across the role chain, optionally extended by `view_full_struct` / `write_full_struct`, intersected with per-model action overrides.
+2. Compute the **writable field set**: fields in the role's effective editable set (granted-edit visages plus `write_full_struct` if held), minus `admin_readonly`, minus `expose(none)`.
 3. Reject the request if the submitted payload contains any field outside the writable set. Silent filtering hides tampering attempts; explicit rejection surfaces them. The error is logged to the event log with the offending field name.
 4. Run `AdminClean::clean()` if the model implements it (see [UI Surface](./ui.md)).
 5. Apply the change through the descriptor-aware ORM path so dirty tracking, audit log mirroring, and `Tracked` semantics are honored.

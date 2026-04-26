@@ -4,18 +4,24 @@
 
 ## Audit Log Access
 
-Maahi exposes the CRUD audit log shipped by [Logging](../logging.md), gated by the `view_audit_log` system permission and **scope-filtered** to match the requesting role's scope on the source model.
+Maahi exposes the CRUD audit log shipped by [Logging](../logging.md), gated by the `view_audit_log` system permission and **visibility-filtered** to match the requesting role's effective field visibility on the source model (per the resolution rules in [RBAC](./rbac.md)).
 
-Granting a role `view_audit_log` does not give that role unrestricted access to every model's `_logs` table. The audit log query layer runs the same field-visibility and tenant filters as the live admin queries: an auditor whose scope allows reading `User.email` and `User.created_at` but not `User.password_hash` will see audit entries for users they can see, with the redacted columns redacted, scoped to their tenant. An "all-or-nothing" audit grant is not the v1 model and never will be — unscoped audit access on a multi-tenant or multi-role deployment is a security hole disguised as a feature.
+Granting a role `view_audit_log` does not give that role unrestricted access to every model's `_logs` table. The audit log query layer runs the same field-visibility and tenant filters as the live admin queries: an auditor whose granted visages on `User` cover `email` and `created_at` but not `password_hash` will see audit entries for users they can see, with the non-visible columns excluded, scoped to their tenant. An "all-or-nothing" audit grant is not the v1 model and never will be — unconstrained audit access on a multi-tenant or multi-role deployment is a security hole disguised as a feature. A holder of `view_full_struct` sees the full struct (modulo `expose(none)`) in audit entries, just as they do in live views.
 
 ## System Permissions
 
 Phase 10 system permissions surfaced in `_admin_roles.system_perms`:
 
-| Permission           | What it grants                                                      | Phase |
-|----------------------|---------------------------------------------------------------------|-------|
-| `view_audit_log`     | Scope-filtered read of `_logs.{model}` tables                       | 10    |
-| `manage_users`       | Create/edit/delete `_admin_users`; cannot grant `is_superuser`      | 10    |
+| Permission           | What it grants                                                                                     | Phase |
+|----------------------|----------------------------------------------------------------------------------------------------|-------|
+| `view_audit_log`     | Visibility-filtered read of `_logs.{model}` tables                                                | 10    |
+| `manage_users`       | Create/edit/delete `_admin_users`; cannot grant `is_superuser` (full upper-bound rule below)       | 10    |
+| `view_full_struct`   | View every field on every model except `expose(none)` — independent of any visage view grant       | 10    |
+| `write_full_struct`  | Edit every field on every model except `expose(none)` and `admin_readonly` — independent of any visage edit grant | 10    |
+
+`view_full_struct` is the discrete grant for "see everything not data-class-hidden." Holding any number of visage view grants gives a role a *union* of those visages' fields; seeing the *raw struct* requires this discrete grant. Use case: an auditor role that holds `view_audit_log + view_full_struct` on relevant models without holding write permissions.
+
+`write_full_struct` is the parallel grant for write. Use case: a "data operations engineer" role that can fix cross-cutting data issues without being full superuser. Write implies the corresponding view, so granting `write_full_struct` without `view_full_struct` is rejected at write time with a form error — Maahi auto-suggests adding the view grant. The `expose(none)` floor is still absolute; `write_full_struct` cannot reach those fields. Superuser holds both implicitly.
 
 `manage_users` carries an upper-bound rule with four coupled clauses. A holder cannot:
 
@@ -32,7 +38,7 @@ The `manage_roles` system permission (which extends the transitive upper-bound t
 
 ## Bulk Operations
 
-Bulk update and bulk delete are first-class actions in v1. The list view supports filtered selection, "select all matching", and a bulk-action menu populated with the actions the requesting role's effective `(scope, actions)` pair grants.
+Bulk update and bulk delete are first-class actions in v1. The list view supports filtered selection, "select all matching", and a bulk-action menu populated with the actions the requesting role's effective `(visibility, actions)` pair grants — visibility resolved from the role's visage grants plus any `view_full_struct` / `write_full_struct` system permissions, actions resolved from the role's defaults plus per-model overrides.
 
 `BulkUpdate` and `BulkDelete` cover *changelist*-initiated operations against a filtered or selected row set. They are distinct from per-row `Update` and `Delete` actions in nature. The dual-control approval flow that gates `BulkDelete` is shared with a sibling v1 action kind: M2M inline saves with `inline_bulk_threshold` (default 25) or more total inline removals across all M2M relations on the parent enter the same `_admin_pending_actions` queue as `action_kind = 'InlineSave'` — see `ui.md` for the exact threshold rule. Below the threshold, inline removals fire as per-row `Delete` calls in the parent's save transaction with no approval gate. The two v1 action kinds (`BulkDelete` and `InlineSave`) share the approval queue, lifecycle, and dual-control discipline; they differ in payload shape and which actions the approved package executes. This makes the dual-control approval safeguard inline-edit-aware: mass deletions cannot evade approval by routing through a parent edit form instead of the changelist.
 

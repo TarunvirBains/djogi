@@ -8,7 +8,7 @@ Maahi is a single Dioxus full-stack application:
 
 - **Server functions** (Dioxus `#[server]`) handle every state-changing operation. Each call carries the session cookie, a CSRF header, and is dispatched against `DjogiContext` so transactions, RLS tenant context, and the descriptor are all native at the call site.
 - **Hydrated client** ships as a WASM bundle; `dx bundle` is the build pipeline, integrated into `cargo djogi admin build` for predictable production output. Asset serving is handled by Dioxus's own Axum integration — no separate `tower_http::services::ServeDir` wiring.
-- **Component tree** is descriptor-driven: a `ModelView` component takes a `ModelDescriptor` plus the requesting role's effective `(scope, actions)` and renders list, detail, edit, and create surfaces. Per-field widgets dispatch from `FieldDescriptor::ty` using the table in [UI Surface](./ui.md).
+- **Component tree** is descriptor-driven: a `ModelView` component takes a `ModelDescriptor` plus the requesting role's effective `(visibility, actions)` — visage grants resolved across the role chain plus per-model action overrides, per [RBAC](./rbac.md) — and renders list, detail, edit, and create surfaces. Per-field widgets dispatch from `FieldDescriptor::ty` using the table in [UI Surface](./ui.md).
 
 Because Dioxus components are pure Rust, the same component tree is reachable from `dioxus-desktop` for adopters who want a native admin shell. Desktop packaging is not a Phase 10 deliverable, but the renderer choice keeps that path open.
 

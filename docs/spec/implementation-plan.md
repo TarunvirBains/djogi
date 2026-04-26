@@ -662,27 +662,30 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ## Phase 10: Maahi — Admin Console
 
-**Goal:** Auto-generated admin console (Maahi) bound by visage-driven RBAC, multi-tenancy-aware, with a first-class security floor (CSRF triple stack, session rotation, server-side write enforcement, visibility-aware `Label` trait, inline-bulk approval threshold).
+**Goal:** Auto-generated admin console (Maahi) with its own visage-grant RBAC layer (visages remain pure compile-time projections — Maahi is the runtime authorization system that consumes them), multi-tenancy-aware, with a first-class security floor (CSRF triple stack, session rotation, server-side write enforcement, visibility-aware `Label` trait, inline-bulk approval threshold).
 
 The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the `djogi-maahi` workspace crate behind the existing `admin` feature flag; per the carve-out reasoning in `CLAUDE.md`, Maahi is the lone admin-tier exception to the one-djogi-crate rule.
 
 ### 10a: Crate Substrate + Auth
 
 - [ ] `djogi-maahi` workspace crate scaffolded; `djogi`'s `admin` feature pulls it in as optional dep; `djogi::maahi::*` re-exports
-- [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`); explicit `ON DELETE RESTRICT` on `_admin_users.role_id` and `_admin_roles.parent_role_id`; `_admin_sessions.token_hash` is HMAC-SHA256 keyed by `session_secret_env` (UNIQUE INDEX); `_admin_pending_actions` ships with partial-unresolved + `expires_at` indexes
+- [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_visage_perms` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`); explicit `ON DELETE RESTRICT` on `_admin_users.role_id` and `_admin_roles.parent_role_id`; `ON DELETE CASCADE` on the two `_admin_role_*_perms` tables; `_admin_sessions.token_hash` is HMAC-SHA256 keyed by `session_secret_env` (UNIQUE INDEX); `_admin_pending_actions` ships with partial-unresolved + `expires_at` indexes
 - [ ] `cargo djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
 
 ### 10b: Permission Model + Feasibility Analysis
 
-- [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, model)` overrides
+- [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, model)` overrides via `_admin_role_model_perms`
+- [ ] Visage-grant resolution: `_admin_role_visage_perms` rows per `(role_id, app_name, model_name, visage_name, can_view, can_edit)`; effective visible / editable field sets computed as the union across granted visages, optionally extended by `view_full_struct` / `write_full_struct`, always minus `expose(none)`
 - [ ] Single-parent role inheritance with cycle rejection on save and "this affects N child roles" save-time preview; role-deletion UX (reassign-first) for users and child roles
 - [ ] Compile-time / startup feasibility analysis: five checks per `(role, model)` pair (`can_actually_read` / `_update` / `_create` / `_delete` plus `fk_label_reachable` for FK fields) surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
+- [ ] Visage-drift handling on deploy: missing compiled visages flagged as `AppDiagnostic`, dangling `_admin_role_visage_perms` rows treated as no-op until removed or the visage restored
 
-### 10c: Field-Visibility Substrate
+### 10c: Field-Visibility Substrate + Label Trait
 
-- [ ] Visage scope grammar (`#[field(expose(...))]`) drives field visibility: `expose(none)` is the absolute floor (never UI-rendered, even for superuser); roles bind to scopes via `_admin_roles.scope`; field-set union across the role's effective scope membership
-- [ ] FK label resolution via `#[field(admin_label)]` and `#[model(admin_label_fn = "...")]` — first non-id `String` field as fallback; FK label feasibility is enforced as a startup diagnostic (per the rule above)
-- [ ] FK widget tier resolution (preload / typeahead based on `[admin].fk_preload_threshold`); optional `AdminFkFilter` trait + `#[field(admin_fk_filter = "...")]` override
+- [ ] `expose(none)` enforced as the absolute floor — never UI-rendered, never editable, even for superuser, even with `view_full_struct` / `write_full_struct`
+- [ ] `Label` trait + `VisibleFields` parameter live in `djogi` (not `djogi-maahi`); macro emission per `#[derive(Model)]` honors the four-rule resolution chain (`label_fn` > `#[field(label)]` > `String`-fallback > ID-only); concurrent `label_fn` and `#[field(label)]` is a compile error
+- [ ] FK widget tier resolution (preload / typeahead based on `[admin].fk_preload_threshold`); optional `AdminFkFilter` trait + `#[field(admin_fk_filter = "...")]` override; FK dropdowns render row labels via `Label::label(&visible)` with `visible` constructed from the requesting role's effective visibility on the FK target
+- [ ] List view default column and audit-log entry rendering route through `Label::label(&visible)` constructed from the *viewer's* visibility on the source model
 
 ### 10d: Multi-Tenancy
 
@@ -693,10 +696,11 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 ### 10e: Dioxus Renderer
 
 - [ ] Dioxus full-stack components: list view, ModelForm, M2M inline, JSONB nested editor, `AdminClean` validation hook
+- [ ] Role-config UI: hierarchical app → model → visage view/edit checkbox grid, per-model action overrides, system-permission toggles, `Preview Effects` action that walks every model the role can see and shows the resolved field set + action bits
 - [ ] `cargo djogi admin build` WASM bundle pipeline (`dx bundle` integration)
 - [ ] CSRF triple stack (SameSite=Strict + `X-Maahi-CSRF` custom header + Origin/Referer check)
 - [ ] Session rotation on login / password change / role change / tenant switch
-- [ ] Server-side write enforcement that rejects out-of-scope fields explicitly (not silent filter)
+- [ ] Server-side write enforcement that rejects out-of-editable-set fields explicitly (not silent filter)
 - [ ] Two parallel login rate limiters (per-IP and per-email, both must accept); `login_rate_limit_per_ip` and `login_rate_limit_per_email` config keys; multi-instance deployments require shared state
 
 ### 10f: Approval Flow
@@ -709,10 +713,10 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 ### 10g: System Permissions + Audit Access
 
-- [ ] Two v1 system permissions: `view_audit_log` (scope-filtered read of `_logs.{model}` tables) and `manage_users` (four-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective `(model, action)` subset, and tenant-reach)
-- [ ] `_logs.{model}` read access through Maahi UI for `view_audit_log` holders, scoped to their viewable fields and tenant
+- [ ] Four v1 system permissions: `view_audit_log` (visibility-filtered read of `_logs.{model}` tables), `manage_users` (four-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective `(model, action)` subset, and tenant-reach), `view_full_struct` (read all non-`expose(none)` fields independent of visage view grants), `write_full_struct` (edit all non-`expose(none)`, non-`admin_readonly` fields independent of visage edit grants; requires `view_full_struct`)
+- [ ] `_logs.{model}` read access through Maahi UI for `view_audit_log` holders, with field-level visibility computed from the viewer's effective visage grants plus any `view_full_struct`, scoped to their tenant
 
-**Deliverable:** Production-grade Maahi admin console with visage-scope-driven visibility, multi-tenancy with secure cross-tenant login handoff, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave` with approver-coverage discipline, and the two v1 system permissions.
+**Deliverable:** Production-grade Maahi admin console with visage-grant-driven visibility, multi-tenancy with secure cross-tenant login handoff, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave` with approver-coverage discipline, and four v1 system permissions (`view_audit_log`, `manage_users`, `view_full_struct`, `write_full_struct`).
 
 ---
 

@@ -10,7 +10,7 @@ Defaults:
 
 - Page size: 25 rows
 - Sortable: every column header for which the descriptor reports a sortable type
-- Search: case-insensitive `ILIKE` across all `String` fields exposed to the role's scope
+- Search: case-insensitive `ILIKE` across all `String` fields in the requesting role's effective visible field set on the model (per the resolution in [RBAC](./rbac.md))
 - Default sort: most recently created first
 
 Per-model overrides via `#[model(...)]` attributes:
@@ -42,7 +42,7 @@ Filter widgets auto-typed by field:
 | `DjogiEnum` (Phase 5)             | Checkbox group of variants                     |
 | `Jsonb<T>` subfield               | Per-subfield widget recursively                |
 
-Foreign-key dropdowns for large tables debounce 300 ms client-side and dispatch a server function that returns the top N matching rows; the response respects the requesting role's read access on the target model.
+Foreign-key dropdowns for large tables debounce 300 ms client-side and dispatch a server function that returns the top N matching rows; the response respects the requesting role's effective visibility on the target model. Rows are rendered via `Label::label(&visible)` (see [Field Visibility](./field-visibility.md)), with `visible` constructed from that effective visibility.
 
 ## ModelForms — Field Widget Mapping
 
@@ -74,7 +74,7 @@ Before any `INSERT` or `UPDATE` fires, the changeform runs an auto-validation pa
 - `#[field(max_length = N)]` — length check
 - `#[field(unique)]` — pre-write conflict query
 - `NOT NULL` fields — error if blank submitted
-- `ForeignKey<T>` — verifies the referenced row exists *and* is visible to the requesting role's scope on `T`
+- `ForeignKey<T>` — verifies the referenced row exists *and* is visible to the requesting role under its effective visibility on `T`
 - `Jsonb<T>` — runs the `validator` validation tree on the schema before save
 
 Custom validation hooks per model:
@@ -139,7 +139,7 @@ When a model declares an M2M relationship (per [Relations](../relations.md)), Ma
    - Changelist-initiated `BulkDelete` continues to follow the standard approval flow defined in `operations.md`. The threshold rule above closes the inline-edit bypass; it does not change changelist behavior.
 - Inline pagination — at most `inline_page_size` rows shown (default `10`) with a load-more action; new unsaved rows always render above the paginated set.
 - Inline search filters visible rows client-side and re-fetches server-side on page load.
-- Inline visibility honors the requesting role's scope on the through model — if the role cannot see the through model at all, the inline is hidden.
+- Inline visibility honors the requesting role's effective visibility on the through model — through models require their own visage grants (no auto-grant from parent → through), so a role with view on `Person` does not automatically see the `PersonGroup` inline; a separate visage grant on `PersonGroup` is required. If the role's effective visible field set on the through model is empty, the inline is hidden.
 
 Per-relationship configuration on the `ManyToMany` impl:
 

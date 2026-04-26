@@ -8,19 +8,20 @@ Phase 10 ships a real, production-grade admin:
 
 - Dioxus full-stack renderer on Axum, `cargo djogi admin build` integration
 - Hybrid `_admin_users` / `_admin_sessions` substrate in the audit DB
-- Visage-driven RBAC with single-parent inheritance
+- Visage-grant RBAC with single-parent inheritance — `_admin_role_visage_perms` per `(role, app, model, visage)`; visages remain pure compile-time projections
 - Six-action permission model with per-model overrides
 - Multi-tenant aware login, session, and query path
 - Compile-time feasibility analysis surfaced as `AppDiagnostic` entries
+- Visage-drift handling on deploy (missing visage diagnostics, dangling-grant tolerance)
 - Triple-stack CSRF + session rotation discipline + server-side write enforcement
 - List view, ModelForm, M2M inline, `AdminClean`, JSONB nested editor — full descriptor-driven UI surface
-- Scope-filtered audit log access via `view_audit_log`
-- `manage_users` system permission with single-rule upper-bound
+- Visibility-aware `Label` trait + `VisibleFields` substrate (lives in `djogi`, consumed by Maahi for FK dropdowns, list view default columns, and audit log entries)
+- Four v1 system permissions: `view_audit_log` (visibility-filtered audit access), `manage_users` (four-clause upper-bound), `view_full_struct` (raw-struct read independent of visage grants), `write_full_struct` (raw-struct write; requires `view_full_struct`)
 - `_admin_pending_actions` table + approval gates on two action kinds in v1:
   - `BulkDelete` — changelist-initiated mass deletion
   - `InlineSave` — M2M inline edits at or above `[admin].inline_bulk_threshold` (default 25 total inline removals across the parent save), with approver-coverage of the full action set the package requires
 - Magnitude-confirmation prompt on `BulkUpdate`
-- Field-visibility primitives: `expose(...)`, `admin_readonly`, `admin_label`
+- Field-visibility primitives: `expose(none)` floor, `admin_readonly`, `#[field(label)]` / `#[model(label_fn = "...")]` for the `Label` trait
 - Bootstrap CLI: `set-password --superuser`, `reset-password`, `build`, `info`
 
 ## Phase 10.5 — Maahi Compliance & Delegation
@@ -34,12 +35,12 @@ Phase 10.5 layers compliance polish atop Phase 10 without breaking changes:
 | `manage_roles` system permission with transitive upper-bound delegation | Subtle correctness; deserves dedicated escalation-path testing |
 | Approval workflows beyond `BulkDelete` and `InlineSave` (configurable per action/model) | v1 mechanism exists; broadening surface area is its own design |
 | Approval-queue UX polish (per-role notifications, bulk approval)        | Layered atop v1 single-action approval                         |
-| Scope-aware audit retention and redaction                               | Builds on v1 scope-filtered read access                        |
+| Visibility-aware audit retention and redaction                          | Builds on v1 visibility-filtered read access                   |
 | Django parity — `list_select_related` (FK eager-loading on list view; auto-detect from `admin_list_display`) | Performance at scale: without it, FK columns on the list view trigger N+1 queries |
 | Django parity — `raw_id_fields` equivalent (third FK widget tier above typeahead — no-widget-just-ID with popup search) | For huge target tables where even typeahead query cost is wasteful |
 | Django parity — `fields` / `fieldsets` (explicit form-field ordering and grouped sections) | Usability for complex models; v1 renders fields in declaration order with no visual grouping |
 | Django parity — `AdminAction` extension trait for custom bulk actions    | Beyond `BulkUpdate` / `BulkDelete`; adopter-defined named actions ("Mark as published", "Send welcome email") |
-| Django parity — per-row history view (audit-log drill-down for a single record) | Natural fit given v1's scope-filtered audit log substrate; ships as a UI affordance + drill query |
+| Django parity — per-row history view (audit-log drill-down for a single record) | Natural fit given v1's visibility-filtered audit log substrate; ships as a UI affordance + drill query |
 | Django parity — `list_editable` (inline-edit columns from list view)     | Power-user editing surface; complements full-form editing |
 | Django parity — `prepopulated_fields` (auto-populate fields from other fields) | Common admin pattern (slug from title); requires lightweight client-side coordination |
 | Django parity — `date_hierarchy` (date drill-down on list views)         | Operator UX for date-heavy models; adds a navigation surface above the filter widgets |

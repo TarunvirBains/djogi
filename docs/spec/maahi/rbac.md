@@ -2,38 +2,77 @@
 
 # Maahi — RBAC and Permissions
 
-## Visage-Driven Scopes
+## Visages as Visibility Units
 
-Maahi reuses the visage scope grammar from [Visages](../visages.md) as its permission backbone. There is no parallel permission system: visage scopes ARE the field-visibility unit, and roles are runtime bindings of `(scope, actions)`.
+Maahi is a runtime authorization system that *consumes* compile-time descriptor metadata; it does not own the field-visibility shape itself. Visages — the compile-time projections defined in [Visages](../visages.md) — remain narrow per their existing spec: they are descriptor data plus transport-type generators. Authorization is an explicit non-goal of visages.
 
-A field's `expose(...)` annotation defines which scopes can see it. A role names a scope; the scope determines what fields the role can read and write.
+Maahi has its own permission system. Within Maahi, visages are the unit of visibility: a role's view-and-edit access to a model is expressed as a set of *visage grants*, not as per-field grants directly. Engineering owns what fields are visible by defining the compiled visages; operators own which roles can see which visages by checking boxes in the Maahi UI. There is no runtime visage management.
 
 ```rust
 #[model(table = "vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    #[field(expose(public, support_agent, billing_agent))]
-    pub vin: String,
+    #[field(expose(public, admin))]
+    pub vin: String,                    // canonical visage membership
 
-    #[field(expose(billing_agent))]
+    pub make: String,                   // no expose() — only visible via view_full_struct
+                                        //   or a hand-defined #[derive(Visage)] that includes it
+
+    #[field(expose(admin))]
     pub registration_state: String,
 
-    pub internal_audit_notes: String,       // no expose() → visible only to superuser
-    pub make: String,                       // no expose() → visible only to superuser
+    #[field(expose(none))]
+    pub internal_audit_id: String,      // never visible to anyone, including superuser
 }
+
+// Custom compiled visage for a narrower admin tier
+#[derive(Visage)]
+#[visage(model = Vehicle, fields(vin, make))]
+pub struct VehicleSupportView;
 ```
 
-**Note:** `superuser` is *not* a listable token inside `expose(...)` — it is an implicit override that bypasses role filtering. Per [Field Visibility](./field-visibility.md), absence of `expose()` makes a field superuser-only by default. Listing `superuser` inside `expose(...)` is rejected by the macro at compile time.
+The compiled-visage registry collected at startup for the example above:
 
-The administrator sees a model only if at least one of its fields exposes to the administrator's scope. A scope that touches no field on a given model means that model is invisible to that role — there is no "model-level allow list" attribute; visibility is implicit and emergent from the field annotations. The lone exception is `#[model(admin = false)]`, which removes a model from Maahi entirely regardless of any field annotation.
+```text
+fleet_app.Vehicle.VehiclePublic       = ["vin"]                    (from expose(public))
+fleet_app.Vehicle.VehicleAdmin        = ["vin", "registration_state"] (from expose(admin))
+fleet_app.Vehicle.VehicleSupportView  = ["vin", "make"]            (from #[derive(Visage)])
+```
 
-## Roles Table
+Field-visibility decisions stay under code review — adding a new view tier requires a code change to add a new `#[derive(Visage)]`, exactly where security-relevant decisions about what fields go where should live. Operators get expressiveness through the combinatorial space of (compiled visages × role grants × per-model action overrides) without bypassing engineering.
+
+The lone whole-model exception is `#[model(admin = false)]`, which removes a model from Maahi entirely regardless of any visage grant.
+
+## Hierarchy: App → Model → Visage
+
+Visages live in the natural ownership hierarchy from the apps subsystem (Phase 7-Zero):
+
+```
+fleet_app/
+├── Vehicle/
+│   ├── VehiclePublic         (compiled, canonical)
+│   ├── VehicleAdmin          (compiled, canonical)
+│   └── VehicleSupportView    (compiled, custom — hand-defined for support tier)
+└── Owner/
+    ├── OwnerPublic
+    ├── OwnerSelfView
+    └── OwnerAdmin
+
+billing_app/
+├── Invoice/
+│   ├── InvoicePublic
+│   └── InvoiceAdmin
+└── ...
+```
+
+Each visage is fully qualified by `(app_name, model_name, visage_name)`. The qualifier is what permission grants reference. Cross-app references are impossible by construction — visage names within an app's namespace can only reference fields on models owned by that app, which falls out of Phase 7-Zero apps-subsystem ownership rules without any extra Maahi runtime check.
+
+## Roles and Visage-Grant Tables
 
 ```sql
 CREATE TABLE _admin_roles (
     id              BIGINT PRIMARY KEY DEFAULT generate_id(),
     name            TEXT UNIQUE NOT NULL,
-    scope           TEXT NOT NULL,                 -- must match a known scope at write time
     parent_role_id  BIGINT REFERENCES _admin_roles(id) ON DELETE RESTRICT,
                                                        -- explicit RESTRICT: deleting a role with child roles
                                                        -- pointing at it is blocked; the role-edit page enforces
@@ -48,17 +87,30 @@ CREATE TABLE _admin_roles (
     can_bulk_update   BOOLEAN NOT NULL DEFAULT FALSE,
     can_bulk_delete   BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- System-level grants. Phase 10 ships view_audit_log + manage_users.
+    -- System-level grants. Phase 10 ships view_audit_log, manage_users,
+    -- view_full_struct, write_full_struct (see operations.md).
     system_perms      JSONB NOT NULL DEFAULT '{}'::JSONB,
 
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Per-(role, visage) grants — fully qualified by (app, model, visage_name).
+-- This is the primary visibility-grant table.
+CREATE TABLE _admin_role_visage_perms (
+    role_id      BIGINT NOT NULL REFERENCES _admin_roles(id) ON DELETE CASCADE,
+    app_name     TEXT NOT NULL,
+    model_name   TEXT NOT NULL,
+    visage_name  TEXT NOT NULL,
+    can_view     BOOLEAN NOT NULL,
+    can_edit     BOOLEAN NOT NULL,
+    PRIMARY KEY (role_id, app_name, model_name, visage_name)
+);
 ```
 
-Scope names are validated at write time against the live inventory of known scopes (collected via `inventory::iter::<&'static FieldDescriptor>()` and the visage scope registry). Saving a role with an unknown scope returns a form error naming the typo. New scopes always require a code change — the type-safety boundary is at the field annotation, not the database.
+The `(app_name, model_name, visage_name)` triple is validated at write time against the live registry of compiled visages — a compile-time-collected list (via `inventory`) of every visage emitted by `#[derive(Visage)]` plus the canonical built-ins. Granting a role a visage that doesn't exist (typo, removed visage) returns a form error naming the offending qualifier.
 
-`is_superuser` on `_admin_users` bypasses all role filtering: a superuser sees the raw struct on every model, every action is granted, every tenant is reachable. Superuser is provisioned via the bootstrap CLI and explicit `is_superuser = TRUE` flips by an existing superuser. No role row, no scope name, can promote a user to superuser; that flip never goes through the role surface.
+`is_superuser` on `_admin_users` bypasses all role filtering: a superuser sees the raw struct on every model (modulo `expose(none)`), every action is granted, every tenant is reachable, every system permission held implicitly. Superuser is provisioned via the bootstrap CLI and explicit `is_superuser = TRUE` flips by an existing superuser. No role row, no visage grant, can promote a user to superuser; that flip never goes through the role surface.
 
 ## The Six-Action Permission Model
 
@@ -91,45 +143,55 @@ CREATE TABLE _admin_role_model_perms (
 );
 ```
 
-The admin UI surfaces both flows. "Uniform across scope" sets the role-row defaults and writes no per-model rows — the simple case. "Per-model" lets the operator override individual models — the realistic admin case where a support agent reads-and-edits customers but only reads billing.
+Visage perms govern *which fields* the role can see and edit; model perms govern *which actions* the role can take. The two are orthogonal axes: a role with `VehicleSupportView` view+edit grants but no `Update` action on Vehicle can see those fields read-only; a role with `Update` on Vehicle but no view grants on any Vehicle visage cannot see the model at all (and therefore cannot exercise the action).
+
+The admin UI surfaces both flows. "Uniform across model" sets the role-row defaults and writes no per-model rows — the simple case. "Per-model" lets the operator override individual models — the realistic admin case where a support agent reads-and-edits customers but only reads billing.
 
 ## Single-Parent Role Inheritance
 
-Single-parent inheritance is supported. `_admin_roles.parent_role_id` introduces a chain; the effective permission set for a role is the recursive union of its own row and its parent's row, with the child's per-model overrides shadowing the parent's. Cycles are rejected on save. The save dialog shows "this change affects N child roles" before commit. Inheritance display in the role-edit screen distinguishes own permissions from inherited ones with a clear `inherited from <parent>` annotation next to each row.
+Single-parent inheritance is supported. `_admin_roles.parent_role_id` introduces a chain; the effective permission set for a role is the recursive union of its own row, its visage grants, and its parent's row + grants, with the child's per-model overrides shadowing the parent's. Cycles are rejected on save. The save dialog shows "this change affects N child roles" before commit. Inheritance display in the role-edit screen distinguishes own permissions from inherited ones with a clear `inherited from <parent>` annotation next to each row.
 
 Multi-parent inheritance, frozen/locked roles, and the transitive upper-bound `manage_roles` system permission are deferred to Phase 10.5 — see [Phase Map](./phase-map.md).
 
 ## Effective Permission Resolution
 
-```text
-effective_actions(role, model) =
-    union(
-        recursive_chain(role.parent_role_id).default_actions,
-        role.default_actions,
-    )
-    .overridden_by(_admin_role_model_perms WHERE role_id IN chain AND model_name = model)
-    .intersected_with(scope_feasibility(role.scope, model))
-```
+For a request from user `U` against model `M`:
 
-The last step — intersection with scope feasibility — is where the "user has Update intent but the scope can't see required fields" case is resolved.
+1. Resolve `U`'s effective role chain (self + parent inheritance — single-parent in v1).
+2. Compute the effective `(action_bits, per_model_overrides)` from the role chain — gives us "can U Create / Read / Update / Delete / BulkUpdate / BulkDelete on M?"
+3. Compute the effective **visage grant set** — union of all `_admin_role_visage_perms` rows across the role chain whose `(app_name, model_name)` matches M.
+4. Compute the effective **visible field set on M**:
+   - Start with the union of fields across all granted-view visages.
+   - If `view_full_struct` is in the effective `system_perms`, add all fields on M except those marked `#[field(expose(none))]`.
+   - Subtract any field marked `#[field(expose(none))]` (this floor is absolute).
+5. Compute the effective **editable field set on M**:
+   - Start with the union of fields across all granted-edit visages.
+   - If `write_full_struct` is in the effective `system_perms`, add all fields on M except those marked `#[field(expose(none))]`.
+   - Subtract any field marked `#[field(admin_readonly)]` (visible-but-not-editable; widget-render axis).
+   - Subtract any field marked `#[field(expose(none))]` (absolute floor).
+6. Intersect with feasibility (per the `can_actually_*` analysis below): if the visible field set is empty, the model is invisible to U entirely; if create-required fields aren't in the editable set, Create is denied.
+
+Superuser bypasses steps 1–5 and gets full struct view + edit on every model, modulo `expose(none)`.
+
+The role-config UI surfaces this resolution as a hierarchical checkbox grid: per-app, per-model, per-visage view + edit checkboxes; per-model action overrides; per-role system permission toggles. A `Preview Effects` action walks every model the role can see and shows the resolved field set + action bits — the user-facing surface of the feasibility analysis below.
 
 ## Compile-Time Feasibility Analysis
 
-Permission intent and scope feasibility don't always agree. A role with `can_create = TRUE` on `Vehicle` whose scope sees only `vin` cannot actually create a `Vehicle` — `make` is `NOT NULL` without a database default and not in scope. Maahi computes this at startup, not at form-submit, and surfaces the result as a diagnostic.
+Permission intent and visage grants don't always agree. A role with `can_create = TRUE` on `Vehicle` whose granted visages cover only `vin` cannot actually create a `Vehicle` — `make` is `NOT NULL` without a database default and not in the role's editable field set. Maahi computes this at startup, not at form-submit, and surfaces the result as a diagnostic.
 
 For each `(role, model)` pair, Maahi resolves five feasibilities:
 
 ```text
-can_actually_read(role, model)   = role.read    AND scope has ≥1 visible field on model
+can_actually_read(role, model)   = role.read    AND ≥1 visible field on model
 can_actually_update(role, model) = role.update  AND ≥1 visible field is not admin_readonly
-can_actually_create(role, model) = role.create  AND scope visibility covers all NOT NULL,
+can_actually_create(role, model) = role.create  AND visible field set covers all NOT NULL,
                                                      no-database-default fields
 can_actually_delete(role, model) = role.delete  AND ≥1 visible field on model
                                    (delete is row-scope, but the model must be visible at all)
 fk_label_reachable(role, model, fk_field) =
-                                   target_model_of(fk_field) has ≥1 admin-label-bearing
-                                   field exposed to role.scope
-                                   (per the FK label rule in field-visibility.md)
+                                   target_model_of(fk_field) yields ≥1 visible field
+                                   under the role's effective visibility on the target
+                                   (per the Label rule in field-visibility.md)
 ```
 
 Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. The fifth feasibility runs once per FK field on each visible model.
@@ -137,19 +199,25 @@ Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. 
 Failures surface at startup as `AppDiagnostic` entries (the diagnostic registry shipped in Phase 7-Zero):
 
 ```text
-maahi: role 'billing_agent_editor' cannot create Vehicle —
-       required field `make` (NOT NULL, no DEFAULT) is not in scope `billing_agent`.
-       To fix: either expose `make` to `billing_agent`, or remove `Create` from this role.
+maahi: role 'support_editor' cannot create Vehicle —
+       required field `make` (NOT NULL, no DEFAULT) is not in any granted visage and
+       `write_full_struct` is not held. To fix: grant a visage that includes `make`
+       (e.g., VehicleSupportView), grant write_full_struct, or remove Create from this role.
 
-maahi: role 'support_agent_editor' cannot expose Vehicle.fuel_type_id —
-       FK target FuelType has no admin-label-bearing field in scope `support_agent`.
-       To fix: expose an admin-label field on FuelType to `support_agent`,
-       or remove `fuel_type_id` from `support_agent`'s field set.
+maahi: role 'support_viewer' cannot expose Vehicle.fuel_type_id —
+       FK target FuelType has no visible label-bearing field under this role's
+       effective visibility. To fix: grant a visage on FuelType whose field set
+       includes a Label-eligible field, or remove fuel_type_id from the granted
+       visage on Vehicle.
 ```
 
 The corresponding UI affordances (the "New" button on the Vehicle list, the "Save" button on the empty create form, the bulk-create action menu, the `fuel_type_id` FK dropdown) are hidden at render time. Operators discover misconfiguration at deploy time, not when an end user clicks a button that does nothing.
 
-The analysis runs against the `inventory`-collected `ModelDescriptor` registry plus the `_admin_roles` and `_admin_role_model_perms` tables. It re-runs whenever a role row is written.
+The analysis runs against the `inventory`-collected `ModelDescriptor` registry, the compile-time visage registry, and the `_admin_roles` / `_admin_role_visage_perms` / `_admin_role_model_perms` tables. It re-runs whenever any of those tables is written.
+
+## Visage Drift After Deploy
+
+If a deploy removes a compiled visage that an existing role was granted, Maahi flags the role with an `AppDiagnostic` at startup and treats the missing grant as a no-op (the row stays in `_admin_role_visage_perms` but contributes nothing to resolution). The operator sees an alert in the role-config UI; they remove the dangling row or restore the visage in code. There is no auto-deletion — silently dropping permission rows on deploy would mask intent.
 
 ## Role Deletion UX
 
@@ -158,7 +226,7 @@ Role deletion is a real workflow distinct from inheritance edits. Two cascade co
 - **Assigned users**: deletion is blocked while at least one `_admin_users.role_id` references the role. The role-edit page surfaces the affected user count and requires the operator to reassign or deactivate those users first. Implementation rests on the explicit `ON DELETE RESTRICT` on `_admin_users.role_id` (see `_admin_users` schema in [Architecture](./architecture.md)).
 - **Child roles**: deletion is blocked while at least one `_admin_roles.parent_role_id` references this role. The role-edit page shows the affected child-role list; the operator must rewire the children's `parent_role_id` first. The `parent_role_id` FK is also `ON DELETE RESTRICT`.
 
-There is no soft-delete in v1. Reassign-first is the documented workflow.
+Visage grants in `_admin_role_visage_perms` cascade-delete via `ON DELETE CASCADE` once the role is removed; reassign-first handles the user and child-role concerns before that point. There is no soft-delete in v1.
 
 ---
 
