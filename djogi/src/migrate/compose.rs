@@ -421,6 +421,16 @@ pub struct ComposeRequest<'a> {
     /// and `<workspace>/target/djogi_pending/`, both of which require
     /// the workspace lock per the v3 §6 file-lock contract.
     pub _guard: &'a WorkspaceGuard,
+    /// Join-table cutover layout for any T9 PK-flip group emitted by
+    /// the differ. `None` defaults to
+    /// [`super::diff::PkFlipJoinTableOption::OptionA`] — single
+    /// mega-transaction across both parents and the join table per
+    /// playbook §7. `Some(OptionB)` selects sequential per-parent
+    /// flips. Production callers pass the operator's
+    /// [`crate::config::MigrateConfig::pk_flip_join_table_option`]
+    /// converted via
+    /// [`super::diff::PkFlipJoinTableOption::from_config_char`].
+    pub pk_flip_join_table_option: Option<super::diff::PkFlipJoinTableOption>,
 }
 
 /// Successful-compose report. Returned per-bucket so the caller can
@@ -699,6 +709,15 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 
     // 3. Run the differ across the (possibly remapped) bucket map.
     let mut deltas = diff_bucket_maps(&snapshots_for_diff, req.models);
+
+    // 3b. Apply operator-configured join-table cutover layout to every
+    //     PK-flip group the differ emitted. Without this step the
+    //     `MigrateConfig::pk_flip_join_table_option` knob would have
+    //     no effect — the differ defaults every group to Option A and
+    //     only this hook overrides it.
+    if let Some(option) = req.pk_flip_join_table_option {
+        super::diff::apply_pk_flip_join_table_option(&mut deltas, option);
+    }
 
     // 4. Layer in `RenameApp` ops driven by `AppRegistry`'s
     //    `renamed_from` field. The differ doesn't see this — it works
@@ -1569,6 +1588,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("noop");
         assert!(matches!(err, ComposeError::NothingToCompose));
@@ -1594,6 +1614,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let report = compose(req).expect("compose");
         assert_eq!(report.composed_buckets.len(), 1);
@@ -1634,6 +1655,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("destructive");
         assert!(matches!(
@@ -1666,6 +1688,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let report = compose(req).expect("compose");
         assert_eq!(report.composed_buckets.len(), 1);
@@ -1699,6 +1722,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("tombstone");
         match err {
@@ -1768,6 +1792,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let report = compose(req).expect("compose");
         // The destination bucket (newname) should have the RenameApp
@@ -1807,6 +1832,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let r1 = compose(req1).expect("first");
         let up1 = fs::read(&r1.composed_buckets[0].up_sql_path).unwrap();
@@ -1822,6 +1848,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let r2 = compose(req2).expect("second");
         let up2 = fs::read(&r2.composed_buckets[0].up_sql_path).unwrap();
@@ -1888,6 +1915,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("must surface D011");
         match err {
@@ -1924,6 +1952,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let r1 = compose(req1).expect("first");
         let up_path = r1.composed_buckets[0].up_sql_path.clone();
@@ -1943,6 +1972,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req2).expect_err("must refuse");
         match err {
@@ -1990,6 +2020,7 @@ mod tests {
             force_overwrite: true,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         compose(req3).expect("force-overwrite succeeds");
         let after_force = fs::read_to_string(&up_path).unwrap();
@@ -2059,6 +2090,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let report = compose(req).expect("compose");
         let dest = report
@@ -2197,6 +2229,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("rename must fail");
         assert!(matches!(err, ComposeError::Io { .. }));
@@ -2285,6 +2318,7 @@ mod tests {
             force_overwrite: true,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("down promote must fail");
         assert!(matches!(err, ComposeError::Io { .. }));
@@ -2411,6 +2445,7 @@ mod tests {
             force_overwrite: true,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("pending promote must fail");
         assert!(
@@ -2493,6 +2528,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let r1 = compose(req1).expect("first compose");
         let down_path = r1.composed_buckets[0].down_sql_path.clone();
@@ -2510,6 +2546,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req2).expect_err("down hand-edit must refuse");
         match err {
@@ -2569,6 +2606,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let r1 = compose(req1).expect("first compose");
         let up_path = r1.composed_buckets[0].up_sql_path.clone();
@@ -2586,6 +2624,7 @@ mod tests {
             force_overwrite: false,
             now,
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req2).expect_err("both-side edit must refuse");
         match err {
@@ -2718,6 +2757,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let report = compose(req).expect("rename without --allow-destructive must succeed");
         let dest = report
@@ -2786,6 +2826,7 @@ mod tests {
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
+            pk_flip_join_table_option: None,
         };
         let err = compose(req).expect_err("collision must surface");
         match err {
@@ -2927,6 +2968,7 @@ mod tests {
                 force_overwrite: false,
                 now: at(2026, 4, 25, 1, 2, 3),
                 _guard: &guard,
+                pk_flip_join_table_option: None,
             };
             let err = compose(req).expect_err("collision must surface");
             match err {
@@ -3006,6 +3048,7 @@ mod tests {
                 force_overwrite: false,
                 now: at(2026, 4, 25, 1, 2, 3),
                 _guard: &guard,
+                pk_flip_join_table_option: None,
             };
             let err = compose(req).expect_err("file-vs-dir collision must surface");
             match err {

@@ -93,8 +93,9 @@ pub use compose::{
 };
 pub use diff::{
     Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, PkFlipChild,
-    PkFlipCycle, PkFlipDirection, PkFlipFamily, PkFlipJoinTable, PkFlipPartitionedMeta,
-    PkFlipSelfFk, PkTypeFlipGroup, SchemaDelta, SchemaOperation, diff_bucket_maps,
+    PkFlipCycle, PkFlipDirection, PkFlipFamily, PkFlipJoinTable, PkFlipJoinTableOption,
+    PkFlipPartitionedMeta, PkFlipSelfFk, PkTypeFlipGroup, SchemaDelta, SchemaOperation,
+    apply_pk_flip_join_table_option, diff_bucket_maps,
 };
 pub use docs::{DocsError, DocsReport, generate_docs, render_inventory, render_model_page};
 pub use guard::{

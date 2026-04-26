@@ -107,23 +107,20 @@ pub fn compose_cmd(
         })
         .collect();
     // Codex round-2 A-1: the resolved workspace flows into config
-    // loading too — `compose` itself doesn't read `Djogi.toml`, but
-    // future flag handling that does (e.g. default-allow-destructive
-    // policy) inherits the path-aware loader. Loading here surfaces
-    // any TOML parse error at the same point as projection errors so
-    // the operator gets one consistent failure mode.
-    //
-    // SYNCWATCH: this load_from_workspace call is currently a defensive
-    // early-parse probe — the parsed `DjogiConfig` is intentionally
-    // dropped because `compose_with_inputs` doesn't yet consume migrate
-    // config. When compose logic begins reading config (e.g. a
-    // migrate.compose.* setting), thread the parsed value through to
-    // the request instead of discarding it, and update this comment.
-    // grep `SYNCWATCH:` to find every paired call site.
-    if let Err(e) = djogi::config::DjogiConfig::load_from_workspace(&workspace) {
-        eprintln!("djogi migrations compose: config load: {e}");
-        return ExitCode::from(1);
-    }
+    // loading too. Round-2 / B-12 update: compose now consumes the
+    // [`MigrateConfig::pk_flip_join_table_option`] knob so we no
+    // longer drop the parsed config — the join-table layout
+    // selected in `Djogi.toml` reaches the differ via this path.
+    let djogi_config = match djogi::config::DjogiConfig::load_from_workspace(&workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations compose: config load: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let pk_flip_option = djogi::migrate::PkFlipJoinTableOption::from_config_char(
+        djogi_config.migrate.pk_flip_join_table_option,
+    );
     compose_with_inputs(
         &workspace,
         name,
@@ -132,6 +129,7 @@ pub fn compose_cmd(
         &models,
         &apps,
         time::OffsetDateTime::now_utc(),
+        Some(pk_flip_option),
     )
 }
 
@@ -144,6 +142,13 @@ pub fn compose_cmd(
 /// Acquires the workspace lock, walks the on-disk migration tree to
 /// recover orphaned snapshots (Codex B-1 — renamed-from buckets), and
 /// invokes [`djogi::migrate::compose`].
+// Compose has 8 inputs because it sits at the bridge between
+// CLI flag parsing (workspace / name / flags / clock) and the
+// engine (`models` / `apps` / `pk_flip_join_table_option`).
+// Folding these into a struct would push the same fields onto
+// the caller; the CLI tests already pass them positionally and
+// a struct-based refactor would be churn for no clarity gain.
+#[allow(clippy::too_many_arguments)]
 fn compose_with_inputs(
     workspace: &Path,
     name: &str,
@@ -155,6 +160,7 @@ fn compose_with_inputs(
     >,
     apps: &[AppLifecycle],
     now: time::OffsetDateTime,
+    pk_flip_join_table_option: Option<djogi::migrate::PkFlipJoinTableOption>,
 ) -> ExitCode {
     let lock_path = workspace.join(LOCK_FILE_NAME);
     let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
@@ -210,6 +216,7 @@ fn compose_with_inputs(
         force_overwrite,
         now,
         _guard: &guard,
+        pk_flip_join_table_option,
     };
     match compose(req) {
         Ok(report) => {
@@ -684,6 +691,7 @@ mod tests {
             &empty_models,
             &[],
             now,
+            None, // pk_flip_join_table_option — no flip in this test
         );
         assert_eq!(exit, ExitCode::from(0), "compose must succeed");
 

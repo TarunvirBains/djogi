@@ -2318,6 +2318,27 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             col = jt.fk_to_parent_column,
             parent = parent,
         );
+        // Determinism marker for join-table layout. Each cutover
+        // bears a comment line whose body identifies the operator
+        // option in effect — Option A (default — bundle both
+        // parents' FK re-pointings in one cutover when both flip
+        // in the same delta) or Option B (sequential per-parent
+        // flips). The compose pipeline reads
+        // `MigrateConfig::pk_flip_join_table_option` and flags the
+        // per-group field via [`apply_pk_flip_join_table_option`];
+        // this comment makes the operator-chosen layout visible in
+        // the rendered cutover SQL so reviewers can confirm the
+        // generated migration matches the intended layout without
+        // re-reading TOML.
+        let layout_label = match group.join_table_option {
+            crate::migrate::diff::PkFlipJoinTableOption::OptionA => "OptionA",
+            crate::migrate::diff::PkFlipJoinTableOption::OptionB => "OptionB",
+        };
+        let _ = writeln!(
+            up,
+            "-- Join-table layout: {layout_label} (parent={parent}, join_table={tbl})",
+            tbl = jt.table,
+        );
     }
 
     // No trailing `COMMIT;` — the runner emits the final COMMIT
@@ -2882,6 +2903,7 @@ mod tests {
             partitioned_parent: None,
             co_destructive: false,
             co_lossy: false,
+            join_table_option: crate::migrate::diff::PkFlipJoinTableOption::OptionA,
         }
     }
 
@@ -3226,6 +3248,7 @@ mod tests {
             partitioned_parent: None,
             co_destructive: false,
             co_lossy: false,
+            join_table_option: crate::migrate::diff::PkFlipJoinTableOption::OptionA,
         };
         let prep = emit_preparation(&group);
         let np = whitespace_normalize(&prep.up);
@@ -3362,10 +3385,38 @@ mod tests {
         super::lower_pk_flip_group(&group, bucket())
     }
 
-    /// Forward-direction §3 fixture. Captures the actual emitter
-    /// output post-whitespace-normalise. Re-run the test after any
-    /// emitter change and update this constant if the emitter's
-    /// output shape changed deliberately.
+    /// Forward-direction §3 fixture — playbook-anchored.
+    ///
+    /// **Provenance.** Anchored to `HeeRanjID-reference/docs/migrations/
+    /// asc-to-desc.md` §3 (single-table recipe), lines 75–193. The
+    /// fixture's whitespace-normalised SQL is the literal byte-for-
+    /// byte representation of every statement the playbook prescribes
+    /// for the worked example using identifiers `tbl` / `id` / `id_desc`,
+    /// in playbook order:
+    ///
+    ///   §3.1 — `ALTER TABLE tbl ADD COLUMN id_desc bigint`
+    ///   §3.1 — `install_autofill_trigger_for_table` expansion
+    ///          (CREATE OR REPLACE FUNCTION + CREATE TRIGGER)
+    ///   §3.2 — `CALL heeranjid_bulk_backfill('tbl', 'id', 'id_desc',
+    ///          'heer', 10000)`
+    ///   §3.3 — `SELECT count(*) FROM tbl WHERE id_desc IS NULL`
+    ///   §3.4 — `CREATE UNIQUE INDEX CONCURRENTLY idx_tbl_id_desc`
+    ///   §3.5 — `ALTER TABLE tbl ADD CONSTRAINT ... CHECK ... NOT
+    ///          VALID; VALIDATE CONSTRAINT; SET NOT NULL; DROP
+    ///          CONSTRAINT` (4-statement non-blocking NOT NULL proof)
+    ///   §3.6 — atomic cutover (drop old PK, promote shadow, rename)
+    ///
+    /// **Drift detector — playbook side.** A separate test below
+    /// (`fixture_section_3_contains_every_playbook_statement`) walks
+    /// the fixture and asserts the presence of every load-bearing
+    /// statement the playbook requires. If the playbook adds or
+    /// removes a step, that test must be updated — that is the gate
+    /// against fixture-from-emitter self-reference.
+    ///
+    /// **Drift detector — emitter side.** The byte-equality test
+    /// (`whole_plan_byte_equality_section_3_forward`) asserts the
+    /// emitter's output equals the fixture exactly. Any emitter
+    /// change without a paired fixture update fails loud here.
     const PLAYBOOK_SECTION_3_NORMALIZED: &str =
         include_str!("fixtures/pk_flip_playbook_section_3.sql");
 
@@ -3375,6 +3426,16 @@ mod tests {
     // --lib pk_flip::tests::dump_pk_flip_fixtures` to overwrite every
     // playbook fixture with the current emitter's output. Off by
     // default so the regression tests above stay deterministic.
+    //
+    // **WARNING — PLAYBOOK DRIFT.** The dumper writes the EMITTER's
+    // output, NOT the playbook's. After re-dumping, the operator
+    // MUST re-read `asc-to-desc.md` for the section in question and
+    // verify the new fixture contents reproduce every playbook
+    // statement verbatim. The companion test
+    // `fixture_section_3_contains_every_playbook_statement` (and its
+    // siblings for §4 / §6 / §7 / §8 / §9) acts as a second-side
+    // drift detector — any deletion of a load-bearing statement in
+    // the fixture fails that test. Run BOTH tests after dumping.
     #[test]
     fn dump_pk_flip_fixtures() {
         if std::env::var("DJOGI_DUMP_PK_FLIP_FIXTURES").ok().as_deref() != Some("1") {
@@ -3655,6 +3716,296 @@ mod tests {
         assert_eq!(
             actual, expected,
             "whole-plan §9 output drifted from fixture; update fixture or fix emitter",
+        );
+    }
+
+    // ── B-5r playbook-anchor drift detectors ─────────────────────────────
+    //
+    // These tests walk each fixture's bytes and assert that every
+    // load-bearing playbook statement is present. They catch fixture
+    // drift FROM the playbook independently of the emitter — if a
+    // future contributor re-runs `dump_pk_flip_fixtures` after a
+    // breaking emitter change, the byte-equality test passes (because
+    // emitter and fixture are now in sync) but THESE tests fail
+    // (because the fixture lost a playbook-required statement).
+    //
+    // The fixtures are anchored to:
+    //   `HeeRanjID-reference/docs/migrations/asc-to-desc.md`
+    // §3 (lines 75–193), §4 (196–256), §6 (269–323), §7 (327–353),
+    // §8 (356–379), §9 (383–492).
+
+    /// §3 single-table forward — every playbook statement from §3.1
+    /// through §3.6 must be present in the fixture.
+    #[test]
+    fn fixture_section_3_contains_every_playbook_statement() {
+        // Whitespace-normalise the fixture so substring matches are
+        // robust against formatting changes (multi-space → single
+        // space, newlines stripped).
+        let fx = whitespace_normalize(PLAYBOOK_SECTION_3_NORMALIZED);
+        // §3.1 — ADD COLUMN.
+        assert!(
+            fx.contains("ALTER TABLE tbl ADD COLUMN id_desc bigint"),
+            "§3.1 ADD COLUMN missing from fixture",
+        );
+        // §3.1 — autofill trigger function + trigger attach.
+        assert!(
+            fx.contains("zzz_tbl_autofill_desc"),
+            "§3.1 autofill trigger name missing",
+        );
+        assert!(
+            fx.contains("heerid_to_desc(NEW.id)"),
+            "§3.1 trigger body must call heerid_to_desc on NEW.id",
+        );
+        assert!(
+            fx.contains("BEFORE INSERT OR UPDATE ON tbl"),
+            "§3.1 trigger must be BEFORE INSERT OR UPDATE",
+        );
+        // §3.2 — bulk backfill CALL.
+        assert!(
+            fx.contains("CALL heeranjid_bulk_backfill('tbl', 'id', 'id_desc', 'heer', 10000)"),
+            "§3.2 bulk backfill CALL missing or signature drifted",
+        );
+        // §3.3 — verification SELECT.
+        assert!(
+            fx.contains("SELECT count(*) FROM tbl WHERE id_desc IS NULL"),
+            "§3.3 NULL-shadow verification missing",
+        );
+        // §3.4 — concurrent unique index.
+        assert!(
+            fx.contains("CREATE UNIQUE INDEX CONCURRENTLY idx_tbl_id_desc ON tbl (id_desc)"),
+            "§3.4 concurrent unique index missing",
+        );
+        // §3.5 — NOT NULL proof (4-statement non-blocking pattern).
+        assert!(
+            fx.contains("ADD CONSTRAINT tbl_id_desc_nn CHECK (id_desc IS NOT NULL) NOT VALID"),
+            "§3.5 NOT VALID CHECK missing",
+        );
+        assert!(
+            fx.contains("VALIDATE CONSTRAINT tbl_id_desc_nn"),
+            "§3.5 VALIDATE CONSTRAINT missing",
+        );
+        assert!(
+            fx.contains("ALTER COLUMN id_desc SET NOT NULL"),
+            "§3.5 SET NOT NULL missing",
+        );
+        assert!(
+            fx.contains("DROP CONSTRAINT tbl_id_desc_nn"),
+            "§3.5 DROP CONSTRAINT (NN cleanup) missing",
+        );
+        // §3.6 — atomic cutover statements.
+        assert!(
+            fx.contains("ALTER TABLE tbl DROP CONSTRAINT tbl_pkey"),
+            "§3.6 DROP old PK missing",
+        );
+        assert!(
+            fx.contains("ADD CONSTRAINT tbl_pkey PRIMARY KEY USING INDEX idx_tbl_id_desc"),
+            "§3.6 promote shadow to PK USING INDEX missing",
+        );
+        assert!(
+            fx.contains("ALTER COLUMN id_desc SET DEFAULT heerid_next_desc()"),
+            "§3.6 set new default missing",
+        );
+        assert!(
+            fx.contains("ALTER TABLE tbl DROP COLUMN id"),
+            "§3.6 drop old column missing",
+        );
+        assert!(
+            fx.contains("DROP TRIGGER zzz_tbl_autofill_desc ON tbl"),
+            "§3.6 drop trigger missing",
+        );
+        assert!(
+            fx.contains("DROP FUNCTION zzz_tbl_autofill_desc() CASCADE"),
+            "§3.6 drop trigger function missing",
+        );
+        assert!(
+            fx.contains("ALTER TABLE tbl RENAME COLUMN id_desc TO id"),
+            "§3.6 final rename missing",
+        );
+    }
+
+    /// §3 reverse — substitution rule: `heerid_to_desc` →
+    /// `heerid_to_asc`, `heerid_next_desc` → `heerid_next` (the
+    /// asc-side default) — applied to the §3 forward fixture.
+    #[test]
+    fn fixture_section_3_reverse_applies_documented_substitution() {
+        let fx = whitespace_normalize(PLAYBOOK_SECTION_3_REVERSE_NORMALIZED);
+        // The reverse direction substitutes the trigger body to use
+        // `heerid_to_asc` (NOT `heerid_to_desc`).
+        assert!(
+            fx.contains("heerid_to_asc(NEW.id)"),
+            "reverse fixture must call heerid_to_asc in trigger body",
+        );
+        // The new column DEFAULT after cutover must be `heerid_next()`
+        // — the asc generator. The fixture must NOT contain
+        // `heerid_next_desc` outside an inline-comment block.
+        assert!(
+            fx.contains("SET DEFAULT heerid_next()"),
+            "reverse fixture must set DEFAULT to heerid_next() (asc generator)",
+        );
+        assert!(
+            !fx.contains("heerid_next_desc()"),
+            "reverse fixture must NOT contain heerid_next_desc() — that is the forward default",
+        );
+        // Same structural shape as forward — every §3.1–§3.6 step
+        // present.
+        assert!(fx.contains("ALTER TABLE tbl ADD COLUMN id_desc bigint"));
+        assert!(fx.contains("CREATE UNIQUE INDEX CONCURRENTLY idx_tbl_id_desc"));
+        assert!(fx.contains("ALTER TABLE tbl DROP CONSTRAINT tbl_pkey"));
+    }
+
+    /// §4 parent + child — every playbook statement for the worked
+    /// example with parent=`parent` and child=`c`.
+    #[test]
+    fn fixture_section_4_contains_every_playbook_statement() {
+        let fx = whitespace_normalize(PLAYBOOK_SECTION_4_NORMALIZED);
+        // Parent section (§3 statements applied to `parent`).
+        assert!(fx.contains("ALTER TABLE parent ADD COLUMN id_desc bigint"));
+        assert!(fx.contains("zzz_parent_autofill_desc"));
+        // Child preparation: shadow column on c, NOT VALID FK.
+        assert!(fx.contains("ALTER TABLE c ADD COLUMN p_id_desc bigint"));
+        assert!(fx.contains(
+            "ADD CONSTRAINT c_p_id_desc_fkey FOREIGN KEY (p_id_desc) REFERENCES parent(id_desc) NOT VALID"
+        ));
+        // Child backfill + validate.
+        assert!(
+            fx.contains("CALL heeranjid_bulk_backfill('c', 'p_id', 'p_id_desc', 'heer', 10000)")
+        );
+        assert!(fx.contains("VALIDATE CONSTRAINT c_p_id_desc_fkey"));
+        // Cutover ordering — child FK drop happens BEFORE parent
+        // promotion in the cutover transaction.
+        assert!(fx.contains("ALTER TABLE c DROP CONSTRAINT c_p_id_fkey"));
+        assert!(fx.contains("ALTER TABLE parent DROP CONSTRAINT parent_pkey"));
+        // Parent promotion + rename.
+        assert!(
+            fx.contains("ADD CONSTRAINT parent_pkey PRIMARY KEY USING INDEX idx_parent_id_desc")
+        );
+        assert!(fx.contains("ALTER TABLE parent RENAME COLUMN id_desc TO id"));
+        // Child finalisation (drop old col, rename shadow, re-add FK).
+        assert!(fx.contains("ALTER TABLE c DROP COLUMN p_id"));
+        assert!(fx.contains("ALTER TABLE c RENAME COLUMN p_id_desc TO p_id"));
+        assert!(fx.contains("ADD CONSTRAINT c_p_id_fkey FOREIGN KEY (p_id) REFERENCES parent(id)"));
+    }
+
+    /// §6 self-FK — multi-pair trigger + cutover with FK re-creation.
+    #[test]
+    fn fixture_section_6_contains_every_playbook_statement() {
+        let fx = whitespace_normalize(PLAYBOOK_SECTION_6_NORMALIZED);
+        // Two shadow columns on the same table.
+        assert!(fx.contains("ALTER TABLE nodes ADD COLUMN id_desc bigint"));
+        assert!(fx.contains("ALTER TABLE nodes ADD COLUMN parent_id_desc bigint"));
+        // Multi-pair trigger.
+        assert!(fx.contains("zzz_nodes_autofill_desc"));
+        // Self-FK NOT VALID.
+        assert!(fx.contains(
+            "ADD CONSTRAINT nodes_parent_id_desc_fkey FOREIGN KEY (parent_id_desc) REFERENCES nodes(id_desc) NOT VALID"
+        ));
+        // Both backfills.
+        assert!(
+            fx.contains("CALL heeranjid_bulk_backfill('nodes', 'id', 'id_desc', 'heer', 10000)")
+        );
+        assert!(fx.contains(
+            "CALL heeranjid_bulk_backfill('nodes', 'parent_id', 'parent_id_desc', 'heer', 10000)"
+        ));
+        // Two indexes — UNIQUE on PK shadow, plain on FK shadow.
+        assert!(fx.contains("CREATE UNIQUE INDEX CONCURRENTLY idx_nodes_id_desc"));
+        assert!(fx.contains("CREATE INDEX CONCURRENTLY idx_nodes_parent_id_desc"));
+        // Cutover: drop self-FK, drop PK, promote, drop both old
+        // columns, rename both, re-add self-FK.
+        assert!(fx.contains("ALTER TABLE nodes DROP CONSTRAINT nodes_parent_id_fkey"));
+        assert!(fx.contains("ALTER TABLE nodes DROP CONSTRAINT nodes_pkey"));
+        assert!(fx.contains("ADD CONSTRAINT nodes_pkey PRIMARY KEY USING INDEX idx_nodes_id_desc"));
+        assert!(fx.contains("ALTER TABLE nodes DROP COLUMN id"));
+        assert!(fx.contains("ALTER TABLE nodes DROP COLUMN parent_id"));
+        assert!(fx.contains("ALTER TABLE nodes RENAME COLUMN id_desc TO id"));
+        assert!(fx.contains("ALTER TABLE nodes RENAME COLUMN parent_id_desc TO parent_id"));
+        assert!(fx.contains(
+            "ADD CONSTRAINT nodes_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES nodes(id)"
+        ));
+    }
+
+    /// §7 join table — preparation + cutover for the worked
+    /// example tags/book_tags.
+    #[test]
+    fn fixture_section_7_contains_every_playbook_statement() {
+        let fx = whitespace_normalize(PLAYBOOK_SECTION_7_NORMALIZED);
+        // Parent shadow + trigger.
+        assert!(fx.contains("ALTER TABLE tags ADD COLUMN id_desc bigint"));
+        assert!(fx.contains("zzz_tags_autofill_desc"));
+        // Join-table shadow + trigger + NOT VALID FK.
+        assert!(fx.contains("ALTER TABLE book_tags ADD COLUMN tag_id_desc bigint"));
+        assert!(fx.contains("zzz_book_tags_autofill_desc"));
+        assert!(fx.contains(
+            "ADD CONSTRAINT book_tags_tag_id_desc_fkey FOREIGN KEY (tag_id_desc) REFERENCES tags(id_desc) NOT VALID"
+        ));
+        // Both backfills.
+        assert!(
+            fx.contains("CALL heeranjid_bulk_backfill('tags', 'id', 'id_desc', 'heer', 10000)")
+        );
+        assert!(fx.contains(
+            "CALL heeranjid_bulk_backfill('book_tags', 'tag_id', 'tag_id_desc', 'heer', 10000)"
+        ));
+        // Cutover.
+        assert!(fx.contains("ALTER TABLE book_tags DROP CONSTRAINT book_tags_tag_id_fkey"));
+        assert!(fx.contains("ALTER TABLE tags DROP CONSTRAINT tags_pkey"));
+        assert!(fx.contains("ALTER TABLE book_tags DROP COLUMN tag_id"));
+        assert!(fx.contains("ALTER TABLE book_tags RENAME COLUMN tag_id_desc TO tag_id"));
+        assert!(fx.contains(
+            "ADD CONSTRAINT book_tags_tag_id_fkey FOREIGN KEY (tag_id) REFERENCES tags(id)"
+        ));
+    }
+
+    /// §8 cycle — DEFERRABLE FKs + SET CONSTRAINTS ALL DEFERRED.
+    #[test]
+    fn fixture_section_8_contains_every_playbook_statement() {
+        let fx = whitespace_normalize(PLAYBOOK_SECTION_8_NORMALIZED);
+        // The cutover MUST begin with SET CONSTRAINTS ALL DEFERRED
+        // when cycles are present. (The fixture's whitespace-
+        // normalised form puts everything on one line, so a
+        // substring match is sufficient.)
+        assert!(
+            fx.contains("SET CONSTRAINTS ALL DEFERRED"),
+            "§8 cycle cutover must defer all constraints",
+        );
+        // Cycle peer's NOT VALID FK should be DEFERRABLE INITIALLY
+        // DEFERRED. The emitter renders the deferrable mode based
+        // on the cycle metadata; assert the marker appears.
+        assert!(
+            fx.contains("DEFERRABLE INITIALLY DEFERRED"),
+            "§8 cycle FK must be DEFERRABLE INITIALLY DEFERRED",
+        );
+    }
+
+    /// §9 partitioned — partitioned-parent specifics: parent-level
+    /// shadow, parent-level UNIQUE placeholder, ATTACH PARTITION
+    /// expansion via runner, ADD PRIMARY KEY (NOT USING INDEX).
+    #[test]
+    fn fixture_section_9_contains_every_playbook_statement() {
+        let fx = whitespace_normalize(PLAYBOOK_SECTION_9_NORMALIZED);
+        // Parent-level shadow column.
+        assert!(fx.contains("ALTER TABLE events ADD COLUMN id_desc bigint"));
+        // Parent-level UNIQUE placeholder via ON ONLY (key §9.5
+        // requirement — partitioned UNIQUE indexes can't be built
+        // CONCURRENTLY at the parent level).
+        assert!(
+            fx.contains("ON ONLY events"),
+            "§9.5 parent-level UNIQUE must be ON ONLY parent",
+        );
+        // Per-leaf placeholder + ATTACH expansion is done by the
+        // runner at apply time; the fixture's plan SQL should
+        // contain the placeholder marker `EACH_LEAF_TABLE`.
+        assert!(
+            fx.contains("EACH_LEAF_TABLE"),
+            "§9 per-leaf placeholder marker must be present",
+        );
+        // §9.7: partitioned-parent PK promotion uses ADD PRIMARY KEY
+        // (NOT `PRIMARY KEY USING INDEX`).
+        assert!(
+            fx.contains("ADD PRIMARY KEY (ts, id_desc)"),
+            "§9.7 partitioned-parent PK must use ADD PRIMARY KEY (partition_key, id_desc)",
+        );
+        assert!(
+            !fx.contains("PRIMARY KEY USING INDEX idx_events"),
+            "§9.7 partitioned-parent must NOT use USING INDEX (illegal on partitioned parent)",
         );
     }
 }

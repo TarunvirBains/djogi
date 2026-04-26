@@ -528,14 +528,49 @@ mod tests {
     fn point_of_no_return_warning_byte_exact() {
         // The PoNR sentence is contractual — operators cite it in
         // runbooks. Any wording drift must be paired with a v3 plan
-        // amendment AND this fixture update; we assert the exact byte
-        // sequence so silent rephrasing fails loud.
+        // amendment AND this fixture update; we assert EVERY byte
+        // (not just the first three) of the constant so silent
+        // rephrasing — even a one-character typo — fails loud.
+        //
+        // The expected sequence below is hand-typed: U+26A0 (warning
+        // sign, 0xE2 0x9A 0xA0), space, ASCII letters of "POINT OF NO
+        // RETURN after this cutover commits", space, U+2014 (em dash,
+        // 0xE2 0x80 0x94), space, ASCII letters of "reverse requires
+        // an inverse migration".
+        let expected_bytes: &[u8] = &[
+            // ⚠
+            0xE2, 0x9A, 0xA0, // (space) POINT OF NO RETURN
+            b' ', b'P', b'O', b'I', b'N', b'T', b' ', b'O', b'F', b' ', b'N', b'O', b' ', b'R',
+            b'E', b'T', b'U', b'R', b'N', // (space) after this cutover commits
+            b' ', b'a', b'f', b't', b'e', b'r', b' ', b't', b'h', b'i', b's', b' ', b'c', b'u',
+            b't', b'o', b'v', b'e', b'r', b' ', b'c', b'o', b'm', b'm', b'i', b't', b's',
+            // (space) — em dash
+            b' ', 0xE2, 0x80, 0x94, // (space) reverse requires an inverse migration
+            b' ', b'r', b'e', b'v', b'e', b'r', b's', b'e', b' ', b'r', b'e', b'q', b'u', b'i',
+            b'r', b'e', b's', b' ', b'a', b'n', b' ', b'i', b'n', b'v', b'e', b'r', b's', b'e',
+            b' ', b'm', b'i', b'g', b'r', b'a', b't', b'i', b'o', b'n',
+        ];
+        let actual_bytes = POINT_OF_NO_RETURN_WARNING.as_bytes();
+        assert_eq!(
+            actual_bytes.len(),
+            expected_bytes.len(),
+            "POINT_OF_NO_RETURN_WARNING byte length drifted from contract; \
+             expected {} bytes, got {}; constant body: {:?}",
+            expected_bytes.len(),
+            actual_bytes.len(),
+            POINT_OF_NO_RETURN_WARNING,
+        );
+        for (i, (a, e)) in actual_bytes.iter().zip(expected_bytes.iter()).enumerate() {
+            assert_eq!(
+                a, e,
+                "POINT_OF_NO_RETURN_WARNING byte {i} drifted: expected 0x{e:02X}, got 0x{a:02X}",
+            );
+        }
+        // Also keep the str-level equality assertion as a readability
+        // safety net so a future test reader sees the exact wording.
         let expected = "\u{26a0} POINT OF NO RETURN after this cutover commits \u{2014} \
                         reverse requires an inverse migration";
         assert_eq!(POINT_OF_NO_RETURN_WARNING, expected);
-        assert_eq!(POINT_OF_NO_RETURN_WARNING.as_bytes()[0], 0xE2);
-        assert_eq!(POINT_OF_NO_RETURN_WARNING.as_bytes()[1], 0x9A);
-        assert_eq!(POINT_OF_NO_RETURN_WARNING.as_bytes()[2], 0xA0);
     }
 
     #[test]

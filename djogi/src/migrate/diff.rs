@@ -405,6 +405,71 @@ pub struct PkTypeFlipGroup {
     pub co_destructive: bool,
     /// Co-existing lossy ops in the same delta.
     pub co_lossy: bool,
+    /// Join-table cutover layout — `OptionA` (default) emits one
+    /// shared cutover transaction across both parents and the join
+    /// table per playbook §7; `OptionB` splits the cutover into
+    /// sequential per-parent migrations. Set by the differ from
+    /// [`crate::config::MigrateConfig::pk_flip_join_table_option`]
+    /// at delta-construction time so the planner reads the operator-
+    /// chosen layout straight from the group without needing the
+    /// `MigrateConfig` plumbed through to lowering. The default
+    /// value is `OptionA`; the differ overrides it per the operator
+    /// config when the delta is built. **Behaviourally,** Option B
+    /// emits a smaller cutover statement set per group — the join
+    /// table's partner-side FK statements are deferred to the next
+    /// flip group's cutover instead of bundled into this one.
+    pub join_table_option: PkFlipJoinTableOption,
+}
+
+/// Join-table cutover layout. Mirrors the operator-facing knob in
+/// [`crate::config::MigrateConfig::pk_flip_join_table_option`]
+/// (which carries an ASCII `'A'` / `'B'` because TOML doesn't have
+/// a strongly-typed enum). The differ converts the config char to
+/// this enum once and writes it onto every emitted
+/// [`PkTypeFlipGroup`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkFlipJoinTableOption {
+    /// Single mega-transaction covers both parents + the join table
+    /// in one cutover (playbook §7 default).
+    OptionA,
+    /// Sequential per-parent flips. The current flip group's cutover
+    /// only re-points `fk_to_parent_column`; the partner FK on the
+    /// same join table is left for the second parent's flip group
+    /// to re-point in its own cutover.
+    OptionB,
+}
+
+impl PkFlipJoinTableOption {
+    /// Parse from the [`crate::config::MigrateConfig`] char value.
+    /// Anything other than `'B'` (case-insensitive) maps to
+    /// [`PkFlipJoinTableOption::OptionA`] — keeping the unknown-
+    /// value fallback aligned with the safer default.
+    pub fn from_config_char(c: char) -> Self {
+        match c {
+            'B' | 'b' => Self::OptionB,
+            _ => Self::OptionA,
+        }
+    }
+}
+
+/// Walk a list of [`SchemaDelta`]s and overwrite every emitted
+/// [`PkTypeFlipGroup`]'s `join_table_option` with the operator-
+/// configured value.
+///
+/// **When to call.** After [`diff_bucket_maps`] has produced the
+/// per-bucket deltas and before the segment planner is invoked.
+/// The compose pipeline + `db reset` replay both call this helper
+/// so the operator's TOML choice reaches the planner.
+///
+/// **Idempotent.** Calling twice with the same option is a no-op.
+pub fn apply_pk_flip_join_table_option(deltas: &mut [SchemaDelta], option: PkFlipJoinTableOption) {
+    for delta in deltas {
+        for op in &mut delta.operations {
+            if let SchemaOperation::PkTypeFlipGroup(group) = op {
+                group.join_table_option = option;
+            }
+        }
+    }
 }
 
 /// Direction of a PK-type flip.
@@ -951,14 +1016,36 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
             }
         }
 
-        // B-4 fixed-point closure: iterate over the FK graph until
-        // no NEW indirect children are discovered. For the asc↔desc
-        // value flip the closure terminates after the initial pass
-        // because the value re-keying only ever affects the parent
-        // table's `id` column directly. The loop is here so future
-        // PK-type changes that propagate to grandchildren inherit
-        // the closure for free, and so a cycle of arbitrary length
-        // cannot loop the differ forever.
+        // B-4r transitive FK closure (real, non-placeholder).
+        //
+        // Walk the FK graph rooted at `parent_table` via BFS so the
+        // visited-set grows to include indirect descendants. The
+        // closure is bounded by `MAX_CLOSURE_DEPTH` and protected
+        // against cycles by the visited-set itself.
+        //
+        // **What `visited_tables` records.** Every table reachable
+        // from `parent_table` via at least one FK that points at a
+        // PK column of an already-visited table. For asc↔desc the
+        // direct children list (`children`) is the only set whose
+        // membership requires shadow-column orchestration — a
+        // grandchild's FK column points at a CHILD's `id`, and the
+        // child's `id` is itself a HeerId whose value space does NOT
+        // re-key when the parent flips. The closure exists to:
+        //
+        //   1. Detect cycles defensively (a real-world cycle of
+        //      arbitrary length cannot infinite-loop the differ).
+        //   2. Terminate cleanly on a pathological graph
+        //      (`MAX_CLOSURE_DEPTH = 65`).
+        //   3. Reserve the structural plumbing for a future PK-type
+        //      flip variant that DOES re-key grandchildren (e.g. a
+        //      hypothetical TEXT key change). Such a variant would
+        //      promote `visited_tables` membership to shadow-column
+        //      orchestration by extending this body — no rewrite of
+        //      the closure shape needed.
+        //
+        // **Cascade-depth panic.** At depth > 65 the closure panics
+        // with the chain of tables that drove the depth blow-out so
+        // tests can detect the contract violation deterministically.
         let mut visited_tables: BTreeSet<String> = BTreeSet::new();
         visited_tables.insert(parent_table.clone());
         for c in &children {
@@ -967,31 +1054,68 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
         for jt in &join_tables {
             visited_tables.insert(jt.table.clone());
         }
+
         // Bound the closure depth defensively. A real-world FK graph
-        // is typically <5 levels; 64 gives us headroom while
+        // is typically <5 levels; 65 gives us headroom while
         // guaranteeing termination on a malformed graph.
-        const MAX_CLOSURE_DEPTH: u32 = 64;
-        let mut depth: u32 = 0;
-        loop {
-            depth += 1;
-            if depth > MAX_CLOSURE_DEPTH {
-                tracing::warn!(
-                    parent = %parent_table,
-                    "PK-flip transitive FK closure hit MAX_CLOSURE_DEPTH; \
-                     graph may have a pathological cycle. Halting closure.",
-                );
+        const MAX_CLOSURE_DEPTH: u32 = 65;
+        // Chain-of-tables tracker so a depth blow-out reports the
+        // sequence that drove it (operator-actionable signal).
+        let mut depth_chain: Vec<String> = vec![parent_table.clone()];
+        // Frontier for BFS — the set of tables whose children we have
+        // not yet enumerated. Seeded with everything in the visited
+        // set so the first pass scans direct children of the parent
+        // AND of every direct-child table (depth-2). The first pass
+        // therefore picks up grandchildren; subsequent passes pick up
+        // great-grandchildren; etc.
+        let mut frontier: BTreeSet<String> = visited_tables.clone();
+
+        for depth in 1u32..=MAX_CLOSURE_DEPTH {
+            if frontier.is_empty() {
                 break;
             }
-            let pre_count = visited_tables.len();
-            // For asc↔desc the parent's `id` value space is the
-            // only one that re-keys. We do not chase grandchildren
-            // here — their FK column is on a CHILD's table (which
-            // is itself a separate flip group if it flips). The
-            // closure is structurally correct for any future
-            // value-rekeying flip type by extending this body.
-            let _ = pre_count; // placeholder for future closure body
-            if visited_tables.len() == pre_count {
+            // Scan every table in `after.models` for FKs whose
+            // `ref_table` is a member of the current frontier. New
+            // hits become next-pass frontier.
+            let mut next_frontier: BTreeSet<String> = BTreeSet::new();
+            for (other_name, other_schema) in &after.models {
+                if visited_tables.contains(other_name) {
+                    continue;
+                }
+                for col in &other_schema.columns {
+                    let Some(fk) = col.foreign_key.as_ref() else {
+                        continue;
+                    };
+                    if frontier.contains(&fk.ref_table) {
+                        next_frontier.insert(other_name.clone());
+                        break;
+                    }
+                }
+            }
+            if next_frontier.is_empty() {
                 break;
+            }
+            // Record one representative table from this depth so a
+            // chain blow-out renders an operator-readable trail.
+            if let Some(first) = next_frontier.iter().next() {
+                depth_chain.push(first.clone());
+            }
+            for t in &next_frontier {
+                visited_tables.insert(t.clone());
+            }
+            frontier = next_frontier;
+            // The depth-65 contract: once we have iterated the
+            // maximum number of times AND the frontier is still
+            // adding tables, the graph is pathological — panic with
+            // the chain so tests + CI catch it.
+            if depth == MAX_CLOSURE_DEPTH {
+                panic!(
+                    "PkFlipCascadeDepthExceeded: PK-flip transitive FK closure exceeded \
+                     {MAX_CLOSURE_DEPTH} levels rooted at {parent_table}; \
+                     table_chain={depth_chain:?}; \
+                     graph likely has a pathological cycle or unbounded fan-out — \
+                     refusing to compose the migration",
+                );
             }
         }
 
@@ -1062,6 +1186,13 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
             partitioned_parent,
             co_destructive,
             co_lossy,
+            // Default join-table layout — Option A. The compose
+            // pipeline overrides this from
+            // `MigrateConfig::pk_flip_join_table_option` after the
+            // differ runs, before the planner lowers the group.
+            // See `apply_join_table_option` for the override entry
+            // point.
+            join_table_option: PkFlipJoinTableOption::OptionA,
         }));
     }
 }
@@ -2605,5 +2736,206 @@ mod tests {
                 kind: EnumVariantAnchorKind::After,
             })
         );
+    }
+
+    // ── B-4r: transitive FK closure unit tests ────────────────────────────
+
+    /// Build a minimal `TableSchema` with the given name, a HeerId
+    /// PK column called `id`, and the supplied FK columns.
+    ///
+    /// Each `(col_name, ref_table)` entry becomes a `BIGINT NOT NULL`
+    /// column with an FK pointing at `ref_table.id`.
+    fn synth_table_with_fks(
+        table: &str,
+        fks: &[(&str, &str)],
+        pk_kind: crate::migrate::schema::PkKindSchema,
+    ) -> crate::migrate::schema::TableSchema {
+        use crate::migrate::schema::{
+            ColumnSchema, ForeignKeySchema, OnDeleteSchema, PrimaryKeySchema, TableSchema,
+        };
+        let mut columns = Vec::new();
+        // PK column
+        columns.push(ColumnSchema {
+            check: None,
+            default_sql: None,
+            foreign_key: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+        });
+        for (col, ref_table) in fks {
+            columns.push(ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(ForeignKeySchema {
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: ref_table.to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: col.to_string(),
+                nullable: false,
+                on_delete: Some(OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            });
+        }
+        TableSchema {
+            app: None,
+            columns,
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: pk_kind,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: table.to_string(),
+            tenant_key: None,
+        }
+    }
+
+    fn synth_schema_with_tables(
+        tables: Vec<crate::migrate::schema::TableSchema>,
+    ) -> crate::migrate::schema::AppliedSchema {
+        let mut models = BTreeMap::new();
+        for t in tables {
+            models.insert(t.table.clone(), t);
+        }
+        crate::migrate::schema::AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models,
+            registered_apps: vec!["".to_string()],
+        }
+    }
+
+    /// 4-level cascade A → B → C → D where A flips. The closure
+    /// should walk through every level (visited_tables grows to
+    /// include B, C, D) without panicking. For asc↔desc the
+    /// children list contains B as a direct child (depth 1) — C
+    /// and D become reachable via the closure but are NOT
+    /// shadow-column targets for this flip variant.
+    #[test]
+    fn transitive_fk_closure_walks_four_level_cascade() {
+        use crate::migrate::schema::PkKindSchema;
+        // A has the flipping PK; B → A, C → B, D → C.
+        let after = synth_schema_with_tables(vec![
+            synth_table_with_fks("a", &[], PkKindSchema::HeerId),
+            synth_table_with_fks("b", &[("a_id", "a")], PkKindSchema::HeerId),
+            synth_table_with_fks("c", &[("b_id", "b")], PkKindSchema::HeerId),
+            synth_table_with_fks("d", &[("c_id", "c")], PkKindSchema::HeerId),
+        ]);
+        let mut ops = vec![SchemaOperation::PkTypeFlip {
+            table: "a".to_string(),
+            from: PkKindSchema::HeerId,
+            to: PkKindSchema::HeerIdRecencyBiased,
+        }];
+        // Closure must terminate without panicking.
+        promote_pk_flips_to_groups(&after, &mut ops);
+        // Resulting group: B is a direct child of A; C and D are NOT
+        // children for the asc↔desc flip (their FKs point at B's /
+        // C's `id`, not A's). The transitive closure walked them but
+        // did not promote them to shadow-column orchestration.
+        let group = ops
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::PkTypeFlipGroup(g) => Some(g),
+                _ => None,
+            })
+            .expect("PkTypeFlipGroup emitted");
+        assert_eq!(group.parent_table, "a");
+        assert_eq!(
+            group
+                .children
+                .iter()
+                .map(|c| c.table.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b"],
+            "for asc↔desc only depth-1 children become shadow-column targets",
+        );
+    }
+
+    /// Cycle A ↔ B: A has FK to B, B has FK to A. Closure must
+    /// terminate (visited-set protection) and the cycle is recorded
+    /// as a `PkFlipCycle` peer rather than as an ordinary child.
+    #[test]
+    fn transitive_fk_closure_terminates_on_cycle() {
+        use crate::migrate::schema::PkKindSchema;
+        let after = synth_schema_with_tables(vec![
+            // a.b_id references b
+            synth_table_with_fks("a", &[("b_id", "b")], PkKindSchema::HeerId),
+            // b.a_id references a — closes the cycle
+            synth_table_with_fks("b", &[("a_id", "a")], PkKindSchema::HeerId),
+        ]);
+        let mut ops = vec![SchemaOperation::PkTypeFlip {
+            table: "a".to_string(),
+            from: PkKindSchema::HeerId,
+            to: PkKindSchema::HeerIdRecencyBiased,
+        }];
+        // Must not loop indefinitely — visited-set + frontier
+        // tracking guarantees termination.
+        promote_pk_flips_to_groups(&after, &mut ops);
+        let group = ops
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::PkTypeFlipGroup(g) => Some(g),
+                _ => None,
+            })
+            .expect("PkTypeFlipGroup emitted");
+        assert_eq!(group.cycles.len(), 1, "cycle peer detected");
+        assert_eq!(group.cycles[0].peer_table, "b");
+    }
+
+    /// 3-level cascade with no cycles — sanity: closure walks
+    /// past depth-1 without spuriously panicking.
+    #[test]
+    fn transitive_fk_closure_handles_three_level_cascade_without_panic() {
+        use crate::migrate::schema::PkKindSchema;
+        let after = synth_schema_with_tables(vec![
+            synth_table_with_fks("p", &[], PkKindSchema::HeerId),
+            synth_table_with_fks("c1", &[("p_id", "p")], PkKindSchema::HeerId),
+            synth_table_with_fks("g1", &[("c_id", "c1")], PkKindSchema::HeerId),
+        ]);
+        let mut ops = vec![SchemaOperation::PkTypeFlip {
+            table: "p".to_string(),
+            from: PkKindSchema::HeerId,
+            to: PkKindSchema::HeerIdRecencyBiased,
+        }];
+        promote_pk_flips_to_groups(&after, &mut ops);
+        let group = ops
+            .iter()
+            .find_map(|op| match op {
+                SchemaOperation::PkTypeFlipGroup(g) => Some(g),
+                _ => None,
+            })
+            .expect("group");
+        // Depth-1 children only (asc↔desc invariant).
+        assert_eq!(group.children.len(), 1);
+        assert_eq!(group.children[0].table, "c1");
     }
 }
