@@ -52,14 +52,35 @@ fn main() {
         }
     };
 
-    if drift_warnings_suppressed(&workspace_root) {
-        return;
+    // Codex B-6: classify FIRST, then suppress only Outcome-3 drift.
+    //
+    // The previous code returned early on `suppress_drift_warning =
+    // true`, silencing every diagnostic — including D004 filesystem
+    // mismatches, Outcome 2 (composed-not-applied), and Outcome 4
+    // (stale pending). Those are not the diagnostics the
+    // `suppress_drift_warning` knob exists to silence; the knob's
+    // purpose is to mute the noisy "model drift detected — run
+    // `djogi migrations compose`" warning that fires every build
+    // while a developer is actively editing schema. The other three
+    // are operator-actionable signals and must always print.
+    let suppress_drift = drift_warnings_suppressed(&workspace_root);
+    let diagnostics = collect_diagnostics(&workspace_root);
+    for d in diagnostics {
+        if suppress_drift && d.is_outcome3_drift {
+            continue;
+        }
+        println!("cargo:warning={text}", text = d.text);
     }
+}
 
-    let warnings = collect_warnings(&workspace_root);
-    for w in warnings {
-        println!("cargo:warning={w}");
-    }
+/// One classified diagnostic emitted by [`collect_diagnostics`].
+///
+/// The `is_outcome3_drift` flag drives Codex B-6's selective
+/// suppression — only Outcome 3 (model drift) is silenced when
+/// `Djogi.toml::build.suppress_drift_warning = true`.
+struct BuildDiagnostic {
+    text: String,
+    is_outcome3_drift: bool,
 }
 
 /// Honour `Djogi.toml::build.suppress_drift_warning`.
@@ -116,8 +137,12 @@ fn drift_warnings_suppressed(workspace_root: &Path) -> bool {
 /// the same logic in production code paths and the test suite pins
 /// the exact warning strings, so the two implementations agree by
 /// the trybuild-style expectation test.
-fn collect_warnings(workspace_root: &Path) -> Vec<String> {
-    let mut out = Vec::new();
+///
+/// Each returned [`BuildDiagnostic`] carries `is_outcome3_drift` so
+/// the caller can suppress only Outcome 3 when
+/// `Djogi.toml::build.suppress_drift_warning = true` (Codex B-6).
+fn collect_diagnostics(workspace_root: &Path) -> Vec<BuildDiagnostic> {
+    let mut out: Vec<BuildDiagnostic> = Vec::new();
     let migrations_root = workspace_root.join("migrations");
     let pending_root = workspace_root.join("target").join("djogi_pending");
 
@@ -165,7 +190,11 @@ fn collect_warnings(workspace_root: &Path) -> Vec<String> {
         }
     }
 
-    // Walk target/djogi_pending/<database>/<app>.json.
+    // Walk target/djogi_pending/<database>/<app>.json. Per Codex B-7
+    // we now peek `format_version` BEFORE accepting the file as a
+    // valid pending plan; a future-version pending JSON surfaces a
+    // version-mismatch warning instead of falling through to garbage
+    // outcome classification.
     let mut pendings: BTreeMap<(String, String), JsonValue> = BTreeMap::new();
     if let Ok(db_entries) = std::fs::read_dir(&pending_root) {
         for db_entry in db_entries.flatten() {
@@ -196,11 +225,33 @@ fn collect_warnings(workspace_root: &Path) -> Vec<String> {
                 } else {
                     stem.to_string()
                 };
-                if let Ok(text) = std::fs::read_to_string(f.path())
-                    && let Ok(v) = parse_json(&text)
+                let path = f.path();
+                let Ok(text) = std::fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Ok(v) = parse_json(&text) else {
+                    continue;
+                };
+                // Codex B-7 — pending format_version peek. The
+                // [`PendingPlan`] struct uses `#[serde(deny_unknown_fields)]`
+                // server-side, but build.rs reads pending JSON via a
+                // raw walk; without an explicit version peek a
+                // `format_version: "2"` pending file with new fields
+                // would flow into `classify_outcome` and produce a
+                // garbage diagnostic. We detect the mismatch and
+                // emit a structured warning instead.
+                if let Some(found) = peek_format_version(&v)
+                    && found != PENDING_FORMAT_VERSION
                 {
-                    pendings.insert((database.clone(), label), v);
+                    out.push(BuildDiagnostic {
+                        text: format_pending_format_version_mismatch(&database, &label, found),
+                        is_outcome3_drift: false,
+                    });
+                    // Skip this bucket's pending — we cannot trust
+                    // its shape for the outcome classifier.
+                    continue;
                 }
+                pendings.insert((database.clone(), label), v);
             }
         }
     }
@@ -229,13 +280,19 @@ fn collect_warnings(workspace_root: &Path) -> Vec<String> {
             .map(|set| set.contains(app.as_str()))
             .unwrap_or(false);
         if !known {
-            out.push(format_d004_unregistered(db, app));
+            out.push(BuildDiagnostic {
+                text: format_d004_unregistered(db, app),
+                is_outcome3_drift: false,
+            });
         }
     }
     for (db, apps) in &registered_per_db {
         for app in apps {
             if !fs_set.contains(&(db.to_string(), app.to_string())) {
-                out.push(format_d004_missing(db, app));
+                out.push(BuildDiagnostic {
+                    text: format_d004_missing(db, app),
+                    is_outcome3_drift: false,
+                });
             }
         }
     }
@@ -250,12 +307,38 @@ fn collect_warnings(workspace_root: &Path) -> Vec<String> {
         let m = models_per_bucket.get(bucket);
         let p = pendings.get(bucket);
         let s = snapshots.get(bucket);
-        if let Some(text) = classify_outcome(bucket, m, p, s) {
-            out.push(text);
+        if let Some(diag) = classify_outcome(bucket, m, p, s) {
+            out.push(diag);
         }
     }
 
     out
+}
+
+/// Pending JSON format version this Djogi understands. Mirrors
+/// [`crate::migrate::compose::PENDING_FORMAT_VERSION`] — duplicated
+/// here because build.rs cannot import the crate it's compiling.
+const PENDING_FORMAT_VERSION: &str = "1";
+
+/// Peek the top-level `format_version` field of a parsed JSON value.
+/// Returns `None` when the value isn't an object or the field is
+/// missing / non-string.
+fn peek_format_version(v: &JsonValue) -> Option<&str> {
+    if let JsonValue::Object(map) = v
+        && let Some(JsonValue::String(s)) = map.get("format_version")
+    {
+        Some(s.as_str())
+    } else {
+        None
+    }
+}
+
+fn format_pending_format_version_mismatch(database: &str, app: &str, found: &str) -> String {
+    format!(
+        "djogi: pending JSON format version '{found}' at {database}/{app} is not supported by this Djogi (expected '{expected}'); upgrade or check out a newer djogi",
+        app = if app.is_empty() { "_global_" } else { app },
+        expected = PENDING_FORMAT_VERSION,
+    )
 }
 
 fn registered_apps_per_database(
@@ -284,7 +367,7 @@ fn classify_outcome(
     models: Option<&JsonValue>,
     pending_full: Option<&JsonValue>,
     snapshot: Option<&JsonValue>,
-) -> Option<String> {
+) -> Option<BuildDiagnostic> {
     // Pending JSON is the [`PendingPlan`] shape — extract the embedded
     // `model_snapshot` field for comparison purposes.
     let pending_snap = pending_full.and_then(|v| {
@@ -304,15 +387,27 @@ fn classify_outcome(
         return None;
     }
     if pending_full.is_some() && m_eq_p && !m_eq_s {
-        return Some(format_outcome2(bucket));
+        return Some(BuildDiagnostic {
+            text: format_outcome2(bucket, pending_full),
+            is_outcome3_drift: false,
+        });
     }
     if pending_full.is_some() && !m_eq_p && !p_eq_s {
-        return Some(format_outcome4(bucket));
+        return Some(BuildDiagnostic {
+            text: format_outcome4(bucket),
+            is_outcome3_drift: false,
+        });
     }
     if !m_eq_s && (pending_full.is_none() || p_eq_s) {
-        return Some(format_outcome3(bucket));
+        return Some(BuildDiagnostic {
+            text: format_outcome3(bucket),
+            is_outcome3_drift: true,
+        });
     }
-    Some(format_outcome3(bucket))
+    Some(BuildDiagnostic {
+        text: format_outcome3(bucket),
+        is_outcome3_drift: true,
+    })
 }
 
 fn json_equiv(a: Option<&JsonValue>, b: Option<&JsonValue>) -> bool {
@@ -362,9 +457,25 @@ fn json_equiv_inner(a: &JsonValue, b: &JsonValue) -> bool {
 // `crate::migrate::build_match` byte-for-byte. The integration test
 // asserts agreement.
 
-fn format_outcome2(bucket: &(String, String)) -> String {
+/// Codex B-8: Outcome 2 wording must include the pending migration's
+/// filename + version. We dig into the parsed pending JSON to recover
+/// `version`, then derive `<version>.sql` (the up-side filename per
+/// `naming::up_filename`). On a malformed pending JSON we fall back
+/// to placeholders so the build never panics over bad data.
+fn format_outcome2(bucket: &(String, String), pending_full: Option<&JsonValue>) -> String {
+    let (filename, version) = pending_full
+        .and_then(|v| {
+            if let JsonValue::Object(map) = v
+                && let Some(JsonValue::String(version)) = map.get("version")
+            {
+                Some((format!("{version}.sql"), version.clone()))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| ("<unknown>.sql".to_string(), "<unknown>".to_string()));
     format!(
-        "composed migration not yet applied: {database}/{app}",
+        "composed migration not yet applied: {filename} (version {version}; bucket {database}/{app})",
         database = bucket.0,
         app = if bucket.1.is_empty() {
             "_global_"

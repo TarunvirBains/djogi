@@ -32,13 +32,31 @@ fn outcome2_wording_matches_build_rs() {
         database: "main".into(),
         app: "billing".into(),
     };
-    let lib = djogi::migrate::build_match::format_warning_outcome2(&bucket);
-    assert_eq!(lib, "composed migration not yet applied: main/billing");
+    // Codex B-8 / v3 §6: Outcome 2 wording must include the pending
+    // migration's filename + version. With no version supplied the
+    // placeholder fallback fires.
+    let lib = djogi::migrate::build_match::format_warning_outcome2(&bucket, None);
+    assert_eq!(
+        lib,
+        "composed migration not yet applied: <unknown>.sql (version <unknown>; bucket main/billing)"
+    );
+    let with_version = djogi::migrate::build_match::format_warning_outcome2(
+        &bucket,
+        Some("V20260425010203__add_invoices"),
+    );
+    assert_eq!(
+        with_version,
+        "composed migration not yet applied: V20260425010203__add_invoices.sql \
+         (version V20260425010203__add_invoices; bucket main/billing)"
+    );
     let text = build_rs_text();
     // The build.rs's frozen-string format helper must contain the
-    // same template literal modulo placeholders.
+    // same template literal modulo placeholders. The new wording
+    // includes filename + version + bucket components.
     assert!(
-        text.contains("composed migration not yet applied: {database}/{app}"),
+        text.contains(
+            "composed migration not yet applied: {filename} (version {version}; bucket {database}/{app})"
+        ),
         "build.rs must carry the same wording as build_match::format_warning_outcome2"
     );
 }
@@ -118,5 +136,63 @@ fn d004_missing_wording_matches_build_rs() {
     assert!(
         text.contains(r#"D004: registered app \"{database}/{app}\" missing from filesystem"#),
         "build.rs must carry the same wording as build_match::format_warning_d004_missing"
+    );
+}
+
+/// Codex B-6 — the suppression flag must only mute Outcome 3 (model
+/// drift). D004 mismatches, Outcome 2 (composed-not-applied), and
+/// Outcome 4 (stale pending) ALWAYS print regardless of the
+/// `suppress_drift_warning` setting.
+///
+/// We assert this by source inspection: build.rs must call the
+/// classifier first and only then check the suppression flag against
+/// the per-diagnostic `is_outcome3_drift` marker. The test pins the
+/// shape so a refactor that re-introduces blanket suppression fails
+/// the test.
+#[test]
+fn b6_suppression_only_mutes_outcome3() {
+    let text = build_rs_text();
+    // Diagnostic struct must carry the `is_outcome3_drift` flag.
+    assert!(
+        text.contains("is_outcome3_drift"),
+        "build.rs must classify diagnostics by outcome kind so suppression is selective"
+    );
+    // The suppression decision must short-circuit on the flag, not
+    // return early before classification.
+    assert!(
+        text.contains("if suppress_drift && d.is_outcome3_drift"),
+        "build.rs must only suppress Outcome-3 diagnostics; D004 / Outcome 2 / Outcome 4 always print"
+    );
+    // The old "blanket return" pattern must not be present.
+    assert!(
+        !text.contains("if drift_warnings_suppressed(&workspace_root) {\n        return;\n    }"),
+        "build.rs must not blanket-return on suppress_drift_warning — selective suppression only"
+    );
+}
+
+/// Codex B-7 — pending JSON format-version peek. build.rs must
+/// validate `format_version` BEFORE accepting a pending file as
+/// input to the three-way classifier; a future-version pending file
+/// surfaces a version-mismatch warning rather than feeding garbage
+/// through `classify_outcome`.
+#[test]
+fn b7_pending_format_version_peek_present() {
+    let text = build_rs_text();
+    // The peek helper exists.
+    assert!(
+        text.contains("fn peek_format_version("),
+        "build.rs must define a format_version peek helper"
+    );
+    // The version mismatch warning shape is wired up.
+    assert!(
+        text.contains("pending JSON format version")
+            && text.contains("not supported by this Djogi"),
+        "build.rs must emit a structured version-mismatch warning"
+    );
+    // The peek runs in the pending walk before the bucket is
+    // inserted into the classifier's input map.
+    assert!(
+        text.contains("if let Some(found) = peek_format_version(&v)"),
+        "build.rs must short-circuit on version mismatch in the pending walk"
     );
 }

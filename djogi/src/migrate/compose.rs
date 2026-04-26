@@ -73,6 +73,77 @@ use super::snapshot::SnapshotError;
 use super::sql::{OperationSql, lower_delta};
 use super::target::{bucket_dir, pending_database_dir, pending_json_path};
 
+/// RAII rollback guard for atomic compose writes.
+///
+/// Tracks two parallel cleanup queues:
+///
+/// 1. `tmps` — staged `<final>.tmp.<pid>` files that have been
+///    written but not yet promoted. These are removed on failure.
+/// 2. `committed` — files that have already been renamed into their
+///    final location. On failure these are deleted to roll the
+///    workspace back to the pre-compose state.
+///
+/// On a successful sequence the caller invokes [`commit`](Self::commit)
+/// to drain both queues — the [`Drop`] impl then runs as a no-op.
+/// On any failure path the guard goes out of scope without `commit`
+/// being called and every tracked path is removed via best-effort
+/// `fs::remove_file`. This addresses Codex B-2 — every rename-failure
+/// point cleans up ALL remaining tmp + already-committed files,
+/// regardless of which step failed.
+struct WriteRollback {
+    tmps: Vec<PathBuf>,
+    committed: Vec<PathBuf>,
+}
+
+impl WriteRollback {
+    fn new() -> Self {
+        Self {
+            tmps: Vec::new(),
+            committed: Vec::new(),
+        }
+    }
+
+    /// Track a staged tmp file — removed on failure if not yet promoted.
+    fn track_tmp(&mut self, path: PathBuf) {
+        self.tmps.push(path);
+    }
+
+    /// Mark a tmp as successfully promoted to its final path. The tmp
+    /// is removed from the tmp queue (the file no longer exists at
+    /// that path) and the final path is added to the committed queue
+    /// so a later failure rolls it back.
+    fn promote(&mut self, tmp: &Path, final_path: PathBuf) {
+        if let Some(idx) = self.tmps.iter().position(|p| p == tmp) {
+            self.tmps.remove(idx);
+        }
+        self.committed.push(final_path);
+    }
+
+    /// Drain both queues without running cleanup — call on the
+    /// success path to consume the guard.
+    fn commit(mut self) {
+        self.tmps.clear();
+        self.committed.clear();
+    }
+}
+
+impl Drop for WriteRollback {
+    fn drop(&mut self) {
+        // Best-effort cleanup. Errors are intentionally swallowed —
+        // we cannot panic from Drop, and the operator already saw the
+        // primary error that triggered the rollback. A dangling tmp
+        // file would only matter if the operator immediately re-ran
+        // compose; the next tmp uses a fresh `<pid>` suffix so even
+        // a missed cleanup never collides.
+        for p in self.tmps.drain(..) {
+            let _ = fs::remove_file(&p);
+        }
+        for p in self.committed.drain(..) {
+            let _ = fs::remove_file(&p);
+        }
+    }
+}
+
 // ── Errors ─────────────────────────────────────────────────────────────────
 
 /// Errors surfaced by [`compose`].
@@ -120,6 +191,22 @@ pub enum ComposeError {
     /// The pending JSON failed to serialize — should be unreachable
     /// for a well-formed `AppliedSchema` but surfaced for completeness.
     SerializeFailed(SnapshotError),
+    /// D013 — the destination SQL file already exists and its current
+    /// checksum does NOT match the pending JSON's `checksum_up`. That
+    /// means the operator hand-edited the migration after compose ran
+    /// it the first time. Compose refuses to overwrite without an
+    /// explicit `--force-overwrite` opt-in.
+    HandEditedMigrationWouldBeOverwritten {
+        /// Affected bucket.
+        bucket: BucketKey,
+        /// Path to the file whose contents diverge from the pending
+        /// checksum.
+        path: PathBuf,
+        /// Pre-formatted diagnostic message — `D013: hand-edited
+        /// migration would be overwritten; pass --force-overwrite to
+        /// discard your edits`.
+        text: String,
+    },
 }
 
 impl std::fmt::Display for ComposeError {
@@ -148,6 +235,7 @@ impl std::fmt::Display for ComposeError {
             Self::SqlEmit(e) => write!(f, "SQL emit failed: {e}"),
             Self::Io { path, source } => write!(f, "I/O at {}: {source}", path.display()),
             Self::SerializeFailed(e) => write!(f, "serialize failed: {e}"),
+            Self::HandEditedMigrationWouldBeOverwritten { text, .. } => f.write_str(text),
         }
     }
 }
@@ -181,6 +269,14 @@ pub struct ComposeRequest<'a> {
     pub name: &'a str,
     /// Operator opt-in for destructive / lossy / tombstone migrations.
     pub allow_destructive: bool,
+    /// Operator opt-in for overwriting hand-edited migration files.
+    /// When `false` (the default), compose refuses with D013 if the
+    /// destination SQL's current checksum diverges from the pending
+    /// JSON's recorded `checksum_up` — the file has been hand-edited
+    /// and re-running compose would silently clobber the operator's
+    /// changes. When `true`, compose discards the edits and rewrites
+    /// the file with freshly-emitted SQL. Per Codex B-3 / OQ-08.
+    pub force_overwrite: bool,
     /// Compose-time clock, used as the version-prefix instant.
     /// Production callers pass `OffsetDateTime::now_utc()`; tests
     /// pin a deterministic value so the version ID is byte-stable.
@@ -275,6 +371,113 @@ pub struct PendingPlan {
 /// changes incompatibly.
 pub const PENDING_FORMAT_VERSION: &str = "1";
 
+/// Errors surfaced by [`parse_pending_bytes`].
+///
+/// A separate type from [`ComposeError`] because the pending-load
+/// path is run in build.rs / status / verify contexts that don't
+/// touch the workspace lock or the SQL emitter — flowing those
+/// errors into [`ComposeError`] would leak unrelated variants.
+#[derive(Debug)]
+pub enum PendingLoadError {
+    /// JSON parse error.
+    Parse {
+        path: Option<PathBuf>,
+        source: serde_json::Error,
+    },
+    /// `format_version` mismatch — declared version doesn't match
+    /// [`PENDING_FORMAT_VERSION`]. Caught by the peek BEFORE
+    /// structural deserialize so the operator gets an actionable
+    /// upgrade message instead of a `deny_unknown_fields` shower.
+    UnsupportedFormatVersion {
+        found: String,
+        expected: &'static str,
+        path: Option<PathBuf>,
+    },
+}
+
+impl std::fmt::Display for PendingLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PendingLoadError::Parse { path, source } => match path {
+                Some(p) => write!(f, "pending parse at {}: {source}", p.display()),
+                None => write!(f, "pending parse: {source}"),
+            },
+            PendingLoadError::UnsupportedFormatVersion {
+                found,
+                expected,
+                path,
+            } => match path {
+                Some(p) => write!(
+                    f,
+                    "pending JSON format version '{found}' at {} is not supported by this Djogi (expected '{expected}'); upgrade or check out a newer djogi",
+                    p.display()
+                ),
+                None => write!(
+                    f,
+                    "pending JSON format version '{found}' is not supported by this Djogi (expected '{expected}'); upgrade or check out a newer djogi"
+                ),
+            },
+        }
+    }
+}
+
+impl std::error::Error for PendingLoadError {}
+
+/// Codex B-7 — parse a pending JSON byte slice with a format-version
+/// peek before structural deserialize.
+///
+/// Mirrors the snapshot loader's two-stage pattern: a permissive
+/// `serde_json::Value` parse first to inspect the top-level
+/// `format_version`, then a strict
+/// [`serde(deny_unknown_fields)`]-driven structural parse. Future
+/// pending-format versions surface
+/// [`PendingLoadError::UnsupportedFormatVersion`] with both the found
+/// and expected versions so the operator's message is actionable.
+///
+/// `path` is purely for error reporting; pass `None` when the bytes
+/// come from memory.
+pub fn parse_pending_bytes(
+    bytes: &[u8],
+    path: Option<PathBuf>,
+) -> Result<PendingPlan, PendingLoadError> {
+    // Stage 1 — peek at `format_version`. A future version with
+    // additional fields would otherwise trip `deny_unknown_fields`
+    // in stage 2 with a cryptic error.
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_slice::<serde_json::Value>(bytes)
+        && let Some(serde_json::Value::String(found)) = map.get("format_version")
+        && found != PENDING_FORMAT_VERSION
+    {
+        return Err(PendingLoadError::UnsupportedFormatVersion {
+            found: found.clone(),
+            expected: PENDING_FORMAT_VERSION,
+            path,
+        });
+    }
+    // Stage 2 — strict structural parse.
+    let plan: PendingPlan = serde_json::from_slice(bytes).map_err(|e| PendingLoadError::Parse {
+        path: path.clone(),
+        source: e,
+    })?;
+    if plan.format_version != PENDING_FORMAT_VERSION {
+        return Err(PendingLoadError::UnsupportedFormatVersion {
+            found: plan.format_version,
+            expected: PENDING_FORMAT_VERSION,
+            path,
+        });
+    }
+    Ok(plan)
+}
+
+/// Convenience wrapper around [`parse_pending_bytes`] for on-disk
+/// pending JSON files.
+pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
+    let bytes = fs::read(path).map_err(|e| PendingLoadError::Parse {
+        path: Some(path.to_path_buf()),
+        source: serde_json::Error::io(e),
+    })?;
+    parse_pending_bytes(&bytes, Some(path.to_path_buf()))
+}
+
 // ── Public entry point ─────────────────────────────────────────────────────
 
 /// Run compose against the supplied request.
@@ -295,24 +498,39 @@ pub const PENDING_FORMAT_VERSION: &str = "1";
 /// `OffsetDateTime::now_utc()`; tests pin a fixed instant.
 pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     // 1. Collect tombstone violations BEFORE any work — fail loudly
-    //    when an active model still references a tombstoned app.
+    //    when an active model OR a stale snapshot still references a
+    //    tombstoned app.
+    //
+    //    Per Codex B-4: D011 fires whenever a tombstoned app still has
+    //    schema state to drop, regardless of whether that state lives
+    //    in `models` (developer hasn't yet removed the structs) or in
+    //    the snapshot (developer removed the structs but the schema
+    //    is still applied to the database). The previous guard
+    //    `!s.models.is_empty()` skipped the snapshot-only path and
+    //    let the destructive classification fire generically — losing
+    //    the D011 specificity.
     if !req.allow_destructive {
         for app in req.apps {
             if !app.tombstone {
                 continue;
             }
-            // The tombstoned app appearing in `models` (with at least
-            // one model) means the operator forgot the
-            // `--allow-destructive` opt-in. Surface D011.
             let bucket_for_app = BucketKey {
                 database: app.database.clone(),
                 app: app.label.clone(),
             };
-            if req
+            // The tombstoned app has schema state to drop iff EITHER
+            // `models` carries at least one model for the bucket OR
+            // the snapshot does. Either way the operator needs the
+            // `--allow-destructive` opt-in.
+            let models_has_state = req
                 .models
                 .get(&bucket_for_app)
-                .is_some_and(|s| !s.models.is_empty())
-            {
+                .is_some_and(|s| !s.models.is_empty());
+            let snapshot_has_state = req
+                .snapshots
+                .get(&bucket_for_app)
+                .is_some_and(|s| !s.models.is_empty());
+            if models_has_state || snapshot_has_state {
                 let text = format!(
                     "D011: app \"{label}\" is tombstoned; pass --allow-destructive to emit the drop migration",
                     label = if app.label.is_empty() {
@@ -398,18 +616,59 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     }
 
     // 6. Lower each delta to SQL pairs + plan, write all artifacts.
+    //
+    // The write dance per bucket:
+    //   - Compute the lowered SQL pair + checksums.
+    //   - Inject the ledger UPDATE leg for any RenameApp ops (Codex
+    //     B-5: v3 §6 mandates that the rename-exception ledger UPDATE
+    //     ride along with the migration's up/down).
+    //   - D013 check: refuse to overwrite a hand-edited file unless
+    //     `force_overwrite` is set (Codex B-3 / OQ-08).
+    //   - Stage three sibling tmp files (up SQL, down SQL, pending
+    //     JSON), tracked under a `WriteRollback` Drop guard so any
+    //     mid-sequence failure removes ALL staged tmps + already-
+    //     promoted finals (Codex B-2).
+    //   - Promote each tmp to its final path; on success commit the
+    //     guard.
+    //   - Per RenameApp delta, atomically rename the OLD bucket
+    //     directory to the NEW bucket directory after artifacts land
+    //     (Codex B-5).
     let slug = sanitize_slug(req.name);
     let prefix = version_prefix(req.now);
     let version = version_id(&prefix, &slug);
     let composed_at = format_rfc3339_seconds(req.now);
 
+    // Outer rollback guard tracks every artifact across all buckets
+    // so a failure on bucket N cleans up every artifact already
+    // written by buckets 0..N too.
+    let mut rollback = WriteRollback::new();
     let mut composed_buckets: Vec<ComposedBucket> = Vec::with_capacity(effective.len());
-    let mut written_paths: Vec<PathBuf> = Vec::new();
+    let mut pending_folder_renames: Vec<(PathBuf, PathBuf)> = Vec::new();
+
     let result: Result<(), ComposeError> = (|| {
         for delta in &effective {
             // Shouldn't fail — we validated classifications above.
-            let lowered = lower_delta(delta).map_err(ComposeError::SqlEmit)?;
+            let mut lowered = lower_delta(delta).map_err(ComposeError::SqlEmit)?;
             let _plan: MigrationPlan = plan_delta(delta).map_err(ComposeError::SqlEmit)?;
+
+            // Codex B-5: For each RenameApp op, append an OperationSql
+            // that updates `djogi_schema_migrations.app_label` so the
+            // ledger is consistent with the new bucket name. The
+            // metadata-only OperationSql produced by the standard
+            // emitter carries only comments; we layer the real DDL
+            // here so it's hashed into `checksum_up` and reviewable
+            // in the on-disk SQL file.
+            let mut folder_renames_for_delta: Vec<(String, String)> = Vec::new();
+            for op in &delta.operations {
+                if let SchemaOperation::RenameApp { from, to } = op {
+                    lowered.push(emit_rename_app_ledger_update(
+                        &delta.bucket.database,
+                        from,
+                        to,
+                    ));
+                    folder_renames_for_delta.push((from.clone(), to.clone()));
+                }
+            }
 
             let model_snapshot = req
                 .models
@@ -440,50 +699,58 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             let down_sql = compose_down_text(&version, delta, &lowered);
             let pending_bytes = serialize_pending(&pending)?;
 
+            // Codex B-3 — D013 hand-edit protection.
+            //
+            // If the up SQL file already exists and its current
+            // bytes differ from what compose would emit fresh, the
+            // operator has hand-edited the file. Without
+            // `force_overwrite` we refuse to clobber. We compare the
+            // full byte content (not a separate checksum) because the
+            // emitter is deterministic — same inputs always produce
+            // the same bytes — so equality is the canonical check.
+            if !req.force_overwrite {
+                check_no_hand_edit(&up_path, up_sql.as_bytes(), &delta.bucket)?;
+            }
+
             // Stage tmp siblings.
             ensure_parent(&up_path)?;
             ensure_parent(&pending_path)?;
             let up_tmp = atomic_write(&up_path, up_sql.as_bytes())?;
-            let down_tmp_result = atomic_write(&down_path, down_sql.as_bytes());
-            let down_tmp = match down_tmp_result {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = fs::remove_file(&up_tmp);
-                    return Err(e);
-                }
-            };
-            let pending_tmp_result = atomic_write(&pending_path, &pending_bytes);
-            let pending_tmp = match pending_tmp_result {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = fs::remove_file(&up_tmp);
-                    let _ = fs::remove_file(&down_tmp);
-                    return Err(e);
-                }
-            };
+            rollback.track_tmp(up_tmp.clone());
+
+            let down_tmp = atomic_write(&down_path, down_sql.as_bytes())?;
+            rollback.track_tmp(down_tmp.clone());
+
+            let pending_tmp = atomic_write(&pending_path, &pending_bytes)?;
+            rollback.track_tmp(pending_tmp.clone());
 
             // Promote tmps. Order: up SQL, down SQL, pending JSON.
-            // On the final-rename failure, the earlier renames are
-            // already committed to disk; we surface the partial state
-            // with an explicit error so the operator knows which file
-            // to clean up.
+            // The `WriteRollback` guard tracks each promotion so any
+            // failure unwinds every prior tmp + final atomically
+            // (Codex B-2).
             promote_tmp(&up_tmp, &up_path)?;
-            written_paths.push(up_path.clone());
-            if let Err(e) = promote_tmp(&down_tmp, &down_path) {
-                let _ = fs::remove_file(&up_path);
-                written_paths.pop();
-                let _ = fs::remove_file(&pending_tmp);
-                return Err(e);
+            rollback.promote(&up_tmp, up_path.clone());
+
+            promote_tmp(&down_tmp, &down_path)?;
+            rollback.promote(&down_tmp, down_path.clone());
+
+            promote_tmp(&pending_tmp, &pending_path)?;
+            rollback.promote(&pending_tmp, pending_path.clone());
+
+            // Codex B-5: queue any RenameApp folder moves. We perform
+            // them after every artifact write succeeds because a folder
+            // rename is hard to roll back atomically in conjunction with
+            // the file writes — the conservative posture is to write
+            // first, rename second.
+            for (from_label, _to_label) in folder_renames_for_delta {
+                let from_bucket = BucketKey {
+                    database: delta.bucket.database.clone(),
+                    app: from_label,
+                };
+                let from_dir = bucket_dir(req.workspace_root, &from_bucket);
+                let to_dir = bucket_dir(req.workspace_root, &delta.bucket);
+                pending_folder_renames.push((from_dir, to_dir));
             }
-            written_paths.push(down_path.clone());
-            if let Err(e) = promote_tmp(&pending_tmp, &pending_path) {
-                let _ = fs::remove_file(&up_path);
-                let _ = fs::remove_file(&down_path);
-                written_paths.pop();
-                written_paths.pop();
-                return Err(e);
-            }
-            written_paths.push(pending_path.clone());
 
             composed_buckets.push(ComposedBucket {
                 bucket: delta.bucket.clone(),
@@ -497,15 +764,179 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         Ok(())
     })();
 
-    if let Err(e) = result {
-        // Roll back any successfully-written files.
-        for p in &written_paths {
-            let _ = fs::remove_file(p);
-        }
-        return Err(e);
+    // `rollback` Drop will clean up every tracked tmp + committed
+    // path on the early-return; nothing else to do here.
+    result?;
+
+    // All file writes succeeded. Apply the queued folder renames for
+    // RenameApp ops (Codex B-5). A folder rename failure is a hard
+    // error — we still drop the rollback guard so the artifact files
+    // are removed and the workspace returns to the pre-compose state.
+    for (from_dir, to_dir) in &pending_folder_renames {
+        rename_old_bucket_folder(from_dir, to_dir)?;
     }
 
+    // All work succeeded — release the rollback guard.
+    rollback.commit();
     Ok(ComposeReport { composed_buckets })
+}
+
+/// Codex B-3 / D013 — refuse to overwrite a hand-edited migration.
+///
+/// Compares the existing up SQL file's bytes to what compose would
+/// emit fresh (`fresh_up_bytes`). When they disagree the operator
+/// has hand-edited the file; we surface
+/// [`ComposeError::HandEditedMigrationWouldBeOverwritten`] (D013)
+/// rather than silently clobber.
+///
+/// We compare full bytes rather than a separate checksum because
+/// `compose_up_text` is deterministic — same inputs always produce
+/// the same bytes — so byte-equality is exactly equivalent to
+/// "checksum matches" without needing a reverse-engineering pass over
+/// the formatted SQL file.
+///
+/// Returns `Ok(())` when:
+///
+/// - The up file does not exist (first compose for this bucket).
+/// - The existing file's bytes match `fresh_up_bytes` exactly.
+fn check_no_hand_edit(
+    up_path: &Path,
+    fresh_up_bytes: &[u8],
+    bucket: &BucketKey,
+) -> Result<(), ComposeError> {
+    let Ok(existing) = fs::read(up_path) else {
+        // No existing file — fresh compose, nothing to clobber.
+        return Ok(());
+    };
+    if existing == fresh_up_bytes {
+        return Ok(());
+    }
+    let text = format!(
+        "D013: hand-edited migration would be overwritten; pass --force-overwrite to discard your edits ({path})",
+        path = up_path.display()
+    );
+    Err(ComposeError::HandEditedMigrationWouldBeOverwritten {
+        bucket: bucket.clone(),
+        path: up_path.to_path_buf(),
+        text,
+    })
+}
+
+/// Codex B-5 — emit the ledger UPDATE leg for a RenameApp delta.
+///
+/// Per v3 §6 ("rename exception to append-only ledger"), the ledger
+/// row's `app_label` for every prior migration must be updated when an
+/// app is renamed. We append this as a real `OperationSql` to the
+/// lowered list so it gets:
+///
+/// 1. Hashed into the up checksum (so verify catches drift).
+/// 2. Written into the on-disk SQL file (so the operator can review it).
+/// 3. Reversed by the down side (so rollback restores the old label).
+fn emit_rename_app_ledger_update(database: &str, from: &str, to: &str) -> OperationSql {
+    let _ = database; // database is implicit via the connection target.
+    // SQL identifier escape: `from` / `to` are app labels — already
+    // strict identifiers per the projection layer. Wrap in single
+    // quotes for SQL string literals; we double any embedded `'` for
+    // belt-and-braces (a real label can't contain one but the runner
+    // does not re-validate).
+    let from_escaped = sql_escape_string(from);
+    let to_escaped = sql_escape_string(to);
+    let up = format!(
+        "UPDATE djogi_schema_migrations \
+         SET app_label = '{to_escaped}' \
+         WHERE app_label = '{from_escaped}';"
+    );
+    let down = format!(
+        "UPDATE djogi_schema_migrations \
+         SET app_label = '{from_escaped}' \
+         WHERE app_label = '{to_escaped}';"
+    );
+    OperationSql {
+        label: format!("RenameAppLedger {from} -> {to}"),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+/// Escape a string for inclusion inside single-quoted SQL literals.
+/// Doubles any embedded `'` per the SQL standard. App labels never
+/// contain `'` per the projection layer's identifier grammar; we apply
+/// the rule defensively so the emitted SQL is robust if that grammar
+/// ever loosens.
+fn sql_escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push('\'');
+            out.push('\'');
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Codex B-5 — atomically rename the OLD bucket directory to the NEW
+/// bucket directory.
+///
+/// Called after every artifact write succeeds so the workspace is
+/// consistent on disk. Skips silently when:
+///
+/// - The OLD directory does not exist (nothing to rename).
+/// - The OLD and NEW directories are identical (a same-app
+///   "self-rename" is a no-op — should not happen but defensive).
+/// - The NEW directory already exists with content (the artifacts we
+///   just wrote live there). In that case we MOVE every entry from
+///   OLD to NEW that isn't already present, then remove OLD.
+fn rename_old_bucket_folder(from_dir: &Path, to_dir: &Path) -> Result<(), ComposeError> {
+    if from_dir == to_dir {
+        return Ok(());
+    }
+    if !from_dir.exists() {
+        return Ok(());
+    }
+    if !to_dir.exists() {
+        // Simple rename — no merge needed.
+        ensure_parent(to_dir)?;
+        return fs::rename(from_dir, to_dir).map_err(|e| ComposeError::Io {
+            path: to_dir.to_path_buf(),
+            source: e,
+        });
+    }
+    // NEW dir already exists (compose just wrote artifacts there).
+    // Move each entry from OLD that the NEW does not yet contain,
+    // then remove OLD.
+    let entries = fs::read_dir(from_dir).map_err(|e| ComposeError::Io {
+        path: from_dir.to_path_buf(),
+        source: e,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| ComposeError::Io {
+            path: from_dir.to_path_buf(),
+            source: e,
+        })?;
+        let src = entry.path();
+        let dst = to_dir.join(entry.file_name());
+        if dst.exists() {
+            // The newly-composed artifacts have priority — leave the
+            // old file in place (it'll be removed when we drop the
+            // OLD directory below). This matches the v3 contract:
+            // post-rename state is the destination's state, not a
+            // merge of both.
+            continue;
+        }
+        fs::rename(&src, &dst).map_err(|e| ComposeError::Io {
+            path: dst,
+            source: e,
+        })?;
+    }
+    // Drop OLD — best-effort; we surface an Io error if it fails so
+    // operators see the dangling directory.
+    fs::remove_dir_all(from_dir).map_err(|e| ComposeError::Io {
+        path: from_dir.to_path_buf(),
+        source: e,
+    })
 }
 
 /// Format the [`PendingPlan`] as pretty-printed JSON with a trailing
@@ -783,6 +1214,7 @@ mod tests {
             apps: &[],
             name: "noop",
             allow_destructive: false,
+            force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
         };
@@ -807,6 +1239,7 @@ mod tests {
             apps: &[],
             name: "add widgets",
             allow_destructive: false,
+            force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
         };
@@ -846,6 +1279,7 @@ mod tests {
             apps: &[],
             name: "drop widgets",
             allow_destructive: false,
+            force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
         };
@@ -877,6 +1311,7 @@ mod tests {
             apps: &[],
             name: "drop widgets",
             allow_destructive: true,
+            force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
         };
@@ -909,6 +1344,7 @@ mod tests {
             apps: std::slice::from_ref(&app),
             name: "tomb",
             allow_destructive: false,
+            force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
         };
@@ -977,6 +1413,7 @@ mod tests {
             apps: std::slice::from_ref(&app),
             name: "rename newname",
             allow_destructive: true,
+            force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
         };
@@ -1015,6 +1452,7 @@ mod tests {
             apps: &[],
             name: "add widgets",
             allow_destructive: false,
+            force_overwrite: false,
             now,
             _guard: &guard,
         };
@@ -1029,6 +1467,7 @@ mod tests {
             apps: &[],
             name: "add widgets",
             allow_destructive: false,
+            force_overwrite: false,
             now,
             _guard: &guard,
         };
@@ -1057,5 +1496,347 @@ mod tests {
         let bytes = serde_json::to_vec(&plan).unwrap();
         let parsed: PendingPlan = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed, plan);
+    }
+
+    // ── Codex round-1 fixup regression coverage ──────────────────────────
+
+    /// Codex B-4 — D011 fires when a tombstoned app has zero current
+    /// models but the snapshot still carries schema state to drop.
+    /// Prior to the fix the `!s.models.is_empty()` guard skipped this
+    /// path and the operator only saw the generic destructive
+    /// classification error.
+    #[test]
+    fn b4_d011_fires_when_models_empty_but_snapshot_has_state() {
+        let work = temp_workspace("b4_zero_model_d011");
+        let guard = lock_for(&work);
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        // Models has the bucket entry but ZERO models inside.
+        let mut models = BTreeMap::new();
+        models.insert(bucket.clone(), empty_snapshot(&bucket));
+        // Snapshot HAS state — a `widgets` table that the tombstone
+        // would drop.
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        let app = AppLifecycle {
+            label: "billing".to_string(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: true,
+        };
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: std::slice::from_ref(&app),
+            name: "tomb",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+        };
+        let err = compose(req).expect_err("must surface D011");
+        match err {
+            ComposeError::TombstonedAppRequiresAllowDestructive { text, .. } => {
+                assert!(text.contains("D011"), "must surface D011 token: {text}");
+                assert!(text.contains("billing"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex B-3 — second compose with the SAME inputs but a hand
+    /// edit to the up SQL file refuses with D013 (no
+    /// `--force-overwrite`). With `force_overwrite = true` the same
+    /// scenario succeeds and the edits are discarded.
+    #[test]
+    fn b3_d013_refuses_to_overwrite_hand_edited_migration() {
+        let work = temp_workspace("b3_hand_edit");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+        let mut models = BTreeMap::new();
+        models.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+        let now = at(2026, 4, 25, 1, 2, 3);
+        let req1 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+        };
+        let r1 = compose(req1).expect("first");
+        let up_path = r1.composed_buckets[0].up_sql_path.clone();
+        // Operator hand-edits the up SQL.
+        let original = fs::read_to_string(&up_path).unwrap();
+        let edited = original.clone() + "\n-- operator hand-edit\n";
+        fs::write(&up_path, &edited).unwrap();
+
+        // Second compose without --force-overwrite must refuse.
+        let req2 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+        };
+        let err = compose(req2).expect_err("must refuse");
+        match err {
+            ComposeError::HandEditedMigrationWouldBeOverwritten { text, .. } => {
+                assert!(text.contains("D013"), "must surface D013: {text}");
+                assert!(text.contains("--force-overwrite"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // The hand-edited file is preserved on disk.
+        let after_refusal = fs::read_to_string(&up_path).unwrap();
+        assert_eq!(after_refusal, edited, "must not have been clobbered");
+
+        // Third compose WITH --force-overwrite succeeds and discards
+        // the edits.
+        let req3 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: true,
+            now,
+            _guard: &guard,
+        };
+        compose(req3).expect("force-overwrite succeeds");
+        let after_force = fs::read_to_string(&up_path).unwrap();
+        assert_eq!(
+            after_force, original,
+            "force-overwrite must restore canonical SQL"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex B-5 — round-trip rename app. Compose with
+    /// `renamed_from = "oldname"` on the new bucket must:
+    ///
+    ///   1. Emit `UPDATE djogi_schema_migrations SET app_label =
+    ///      'newname' WHERE app_label = 'oldname';` into the up SQL.
+    ///   2. Emit the inverse UPDATE into the down SQL.
+    ///   3. Move `migrations/main/oldname/` → `migrations/main/newname/`
+    ///      on disk.
+    #[test]
+    fn b5_rename_app_emits_ledger_update_and_renames_folder() {
+        let work = temp_workspace("b5_rename_round_trip");
+        let guard = lock_for(&work);
+        let old_bucket = BucketKey {
+            database: "main".into(),
+            app: "oldname".into(),
+        };
+        let new_bucket = BucketKey {
+            database: "main".into(),
+            app: "newname".into(),
+        };
+        // Pre-populate the OLD app's directory with a fake prior
+        // artifact so the post-rename folder existence is verifiable.
+        let old_dir = bucket_dir(&work, &old_bucket);
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(old_dir.join("V20260101010101__init.sql"), "-- init").unwrap();
+        // Save the snapshot at the old bucket (Codex B-1's CLI side
+        // reads this; the lib-side test passes it through `snapshots`).
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
+        let mut models = BTreeMap::new();
+        // Same shape under the new app — purely a rename.
+        models.insert(new_bucket.clone(), snapshot_with_widgets(&new_bucket));
+        let app = AppLifecycle {
+            label: "newname".to_string(),
+            database: "main".to_string(),
+            renamed_from: Some("oldname".to_string()),
+            tombstone: false,
+        };
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: std::slice::from_ref(&app),
+            name: "rename newname",
+            allow_destructive: true,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+        };
+        let report = compose(req).expect("compose");
+        let dest = report
+            .composed_buckets
+            .iter()
+            .find(|c| c.bucket == new_bucket)
+            .expect("destination composed");
+        let up = fs::read_to_string(&dest.up_sql_path).unwrap();
+        let down = fs::read_to_string(&dest.down_sql_path).unwrap();
+        // 1. UPDATE goes forward in up.
+        assert!(
+            up.contains("UPDATE djogi_schema_migrations"),
+            "up must carry the ledger UPDATE: {up}"
+        );
+        assert!(up.contains("'newname'") && up.contains("'oldname'"));
+        // 2. UPDATE reverses in down.
+        assert!(
+            down.contains("UPDATE djogi_schema_migrations"),
+            "down must carry the inverse UPDATE: {down}"
+        );
+        // 3. Folder renamed.
+        let new_dir = bucket_dir(&work, &new_bucket);
+        assert!(new_dir.exists(), "new bucket dir must exist");
+        assert!(
+            !old_dir.exists(),
+            "old bucket dir must have been renamed away"
+        );
+        // The pre-existing artifact was moved over.
+        assert!(new_dir.join("V20260101010101__init.sql").exists());
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex B-7 — pending JSON with future `format_version` surfaces
+    /// `UnsupportedFormatVersion` from [`parse_pending_bytes`] BEFORE
+    /// the structural deserialize trips on extra fields. The
+    /// production build.rs reader mirrors this peek pattern (see
+    /// `b7_pending_format_version_peek_present` in the agreement
+    /// integration test).
+    #[test]
+    fn b7_pending_format_version_peek_rejects_future_version() {
+        let blob = r#"{
+            "format_version": "2",
+            "bucket_database": "main",
+            "bucket_app": "billing",
+            "version": "V20260425010203__add_invoices",
+            "slug": "add_invoices",
+            "model_snapshot": {
+                "djogi_version": "0.2.0",
+                "enums": {},
+                "format_version": "1",
+                "generated_at": "2027-01-01T00:00:00Z",
+                "indexes": [],
+                "models": {},
+                "registered_apps": []
+            },
+            "checksum_up": "V1:0000000000000000000000000000000000000000000000000000000000000000",
+            "checksum_down": null,
+            "composed_at": "2026-04-25T01:02:03Z",
+            "future_field_added_in_v2": "garbage"
+        }"#;
+        let err = parse_pending_bytes(blob.as_bytes(), None).expect_err("must fail");
+        match err {
+            PendingLoadError::UnsupportedFormatVersion {
+                found, expected, ..
+            } => {
+                assert_eq!(found, "2");
+                assert_eq!(expected, "1");
+            }
+            other => panic!("expected UnsupportedFormatVersion, got {other:?}"),
+        }
+    }
+
+    /// Round-trip on a well-formed pending JSON — the loader accepts
+    /// the canonical shape produced by `compose` itself.
+    #[test]
+    fn b7_pending_loader_accepts_current_format_version() {
+        let bucket = global_bucket();
+        let plan = PendingPlan {
+            format_version: PENDING_FORMAT_VERSION.to_string(),
+            bucket_database: bucket.database.clone(),
+            bucket_app: bucket.app.clone(),
+            version: "V20260425010203__add_widgets".to_string(),
+            slug: "add_widgets".to_string(),
+            model_snapshot: empty_snapshot(&bucket),
+            checksum_up: "V1:".to_string() + &"a".repeat(64),
+            checksum_down: None,
+            composed_at: "2026-04-25T01:02:03Z".to_string(),
+        };
+        let bytes = serde_json::to_vec(&plan).unwrap();
+        let parsed = parse_pending_bytes(&bytes, None).expect("loader accepts canonical shape");
+        assert_eq!(parsed, plan);
+    }
+
+    /// Codex B-2 — rollback guard removes ALL staged tmp files when
+    /// any rename in the dance fails. We simulate this by pre-creating
+    /// the down_path as a directory (which makes the down rename fail
+    /// with `IsADirectory`); the guard must remove the up tmp, the
+    /// down tmp, and the pending tmp, plus roll back the up rename.
+    #[test]
+    fn b2_rollback_cleans_all_tmps_on_rename_failure() {
+        let work = temp_workspace("b2_rollback");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+        let mut models = BTreeMap::new();
+        models.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+        let now = at(2026, 4, 25, 1, 2, 3);
+        // Pre-create the down_path as a non-empty directory so
+        // `fs::rename(<file>, <dir>)` fails. We compute the path the
+        // same way compose does.
+        let prefix = version_prefix(now);
+        let version = version_id(&prefix, &sanitize_slug("add widgets"));
+        let down_filename_str = down_filename(&version);
+        let bucket_directory = bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_directory).unwrap();
+        let blocked_down = bucket_directory.join(&down_filename_str);
+        fs::create_dir_all(&blocked_down).unwrap();
+        // Drop a sentinel so removing the directory would matter.
+        fs::write(blocked_down.join("sentinel"), b"keep").unwrap();
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+        };
+        let err = compose(req).expect_err("rename must fail");
+        assert!(matches!(err, ComposeError::Io { .. }));
+
+        // Now verify the workspace is clean: zero `<*>.tmp.<pid>`
+        // files anywhere, and the up SQL was rolled back. The
+        // pre-existing blocking directory is intentionally untouched.
+        let mut tmp_files = Vec::new();
+        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.contains(".tmp.") {
+                    tmp_files.push(name);
+                }
+            }
+        }
+        assert!(
+            tmp_files.is_empty(),
+            "no .tmp.<pid> file should remain: {tmp_files:?}"
+        );
+        // Up SQL must NOT exist (the up rename had succeeded but the
+        // guard rolled it back).
+        let up_path = bucket_directory.join(up_filename(&version));
+        assert!(!up_path.exists(), "up SQL must have been rolled back");
+        // Pending JSON also rolled back.
+        let pending_path = pending_json_path(&work, &bucket);
+        assert!(
+            !pending_path.exists(),
+            "pending JSON must have been rolled back"
+        );
+        // Sentinel inside the blocking directory is preserved.
+        assert!(blocked_down.join("sentinel").exists());
+        let _ = fs::remove_dir_all(&work);
     }
 }

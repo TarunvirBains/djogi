@@ -63,6 +63,12 @@ enum MigrationsCommand {
         /// destructive deltas with a structural error.
         #[arg(long, default_value_t = false)]
         allow_destructive: bool,
+        /// Discard hand-edits to existing migration files (D013
+        /// override). Without this flag compose refuses to overwrite
+        /// any migration file whose current content does not match
+        /// the recorded `checksum_up` in the pending JSON.
+        #[arg(long, default_value_t = false)]
+        force_overwrite: bool,
         /// Workspace root override. Defaults to the current working
         /// directory.
         #[arg(long)]
@@ -103,8 +109,9 @@ fn main() -> ExitCode {
             MigrationsCommand::Compose {
                 name,
                 allow_destructive,
+                force_overwrite,
                 workspace,
-            } => migrations::compose_cmd(&name, allow_destructive, workspace),
+            } => migrations::compose_cmd(&name, allow_destructive, force_overwrite, workspace),
             MigrationsCommand::Status { workspace } => migrations::status_cmd(workspace),
         },
     }

@@ -104,4 +104,31 @@ impl DjogiConfig {
 
         Ok(config)
     }
+
+    /// Load configuration from `<workspace>/Djogi.toml` instead of the
+    /// cwd-relative `Djogi.toml`.
+    ///
+    /// This is the path-aware loader used by CLI subcommands that
+    /// accept `--workspace <path>` (per Codex A-1). The default
+    /// [`load`](Self::load) reads `Djogi.toml` from the current
+    /// working directory; callers that want to operate against a
+    /// different workspace pass the resolved path here. Environment-
+    /// variable overrides (`DATABASE_URL`, `DJOGI_*`) still win, so
+    /// secrets stay out of the workspace config.
+    #[allow(clippy::result_large_err)]
+    pub fn load_from_workspace(workspace: &std::path::Path) -> Result<Self, figment::Error> {
+        let toml_path = workspace.join("Djogi.toml");
+        let mut config: DjogiConfig = Figment::new()
+            .merge(Serialized::defaults(DjogiConfig::default()))
+            .merge(Toml::file(toml_path))
+            .merge(Env::prefixed("DJOGI_").split("_"))
+            .extract()?;
+
+        // DATABASE_URL env var always wins (not prefixed with DJOGI_)
+        if let Ok(url) = std::env::var("DATABASE_URL") {
+            config.database.url = url;
+        }
+
+        Ok(config)
+    }
 }

@@ -118,11 +118,31 @@ pub enum DriftKind {
 /// `models`, `pending`, `snapshot` are the three inputs described in
 /// the module-level docs. Returns `None` for Outcome 1 (synced) —
 /// callers treat `None` as "nothing to warn about".
+///
+/// Convenience wrapper that supplies a `None` pending-version /
+/// `None` filename for callers that don't know the pending version.
+/// Outcome 2 messages from this entry point use the placeholder
+/// `<unknown>` for filename and version (the production path goes
+/// through [`classify_bucket_with_pending`]).
 pub fn classify_bucket(
     bucket: &BucketKey,
     models: Option<&AppliedSchema>,
     pending: Option<&AppliedSchema>,
     snapshot: Option<&AppliedSchema>,
+) -> Option<DriftDiagnostic> {
+    classify_bucket_with_pending(bucket, models, pending, snapshot, None)
+}
+
+/// Same as [`classify_bucket`] but accepts the pending migration's
+/// version ID (e.g. `"V20260425010203__add_widgets"`) so the
+/// Outcome 2 warning includes the filename + version per Codex B-8 /
+/// v3 §6.
+pub fn classify_bucket_with_pending(
+    bucket: &BucketKey,
+    models: Option<&AppliedSchema>,
+    pending: Option<&AppliedSchema>,
+    snapshot: Option<&AppliedSchema>,
+    pending_version: Option<&str>,
 ) -> Option<DriftDiagnostic> {
     // The three-way comparison ignores `generated_at` because every
     // run regenerates the timestamp; comparing it would always trip
@@ -160,7 +180,7 @@ pub fn classify_bucket(
         return Some(DriftDiagnostic {
             bucket: bucket.clone(),
             kind: DriftKind::Outcome2ComposedNotApplied,
-            text: format_warning_outcome2(bucket),
+            text: format_warning_outcome2(bucket, pending_version),
         });
     }
 
@@ -284,10 +304,23 @@ pub fn classify_filesystem_drift(
 // version IDs in that file in lockstep when intentionally changing
 // the messages.
 
-/// Outcome 2 — `composed migration not yet applied: <app>` (frozen).
-pub fn format_warning_outcome2(bucket: &BucketKey) -> String {
+/// Outcome 2 — `composed migration not yet applied: <filename>
+/// (version <version>; bucket <database>/<app>)` (frozen, per Codex
+/// B-8 + v3 §6 amendment).
+///
+/// `pending_version` carries the pending migration's version ID
+/// (e.g. `"V20260425010203__add_widgets"`); the `.sql` filename is
+/// derived by appending the up-side suffix. Callers that don't have
+/// the version pass `None` and the message uses the placeholder
+/// `<unknown>` for filename and version — production code paths
+/// always supply a real version.
+pub fn format_warning_outcome2(bucket: &BucketKey, pending_version: Option<&str>) -> String {
+    let (filename, version) = match pending_version {
+        Some(v) => (format!("{v}.sql"), v.to_string()),
+        None => ("<unknown>.sql".to_string(), "<unknown>".to_string()),
+    };
     format!(
-        "composed migration not yet applied: {database}/{app}",
+        "composed migration not yet applied: {filename} (version {version}; bucket {database}/{app})",
         database = bucket.database,
         app = super::target::app_dirname(&bucket.app),
     )
@@ -399,11 +432,38 @@ mod tests {
         let m = drifted_schema();
         let p = drifted_schema();
         let s = empty_schema();
+        // Default classify_bucket entry point — no pending version —
+        // so the message uses the `<unknown>` placeholder.
         let diag = classify_bucket(&global_bucket(), Some(&m), Some(&p), Some(&s)).expect("diag");
         assert_eq!(diag.kind, DriftKind::Outcome2ComposedNotApplied);
         assert_eq!(
             diag.text,
-            "composed migration not yet applied: main/_global_"
+            "composed migration not yet applied: <unknown>.sql (version <unknown>; bucket main/_global_)"
+        );
+    }
+
+    #[test]
+    fn outcome2_composed_not_applied_with_pending_version() {
+        // Codex B-8: when a real pending version is threaded through,
+        // the message names both the SQL filename AND the version ID
+        // alongside the bucket. Production build.rs / status callers
+        // always supply this.
+        let m = drifted_schema();
+        let p = drifted_schema();
+        let s = empty_schema();
+        let diag = classify_bucket_with_pending(
+            &global_bucket(),
+            Some(&m),
+            Some(&p),
+            Some(&s),
+            Some("V20260425010203__add_widgets"),
+        )
+        .expect("diag");
+        assert_eq!(diag.kind, DriftKind::Outcome2ComposedNotApplied);
+        assert_eq!(
+            diag.text,
+            "composed migration not yet applied: V20260425010203__add_widgets.sql \
+             (version V20260425010203__add_widgets; bucket main/_global_)"
         );
     }
 

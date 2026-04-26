@@ -72,11 +72,13 @@ pub mod target;
 pub mod verify;
 
 pub use build_match::{
-    DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket, classify_filesystem_drift,
+    DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket,
+    classify_bucket_with_pending as build_classify_bucket_with_pending, classify_filesystem_drift,
 };
 pub use compose::{
     AppLifecycle, ComposeError, ComposeReport, ComposeRequest, ComposedBucket,
-    PENDING_FORMAT_VERSION, PendingPlan, compose,
+    PENDING_FORMAT_VERSION, PendingLoadError, PendingPlan, compose, load_pending,
+    parse_pending_bytes,
 };
 pub use diff::{
     Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
