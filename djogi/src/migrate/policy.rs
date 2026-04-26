@@ -263,13 +263,28 @@ fn extract_url_host(body: &str) -> &str {
 /// the bug B-1 closed: a remote DATABASE_URL with whitespace-padded
 /// `=` falsely passed the localhost gate.
 ///
-/// Quoting (`'`-delimited values with backslash escapes) is supported
-/// per the libpq grammar: a value may start with `'` and run until
-/// the next unescaped `'`. Outside the quoted form, the value runs
-/// until the next ASCII whitespace byte.
+/// Quoting is supported in BOTH the single-quoted form (a value
+/// surrounded by ASCII apostrophe bytes) and the double-quoted form
+/// (a value surrounded by ASCII double-quote bytes) per the libpq
+/// grammar — a value may start with `'` or `"` and run until the next
+/// unescaped matching quote byte, with `\` escaping the following
+/// byte. Outside a quoted form, the value runs until the next ASCII
+/// whitespace byte. Round-2 A-2 added the double-quoted variant; the
+/// single-quoted path was wired up by B-1.
 ///
 /// Empty input → empty host (the allowlist treats that as localhost
 /// since libpq defaults to a Unix-domain socket).
+///
+/// **Empty-host edge case (round-2 A-2 documentation).** A pathological
+/// input like `host= dbname=test` follows libpq's actual grammar:
+/// libpq skips whitespace after `=` and then reads the value up to the
+/// next whitespace byte, which means the next token (`dbname=test`)
+/// becomes the value of `host`. Our parser mirrors that behaviour
+/// verbatim. The result is a non-localhost host string for ambiguous
+/// input, which is the safe-bias direction for the localhost gate:
+/// the gate refuses, and the squash refuses to run rather than
+/// guessing localhost. We leave this behaviour untouched on purpose —
+/// changing it would diverge from libpq and would loosen the gate.
 fn extract_libpq_host(s: &str) -> &str {
     let bytes = s.as_bytes();
     let mut last_host_start: Option<usize> = None;
@@ -306,8 +321,11 @@ fn extract_libpq_host(s: &str) -> &str {
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
-        // Read the value. Quoted form starts with `'`.
-        if i < bytes.len() && bytes[i] == b'\'' {
+        // Read the value. Quoted form starts with `'` (single) or `"`
+        // (double). libpq accepts both variants with identical
+        // backslash-escape semantics; we mirror that.
+        if i < bytes.len() && (bytes[i] == b'\'' || bytes[i] == b'"') {
+            let quote = bytes[i];
             i += 1; // consume opening quote
             let inner_start = i;
             while i < bytes.len() {
@@ -315,14 +333,14 @@ fn extract_libpq_host(s: &str) -> &str {
                     i += 2;
                     continue;
                 }
-                if bytes[i] == b'\'' {
+                if bytes[i] == quote {
                     break;
                 }
                 i += 1;
             }
             let inner_end = i;
             // Consume the closing quote when present.
-            if i < bytes.len() && bytes[i] == b'\'' {
+            if i < bytes.len() && bytes[i] == quote {
                 i += 1;
             }
             if matches_key(&bytes[key_start..key_end], b"host") {
@@ -733,5 +751,50 @@ mod tests {
         assert!(is_localhost_connection("host = localhost dbname=test"));
         assert!(is_localhost_connection("host  =  127.0.0.1 dbname=test"));
         assert!(is_localhost_connection("host=  ::1 dbname=test"));
+    }
+
+    // ── Round-2 A-2: double-quoted libpq values ──────────────────────────
+
+    /// `host="hostname"` must extract `hostname` — without the double
+    /// quotes, exactly as the single-quoted form does. The pre-A-2
+    /// parser saw the leading `"` as a non-quote byte and produced the
+    /// quoted-with-quotes string, which never matched the localhost
+    /// allowlist.
+    #[test]
+    fn extract_host_libpq_double_quoted_value() {
+        assert_eq!(extract_host("host=\"localhost\" dbname=test"), "localhost");
+    }
+
+    /// Double-quoted values may contain whitespace just like the
+    /// single-quoted form.
+    #[test]
+    fn extract_host_libpq_double_quoted_with_space() {
+        assert_eq!(
+            extract_host("host=\"prod with space\" dbname=test"),
+            "prod with space"
+        );
+    }
+
+    /// A value opened with `"` is closed by `"`, not `'` (and vice
+    /// versa). A mixed-quote token like `host="x'y"` retains the inner
+    /// `'` literally; a token like `host='x"y'` retains the inner `"`.
+    #[test]
+    fn extract_host_libpq_mixed_quotes() {
+        // Opening `"` is closed by `"` — the `'` inside is literal.
+        assert_eq!(extract_host("host=\"x'y\" dbname=test"), "x'y");
+        // Opening `'` is closed by `'` — the `"` inside is literal.
+        assert_eq!(extract_host("host='x\"y' dbname=test"), "x\"y");
+    }
+
+    /// `is_localhost_connection` must recognise double-quoted localhost
+    /// the same way it recognises the single-quoted form (B-1 covered
+    /// the single-quoted path; A-2 closes the double-quoted gap).
+    #[test]
+    fn is_localhost_connection_libpq_double_quoted_localhost() {
+        assert!(is_localhost_connection("host=\"localhost\" dbname=test"));
+        assert!(is_localhost_connection("host=\"127.0.0.1\" dbname=test"));
+        assert!(!is_localhost_connection(
+            "host=\"db.prod.example.com\" dbname=test"
+        ));
     }
 }

@@ -38,6 +38,17 @@
 //!      the remote `migrations` submodule. Without it, the rewrite
 //!      stays local — the operator can inspect the result, run the
 //!      test suite, and only then publish.
+//!    - **`--publish` is atomic: commit-then-push (round-2 A-1).**
+//!      When `--publish` is set, attune treats the squash mutation as
+//!      one atomic step: it stages every change in the migrations
+//!      working tree (`git add -A`), creates a commit
+//!      (`djogi attune --squash from <from>`), then pushes the current
+//!      branch to `origin`. The operator does NOT need to commit the
+//!      mutation themselves — the publisher's contract is "commit the
+//!      squash mutation, then push to origin". This matches v3 §6's
+//!      "destructive history rewrite" framing: the squash mutation +
+//!      the publish are one indivisible operation. Without `--publish`
+//!      the operator owns the commit cycle as before.
 //!
 //! # File-lock contract
 //!
@@ -291,15 +302,10 @@ pub enum AttuneRefusal {
     /// `Squash` mode was invoked but `Djogi.toml::profile` is
     /// `"production"`.
     SquashNotDevProfile { profile: String },
-    /// `Squash --from` named a version that does not exist on disk.
-    /// We refuse rather than silently no-op because the version
-    /// argument is load-bearing for an audit trail. Alias of
-    /// [`AttuneRefusal::SquashFromVersionNotFound`] retained for
-    /// pre-B-5 callers.
-    SquashFromNotFound { from: String },
     /// `Squash --from` named a version that does not exist on disk in
-    /// any bucket scoped to the connected database (B-5). Distinct
-    /// from `SquashFromNotFound` only by the more specific message.
+    /// any bucket scoped to the connected database (B-5). The squash
+    /// refuses rather than silently no-op because the version argument
+    /// is load-bearing for an audit trail.
     SquashFromVersionNotFound { version: String },
     /// `Squash --from` named a version that exists in MULTIPLE
     /// buckets within the connected database (B-5). Squash refuses to
@@ -371,11 +377,6 @@ impl std::fmt::Display for AttuneRefusal {
                 "attune --squash refuses to run with profile=`{profile}`; squash \
                  is dev-only — set `profile = \"development\"` (or remove the \
                  production override) before retrying"
-            ),
-            AttuneRefusal::SquashFromNotFound { from } => write!(
-                f,
-                "attune --squash --from `{from}` did not match any version on disk; \
-                 list `migrations/<database>/<app>/` to find a valid starting version"
             ),
             AttuneRefusal::SquashFromVersionNotFound { version } => write!(
                 f,
@@ -1120,9 +1121,13 @@ async fn run_squash(
     report.mutated = true;
     report.squashed_to = Some(from.to_string());
 
-    // Optional publish step.
+    // Optional publish step. Round-2 A-1: when `publish` is set, the
+    // publisher commits the squash mutation (every disk change made by
+    // run_squash above) and then pushes to `origin`. The combined
+    // operation is atomic from the operator's perspective: a single
+    // `attune --publish` invocation lands the rewrite in the remote.
     if publish && report.mutated {
-        run_git_publish(workspace_root)?;
+        run_git_commit_and_publish(workspace_root, from)?;
         report.published = true;
     }
 
@@ -1131,27 +1136,91 @@ async fn run_squash(
     Ok(())
 }
 
-/// Shell out to `git -C <migrations_root> push`. Captures stderr so
-/// the operator can diagnose without re-running.
-fn run_git_publish(workspace_root: &Path) -> Result<(), AttuneError> {
+/// Stage every change in the migrations working tree, commit it with a
+/// canonical squash message, then push the current branch to `origin`.
+/// Round-2 A-1: the publisher's contract is "commit the squash mutation,
+/// then push to origin" — the operator does not run `git add` /
+/// `git commit` themselves between the squash mutation and the push.
+///
+/// Each step captures stderr so an operator-facing diagnostic carries
+/// the precise failure point. A failure anywhere in the chain surfaces
+/// as [`AttuneError::GitPublishFailed`] — the stderr prefix names the
+/// step that failed (`git add`, `git commit`, `git push`) so the
+/// operator can correct without re-running.
+fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), AttuneError> {
     let migrations_root = super::target::migrations_root(workspace_root);
-    let output = std::process::Command::new("git")
+
+    // Step 1: stage every mutation produced by run_squash above. We
+    // pass `-A` so deletions of subsumed SQL files are picked up
+    // alongside the squashed file's write.
+    let add_out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("add")
+        .arg("-A")
+        .output()
+        .map_err(|e| AttuneError::GitPublishFailed {
+            stderr: format!("failed to spawn `git add`: {e}"),
+            status_code: None,
+        })?;
+    if !add_out.status.success() {
+        let stderr = String::from_utf8_lossy(&add_out.stderr).into_owned();
+        return Err(AttuneError::GitPublishFailed {
+            stderr: format!("`git add -A` failed: {stderr}"),
+            status_code: add_out.status.code(),
+        });
+    }
+
+    // Step 2: commit the staged squash. The message names the
+    // canonical `from` version so the audit trail in the migrations
+    // submodule's history points back to the operator's intent.
+    let commit_msg = format!("djogi attune --squash from {from}");
+    let commit_out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("commit")
+        .arg("-m")
+        .arg(&commit_msg)
+        .output()
+        .map_err(|e| AttuneError::GitPublishFailed {
+            stderr: format!("failed to spawn `git commit`: {e}"),
+            status_code: None,
+        })?;
+    if !commit_out.status.success() {
+        let stderr = String::from_utf8_lossy(&commit_out.stderr).into_owned();
+        // A "nothing to commit" failure is unusual after a successful
+        // squash mutation, but if it happens we surface the captured
+        // stderr verbatim — it's almost always an operator-side issue
+        // (e.g. pre-commit hooks rejecting the change).
+        return Err(AttuneError::GitPublishFailed {
+            stderr: format!("`git commit` failed: {stderr}"),
+            status_code: commit_out.status.code(),
+        });
+    }
+
+    // Step 3: push the current branch to `origin`. We rely on the
+    // operator having a tracking branch already configured (squash is
+    // dev-only and the migrations repo is expected to have its
+    // upstream wired up at clone time).
+    let push_out = std::process::Command::new("git")
         .arg("-C")
         .arg(&migrations_root)
         .arg("push")
+        .arg("origin")
+        .arg("HEAD")
         .output()
         .map_err(|e| AttuneError::GitPublishFailed {
-            stderr: format!("failed to spawn git: {e}"),
+            stderr: format!("failed to spawn `git push`: {e}"),
             status_code: None,
         })?;
-    if output.status.success() {
-        return Ok(());
+    if !push_out.status.success() {
+        let stderr = String::from_utf8_lossy(&push_out.stderr).into_owned();
+        return Err(AttuneError::GitPublishFailed {
+            stderr: format!("`git push origin HEAD` failed: {stderr}"),
+            status_code: push_out.status.code(),
+        });
     }
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    Err(AttuneError::GitPublishFailed {
-        stderr,
-        status_code: output.status.code(),
-    })
+    Ok(())
 }
 
 // ── Sort key ──────────────────────────────────────────────────────────────

@@ -1508,8 +1508,27 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
         .expect("seed");
     }
 
-    // Local squash WITHOUT publish — produces the rewrite on disk +
-    // ledger.
+    // Capture the pre-attune HEAD so we can prove `--publish` advanced
+    // the local branch. The initial commit pushed above is the only
+    // commit on `main` at this point.
+    let pre_attune_head = String::from_utf8_lossy(
+        &std::process::Command::new("git")
+            .arg("-C")
+            .arg(&migrations_root)
+            .arg("rev-parse")
+            .arg("HEAD")
+            .output()
+            .expect("rev-parse pre-attune")
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    // Round-2 A-1: a single `attune --squash --publish` invocation
+    // performs the squash mutation, auto-commits the result, and pushes
+    // to `origin`. The operator does NOT run `git add` / `git commit`
+    // between the squash mutation and the push — the publisher owns
+    // the commit-then-push contract end-to-end.
     let lock_path = work.join(".djogi-migrate.lock");
     let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
     let req = AttuneRequest {
@@ -1518,169 +1537,56 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
         profile: "development",
         mode: AttuneMode::Squash {
             from: "V20260101000000__init".to_string(),
-            publish: false,
+            publish: true,
             app: None,
         },
         _guard: &guard,
     };
-    let report = attune(&mut ctx, req).await.expect("squash ok");
-    assert!(report.mutated, "squash must produce a rewrite");
-    assert!(!report.published, "publish=false must not push");
-    drop(guard);
-
-    // Stage + commit the rewrite so HEAD diverges from origin.
-    let _ = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&migrations_root)
-        .arg("add")
-        .arg("-A")
-        .output()
-        .expect("git add post-squash");
-    let post_commit = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&migrations_root)
-        .arg("commit")
-        .arg("-m")
-        .arg("squash result")
-        .output()
-        .expect("git commit post-squash");
-    assert!(
-        post_commit.status.success(),
-        "post-squash commit failed: {}",
-        String::from_utf8_lossy(&post_commit.stderr)
-    );
-    let local_head = String::from_utf8_lossy(
-        &std::process::Command::new("git")
-            .arg("-C")
-            .arg(&migrations_root)
-            .arg("rev-parse")
-            .arg("HEAD")
-            .output()
-            .expect("rev-parse local")
-            .stdout,
-    )
-    .trim()
-    .to_string();
-
-    // Now invoke attune with `publish: true` and a no-op `from` —
-    // squash collapses nothing because only one file remains, but
-    // the publisher's git-push path runs only when `report.mutated`
-    // is `true`. Since the rewrite already happened, run a fresh
-    // squash starting from the squashed `from` against an unrelated
-    // mid-tree marker. Easier path: bypass the squash mutation and
-    // call the publish step via a second invocation using a SEPARATE
-    // workspace whose history needs squashing.
-    //
-    // Simpler still: stage a NEW pending commit (an unrelated
-    // file) so push has something to publish, then ask attune
-    // to push by exercising the actual publish helper directly.
-    // The publisher is `pub(super) fn run_git_publish` — re-export
-    // is not desired, but the entire test exercises the contract
-    // by running `git -C <migrations_root> push` ourselves and
-    // confirming it succeeds against this fixture remote.
-    //
-    // Final shape: attune --publish requires `report.mutated`. To
-    // re-trigger mutation, we add a brand-new SQL file that the
-    // squash-from anchor can extend.
-    std::fs::write(
-        bucket_dir.join("V20270101000000__followup.sql"),
-        "ALTER TABLE foo ADD COLUMN qux TEXT;",
-    )
-    .unwrap();
-    let _ = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&migrations_root)
-        .arg("add")
-        .arg("-A")
-        .output();
-    let _ = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&migrations_root)
-        .arg("commit")
-        .arg("-m")
-        .arg("followup")
-        .output();
-    let head_after_followup = String::from_utf8_lossy(
-        &std::process::Command::new("git")
-            .arg("-C")
-            .arg(&migrations_root)
-            .arg("rev-parse")
-            .arg("HEAD")
-            .output()
-            .expect("rev-parse follow")
-            .stdout,
-    )
-    .trim()
-    .to_string();
-    assert_ne!(
-        local_head, head_after_followup,
-        "follow-up commit must advance HEAD"
-    );
-    // Seed a ledger row for the follow-up so the squash can include it.
-    ctx.raw_execute(
-        "INSERT INTO djogi_schema_migrations \
-         (version, description, checksum_up, checksum_down, execution_mode, status, \
-          run_id, snapshot_version, app_label) \
-         VALUES ($1, $2, $3, NULL, 'transactional', 'applied', 0, '1.0', '')",
-        &[
-            &"V20270101000000__followup".to_string(),
-            &"followup".to_string(),
-            &"V1:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
-        ],
-    )
-    .await
-    .expect("seed followup");
-
-    let lock_path2 = work.join(".djogi-migrate.lock");
-    let guard2 = acquire_workspace_lock(&lock_path2, Duration::from_secs(2)).expect("lock 2");
-    let req2 = AttuneRequest {
-        workspace_root: &work,
-        database_url: "postgres://localhost/main",
-        profile: "development",
-        mode: AttuneMode::Squash {
-            from: "V20260101000000__init".to_string(),
-            publish: true,
-            app: None,
-        },
-        _guard: &guard2,
-    };
-    // Stage the follow-up's squash output BEFORE attune is invoked —
-    // attune --publish only PUSHES; staging + committing the rewrite
-    // is the operator's responsibility per the spec contract. Since
-    // attune will modify the working tree mid-call, we instead let
-    // attune do its filesystem rewrite, then commit + push.
-    let report2_result = attune(&mut ctx, req2).await;
-    drop(guard2);
-
-    // Either the publish succeeded OR git push failed because the
-    // working tree wasn't committed before the push (publisher
-    // pushes whatever is currently in `origin/main`'s reachable
-    // commits — and at this point it equals `head_after_followup`
-    // because of the follow-up commit). In either branch, the
-    // publisher's invocation shape is exercised: a `Some(0)` exit
-    // status proves the push reached origin.
-    let report2 = match report2_result {
+    let report = match attune(&mut ctx, req).await {
         Ok(r) => r,
         Err(djogi::migrate::AttuneError::GitPublishFailed {
             stderr,
             status_code,
         }) => {
-            // Diagnostic shape only — never silently swallow real
-            // misconfigurations. Surface the captured stderr so a
-            // CI-side failure is debuggable.
+            // Surface captured stderr so a CI-side failure is
+            // debuggable without re-running.
             panic!("attune --publish: GitPublishFailed (status={status_code:?}): {stderr}");
         }
         Err(other) => panic!("unexpected attune error: {other}"),
     };
+    drop(guard);
+
+    // (1) The report must mark the run as both mutated AND published —
+    // those are the publisher's two contract bits.
+    assert!(report.mutated, "squash must produce a rewrite");
     assert!(
-        report2.published,
+        report.published,
         "report.published must be TRUE after a successful --publish run"
     );
 
-    // Verify the bare remote received SOMETHING beyond just the
-    // initial commit (which is what we pushed at setup time).
-    // `head_after_followup` is the most-recently committed state,
-    // which the `--publish` invocation should have published.
+    // (2) The local migrations submodule's HEAD must have advanced
+    // past the pre-attune state — the publisher's auto-commit IS the
+    // proof that the squash mutation was committed before pushing.
+    let post_attune_local_head = String::from_utf8_lossy(
+        &std::process::Command::new("git")
+            .arg("-C")
+            .arg(&migrations_root)
+            .arg("rev-parse")
+            .arg("HEAD")
+            .output()
+            .expect("rev-parse post-attune local")
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    assert_ne!(
+        pre_attune_head, post_attune_local_head,
+        "attune --publish must auto-commit the squash mutation; local HEAD \
+         did not advance past the pre-attune commit ({pre_attune_head})"
+    );
+
+    // (3) The bare remote's HEAD must equal the post-attune local HEAD
+    // — the publisher pushed the squash commit it just authored.
     let remote_head = String::from_utf8_lossy(
         &std::process::Command::new("git")
             .arg("-C")
@@ -1694,10 +1600,32 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
     .trim()
     .to_string();
     assert_eq!(
-        remote_head, head_after_followup,
-        "bare remote HEAD ({remote_head}) must equal the most-recently committed local HEAD \
-         ({head_after_followup}) after attune --publish; the publisher pushes whatever is \
-         committed to `origin/main` at the time of invocation"
+        remote_head, post_attune_local_head,
+        "bare remote HEAD ({remote_head}) must equal the post-attune local HEAD \
+         ({post_attune_local_head}); attune --publish is contracted to commit + push \
+         the squash mutation atomically"
+    );
+
+    // (4) The auto-commit's message must be the canonical
+    // `djogi attune --squash from <from>` shape so the audit trail in
+    // the migrations submodule's history points back to the operator's
+    // intent.
+    let commit_subject = String::from_utf8_lossy(
+        &std::process::Command::new("git")
+            .arg("-C")
+            .arg(&migrations_root)
+            .arg("log")
+            .arg("-1")
+            .arg("--pretty=%s")
+            .output()
+            .expect("git log post-attune")
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    assert_eq!(
+        commit_subject, "djogi attune --squash from V20260101000000__init",
+        "auto-commit subject must name the canonical `from` version"
     );
 
     let _ = std::fs::remove_dir_all(&work);
