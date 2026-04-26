@@ -214,6 +214,23 @@ impl Drop for WriteRollback {
         }
         // Per Codex B-11: undo every tracked entry rename. We move
         // each `to` back to its prior `from` location.
+        //
+        // Codex round-3 B-11 testing-gap note: this rollback path is
+        // reachable in principle (a `fs::rename` call inside the merge
+        // loop could fail mid-iteration on out-of-disk, EPERM, or a
+        // TOCTOU race against the pre-flight check), but in practice
+        // the pre-flight collision scan in `rename_old_bucket_folder`
+        // catches every deterministically-reachable failure before any
+        // entry has been moved — so this branch executes zero queue
+        // entries on every test run. A non-vacuous test would have to
+        // simulate a mid-loop kernel-level failure (permission flip
+        // between iterations, disk-full on the second move, etc.) and
+        // those are not portably reproducible from a unit test
+        // harness. The rollback queue is kept alive defensively so a
+        // future change to the pre-flight (or a TOCTOU race in
+        // production) cannot leave the workspace half-merged. See
+        // `b11_pre_flight_pre_empts_mid_loop_rollback` for the
+        // documented gap.
         for (from, to) in self.entry_renames.drain(..).rev() {
             let _ = fs::rename(&to, &from);
         }
@@ -1929,9 +1946,31 @@ mod tests {
         };
         let err = compose(req2).expect_err("must refuse");
         match err {
-            ComposeError::HandEditedMigrationWouldBeOverwritten { text, .. } => {
-                assert!(text.contains("D013"), "must surface D013: {text}");
-                assert!(text.contains("--force-overwrite"));
+            ComposeError::HandEditedMigrationWouldBeOverwritten { text, path, .. } => {
+                // Codex round-3 B-3 — pin the FULL D013 diagnostic
+                // wording so a future regression on any phrase fails
+                // loudly. Frozen by `compose.rs:987-991`.
+                assert!(
+                    text.starts_with("D013:"),
+                    "must start with D013 prefix: {text}"
+                );
+                assert!(
+                    text.contains("hand-edited migration would be overwritten"),
+                    "must carry the canonical phrase: {text}"
+                );
+                assert!(
+                    text.contains("(up side)"),
+                    "side label must read \"(up side)\" verbatim: {text}"
+                );
+                assert!(
+                    text.contains("pass --force-overwrite"),
+                    "must instruct the operator to use --force-overwrite: {text}"
+                );
+                assert!(
+                    text.contains(&path.display().to_string()),
+                    "must include the offending path: {text}"
+                );
+                assert_eq!(path, up_path, "path must be the up file");
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -2290,6 +2329,147 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
+    /// Codex round-3 B-10 — `WriteRollback` must restore BOTH the up
+    /// and the down bytes when a mid-sequence failure occurs after
+    /// MULTIPLE promotes have already overwritten existing files.
+    ///
+    /// The original B-10 test (above) exercises a single restore point
+    /// — the down promote fails so only the up rollback is tested.
+    /// This sibling test stresses the LIFO unwind in
+    /// [`WriteRollback::drop`]: it forces the failure at the THIRD
+    /// promote (pending JSON), so up + down promotes have already
+    /// captured backups and the rollback must restore each in reverse
+    /// order.
+    ///
+    /// Strategy:
+    ///
+    /// 1. Pre-create up SQL with "operator up content".
+    /// 2. Pre-create down SQL with "operator down content".
+    /// 3. Block the pending JSON promote by creating its target as a
+    ///    NON-EMPTY directory (so `fs::rename(<file>, <non-empty-dir>)`
+    ///    fails with a kernel-level error). The `pending_path` lives
+    ///    under `target/djogi_pending/<db>/<app>.json` — a different
+    ///    parent from up/down — so blocking it does not interfere with
+    ///    the bucket directory writes.
+    ///
+    /// Asserts:
+    /// - The error variant matches `ComposeError::Io { .. }`.
+    /// - BOTH up and down files are restored to their original
+    ///   operator content (LIFO order: down restored before up; the
+    ///   final on-disk state must be identical to the pre-compose
+    ///   state).
+    /// - No `.tmp.<pid>.<n>` or `.bak.<pid>.<n>` siblings remain.
+    #[test]
+    fn b10_rollback_restores_multi_promote_lifo_order() {
+        let work = temp_workspace("b10_multi_promote_lifo");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+        let mut models = BTreeMap::new();
+        models.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+        let now = at(2026, 4, 25, 1, 2, 3);
+        let prefix = version_prefix(now);
+        let version = version_id(&prefix, &sanitize_slug("add widgets"));
+        let bucket_directory = bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_directory).unwrap();
+
+        // (1) + (2) — pre-existing operator content on BOTH SQL files.
+        // Each promote will overwrite these; the rollback must restore
+        // each one back to its original bytes via the LIFO unwind.
+        let up_path = bucket_directory.join(up_filename(&version));
+        let down_path = bucket_directory.join(down_filename(&version));
+        let original_up = b"operator up content";
+        let original_down = b"operator down content";
+        fs::write(&up_path, original_up).unwrap();
+        fs::write(&down_path, original_down).unwrap();
+
+        // (3) — block the THIRD promote (pending JSON) by pre-creating
+        // its destination as a non-empty directory. The pending path
+        // lives under `target/djogi_pending/<db>/<app>.json` so we
+        // need to fabricate the parent and the colliding directory
+        // ourselves.
+        let pending_path = pending_json_path(&work, &bucket);
+        if let Some(parent) = pending_path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::create_dir_all(&pending_path).unwrap();
+        fs::write(pending_path.join("sentinel"), b"keep").unwrap();
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            // Force-overwrite required: both up and down were edited
+            // (have non-canonical content), so D013 would otherwise
+            // fire BEFORE any promote happens — and we need the
+            // promotes to run so the multi-promote rollback path is
+            // exercised.
+            force_overwrite: true,
+            now,
+            _guard: &guard,
+        };
+        let err = compose(req).expect_err("pending promote must fail");
+        assert!(
+            matches!(err, ComposeError::Io { .. }),
+            "must surface a typed I/O error: {err:?}"
+        );
+
+        // (a) BOTH up and down files restored to their original
+        //     operator content. The LIFO unwind in
+        //     `WriteRollback::drop` runs the down restore first, then
+        //     the up restore — but we only observe the final state,
+        //     which must match the pre-compose state byte-for-byte.
+        let after_up = fs::read(&up_path).expect("up file still present");
+        assert_eq!(
+            after_up.as_slice(),
+            original_up,
+            "up file must be restored to original operator content"
+        );
+        let after_down = fs::read(&down_path).expect("down file still present");
+        assert_eq!(
+            after_down.as_slice(),
+            original_down,
+            "down file must be restored to original operator content"
+        );
+
+        // (b) No `.tmp.<pid>.<n>` files remain in the bucket directory.
+        let mut tmp_files: Vec<String> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.contains(".tmp.") {
+                    tmp_files.push(name);
+                }
+            }
+        }
+        assert!(
+            tmp_files.is_empty(),
+            ".tmp.<pid> files must be cleaned: {tmp_files:?}"
+        );
+
+        // (c) No `.bak.<pid>.<n>` files remain anywhere in the bucket
+        //     directory. The LIFO restore renames each backup back
+        //     over its final path, leaving zero backup siblings.
+        let mut bak_files: Vec<String> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.contains(".bak.") {
+                    bak_files.push(name);
+                }
+            }
+        }
+        assert!(
+            bak_files.is_empty(),
+            "backup files must be cleaned after restore: {bak_files:?}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
     /// Codex round-2 B-3 — D013 also fires when ONLY the down SQL was
     /// hand-edited. The original B-3 test only covered the up side;
     /// round-2 caught the down side as silently overwriteable.
@@ -2334,10 +2514,28 @@ mod tests {
         let err = compose(req2).expect_err("down hand-edit must refuse");
         match err {
             ComposeError::HandEditedMigrationWouldBeOverwritten { text, path, .. } => {
-                assert!(text.contains("D013"), "must surface D013: {text}");
+                // Codex round-3 B-3 — pin the FULL D013 diagnostic
+                // wording (down side variant). Frozen format string
+                // lives at `compose.rs:987-991`.
                 assert!(
-                    text.contains("down"),
-                    "diagnostic must name the down side: {text}"
+                    text.starts_with("D013:"),
+                    "must start with D013 prefix: {text}"
+                );
+                assert!(
+                    text.contains("hand-edited migration would be overwritten"),
+                    "must carry the canonical phrase: {text}"
+                );
+                assert!(
+                    text.contains("(down side)"),
+                    "side label must read \"(down side)\" verbatim: {text}"
+                );
+                assert!(
+                    text.contains("pass --force-overwrite"),
+                    "must instruct the operator to use --force-overwrite: {text}"
+                );
+                assert!(
+                    text.contains(&path.display().to_string()),
+                    "must include the offending path: {text}"
                 );
                 assert_eq!(path, down_path, "path must be the down file");
             }
@@ -2391,12 +2589,33 @@ mod tests {
         };
         let err = compose(req2).expect_err("both-side edit must refuse");
         match err {
-            ComposeError::HandEditedMigrationWouldBeOverwritten { text, .. } => {
-                assert!(text.contains("D013"), "must surface D013: {text}");
+            ComposeError::HandEditedMigrationWouldBeOverwritten { text, path, .. } => {
+                // Codex round-3 B-3 — pin the FULL D013 diagnostic
+                // wording (both-sides variant). The reporter favours
+                // the up path when both sides were edited (operator
+                // typically inspects up first); see
+                // `compose.rs:981-985`.
                 assert!(
-                    text.contains("up and down"),
-                    "diagnostic must indicate both sides edited: {text}"
+                    text.starts_with("D013:"),
+                    "must start with D013 prefix: {text}"
                 );
+                assert!(
+                    text.contains("hand-edited migration would be overwritten"),
+                    "must carry the canonical phrase: {text}"
+                );
+                assert!(
+                    text.contains("(up and down side)"),
+                    "side label must read \"(up and down side)\" verbatim: {text}"
+                );
+                assert!(
+                    text.contains("pass --force-overwrite"),
+                    "must instruct the operator to use --force-overwrite: {text}"
+                );
+                assert!(
+                    text.contains(&path.display().to_string()),
+                    "must include the offending path: {text}"
+                );
+                assert_eq!(path, up_path, "both-edited reports the up path");
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -2631,5 +2850,265 @@ mod tests {
         )
         .expect("must produce diagnostic");
         assert_eq!(via_wrapper, via_direct);
+    }
+
+    /// Codex round-3 B-11 (testing-gap acknowledgement) — the
+    /// `WriteRollback.entry_renames` queue exists so a mid-loop
+    /// failure during the post-compose folder merge unwinds every
+    /// already-moved entry. In practice the pre-flight collision scan
+    /// in `rename_old_bucket_folder` (compose.rs:1115-1127) catches
+    /// every deterministically-reachable conflict before any entry
+    /// move runs — so the rollback path is unreachable from a unit
+    /// test harness without monkey-patching `fs::rename` to fail
+    /// mid-iteration.
+    ///
+    /// This test pins that observation: it constructs two distinct
+    /// collision shapes (file-vs-file and file-vs-directory) and
+    /// asserts the pre-flight surfaces a typed
+    /// [`ComposeError::FolderRenameTargetCollision`] BEFORE any move
+    /// happens. The OLD directory is left intact (the rollback queue
+    /// would be irrelevant — pre-flight pre-empted it).
+    ///
+    /// A non-vacuous test would require simulating a mid-loop
+    /// kernel-level I/O failure (out-of-disk, permission flip between
+    /// iterations, TOCTOU race), none of which are portably
+    /// reproducible from a unit test. The defensive comment in
+    /// `WriteRollback::drop` records this gap; a future hardening
+    /// pass that removes the pre-flight (or that adds a TOCTOU race
+    /// fence in production) must land a real mid-loop test alongside.
+    #[test]
+    fn b11_pre_flight_pre_empts_mid_loop_rollback() {
+        // Shape 1 — file-vs-file collision on a single entry. The
+        // pre-flight catches this (already covered by
+        // `b11_folder_rename_collision_refuses_fail_fast` for the
+        // single-entry case; we reproduce the assertion here so the
+        // gap-acknowledgement test is self-contained).
+        {
+            let work = temp_workspace("b11_gap_file_file");
+            let guard = lock_for(&work);
+            let old_bucket = BucketKey {
+                database: "main".into(),
+                app: "oldname".into(),
+            };
+            let new_bucket = BucketKey {
+                database: "main".into(),
+                app: "newname".into(),
+            };
+            let old_dir = bucket_dir(&work, &old_bucket);
+            let new_dir = bucket_dir(&work, &new_bucket);
+            fs::create_dir_all(&old_dir).unwrap();
+            fs::create_dir_all(&new_dir).unwrap();
+            // Two entries on the OLD side; the SECOND one collides on
+            // the NEW side. If the pre-flight check were ever loosened
+            // to skip later entries, the first move would land and the
+            // second would fail mid-loop — which is the scenario we
+            // want to make unreachable. Today the pre-flight inspects
+            // every entry up-front and refuses fail-fast.
+            fs::write(old_dir.join("V20260101010101__a.sql"), "movable").unwrap();
+            fs::write(old_dir.join("V20260101010102__b.sql"), "from-old").unwrap();
+            fs::write(new_dir.join("V20260101010102__b.sql"), "from-new").unwrap();
+            let mut snapshots = BTreeMap::new();
+            snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
+            let mut models = BTreeMap::new();
+            models.insert(new_bucket.clone(), snapshot_with_widgets(&new_bucket));
+            let app = AppLifecycle {
+                label: "newname".to_string(),
+                database: "main".to_string(),
+                renamed_from: Some("oldname".to_string()),
+                tombstone: false,
+            };
+            let req = ComposeRequest {
+                workspace_root: &work,
+                models: &models,
+                snapshots: &snapshots,
+                apps: std::slice::from_ref(&app),
+                name: "rename newname",
+                allow_destructive: false,
+                force_overwrite: false,
+                now: at(2026, 4, 25, 1, 2, 3),
+                _guard: &guard,
+            };
+            let err = compose(req).expect_err("collision must surface");
+            match err {
+                ComposeError::FolderRenameTargetCollision {
+                    offending_entry, ..
+                } => {
+                    assert_eq!(offending_entry, "V20260101010102__b.sql");
+                }
+                other => panic!("wrong variant (file-vs-file): {other:?}"),
+            }
+            // Pre-flight pre-empted the move loop — the OLD
+            // directory's MOVABLE entry must still be in OLD (not in
+            // NEW). If the pre-flight ever regressed to "skip
+            // colliding entries and silently keep going", this
+            // assertion would fail because the first entry would have
+            // been moved before the second hit the rollback path.
+            assert!(
+                old_dir.join("V20260101010101__a.sql").exists(),
+                "movable entry must remain under OLD — pre-flight \
+                 must pre-empt the entire merge loop"
+            );
+            assert!(
+                !new_dir.join("V20260101010101__a.sql").exists(),
+                "movable entry must NOT have been promoted into NEW"
+            );
+            let _ = fs::remove_dir_all(&work);
+        }
+
+        // Shape 2 — file-vs-directory collision. The OLD entry is a
+        // file; the NEW side has a DIRECTORY at the same name. The
+        // pre-flight uses `Path::exists()` which returns true for
+        // both files and directories, so the collision is caught
+        // before any rename attempt.
+        {
+            let work = temp_workspace("b11_gap_file_dir");
+            let guard = lock_for(&work);
+            let old_bucket = BucketKey {
+                database: "main".into(),
+                app: "oldname".into(),
+            };
+            let new_bucket = BucketKey {
+                database: "main".into(),
+                app: "newname".into(),
+            };
+            let old_dir = bucket_dir(&work, &old_bucket);
+            let new_dir = bucket_dir(&work, &new_bucket);
+            fs::create_dir_all(&old_dir).unwrap();
+            fs::create_dir_all(&new_dir).unwrap();
+            // OLD has a file at `V20260101010101__init.sql`. NEW has
+            // a DIRECTORY at the same path. Without the pre-flight,
+            // `fs::rename(<file>, <existing-dir>)` would fail
+            // mid-loop with EISDIR.
+            fs::write(old_dir.join("V20260101010101__init.sql"), "movable").unwrap();
+            fs::create_dir_all(new_dir.join("V20260101010101__init.sql")).unwrap();
+            fs::write(
+                new_dir.join("V20260101010101__init.sql").join("sentinel"),
+                b"keep",
+            )
+            .unwrap();
+            let mut snapshots = BTreeMap::new();
+            snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
+            let mut models = BTreeMap::new();
+            models.insert(new_bucket.clone(), snapshot_with_widgets(&new_bucket));
+            let app = AppLifecycle {
+                label: "newname".to_string(),
+                database: "main".to_string(),
+                renamed_from: Some("oldname".to_string()),
+                tombstone: false,
+            };
+            let req = ComposeRequest {
+                workspace_root: &work,
+                models: &models,
+                snapshots: &snapshots,
+                apps: std::slice::from_ref(&app),
+                name: "rename newname",
+                allow_destructive: false,
+                force_overwrite: false,
+                now: at(2026, 4, 25, 1, 2, 3),
+                _guard: &guard,
+            };
+            let err = compose(req).expect_err("file-vs-dir collision must surface");
+            match err {
+                ComposeError::FolderRenameTargetCollision {
+                    offending_entry, ..
+                } => {
+                    assert_eq!(offending_entry, "V20260101010101__init.sql");
+                }
+                other => panic!("wrong variant (file-vs-dir): {other:?}"),
+            }
+            // Sentinel inside the blocking directory survives — the
+            // rollback never ran because pre-flight pre-empted it.
+            assert!(
+                new_dir
+                    .join("V20260101010101__init.sql")
+                    .join("sentinel")
+                    .exists(),
+                "blocking directory's contents must be preserved"
+            );
+            let _ = fs::remove_dir_all(&work);
+        }
+    }
+
+    /// Codex round-3 B-9 — `remap_snapshots_for_renames` must rewrite
+    /// the OLD bucket key AND the embedded `registered_apps` list on
+    /// the relabeled snapshot, while leaving every other bucket in the
+    /// input map untouched.
+    ///
+    /// The differ inspects `registered_apps` on the destination bucket
+    /// for an "app move" consistency check. If the relabel only
+    /// rewrote the BTreeMap key but left the embedded list pointing at
+    /// the OLD label, the differ would see a mismatch where the new
+    /// bucket's snapshot does not list itself as a registered app —
+    /// regressing the rename path silently.
+    #[test]
+    fn b9_remap_relabels_registered_apps_field() {
+        // BEFORE: bucket map keyed under the OLD app label "billing".
+        // The snapshot's `registered_apps` lists three apps including
+        // "billing". A second untouched bucket ("audit") confirms the
+        // remap leaves unrelated entries alone.
+        let old_billing_bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let audit_bucket = BucketKey {
+            database: "main".into(),
+            app: "audit".into(),
+        };
+        let mut before_billing = empty_snapshot(&old_billing_bucket);
+        before_billing.registered_apps =
+            vec!["".to_string(), "billing".to_string(), "users".to_string()];
+        let mut before_audit = empty_snapshot(&audit_bucket);
+        before_audit.registered_apps = vec!["audit".to_string()];
+        let mut before: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+        before.insert(old_billing_bucket.clone(), before_billing.clone());
+        before.insert(audit_bucket.clone(), before_audit.clone());
+
+        // AppLifecycle entry models the rename `billing -> invoicing`.
+        let apps = [AppLifecycle {
+            label: "invoicing".to_string(),
+            database: "main".to_string(),
+            renamed_from: Some("billing".to_string()),
+            tombstone: false,
+        }];
+
+        let after = remap_snapshots_for_renames(&before, &apps);
+
+        // (a) The OLD billing bucket key has been rewritten to NEW
+        //     under the same database; the OLD key no longer exists.
+        let new_billing_bucket = BucketKey {
+            database: "main".into(),
+            app: "invoicing".into(),
+        };
+        assert!(
+            after.contains_key(&new_billing_bucket),
+            "remap must produce the new bucket key (main, invoicing)"
+        );
+        assert!(
+            !after.contains_key(&old_billing_bucket),
+            "remap must drop the old bucket key (main, billing)"
+        );
+
+        // (b) The relabeled snapshot's `registered_apps` field
+        //     contains "invoicing" and does NOT contain "billing".
+        let relabeled = &after[&new_billing_bucket];
+        assert!(
+            relabeled.registered_apps.iter().any(|s| s == "invoicing"),
+            "registered_apps must contain new label \"invoicing\": {:?}",
+            relabeled.registered_apps
+        );
+        assert!(
+            !relabeled.registered_apps.iter().any(|s| s == "billing"),
+            "registered_apps must drop old label \"billing\": {:?}",
+            relabeled.registered_apps
+        );
+        // Sibling entries ("" global and "users") are preserved
+        // verbatim — only the renamed-from entry was rewritten.
+        assert!(relabeled.registered_apps.iter().any(|s| s.is_empty()));
+        assert!(relabeled.registered_apps.iter().any(|s| s == "users"));
+
+        // (c) The unrelated `audit` bucket is unchanged in both key
+        //     and value (including its registered_apps list).
+        let after_audit = after.get(&audit_bucket).expect("audit untouched");
+        assert_eq!(*after_audit, before_audit);
     }
 }

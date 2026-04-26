@@ -112,6 +112,14 @@ pub fn compose_cmd(
     // policy) inherits the path-aware loader. Loading here surfaces
     // any TOML parse error at the same point as projection errors so
     // the operator gets one consistent failure mode.
+    //
+    // SYNCWATCH: this load_from_workspace call is currently a defensive
+    // early-parse probe — the parsed `DjogiConfig` is intentionally
+    // dropped because `compose_with_inputs` doesn't yet consume migrate
+    // config. When compose logic begins reading config (e.g. a
+    // migrate.compose.* setting), thread the parsed value through to
+    // the request instead of discarding it, and update this comment.
+    // grep `SYNCWATCH:` to find every paired call site.
     if let Err(e) = djogi::config::DjogiConfig::load_from_workspace(&workspace) {
         eprintln!("djogi migrations compose: config load: {e}");
         return ExitCode::from(1);

@@ -152,6 +152,19 @@ fn d004_missing_wording_matches_build_rs() {
 /// source inspection still pins the wire-up shape but the runtime
 /// case is what proves the four outcomes route correctly under the
 /// flag.
+///
+/// Round-3 strengthening (Codex B-6):
+///
+/// - Outcome 1 (synced) is now exercised explicitly: when models ==
+///   pending == snapshot the classifier must return `None` (no
+///   diagnostic). This pins the silent path that build.rs depends on
+///   to avoid spurious warnings on a clean tree.
+/// - Outcome 2 / 3 / 4 wording is now asserted via EXACT-STRING
+///   equality (built from the v3-frozen format strings) rather than
+///   `contains` substring matches. A regression on any phrase will
+///   surface as a hard-string-mismatch at the assertion line.
+/// - The multi-bucket emission case is asserted via exact equality on
+///   the single emitted text.
 #[test]
 fn b6_suppression_only_mutes_outcome3() {
     use djogi::migrate::build_match::{
@@ -179,6 +192,25 @@ fn b6_suppression_only_mutes_outcome3() {
         app: "".into(),
     };
 
+    // Codex round-3 B-6 — Outcome 1 (synced). When models == pending
+    // == snapshot, the classifier returns `None` (silent — no
+    // diagnostic). This is the path build.rs walks on a clean tree;
+    // any regression that returns `Some(..)` would fire a spurious
+    // build warning on every developer's first compile.
+    let synced = empty_schema();
+    let outcome1_no_pending = classify_bucket(&bucket, Some(&synced), None, Some(&synced));
+    assert!(
+        outcome1_no_pending.is_none(),
+        "Outcome 1 (synced, no pending) must be silent: {outcome1_no_pending:?}"
+    );
+    let outcome1_with_pending =
+        classify_bucket(&bucket, Some(&synced), Some(&synced), Some(&synced));
+    assert!(
+        outcome1_with_pending.is_none(),
+        "Outcome 1 (synced, pending == models == snapshot) must be silent: \
+         {outcome1_with_pending:?}"
+    );
+
     // Outcome 2 — pending matches models, snapshot diverges.
     let drifted = AppliedSchema {
         djogi_version: "9.9.9".to_string(),
@@ -193,12 +225,26 @@ fn b6_suppression_only_mutes_outcome3() {
     .expect("outcome 2");
     assert_eq!(outcome2.kind, DriftKind::Outcome2ComposedNotApplied);
     assert!(!outcome2.kind.is_outcome3_drift());
+    // Codex round-3 B-6 — exact-string equality. Built from the
+    // frozen format string in `build_match::format_warning_outcome2`
+    // (no pending version → `<unknown>` placeholder; bucket main /
+    // global → `_global_` via `app_dirname`).
+    assert_eq!(
+        outcome2.text,
+        "composed migration not yet applied: <unknown>.sql \
+         (version <unknown>; bucket main/_global_)"
+    );
 
     // Outcome 3 — drift, no pending.
     let outcome3 =
         classify_bucket(&bucket, Some(&drifted), None, Some(&empty_schema())).expect("outcome 3");
     assert_eq!(outcome3.kind, DriftKind::Outcome3Drift);
     assert!(outcome3.kind.is_outcome3_drift());
+    assert_eq!(
+        outcome3.text,
+        "model drift detected for main/_global_; \
+         run `djogi migrations compose` to stage the delta"
+    );
 
     // Outcome 4 — pending diverges from models AND snapshot.
     let other = AppliedSchema {
@@ -209,6 +255,11 @@ fn b6_suppression_only_mutes_outcome3() {
         .expect("outcome 4");
     assert_eq!(outcome4.kind, DriftKind::Outcome4PendingInvalid);
     assert!(!outcome4.kind.is_outcome3_drift());
+    assert_eq!(
+        outcome4.text,
+        "pending compose for main/_global_ is stale relative to model state; \
+         re-run `djogi migrations compose`"
+    );
 
     // Apply the suppression predicate matching build.rs's logic:
     // `if suppress_drift && d.is_outcome3_drift()` skips emission.
@@ -256,7 +307,14 @@ fn b6_suppression_only_mutes_outcome3() {
         1,
         "only bucket B's outcome2 must emit under suppression: {emitted:?}"
     );
-    assert!(emitted[0].contains("V20260425010203__b"));
+    // Codex round-3 B-6 — exact-string equality on the multi-bucket
+    // emitted text. Built from the v3-frozen Outcome 2 format string
+    // with the explicit pending version threaded through.
+    assert_eq!(
+        emitted[0],
+        "composed migration not yet applied: V20260425010203__b.sql \
+         (version V20260425010203__b; bucket main/beta)"
+    );
 
     // Confirm the wording functions still round-trip the frozen
     // strings — guards against a refactor that breaks the contract
