@@ -17,9 +17,15 @@ Phase 10 system permissions surfaced in `_admin_roles.system_perms`:
 | `view_audit_log`     | Scope-filtered read of `_logs.{model}` tables                       | 10    |
 | `manage_users`       | Create/edit/delete `_admin_users`; cannot grant `is_superuser`      | 10    |
 
-`manage_users` carries a single upper-bound rule: a holder cannot grant `is_superuser = TRUE` and cannot assign a role whose system permissions are not a subset of their own. Privilege escalation via user creation is closed by construction.
+`manage_users` carries an upper-bound rule with three coupled clauses. A holder cannot:
 
-The `manage_roles` system permission, with its transitive upper-bound rule (every grant ≤ granter's privileges, recursively through inheritance), is deferred to Phase 10.5. Until then, role creation and editing are superuser-only operations. Other system actions — running migrations, resetting databases, force-evicting sessions — are also superuser-only in v1.
+1. Grant `is_superuser = TRUE` (only an existing superuser can flip that bit).
+2. Assign a role whose `system_perms` are not a subset of the holder's own `system_perms`.
+3. Assign a role whose **effective per-(model, action) permission set** — defaults plus `_admin_role_model_perms` overrides, resolved recursively through `parent_role_id` inheritance — is not a subset of the holder's own effective per-(model, action) permission set.
+
+The third clause is the privilege-escalation closer: without it, a `manage_users` holder with read-only access on Vehicle could assign a pre-existing role with `can_bulk_delete = TRUE` on Vehicle (system_perms `{}` ⊆ holder's, so clauses 1 and 2 alone pass), then impersonate the new user to delete rows the granter could not. With clause 3, a `manage_users` holder can only create users whose realized authority is bounded by their own. This is the same transitive upper-bound discipline that Phase 10.5's `manage_roles` extends to role *editing*; v1 applies it to user *assignment* because the escalation surface is the same.
+
+The `manage_roles` system permission (which extends the transitive upper-bound to role create / edit, not just user assignment) is deferred to Phase 10.5. Until then, role creation and editing are superuser-only operations. Other system actions — running migrations, resetting databases, force-evicting sessions — are also superuser-only in v1.
 
 ## Bulk Operations
 
@@ -46,6 +52,16 @@ CREATE TABLE _admin_pending_actions (
     rejected_at     TIMESTAMPTZ,
     rejection_note  TEXT
 );
+
+CREATE INDEX _admin_pending_actions_unresolved_idx
+    ON _admin_pending_actions (requested_at)
+    WHERE approved_at IS NULL AND rejected_at IS NULL;
+    -- Partial index: supports the pending-queue view (filter on unresolved, order by requested_at).
+    -- Only indexes rows actually surfaced; resolved rows accumulate harmlessly outside the index.
+
+CREATE INDEX _admin_pending_actions_expires_at_idx
+    ON _admin_pending_actions (expires_at);
+    -- Supports the periodic auto-expiry sweep (`expires_at < NOW()`).
 ```
 
 **v1 ships two action kinds**: `BulkDelete` (changelist-initiated mass deletion) and `InlineSave` (the M2M inline-edit variant created by the threshold rule in `ui.md`). Both share the table, lifecycle, and approver-coverage discipline; they differ in payload shape and which actions the package executes. Phase 10.5 extends with additional kinds (`BulkUpdate` approval, configurable per-action gates).
@@ -81,6 +97,8 @@ A `BulkDelete` issued through the admin UI:
 An `InlineSave` (the variant created by the M2M inline threshold rule in `ui.md`) follows the same lifecycle steps with two adaptations: the payload bundles parent field updates plus inline creates/updates/deletes (per the schema above), and the approver must hold every action permission the package execution requires — Update on the parent (if parent fields change), Create / Update / Delete / BulkDelete on the through model (as the package contains those operations) — not just `BulkDelete`. The approval UI surfaces the full action set with affected row counts per category, and the "Approve" button is disabled when the approver lacks any required action, naming the missing permission. This prevents piggybacking unauthorized mutations onto a delete-only approval; the dual-control safeguard requires both operators to cover the full scope of the change.
 
 Approver cannot equal requester. Pending requests expire after `[admin].pending_action_ttl` (default `24h`) and require resubmission.
+
+**Single-admin deployments cannot satisfy approver ≠ requester.** The bootstrap CLI provisions exactly one superuser. A deployment relying on `BulkDelete` or above-threshold `InlineSave` therefore needs at least two admins — the dual-control safeguard does not relax for single-admin or bootstrap-only state. Operators who need v1 approval-gated action kinds must provision a second admin (superuser or a role with the relevant action authority) before relying on them. See [Configuration](./configuration.md) — the bootstrap flow names this prerequisite explicitly.
 
 The broader application of this mechanism — gating arbitrary destructive actions, configurable approver counts, per-role gating — is Phase 10.5. The schema is designed to absorb that expansion without migration.
 

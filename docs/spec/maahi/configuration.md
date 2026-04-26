@@ -17,7 +17,10 @@ pending_action_ttl    = "24h"                 # approval-queue expiry
 inline_page_size      = 10                    # M2M inline default
 inline_bulk_threshold = 25                    # inline removals at-or-above this count route a parent save through the dual-control approval flow as an `InlineSave` pending action (sibling to `BulkDelete`)
 default_page_size     = 25                    # list view default
-login_rate_limit      = "10/5m"               # max attempts per (email, ip)
+login_rate_limit_per_ip    = "20/5m"          # per-IP limiter (caps total auth volume from one source)
+login_rate_limit_per_email = "10/5m"          # per-email limiter (caps total auth volume against one account)
+                                              # Both must accept; either failing returns 429.
+                                              # Multi-instance deployments require shared state — see security.md
 csrf_secret_env       = "DJOGI_ADMIN_CSRF_SECRET"     # env var holding signing key
 session_secret_env    = "DJOGI_ADMIN_SESSION_SECRET"  # env var holding signing key
 # multi_tenant       = false                          # auto-detected from registered RLS-enabled models;
@@ -56,6 +59,7 @@ Forgot-password via email is not part of v1 — the framework has no notificatio
 4. Run `cargo djogi admin set-password --superuser <email>` — creates the first user; prompts interactively for the password, hashes via argon2, writes to `_admin_users` with `is_superuser = TRUE`
 5. Start the application; navigate to `/_admin/`; log in with the bootstrap credentials
 6. From inside Maahi, the superuser creates additional roles and users
+7. **Before relying on `BulkDelete` or above-threshold `InlineSave`**, provision a second admin (a second superuser, or a role with the relevant action and `BulkDelete` authority). The dual-control approval gate documented in [Operations](./operations.md) requires `approver ≠ requester` and does not relax for single-admin deployments — the bootstrap state alone cannot execute either of v1's two approval-gated action kinds.
 
 The bootstrap flow is one-time. Subsequent superuser additions go through `cargo djogi admin set-password --superuser` (re-runnable) or through Maahi itself (existing superuser promotes another user).
 

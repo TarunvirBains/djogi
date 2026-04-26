@@ -54,7 +54,10 @@ CREATE TABLE _admin_users (
     id            BIGINT PRIMARY KEY DEFAULT generate_id(),
     email         TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,           -- argon2 via djogi::auth::PasswordHash (Phase 5.5)
-    role_id       BIGINT REFERENCES _admin_roles(id),
+    role_id       BIGINT REFERENCES _admin_roles(id) ON DELETE RESTRICT,
+                                           -- explicit RESTRICT: role deletion is blocked while users are
+                                           -- assigned; the role-edit page enforces reassign-first (see rbac.md
+                                           -- "Role Deletion UX")
     is_superuser  BOOLEAN NOT NULL DEFAULT FALSE,
     tenant_scope  TEXT,                    -- nullable; UI-level requirement is deployment-mode-dependent (see Multi-Tenancy section below)
     expires_at    TIMESTAMPTZ,             -- NULL = no expiry; for time-bounded contractor access
@@ -64,19 +67,28 @@ CREATE TABLE _admin_users (
 );
 
 CREATE TABLE _admin_sessions (
-    id            BIGINT PRIMARY KEY DEFAULT generate_id(),
-    user_id       BIGINT NOT NULL REFERENCES _admin_users(id) ON DELETE CASCADE,
-    token_hash    TEXT NOT NULL,           -- argon2 of the session token; cookie carries the plaintext
-    csrf_token    TEXT NOT NULL,           -- per-session, sent in X-Maahi-CSRF on every mutation
-    issued_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    expires_at    TIMESTAMPTZ NOT NULL,
-    last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ip_inet       INET,
-    user_agent    TEXT
+    id                   BIGINT PRIMARY KEY DEFAULT generate_id(),
+    user_id              BIGINT NOT NULL REFERENCES _admin_users(id) ON DELETE CASCADE,
+    token_hash           TEXT NOT NULL,    -- HMAC-SHA256 keyed by session_secret_env over the session token;
+                                           -- the cookie carries the plaintext token, the DB carries only the
+                                           -- HMAC. Deterministic + indexed so per-request session lookup is a
+                                           -- single equality probe. Argon2 stays on _admin_users.password_hash
+                                           -- where slow-by-design is the right primitive; HMAC-SHA256 is the
+                                           -- right primitive for short-lived secret-token storage.
+    csrf_token           TEXT NOT NULL,    -- per-session, sent in X-Maahi-CSRF on every mutation
+    current_tenant_scope TEXT,             -- per-session active tenant for cross-tenant users (see Multi-Tenancy
+                                           -- below). For non-cross-tenant users, derived from
+                                           -- _admin_users.tenant_scope at login. NULL in single-tenant mode.
+    issued_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at           TIMESTAMPTZ NOT NULL,
+    last_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    ip_inet              INET,
+    user_agent           TEXT
 );
 
-CREATE INDEX _admin_sessions_user_id_idx       ON _admin_sessions (user_id);
-CREATE INDEX _admin_sessions_expires_at_idx    ON _admin_sessions (expires_at);
+CREATE UNIQUE INDEX _admin_sessions_token_hash_idx ON _admin_sessions (token_hash);
+CREATE INDEX        _admin_sessions_user_id_idx     ON _admin_sessions (user_id);
+CREATE INDEX        _admin_sessions_expires_at_idx  ON _admin_sessions (expires_at);
 ```
 
 **Why the audit DB.** A `cargo djogi db reset` on the application database during development must not lock administrators out. The audit DB is already provisioned by the three-database architecture defined in [Logging](../logging.md), so Maahi tables ride that pool without adding infrastructure.
@@ -96,9 +108,14 @@ Two relevant columns on the Maahi tables; their semantics are deployment-mode-de
 - `_admin_users.tenant_scope: TEXT` — nullable column. In multi-tenant mode, the role-management UI requires a non-NULL value unless the user is a superuser or has been assigned a role with `cross_tenant = TRUE`. In single-tenant mode, the field is hidden in the UI and left NULL on every user.
 - `_admin_roles.cross_tenant: BOOLEAN` — non-superuser roles allowed cross-tenant access. Useful in multi-tenant deployments for "platform support agent" roles that span customers; ignored in single-tenant mode.
 
-In **multi-tenant** deployments, the login flow captures `tenant_scope` into the session. Every server function dispatches against a `DjogiContext` whose `set_tenant(tenant_scope)` has already been called by middleware. RLS does the rest. Cross-tenant users get a tenant picker in the navigation bar; switching the picker re-issues `set_tenant` for subsequent queries.
+In **multi-tenant** deployments, the login flow captures the active tenant into `_admin_sessions.current_tenant_scope` at session-issuance time. Two flows depending on the user shape:
 
-In **single-tenant** deployments, `set_tenant` is never called on the admin's `DjogiContext`, the picker is hidden, `cross_tenant` is irrelevant, and the `tenant_scope` UI-level requirement does not apply.
+- **Single-tenant user** (`_admin_users.tenant_scope` non-NULL): login derives `current_tenant_scope` directly from the user row at issuance — no picker prompt.
+- **Cross-tenant user** (`_admin_users.tenant_scope IS NULL`, role `cross_tenant = TRUE`): login does *not* issue a session until the user picks a tenant. After successful credential check, Maahi shows the tenant picker; on selection, the session row is written with `current_tenant_scope` = picked tenant and the session cookie is issued. There is no "no tenant set" or "all-tenants" intermediate state — sessions always have a non-NULL `current_tenant_scope` in multi-tenant mode.
+
+Every server function dispatches against a `DjogiContext` whose `set_tenant(session.current_tenant_scope)` has already been called by middleware. RLS does the rest. Switching the picker rotates the session (per the rotation discipline in [Security](./security.md)) — the rotated row is written with the new `current_tenant_scope` value atomically. Cookie tampering cannot move a session across tenants because the active tenant lives server-side on the session row, not in the cookie.
+
+In **single-tenant** deployments, `set_tenant` is never called on the admin's `DjogiContext`, `current_tenant_scope` is left NULL on every session row, the picker is hidden, `cross_tenant` is irrelevant, and the `tenant_scope` UI-level requirement does not apply.
 
 ---
 

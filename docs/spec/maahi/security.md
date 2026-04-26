@@ -14,12 +14,24 @@ A request missing any of the three is rejected before reaching the descriptor-aw
 
 ## Sessions — Rotation Discipline
 
-- Session token is generated cryptographically per login, stored as `argon2` hash in `_admin_sessions.token_hash`. The cookie carries the plaintext; the database carries only the hash.
-- Session ID rotates on login, password change, role change, and tenant switch. Privilege change without rotation is a fixation hazard.
+- Session token is generated cryptographically per login, stored as **HMAC-SHA256** keyed by `session_secret_env` over the plaintext in `_admin_sessions.token_hash`. The cookie carries the plaintext; the database carries only the HMAC. Deterministic + indexed (the `_admin_sessions_token_hash_idx` UNIQUE INDEX from [Architecture](./architecture.md)) so per-request session lookup is a single equality probe in microseconds. Argon2 is reserved for `_admin_users.password_hash` where slow-by-design is the right primitive against offline brute force; HMAC-SHA256 is the right primitive for short-lived secret-token storage where lookup speed is on the hot path.
+- Session ID rotates on login, password change, role change, and tenant switch. The rotated row carries the new tenant value in `_admin_sessions.current_tenant_scope` atomically when the trigger is a tenant switch. Privilege change without rotation is a fixation hazard.
 - Idle timeout: configurable in `[admin].session_idle` (default `30m`). Updated on each authenticated request via `last_seen_at`.
 - Absolute timeout: configurable in `[admin].session_max` (default `12h`). Independent of activity.
 - Logout revokes the session row.
-- Login rate limiting: a small in-memory leaky bucket per `(email, ip_inet)` rejects brute-force attempts with a `429`. Limits configurable in `[admin].login_rate_limit`.
+
+## Login Rate Limiting
+
+Two parallel leaky-bucket limiters gate login; both must accept for the request to proceed:
+
+- **Per-IP** limiter, keyed by `ip_inet`. Caps total auth volume from a source. Defeats single-IP brute force.
+- **Per-email** limiter, keyed by `email`. Caps total auth volume against an account. Defeats credential-stuffing across many IPs (residential proxies, botnets) targeting one account.
+
+Both must accept; failure of either returns `429`. The compound `(email, ip)` key alone is the weakest of the three standard shapes — a credential-stuffing attacker rotating IPs gets a fresh bucket per source and trivially bypasses it. Two parallel limiters is the OWASP ASVS / NIST 800-63B baseline.
+
+Limits configurable per limiter in `[admin].login_rate_limit` — the configuration takes both a per-IP rate and a per-email rate.
+
+State storage: single-instance deployments may use process-local in-memory state. Multi-instance deployments must use shared state — the audit DB Maahi already provisions (the `crud_log` target) is the natural home; an `_admin_login_rate_limit` table or equivalent backing store is acceptable. The spec does not mandate the storage shape, only that multi-replica deployments cannot rely on per-process buckets (which would scale the limiter the wrong direction — N replicas = N× the configured rate).
 
 ## Server-Side Write Enforcement
 

@@ -12,18 +12,18 @@ A field's `expose(...)` annotation defines which scopes can see it. A role names
 #[model(table = "vehicles")]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
-    #[field(expose(public, support_agent, billing_agent, superuser))]
+    #[field(expose(public, support_agent, billing_agent))]
     pub vin: String,
 
-    #[field(expose(billing_agent, superuser))]
+    #[field(expose(billing_agent))]
     pub registration_state: String,
 
-    #[field(expose(superuser))]
-    pub internal_audit_notes: String,
-
+    pub internal_audit_notes: String,       // no expose() → visible only to superuser
     pub make: String,                       // no expose() → visible only to superuser
 }
 ```
+
+**Note:** `superuser` is *not* a listable token inside `expose(...)` — it is an implicit override that bypasses role filtering. Per [Field Visibility](./field-visibility.md), absence of `expose()` makes a field superuser-only by default. Listing `superuser` inside `expose(...)` is rejected by the macro at compile time.
 
 The administrator sees a model only if at least one of its fields exposes to the administrator's scope. A scope that touches no field on a given model means that model is invisible to that role — there is no "model-level allow list" attribute; visibility is implicit and emergent from the field annotations. The lone exception is `#[model(admin = false)]`, which removes a model from Maahi entirely regardless of any field annotation.
 
@@ -34,7 +34,10 @@ CREATE TABLE _admin_roles (
     id              BIGINT PRIMARY KEY DEFAULT generate_id(),
     name            TEXT UNIQUE NOT NULL,
     scope           TEXT NOT NULL,                 -- must match a known scope at write time
-    parent_role_id  BIGINT REFERENCES _admin_roles(id),
+    parent_role_id  BIGINT REFERENCES _admin_roles(id) ON DELETE RESTRICT,
+                                                       -- explicit RESTRICT: deleting a role with child roles
+                                                       -- pointing at it is blocked; the role-edit page enforces
+                                                       -- rewire-children-first (see "Role Deletion UX" below).
     cross_tenant    BOOLEAN NOT NULL DEFAULT FALSE,
 
     -- Default actions, used when no per-model override exists.
@@ -114,18 +117,22 @@ The last step — intersection with scope feasibility — is where the "user has
 
 Permission intent and scope feasibility don't always agree. A role with `can_create = TRUE` on `Vehicle` whose scope sees only `vin` cannot actually create a `Vehicle` — `make` is `NOT NULL` without a database default and not in scope. Maahi computes this at startup, not at form-submit, and surfaces the result as a diagnostic.
 
-For each `(role, model)` pair, Maahi resolves four feasibilities:
+For each `(role, model)` pair, Maahi resolves five feasibilities:
 
 ```text
-can_actually_read(role, model)  = role.read    AND scope has ≥1 visible field on model
-can_actually_update(role, model)= role.update  AND ≥1 visible field is not admin_readonly
-can_actually_create(role, model)= role.create  AND scope visibility covers all NOT NULL,
-                                                    no-database-default fields
-can_actually_delete(role, model)= role.delete  AND ≥1 visible field on model
-                                  (delete is row-scope, but the model must be visible at all)
+can_actually_read(role, model)   = role.read    AND scope has ≥1 visible field on model
+can_actually_update(role, model) = role.update  AND ≥1 visible field is not admin_readonly
+can_actually_create(role, model) = role.create  AND scope visibility covers all NOT NULL,
+                                                     no-database-default fields
+can_actually_delete(role, model) = role.delete  AND ≥1 visible field on model
+                                   (delete is row-scope, but the model must be visible at all)
+fk_label_reachable(role, model, fk_field) =
+                                   target_model_of(fk_field) has ≥1 admin-label-bearing
+                                   field exposed to role.scope
+                                   (per the FK label rule in field-visibility.md)
 ```
 
-Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit.
+Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. The fifth feasibility runs once per FK field on each visible model.
 
 Failures surface at startup as `AppDiagnostic` entries (the diagnostic registry shipped in Phase 7-Zero):
 
@@ -133,11 +140,25 @@ Failures surface at startup as `AppDiagnostic` entries (the diagnostic registry 
 maahi: role 'billing_agent_editor' cannot create Vehicle —
        required field `make` (NOT NULL, no DEFAULT) is not in scope `billing_agent`.
        To fix: either expose `make` to `billing_agent`, or remove `Create` from this role.
+
+maahi: role 'support_agent_editor' cannot expose Vehicle.fuel_type_id —
+       FK target FuelType has no admin-label-bearing field in scope `support_agent`.
+       To fix: expose an admin-label field on FuelType to `support_agent`,
+       or remove `fuel_type_id` from `support_agent`'s field set.
 ```
 
-The corresponding UI affordances (the "New" button on the Vehicle list, the "Save" button on the empty create form, the bulk-create action menu) are hidden at render time. Operators discover misconfiguration at deploy time, not when an end user clicks a button that does nothing.
+The corresponding UI affordances (the "New" button on the Vehicle list, the "Save" button on the empty create form, the bulk-create action menu, the `fuel_type_id` FK dropdown) are hidden at render time. Operators discover misconfiguration at deploy time, not when an end user clicks a button that does nothing.
 
 The analysis runs against the `inventory`-collected `ModelDescriptor` registry plus the `_admin_roles` and `_admin_role_model_perms` tables. It re-runs whenever a role row is written.
+
+## Role Deletion UX
+
+Role deletion is a real workflow distinct from inheritance edits. Two cascade concerns must be surfaced before a role row is deleted:
+
+- **Assigned users**: deletion is blocked while at least one `_admin_users.role_id` references the role. The role-edit page surfaces the affected user count and requires the operator to reassign or deactivate those users first. Implementation rests on the explicit `ON DELETE RESTRICT` on `_admin_users.role_id` (see `_admin_users` schema in [Architecture](./architecture.md)).
+- **Child roles**: deletion is blocked while at least one `_admin_roles.parent_role_id` references this role. The role-edit page shows the affected child-role list; the operator must rewire the children's `parent_role_id` first. The `parent_role_id` FK is also `ON DELETE RESTRICT`.
+
+There is no soft-delete in v1. Reassign-first is the documented workflow.
 
 ---
 
