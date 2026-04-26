@@ -64,7 +64,7 @@
 use sha2::{Digest, Sha256};
 
 use crate::context::DjogiContext;
-use crate::error::DjogiError;
+use crate::error::{DbError, DjogiError};
 
 /// Constant emitting the `djogi_schema_migrations` DDL. Public so
 /// integration tests and the T6 `init` command can replay it
@@ -640,6 +640,85 @@ pub async fn mark_partial(
     ctx.execute(sql, &[&ledger_id, &applied_steps_count, &note])
         .await?;
     Ok(())
+}
+
+/// Read-only projection of a ledger row used by `migrations status`.
+///
+/// Carries enough fields for the operator-facing list output without
+/// over-fetching (the full [`LedgerRow`] is heavier and includes
+/// fields `status` does not surface). T6 owns this projection because
+/// it is shaped specifically for the status command's grouped /
+/// time-sorted output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerSummaryRow {
+    /// Ledger row primary key.
+    pub id: i64,
+    /// `V<ts>__<slug>` version key.
+    pub version: String,
+    /// Operator-facing description.
+    pub description: String,
+    /// Lifecycle status — see [`LedgerStatus`].
+    pub status: LedgerStatus,
+    /// Apply wall-clock time in milliseconds.
+    pub execution_time_ms: i64,
+    /// `applied_at` rendered as RFC 3339 UTC second-precision so the
+    /// command output is deterministic across locales / time zones.
+    pub applied_at_rfc3339: String,
+    /// Operator (`applied_by`) recorded by the runner.
+    pub applied_by: String,
+    /// Per-runner-invocation ID — surfaced truncated by the status
+    /// command, full value here so consumers can join with logs.
+    pub run_id: i64,
+    /// `partial_apply_note` if the migration ended in a partial
+    /// state.
+    pub partial_apply_note: Option<String>,
+    /// `app_label` recorded on the row. Empty string for the
+    /// synthetic global bucket.
+    pub app_label: String,
+}
+
+/// Read every ledger row from the active database, ordered by
+/// `app_label` ASC then `applied_at` ASC.
+///
+/// Read-only — does not bootstrap the table. Callers expecting an
+/// uninitialised database should bootstrap first via [`bootstrap`].
+/// The status command intentionally skips bootstrap so it can run
+/// against a database that has never seen a Djogi migration and emit
+/// an empty list rather than create infrastructure.
+pub async fn select_all(ctx: &mut DjogiContext) -> Result<Vec<LedgerSummaryRow>, DjogiError> {
+    // The `to_char` formatter renders `applied_at` deterministically
+    // in UTC second-precision. Postgres `to_char` does not understand
+    // timezone-zulu shorthand; we format the components explicitly.
+    let sql = "SELECT \
+               id, version, description, status, execution_time_ms, \
+               to_char(applied_at AT TIME ZONE 'UTC', \
+                       'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS applied_at_rfc3339, \
+               applied_by, run_id, partial_apply_note, app_label \
+               FROM djogi_schema_migrations \
+               ORDER BY app_label ASC, applied_at ASC, id ASC";
+    let rows = ctx.query_all(sql, &[]).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let status_str: String = row.try_get("status")?;
+        let status = LedgerStatus::from_db_str(&status_str).ok_or_else(|| {
+            DjogiError::Db(DbError::other(format!(
+                "unknown LedgerStatus value in djogi_schema_migrations: {status_str:?}"
+            )))
+        })?;
+        out.push(LedgerSummaryRow {
+            id: row.try_get("id")?,
+            version: row.try_get("version")?,
+            description: row.try_get("description")?,
+            status,
+            execution_time_ms: row.try_get("execution_time_ms")?,
+            applied_at_rfc3339: row.try_get("applied_at_rfc3339")?,
+            applied_by: row.try_get("applied_by")?,
+            run_id: row.try_get("run_id")?,
+            partial_apply_note: row.try_get("partial_apply_note")?,
+            app_label: row.try_get("app_label")?,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

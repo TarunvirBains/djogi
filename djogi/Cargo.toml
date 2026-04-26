@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 description = "Model-first web framework for Rust — web-framework-agnostic core; Axum integration opt-in via the `axum` feature flag"
+build = "build.rs"
 
 [features]
 # auth-argon2 — enables PasswordHash::hash (Argon2id hashing) and the
@@ -224,4 +225,14 @@ harness = true
 [[test]]
 name = "phase7_t5_repair_verify_live"
 path = "../tests/integration/phase7_t5_repair_verify_live.rs"
+harness = true
+
+[[test]]
+name = "phase7_t6_build_warning_agreement"
+path = "../tests/integration/phase7_t6_build_warning_agreement.rs"
+harness = true
+
+[[test]]
+name = "phase7_t6_filesystem_scan"
+path = "../tests/integration/phase7_t6_filesystem_scan.rs"
 harness = true

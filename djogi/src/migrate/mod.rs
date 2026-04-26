@@ -54,9 +54,12 @@
 //! consume; segment kinds tell the runner how to dispatch each
 //! group of statements.
 
+pub mod build_match;
+pub mod compose;
 pub mod diff;
 pub mod guard;
 pub mod ledger;
+pub mod naming;
 pub mod projection;
 pub mod repair;
 pub mod runner;
@@ -64,8 +67,17 @@ pub mod schema;
 pub mod segment;
 pub mod snapshot;
 pub mod sql;
+pub mod status;
+pub mod target;
 pub mod verify;
 
+pub use build_match::{
+    DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket, classify_filesystem_drift,
+};
+pub use compose::{
+    AppLifecycle, ComposeError, ComposeReport, ComposeRequest, ComposedBucket,
+    PENDING_FORMAT_VERSION, PendingPlan, compose,
+};
 pub use diff::{
     Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
     SchemaOperation, diff_bucket_maps,
@@ -76,11 +88,16 @@ pub use guard::{
 };
 pub use ledger::{
     CHECKSUM_LEN, CHECKSUM_PREFIX, ChecksumFormatError, ChecksumFormatErrorKind, ChecksumMismatch,
-    ChecksumSide, ExecutionMode, LEDGER_TABLE_DDL, LedgerRow, LedgerStatus, SHA256_HEX_LEN,
-    VerifyError, bootstrap as bootstrap_ledger, compute_checksum,
+    ChecksumSide, ExecutionMode, LEDGER_TABLE_DDL, LedgerRow, LedgerStatus, LedgerSummaryRow,
+    SHA256_HEX_LEN, VerifyError, bootstrap as bootstrap_ledger, compute_checksum,
     insert_pending as insert_pending_ledger_row, mark_applied as mark_ledger_applied,
     mark_failed as mark_ledger_failed, mark_partial as mark_ledger_partial,
-    update_progress as update_ledger_progress, validate_checksum_format, verify_checksum,
+    select_all as select_all_ledger_rows, update_progress as update_ledger_progress,
+    validate_checksum_format, verify_checksum,
+};
+pub use naming::{
+    MAX_SLUG_LEN, down_filename, pending_json_filename, sanitize_slug, up_filename, version_id,
+    version_prefix,
 };
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use repair::{
@@ -103,4 +120,11 @@ pub use snapshot::{
     SnapshotError, load_snapshot, parse_snapshot_bytes, save_snapshot, serialize_snapshot,
 };
 pub use sql::{LossyRollbackKind, LossyRollbackWarning, OperationSql, SqlEmitError, lower_delta};
+pub use status::{StatusReport, render as render_status};
+pub use target::{
+    FilesystemBucket, GLOBAL_BUCKET_DIRNAME, MIGRATIONS_DIR, MODELS_INVENTORY_FILENAME,
+    PENDING_DIR, SNAPSHOT_FILENAME, app_dirname, app_label_from_dirname, bucket_dir, database_dir,
+    migrations_root, pending_database_dir, pending_json_path, pending_root, scan_filesystem,
+    snapshot_path,
+};
 pub use verify::{VerifyDiagnostic, VerifyReport, VerifyRunError, VerifySeverity, verify};
