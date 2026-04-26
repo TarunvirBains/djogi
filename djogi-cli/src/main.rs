@@ -87,6 +87,39 @@ enum MigrationsCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Reconcile local migration history with the ledger. Default
+    /// mode is a read-only diff between the on-disk SQL files and
+    /// the ledger. `--record` inserts ledger rows for unrecorded SQL
+    /// files. `--squash --from <ver>` collapses local history into a
+    /// single migration (localhost + dev profile only).
+    Attune {
+        /// Insert ledger rows for SQL files present on disk but
+        /// absent from the ledger. Records the operator-supplied
+        /// reason in `partial_apply_note`. Does NOT execute SQL.
+        #[arg(long, default_value_t = false, conflicts_with = "squash")]
+        record: bool,
+        /// When `--record` is set, the rationale recorded on every
+        /// inserted ledger row's `partial_apply_note`.
+        #[arg(long, default_value = "operator asserted out-of-band apply")]
+        record_reason: String,
+        /// Coalesce every committed migration from `--from` to HEAD
+        /// into a single squashed migration. HISTORY REWRITE — gated
+        /// on localhost + dev profile.
+        #[arg(long, default_value_t = false)]
+        squash: bool,
+        /// Inclusive starting version for `--squash` (e.g.
+        /// `V20260101000000__init`).
+        #[arg(long)]
+        from: Option<String>,
+        /// After a successful squash, push the rewritten
+        /// `migrations/` submodule to its remote. Without this flag
+        /// the rewrite stays local. Squash NEVER auto-publishes.
+        #[arg(long, default_value_t = false)]
+        publish: bool,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -118,6 +151,21 @@ fn main() -> ExitCode {
                 workspace,
             } => migrations::compose_cmd(&name, allow_destructive, force_overwrite, workspace),
             MigrationsCommand::Status { workspace } => migrations::status_cmd(workspace),
+            MigrationsCommand::Attune {
+                record,
+                record_reason,
+                squash,
+                from,
+                publish,
+                workspace,
+            } => migrations::attune_cmd(
+                record,
+                &record_reason,
+                squash,
+                from.as_deref(),
+                publish,
+                workspace,
+            ),
         },
     }
 }

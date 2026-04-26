@@ -101,8 +101,20 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
         for row in app_rows {
             let run_short = format_run_id_short(row.run_id);
             let status_str = row.status.as_db_str();
+            // T7: prefix the line with `[ooo]` when the row was
+            // recorded as out-of-order so operators reading the status
+            // listing immediately see the historical drift. The marker
+            // is a fixed-width prefix (with a single trailing space)
+            // so non-ooo rows align cleanly when the listing mixes
+            // both kinds.
+            let ooo_marker = if row.out_of_order_flag {
+                "[ooo] "
+            } else {
+                "      "
+            };
             let line = format!(
-                "  {version}  {status:<11}  {applied_at}  {applied_by}  run={run_short}  {ms}ms",
+                "  {marker}{version}  {status:<11}  {applied_at}  {applied_by}  run={run_short}  {ms}ms",
+                marker = ooo_marker,
                 version = row.version,
                 status = status_str,
                 applied_at = row.applied_at_rfc3339,
@@ -175,7 +187,19 @@ mod tests {
             run_id: 0x1234_5678_9abc_def0_u64 as i64,
             partial_apply_note: None,
             app_label: app.to_string(),
+            out_of_order_flag: false,
         }
+    }
+
+    fn synth_row_ooo(
+        version: &str,
+        app: &str,
+        status: LedgerStatus,
+        applied_at: &str,
+    ) -> LedgerSummaryRow {
+        let mut r = synth_row(version, app, status, applied_at);
+        r.out_of_order_flag = true;
+        r
     }
 
     #[test]
@@ -322,5 +346,103 @@ mod tests {
             .find(|l| l.contains("partial-apply-note"))
             .expect("note line");
         assert!(note_line.contains("step 2 of 3 crashed"));
+    }
+
+    // ── T7: out-of-order marker ──────────────────────────────────────────
+
+    #[test]
+    fn out_of_order_flag_renders_ooo_marker() {
+        let row = synth_row_ooo(
+            "V20260101000001__feature",
+            "billing",
+            LedgerStatus::Applied,
+            "2026-04-25T01:02:03Z",
+        );
+        let report = render(&[row], &["billing".to_string()]);
+        let row_line = report
+            .lines
+            .iter()
+            .find(|l| l.contains("V20260101000001__feature"))
+            .expect("row line");
+        assert!(
+            row_line.contains("[ooo]"),
+            "out-of-order rows must show [ooo] marker; got: {row_line}"
+        );
+    }
+
+    #[test]
+    fn non_ooo_row_has_no_marker() {
+        let row = synth_row(
+            "V20260101000001__feature",
+            "billing",
+            LedgerStatus::Applied,
+            "2026-04-25T01:02:03Z",
+        );
+        let report = render(&[row], &["billing".to_string()]);
+        let row_line = report
+            .lines
+            .iter()
+            .find(|l| l.contains("V20260101000001__feature"))
+            .expect("row line");
+        assert!(
+            !row_line.contains("[ooo]"),
+            "non-ooo rows must NOT show [ooo]; got: {row_line}"
+        );
+    }
+
+    #[test]
+    fn ooo_marker_does_not_break_exit_code_for_applied_status() {
+        // An applied + out-of-order row is still a successful apply
+        // from the lifecycle perspective; the marker is informational.
+        // Status exit_code stays 0 unless we have pending/failed rows
+        // or D010 warnings.
+        let row = synth_row_ooo(
+            "V20260101000001__feature",
+            "billing",
+            LedgerStatus::Applied,
+            "2026-04-25T01:02:03Z",
+        );
+        let report = render(&[row], &["billing".to_string()]);
+        assert_eq!(
+            report.exit_code, 0,
+            "[ooo] applied row must not cause non-zero exit"
+        );
+    }
+
+    #[test]
+    fn mixed_ooo_and_non_ooo_rows_align_with_consistent_prefix() {
+        // The non-ooo rows use a 6-byte spaces prefix so the columns
+        // line up with `[ooo] ` on rows that have the marker. The
+        // assertion here is loose — we only check that both lines
+        // emit and the version label appears in both.
+        let r1 = synth_row(
+            "V20260101000001__a",
+            "billing",
+            LedgerStatus::Applied,
+            "2026-04-25T01:02:03Z",
+        );
+        let r2 = synth_row_ooo(
+            "V20251201000002__b",
+            "billing",
+            LedgerStatus::Applied,
+            "2026-04-25T02:02:03Z",
+        );
+        let report = render(&[r1, r2], &["billing".to_string()]);
+        let line_a = report
+            .lines
+            .iter()
+            .find(|l| l.contains("V20260101000001__a"))
+            .expect("line a");
+        let line_b = report
+            .lines
+            .iter()
+            .find(|l| l.contains("V20251201000002__b"))
+            .expect("line b");
+        // Spot-check: line A has the spaces prefix; line B has [ooo].
+        assert!(!line_a.contains("[ooo]"));
+        assert!(line_b.contains("[ooo]"));
+        // Both lines start with two indenting spaces matching `App :`.
+        assert!(line_a.starts_with("  "));
+        assert!(line_b.starts_with("  "));
     }
 }

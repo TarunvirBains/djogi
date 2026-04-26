@@ -54,12 +54,14 @@
 //! consume; segment kinds tell the runner how to dispatch each
 //! group of statements.
 
+pub mod attune;
 pub mod build_match;
 pub mod compose;
 pub mod diff;
 pub mod guard;
 pub mod ledger;
 pub mod naming;
+pub mod policy;
 pub mod projection;
 pub mod repair;
 pub mod runner;
@@ -71,6 +73,10 @@ pub mod status;
 pub mod target;
 pub mod verify;
 
+pub use attune::{
+    AttuneEntry, AttuneEntryKind, AttuneError, AttuneMode, AttuneRefusal, AttuneReport,
+    AttuneRequest, attune,
+};
 pub use build_match::{
     DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket,
     classify_bucket_with_pending as build_classify_bucket_with_pending, classify_filesystem_drift,
@@ -101,6 +107,7 @@ pub use naming::{
     MAX_SLUG_LEN, down_filename, pending_json_filename, sanitize_slug, up_filename, version_id,
     version_prefix,
 };
+pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use repair::{
     LedgerChange, PartialApplyResolution, RepairConfirmation, RepairError, RepairReport,
@@ -129,4 +136,6 @@ pub use target::{
     migrations_root, pending_database_dir, pending_json_path, pending_root, scan_filesystem,
     snapshot_path,
 };
-pub use verify::{VerifyDiagnostic, VerifyReport, VerifyRunError, VerifySeverity, verify};
+pub use verify::{
+    VerifyDiagnostic, VerifyReport, VerifyRunError, VerifySeverity, verify, verify_with_policy,
+};

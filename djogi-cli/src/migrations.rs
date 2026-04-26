@@ -13,8 +13,8 @@ use std::process::ExitCode;
 
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
-    AppLifecycle, ComposeError, ComposeRequest, GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME,
-    acquire_workspace_lock, compose, project_from_inventory,
+    AppLifecycle, AttuneMode, AttuneRequest, ComposeError, ComposeRequest, GUARD_DEFAULT_TIMEOUT,
+    LOCK_FILE_NAME, acquire_workspace_lock, attune, compose, project_from_inventory,
 };
 
 /// Resolve the workspace root from the `--workspace` flag. When the
@@ -328,6 +328,144 @@ async fn build_status_context(url: &str) -> Result<djogi::context::DjogiContext,
         .await
         .map_err(|e| e.to_string())?;
     Ok(djogi::context::DjogiContext::from_pool(pool))
+}
+
+/// `djogi migrations attune` entry point.
+///
+/// Mode selection (per CLI flags):
+///
+/// | `--record` | `--squash` | resolved mode |
+/// |-----------|-----------|---------------|
+/// | false | false | [`AttuneMode::DiffOnly`] (read-only diff) |
+/// | true  | false | [`AttuneMode::Record`] |
+/// | false | true  | [`AttuneMode::Squash { from, publish }`] |
+/// | true  | true  | rejected by clap (`conflicts_with`) |
+///
+/// `--squash` requires `--from <ver>`; an absent `from` while
+/// `--squash` is set surfaces as a CLI error before any work happens.
+pub fn attune_cmd(
+    record: bool,
+    record_reason: &str,
+    squash: bool,
+    from: Option<&str>,
+    publish: bool,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+    let mode = match (record, squash) {
+        (false, false) => AttuneMode::DiffOnly,
+        (true, false) => AttuneMode::Record {
+            reason: record_reason.to_string(),
+        },
+        (false, true) => match from {
+            Some(v) if !v.is_empty() => AttuneMode::Squash {
+                from: v.to_string(),
+                publish,
+            },
+            _ => {
+                eprintln!(
+                    "djogi migrations attune --squash requires --from <version> (e.g. \
+                     `--from V20260101000000__init`)"
+                );
+                return ExitCode::from(2);
+            }
+        },
+        (true, true) => {
+            // Already rejected by clap's `conflicts_with`; this branch
+            // is defensive in case the flag is added programmatically.
+            eprintln!("djogi migrations attune: --record and --squash are mutually exclusive");
+            return ExitCode::from(2);
+        }
+    };
+
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("djogi migrations attune: tokio runtime: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    let exit = runtime.block_on(async { run_attune(&workspace, mode).await });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`attune_cmd`]. Loads config, builds the context,
+/// acquires the workspace lock, invokes the library entry point.
+async fn run_attune(workspace: &Path, mode: AttuneMode) -> i32 {
+    use djogi::config::DjogiConfig;
+
+    let config = match DjogiConfig::load_from_workspace(workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi migrations attune: config load: {e}");
+            return 1;
+        }
+    };
+
+    let mut ctx = match build_status_context(&config.database.url).await {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("djogi migrations attune: pool: {e}");
+            return 1;
+        }
+    };
+
+    // All three modes acquire the workspace lock per the v3 file-lock
+    // contract — even DiffOnly takes the lock so a concurrent compose
+    // / apply cannot mutate the tree mid-scan.
+    let lock_path = workspace.join(LOCK_FILE_NAME);
+    let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("djogi migrations attune: failed to acquire workspace lock: {e}");
+            return 1;
+        }
+    };
+
+    let req = AttuneRequest {
+        workspace_root: workspace,
+        database_url: &config.database.url,
+        profile: &config.profile,
+        mode,
+        _guard: &guard,
+    };
+    match attune(&mut ctx, req).await {
+        Ok(report) => {
+            if report.entries.is_empty() {
+                println!("attune: no drift");
+            } else {
+                for entry in &report.entries {
+                    let app_display = if entry.bucket.app.is_empty() {
+                        "_global_"
+                    } else {
+                        entry.bucket.app.as_str()
+                    };
+                    println!(
+                        "  {kind:<10}  {database}/{app}  {version}",
+                        kind = entry.kind.as_str(),
+                        database = entry.bucket.database,
+                        app = app_display,
+                        version = entry.version,
+                    );
+                }
+            }
+            if let Some(squashed) = &report.squashed_to {
+                println!("squashed to: {squashed}");
+            }
+            if report.published {
+                println!("published to remote");
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("djogi migrations attune: {e}");
+            1
+        }
+    }
 }
 
 #[cfg(test)]

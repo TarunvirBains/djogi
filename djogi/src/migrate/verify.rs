@@ -73,6 +73,7 @@
 //! | D614 | Warning  | Index method (btree / gin / ...) differs. |
 //! | D615 | Error    | Index is on the wrong table. |
 //! | D621 | Error    | Ledger table is missing — run apply / baseline first. |
+//! | D622 | Warning  | Out-of-order migration applied — `out_of_order_flag = TRUE`. Strict mode upgrades to Error. |
 //! | D690 | Info     | FTS configuration declared but not yet checked. |
 //! | D691 | Info     | Partition strategy declared but not yet checked. |
 //! | D692 | Info     | Enum types declared but not yet checked. |
@@ -310,6 +311,27 @@ pub async fn verify(
     ctx: &mut DjogiContext,
     snapshot: &AppliedSchema,
 ) -> Result<VerifyReport, VerifyRunError> {
+    // Default policy: lenient on out-of-order. Callers that want
+    // stricter D622 severity invoke [`verify_with_policy`] directly
+    // with `strict_out_of_order = true`.
+    verify_with_policy(ctx, snapshot, &crate::config::PolicyConfig::default()).await
+}
+
+/// Same as [`verify`] but threads a [`crate::config::PolicyConfig`]
+/// so the caller can pin the severity of T7's `D622` (out-of-order
+/// applied migration) diagnostic.
+///
+/// **Why a separate entry point.** The historical signature
+/// `verify(ctx, snapshot)` is consumed by every existing caller. Adding
+/// a `policy: &PolicyConfig` parameter would churn every call site even
+/// though most callers use the default lenient policy. A second entry
+/// point keeps the existing API and gives strict-mode callers the new
+/// surface they need.
+pub async fn verify_with_policy(
+    ctx: &mut DjogiContext,
+    snapshot: &AppliedSchema,
+    policy: &crate::config::PolicyConfig,
+) -> Result<VerifyReport, VerifyRunError> {
     let mut diagnostics: Vec<VerifyDiagnostic> = Vec::new();
 
     // B-8: probe for the ledger without bootstrapping it. Verify is
@@ -355,6 +377,13 @@ pub async fn verify(
             });
         }
 
+        // T7 / D622: surface every ledger row whose `out_of_order_flag`
+        // is set. Each occurrence becomes its own diagnostic entry so
+        // the operator can see the full list. Severity is Warning by
+        // default; `policy.strict_out_of_order = true` upgrades to
+        // Error so verify exits non-zero on any historical drift.
+        emit_out_of_order_diagnostics(&ledger_rows, policy, &mut diagnostics);
+
         (applied_count, unfinished_count, latest_applied_version)
     } else {
         diagnostics.push(VerifyDiagnostic {
@@ -394,6 +423,80 @@ pub async fn verify(
         applied_count,
         unfinished_count,
     })
+}
+
+/// Walk the ledger rows and emit a D622 diagnostic for each row whose
+/// `out_of_order_flag` is set. Severity follows
+/// [`crate::config::PolicyConfig::strict_out_of_order`] — Warning when
+/// false, Error when true.
+///
+/// The conflicting peer's identity is recovered from the ledger by
+/// finding the highest-version row that was already applied at the
+/// time. We do that here rather than at apply time so verify can
+/// re-explain history without depending on a transient runtime
+/// signal.
+fn emit_out_of_order_diagnostics(
+    ledger_rows: &[LedgerRow],
+    policy: &crate::config::PolicyConfig,
+    diagnostics: &mut Vec<VerifyDiagnostic>,
+) {
+    let severity = if policy.strict_out_of_order {
+        VerifySeverity::Error
+    } else {
+        VerifySeverity::Warning
+    };
+    for row in ledger_rows {
+        if !row.out_of_order_flag {
+            continue;
+        }
+        // Find the lexically-greater peer: the highest version among
+        // applied / faked / baseline rows in the same app_label that
+        // sorts above our row. This is the conflict surface.
+        let conflicting_peer: Option<&LedgerRow> = ledger_rows
+            .iter()
+            .filter(|r| {
+                r.app_label == row.app_label
+                    && r.version > row.version
+                    && matches!(
+                        r.status,
+                        LedgerStatus::Applied | LedgerStatus::Faked | LedgerStatus::Baseline
+                    )
+            })
+            .max_by(|a, b| a.version.cmp(&b.version));
+        let location = format!("version:{}", row.version);
+        let message = match conflicting_peer {
+            Some(peer) => format!(
+                "out-of-order migration `{version}` (app={app}) was applied \
+                 below peer `{peer}` (which carries the same or higher \
+                 version)",
+                version = row.version,
+                app = if row.app_label.is_empty() {
+                    "_global_"
+                } else {
+                    row.app_label.as_str()
+                },
+                peer = peer.version,
+            ),
+            None => format!(
+                "out-of-order migration `{version}` (app={app}) was \
+                 recorded with out_of_order_flag = TRUE but no \
+                 higher-version peer is currently in the ledger; the \
+                 peer may have been rolled back",
+                version = row.version,
+                app = if row.app_label.is_empty() {
+                    "_global_"
+                } else {
+                    row.app_label.as_str()
+                },
+            ),
+        };
+        diagnostics.push(VerifyDiagnostic {
+            code: "D622".to_string(),
+            severity,
+            message,
+            location: Some(location),
+        });
+    }
 }
 
 /// Returns `true` when `djogi_schema_migrations` exists in the
@@ -2386,6 +2489,208 @@ mod tests {
         assert!(!is_heeranjid_artifact_table(""));
     }
 
+    // ── T7: emit_out_of_order_diagnostics (D622) ─────────────────────────
+
+    fn ledger_row_at(version: &str, app: &str, ooo: bool, status: LedgerStatus) -> LedgerRow {
+        LedgerRow {
+            version: version.to_string(),
+            description: String::new(),
+            checksum_up: "V1:0000000000000000000000000000000000000000000000000000000000000000"
+                .to_string(),
+            checksum_down: None,
+            execution_mode: super::super::ledger::ExecutionMode::Transactional,
+            status,
+            execution_time_ms: 0,
+            out_of_order_flag: ooo,
+            applied_steps_count: 0,
+            total_steps: None,
+            partial_apply_note: None,
+            run_id: 0,
+            snapshot_version: super::super::schema::SNAPSHOT_FORMAT_VERSION.to_string(),
+            app_label: app.to_string(),
+        }
+    }
+
+    #[test]
+    fn d622_warning_for_ooo_row_default_policy() {
+        let rows = vec![
+            ledger_row_at(
+                "V20260201000000__early",
+                "billing",
+                true,
+                LedgerStatus::Applied,
+            ),
+            ledger_row_at(
+                "V20260301000000__later",
+                "billing",
+                false,
+                LedgerStatus::Applied,
+            ),
+        ];
+        let policy = crate::config::PolicyConfig::default();
+        let mut diagnostics = Vec::new();
+        emit_out_of_order_diagnostics(&rows, &policy, &mut diagnostics);
+        let d622: Vec<&VerifyDiagnostic> =
+            diagnostics.iter().filter(|d| d.code == "D622").collect();
+        assert_eq!(d622.len(), 1, "exactly one D622 expected");
+        assert_eq!(d622[0].severity, VerifySeverity::Warning);
+        assert!(
+            d622[0].message.contains("V20260201000000__early"),
+            "must name the offending row: {}",
+            d622[0].message
+        );
+        assert!(
+            d622[0].message.contains("V20260301000000__later"),
+            "must name the conflicting peer: {}",
+            d622[0].message
+        );
+    }
+
+    #[test]
+    fn d622_error_for_ooo_row_strict_policy() {
+        let rows = vec![
+            ledger_row_at(
+                "V20260201000000__early",
+                "billing",
+                true,
+                LedgerStatus::Applied,
+            ),
+            ledger_row_at(
+                "V20260301000000__later",
+                "billing",
+                false,
+                LedgerStatus::Applied,
+            ),
+        ];
+        let policy = crate::config::PolicyConfig {
+            strict_out_of_order: true,
+        };
+        let mut diagnostics = Vec::new();
+        emit_out_of_order_diagnostics(&rows, &policy, &mut diagnostics);
+        let d622: Vec<&VerifyDiagnostic> =
+            diagnostics.iter().filter(|d| d.code == "D622").collect();
+        assert_eq!(d622.len(), 1);
+        assert_eq!(d622[0].severity, VerifySeverity::Error);
+    }
+
+    #[test]
+    fn d622_silent_when_no_rows_have_ooo_flag() {
+        let rows = vec![
+            ledger_row_at(
+                "V20260101000000__a",
+                "billing",
+                false,
+                LedgerStatus::Applied,
+            ),
+            ledger_row_at(
+                "V20260201000000__b",
+                "billing",
+                false,
+                LedgerStatus::Applied,
+            ),
+        ];
+        let policy = crate::config::PolicyConfig::default();
+        let mut diagnostics = Vec::new();
+        emit_out_of_order_diagnostics(&rows, &policy, &mut diagnostics);
+        assert!(
+            !diagnostics.iter().any(|d| d.code == "D622"),
+            "no D622 expected when no rows are out-of-order"
+        );
+    }
+
+    #[test]
+    fn d622_one_per_ooo_row() {
+        let rows = vec![
+            ledger_row_at(
+                "V20260101000000__early1",
+                "billing",
+                true,
+                LedgerStatus::Applied,
+            ),
+            ledger_row_at(
+                "V20260201000000__early2",
+                "billing",
+                true,
+                LedgerStatus::Applied,
+            ),
+            ledger_row_at(
+                "V20260301000000__later",
+                "billing",
+                false,
+                LedgerStatus::Applied,
+            ),
+        ];
+        let policy = crate::config::PolicyConfig::default();
+        let mut diagnostics = Vec::new();
+        emit_out_of_order_diagnostics(&rows, &policy, &mut diagnostics);
+        let d622: Vec<&VerifyDiagnostic> =
+            diagnostics.iter().filter(|d| d.code == "D622").collect();
+        assert_eq!(d622.len(), 2, "one D622 per ooo row");
+    }
+
+    #[test]
+    fn d622_ignores_rolled_back_peer() {
+        // A rolled-back peer is not a conflicting peer (the operator
+        // explicitly reverted it). The OOO row's diagnostic still
+        // emits, but with a "no peer found" message.
+        let rows = vec![
+            ledger_row_at(
+                "V20260201000000__early",
+                "billing",
+                true,
+                LedgerStatus::Applied,
+            ),
+            ledger_row_at(
+                "V20260301000000__rolled",
+                "billing",
+                false,
+                LedgerStatus::RolledBack,
+            ),
+        ];
+        let policy = crate::config::PolicyConfig::default();
+        let mut diagnostics = Vec::new();
+        emit_out_of_order_diagnostics(&rows, &policy, &mut diagnostics);
+        let d622: Vec<&VerifyDiagnostic> =
+            diagnostics.iter().filter(|d| d.code == "D622").collect();
+        assert_eq!(d622.len(), 1);
+        assert!(
+            d622[0].message.contains("no higher-version peer"),
+            "expected a `no higher-version peer` note: {}",
+            d622[0].message
+        );
+    }
+
+    #[test]
+    fn d622_scopes_peer_lookup_to_same_app_label() {
+        // An out-of-order row in `billing` must not pull in a peer
+        // from `users` even if the peer's version is lexically higher.
+        let rows = vec![
+            ledger_row_at(
+                "V20260201000000__early",
+                "billing",
+                true,
+                LedgerStatus::Applied,
+            ),
+            ledger_row_at(
+                "V20260301000000__other_app_peer",
+                "users",
+                false,
+                LedgerStatus::Applied,
+            ),
+        ];
+        let policy = crate::config::PolicyConfig::default();
+        let mut diagnostics = Vec::new();
+        emit_out_of_order_diagnostics(&rows, &policy, &mut diagnostics);
+        let d622: Vec<&VerifyDiagnostic> =
+            diagnostics.iter().filter(|d| d.code == "D622").collect();
+        assert_eq!(d622.len(), 1);
+        assert!(
+            d622[0].message.contains("no higher-version peer"),
+            "no peer should match across app labels: {}",
+            d622[0].message
+        );
+    }
+
     // ── D6xx code-uniqueness audit (A-2) ─────────────────────────────────
 
     /// Master table of every D6xx diagnostic code that can be emitted
@@ -2415,6 +2720,7 @@ mod tests {
         ("D614", "index method drift (advisory)"),
         ("D615", "index lives on wrong table"),
         ("D621", "ledger table not found"),
+        ("D622", "out-of-order migration applied"),
         ("D690", "FTS not yet checked (info)"),
         ("D691", "partition not yet checked (info)"),
         ("D692", "enums not yet checked (info)"),

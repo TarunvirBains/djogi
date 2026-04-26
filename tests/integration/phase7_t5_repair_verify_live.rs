@@ -125,6 +125,9 @@ fn make_runner_ctx(
         snapshot,
         snapshot_path,
         config: MigrateConfig::default(),
+        // T5 tests pre-date T7's policy gate; pick the permissive
+        // default so rollback / repair / baseline paths run as before.
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
     }
 }
 
@@ -2096,6 +2099,7 @@ async fn baseline_projects_live_database_into_snapshot(mut ctx: djogi::DjogiCont
         snapshot: None, // <-- B-11 forbids supplying a snapshot
         snapshot_path: Some(snapshot_path.clone()),
         config: MigrateConfig::default(),
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
     };
     let _plan = plan; // unused — baseline does not consume the plan SQL
 
@@ -2142,6 +2146,7 @@ async fn baseline_rejects_caller_supplied_snapshot(mut ctx: djogi::DjogiContext)
         snapshot: Some(empty_snapshot()), // <-- the bad input
         snapshot_path: None,
         config: MigrateConfig::default(),
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
     };
     let _plan = plan;
 
@@ -2209,6 +2214,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         snapshot: None,
         snapshot_path: Some(global_path.clone()),
         config: MigrateConfig::default(),
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
     };
     baseline_plan(
         &mut ctx,
@@ -2240,6 +2246,7 @@ async fn baseline_scopes_projection_to_supplied_bucket_app(mut ctx: djogi::Djogi
         snapshot: None,
         snapshot_path: Some(named_path.clone()),
         config: MigrateConfig::default(),
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
     };
     baseline_plan(
         &mut ctx,

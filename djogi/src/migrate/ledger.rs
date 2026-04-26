@@ -590,6 +590,34 @@ pub async fn mark_applied(
     Ok(())
 }
 
+/// Mark a ledger row as `applied` while PRESERVING the
+/// `partial_apply_note`. T7's out-of-order detection sets the note
+/// at insert time (the conflicting peer + optional override reason);
+/// preserving it on success keeps the audit trail honest about why
+/// the row carries `out_of_order_flag = TRUE` even after it reached
+/// the final `applied` state.
+///
+/// Call this in place of [`mark_applied`] whenever the runner's apply
+/// path inserted a non-empty initial note — the note describes a
+/// historical condition (out-of-order arrival) that does not stop
+/// being true once the migration applies cleanly.
+pub async fn mark_applied_keep_note(
+    ctx: &mut DjogiContext,
+    ledger_id: i64,
+    execution_time_ms: i64,
+    applied_steps_count: i32,
+) -> Result<(), DjogiError> {
+    let sql = "UPDATE djogi_schema_migrations \
+               SET status = 'applied', \
+                   execution_time_ms = $2, \
+                   applied_steps_count = $3, \
+                   applied_at = now() \
+               WHERE id = $1";
+    ctx.execute(sql, &[&ledger_id, &execution_time_ms, &applied_steps_count])
+        .await?;
+    Ok(())
+}
+
 /// Mark a previously-inserted ledger row as `failed` and attach a
 /// human-readable note. Used when an entirely transactional apply
 /// failed before any non-tx work began.
@@ -675,6 +703,10 @@ pub struct LedgerSummaryRow {
     /// `app_label` recorded on the row. Empty string for the
     /// synthetic global bucket.
     pub app_label: String,
+    /// `true` when this row applied out-of-order — its `version`
+    /// sorts before some peer that was already applied at the time.
+    /// Surfaced by the status command via the `[ooo]` line marker.
+    pub out_of_order_flag: bool,
 }
 
 /// Read every ledger row from the active database, ordered by
@@ -693,7 +725,8 @@ pub async fn select_all(ctx: &mut DjogiContext) -> Result<Vec<LedgerSummaryRow>,
                id, version, description, status, execution_time_ms, \
                to_char(applied_at AT TIME ZONE 'UTC', \
                        'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS applied_at_rfc3339, \
-               applied_by, run_id, partial_apply_note, app_label \
+               applied_by, run_id, partial_apply_note, app_label, \
+               out_of_order_flag \
                FROM djogi_schema_migrations \
                ORDER BY app_label ASC, applied_at ASC, id ASC";
     let rows = ctx.query_all(sql, &[]).await?;
@@ -716,6 +749,7 @@ pub async fn select_all(ctx: &mut DjogiContext) -> Result<Vec<LedgerSummaryRow>,
             run_id: row.try_get("run_id")?,
             partial_apply_note: row.try_get("partial_apply_note")?,
             app_label: row.try_get("app_label")?,
+            out_of_order_flag: row.try_get("out_of_order_flag")?,
         });
     }
     Ok(out)

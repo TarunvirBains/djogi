@@ -16,6 +16,29 @@ pub struct DjogiConfig {
     /// Migration-engine settings. See [`MigrateConfig`].
     #[serde(default)]
     pub migrate: MigrateConfig,
+    /// Deployment profile. Drives the migration engine's
+    /// out-of-order policy default (production/CI rejects out-of-order
+    /// applies; development warns and proceeds) and gates destructive
+    /// `attune --squash` operations.
+    ///
+    /// Recognised values today: `"development"` (default), `"production"`,
+    /// `"staging"`, `"test"`. Anything that is not the literal
+    /// `"production"` string is treated as non-production.
+    #[serde(default = "default_profile")]
+    pub profile: String,
+    /// Migration policy knobs — orthogonal to [`MigrateConfig`]
+    /// (which controls runner behaviour like the relpages probe).
+    /// Policy fields gate which apply paths the runner accepts and how
+    /// loud `verify` is about historical drift.
+    #[serde(default)]
+    pub policy: PolicyConfig,
+}
+
+/// Default value for [`DjogiConfig::profile`] when the field is absent
+/// from `Djogi.toml`. Development is the safe default for new
+/// projects — production environments must opt in explicitly.
+fn default_profile() -> String {
+    "development".to_string()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -69,6 +92,33 @@ impl Default for MigrateConfig {
     }
 }
 
+/// Migration policy knobs — controls how the runner reacts to
+/// out-of-order applies and how `verify` reports historical
+/// out-of-order rows.
+///
+/// These fields are intentionally separate from [`MigrateConfig`].
+/// `MigrateConfig` controls runner mechanics (relpages probe, strict
+/// warnings) — `PolicyConfig` controls policy decisions (allow vs
+/// reject). The split lets an operator dial mechanics independently
+/// from policy.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct PolicyConfig {
+    /// When `true`, [`crate::migrate::verify`] surfaces out-of-order
+    /// rows as `D622` Error diagnostics (verify exits non-zero).
+    /// When `false` (the default), the same rows surface as `D622`
+    /// Warning — verify still reports the drift, but does not fail
+    /// the run.
+    ///
+    /// Pair with the runner-side [`crate::migrate::OutOfOrderPolicy`]:
+    /// the runner gates whether out-of-order applies are PERMITTED;
+    /// `strict_out_of_order` gates whether already-applied out-of-order
+    /// rows count as a verify-time ERROR or just a warning. Production
+    /// environments that have already cleaned up historical drift
+    /// flip this on to make new drift hard to ignore.
+    #[serde(default)]
+    pub strict_out_of_order: bool,
+}
+
 impl Default for DjogiConfig {
     fn default() -> Self {
         Self {
@@ -82,7 +132,27 @@ impl Default for DjogiConfig {
                 port: 8000,
             },
             migrate: MigrateConfig::default(),
+            profile: default_profile(),
+            policy: PolicyConfig::default(),
         }
+    }
+}
+
+impl DjogiConfig {
+    /// Returns `true` when this configuration represents a production
+    /// deployment. Used by the migration engine to set the default
+    /// [`crate::migrate::OutOfOrderPolicy`] to `Reject` and to gate
+    /// `attune --squash` against accidental destructive history
+    /// rewrites.
+    ///
+    /// **Definition.** `profile` literally equal to the lowercase
+    /// string `"production"`. Anything else (including
+    /// `"Production"`, `"PROD"`, `"prod"`) is treated as
+    /// non-production. The strictness is intentional — a typo in the
+    /// profile field should fall back to the safe-for-dev default,
+    /// not silently flip the runner into reject-mode.
+    pub fn is_production(&self) -> bool {
+        self.profile == "production"
     }
 }
 
@@ -130,5 +200,41 @@ impl DjogiConfig {
         }
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_profile_is_development() {
+        let cfg = DjogiConfig::default();
+        assert_eq!(cfg.profile, "development");
+        assert!(!cfg.is_production());
+    }
+
+    #[test]
+    fn profile_eq_production_only_for_exact_lowercase_match() {
+        // Helper: build a default config with the supplied profile string.
+        let with_profile = |s: &str| DjogiConfig {
+            profile: s.to_string(),
+            ..DjogiConfig::default()
+        };
+        assert!(with_profile("production").is_production());
+
+        // Strict — typos must fall back to non-production.
+        assert!(!with_profile("Production").is_production());
+        assert!(!with_profile("PROD").is_production());
+        assert!(!with_profile("prod").is_production());
+        assert!(!with_profile("staging").is_production());
+        assert!(!with_profile("test").is_production());
+        assert!(!with_profile("").is_production());
+    }
+
+    #[test]
+    fn policy_config_default_is_lenient() {
+        let cfg = DjogiConfig::default();
+        assert!(!cfg.policy.strict_out_of_order);
     }
 }

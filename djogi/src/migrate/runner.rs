@@ -187,6 +187,28 @@ pub enum RunnerError {
     /// future diffs.
     BaselineSnapshotShouldNotBeProvided,
 
+    /// The candidate version applies out-of-order (it sorts before
+    /// some already-applied row in the same `(database, app)` bucket)
+    /// AND the runner's [`super::policy::OutOfOrderPolicy`] is
+    /// `Reject`. Surfaces the conflicting peer so the operator can
+    /// decide between rebasing the migration to a later timestamp,
+    /// supplying an explicit override, or reordering the apply.
+    ///
+    /// Note: this error fires BEFORE the pending ledger row is
+    /// inserted, so a `Reject` outcome leaves no trace in the
+    /// database. The operator-facing message is the only artifact.
+    OutOfOrderRejected {
+        /// The candidate version that triggered the conflict.
+        version: String,
+        /// The already-applied peer whose `version` is lexically
+        /// greater than `version`.
+        conflicting_version: String,
+        /// `applied_at` of the conflicting peer, when available. The
+        /// formatted RFC 3339 string is used so the message is
+        /// timezone-explicit.
+        conflicting_applied_at: Option<String>,
+    },
+
     /// The live-DB projection underpinning `baseline_plan` failed
     /// before the ledger row could be inserted. Distinct from
     /// `LedgerWriteFailed` so the operator-facing message names the
@@ -309,6 +331,28 @@ impl std::fmt::Display for RunnerError {
                 f,
                 "baseline live-DB projection failed before ledger insert: {source}",
             ),
+            RunnerError::OutOfOrderRejected {
+                version,
+                conflicting_version,
+                conflicting_applied_at,
+            } => match conflicting_applied_at {
+                Some(when) => write!(
+                    f,
+                    "version `{version}` would apply out-of-order: peer \
+                     `{conflicting_version}` was already applied at {when}; \
+                     the active OutOfOrderPolicy is Reject. Either rebase \
+                     this migration to a later timestamp, supply \
+                     OutOfOrderPolicy::AllowExplicit with an override reason, \
+                     or run on a non-CI / non-production profile to inherit \
+                     AllowWithDiagnostic."
+                ),
+                None => write!(
+                    f,
+                    "version `{version}` would apply out-of-order: peer \
+                     `{conflicting_version}` is already applied; \
+                     the active OutOfOrderPolicy is Reject."
+                ),
+            },
         }
     }
 }
@@ -363,6 +407,13 @@ pub struct RunnerCtx {
     pub snapshot_path: Option<PathBuf>,
     /// Migrate-engine config (relpages threshold + strict mode).
     pub config: MigrateConfig,
+    /// Policy gate for out-of-order applies (T7). Defaults to
+    /// [`super::policy::OutOfOrderPolicy::AllowWithDiagnostic`] for
+    /// dev iteration; CI / production loaders flip to `Reject` via
+    /// [`super::policy::OutOfOrderPolicy::default_for_config`]. The
+    /// runner consults this BEFORE inserting the pending ledger row,
+    /// so a `Reject` outcome leaves no database trace.
+    pub out_of_order_policy: super::policy::OutOfOrderPolicy,
 }
 
 /// Successful-apply report. The runner returns this on a clean
@@ -492,6 +543,79 @@ async fn apply_plan_inner(
         ExecutionMode::Transactional
     };
 
+    // T7: out-of-order detection. Walk the bucket's existing applied
+    // ledger rows and surface any whose `version` is lexically greater
+    // than ours — that indicates this version applies "before" a
+    // previously-applied peer (the dev branch picked up a feature
+    // branch's older migration after main shipped a newer one).
+    //
+    // Lexical compare is correct because the version prefix is
+    // `V<14 digits>` (timestamp-derived) so lexical order = chronological.
+    //
+    // The detection runs BEFORE inserting the pending row so a
+    // `Reject` policy leaves no database trace.
+    let conflicting_peer = find_higher_applied_version(ctx, &plan.bucket, &runner_ctx.version)
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })?;
+    let is_out_of_order = conflicting_peer.is_some();
+    if is_out_of_order && !runner_ctx.out_of_order_policy.allows() {
+        let (conflicting_version, conflicting_applied_at) =
+            conflicting_peer.unwrap_or_else(|| (String::new(), None));
+        return Err(RunnerError::OutOfOrderRejected {
+            version: runner_ctx.version.clone(),
+            conflicting_version,
+            conflicting_applied_at,
+        });
+    }
+    if is_out_of_order {
+        let (conflicting_version, applied_at) = conflicting_peer
+            .as_ref()
+            .map(|(v, ts)| (v.as_str(), ts.as_deref()))
+            .unwrap_or(("", None));
+        tracing::warn!(
+            bucket_database = %plan.bucket.database,
+            bucket_app = %plan.bucket.app,
+            version = %runner_ctx.version,
+            conflicting_version,
+            conflicting_applied_at = applied_at.unwrap_or("<unknown>"),
+            policy = ?runner_ctx.out_of_order_policy,
+            "out-of-order migration apply allowed by policy",
+        );
+    }
+    // Compose a partial_apply_note when the policy is AllowExplicit so
+    // the operator-supplied override reason lands on the row alongside
+    // the out_of_order_flag. This is the audit-trail half of the
+    // "tracing::warn! plus partial_apply_note" contract called out in
+    // the T7 brief.
+    let initial_note = match (
+        is_out_of_order,
+        runner_ctx.out_of_order_policy.override_reason(),
+    ) {
+        (true, Some(reason)) if !reason.is_empty() => {
+            let header = match conflicting_peer.as_ref() {
+                Some((peer, Some(ts))) => {
+                    format!("out-of-order apply (peer {peer} applied at {ts}) override: {reason}")
+                }
+                Some((peer, None)) => {
+                    format!("out-of-order apply (peer {peer}) override: {reason}")
+                }
+                None => format!("out-of-order apply override: {reason}"),
+            };
+            Some(header)
+        }
+        (true, None) => match conflicting_peer.as_ref() {
+            Some((peer, Some(ts))) => Some(format!(
+                "out-of-order apply: peer {peer} was already applied at {ts}"
+            )),
+            Some((peer, None)) => Some(format!("out-of-order apply: peer {peer}")),
+            None => None,
+        },
+        _ => None,
+    };
+
     // 5. Insert pending ledger row. Generate a fresh run_id.
     let run_id = generate_run_id(ctx).await?;
     let ledger_row = LedgerRow {
@@ -502,14 +626,14 @@ async fn apply_plan_inner(
         execution_mode,
         status: LedgerStatus::Pending,
         execution_time_ms: 0,
-        out_of_order_flag: false,
+        out_of_order_flag: is_out_of_order,
         applied_steps_count: 0,
         total_steps: if has_non_tx {
             Some(total_non_tx_steps)
         } else {
             None
         },
-        partial_apply_note: None,
+        partial_apply_note: initial_note,
         run_id,
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: plan.bucket.app.clone(),
@@ -648,12 +772,26 @@ async fn apply_plan_inner(
     // snapshot from the descriptor inventory.
     let elapsed_ms: i64 = elapsed_ms(started);
 
-    ledger::mark_applied(ctx, ledger_id, elapsed_ms, applied_non_tx_steps)
-        .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })?;
+    // T7: when the row was flagged out-of-order, preserve the
+    // partial_apply_note so the historical conflict + override reason
+    // stay visible alongside `applied` status. The default
+    // `mark_applied` clears the note (its prior purpose was to
+    // describe a partial-apply state that resolves on success).
+    if is_out_of_order {
+        ledger::mark_applied_keep_note(ctx, ledger_id, elapsed_ms, applied_non_tx_steps)
+            .await
+            .map_err(|e| RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            })?;
+    } else {
+        ledger::mark_applied(ctx, ledger_id, elapsed_ms, applied_non_tx_steps)
+            .await
+            .map_err(|e| RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            })?;
+    }
 
     if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
         save_snapshot(snapshot, path).map_err(|e| RunnerError::SnapshotPersistFailed {
@@ -1919,6 +2057,56 @@ fn is_unique_violation(e: &DjogiError) -> bool {
 /// `Option<&SqlState>`; we compare by reference.
 fn db_code_matches(db: &DbError, target: &tokio_postgres::error::SqlState) -> bool {
     db.code().map(|c| c == target).unwrap_or(false)
+}
+
+/// Walk the bucket's existing applied / faked / baseline ledger
+/// rows and surface the highest-version peer whose `version`
+/// lexically exceeds `candidate_version`. Returns the peer's
+/// `(version, applied_at_rfc3339)` tuple — or `None` when no peer
+/// would conflict (the typical happy-path case).
+///
+/// **Why "applied / faked / baseline"?** These three statuses
+/// represent rows that the runner has acknowledged as "this
+/// migration is in the database" — `pending` and `failed` rows do
+/// not, and rolled-back rows have explicitly opted out. Treating
+/// rolled-back rows as conflicting peers would block re-applying a
+/// reverted migration, which is a legitimate workflow.
+///
+/// **Lexical compare.** The version prefix is `V<14 ASCII digits>`
+/// (timestamp-derived) so lexical order = chronological order. We
+/// compare the full version string (including the `__<slug>` tail)
+/// so two versions sharing the same timestamp prefix sort by their
+/// slug, which keeps the comparison deterministic.
+async fn find_higher_applied_version(
+    ctx: &mut DjogiContext,
+    bucket: &BucketKey,
+    candidate_version: &str,
+) -> Result<Option<(String, Option<String>)>, DjogiError> {
+    // app_label is the bucket's per-app key — the per-database
+    // dimension is implicit in which connection / pool the runner
+    // routes through, mirroring T4 / T5 / T6's single-pool stance.
+    // When `DjogiContext::pool_for(database)` lands the per-database
+    // routing comes for free; the SELECT still scopes by app_label.
+    let row_opt = ctx
+        .query_opt(
+            "SELECT version, \
+                    to_char(applied_at AT TIME ZONE 'UTC', \
+                            'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS applied_at_rfc3339 \
+             FROM djogi_schema_migrations \
+             WHERE app_label = $1 \
+               AND status IN ('applied', 'faked', 'baseline') \
+               AND version > $2 \
+             ORDER BY version DESC \
+             LIMIT 1",
+            &[&bucket.app, &candidate_version],
+        )
+        .await?;
+    let Some(row) = row_opt else {
+        return Ok(None);
+    };
+    let conflicting_version: String = row.try_get(0)?;
+    let applied_at_rfc3339: Option<String> = row.try_get(1).ok();
+    Ok(Some((conflicting_version, applied_at_rfc3339)))
 }
 
 /// Read the `applied_at` timestamp of an existing row whose

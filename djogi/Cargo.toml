@@ -236,3 +236,8 @@ harness = true
 name = "phase7_t6_filesystem_scan"
 path = "../tests/integration/phase7_t6_filesystem_scan.rs"
 harness = true
+
+[[test]]
+name = "phase7_t7_policy_attune_live"
+path = "../tests/integration/phase7_t7_policy_attune_live.rs"
+harness = true

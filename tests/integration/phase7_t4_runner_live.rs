@@ -159,6 +159,10 @@ fn make_runner_ctx(
         snapshot,
         snapshot_path,
         config,
+        // T4 tests do not exercise out-of-order policy; pick the
+        // permissive default so existing assertions are unaffected.
+        // The dedicated phase7_t7_*.rs tests cover the policy paths.
+        out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
     }
 }
 
