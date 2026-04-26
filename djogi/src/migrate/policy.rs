@@ -797,4 +797,54 @@ mod tests {
             "host=\"db.prod.example.com\" dbname=test"
         ));
     }
+
+    /// Round-3 A-2 closeout: backslash escape inside a quoted value
+    /// does NOT terminate the quoted region. The parser tracks each
+    /// backslash plus the next byte as a 2-byte unit, so a `\"`
+    /// inside `"..."` keeps the value open through the inner `"`.
+    ///
+    /// Important: because `extract_libpq_host` returns a `&str` slice
+    /// of the original input, the captured value preserves the raw
+    /// bytes including the backslash escape. It does NOT unescape
+    /// (that would require allocation). For the localhost gate this
+    /// is safe: a hostname containing `\` cannot match the allowlist
+    /// (`localhost`, `127.0.0.1`, `::1`), so the gate fails closed.
+    /// If a future use case needs the unescaped form, change the
+    /// signature to `Cow<'_, str>` and unescape only when needed.
+    #[test]
+    fn extract_host_libpq_double_quoted_with_escaped_quote() {
+        // `host="foo\"bar"` — the inner `\"` is consumed as a 2-byte
+        // unit, keeping the quoted region open. The captured slice
+        // is the raw `foo\"bar` (including backslash) per the doc
+        // above.
+        assert_eq!(
+            extract_host("host=\"foo\\\"bar\" dbname=test"),
+            "foo\\\"bar"
+        );
+        // Mirror form: single-quoted value with escaped `'`.
+        assert_eq!(extract_host("host='foo\\'bar' dbname=test"), "foo\\'bar");
+        // The localhost gate correctly fails closed — neither raw
+        // string is in the allowlist.
+        assert!(!is_localhost_connection("host=\"foo\\\"bar\" dbname=test"));
+        assert!(!is_localhost_connection("host='foo\\'bar' dbname=test"));
+    }
+
+    /// Round-3 A-2 closeout: the `host= dbname=test` empty-value edge
+    /// case. Per the libpq grammar documented at the parser, libpq
+    /// itself skips whitespace after `=` and reads the next non-
+    /// whitespace token as the value — so `host= dbname=test` parses
+    /// as `host = "dbname=test"`. Our parser mirrors that. The
+    /// localhost gate then rejects `dbname=test` (not in the allowlist),
+    /// which is the safe-bias direction: ambiguous connection strings
+    /// fail closed (refuse to assume localhost) rather than fail open.
+    #[test]
+    fn extract_host_libpq_empty_value_consumes_next_token() {
+        // The current behaviour mirrors libpq: the value runs up to
+        // the next whitespace, so `dbname=test` is captured as the
+        // host literal.
+        assert_eq!(extract_host("host= dbname=test"), "dbname=test");
+        // The localhost predicate then refuses this — `dbname=test`
+        // is not in the allowlist, so the gate fails closed.
+        assert!(!is_localhost_connection("host= dbname=test"));
+    }
 }
