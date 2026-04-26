@@ -17,13 +17,16 @@ Phase 10 system permissions surfaced in `_admin_roles.system_perms`:
 | `view_audit_log`     | Scope-filtered read of `_logs.{model}` tables                       | 10    |
 | `manage_users`       | Create/edit/delete `_admin_users`; cannot grant `is_superuser`      | 10    |
 
-`manage_users` carries an upper-bound rule with three coupled clauses. A holder cannot:
+`manage_users` carries an upper-bound rule with four coupled clauses. A holder cannot:
 
 1. Grant `is_superuser = TRUE` (only an existing superuser can flip that bit).
 2. Assign a role whose `system_perms` are not a subset of the holder's own `system_perms`.
 3. Assign a role whose **effective per-(model, action) permission set** — defaults plus `_admin_role_model_perms` overrides, resolved recursively through `parent_role_id` inheritance — is not a subset of the holder's own effective per-(model, action) permission set.
+4. **Tenant reach**: assign a role with `cross_tenant = TRUE` unless the holder's own effective authority is also cross-tenant (either `is_superuser = TRUE` or assigned to a role with `cross_tenant = TRUE`). In multi-tenant mode, additionally cannot create or retarget a user into a `tenant_scope` the holder could not themselves operate in — a single-tenant `manage_users` holder can only place users into their own tenant (or NULL when both holder and assigned role are cross-tenant).
 
-The third clause is the privilege-escalation closer: without it, a `manage_users` holder with read-only access on Vehicle could assign a pre-existing role with `can_bulk_delete = TRUE` on Vehicle (system_perms `{}` ⊆ holder's, so clauses 1 and 2 alone pass), then impersonate the new user to delete rows the granter could not. With clause 3, a `manage_users` holder can only create users whose realized authority is bounded by their own. This is the same transitive upper-bound discipline that Phase 10.5's `manage_roles` extends to role *editing*; v1 applies it to user *assignment* because the escalation surface is the same.
+Clause 3 closes the per-action escalation surface; clause 4 closes the tenant-reach escalation surface that would otherwise let a single-tenant admin manufacture cross-tenant users. Without clause 4, a `manage_users` holder with the same `(model, action)` matrix as a target role but bounded to one tenant could assign that role with `cross_tenant = TRUE`, creating a user who can act in *every* tenant while the granter can act in only one. With clause 4, a `manage_users` holder can only create users whose realized authority — including tenant reach — is bounded by their own.
+
+This is the same transitive upper-bound discipline that Phase 10.5's `manage_roles` extends to role *editing*; v1 applies it to user *assignment* because the escalation surface is the same.
 
 The `manage_roles` system permission (which extends the transitive upper-bound to role create / edit, not just user assignment) is deferred to Phase 10.5. Until then, role creation and editing are superuser-only operations. Other system actions — running migrations, resetting databases, force-evicting sessions — are also superuser-only in v1.
 

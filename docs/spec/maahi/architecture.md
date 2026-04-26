@@ -111,7 +111,15 @@ Two relevant columns on the Maahi tables; their semantics are deployment-mode-de
 In **multi-tenant** deployments, the login flow captures the active tenant into `_admin_sessions.current_tenant_scope` at session-issuance time. Two flows depending on the user shape:
 
 - **Single-tenant user** (`_admin_users.tenant_scope` non-NULL): login derives `current_tenant_scope` directly from the user row at issuance — no picker prompt.
-- **Cross-tenant user** (`_admin_users.tenant_scope IS NULL`, role `cross_tenant = TRUE`): login does *not* issue a session until the user picks a tenant. After successful credential check, Maahi shows the tenant picker; on selection, the session row is written with `current_tenant_scope` = picked tenant and the session cookie is issued. There is no "no tenant set" or "all-tenants" intermediate state — sessions always have a non-NULL `current_tenant_scope` in multi-tenant mode.
+- **Cross-tenant user** (`_admin_users.tenant_scope IS NULL`, role `cross_tenant = TRUE`): login does *not* issue a session until the user picks a tenant. The flow is:
+  1. Credential check (email + password verified against `_admin_users.password_hash`).
+  2. Maahi issues a **short-lived signed one-time login ticket** — an HMAC-SHA256 token keyed by `session_secret_env`, body `{user_id, issued_at}`, TTL 60 seconds — and returns it to the client; no `_admin_sessions` row exists yet, no session cookie is set.
+  3. Client renders the tenant picker. The tenant-selection POST carries the ticket (in a request header, not a cookie — no auth state is being persisted yet).
+  4. Maahi verifies the ticket signature, checks the TTL, confirms the ticket has not been consumed (one-time use enforced via a small bounded in-memory set keyed by ticket id with TTL-aligned eviction; multi-instance deployments back this with the audit DB), and validates the picked tenant is reachable for `user_id`'s assigned role.
+  5. On success, Maahi consumes the ticket, writes the `_admin_sessions` row with `current_tenant_scope = picked_tenant`, and issues the session cookie. There is no "no tenant set" or "all-tenants" intermediate state — sessions always have a non-NULL `current_tenant_scope` in multi-tenant mode.
+  6. On ticket failure (invalid signature, expired, already consumed, tenant unreachable), the request is rejected with no session and no information leak; the user must restart from credential entry.
+
+  This binding mechanism prevents an unauthenticated tenant-selection POST from creating a session, and prevents a stolen ticket from being replayed past its 60-second window or after first use.
 
 Every server function dispatches against a `DjogiContext` whose `set_tenant(session.current_tenant_scope)` has already been called by middleware. RLS does the rest. Switching the picker rotates the session (per the rotation discipline in [Security](./security.md)) — the rotated row is written with the new `current_tenant_scope` value atomically. Cookie tampering cannot move a session across tenants because the active tenant lives server-side on the session row, not in the cookie.
 

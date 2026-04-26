@@ -29,7 +29,7 @@ Two parallel leaky-bucket limiters gate login; both must accept for the request 
 
 Both must accept; failure of either returns `429`. The compound `(email, ip)` key alone is the weakest of the three standard shapes — a credential-stuffing attacker rotating IPs gets a fresh bucket per source and trivially bypasses it. Two parallel limiters is the OWASP ASVS / NIST 800-63B baseline.
 
-Limits configurable per limiter in `[admin].login_rate_limit` — the configuration takes both a per-IP rate and a per-email rate.
+Limits configurable per limiter via two separate `[admin]` keys: `login_rate_limit_per_ip` (per-IP rate) and `login_rate_limit_per_email` (per-email rate). See [Configuration](./configuration.md) for defaults and rate-string format.
 
 State storage: single-instance deployments may use process-local in-memory state. Multi-instance deployments must use shared state — the audit DB Maahi already provisions (the `crud_log` target) is the natural home; an `_admin_login_rate_limit` table or equivalent backing store is acceptable. The spec does not mandate the storage shape, only that multi-replica deployments cannot rely on per-process buckets (which would scale the limiter the wrong direction — N replicas = N× the configured rate).
 

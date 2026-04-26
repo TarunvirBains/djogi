@@ -669,26 +669,26 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 ### 10a: Crate Substrate + Auth
 
 - [ ] `djogi-maahi` workspace crate scaffolded; `djogi`'s `admin` feature pulls it in as optional dep; `djogi::maahi::*` re-exports
-- [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_visage_perms` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`)
+- [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`); explicit `ON DELETE RESTRICT` on `_admin_users.role_id` and `_admin_roles.parent_role_id`; `_admin_sessions.token_hash` is HMAC-SHA256 keyed by `session_secret_env` (UNIQUE INDEX); `_admin_pending_actions` ships with partial-unresolved + `expires_at` indexes
 - [ ] `cargo djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
 
 ### 10b: Permission Model + Feasibility Analysis
 
 - [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, model)` overrides
-- [ ] Single-parent role inheritance with cycle rejection on save and "this affects N child roles" save-time preview
-- [ ] Compile-time / startup feasibility analysis for each `(role, model)` pair surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
+- [ ] Single-parent role inheritance with cycle rejection on save and "this affects N child roles" save-time preview; role-deletion UX (reassign-first) for users and child roles
+- [ ] Compile-time / startup feasibility analysis: five checks per `(role, model)` pair (`can_actually_read` / `_update` / `_create` / `_delete` plus `fk_label_reachable` for FK fields) surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
 
-### 10c: Visage-Driven Visibility
+### 10c: Field-Visibility Substrate
 
-- [ ] Visage grant resolution from `_admin_role_visage_perms`; field-set union across granted visages, `expose(none)` floor enforcement
-- [ ] `Label` trait with `fn label(&self, visible: &VisibleFields) -> String` — visibility-aware so FK dropdowns and audit log entries cannot leak hidden fields
+- [ ] Visage scope grammar (`#[field(expose(...))]`) drives field visibility: `expose(none)` is the absolute floor (never UI-rendered, even for superuser); roles bind to scopes via `_admin_roles.scope`; field-set union across the role's effective scope membership
+- [ ] FK label resolution via `#[field(admin_label)]` and `#[model(admin_label_fn = "...")]` — first non-id `String` field as fallback; FK label feasibility is enforced as a startup diagnostic (per the rule above)
 - [ ] FK widget tier resolution (preload / typeahead based on `[admin].fk_preload_threshold`); optional `AdminFkFilter` trait + `#[field(admin_fk_filter = "...")]` override
 
 ### 10d: Multi-Tenancy
 
 - [ ] Auto-detection of multi-tenant mode from registered RLS-enabled models; `[admin].multi_tenant` config override
-- [ ] Login flow captures `tenant_scope` into session; `set_tenant` middleware on every server-fn call
-- [ ] Tenant picker for cross-tenant users; hidden in single-tenant deployments
+- [ ] `_admin_sessions.current_tenant_scope` records the per-session active tenant; middleware calls `set_tenant(session.current_tenant_scope)` on every server-fn dispatch
+- [ ] Cross-tenant login flow: short-lived signed one-time login ticket bridges credential check → tenant pick (no session row written until pick); hidden in single-tenant deployments
 
 ### 10e: Dioxus Renderer
 
@@ -697,6 +697,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 - [ ] CSRF triple stack (SameSite=Strict + `X-Maahi-CSRF` custom header + Origin/Referer check)
 - [ ] Session rotation on login / password change / role change / tenant switch
 - [ ] Server-side write enforcement that rejects out-of-scope fields explicitly (not silent filter)
+- [ ] Two parallel login rate limiters (per-IP and per-email, both must accept); `login_rate_limit_per_ip` and `login_rate_limit_per_email` config keys; multi-instance deployments require shared state
 
 ### 10f: Approval Flow
 
@@ -704,13 +705,14 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 - [ ] Magnitude-confirmation prompt on `BulkDelete` and `BulkUpdate` ("type the count to confirm")
 - [ ] Inline-bulk threshold (`[admin].inline_bulk_threshold`, default 25) routes mass-removal saves through the approval flow as `InlineSave`
 - [ ] Approver coverage rule: approver must hold every action permission the package execution requires (anti-piggyback)
+- [ ] Single-admin / bootstrap deployments cannot satisfy approver ≠ requester; bootstrap flow recommends provisioning a second admin with the full action set required for the approval-gated operations they must approve
 
 ### 10g: System Permissions + Audit Access
 
-- [ ] `view_audit_log` (scope-filtered read of `_logs.{model}` tables), `manage_users` (single-rule upper-bound), `view_full_struct`, `write_full_struct` (requires `view_full_struct`) system permissions
+- [ ] Two v1 system permissions: `view_audit_log` (scope-filtered read of `_logs.{model}` tables) and `manage_users` (four-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective `(model, action)` subset, and tenant-reach)
 - [ ] `_logs.{model}` read access through Maahi UI for `view_audit_log` holders, scoped to their viewable fields and tenant
 
-**Deliverable:** Production-grade Maahi admin console with visage-RBAC, multi-tenancy, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave`, and the four v1 system permissions.
+**Deliverable:** Production-grade Maahi admin console with visage-scope-driven visibility, multi-tenancy with secure cross-tenant login handoff, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave` with approver-coverage discipline, and the two v1 system permissions.
 
 ---
 
