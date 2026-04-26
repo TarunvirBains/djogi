@@ -65,8 +65,13 @@ enum MigrationsCommand {
         allow_destructive: bool,
         /// Discard hand-edits to existing migration files (D013
         /// override). Without this flag compose refuses to overwrite
-        /// any migration file whose current content does not match
-        /// the recorded `checksum_up` in the pending JSON.
+        /// any up or down migration file whose current bytes do NOT
+        /// match what the deterministic emitter would freshly produce
+        /// — the byte-equality check stands in for a checksum compare
+        /// because the emitter is deterministic (same inputs always
+        /// produce the same bytes). Per Codex round-2 A-2 the check
+        /// is purely byte-level; it does not read the pending JSON's
+        /// `checksum_up` field.
         #[arg(long, default_value_t = false)]
         force_overwrite: bool,
         /// Workspace root override. Defaults to the current working

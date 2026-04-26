@@ -113,17 +113,41 @@ pub enum DriftKind {
     D004RegisteredMissingFolder,
 }
 
+impl DriftKind {
+    /// Per Codex round-2 B-6: only Outcome 3 (model drift) is muted by
+    /// `Djogi.toml::build.suppress_drift_warning = true`. The other
+    /// outcomes (D004 filesystem mismatches, Outcome 2
+    /// composed-not-applied, Outcome 4 stale-pending) are
+    /// operator-actionable signals that always print regardless of the
+    /// suppression flag.
+    ///
+    /// The build.rs script uses an `is_outcome3_drift: bool` field on
+    /// its internal diagnostic struct; this method gives library
+    /// callers (and the round-2 B-6 runtime test) the same predicate
+    /// without re-implementing the kind discriminant.
+    pub fn is_outcome3_drift(self) -> bool {
+        matches!(self, DriftKind::Outcome3Drift)
+    }
+}
+
 /// Compute the three-way match outcome for one bucket.
 ///
 /// `models`, `pending`, `snapshot` are the three inputs described in
 /// the module-level docs. Returns `None` for Outcome 1 (synced) —
 /// callers treat `None` as "nothing to warn about".
 ///
-/// Convenience wrapper that supplies a `None` pending-version /
-/// `None` filename for callers that don't know the pending version.
-/// Outcome 2 messages from this entry point use the placeholder
-/// `<unknown>` for filename and version (the production path goes
-/// through [`classify_bucket_with_pending`]).
+/// Convenience wrapper around [`classify_bucket_with_pending`] that
+/// supplies `None` for the pending-version argument. Outcome 2
+/// messages from this entry point use the `<unknown>` placeholder.
+///
+/// Per Codex round-2 B-8 the two entry points share a single
+/// implementation: this function forwards directly to
+/// [`classify_bucket_with_pending`] so the four outcome categories
+/// and frozen-string contracts cannot drift between them. The
+/// `<unknown>` placeholder is the defensive fallback for callers
+/// (e.g. early-build paths, malformed pending JSON) that genuinely
+/// cannot supply a version; production paths thread the real
+/// version through [`classify_bucket_with_pending`].
 pub fn classify_bucket(
     bucket: &BucketKey,
     models: Option<&AppliedSchema>,
@@ -137,6 +161,23 @@ pub fn classify_bucket(
 /// version ID (e.g. `"V20260425010203__add_widgets"`) so the
 /// Outcome 2 warning includes the filename + version per Codex B-8 /
 /// v3 §6.
+///
+/// **Caller mapping** (per Codex round-2 B-8):
+///
+/// - `migrations status` (CLI): threads the real `version` from each
+///   pending JSON it loads; the operator sees an actionable filename.
+/// - `build.rs`: walks pending JSON files itself (build scripts cannot
+///   import the crate they are compiling), reads the `version` field
+///   directly, and emits the same wording. The trybuild-style
+///   integration test in `phase7_t6_build_warning_agreement` pins
+///   the agreement.
+/// - `build_classify_bucket` re-export (the convenience wrapper): used
+///   by tests and the rare caller that genuinely lacks a version
+///   string. Surfaces the `<unknown>` placeholder so the message is
+///   still well-formed.
+///
+/// Both entry points route through this function so the four-outcome
+/// classification logic lives in one place.
 pub fn classify_bucket_with_pending(
     bucket: &BucketKey,
     models: Option<&AppliedSchema>,

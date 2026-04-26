@@ -90,19 +90,69 @@ pub fn compose_cmd(
     workspace: Option<PathBuf>,
 ) -> ExitCode {
     let workspace = resolve_workspace(workspace);
+    let models = match project_from_inventory() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("djogi migrations compose: projection error: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let apps: Vec<AppLifecycle> = AppRegistry::all()
+        .iter()
+        .map(|d| AppLifecycle {
+            label: d.label.to_string(),
+            database: d.database.to_string(),
+            renamed_from: d.renamed_from.map(str::to_string),
+            tombstone: d.tombstone,
+        })
+        .collect();
+    // Codex round-2 A-1: the resolved workspace flows into config
+    // loading too — `compose` itself doesn't read `Djogi.toml`, but
+    // future flag handling that does (e.g. default-allow-destructive
+    // policy) inherits the path-aware loader. Loading here surfaces
+    // any TOML parse error at the same point as projection errors so
+    // the operator gets one consistent failure mode.
+    if let Err(e) = djogi::config::DjogiConfig::load_from_workspace(&workspace) {
+        eprintln!("djogi migrations compose: config load: {e}");
+        return ExitCode::from(1);
+    }
+    compose_with_inputs(
+        &workspace,
+        name,
+        allow_destructive,
+        force_overwrite,
+        &models,
+        &apps,
+        time::OffsetDateTime::now_utc(),
+    )
+}
+
+/// Shared compose body — separated from [`compose_cmd`] so tests can
+/// drive it with explicit `models` and `apps` (the production entry
+/// point sources both from `inventory::iter` and `AppRegistry::all`,
+/// which are global state and thus not directly addressable from a
+/// unit test).
+///
+/// Acquires the workspace lock, walks the on-disk migration tree to
+/// recover orphaned snapshots (Codex B-1 — renamed-from buckets), and
+/// invokes [`djogi::migrate::compose`].
+fn compose_with_inputs(
+    workspace: &Path,
+    name: &str,
+    allow_destructive: bool,
+    force_overwrite: bool,
+    models: &std::collections::BTreeMap<
+        djogi::migrate::projection::BucketKey,
+        djogi::migrate::AppliedSchema,
+    >,
+    apps: &[AppLifecycle],
+    now: time::OffsetDateTime,
+) -> ExitCode {
     let lock_path = workspace.join(LOCK_FILE_NAME);
     let guard = match acquire_workspace_lock(&lock_path, GUARD_DEFAULT_TIMEOUT) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("djogi migrations compose: failed to acquire workspace lock: {e}");
-            return ExitCode::from(1);
-        }
-    };
-
-    let models = match project_from_inventory() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("djogi migrations compose: projection error: {e}");
             return ExitCode::from(1);
         }
     };
@@ -116,13 +166,13 @@ pub fn compose_cmd(
     // move emission).
     let mut bucket_set: std::collections::BTreeSet<djogi::migrate::projection::BucketKey> =
         models.keys().cloned().collect();
-    for bucket in discover_snapshot_buckets_on_disk(&workspace) {
+    for bucket in discover_snapshot_buckets_on_disk(workspace) {
         bucket_set.insert(bucket);
     }
 
     let mut snapshots: std::collections::BTreeMap<_, _> = std::collections::BTreeMap::new();
     for bucket in &bucket_set {
-        let path = djogi::migrate::snapshot_path(&workspace, bucket);
+        let path = djogi::migrate::snapshot_path(workspace, bucket);
         match djogi::migrate::load_snapshot(&path) {
             Ok(s) => {
                 snapshots.insert(bucket.clone(), s);
@@ -142,22 +192,11 @@ pub fn compose_cmd(
         }
     }
 
-    let apps: Vec<AppLifecycle> = AppRegistry::all()
-        .iter()
-        .map(|d| AppLifecycle {
-            label: d.label.to_string(),
-            database: d.database.to_string(),
-            renamed_from: d.renamed_from.map(str::to_string),
-            tombstone: d.tombstone,
-        })
-        .collect();
-
-    let now = time::OffsetDateTime::now_utc();
     let req = ComposeRequest {
-        workspace_root: &workspace,
-        models: &models,
+        workspace_root: workspace,
+        models,
         snapshots: &snapshots,
-        apps: &apps,
+        apps,
         name,
         allow_destructive,
         force_overwrite,
@@ -370,6 +409,175 @@ mod tests {
         if let Some(v) = prior {
             unsafe { std::env::set_var("DATABASE_URL", v) };
         }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 A-1 — env override precedence. A `DATABASE_URL`
+    /// in the environment must beat any value in
+    /// `<workspace>/Djogi.toml`, matching the security contract that
+    /// secrets only live in env vars.
+    #[test]
+    fn a1_round2_env_override_beats_workspace_toml() {
+        let work = temp_workspace("a1r2_env_override");
+        let toml = "[database]\nurl = \"postgres://from-toml/test\"\n\
+                    max_connections = 1\ndev_mode = false\n\
+                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let prior = std::env::var("DATABASE_URL").ok();
+        // SAFETY: --test-threads=1; no concurrent env mutation.
+        unsafe { std::env::set_var("DATABASE_URL", "postgres://from-env/test") };
+        let config = djogi::config::DjogiConfig::load_from_workspace(&work).expect("load");
+        assert_eq!(
+            config.database.url, "postgres://from-env/test",
+            "env DATABASE_URL must win over workspace Djogi.toml"
+        );
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 B-1 — `compose_with_inputs` must consume the
+    /// disk-discovered buckets, not just the inventory's. We set up a
+    /// `migrations/main/billing/schema_snapshot.json` with a `widgets`
+    /// table, pass an EMPTY models map (simulating "billing app was
+    /// removed from the workspace"), set `allow_destructive = true`,
+    /// and assert the resulting up SQL contains `DROP TABLE
+    /// "widgets"`. If the disk-walk regressed and `compose_with_inputs`
+    /// only loaded snapshots for inventory-known buckets, the differ
+    /// would never see billing's snapshot and the compose would exit
+    /// `NothingToCompose` (no DROP, no SQL written).
+    ///
+    /// This is the end-to-end pinning B-1 round-1 missed.
+    #[test]
+    fn b1_round2_compose_consumes_discovered_orphan_snapshot() {
+        use djogi::migrate::projection::BucketKey;
+        use djogi::migrate::schema::{
+            ColumnSchema, PkKindSchema, PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+        };
+        use djogi::migrate::{AppliedSchema, save_snapshot, snapshot_path};
+        use std::collections::BTreeMap;
+
+        let work = temp_workspace("b1r2_compose_uses_discovery");
+
+        // Build a billing-bucket snapshot with one `widgets` table
+        // and write it to disk under `migrations/main/billing/`.
+        let billing_bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let mut billing_snap = AppliedSchema {
+            djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models: BTreeMap::new(),
+            registered_apps: vec!["billing".to_string()],
+        };
+        billing_snap.models.insert(
+            "widgets".to_string(),
+            TableSchema {
+                app: Some("billing".to_string()),
+                columns: vec![ColumnSchema {
+                    check: None,
+                    default_sql: Some("generate_id_desc()".to_string()),
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "id".to_string(),
+                    nullable: false,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                }],
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::HeerIdRecencyBiased,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "widgets".to_string(),
+                tenant_key: None,
+            },
+        );
+        let snap_path = snapshot_path(&work, &billing_bucket);
+        save_snapshot(&billing_snap, &snap_path).expect("write snapshot");
+
+        // EMPTY models — simulates the billing crate having been
+        // removed from the workspace. Without the disk-walk this
+        // bucket would never reach the differ.
+        let empty_models: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+        let now = time::OffsetDateTime::from_unix_timestamp(1_745_549_523).unwrap();
+
+        let exit = compose_with_inputs(
+            &work,
+            "drop billing remnant",
+            true,  // allow_destructive — billing's snapshot will produce DROP ops
+            false, // force_overwrite
+            &empty_models,
+            &[],
+            now,
+        );
+        assert_eq!(exit, ExitCode::from(0), "compose must succeed");
+
+        // The composed up SQL must carry DROP TABLE for billing's
+        // widgets — that is the whole point. Find the file and check.
+        let billing_dir = djogi::migrate::bucket_dir(&work, &billing_bucket);
+        let mut up_path: Option<PathBuf> = None;
+        for entry in fs::read_dir(&billing_dir).unwrap().flatten() {
+            let n = entry.file_name().to_string_lossy().to_string();
+            // Up file pattern: starts with "V", ends with ".sql", does
+            // NOT contain ".down.".
+            if n.starts_with('V') && n.ends_with(".sql") && !n.contains(".down.") {
+                up_path = Some(entry.path());
+                break;
+            }
+        }
+        let up_path = up_path.expect("compose must have written an up SQL file");
+        let up_sql = fs::read_to_string(&up_path).unwrap();
+        assert!(
+            up_sql.contains("DROP TABLE \"widgets\""),
+            "compose must have seen the disk snapshot and emitted DROP TABLE — \
+             this proves discover_snapshot_buckets_on_disk reached the differ. \
+             SQL: {up_sql}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 A-1 — `status_cmd` invokes its tokio runtime and
+    /// fails fast on a malformed `Djogi.toml`. We don't need a live
+    /// Postgres for this assertion — the test is that the workspace
+    /// path is threaded through the loader and TOML errors surface
+    /// promptly. (The earlier `a1_load_from_workspace_reads_path_specific_djogi_toml`
+    /// covers the well-formed case; this is the malformed-input
+    /// path-threading proof.)
+    #[test]
+    fn a1_round2_status_cmd_threads_workspace_to_config() {
+        let work = temp_workspace("a1r2_status_workspace");
+        // Write a deliberately malformed TOML so config load fails.
+        // If the workspace path wasn't threaded, status_cmd would
+        // try the cwd's Djogi.toml (typically absent) and silently
+        // fall through to defaults, giving a different error code.
+        fs::write(work.join("Djogi.toml"), "this is = not = valid toml ===").unwrap();
+        let exit = status_cmd(Some(work.clone()));
+        assert_eq!(
+            exit,
+            ExitCode::from(1),
+            "malformed workspace Djogi.toml must surface as config load error"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 }

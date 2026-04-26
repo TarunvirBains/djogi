@@ -73,33 +73,62 @@ use super::snapshot::SnapshotError;
 use super::sql::{OperationSql, lower_delta};
 use super::target::{bucket_dir, pending_database_dir, pending_json_path};
 
+/// One restore point captured before a tmp file was promoted onto a
+/// destination that already had bytes on it.
+///
+/// Per Codex B-10: `promote_tmp` overwrites the final path via
+/// `fs::rename`. Without a backup of the prior bytes, a later failure
+/// in the same compose sequence cannot restore the original file —
+/// the rollback only knew to `remove_file(final_path)`, leaving the
+/// workspace in a half-state. This struct carries both the final path
+/// (where the new bytes live after a successful promote) and the
+/// backup path (where the prior bytes were copied just before the
+/// rename). On commit we delete the backup; on failure we restore the
+/// backup over the final path.
+struct RestorePoint {
+    /// The artifact's final path on disk (the post-promote location).
+    final_path: PathBuf,
+    /// Sibling backup file that holds the pre-overwrite bytes.
+    /// `None` when no prior file existed and the promote was a fresh
+    /// create rather than an overwrite — nothing to restore.
+    backup_path: Option<PathBuf>,
+}
+
 /// RAII rollback guard for atomic compose writes.
 ///
-/// Tracks two parallel cleanup queues:
+/// Tracks three parallel cleanup queues:
 ///
 /// 1. `tmps` — staged `<final>.tmp.<pid>` files that have been
 ///    written but not yet promoted. These are removed on failure.
-/// 2. `committed` — files that have already been renamed into their
-///    final location. On failure these are deleted to roll the
-///    workspace back to the pre-compose state.
+/// 2. `restore_points` — files that have already been renamed into
+///    their final location, possibly OVER an existing file. On failure
+///    we restore the prior bytes (via the backup path) when one was
+///    captured, otherwise we delete the freshly-promoted file. This
+///    addresses Codex B-10: the previous shape only deleted the final
+///    path on rollback, which silently lost the original content for
+///    overwrite cases.
+/// 3. `entry_renames` — entries that were moved from one directory to
+///    another by [`rename_old_bucket_folder`]. On failure we move them
+///    back. This addresses Codex B-11: the merge loop touched many
+///    files and a mid-loop failure left partial state untracked.
 ///
 /// On a successful sequence the caller invokes [`commit`](Self::commit)
-/// to drain both queues — the [`Drop`] impl then runs as a no-op.
-/// On any failure path the guard goes out of scope without `commit`
-/// being called and every tracked path is removed via best-effort
-/// `fs::remove_file`. This addresses Codex B-2 — every rename-failure
-/// point cleans up ALL remaining tmp + already-committed files,
-/// regardless of which step failed.
+/// to drain every queue (and delete the backups) — the [`Drop`] impl
+/// then runs as a no-op. On any failure path the guard goes out of
+/// scope without `commit` being called and every tracked artifact is
+/// rolled back via best-effort filesystem ops.
 struct WriteRollback {
     tmps: Vec<PathBuf>,
-    committed: Vec<PathBuf>,
+    restore_points: Vec<RestorePoint>,
+    entry_renames: Vec<(PathBuf, PathBuf)>,
 }
 
 impl WriteRollback {
     fn new() -> Self {
         Self {
             tmps: Vec::new(),
-            committed: Vec::new(),
+            restore_points: Vec::new(),
+            entry_renames: Vec::new(),
         }
     }
 
@@ -110,20 +139,44 @@ impl WriteRollback {
 
     /// Mark a tmp as successfully promoted to its final path. The tmp
     /// is removed from the tmp queue (the file no longer exists at
-    /// that path) and the final path is added to the committed queue
-    /// so a later failure rolls it back.
-    fn promote(&mut self, tmp: &Path, final_path: PathBuf) {
+    /// that path) and a [`RestorePoint`] is recorded so a later failure
+    /// rolls the final path back. `backup_path` is `None` when the
+    /// promote was a fresh create (no existing bytes were overwritten),
+    /// in which case the rollback simply deletes the final path; when
+    /// `Some`, the rollback restores the backup bytes back over
+    /// `final_path` per Codex B-10's overwrite-safe contract.
+    fn promote(&mut self, tmp: &Path, final_path: PathBuf, backup_path: Option<PathBuf>) {
         if let Some(idx) = self.tmps.iter().position(|p| p == tmp) {
             self.tmps.remove(idx);
         }
-        self.committed.push(final_path);
+        self.restore_points.push(RestorePoint {
+            final_path,
+            backup_path,
+        });
     }
 
-    /// Drain both queues without running cleanup — call on the
-    /// success path to consume the guard.
+    /// Track an entry rename performed during the post-compose folder
+    /// merge — the pair is `(from, to)`. On failure we move it back
+    /// from `to` to `from`. Per Codex B-11 the merge loop must be
+    /// undoable so a mid-loop failure does not leak partial state.
+    fn track_entry_rename(&mut self, from: PathBuf, to: PathBuf) {
+        self.entry_renames.push((from, to));
+    }
+
+    /// Drain every queue without running cleanup — call on the
+    /// success path to consume the guard. The committed restore-point
+    /// backups are deleted here so a successful compose leaves no
+    /// `.bak.<pid>` siblings on disk.
     fn commit(mut self) {
         self.tmps.clear();
-        self.committed.clear();
+        // Backups exist only because the promote overwrote a prior
+        // file. On commit (success path) we delete each backup.
+        for rp in self.restore_points.drain(..) {
+            if let Some(backup) = rp.backup_path {
+                let _ = fs::remove_file(&backup);
+            }
+        }
+        self.entry_renames.clear();
     }
 }
 
@@ -138,8 +191,31 @@ impl Drop for WriteRollback {
         for p in self.tmps.drain(..) {
             let _ = fs::remove_file(&p);
         }
-        for p in self.committed.drain(..) {
-            let _ = fs::remove_file(&p);
+        // Restore in reverse order — the LIFO unwind keeps the
+        // filesystem state consistent (later promotes are undone
+        // before earlier ones).
+        for rp in self.restore_points.drain(..).rev() {
+            match rp.backup_path {
+                Some(backup) => {
+                    // Best-effort restore: rename backup back over the
+                    // final path. If the rename fails (e.g. the backup
+                    // disappeared) we fall back to deleting the new
+                    // bytes so the workspace at least matches the
+                    // "fresh-create" rollback path.
+                    if fs::rename(&backup, &rp.final_path).is_err() {
+                        let _ = fs::remove_file(&rp.final_path);
+                        let _ = fs::remove_file(&backup);
+                    }
+                }
+                None => {
+                    let _ = fs::remove_file(&rp.final_path);
+                }
+            }
+        }
+        // Per Codex B-11: undo every tracked entry rename. We move
+        // each `to` back to its prior `from` location.
+        for (from, to) in self.entry_renames.drain(..).rev() {
+            let _ = fs::rename(&to, &from);
         }
     }
 }
@@ -191,21 +267,43 @@ pub enum ComposeError {
     /// The pending JSON failed to serialize — should be unreachable
     /// for a well-formed `AppliedSchema` but surfaced for completeness.
     SerializeFailed(SnapshotError),
-    /// D013 — the destination SQL file already exists and its current
-    /// checksum does NOT match the pending JSON's `checksum_up`. That
-    /// means the operator hand-edited the migration after compose ran
-    /// it the first time. Compose refuses to overwrite without an
-    /// explicit `--force-overwrite` opt-in.
+    /// D013 — the destination SQL file already exists and its bytes
+    /// do NOT match what the deterministic emitter would freshly
+    /// produce. That means the operator hand-edited the migration
+    /// after compose ran it the first time. Compose refuses to
+    /// overwrite without an explicit `--force-overwrite` opt-in.
+    ///
+    /// Per Codex B-3 the check protects BOTH up and down SQL — the
+    /// `side` field disambiguates which file diverged so the
+    /// diagnostic text names the offending file.
     HandEditedMigrationWouldBeOverwritten {
         /// Affected bucket.
         bucket: BucketKey,
-        /// Path to the file whose contents diverge from the pending
-        /// checksum.
+        /// Path to the file whose bytes diverge from the freshly-
+        /// emitted SQL. When both up and down were edited the up
+        /// path is reported (the up file is what runs first; the
+        /// operator typically inspects it first).
         path: PathBuf,
         /// Pre-formatted diagnostic message — `D013: hand-edited
         /// migration would be overwritten; pass --force-overwrite to
-        /// discard your edits`.
+        /// discard your edits` plus which side (up / down / both) was
+        /// edited.
         text: String,
+    },
+    /// Codex B-11 — `rename_old_bucket_folder` would have to merge the
+    /// OLD app's directory into a NEW directory that already contains
+    /// conflicting entries. The old shape attempted a non-atomic merge
+    /// loop; per round-2 we now refuse fail-fast so the operator
+    /// resolves the conflict explicitly instead of silently leaving a
+    /// partial-merge state on disk.
+    FolderRenameTargetCollision {
+        /// Source directory (the OLD app's bucket dir).
+        from: PathBuf,
+        /// Destination directory whose entries collided.
+        to: PathBuf,
+        /// One offending entry name — included so the operator can
+        /// move or delete it before re-running compose.
+        offending_entry: String,
     },
 }
 
@@ -236,6 +334,17 @@ impl std::fmt::Display for ComposeError {
             Self::Io { path, source } => write!(f, "I/O at {}: {source}", path.display()),
             Self::SerializeFailed(e) => write!(f, "serialize failed: {e}"),
             Self::HandEditedMigrationWouldBeOverwritten { text, .. } => f.write_str(text),
+            Self::FolderRenameTargetCollision {
+                from,
+                to,
+                offending_entry,
+            } => write!(
+                f,
+                "folder rename would collide at {to_path}: entry \"{offending_entry}\" already exists \
+                 (source: {from_path}); resolve manually before re-running compose",
+                from_path = from.display(),
+                to_path = to.display(),
+            ),
         }
     }
 }
@@ -270,12 +379,22 @@ pub struct ComposeRequest<'a> {
     /// Operator opt-in for destructive / lossy / tombstone migrations.
     pub allow_destructive: bool,
     /// Operator opt-in for overwriting hand-edited migration files.
-    /// When `false` (the default), compose refuses with D013 if the
-    /// destination SQL's current checksum diverges from the pending
-    /// JSON's recorded `checksum_up` — the file has been hand-edited
-    /// and re-running compose would silently clobber the operator's
-    /// changes. When `true`, compose discards the edits and rewrites
-    /// the file with freshly-emitted SQL. Per Codex B-3 / OQ-08.
+    /// When `false` (the default), compose refuses with D013 when
+    /// EITHER the existing up SQL or the existing down SQL bytes
+    /// diverge from what the deterministic emitter would freshly
+    /// produce — that means the operator hand-edited the file after
+    /// the prior compose. When `true`, compose discards the edits and
+    /// rewrites the files with freshly-emitted SQL.
+    ///
+    /// **Implementation detail (Codex round-2 A-2):** the divergence
+    /// check is a byte-equality compare between the existing file's
+    /// content and the freshly-emitted bytes — NOT a checksum read
+    /// from the pending JSON. Because the SQL emitter is
+    /// deterministic (same inputs always produce the same output
+    /// bytes), byte-equality is exactly equivalent to a checksum
+    /// match without re-deriving the checksum or parsing the pending
+    /// JSON. Per Codex B-3 / OQ-08; round-2 extended the check to
+    /// the down side and to both-sides edits.
     pub force_overwrite: bool,
     /// Compose-time clock, used as the version-prefix instant.
     /// Production callers pass `OffsetDateTime::now_utc()`; tests
@@ -548,10 +667,23 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         }
     }
 
-    // 2. Run the differ across the full bucket map.
-    let mut deltas = diff_bucket_maps(req.snapshots, req.models);
+    // 2. Per Codex B-9: rewrite snapshot bucket keys for renamed apps
+    //    BEFORE running the differ. The on-disk SQL tables don't move
+    //    when an app renames — only the `app_label` ledger column and
+    //    the `migrations/<db>/<app>/` folder do. The pre-rename
+    //    snapshot still describes the same physical tables; under the
+    //    NEW app label they are unchanged. By rewriting the OLD
+    //    bucket's snapshot key to NEW before diffing, the differ sees
+    //    the tables as already-present on both sides and emits no
+    //    spurious DropTable on OLD / AddTable on NEW. Without this
+    //    rewrite a rename would always require `--allow-destructive`
+    //    even though the operation is metadata-only.
+    let snapshots_for_diff = remap_snapshots_for_renames(req.snapshots, req.apps);
 
-    // 3. Layer in `RenameApp` ops driven by `AppRegistry`'s
+    // 3. Run the differ across the (possibly remapped) bucket map.
+    let mut deltas = diff_bucket_maps(&snapshots_for_diff, req.models);
+
+    // 4. Layer in `RenameApp` ops driven by `AppRegistry`'s
     //    `renamed_from` field. The differ doesn't see this — it works
     //    purely on snapshots — so compose injects the op on the
     //    DESTINATION bucket (the post-rename label).
@@ -577,7 +709,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         }
     }
 
-    // 4. Filter to non-empty deltas. NoOp deltas have classification
+    // 5. Filter to non-empty deltas. NoOp deltas have classification
     //    `NoOp` and an empty operations vec; skip them. Renamed-only
     //    deltas DO carry operations and survive the filter.
     let mut effective: Vec<SchemaDelta> = deltas
@@ -589,7 +721,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         return Err(ComposeError::NothingToCompose);
     }
 
-    // 5. Re-classify deltas that gained injected RenameApp ops and
+    // 6. Re-classify deltas that gained injected RenameApp ops and
     //    apply the destructive / unsupported gates.
     for delta in &mut effective {
         // RenameApp ops re-classify via `classify` (not exposed) but
@@ -615,7 +747,7 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         }
     }
 
-    // 6. Lower each delta to SQL pairs + plan, write all artifacts.
+    // 7. Lower each delta to SQL pairs + plan, write all artifacts.
     //
     // The write dance per bucket:
     //   - Compute the lowered SQL pair + checksums.
@@ -701,15 +833,23 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
 
             // Codex B-3 — D013 hand-edit protection.
             //
-            // If the up SQL file already exists and its current
-            // bytes differ from what compose would emit fresh, the
-            // operator has hand-edited the file. Without
-            // `force_overwrite` we refuse to clobber. We compare the
-            // full byte content (not a separate checksum) because the
-            // emitter is deterministic — same inputs always produce
-            // the same bytes — so equality is the canonical check.
+            // Per round-2: protect BOTH up AND down SQL. If either
+            // file already exists and its current bytes differ from
+            // what compose would emit fresh, the operator has hand
+            // edited the migration. Without `force_overwrite` we
+            // refuse to clobber. The comparison uses full byte
+            // equality (not a separate checksum) because the emitter
+            // is deterministic — same inputs always produce the same
+            // bytes — so byte-equality is exactly equivalent to a
+            // checksum match without re-derivation.
             if !req.force_overwrite {
-                check_no_hand_edit(&up_path, up_sql.as_bytes(), &delta.bucket)?;
+                check_no_hand_edit(
+                    &up_path,
+                    up_sql.as_bytes(),
+                    &down_path,
+                    down_sql.as_bytes(),
+                    &delta.bucket,
+                )?;
             }
 
             // Stage tmp siblings.
@@ -725,17 +865,20 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
             rollback.track_tmp(pending_tmp.clone());
 
             // Promote tmps. Order: up SQL, down SQL, pending JSON.
-            // The `WriteRollback` guard tracks each promotion so any
-            // failure unwinds every prior tmp + final atomically
-            // (Codex B-2).
-            promote_tmp(&up_tmp, &up_path)?;
-            rollback.promote(&up_tmp, up_path.clone());
+            // Per Codex B-10 each promote captures any prior bytes
+            // into a sibling backup file BEFORE renaming the tmp into
+            // place; the `WriteRollback` guard records the backup
+            // alongside the final path so a later failure restores
+            // the original content. On commit (success path) the
+            // backups are deleted.
+            let up_backup = promote_tmp_with_backup(&up_tmp, &up_path)?;
+            rollback.promote(&up_tmp, up_path.clone(), up_backup);
 
-            promote_tmp(&down_tmp, &down_path)?;
-            rollback.promote(&down_tmp, down_path.clone());
+            let down_backup = promote_tmp_with_backup(&down_tmp, &down_path)?;
+            rollback.promote(&down_tmp, down_path.clone(), down_backup);
 
-            promote_tmp(&pending_tmp, &pending_path)?;
-            rollback.promote(&pending_tmp, pending_path.clone());
+            let pending_backup = promote_tmp_with_backup(&pending_tmp, &pending_path)?;
+            rollback.promote(&pending_tmp, pending_path.clone(), pending_backup);
 
             // Codex B-5: queue any RenameApp folder moves. We perform
             // them after every artifact write succeeds because a folder
@@ -764,60 +907,91 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         Ok(())
     })();
 
-    // `rollback` Drop will clean up every tracked tmp + committed
-    // path on the early-return; nothing else to do here.
+    // `rollback` Drop will clean up every tracked tmp + restore every
+    // overwrite backup on the early-return; nothing else to do here.
     result?;
 
     // All file writes succeeded. Apply the queued folder renames for
-    // RenameApp ops (Codex B-5). A folder rename failure is a hard
-    // error — we still drop the rollback guard so the artifact files
-    // are removed and the workspace returns to the pre-compose state.
+    // RenameApp ops (Codex B-5). Per round-2 B-11 the merge step
+    // tracks every entry move on the same `rollback` guard so a
+    // mid-loop failure rolls back every already-moved entry too.
     for (from_dir, to_dir) in &pending_folder_renames {
-        rename_old_bucket_folder(from_dir, to_dir)?;
+        rename_old_bucket_folder(from_dir, to_dir, &mut rollback)?;
     }
 
-    // All work succeeded — release the rollback guard.
+    // All work succeeded — release the rollback guard. This deletes
+    // every backup file captured during promote and clears every
+    // entry-rename tracking entry.
     rollback.commit();
     Ok(ComposeReport { composed_buckets })
 }
 
 /// Codex B-3 / D013 — refuse to overwrite a hand-edited migration.
 ///
-/// Compares the existing up SQL file's bytes to what compose would
-/// emit fresh (`fresh_up_bytes`). When they disagree the operator
-/// has hand-edited the file; we surface
+/// Compares the existing up AND down SQL files' bytes to what compose
+/// would emit fresh. When EITHER side's existing bytes differ from
+/// the freshly-emitted bytes the operator has hand edited the
+/// migration; we surface
 /// [`ComposeError::HandEditedMigrationWouldBeOverwritten`] (D013)
-/// rather than silently clobber.
+/// rather than silently clobber. Per round-2 the down side was
+/// previously unprotected — a hand-edit there would have been
+/// silently overwritten.
 ///
 /// We compare full bytes rather than a separate checksum because
-/// `compose_up_text` is deterministic — same inputs always produce
-/// the same bytes — so byte-equality is exactly equivalent to
-/// "checksum matches" without needing a reverse-engineering pass over
-/// the formatted SQL file.
+/// `compose_up_text` / `compose_down_text` are deterministic — same
+/// inputs always produce the same bytes — so byte-equality is
+/// exactly equivalent to "checksum matches" without needing a
+/// reverse-engineering pass over the formatted SQL file. (Per Codex
+/// round-2 A-2: this is the canonical D013 check; the doc comment on
+/// `ComposeError::HandEditedMigrationWouldBeOverwritten` describes
+/// the byte-equality semantics directly.)
+///
+/// The reported `path` and `side` describe which side was edited:
+///
+/// - Up only edited → `path = up_path`, side label "up".
+/// - Down only edited → `path = down_path`, side label "down".
+/// - Both edited → `path = up_path`, side label "up and down" (the up
+///   path is reported because the operator typically inspects the up
+///   file first).
 ///
 /// Returns `Ok(())` when:
 ///
-/// - The up file does not exist (first compose for this bucket).
-/// - The existing file's bytes match `fresh_up_bytes` exactly.
+/// - Both files do not exist (first compose for this bucket).
+/// - The existing files' bytes both match the freshly-emitted bytes.
 fn check_no_hand_edit(
     up_path: &Path,
     fresh_up_bytes: &[u8],
+    down_path: &Path,
+    fresh_down_bytes: &[u8],
     bucket: &BucketKey,
 ) -> Result<(), ComposeError> {
-    let Ok(existing) = fs::read(up_path) else {
-        // No existing file — fresh compose, nothing to clobber.
-        return Ok(());
+    let up_edited = match fs::read(up_path) {
+        Ok(existing) => existing != fresh_up_bytes,
+        Err(_) => false, // file missing — fresh compose, no clobber risk.
     };
-    if existing == fresh_up_bytes {
+    let down_edited = match fs::read(down_path) {
+        Ok(existing) => existing != fresh_down_bytes,
+        Err(_) => false,
+    };
+    if !up_edited && !down_edited {
         return Ok(());
     }
+    // Pick the path + side label to report. When both sides were
+    // edited we surface the up path (the operator inspects up first).
+    let (reported_path, side_label) = match (up_edited, down_edited) {
+        (true, true) => (up_path.to_path_buf(), "up and down"),
+        (true, false) => (up_path.to_path_buf(), "up"),
+        (false, true) => (down_path.to_path_buf(), "down"),
+        (false, false) => unreachable!("guarded above"),
+    };
     let text = format!(
-        "D013: hand-edited migration would be overwritten; pass --force-overwrite to discard your edits ({path})",
-        path = up_path.display()
+        "D013: hand-edited migration would be overwritten ({side_label} side); \
+         pass --force-overwrite to discard your edits ({path})",
+        path = reported_path.display()
     );
     Err(ComposeError::HandEditedMigrationWouldBeOverwritten {
         bucket: bucket.clone(),
-        path: up_path.to_path_buf(),
+        path: reported_path,
         text,
     })
 }
@@ -877,8 +1051,8 @@ fn sql_escape_string(s: &str) -> String {
     out
 }
 
-/// Codex B-5 — atomically rename the OLD bucket directory to the NEW
-/// bucket directory.
+/// Codex B-5 / B-11 — atomically rename the OLD bucket directory to
+/// the NEW bucket directory.
 ///
 /// Called after every artifact write succeeds so the workspace is
 /// consistent on disk. Skips silently when:
@@ -886,10 +1060,26 @@ fn sql_escape_string(s: &str) -> String {
 /// - The OLD directory does not exist (nothing to rename).
 /// - The OLD and NEW directories are identical (a same-app
 ///   "self-rename" is a no-op — should not happen but defensive).
-/// - The NEW directory already exists with content (the artifacts we
-///   just wrote live there). In that case we MOVE every entry from
-///   OLD to NEW that isn't already present, then remove OLD.
-fn rename_old_bucket_folder(from_dir: &Path, to_dir: &Path) -> Result<(), ComposeError> {
+///
+/// When the NEW directory already exists (the typical case — compose
+/// just wrote artifacts there), we MOVE every entry from OLD to NEW.
+/// Per Codex round-2 B-11 each entry move is tracked through the
+/// supplied [`WriteRollback`] guard so a mid-loop failure rolls back
+/// every already-moved entry.
+///
+/// Per Codex round-2 B-11 we ALSO refuse fail-fast on a content
+/// collision: if any entry under OLD already exists under NEW with
+/// a different name-equivalent location, we return
+/// [`ComposeError::FolderRenameTargetCollision`] before moving any
+/// entry — the prior shape silently skipped collisions and dropped
+/// the OLD entry, which conflated two distinct files of the same
+/// name. The operator must resolve the collision manually before
+/// re-running compose.
+fn rename_old_bucket_folder(
+    from_dir: &Path,
+    to_dir: &Path,
+    rollback: &mut WriteRollback,
+) -> Result<(), ComposeError> {
     if from_dir == to_dir {
         return Ok(());
     }
@@ -897,42 +1087,61 @@ fn rename_old_bucket_folder(from_dir: &Path, to_dir: &Path) -> Result<(), Compos
         return Ok(());
     }
     if !to_dir.exists() {
-        // Simple rename — no merge needed.
+        // Simple rename — no merge needed. We still register the
+        // single move with the rollback guard so a later failure
+        // (none today, but the hook keeps the contract symmetric)
+        // would unwind it.
         ensure_parent(to_dir)?;
-        return fs::rename(from_dir, to_dir).map_err(|e| ComposeError::Io {
+        fs::rename(from_dir, to_dir).map_err(|e| ComposeError::Io {
             path: to_dir.to_path_buf(),
             source: e,
-        });
+        })?;
+        rollback.track_entry_rename(from_dir.to_path_buf(), to_dir.to_path_buf());
+        return Ok(());
     }
     // NEW dir already exists (compose just wrote artifacts there).
-    // Move each entry from OLD that the NEW does not yet contain,
-    // then remove OLD.
-    let entries = fs::read_dir(from_dir).map_err(|e| ComposeError::Io {
-        path: from_dir.to_path_buf(),
-        source: e,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|e| ComposeError::Io {
+    // Walk OLD, plan each move, fail-fast on any collision, then
+    // execute the moves while tracking each on the rollback guard.
+    let entries: Vec<PathBuf> = fs::read_dir(from_dir)
+        .map_err(|e| ComposeError::Io {
             path: from_dir.to_path_buf(),
             source: e,
-        })?;
-        let src = entry.path();
-        let dst = to_dir.join(entry.file_name());
-        if dst.exists() {
-            // The newly-composed artifacts have priority — leave the
-            // old file in place (it'll be removed when we drop the
-            // OLD directory below). This matches the v3 contract:
-            // post-rename state is the destination's state, not a
-            // merge of both.
+        })?
+        .filter_map(|res| res.ok().map(|e| e.path()))
+        .collect();
+
+    // Codex B-11 — pre-flight collision check. We refuse to
+    // silently overwrite any newly-composed artifact in NEW.
+    for src in &entries {
+        let Some(name) = src.file_name() else {
             continue;
+        };
+        let dst = to_dir.join(name);
+        if dst.exists() {
+            return Err(ComposeError::FolderRenameTargetCollision {
+                from: from_dir.to_path_buf(),
+                to: to_dir.to_path_buf(),
+                offending_entry: name.to_string_lossy().to_string(),
+            });
         }
+    }
+    // No collisions — execute every move, tracking each on the
+    // rollback guard so a mid-loop failure unwinds previously-moved
+    // entries.
+    for src in entries {
+        let Some(name) = src.file_name().map(|n| n.to_os_string()) else {
+            continue;
+        };
+        let dst = to_dir.join(&name);
         fs::rename(&src, &dst).map_err(|e| ComposeError::Io {
-            path: dst,
+            path: dst.clone(),
             source: e,
         })?;
+        rollback.track_entry_rename(src, dst);
     }
     // Drop OLD — best-effort; we surface an Io error if it fails so
-    // operators see the dangling directory.
+    // operators see the dangling directory. The OLD dir should be
+    // empty by now (every entry got moved above).
     fs::remove_dir_all(from_dir).map_err(|e| ComposeError::Io {
         path: from_dir.to_path_buf(),
         source: e,
@@ -962,6 +1171,76 @@ fn empty_schema_for(bucket: &BucketKey) -> AppliedSchema {
         models: Default::default(),
         registered_apps: vec![bucket.app.clone()],
     }
+}
+
+/// Per Codex round-2 B-9 — relabel any OLD-bucket snapshot under its
+/// renamed-to label BEFORE the differ runs.
+///
+/// Why: an `#[app(renamed_from = "old")]` annotation tells compose
+/// that the app's logical label changed but its physical schema did
+/// not. The pre-rename snapshot was keyed under `BucketKey { app:
+/// "old", .. }`; the new model inventory keys the same tables under
+/// `BucketKey { app: "new", .. }`. If the differ sees both keys it
+/// emits `DropTable` on OLD and `AddTable` on NEW for every model in
+/// the bucket — escalating the rename to a destructive classification
+/// that wrongly demands `--allow-destructive` and re-creates every
+/// table from scratch.
+///
+/// The fix: walk `apps` for renamed-from entries and rebuild
+/// `snapshots` so the OLD bucket's snapshot value lives under the NEW
+/// bucket's key. The differ then sees a single bucket on both sides
+/// (NEW) with identical models — no drops, no adds, just possibly
+/// column-level diffs the operator legitimately introduced.
+///
+/// When the OLD bucket has no snapshot, this is a no-op for that
+/// rename. When BOTH OLD and NEW snapshots exist (operators rarely
+/// hit this — would imply a partial earlier rename) the OLD wins
+/// because the post-rename schema is what the model inventory
+/// reflects, and we want the differ to see the OLD schema as the
+/// "before" state being moved to NEW.
+fn remap_snapshots_for_renames(
+    snapshots: &std::collections::BTreeMap<BucketKey, AppliedSchema>,
+    apps: &[AppLifecycle],
+) -> std::collections::BTreeMap<BucketKey, AppliedSchema> {
+    use std::collections::BTreeMap;
+
+    // Build a lookup from `(database, old_label) -> new_label`. Each
+    // app's `renamed_from` is at most one OLD label.
+    let mut rename_map: BTreeMap<(String, String), String> = BTreeMap::new();
+    for app in apps {
+        if let Some(old) = app.renamed_from.as_deref() {
+            rename_map.insert((app.database.clone(), old.to_string()), app.label.clone());
+        }
+    }
+    if rename_map.is_empty() {
+        // Hot path — the typical compose has no renames; clone and
+        // return the input untouched.
+        return snapshots.clone();
+    }
+
+    let mut remapped: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
+    for (key, schema) in snapshots {
+        let lookup_key = (key.database.clone(), key.app.clone());
+        if let Some(new_label) = rename_map.get(&lookup_key) {
+            let new_key = BucketKey {
+                database: key.database.clone(),
+                app: new_label.clone(),
+            };
+            // Update the embedded `registered_apps` list too — the
+            // differ inspects it for the `App move` consistency
+            // check on the destination bucket.
+            let mut relabeled = schema.clone();
+            for entry in &mut relabeled.registered_apps {
+                if entry == &key.app {
+                    *entry = new_label.clone();
+                }
+            }
+            remapped.insert(new_key, relabeled);
+        } else {
+            remapped.insert(key.clone(), schema.clone());
+        }
+    }
+    remapped
 }
 
 fn compute_checksums(lowered: &[OperationSql]) -> (String, Option<String>) {
@@ -1068,11 +1347,67 @@ fn atomic_write(final_path: &Path, bytes: &[u8]) -> Result<PathBuf, ComposeError
     Ok(tmp)
 }
 
-fn promote_tmp(tmp: &Path, final_path: &Path) -> Result<(), ComposeError> {
-    fs::rename(tmp, final_path).map_err(|e| ComposeError::Io {
-        path: final_path.to_path_buf(),
-        source: e,
-    })
+/// Promote a tmp file to its final path, capturing any pre-existing
+/// bytes into a sibling `.bak.<pid>.<n>` backup file BEFORE the
+/// rename so a later failure can restore the original content.
+///
+/// Per Codex round-2 B-10 the prior `promote_tmp` was not
+/// restoration-safe on overwrite: a `fs::rename` over an existing
+/// file silently replaced the content, and the rollback path could
+/// only `remove_file(final_path)` — losing the original bytes
+/// entirely. The new shape:
+///
+/// 1. If `final_path` already exists, copy its bytes into a sibling
+///    `<final>.bak.<pid>.<counter>` backup. The counter is per-
+///    process atomic so two simultaneous promotes never collide.
+/// 2. Rename `tmp` over `final_path`.
+/// 3. Return the backup path so the caller can hand it to the
+///    [`WriteRollback`] guard for restoration on failure.
+///
+/// Returns `Ok(None)` when no prior file existed at `final_path`
+/// (fresh create — nothing to back up). Returns `Ok(Some(path))` when
+/// a backup was captured. Returns `Err` only if either I/O step
+/// fails; in that case any partial backup is removed before
+/// surfacing the error so the workspace is left clean.
+fn promote_tmp_with_backup(tmp: &Path, final_path: &Path) -> Result<Option<PathBuf>, ComposeError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static BACKUP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let backup_path = if final_path.exists() {
+        let pid = std::process::id();
+        let n = BACKUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut name = final_path
+            .file_name()
+            .map(|f| f.to_os_string())
+            .unwrap_or_default();
+        name.push(format!(".bak.{pid}.{n}"));
+        let backup = final_path.with_file_name(name);
+        // Copy preserves the original bytes regardless of whether the
+        // tmp's overwrite succeeds. We use `fs::copy` rather than
+        // `fs::rename` because we want both files to coexist briefly
+        // (the tmp will land on `final_path` next) and `rename` would
+        // make the original disappear.
+        fs::copy(final_path, &backup).map_err(|e| ComposeError::Io {
+            path: backup.clone(),
+            source: e,
+        })?;
+        Some(backup)
+    } else {
+        None
+    };
+    if let Err(e) = fs::rename(tmp, final_path) {
+        // Promote failed — remove the just-captured backup so the
+        // workspace is clean for the rollback guard's tmp cleanup
+        // pass.
+        if let Some(b) = backup_path {
+            let _ = fs::remove_file(&b);
+        }
+        return Err(ComposeError::Io {
+            path: final_path.to_path_buf(),
+            source: e,
+        });
+    }
+    Ok(backup_path)
 }
 
 /// Ensure the per-database pending dir exists. Useful as a pre-flight
@@ -1626,7 +1961,7 @@ mod tests {
         let _ = fs::remove_dir_all(&work);
     }
 
-    /// Codex B-5 — round-trip rename app. Compose with
+    /// Codex B-5 / B-9 — round-trip rename app. Compose with
     /// `renamed_from = "oldname"` on the new bucket must:
     ///
     ///   1. Emit `UPDATE djogi_schema_migrations SET app_label =
@@ -1634,6 +1969,15 @@ mod tests {
     ///   2. Emit the inverse UPDATE into the down SQL.
     ///   3. Move `migrations/main/oldname/` → `migrations/main/newname/`
     ///      on disk.
+    ///   4. Per Codex round-2 B-9: succeed WITHOUT
+    ///      `--allow-destructive`. The on-disk SQL tables don't move
+    ///      when an app renames; `remap_snapshots_for_renames`
+    ///      relabels the OLD-bucket snapshot under NEW before diffing
+    ///      so no DropTable / AddTable pair appears, and the
+    ///      classification stays metadata-only.
+    ///   5. Per Codex round-2 B-9: the SQL must NOT carry a DROP
+    ///      TABLE for the renamed-from bucket's tables — they aren't
+    ///      being dropped.
     #[test]
     fn b5_rename_app_emits_ledger_update_and_renames_folder() {
         let work = temp_workspace("b5_rename_round_trip");
@@ -1670,7 +2014,9 @@ mod tests {
             snapshots: &snapshots,
             apps: std::slice::from_ref(&app),
             name: "rename newname",
-            allow_destructive: true,
+            // Codex round-2 B-9: pure rename must NOT require the
+            // destructive opt-in.
+            allow_destructive: false,
             force_overwrite: false,
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
@@ -1703,6 +2049,13 @@ mod tests {
         );
         // The pre-existing artifact was moved over.
         assert!(new_dir.join("V20260101010101__init.sql").exists());
+        // 5. Codex round-2 B-9: the up SQL must NOT carry a DROP
+        // TABLE for `widgets` — the table isn't being dropped, just
+        // re-labelled at the app boundary.
+        assert!(
+            !up.contains("DROP TABLE \"widgets\""),
+            "rename must not emit DROP TABLE for widgets: {up}"
+        );
         let _ = fs::remove_dir_all(&work);
     }
 
@@ -1838,5 +2191,445 @@ mod tests {
         // Sentinel inside the blocking directory is preserved.
         assert!(blocked_down.join("sentinel").exists());
         let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 B-10 — `WriteRollback` must restore original
+    /// bytes when a tmp was promoted OVER an existing file. We
+    /// simulate a mid-sequence failure by:
+    ///
+    /// 1. Pre-creating the up SQL file with content `"old"` (so the
+    ///    up promote is an OVERWRITE, not a fresh create).
+    /// 2. Pre-creating the down_path as a directory so the down
+    ///    promote fails. The up promote has already succeeded by
+    ///    that point, so its rollback path runs.
+    ///
+    /// Asserts:
+    /// - tmp files cleaned up (B-2 contract still holds).
+    /// - The up file's content is still `"old"` (restored from
+    ///   backup, NOT the freshly-emitted bytes).
+    /// - No `.bak.<pid>.<n>` sibling files remain on disk (the
+    ///   rollback's restore step renames the backup back over the
+    ///   final path; no backup file is left behind).
+    #[test]
+    fn b10_rollback_restores_original_bytes_on_overwrite_failure() {
+        let work = temp_workspace("b10_overwrite_restore");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+        let mut models = BTreeMap::new();
+        models.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+        let now = at(2026, 4, 25, 1, 2, 3);
+        let prefix = version_prefix(now);
+        let version = version_id(&prefix, &sanitize_slug("add widgets"));
+        let bucket_directory = bucket_dir(&work, &bucket);
+        fs::create_dir_all(&bucket_directory).unwrap();
+        // Pre-existing up SQL — operator's prior content. The
+        // promote will overwrite this; the rollback must restore it.
+        let up_path = bucket_directory.join(up_filename(&version));
+        fs::write(&up_path, b"old up content").unwrap();
+        // Block the down promote so the sequence fails after the up
+        // promote has already overwritten the existing up file.
+        let blocked_down = bucket_directory.join(down_filename(&version));
+        fs::create_dir_all(&blocked_down).unwrap();
+
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            // Force-overwrite is required because the up file already
+            // exists with non-canonical bytes (otherwise the D013
+            // hand-edit guard fires before any promote happens).
+            force_overwrite: true,
+            now,
+            _guard: &guard,
+        };
+        let err = compose(req).expect_err("down promote must fail");
+        assert!(matches!(err, ComposeError::Io { .. }));
+
+        // (a) tmp files cleaned up.
+        let mut tmp_files: Vec<String> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.contains(".tmp.") {
+                    tmp_files.push(name);
+                }
+            }
+        }
+        assert!(
+            tmp_files.is_empty(),
+            ".tmp.<pid> files must be cleaned: {tmp_files:?}"
+        );
+
+        // (b) up file's content is still the original `"old up content"`.
+        let after = fs::read_to_string(&up_path).expect("up still exists");
+        assert_eq!(
+            after, "old up content",
+            "rollback must restore original up bytes from the backup"
+        );
+
+        // (c) No `.bak.<pid>.<n>` files remain anywhere in the
+        // bucket directory.
+        let mut bak_files: Vec<String> = Vec::new();
+        if let Ok(entries) = fs::read_dir(&bucket_directory) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.contains(".bak.") {
+                    bak_files.push(name);
+                }
+            }
+        }
+        assert!(
+            bak_files.is_empty(),
+            "backup files must be cleaned after restore: {bak_files:?}"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 B-3 — D013 also fires when ONLY the down SQL was
+    /// hand-edited. The original B-3 test only covered the up side;
+    /// round-2 caught the down side as silently overwriteable.
+    #[test]
+    fn b3_round2_d013_fires_on_down_only_hand_edit() {
+        let work = temp_workspace("b3r2_down_only");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+        let mut models = BTreeMap::new();
+        models.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+        let now = at(2026, 4, 25, 1, 2, 3);
+        let req1 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+        };
+        let r1 = compose(req1).expect("first compose");
+        let down_path = r1.composed_buckets[0].down_sql_path.clone();
+        let original_down = fs::read_to_string(&down_path).unwrap();
+        let edited_down = original_down.clone() + "\n-- operator hand-edit on down only\n";
+        fs::write(&down_path, &edited_down).unwrap();
+
+        let req2 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+        };
+        let err = compose(req2).expect_err("down hand-edit must refuse");
+        match err {
+            ComposeError::HandEditedMigrationWouldBeOverwritten { text, path, .. } => {
+                assert!(text.contains("D013"), "must surface D013: {text}");
+                assert!(
+                    text.contains("down"),
+                    "diagnostic must name the down side: {text}"
+                );
+                assert_eq!(path, down_path, "path must be the down file");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // The hand-edited down file is preserved on disk.
+        let after = fs::read_to_string(&down_path).unwrap();
+        assert_eq!(after, edited_down);
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 B-3 — D013 fires when BOTH up and down were
+    /// edited. The diagnostic surfaces both via the side label.
+    #[test]
+    fn b3_round2_d013_fires_on_both_sides_hand_edit() {
+        let work = temp_workspace("b3r2_both");
+        let guard = lock_for(&work);
+        let bucket = global_bucket();
+        let mut models = BTreeMap::new();
+        models.insert(bucket.clone(), snapshot_with_widgets(&bucket));
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(bucket.clone(), empty_snapshot(&bucket));
+        let now = at(2026, 4, 25, 1, 2, 3);
+        let req1 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+        };
+        let r1 = compose(req1).expect("first compose");
+        let up_path = r1.composed_buckets[0].up_sql_path.clone();
+        let down_path = r1.composed_buckets[0].down_sql_path.clone();
+        fs::write(&up_path, b"-- hand edit up\n").unwrap();
+        fs::write(&down_path, b"-- hand edit down\n").unwrap();
+
+        let req2 = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: &[],
+            name: "add widgets",
+            allow_destructive: false,
+            force_overwrite: false,
+            now,
+            _guard: &guard,
+        };
+        let err = compose(req2).expect_err("both-side edit must refuse");
+        match err {
+            ComposeError::HandEditedMigrationWouldBeOverwritten { text, .. } => {
+                assert!(text.contains("D013"), "must surface D013: {text}");
+                assert!(
+                    text.contains("up and down"),
+                    "diagnostic must indicate both sides edited: {text}"
+                );
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 B-9 — rename app with multiple existing tables
+    /// must succeed WITHOUT `--allow-destructive`. This guards the
+    /// snapshot-key remap step in `remap_snapshots_for_renames`: if
+    /// the remap regresses, the differ would emit DropTable for each
+    /// of the OLD bucket's three tables and the test would fail with
+    /// `DestructiveRequiresAllowDestructive`.
+    #[test]
+    fn b9_rename_app_with_three_tables_no_allow_destructive() {
+        let work = temp_workspace("b9_rename_three_tables");
+        let guard = lock_for(&work);
+        let old_bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let new_bucket = BucketKey {
+            database: "main".into(),
+            app: "invoicing".into(),
+        };
+        // Three tables on the OLD side, three IDENTICAL tables on the
+        // NEW side. Only the bucket label changed.
+        fn three_tables(bucket: &BucketKey) -> AppliedSchema {
+            let mut s = AppliedSchema {
+                djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+                enums: BTreeMap::new(),
+                format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-04-25T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models: BTreeMap::new(),
+                registered_apps: vec![bucket.app.clone()],
+            };
+            for name in ["invoices", "customers", "line_items"] {
+                s.models.insert(
+                    name.to_string(),
+                    TableSchema {
+                        app: if bucket.app.is_empty() {
+                            None
+                        } else {
+                            Some(bucket.app.clone())
+                        },
+                        columns: vec![ColumnSchema {
+                            check: None,
+                            default_sql: Some("generate_id_desc()".to_string()),
+                            foreign_key: None,
+                            index_type: None,
+                            indexed: false,
+                            max_length: None,
+                            name: "id".to_string(),
+                            nullable: false,
+                            on_delete: None,
+                            outbox_exclude: false,
+                            rationale: None,
+                            relation_kind: None,
+                            renamed_from: None,
+                            sequence_within: None,
+                            sql_type: "BIGINT".to_string(),
+                            unique: false,
+                        }],
+                        fts: None,
+                        is_through: false,
+                        moved_from_app: None,
+                        partition: None,
+                        primary_key: PrimaryKeySchema {
+                            columns: vec!["id".to_string()],
+                            kind: PkKindSchema::HeerIdRecencyBiased,
+                        },
+                        rationale: None,
+                        renamed_from: None,
+                        rls_enabled: false,
+                        table: name.to_string(),
+                        tenant_key: None,
+                    },
+                );
+            }
+            s
+        }
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(old_bucket.clone(), three_tables(&old_bucket));
+        let mut models = BTreeMap::new();
+        models.insert(new_bucket.clone(), three_tables(&new_bucket));
+        let app = AppLifecycle {
+            label: "invoicing".to_string(),
+            database: "main".to_string(),
+            renamed_from: Some("billing".to_string()),
+            tombstone: false,
+        };
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: std::slice::from_ref(&app),
+            name: "rename invoicing",
+            // Crucial: NO allow_destructive flag.
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+        };
+        let report = compose(req).expect("rename without --allow-destructive must succeed");
+        let dest = report
+            .composed_buckets
+            .iter()
+            .find(|c| c.bucket == new_bucket)
+            .expect("destination bucket composed");
+        let up = fs::read_to_string(&dest.up_sql_path).unwrap();
+        // No DropTable for any of the three table names.
+        for name in ["invoices", "customers", "line_items"] {
+            let drop_text = format!("DROP TABLE \"{name}\"");
+            assert!(
+                !up.contains(&drop_text),
+                "rename must not emit {drop_text} (B-9): {up}"
+            );
+        }
+        // The RenameApp ledger UPDATE is still there.
+        assert!(up.contains("UPDATE djogi_schema_migrations"));
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 B-11 — `rename_old_bucket_folder` refuses
+    /// fail-fast when the destination directory already contains an
+    /// entry colliding with the OLD directory's content. The prior
+    /// shape silently skipped collisions (dropping the OLD entry); the
+    /// new shape returns a typed `FolderRenameTargetCollision` error
+    /// before any move happens.
+    #[test]
+    fn b11_folder_rename_collision_refuses_fail_fast() {
+        let work = temp_workspace("b11_collision");
+        let guard = lock_for(&work);
+        let old_bucket = BucketKey {
+            database: "main".into(),
+            app: "oldname".into(),
+        };
+        let new_bucket = BucketKey {
+            database: "main".into(),
+            app: "newname".into(),
+        };
+        let old_dir = bucket_dir(&work, &old_bucket);
+        let new_dir = bucket_dir(&work, &new_bucket);
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::create_dir_all(&new_dir).unwrap();
+        // Both directories contain a file of the SAME name with
+        // DIFFERENT content — a collision the prior merge loop would
+        // silently swallow.
+        fs::write(old_dir.join("V20260101010101__init.sql"), "from-old").unwrap();
+        fs::write(new_dir.join("V20260101010101__init.sql"), "from-new").unwrap();
+        let mut snapshots = BTreeMap::new();
+        snapshots.insert(old_bucket.clone(), snapshot_with_widgets(&old_bucket));
+        let mut models = BTreeMap::new();
+        models.insert(new_bucket.clone(), snapshot_with_widgets(&new_bucket));
+        let app = AppLifecycle {
+            label: "newname".to_string(),
+            database: "main".to_string(),
+            renamed_from: Some("oldname".to_string()),
+            tombstone: false,
+        };
+        let req = ComposeRequest {
+            workspace_root: &work,
+            models: &models,
+            snapshots: &snapshots,
+            apps: std::slice::from_ref(&app),
+            name: "rename newname",
+            allow_destructive: false,
+            force_overwrite: false,
+            now: at(2026, 4, 25, 1, 2, 3),
+            _guard: &guard,
+        };
+        let err = compose(req).expect_err("collision must surface");
+        match err {
+            ComposeError::FolderRenameTargetCollision {
+                offending_entry, ..
+            } => {
+                assert_eq!(offending_entry, "V20260101010101__init.sql");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        // The pre-existing files are left untouched (no partial
+        // merge state).
+        assert_eq!(
+            fs::read_to_string(old_dir.join("V20260101010101__init.sql")).unwrap(),
+            "from-old"
+        );
+        assert_eq!(
+            fs::read_to_string(new_dir.join("V20260101010101__init.sql")).unwrap(),
+            "from-new"
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Codex round-2 B-8 — both `classify_bucket` and
+    /// `classify_bucket_with_pending` route through the same
+    /// underlying logic. The convenience wrapper supplies `None` for
+    /// `pending_version` so the message uses the `<unknown>`
+    /// placeholder; production callers go through the with-pending
+    /// path.
+    #[test]
+    fn b8_classify_bucket_routes_through_with_pending() {
+        // We exercise both entry points and assert they agree on the
+        // None-version case (the classify_bucket convenience wrapper
+        // forwards directly to classify_bucket_with_pending(.., None)).
+        use super::super::build_match::{classify_bucket, classify_bucket_with_pending};
+        use super::super::schema::SNAPSHOT_FORMAT_VERSION;
+        let bucket = BucketKey {
+            database: "main".into(),
+            app: "billing".into(),
+        };
+        let drifted = AppliedSchema {
+            djogi_version: "9.9.9".to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-04-25T00:00:00Z".to_string(),
+            indexes: Vec::new(),
+            models: BTreeMap::new(),
+            registered_apps: Vec::new(),
+        };
+        let synced = AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            ..drifted.clone()
+        };
+        let via_wrapper = classify_bucket(&bucket, Some(&drifted), Some(&drifted), Some(&synced))
+            .expect("must produce diagnostic");
+        let via_direct = classify_bucket_with_pending(
+            &bucket,
+            Some(&drifted),
+            Some(&drifted),
+            Some(&synced),
+            None,
+        )
+        .expect("must produce diagnostic");
+        assert_eq!(via_wrapper, via_direct);
     }
 }
