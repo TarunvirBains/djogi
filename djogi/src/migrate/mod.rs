@@ -74,8 +74,8 @@ pub mod target;
 pub mod verify;
 
 pub use attune::{
-    AttuneEntry, AttuneEntryKind, AttuneError, AttuneMode, AttuneRefusal, AttuneReport,
-    AttuneRequest, attune,
+    AttuneDiagnostic, AttuneEntry, AttuneEntryKind, AttuneError, AttuneMode, AttuneRefusal,
+    AttuneReport, AttuneRequest, attune,
 };
 pub use build_match::{
     DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket,

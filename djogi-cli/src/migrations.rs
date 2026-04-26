@@ -349,6 +349,7 @@ pub fn attune_cmd(
     squash: bool,
     from: Option<&str>,
     publish: bool,
+    app: Option<&str>,
     workspace: Option<PathBuf>,
 ) -> ExitCode {
     let workspace = resolve_workspace(workspace);
@@ -361,6 +362,7 @@ pub fn attune_cmd(
             Some(v) if !v.is_empty() => AttuneMode::Squash {
                 from: v.to_string(),
                 publish,
+                app: app.filter(|s| !s.is_empty()).map(|s| s.to_string()),
             },
             _ => {
                 eprintln!(
@@ -452,6 +454,12 @@ async fn run_attune(workspace: &Path, mode: AttuneMode) -> i32 {
                         version = entry.version,
                     );
                 }
+            }
+            // Surface structured diagnostics — today this carries the
+            // B-3 LedgerTableMissing notice when DiffOnly runs on a
+            // fresh database.
+            for diag in &report.diagnostics {
+                println!("  diagnostic: {diag}");
             }
             if let Some(squashed) = &report.squashed_to {
                 println!("squashed to: {squashed}");

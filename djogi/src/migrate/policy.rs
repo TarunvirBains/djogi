@@ -249,8 +249,19 @@ fn extract_url_host(body: &str) -> &str {
 }
 
 /// Extract the host from a libpq parameter string —
-/// `key=value key=value …` separated by spaces. Returns the value of
-/// the *last* `host=` key (libpq's documented "last wins" semantics).
+/// `key=value key=value …` separated by ASCII whitespace. Returns the
+/// value of the *last* `host=` key (libpq's documented "last wins"
+/// semantics).
+///
+/// **Whitespace tolerance.** Per libpq's documented connection-string
+/// grammar, a keyword/value pair may have ASCII whitespace surrounding
+/// the `=` separator: `host = prod`, `host  =  prod`, `host=  prod`,
+/// and `host  =prod` all assign value `prod` to key `host`. The
+/// previous parser only accepted the no-space form `host=prod` and
+/// silently produced an empty host for any other shape — that empty
+/// host then collated to localhost via the allowlist, which is exactly
+/// the bug B-1 closed: a remote DATABASE_URL with whitespace-padded
+/// `=` falsely passed the localhost gate.
 ///
 /// Quoting (`'`-delimited values with backslash escapes) is supported
 /// per the libpq grammar: a value may start with `'` and run until
@@ -273,18 +284,28 @@ fn extract_libpq_host(s: &str) -> &str {
         if i >= bytes.len() {
             break;
         }
-        // Read the key up to '='.
+        // Read the key — up to the first whitespace byte or `=`.
         let key_start = i;
         while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() {
             i += 1;
         }
         let key_end = i;
-        // If we ran out of input, or hit whitespace without an `=`,
-        // skip to the next token.
+        // Skip whitespace BETWEEN the key and the `=` (libpq tolerates
+        // `host = prod` and `host  =  prod`).
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        // If the next byte is not `=`, this token had no value — skip
+        // it and continue scanning.
         if i >= bytes.len() || bytes[i] != b'=' {
             continue;
         }
         i += 1; // consume '='
+        // Skip whitespace AFTER the `=` (libpq tolerates `host=  prod`
+        // and `host = prod`).
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
         // Read the value. Quoted form starts with `'`.
         if i < bytes.len() && bytes[i] == b'\'' {
             i += 1; // consume opening quote
@@ -645,5 +666,72 @@ mod tests {
     #[test]
     fn is_localhost_connection_libpq_quoted_localhost() {
         assert!(is_localhost_connection("host='localhost' dbname=test"));
+    }
+
+    // ── B-1 regression: whitespace-padded `=` in libpq form ──────────────
+
+    /// Padded `host = prod` must extract `prod`, not the empty string.
+    /// The empty-string case previously short-circuited through the
+    /// allowlist as localhost — which falsely passed the squash gate
+    /// against a remote database.
+    #[test]
+    fn extract_host_libpq_padded_equals_single_space_each_side() {
+        assert_eq!(extract_host("host = prod dbname=test"), "prod");
+    }
+
+    #[test]
+    fn extract_host_libpq_padded_equals_double_space_each_side() {
+        assert_eq!(extract_host("host  =  prod dbname=test"), "prod");
+    }
+
+    #[test]
+    fn extract_host_libpq_padded_equals_only_after() {
+        assert_eq!(extract_host("host=  prod dbname=test"), "prod");
+    }
+
+    #[test]
+    fn extract_host_libpq_padded_equals_only_before() {
+        assert_eq!(extract_host("host  =prod dbname=test"), "prod");
+    }
+
+    #[test]
+    fn extract_host_libpq_padded_equals_quoted_value() {
+        assert_eq!(
+            extract_host("host = 'prod with space' dbname=test"),
+            "prod with space"
+        );
+    }
+
+    #[test]
+    fn extract_host_libpq_padded_equals_remote_hostname() {
+        // The full B-1 trigger: `host = prod.example.com` previously
+        // returned `""` and `is_localhost_connection` treated `""` as
+        // localhost (Unix-socket convention). Verify the parser now
+        // returns the full hostname so the squash gate refuses.
+        assert_eq!(
+            extract_host("host = prod.example.com dbname=main"),
+            "prod.example.com"
+        );
+        assert!(!is_localhost_connection(
+            "host = prod.example.com dbname=main"
+        ));
+    }
+
+    #[test]
+    fn is_localhost_connection_libpq_padded_equals_remote_rejected() {
+        // Same as above but exercising the public predicate directly.
+        assert!(!is_localhost_connection(
+            "host = db.prod.example.com dbname=test"
+        ));
+        assert!(!is_localhost_connection("host  =  10.0.0.5 dbname=test"));
+        assert!(!is_localhost_connection("host=  prod dbname=test"));
+        assert!(!is_localhost_connection("host  =prod dbname=test"));
+    }
+
+    #[test]
+    fn is_localhost_connection_libpq_padded_equals_localhost_still_passes() {
+        assert!(is_localhost_connection("host = localhost dbname=test"));
+        assert!(is_localhost_connection("host  =  127.0.0.1 dbname=test"));
+        assert!(is_localhost_connection("host=  ::1 dbname=test"));
     }
 }

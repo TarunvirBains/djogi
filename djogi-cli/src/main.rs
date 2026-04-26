@@ -116,6 +116,12 @@ enum MigrationsCommand {
         /// the rewrite stays local. Squash NEVER auto-publishes.
         #[arg(long, default_value_t = false)]
         publish: bool,
+        /// Optional explicit app label to scope `--squash` to a
+        /// single bucket. Required when `--from` matches a version in
+        /// multiple buckets (B-5); auto-detected when the version is
+        /// unique to one bucket.
+        #[arg(long)]
+        app: Option<String>,
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -157,6 +163,7 @@ fn main() -> ExitCode {
                 squash,
                 from,
                 publish,
+                app,
                 workspace,
             } => migrations::attune_cmd(
                 record,
@@ -164,6 +171,7 @@ fn main() -> ExitCode {
                 squash,
                 from.as_deref(),
                 publish,
+                app.as_deref(),
                 workspace,
             ),
         },

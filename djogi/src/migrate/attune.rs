@@ -19,10 +19,11 @@
 //!    out-of-band". Distinct from `fake_apply_plan` because `Record`
 //!    walks every unrecorded SQL file in the bucket in one go.
 //!
-//! 3. **`AttuneMode::Squash { from }`**: HISTORY REWRITE. Coalesces
-//!    every committed SQL file from `from` to HEAD into one squashed
-//!    file, deletes the originals, and removes the deleted versions
-//!    from the ledger. Per OQ-04 (Codex round-3 lens-auto-resolved):
+//! 3. **`AttuneMode::Squash { from, publish, app }`**: HISTORY REWRITE.
+//!    Coalesces every committed SQL file from `from` to HEAD into one
+//!    squashed file, deletes the originals, and removes the deleted
+//!    versions from the ledger. Per OQ-04 (Codex round-3 lens-auto-
+//!    resolved) plus the round-4 fixup for B-5 (single-bucket scope):
 //!
 //!    - **Localhost-only.** Refuses to run when `DATABASE_URL` does
 //!      not resolve to the local machine — see
@@ -43,6 +44,26 @@
 //! Every mode acquires the workspace [`super::guard::WorkspaceGuard`]
 //! before touching any path. Concurrent compose / apply / repair
 //! invocations cannot interleave with attune.
+//!
+//! # Database scope (B-2)
+//!
+//! Each attune invocation is bound to ONE database — the active
+//! `DjogiContext`'s `current_database()`. The disk scan is filtered
+//! to `migrations/<active_db>/...` and ledger queries run against the
+//! connected pool. Multi-database workspaces require running attune
+//! once per database; this is intentional and matches the existing
+//! single-context architecture (the runner has a single pool today;
+//! `pool_for(database)` is a future seam).
+//!
+//! # Read-only DiffOnly contract (B-3)
+//!
+//! `AttuneMode::DiffOnly` does NOT bootstrap the ledger. On a fresh
+//! database where `djogi_schema_migrations` does not exist yet, the
+//! returned report carries an [`AttuneDiagnostic::LedgerTableMissing`]
+//! entry and the ledger table stays absent. The operator must run
+//! `apply` or `attune --record` (or `baseline`) to bootstrap before
+//! subsequent diffs become meaningful. Only `Record` and `Squash`
+//! modes call `ledger::bootstrap`.
 //!
 //! # No regex
 //!
@@ -95,12 +116,28 @@ pub enum AttuneMode {
     /// stays local. When `true`, attune shells out to
     /// `git -C <migrations_root> push` to publish. Default is
     /// `false`; a missing `--publish` flag NEVER auto-publishes.
+    ///
+    /// **`app`** narrows the squash to a single bucket within the
+    /// connected database (B-5). When `None`, the bucket is auto-
+    /// detected: if exactly one bucket contains `from`, that bucket
+    /// is the squash target. If `from` exists in MULTIPLE buckets,
+    /// auto-detection refuses with
+    /// [`AttuneRefusal::SquashFromVersionAmbiguous`] and the operator
+    /// must re-run with an explicit `app`. The pre-B-5 implementation
+    /// applied the `versions >= from` predicate to every bucket in the
+    /// workspace, which collapsed unrelated bucket histories — a
+    /// destructive, non-recoverable side effect.
     Squash {
         /// Inclusive starting version (e.g. `V20260101000000__init`).
         from: String,
         /// `true` to push to the migrations submodule's remote;
         /// `false` to keep the rewrite local.
         publish: bool,
+        /// Optional explicit app label to scope the squash. `None`
+        /// means "auto-detect"; an explicit value forces the squash
+        /// to that single bucket and refuses if the version is not
+        /// present there.
+        app: Option<String>,
     },
 }
 
@@ -162,6 +199,50 @@ pub struct AttuneReport {
     /// `true` when the squashed history was pushed to the remote.
     /// Only set in `Squash { publish: true }` after a successful push.
     pub published: bool,
+    /// Structured diagnostics surfaced alongside the diff entries.
+    /// Today this carries [`AttuneDiagnostic::LedgerTableMissing`] (B-3)
+    /// when DiffOnly runs on a fresh database — the report is still
+    /// produced, but the operator sees an actionable note that they
+    /// must run `apply` or `attune --record` to bootstrap the ledger
+    /// before subsequent diffs are meaningful.
+    pub diagnostics: Vec<AttuneDiagnostic>,
+}
+
+/// Structured operator-facing diagnostic surfaced by [`attune`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttuneDiagnostic {
+    /// The `djogi_schema_migrations` table does not exist in the
+    /// connected database. DiffOnly's read-only contract (B-3) means
+    /// attune does NOT bootstrap the ledger from a diff; the operator
+    /// must run `apply` or `attune --record` first.
+    ///
+    /// The `database` field is the active connection's
+    /// `current_database()` so a multi-database workspace's diagnostic
+    /// is unambiguous.
+    LedgerTableMissing { database: String },
+}
+
+impl AttuneDiagnostic {
+    /// Stable code used by CLI rendering. Kept short so terminal
+    /// output stays compact.
+    pub fn code(&self) -> &'static str {
+        match self {
+            AttuneDiagnostic::LedgerTableMissing { .. } => "ATTUNE-001",
+        }
+    }
+}
+
+impl std::fmt::Display for AttuneDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AttuneDiagnostic::LedgerTableMissing { database } => write!(
+                f,
+                "[{}] ledger table `djogi_schema_migrations` does not exist in database \
+                 `{database}`; ledger not bootstrapped — run `apply` or `attune --record` first",
+                self.code(),
+            ),
+        }
+    }
 }
 
 /// Errors surfaced by [`attune`]. Distinct from [`super::runner::RunnerError`]
@@ -212,8 +293,26 @@ pub enum AttuneRefusal {
     SquashNotDevProfile { profile: String },
     /// `Squash --from` named a version that does not exist on disk.
     /// We refuse rather than silently no-op because the version
-    /// argument is load-bearing for an audit trail.
+    /// argument is load-bearing for an audit trail. Alias of
+    /// [`AttuneRefusal::SquashFromVersionNotFound`] retained for
+    /// pre-B-5 callers.
     SquashFromNotFound { from: String },
+    /// `Squash --from` named a version that does not exist on disk in
+    /// any bucket scoped to the connected database (B-5). Distinct
+    /// from `SquashFromNotFound` only by the more specific message.
+    SquashFromVersionNotFound { version: String },
+    /// `Squash --from` named a version that exists in MULTIPLE
+    /// buckets within the connected database (B-5). Squash refuses to
+    /// silently pick one because each bucket's history is independent;
+    /// the operator must disambiguate via `--app <app_label>`.
+    ///
+    /// The `buckets` field carries `(database, app)` pairs in
+    /// `database/app` rendering form so the error message lists every
+    /// candidate.
+    SquashFromVersionAmbiguous {
+        version: String,
+        buckets: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for AttuneError {
@@ -277,6 +376,20 @@ impl std::fmt::Display for AttuneRefusal {
                 f,
                 "attune --squash --from `{from}` did not match any version on disk; \
                  list `migrations/<database>/<app>/` to find a valid starting version"
+            ),
+            AttuneRefusal::SquashFromVersionNotFound { version } => write!(
+                f,
+                "attune --squash --from `{version}` did not match any version on disk \
+                 in the connected database; list `migrations/<database>/<app>/` to find \
+                 a valid starting version"
+            ),
+            AttuneRefusal::SquashFromVersionAmbiguous { version, buckets } => write!(
+                f,
+                "attune --squash --from `{version}` exists in multiple buckets ({}); \
+                 squash refuses to silently pick one — each bucket's history is \
+                 independent. Disambiguate by passing `--app <app_label>` to scope the \
+                 squash to a single bucket",
+                buckets.join(", ")
             ),
         }
     }
@@ -346,19 +459,48 @@ pub async fn attune(
         }
     }
 
-    // Bootstrap the ledger so the SELECT below cannot fail with
-    // relation-not-found. This is a small write — the ledger DDL is
-    // `CREATE TABLE IF NOT EXISTS`, idempotent — and is consistent
-    // with the runner's own bootstrap pattern. Attune is gated on the
-    // workspace lock so the bootstrap is serial against other
-    // migration tooling.
-    ledger::bootstrap(ctx)
-        .await
-        .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
+    // Resolve the active database name first — every subsequent
+    // disk-scan + ledger-query path is scoped to the bucket that
+    // matches THIS context's database. The CLI orchestrator runs
+    // attune once per database; this guarantees an attune invocation
+    // never inserts ledger rows for a database it isn't actually
+    // connected to (B-2).
+    //
+    // Reading `current_database()` does not require the ledger table,
+    // so we issue it BEFORE the bootstrap dispatch below — DiffOnly's
+    // read-only contract (B-3) hinges on us not creating the ledger
+    // table when the operator only asked for a diff.
+    let active_database = active_database_name(ctx).await?;
 
-    // Walk disk + ledger.
-    let disk = scan_disk(req.workspace_root)?;
-    let ledger_versions = scan_ledger(ctx).await?;
+    // Mode dispatch for ledger bootstrap (B-3): DiffOnly is read-only
+    // and must NEVER create `djogi_schema_migrations` on a fresh DB.
+    // Record + Squash both write to the ledger and bootstrap it
+    // up-front (idempotent CREATE TABLE IF NOT EXISTS). DiffOnly skips
+    // bootstrap; if the ledger table is missing it surfaces a
+    // structured diagnostic in the report instead of silently creating
+    // the table.
+    let ledger_exists = match &req.mode {
+        AttuneMode::DiffOnly => ledger_table_exists(ctx).await?,
+        AttuneMode::Record { .. } | AttuneMode::Squash { .. } => {
+            ledger::bootstrap(ctx)
+                .await
+                .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
+            true
+        }
+    };
+
+    // Walk disk + ledger. Disk scan is filtered to ONLY the active
+    // database's bucket directories (B-2): if `migrations/main/...`
+    // and `migrations/crud_log/...` both exist on disk but the
+    // operator's context is connected to `main`, only `main`'s tree
+    // is in scope. Multi-database attune requires per-database
+    // invocations.
+    let disk = scan_disk_for_database(req.workspace_root, &active_database)?;
+    let ledger_versions = if ledger_exists {
+        scan_ledger(ctx, &active_database).await?
+    } else {
+        BTreeMap::new()
+    };
 
     // Compute the diff: unrecorded (on disk, not in ledger) and
     // orphaned (in ledger, not on disk).
@@ -388,11 +530,19 @@ pub async fn attune(
         }
     }
 
+    let mut diagnostics: Vec<AttuneDiagnostic> = Vec::new();
+    if matches!(req.mode, AttuneMode::DiffOnly) && !ledger_exists {
+        diagnostics.push(AttuneDiagnostic::LedgerTableMissing {
+            database: active_database.clone(),
+        });
+    }
+
     let mut report = AttuneReport {
         entries: Vec::new(),
         mutated: false,
         squashed_to: None,
         published: false,
+        diagnostics,
     };
 
     match &req.mode {
@@ -432,12 +582,13 @@ pub async fn attune(
             report.entries = out;
             Ok(report)
         }
-        AttuneMode::Squash { from, publish } => {
+        AttuneMode::Squash { from, publish, app } => {
             run_squash(
                 ctx,
                 req.workspace_root,
                 from,
                 *publish,
+                app.as_deref(),
                 &disk,
                 &mut report,
                 entries,
@@ -458,13 +609,26 @@ pub async fn attune(
 /// is what `attune --record` recovers from). The down file is paired
 /// 1:1 — a missing down for a present up surfaces in compose's
 /// idempotency check, not here.
-fn scan_disk(
+///
+/// **Single-database scope (B-2).** When `database_filter` is `Some`,
+/// only buckets whose `database` field matches the filter are included.
+/// `None` includes every bucket — used by unit tests that exercise the
+/// raw scan; the production `attune` entry point always passes a
+/// filter so it never inserts ledger rows for a database it isn't
+/// connected to.
+fn scan_disk_filtered(
     workspace_root: &Path,
+    database_filter: Option<&str>,
 ) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, AttuneError> {
     let mut out: BTreeMap<BucketKey, BTreeMap<String, PathBuf>> = BTreeMap::new();
     let buckets = scan_filesystem(workspace_root)
         .map_err(|e| AttuneError::FilesystemScanFailed { source: e })?;
     for fb in buckets {
+        if let Some(want) = database_filter
+            && fb.database != want
+        {
+            continue;
+        }
         let bucket = BucketKey {
             database: fb.database,
             app: fb.app,
@@ -538,6 +702,28 @@ fn recover_version_from_stem(stem: &str) -> Option<String> {
     None
 }
 
+/// Wrapper around [`scan_disk_filtered`] that includes every bucket
+/// regardless of database. Retained for unit tests that pre-date the
+/// B-2 single-database scope; production callers use
+/// [`scan_disk_for_database`].
+#[cfg(test)]
+fn scan_disk(
+    workspace_root: &Path,
+) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, AttuneError> {
+    scan_disk_filtered(workspace_root, None)
+}
+
+/// Wrapper around [`scan_disk_filtered`] that scopes the scan to a
+/// single database. The B-2 fix routes every production attune call
+/// through this helper so the disk scan never returns rows whose
+/// `database` field disagrees with the connected context.
+fn scan_disk_for_database(
+    workspace_root: &Path,
+    database: &str,
+) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, AttuneError> {
+    scan_disk_filtered(workspace_root, Some(database))
+}
+
 // ── Ledger scan ───────────────────────────────────────────────────────────
 
 /// Read every ledger row's `version`, `app_label`, and `status`,
@@ -548,6 +734,7 @@ fn recover_version_from_stem(stem: &str) -> Option<String> {
 /// repair / re-apply.
 async fn scan_ledger(
     ctx: &mut DjogiContext,
+    database: &str,
 ) -> Result<BTreeMap<BucketKey, BTreeMap<String, LedgerStatus>>, AttuneError> {
     let rows = ctx
         .query_all(
@@ -563,14 +750,11 @@ async fn scan_ledger(
     // ledger does not record `database` directly — it lives on the
     // bucket from which the runner derived the row. For T7 we treat
     // the active connection as a single database; the bucket
-    // identity reduces to `(active_db, app_label)`. Attune's caller
-    // is expected to invoke per-database (the orchestrator T7
-    // lifecycle iterates buckets the same way `compose` does in T6).
-    //
-    // Today's runner is single-pool too; we mirror that. When
-    // `DjogiContext::pool_for(database)` lands the call site picks
-    // the right database name from the pool's metadata.
-    let database = active_database_name(ctx).await?;
+    // identity reduces to `(database, app_label)`. The `database`
+    // argument is the active connection's `current_database()` —
+    // resolved once at the top of `attune` so DiffOnly never bootstraps
+    // the ledger (B-3) and so multi-database workspaces require a
+    // fresh attune invocation per database (B-2).
 
     let mut out: BTreeMap<BucketKey, BTreeMap<String, LedgerStatus>> = BTreeMap::new();
     for row in &rows {
@@ -591,7 +775,7 @@ async fn scan_ledger(
             continue;
         }
         let bucket = BucketKey {
-            database: database.clone(),
+            database: database.to_string(),
             app: app_label,
         };
         out.entry(bucket).or_default().insert(version, status);
@@ -613,6 +797,26 @@ async fn active_database_name(ctx: &mut DjogiContext) -> Result<String, AttuneEr
         source: DjogiError::from(e),
     })?;
     Ok(name)
+}
+
+/// Probe `pg_class` for the `djogi_schema_migrations` table without
+/// creating it. Used by [`AttuneMode::DiffOnly`] (B-3) so a fresh
+/// database stays read-only — the prior implementation called
+/// `ledger::bootstrap` unconditionally, which silently created the
+/// ledger table and broke the read-only contract.
+async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, AttuneError> {
+    let row = ctx
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
+    let exists: bool = row.try_get(0).map_err(|e| AttuneError::LedgerQueryFailed {
+        source: DjogiError::from(e),
+    })?;
+    Ok(exists)
 }
 
 // ── Record mode ───────────────────────────────────────────────────────────
@@ -686,12 +890,39 @@ async fn insert_recorded_row(
 /// `from` to HEAD into a single squashed file, deletes the originals,
 /// and removes the corresponding ledger rows. Optionally pushes to
 /// the migrations submodule's remote when `publish = true`.
+///
+/// **Single-bucket scope (B-5).** The squash predicate `versions >= from`
+/// is applied to EXACTLY ONE bucket — the bucket where `from` actually
+/// exists. The pre-B-5 implementation looped over every bucket in the
+/// workspace and applied the predicate to each, which collapsed
+/// unrelated bucket histories whose versions happened to sort after
+/// `from`. The new contract:
+///
+/// - If `app_filter` is `Some(label)`, the squash is scoped to
+///   `(active_db, label)`; if `from` is absent there it errors with
+///   [`AttuneRefusal::SquashFromVersionNotFound`].
+/// - If `app_filter` is `None` and `from` exists in exactly one bucket,
+///   that bucket is the target.
+/// - If `app_filter` is `None` and `from` exists in multiple buckets,
+///   we refuse with [`AttuneRefusal::SquashFromVersionAmbiguous`] and
+///   require the operator to disambiguate.
+/// - If `from` exists in zero buckets, we refuse with
+///   [`AttuneRefusal::SquashFromVersionNotFound`].
+///
+/// **Retained-row checksum refresh (B-4).** After writing the squashed
+/// SQL file, we recompute its `up` (and best-effort `down`) checksum
+/// and `UPDATE` the retained `from` ledger row's `checksum_up`,
+/// `checksum_down`, and `description` to match. The pre-B-4
+/// implementation left the retained row's checksum describing the
+/// PRE-squash file content — every subsequent verify or apply path
+/// would surface drift authored by squash itself.
 #[allow(clippy::too_many_arguments)]
 async fn run_squash(
     ctx: &mut DjogiContext,
     workspace_root: &Path,
     from: &str,
     publish: bool,
+    app_filter: Option<&str>,
     disk: &BTreeMap<BucketKey, BTreeMap<String, PathBuf>>,
     report: &mut AttuneReport,
     diff_entries: Vec<AttuneEntry>,
@@ -701,114 +932,193 @@ async fn run_squash(
     // squash.
     let mut entries = diff_entries;
 
-    // Squash operates per-bucket. Validate that `from` matches a
-    // version present somewhere on disk; reject early if not.
-    let mut from_found = false;
-    for versions in disk.values() {
-        if versions.contains_key(from) {
-            from_found = true;
-            break;
-        }
-    }
-    if !from_found {
-        return Err(AttuneError::Refused(AttuneRefusal::SquashFromNotFound {
-            from: from.to_string(),
-        }));
-    }
-
+    // Identify candidate buckets — buckets containing `from`.
+    let mut matching_buckets: Vec<&BucketKey> = Vec::new();
     for (bucket, versions) in disk {
-        // Collect versions >= `from` in ascending order. Lexical
-        // compare = chronological because version_prefix is
-        // `V<14 digits>`.
-        let to_squash: Vec<(&String, &PathBuf)> = versions
-            .iter()
-            .filter(|(v, _)| v.as_str() >= from)
-            .collect();
-        if to_squash.len() <= 1 {
-            // Nothing to squash for this bucket — `from` is the only
-            // version (or absent here entirely). Move on.
+        if let Some(label) = app_filter
+            && bucket.app.as_str() != label
+        {
             continue;
         }
-        let dir = bucket_dir(workspace_root, bucket);
-        // Concatenate up SQL.
-        let mut combined_up = String::new();
-        let mut combined_down_segments: Vec<String> = Vec::new();
-        for (version, path) in &to_squash {
-            let up_sql = std::fs::read_to_string(path).map_err(|e| AttuneError::SqlReadFailed {
-                path: (*path).clone(),
-                source: e,
-            })?;
-            combined_up.push_str(&format!("-- begin {version}\n"));
-            combined_up.push_str(&up_sql);
-            if !up_sql.ends_with('\n') {
-                combined_up.push('\n');
-            }
-            combined_up.push_str(&format!("-- end {version}\n\n"));
-            // Down side — best-effort.
-            let down_path = dir.join(down_filename(version));
-            if let Ok(down_sql) = std::fs::read_to_string(&down_path) {
-                combined_down_segments.push(format!(
-                    "-- begin {version} (reverse)\n{down_sql}\n-- end {version}\n",
-                ));
-            }
+        if versions.contains_key(from) {
+            matching_buckets.push(bucket);
         }
-        // The squash target keeps `from` as its version label.
-        let new_up_path = dir.join(up_filename(from));
-        let new_down_path = dir.join(down_filename(from));
-        std::fs::write(&new_up_path, combined_up.as_bytes()).map_err(|e| {
+    }
+
+    let target_bucket: &BucketKey = match matching_buckets.len() {
+        0 => {
+            return Err(AttuneError::Refused(
+                AttuneRefusal::SquashFromVersionNotFound {
+                    version: from.to_string(),
+                },
+            ));
+        }
+        1 => matching_buckets[0],
+        _ => {
+            // Multiple buckets contain `from`. Refuse and tell the
+            // operator how to disambiguate.
+            let mut buckets_rendered: Vec<String> = matching_buckets
+                .iter()
+                .map(|b| {
+                    let app_render = if b.app.is_empty() { "_global_" } else { &b.app };
+                    format!("{}/{}", b.database, app_render)
+                })
+                .collect();
+            buckets_rendered.sort();
+            return Err(AttuneError::Refused(
+                AttuneRefusal::SquashFromVersionAmbiguous {
+                    version: from.to_string(),
+                    buckets: buckets_rendered,
+                },
+            ));
+        }
+    };
+
+    // From here on, work strictly within `target_bucket`.
+    let bucket = target_bucket.clone();
+    let versions = disk.get(&bucket).expect("target_bucket came from disk map");
+
+    // Collect versions >= `from` in ascending order. Lexical compare =
+    // chronological because version_prefix is `V<14 digits>`.
+    let to_squash: Vec<(&String, &PathBuf)> = versions
+        .iter()
+        .filter(|(v, _)| v.as_str() >= from)
+        .collect();
+    if to_squash.len() <= 1 {
+        // Nothing to squash — `from` is HEAD or the only version in
+        // the bucket. Surface a clean no-op report.
+        entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+        report.entries = entries;
+        return Ok(());
+    }
+
+    let dir = bucket_dir(workspace_root, &bucket);
+
+    // Concatenate up SQL.
+    let mut combined_up = String::new();
+    let mut combined_down_segments: Vec<String> = Vec::new();
+    for (version, path) in &to_squash {
+        let up_sql = std::fs::read_to_string(path).map_err(|e| AttuneError::SqlReadFailed {
+            path: (*path).clone(),
+            source: e,
+        })?;
+        combined_up.push_str(&format!("-- begin {version}\n"));
+        combined_up.push_str(&up_sql);
+        if !up_sql.ends_with('\n') {
+            combined_up.push('\n');
+        }
+        combined_up.push_str(&format!("-- end {version}\n\n"));
+        // Down side — best-effort.
+        let down_path = dir.join(down_filename(version));
+        if let Ok(down_sql) = std::fs::read_to_string(&down_path) {
+            combined_down_segments.push(format!(
+                "-- begin {version} (reverse)\n{down_sql}\n-- end {version}\n",
+            ));
+        }
+    }
+
+    // The squash target keeps `from` as its version label.
+    let new_up_path = dir.join(up_filename(from));
+    let new_down_path = dir.join(down_filename(from));
+    std::fs::write(&new_up_path, combined_up.as_bytes()).map_err(|e| {
+        AttuneError::SqlWriteFailed {
+            path: new_up_path.clone(),
+            source: e,
+        }
+    })?;
+    // Down side: reverse-order concat of the per-version segments
+    // collected above so a rollback unwinds in the same order apply
+    // happened.
+    let mut combined_down = String::new();
+    for seg in combined_down_segments.iter().rev() {
+        combined_down.push_str(seg);
+        combined_down.push('\n');
+    }
+    let wrote_down = !combined_down.is_empty();
+    if wrote_down {
+        std::fs::write(&new_down_path, combined_down.as_bytes()).map_err(|e| {
             AttuneError::SqlWriteFailed {
-                path: new_up_path.clone(),
+                path: new_down_path.clone(),
                 source: e,
             }
         })?;
-        // Down side: reverse-order concat of the per-version segments
-        // collected above so a rollback unwinds in the same order
-        // apply happened.
-        let mut combined_down = String::new();
-        for seg in combined_down_segments.iter().rev() {
-            combined_down.push_str(seg);
-            combined_down.push('\n');
+    }
+
+    // Delete the originals (everything in `to_squash` except `from`).
+    for (version, path) in &to_squash {
+        if version.as_str() == from {
+            continue;
         }
-        if !combined_down.is_empty() {
-            std::fs::write(&new_down_path, combined_down.as_bytes()).map_err(|e| {
-                AttuneError::SqlWriteFailed {
-                    path: new_down_path.clone(),
-                    source: e,
-                }
-            })?;
-        }
-        // Delete the originals (everything in `to_squash` except `from`).
-        for (version, path) in &to_squash {
-            if version.as_str() == from {
-                continue;
-            }
-            std::fs::remove_file(path).map_err(|e| AttuneError::SqlDeleteFailed {
-                path: (*path).clone(),
+        std::fs::remove_file(path).map_err(|e| AttuneError::SqlDeleteFailed {
+            path: (*path).clone(),
+            source: e,
+        })?;
+        let down = dir.join(down_filename(version));
+        if down.exists() {
+            std::fs::remove_file(&down).map_err(|e| AttuneError::SqlDeleteFailed {
+                path: down.clone(),
                 source: e,
             })?;
-            let down = dir.join(down_filename(version));
-            if down.exists() {
-                std::fs::remove_file(&down).map_err(|e| AttuneError::SqlDeleteFailed {
-                    path: down.clone(),
-                    source: e,
-                })?;
-            }
-            // Drop the ledger row.
-            ctx.execute(
-                "DELETE FROM djogi_schema_migrations WHERE version = $1 AND app_label = $2",
-                &[version, &bucket.app],
-            )
-            .await
-            .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
-            entries.push(AttuneEntry {
-                bucket: bucket.clone(),
-                version: (*version).clone(),
-                kind: AttuneEntryKind::Squashed,
-            });
         }
-        report.mutated = true;
-        report.squashed_to = Some(from.to_string());
+        // Drop the ledger row.
+        ctx.execute(
+            "DELETE FROM djogi_schema_migrations WHERE version = $1 AND app_label = $2",
+            &[version, &bucket.app],
+        )
+        .await
+        .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
+        entries.push(AttuneEntry {
+            bucket: bucket.clone(),
+            version: (*version).clone(),
+            kind: AttuneEntryKind::Squashed,
+        });
     }
+
+    // B-4: refresh the retained `from` row's checksum + description so
+    // it describes the post-squash file content, not the pre-squash
+    // file content. Without this, every subsequent verify or apply
+    // path would surface drift authored by squash itself.
+    let new_checksum_up = compute_checksum([combined_up.as_str()]);
+    let new_checksum_down = if wrote_down {
+        Some(compute_checksum([combined_down.as_str()]))
+    } else {
+        None
+    };
+    let prior_description: Option<String> = ctx
+        .query_one(
+            "SELECT description FROM djogi_schema_migrations \
+             WHERE version = $1 AND app_label = $2",
+            &[&from.to_string(), &bucket.app],
+        )
+        .await
+        .ok()
+        .and_then(|row| row.try_get::<_, String>(0).ok());
+    let new_description = match prior_description {
+        Some(prev) => format!("squashed migration starting at {from} (was: {prev})"),
+        // No retained ledger row yet — squash also runs on workspaces
+        // whose `from` was never recorded (the disk file is the
+        // canonical artifact). The UPDATE below is a no-op in that
+        // case; we still produce a description for parity with the
+        // recorded path.
+        None => format!("squashed migration starting at {from}"),
+    };
+    ctx.execute(
+        "UPDATE djogi_schema_migrations \
+         SET checksum_up = $1, checksum_down = $2, description = $3 \
+         WHERE version = $4 AND app_label = $5",
+        &[
+            &new_checksum_up,
+            &new_checksum_down,
+            &new_description,
+            &from.to_string(),
+            &bucket.app,
+        ],
+    )
+    .await
+    .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
+
+    report.mutated = true;
+    report.squashed_to = Some(from.to_string());
 
     // Optional publish step.
     if publish && report.mutated {
