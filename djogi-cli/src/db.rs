@@ -23,15 +23,19 @@
 //! | Code | Meaning |
 //! |------|---------|
 //! | `0`  | Success — the command completed and any post-state was applied. |
-//! | `1`  | Error — config load failure, network, SQL, or any other underlying failure. |
-//! | `2`  | Gate refusal — a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect. |
+//! | `1`  | Error — config load failure, network, SQL, or any other underlying runtime failure. |
+//! | `2`  | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
 //!
-//! The `2` code mirrors clap's argument-error convention so a CI
-//! script can branch on `if [ $? -eq 2 ]` and treat a refusal as a
-//! soft "skipped" signal rather than a hard failure. The matrix is
-//! also documented in `ReadMe.MD` and `docs/spec/configuration.md` so
-//! the operator-facing surface stays in sync with the source of
-//! truth.
+//! Codex round-2 A-1: exit code `2` deliberately bundles policy
+//! refusals and argument-validation errors. Clap's default behaviour
+//! is to return `2` for unknown / malformed flags; manual `2` returns
+//! in `migrations attune` (missing `--from`, conflicting flags) and
+//! the `db reset` / `db seed` gates intentionally share that code so
+//! a CI script can treat any `2` as "operator must intervene; nothing
+//! happened" without distinguishing the two cases. `1` is reserved for
+//! "we tried; something broke" so a CI can retry. The matrix is also
+//! documented in `ReadMe.MD` and `docs/spec/configuration.md` so the
+//! operator-facing surface stays in sync.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -255,14 +259,19 @@ async fn run_seed(
     // URL. The result is the connection target AND the URL the
     // localhost gate inside `run_seeds` evaluates against — both
     // gate and SQL execution stay on the same database.
+    //
+    // Codex round-2 A-6: surface the malformed-URL case via the
+    // typed `SeedError::MalformedApplicationUrl` variant rather than
+    // a bare `eprintln!`. The variant was previously dead — the CLI
+    // now constructs it explicitly so the error path is operator-
+    // actionable AND the variant has a real call site.
     let routed_url = match djogi::migrate::derive_per_database_url(&config.database.url, database) {
         Some(u) => u,
         None => {
-            eprintln!(
-                "djogi db seed: application URL `{}` has no database-name \
-                 component the runner can splice `--database {database}` into",
-                config.database.url,
-            );
+            let err = SeedError::MalformedApplicationUrl {
+                application_url: config.database.url.clone(),
+            };
+            eprintln!("djogi db seed: {err} (--database `{database}`)");
             return 1;
         }
     };

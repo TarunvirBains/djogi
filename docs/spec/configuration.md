@@ -139,12 +139,18 @@ matrix so shell integrations can distinguish "operation refused" from
 | Code | Meaning |
 |------|---------|
 | `0`  | Success — the command completed and any post-state was applied. |
-| `1`  | Error — config load failure, network, SQL, replay, or any other underlying failure. |
-| `2`  | Gate refusal — a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect. |
+| `1`  | Error — config load failure, network, SQL, replay, or any other underlying runtime failure. |
+| `2`  | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
 
-The `2` code mirrors clap's argument-error convention; CI scripts can branch
-on `if [ $? -eq 2 ]` and treat a refusal as a soft "skipped" signal rather than
-a hard failure. Subcommands document the matrix in their `--help` output.
+Codex round-2 A-1: exit code `2` deliberately bundles policy refusals
+and argument-validation errors. Clap's default behaviour is to return
+`2` for unknown / malformed flags; manual `2` returns in
+`migrations attune` (missing `--from`, conflicting flags) and the
+`db reset` / `db seed` gates intentionally share that code so a CI
+script can treat any `2` as "operator must intervene; nothing
+happened" without distinguishing the two cases. `1` is reserved for
+"we tried; something broke" so CI can retry. Subcommands document
+the matrix in their `--help` output.
 
 `db reset` hard-errors unless all three guards pass: `DATABASE_URL` resolves to localhost (per the byte-level libpq + URL parser shared with `attune --squash`), `Djogi.toml::profile != "production"`, and the operator supplies explicit confirmation (either `--yes` on the command line or types `yes` at the interactive prompt). Logging databases (`crud_log`, `event_log`) are NEVER touched by `db reset`.
 

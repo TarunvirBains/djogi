@@ -352,9 +352,15 @@ Adoption flows:
 
 ### 10.9 Verification and Out-of-Order Policy
 
-`migrations verify` is a first-class command.
+Verification is a first-class concern of the engine; the
+`migrations verify` CLI subcommand is **deferred post-Phase-7** (per
+§7.4 of this spec). The library entry point is available today as
+[`djogi::migrate::verify`](../../djogi/src/migrate/verify.rs), and
+adopters can drive it directly or via the `djogi::migrate::repair_*`
+helpers until the CLI dispatch lands.
 
-It compares snapshot/ledger expectations against the live database catalog and is used for:
+The verification path compares snapshot/ledger expectations against
+the live database catalog and is used for:
 
 - baseline validation
 - out-of-band DDL discovery

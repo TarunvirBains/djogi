@@ -413,7 +413,18 @@ fn display_index_target(target: &IndexTarget) -> String {
 /// phase adds per-field defaults to `FieldDescriptor`, both this
 /// renderer and the projection grow the new branch together.
 ///
-/// Codex round-1 A-3.
+/// **Known limitation (round-2 A-3):** today's `FieldDescriptor`
+/// only carries the PK column's default expression (derived from
+/// `parent.pk_type`). Non-PK fields with declared defaults render
+/// as `—` because the descriptor doesn't carry their `default_sql`
+/// — that information lives in the snapshot's `ColumnSchema` but is
+/// not threaded through the descriptor inventory the macro emits.
+/// TODO(post-Phase-7): extend `FieldDescriptor` with a
+/// `default_sql: Option<&'static str>` field populated by the macro
+/// from `#[field(default = "...")]` attributes, and update this
+/// renderer's else-branch to surface it.
+///
+/// Codex round-1 A-3 / round-2 A-3.
 fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String {
     if f.name == "id" {
         match pk_default_sql(&parent.pk_type) {
@@ -421,6 +432,8 @@ fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String
             None => "—".to_string(),
         }
     } else {
+        // TODO(post-Phase-7): when FieldDescriptor.default_sql exists,
+        // render it here. See module-level note above.
         "—".to_string()
     }
 }
