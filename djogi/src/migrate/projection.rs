@@ -407,13 +407,34 @@ where
     registered_apps.sort();
     registered_apps.dedup();
 
+    // FK column type substitution map — every model's `type_name`
+    // mapped to the SQL type its `id` column carries. The migration
+    // engine's `CREATE TABLE` emitter inlines `<col> <sql_type>
+    // REFERENCES <ref_table> (id)`, and Postgres rejects FK constraints
+    // whose source type does not match the target's PK type. The
+    // descriptor layer always emits `TEXT` for FK fields (the macro
+    // does not look up the target's PK type — it cannot, since the
+    // target may live in a separate crate that defines its own
+    // descriptor). The projection layer is the canonical place to
+    // resolve this since it walks every descriptor in the inventory.
+    //
+    // Surfaced by Phase 7 T10. Unmapped target type names fall back to
+    // the original `f.sql_type` (e.g. when the FK target is in a
+    // different `sync_models` call or hasn't been registered yet —
+    // `sync_models` itself rejects that case before the projection
+    // runs, so the fallback is informational).
+    let mut type_to_pk_sql: BTreeMap<&str, String> = BTreeMap::new();
+    for m in &models {
+        type_to_pk_sql.insert(m.type_name, pk_sql_type_text(&m.pk_type));
+    }
+
     // Build each bucket's AppliedSchema.
     let mut out: BTreeMap<BucketKey, AppliedSchema> = BTreeMap::new();
     for (bucket, ms) in bucket_models {
         let mut tables: BTreeMap<String, TableSchema> = BTreeMap::new();
         let mut indexes: Vec<IndexSchema> = Vec::new();
         for m in &ms {
-            let projected = project_model(m, &type_to_table);
+            let projected = project_model(m, &type_to_table, &type_to_pk_sql);
             match tables.entry(projected.table.clone()) {
                 Entry::Vacant(v) => {
                     for idx in m.indexes {
@@ -474,11 +495,15 @@ pub(crate) fn rfc3339_now_seconds() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn project_model(m: &ModelDescriptor, type_to_table: &BTreeMap<&str, &str>) -> TableSchema {
+fn project_model(
+    m: &ModelDescriptor,
+    type_to_table: &BTreeMap<&str, &str>,
+    type_to_pk_sql: &BTreeMap<&str, String>,
+) -> TableSchema {
     let columns: Vec<ColumnSchema> = m
         .fields
         .iter()
-        .map(|f| project_column(f, m, type_to_table))
+        .map(|f| project_column(f, m, type_to_table, type_to_pk_sql))
         .collect();
 
     let primary_key = project_primary_key(&m.pk_type);
@@ -503,6 +528,7 @@ fn project_column(
     f: &FieldDescriptor,
     parent: &ModelDescriptor,
     type_to_table: &BTreeMap<&str, &str>,
+    type_to_pk_sql: &BTreeMap<&str, String>,
 ) -> ColumnSchema {
     let projected_on_delete = if f.relation_kind.is_some() {
         Some(project_on_delete(f.on_delete.unwrap_or(OnDelete::Restrict)))
@@ -534,8 +560,42 @@ fn project_column(
 
     let default_sql = if f.name == "id" {
         pk_default_sql(&parent.pk_type)
+    } else if (f.name == "created_at" || f.name == "updated_at")
+        && matches!(f.sql_type, crate::descriptor::FieldSqlType::Timestamptz)
+    {
+        // Framework-injected timestamp columns get `DEFAULT now()` so
+        // INSERTs without explicit values pick up server time. The
+        // descriptor layer does not carry per-field default expressions
+        // (every field shares one nullable shape), so the projection
+        // owns this rule for the two framework cols. Phase 1's
+        // hand-written CREATE TABLE statements (`tests/integration/
+        // migrations/phase3/*.sql` and friends) have always used this
+        // shape — the migration engine produces the same DDL by
+        // recording the default here.
+        //
+        // Surfaced by Phase 7 T10 (`#[djogi_test(sync_models = [...])]`)
+        // — without this, every sync_models'd table rejected its first
+        // INSERT with `null value in column "created_at"` because the
+        // typed `Model::create` path leaves `created_at` blank for the
+        // DB to populate via the column DEFAULT.
+        Some("now()".to_string())
     } else {
         None
+    };
+
+    // FK column SQL type — substitute the target's PK SQL type when
+    // this column carries a relation. The descriptor layer cannot do
+    // this lookup (the macro emits each model's descriptor in
+    // isolation; the FK target may live in a separate crate), so the
+    // projection is the canonical resolution site. Unrelated columns
+    // pass through `f.sql_type` verbatim.
+    let sql_type = if f.relation_kind.is_some()
+        && let Some(target) = f.target_type_name
+        && let Some(pk_sql) = type_to_pk_sql.get(target)
+    {
+        pk_sql.clone()
+    } else {
+        f.sql_type.to_string()
     };
 
     ColumnSchema {
@@ -553,8 +613,34 @@ fn project_column(
         relation_kind: f.relation_kind.map(project_relation_kind),
         renamed_from: f.renamed_from.map(|s| s.to_string()),
         sequence_within: f.sequence_within.map(|s| s.to_string()),
-        sql_type: f.sql_type.to_string(),
+        sql_type,
         unique: f.unique,
+    }
+}
+
+/// Render the SQL type text for a model's PK as it appears on FK
+/// columns referencing that model.
+///
+/// `HeerId` / `HeerIdRecencyBiased` → `BIGINT`,
+/// `RanjId` / `RanjIdRecencyBiased` → `UUID`,
+/// `Serial` → `INTEGER`,
+/// `Custom { sql_type, .. }` → that text verbatim,
+/// `Composite` / `None` → `TEXT` (placeholder; FK references against
+///   composite or no-PK tables are rejected upstream by the descriptor
+///   contract — the placeholder lets the projection complete instead
+///   of panicking, and the broken DDL surfaces at apply time).
+fn pk_sql_type_text(pk: &PkType) -> String {
+    match pk {
+        PkType::HeerId | PkType::HeerIdDesc => "BIGINT".to_string(),
+        PkType::RanjId | PkType::RanjIdDesc => "UUID".to_string(),
+        PkType::Serial => "INTEGER".to_string(),
+        PkType::Custom(c) => c.sql_type.to_string(),
+        // A model with no PK or a composite PK cannot legitimately
+        // be the target of an FK (Postgres requires the referenced
+        // column to be a single-column unique index). The descriptor
+        // layer catches this earlier; the placeholder here is for
+        // forward-compatibility with future PK shapes.
+        PkType::Composite(_) | PkType::None => "TEXT".to_string(),
     }
 }
 

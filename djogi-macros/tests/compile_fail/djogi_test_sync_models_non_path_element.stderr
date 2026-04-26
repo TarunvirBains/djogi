@@ -1,0 +1,5 @@
+error: #[djogi_test] `sync_models` array elements must be bare type paths, e.g. `Widget` or `crate::models::Widget`
+ --> tests/compile_fail/djogi_test_sync_models_non_path_element.rs:5:36
+  |
+5 | #[djogi::djogi_test(sync_models = [42])]
+  |                                    ^^

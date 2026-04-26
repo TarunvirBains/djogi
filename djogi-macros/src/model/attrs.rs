@@ -1794,6 +1794,21 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         | "djogi::MultiPolygon" => Some("GEOGRAPHY(MultiPolygon, 4326)"),
         // Option<T> is handled at call site — strip and recurse via unwrap_option
         _ if s.starts_with("Option<") => None,
+        // `Jsonb<T>` for any `T: JsonbSchema` lowers to a Postgres
+        // `JSONB` column. The runtime descriptor's `sql_type` slot
+        // therefore needs `FieldSqlType::Jsonb`. Detect the wrapper by
+        // its head ident, accepting bare `Jsonb<…>`, `djogi::Jsonb<…>`,
+        // and `::djogi::Jsonb<…>` forms (the leading `::` is stripped
+        // above). Surfaced by Phase 7 T10 — without this rule, every
+        // `sync_models`'d table with a `Jsonb<T>` field rendered the
+        // column as `TEXT` and round-tripping the typed Jsonb value
+        // failed at INSERT time.
+        _ if s.starts_with("Jsonb<")
+            || s.starts_with("djogi::Jsonb<")
+            || s.starts_with("djogi::jsonb::Jsonb<") =>
+        {
+            Some("JSONB")
+        }
         _ => None,
     }
 }

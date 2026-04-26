@@ -54,6 +54,14 @@
 //! in production is negligible, but its entry points are meaningless outside
 //! tests.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::apps::AppRegistry;
+use crate::descriptor::{EnumDescriptor, ModelDescriptor};
+use crate::migrate::diff::{Classification, SchemaOperation};
+use crate::migrate::projection::{BucketKey, project_from_iters, rfc3339_now_seconds};
+use crate::migrate::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
+use crate::migrate::{SegmentKind, diff_bucket_maps, plan_delta};
 use crate::pg::pool::DjogiPool;
 use crate::{DbError, DjogiContext, DjogiError};
 use tokio_postgres::NoTls;
@@ -365,6 +373,309 @@ fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
     Ok(format!("{base}{new_db}"))
 }
 
+/// Phase 7 T10 — auto-materialise the supplied descriptors on the
+/// per-test database (closes issue #18).
+///
+/// Called by macro-generated code from
+/// `#[djogi_test(sync_models = [Type1, Type2, ...])]` after
+/// [`setup_test_db_with_extensions`] returns. The macro lowers each
+/// `Type` to `<Type as ::djogi::Model>::descriptor()`, so the
+/// descriptors arrive here with full `&'static` lifetimes from the
+/// `inventory` collectors.
+///
+/// # What this does
+///
+/// 1. Walks `descriptors`, derives the `(database, app)` bucket each
+///    one belongs in (resolved via [`AppRegistry::all`]).
+/// 2. Projects the descriptors into per-bucket [`AppliedSchema`]
+///    values via [`project_from_iters`] — same projection layer that
+///    production migrations and `compose` use, so any new field type
+///    or index annotation propagates automatically.
+/// 3. Diffs the projection against an empty per-bucket map via
+///    [`diff_bucket_maps`] — every operation is therefore additive
+///    (`AddTable`, `AddIndex`, `AddEnum`, `AddForeignKey`).
+/// 4. Validates that every FK target table is also present in the
+///    same `sync_models` set — a missing target produces a clear
+///    runtime error naming the referencing column AND the missing
+///    target. Macro-time detection is impossible (only type paths are
+///    visible; descriptors are runtime data).
+/// 5. Asserts the delta is additive only. If the differ ever
+///    produces a destructive op against an empty target the
+///    invariant is broken — error rather than silently executing it.
+/// 6. Plans each per-bucket delta via [`plan_delta`] (T3's segment
+///    planner), then executes every statement via
+///    [`DjogiContext::raw_ddl`] in segment + statement order.
+///
+/// # No advisory lock, no ledger
+///
+/// Per the v3 plan rationale: per-test databases are ephemeral and
+/// have no concurrent writers, so the `apply` orchestration layer
+/// (T4 — advisory lock + ledger insertion + snapshot persistence) is
+/// intentionally bypassed. The composition primitives (T1 + T2 + T3)
+/// remain shared with production.
+///
+/// # Bucket ordering
+///
+/// Buckets are walked in [`BucketKey`] order
+/// (`(database, app)` pair, alphabetically). A multi-bucket
+/// `sync_models` call therefore applies its DDL in a deterministic,
+/// reproducible order across runs.
+///
+/// # Errors
+///
+/// Returns [`DjogiError::Db`] for:
+/// - Projection failures (unknown app label, duplicate type name,
+///   cross-database FK).
+/// - SQL emission errors from the migration engine
+///   (`Unsupported`, `PkTypeFlipMustRouteToT9` — neither should occur
+///   on an empty-target diff in practice).
+/// - FK-to-missing-model violations.
+/// - Invariant-violation classification (any non-additive op).
+/// - Statement-execution failures from `ctx.raw_ddl`.
+///
+/// All paths preserve the per-test DB drop in the macro-generated
+/// wrapper: `sync_models` failures bubble out as `Err`, the macro's
+/// `.expect("djogi_test: failed to sync_models on per-test database")`
+/// turns that into a panic, and the wrapper's `catch_unwind` +
+/// teardown sequence still runs to drop the throwaway database.
+pub async fn sync_models(
+    ctx: &mut DjogiContext,
+    descriptors: &[&'static ModelDescriptor],
+) -> Result<(), DjogiError> {
+    // Empty input is a zero-DDL no-op. The macro suppresses the call
+    // entirely for `sync_models = []`, but the runtime helper
+    // accepts it for direct (hand-written) callers — keeps the
+    // surface honest about the contract.
+    if descriptors.is_empty() {
+        return Ok(());
+    }
+
+    // ── Step 1 — pre-flight: every FK target named on a descriptor
+    //              must also be in the supplied list. Macro-time
+    //              detection is impossible because only type paths
+    //              are visible; descriptors are runtime data.
+    let supplied_type_names: BTreeSet<&'static str> =
+        descriptors.iter().map(|d| d.type_name).collect();
+    for d in descriptors {
+        for f in d.fields {
+            if f.relation_kind.is_none() {
+                continue;
+            }
+            // Only check FK / O2O fields that point at a model
+            // tracked in `target_type_name`. Reverse-only relations
+            // and M2M-through join columns slot through differently
+            // and are caught by the projection / differ.
+            let Some(target) = f.target_type_name else {
+                continue;
+            };
+            if !supplied_type_names.contains(target) {
+                return Err(DjogiError::Db(DbError::other(format!(
+                    "sync_models: model `{src}`.`{col}` references `{tgt}` via foreign key, \
+                     but `{tgt}` is not in sync_models. \
+                     Add `{tgt}` to sync_models = [...] alongside `{src}`.",
+                    src = d.type_name,
+                    col = f.name,
+                    tgt = target,
+                ))));
+            }
+        }
+    }
+
+    // ── Step 2 — project the supplied descriptors. Enums are
+    //              global, so feed the full inventory; the projection
+    //              attaches them to every bucket that holds a model.
+    //              Apps come from `AppRegistry::all` so model app
+    //              labels resolve to their declared database target.
+    //
+    //              `generated_at` does not influence DDL emission;
+    //              the schema's timestamp is informational. Pin it to
+    //              `rfc3339_now_seconds` for parity with production.
+    let target = project_from_iters(
+        descriptors.iter().copied(),
+        inventory::iter::<EnumDescriptor>(),
+        AppRegistry::all().iter(),
+        rfc3339_now_seconds(),
+    )
+    .map_err(|e| {
+        DjogiError::Db(DbError::other(format!(
+            "sync_models: descriptor projection failed: {e:?}"
+        )))
+    })?;
+
+    // ── Step 3 — empty-source diff. Build a `before` map mirroring
+    //              the target map's bucket keys; each `before` value
+    //              is a fresh empty `AppliedSchema`. The differ then
+    //              emits one `AppliedSchema` per bucket, all additive.
+    let before: BTreeMap<BucketKey, AppliedSchema> = target
+        .keys()
+        .map(|bucket| (bucket.clone(), empty_applied_schema()))
+        .collect();
+
+    let deltas = diff_bucket_maps(&before, &target);
+
+    // ── Step 4 — invariant + classification check. The empty-target
+    //              path can only produce `Additive` or `NoOp`
+    //              (buckets with zero models). Anything else is a
+    //              broken invariant in the differ.
+    for delta in &deltas {
+        match delta.classification {
+            Classification::NoOp | Classification::Additive => {}
+            ref other => {
+                return Err(DjogiError::Db(DbError::other(format!(
+                    "sync_models: internal invariant violated — empty-target diff classified as \
+                     `{other:?}` for bucket `{db}/{app}`; expected NoOp or Additive only",
+                    db = delta.bucket.database,
+                    app = delta.bucket.app,
+                ))));
+            }
+        }
+        for op in &delta.operations {
+            if !is_additive_op(op) {
+                return Err(DjogiError::Db(DbError::other(format!(
+                    "sync_models: internal invariant violated — empty-target diff produced \
+                     destructive op `{kind}` for bucket `{db}/{app}`",
+                    kind = additive_op_label(op),
+                    db = delta.bucket.database,
+                    app = delta.bucket.app,
+                ))));
+            }
+        }
+    }
+
+    // ── Step 5 — plan + execute, bucket by bucket. Bucket order is
+    //              the natural BTreeMap order (alphabetic by
+    //              `(database, app)`), so multi-bucket runs are
+    //              deterministic.
+    for delta in &deltas {
+        if matches!(delta.classification, Classification::NoOp) {
+            continue;
+        }
+        let plan = plan_delta(delta).map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "sync_models: SQL emission failed for bucket `{db}/{app}`: {e:?}",
+                db = delta.bucket.database,
+                app = delta.bucket.app,
+            )))
+        })?;
+        execute_plan(ctx, &plan).await?;
+    }
+
+    Ok(())
+}
+
+/// Build a fresh, empty [`AppliedSchema`] suitable as the "before"
+/// state in `sync_models`'s empty-target diff.
+///
+/// The shape mirrors what [`project_from_iters`] produces for a
+/// bucket with zero models — empty `models`, `enums`, `indexes`,
+/// `registered_apps`. The differ keys equality off all observable
+/// fields (`PartialEq` derive), so leaving `djogi_version` /
+/// `generated_at` as the same defaults the projection uses keeps
+/// `before == empty_target_bucket` and does not perturb the diff.
+fn empty_applied_schema() -> AppliedSchema {
+    AppliedSchema {
+        djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: rfc3339_now_seconds(),
+        indexes: Vec::new(),
+        models: BTreeMap::new(),
+        registered_apps: Vec::new(),
+    }
+}
+
+/// Returns `true` for every [`SchemaOperation`] variant that the
+/// empty-target path can legitimately produce.
+///
+/// Additive ops on an empty `before` schema:
+/// - `AddTable`, `AddColumn`, `AddIndex`, `AddEnum`, `AddEnumVariant`,
+///   `AddForeignKey`.
+///
+/// Anything else (drops, renames, alters, app moves, PK flips) is
+/// structurally impossible from an empty `before` and signals a
+/// broken differ invariant.
+fn is_additive_op(op: &SchemaOperation) -> bool {
+    matches!(
+        op,
+        SchemaOperation::AddTable(_)
+            | SchemaOperation::AddColumn { .. }
+            | SchemaOperation::AddIndex(_)
+            | SchemaOperation::AddEnum(_)
+            | SchemaOperation::AddEnumVariant { .. }
+            | SchemaOperation::AddForeignKey { .. }
+    )
+}
+
+/// Operator-facing variant label for the invariant-violation error
+/// message. We keep this separate from `is_additive_op` so the error
+/// payload names the offending variant precisely without depending on
+/// `Debug` formatting (which would also dump the variant's payload).
+fn additive_op_label(op: &SchemaOperation) -> &'static str {
+    match op {
+        SchemaOperation::AddTable(_) => "AddTable",
+        SchemaOperation::DropTable(_) => "DropTable",
+        SchemaOperation::RenameTable { .. } => "RenameTable",
+        SchemaOperation::AddColumn { .. } => "AddColumn",
+        SchemaOperation::DropColumn { .. } => "DropColumn",
+        SchemaOperation::RenameColumn { .. } => "RenameColumn",
+        SchemaOperation::AlterColumn { .. } => "AlterColumn",
+        SchemaOperation::AddForeignKey { .. } => "AddForeignKey",
+        SchemaOperation::DropForeignKey { .. } => "DropForeignKey",
+        SchemaOperation::AddIndex(_) => "AddIndex",
+        SchemaOperation::DropIndex(_) => "DropIndex",
+        SchemaOperation::AddEnum(_) => "AddEnum",
+        SchemaOperation::DropEnum(_) => "DropEnum",
+        SchemaOperation::AddEnumVariant { .. } => "AddEnumVariant",
+        SchemaOperation::RenameApp { .. } => "RenameApp",
+        SchemaOperation::MoveModelBetweenApps { .. } => "MoveModelBetweenApps",
+        SchemaOperation::PkTypeFlip { .. } => "PkTypeFlip",
+        SchemaOperation::PkTypeFlipGroup(_) => "PkTypeFlipGroup",
+        SchemaOperation::Unsupported { .. } => "Unsupported",
+    }
+}
+
+/// Execute every statement in `plan` via `ctx.raw_ddl`. Single
+/// connection, no advisory lock, no ledger updates — this is the
+/// per-test path; production migrations route through the runner
+/// (T4) for the same composition output.
+///
+/// `MetadataOnly` segments are skipped entirely — they exist for the
+/// production runner's folder-rename / app-move bookkeeping and have
+/// no DDL to execute. Empty-target diffs cannot produce them, but the
+/// guard makes the helper robust against future T2 differ changes.
+async fn execute_plan(
+    ctx: &mut DjogiContext,
+    plan: &crate::migrate::MigrationPlan,
+) -> Result<(), DjogiError> {
+    for segment in &plan.segments {
+        if matches!(segment.kind, SegmentKind::MetadataOnly) {
+            continue;
+        }
+        for op_sql in &segment.statements {
+            ctx.raw_ddl(&op_sql.up).await.map_err(|e| {
+                // Surface both the operator-facing label AND the SQL
+                // text so failures point at the exact statement that
+                // tripped Postgres. Without the SQL, debugging
+                // descriptor / projection bugs from a test failure
+                // is a hunt — every `AddTable` op surfaces only the
+                // table name, not the emitted DDL. The tail-`{e}` is
+                // the underlying `DjogiError`, which carries the
+                // server-side `SqlState` + message in the source
+                // chain.
+                DjogiError::Db(DbError::other(format!(
+                    "sync_models: failed to apply `{label}` on bucket `{db}/{app}`: {e}\n\
+                     -- offending SQL --\n{sql}",
+                    label = op_sql.label,
+                    db = plan.bucket.database,
+                    app = plan.bucket.app,
+                    sql = op_sql.up,
+                )))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{replace_db_in_url, validate_extension_name};
@@ -442,5 +753,121 @@ mod tests {
                 "expected validation failure for `{candidate}`, got: {err}",
             );
         }
+    }
+
+    // ── Phase 7 T10: sync_models invariants ─────────────────────────
+    //
+    // These tests pin the empty-target additive-only contract without
+    // touching a live database. The invariant guard sits between the
+    // differ and the SQL emitter, so we exercise it by walking
+    // synthetic operations through the pure helper functions.
+
+    use super::{additive_op_label, is_additive_op};
+    use crate::migrate::diff::SchemaOperation;
+    use crate::migrate::schema::{OnDeleteSchema, PkKindSchema, PrimaryKeySchema, TableSchema};
+
+    /// Build a minimal `TableSchema` so we can construct synthetic
+    /// `AddTable` / `DropTable` operations without spinning up the
+    /// full descriptor projection. Columns / PK details are not
+    /// inspected by [`is_additive_op`] / [`additive_op_label`] — both
+    /// dispatch on the variant tag — so the placeholder is enough.
+    fn synthetic_table(name: &str) -> TableSchema {
+        TableSchema {
+            app: None,
+            columns: Vec::new(),
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerId,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: name.to_string(),
+            tenant_key: None,
+        }
+    }
+
+    #[test]
+    fn is_additive_op_classifies_add_variants_as_additive() {
+        // Every `Add*` variant of `SchemaOperation` is additive on an
+        // empty-target diff. The synthetic table we build is a stand-in
+        // — `is_additive_op` only inspects the variant tag.
+        let t = synthetic_table("widgets");
+        assert!(is_additive_op(&SchemaOperation::AddTable(t)));
+        assert!(is_additive_op(&SchemaOperation::AddEnum(
+            crate::migrate::schema::EnumSchema {
+                name: "color".to_string(),
+                variants: vec!["red".to_string()],
+            }
+        )));
+        assert!(is_additive_op(&SchemaOperation::AddForeignKey {
+            table: "widgets".to_string(),
+            column: "category_id".to_string(),
+            fk: crate::migrate::schema::ForeignKeySchema {
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "categories".to_string(),
+            },
+        }));
+    }
+
+    #[test]
+    fn is_additive_op_classifies_drop_variants_as_destructive() {
+        // The empty-target invariant guard must reject every `Drop*`
+        // (and rename / alter / app-move / PK-flip / unsupported)
+        // variant — none of them should ever appear on an empty-target
+        // diff. If the differ ever produces one, `sync_models`
+        // surfaces a clear "invariant violated" error rather than
+        // silently executing destructive DDL.
+        assert!(!is_additive_op(&SchemaOperation::DropTable(
+            "widgets".to_string()
+        )));
+        assert!(!is_additive_op(&SchemaOperation::DropColumn {
+            table: "widgets".to_string(),
+            column: "name".to_string(),
+        }));
+        assert!(!is_additive_op(&SchemaOperation::DropEnum(
+            "color".to_string()
+        )));
+        assert!(!is_additive_op(&SchemaOperation::RenameTable {
+            from: "old".to_string(),
+            to: "new".to_string(),
+        }));
+        assert!(!is_additive_op(&SchemaOperation::DropForeignKey {
+            table: "widgets".to_string(),
+            column: "category_id".to_string(),
+            fk: crate::migrate::schema::ForeignKeySchema {
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "categories".to_string(),
+            },
+        }));
+    }
+
+    #[test]
+    fn additive_op_label_emits_variant_name_for_each_kind() {
+        // Sanity-check the operator-facing label emitted in invariant-
+        // violation error messages. A few representative variants is
+        // enough — the function is a flat match arm so any one
+        // mismatch would be a typo, not a logic bug.
+        assert_eq!(
+            additive_op_label(&SchemaOperation::AddTable(synthetic_table("x"))),
+            "AddTable",
+        );
+        assert_eq!(
+            additive_op_label(&SchemaOperation::DropTable("x".to_string())),
+            "DropTable",
+        );
+        assert_eq!(
+            additive_op_label(&SchemaOperation::RenameTable {
+                from: "a".to_string(),
+                to: "b".to_string(),
+            }),
+            "RenameTable",
+        );
     }
 }
