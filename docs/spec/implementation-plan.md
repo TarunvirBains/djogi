@@ -713,7 +713,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 ### 10g: System Permissions + Audit Access
 
-- [ ] Four v1 system permissions: `view_audit_log` (visibility-filtered read of `_logs.{model}` tables), `manage_users` (four-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective `(model, action)` subset, and tenant-reach), `view_full_struct` (read all non-`expose(none)` fields independent of visage view grants), `write_full_struct` (edit all non-`expose(none)`, non-`admin_readonly` fields independent of visage edit grants; requires `view_full_struct`)
+- [ ] Four v1 system permissions: `view_audit_log` (visibility-filtered read of `_logs.{model}` tables), `manage_users` (five-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective `(model, action)` subset, effective visage-grant subset, and tenant-reach), `view_full_struct` (read all non-`expose(none)` fields independent of visage view grants), `write_full_struct` (edit all non-`expose(none)`, non-`admin_readonly` fields independent of visage edit grants; requires `view_full_struct`)
 - [ ] `_logs.{model}` read access through Maahi UI for `view_audit_log` holders, with field-level visibility computed from the viewer's effective visage grants plus any `view_full_struct`, scoped to their tenant
 
 **Deliverable:** Production-grade Maahi admin console with visage-grant-driven visibility, multi-tenancy with secure cross-tenant login handoff, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave` with approver-coverage discipline, and four v1 system permissions (`view_audit_log`, `manage_users`, `view_full_struct`, `write_full_struct`).
