@@ -97,16 +97,19 @@ djogi migrations baseline 0001_initial # adopt an existing DB without replaying 
 
 # Migration-history state management
 djogi migrations attune                # attune local migration-history files to the repo-default target
-djogi migrations attune <target>       # attune to a local or remote git target
-djogi migrations attune <target> --verify
-djogi migrations attune <target> --record
-djogi migrations attune --squash       # dev-only local squash of migration history
-djogi migrations attune --squash --push
+djogi migrations attune                # diff-only ledger / disk reconciliation
+djogi migrations attune --record       # insert ledger rows for unrecorded SQL files
+djogi migrations attune --squash --from V<ts>   # dev-only local squash of migration history
+djogi migrations attune --squash --from V<ts> --publish   # squash and push the rewritten submodule
 
-# Database (dev only — gated on dev_mode + localhost + DJOGI_ENV != production)
-djogi db reset                         # drop → recreate → migrate
-djogi db reset --seed                  # drop → recreate → migrate → seed
-djogi db seed                          # run seeds.rhai only
+# Database (dev only — triple-gated)
+djogi db reset                         # drop → recreate → replay; refuses without --yes / interactive y
+djogi db reset --yes                   # non-interactive — typical for CI
+djogi db seed                          # run seeds/<database>/*.sql files; idempotent via djogi_seed_runs ledger
+djogi db seed --allow-non-localhost    # opt in to remote DBs (CI integration suites)
+
+# Documentation
+djogi docs                             # render Markdown reference pages from descriptor inventory
 
 # Shell
 djogi shell
@@ -115,7 +118,7 @@ djogi shell
 djogi new my-project                   # scaffold project + init migrations submodule
 djogi init                             # add Djogi to existing project
 ```
-`db reset` hard-errors unless all three guards pass: `dev_mode = true`, `DATABASE_URL` resolves to localhost, `DJOGI_ENV` is not `production`.
+`db reset` hard-errors unless all three guards pass: `DATABASE_URL` resolves to localhost (per the byte-level libpq + URL parser shared with `attune --squash`), `Djogi.toml::profile != "production"`, and the operator supplies explicit confirmation (either `--yes` on the command line or types `yes` at the interactive prompt). Logging databases (`crud_log`, `event_log`) are NEVER touched by `db reset`.
 
 `migrations attune` manages local migration-history Git state. It may fetch remote refs when needed to resolve a target, but it does not mutate the database unless `--apply` is explicitly passed. Parent-repo submodule-pointer changes are explicit via `--record` or options that clearly imply recording, such as `--squash`.
 

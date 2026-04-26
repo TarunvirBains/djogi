@@ -16,8 +16,9 @@
 //! | [`ledger`] | `djogi_schema_migrations` DDL bootstrap, row CRUD, and `V1:<sha256-hex>` checksum format. |
 //! | [`runner`] | Apply orchestration — advisory lock, transactional / non-transactional segment dispatch, partial-state recording, snapshot persist on success. |
 //!
-//! Subsequent Phase 7 tasks add `rename`, `naming`, `target`, `docs`
-//! per the v3 plan §5 file structure.
+//! T8 adds `docs`, `seed`, and `reset` — markdown documentation
+//! generation, the seed runner / `djogi_seed_runs` ledger, and the
+//! triple-gated `db reset` orchestrator.
 //!
 //! # Public surface
 //!
@@ -58,14 +59,17 @@ pub mod attune;
 pub mod build_match;
 pub mod compose;
 pub mod diff;
+pub mod docs;
 pub mod guard;
 pub mod ledger;
 pub mod naming;
 pub mod policy;
 pub mod projection;
 pub mod repair;
+pub mod reset;
 pub mod runner;
 pub mod schema;
+pub mod seed;
 pub mod segment;
 pub mod snapshot;
 pub mod sql;
@@ -90,6 +94,7 @@ pub use diff::{
     Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
     SchemaOperation, diff_bucket_maps,
 };
+pub use docs::{DocsError, DocsReport, generate_docs, render_inventory, render_model_page};
 pub use guard::{
     DEFAULT_TIMEOUT as GUARD_DEFAULT_TIMEOUT, GuardError, LOCK_FILE_NAME, WorkspaceGuard,
     acquire as acquire_workspace_lock,
@@ -114,6 +119,9 @@ pub use repair::{
     SnapshotChange, repair_checksum_drift, repair_partial_apply, repair_resume_partial_apply,
     repair_snapshot_rebuild,
 };
+pub use reset::{
+    ReplayedMigration, ResetError, ResetRefusal, ResetReport, ResetRequest, reset_app_database,
+};
 pub use runner::{
     LossyRollbackPolicy, RollbackError, RollbackReport, RunReport, RunnerCtx, RunnerError,
     advisory_lock_key, apply_plan, baseline_plan, fake_apply_plan, rollback_plan,
@@ -123,6 +131,12 @@ pub use schema::{
     IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema,
     IndexTargetSchema, IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema,
     PrimaryKeySchema, RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+};
+pub use seed::{
+    DiscoveredSeed, SEED_LEDGER_TABLE_DDL, SEEDS_DIRNAME, SeedError, SeedOutcome, SeedReport,
+    SeedReportEntry, bootstrap as bootstrap_seed_ledger, compute_seed_checksum, discover_seeds,
+    fetch_recorded_checksum as fetch_recorded_seed_checksum,
+    insert_recorded as insert_recorded_seed, run_seeds,
 };
 pub use segment::{MigrationPlan, Segment, SegmentKind, plan_delta};
 pub use snapshot::{

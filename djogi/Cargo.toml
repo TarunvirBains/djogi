@@ -241,3 +241,8 @@ harness = true
 name = "phase7_t7_policy_attune_live"
 path = "../tests/integration/phase7_t7_policy_attune_live.rs"
 harness = true
+
+[[test]]
+name = "phase7_t8_seed_docs_live"
+path = "../tests/integration/phase7_t8_seed_docs_live.rs"
+harness = true

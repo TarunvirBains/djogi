@@ -466,61 +466,73 @@ Spatial-gated surface (`spatial` feature):
 
 ---
 
-## Phase 7: Migration System
+## Phase 7: Migration System *(shipped)*
 
 **Goal:** Drift diagnostics, explicit SQL composition, target-scoped apply/rollback/repair.
 
+Phase 7 shipped 2026-04-25 as task chain T1–T8 against the v3 plan:
+
+- T1–T2 — schema snapshot data model + projection.
+- T3 — diff + SQL emitter.
+- T4 — runner core (advisory lock, transactional / non-transactional segments, ledger CRUD).
+- T5 — rollback + fake + baseline + repair + verify.
+- T6 — build.rs + compose + status (drift diagnostics + pending JSON).
+- T7 — out-of-order policy + multi-DB guardrails + `attune` (`--record` / `--squash --from <ver>` with `--publish`).
+- T8 — `db reset`, `db seed`, `djogi docs`, spec cleanup.
+
+Filenames are `V<YYYYMMDDHHMMSS>__<slug>.sql` plus `.down.sql`. Every Phase 7 path keys per `(database, app)` bucket. SQL seeds (not Rhai) — the Rhai shell is a separate phase.
+
 ### 7a: Schema Differ
 
-- [ ] `ModelDescriptor` comparison: detect added/removed/altered fields, tables, indexes
-- [ ] `#[field(renamed_from = "old")]` for rename detection
-- [ ] `#[model(renamed_from = "old_table")]` for table rename detection
-- [ ] Destructive operation gating with `--allow-destructive`
+- [x] `ModelDescriptor` comparison: detect added/removed/altered fields, tables, indexes
+- [x] `#[field(renamed_from = "old")]` for rename detection
+- [x] `#[model(renamed_from = "old_table")]` for table rename detection
+- [x] Destructive operation gating with `--allow-destructive`
 
 ### 7b: SQL Generation
 
-- [ ] Generate up/down SQL pairs from `SchemaDelta`
-- [ ] `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE ADD/DROP/ALTER COLUMN`
-- [ ] `CREATE INDEX` / `DROP INDEX` (with `CONCURRENTLY` support)
-- [ ] `CREATE TYPE ... AS ENUM` / `ALTER TYPE ... ADD VALUE`
-- [ ] `ADD CONSTRAINT` / `DROP CONSTRAINT` (with `NOT VALID` + `VALIDATE` support)
-- [ ] Foreign key constraints with cascade options
+- [x] Generate up/down SQL pairs from `SchemaDelta`
+- [x] `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE ADD/DROP/ALTER COLUMN`
+- [x] `CREATE INDEX` / `DROP INDEX` (with `CONCURRENTLY` support)
+- [x] `CREATE TYPE ... AS ENUM` / `ALTER TYPE ... ADD VALUE`
+- [x] `ADD CONSTRAINT` / `DROP CONSTRAINT` (with `NOT VALID` + `VALIDATE` support)
+- [x] Foreign key constraints with cascade options
 
 ### 7c: Build-Time Integration
 
-- [ ] `build.rs` reads `target/djogi_models.json` and diffs against `schema_snapshot.json`
-- [ ] Emits compiler warning (not error) when drift detected
-- [ ] Never mutates migration files or snapshots directly
-- [ ] Stages pending composition artifacts under `target/djogi_pending/` for explicit CLI review
+- [x] `build.rs` reads `target/djogi_models.json` and diffs against `schema_snapshot.json`
+- [x] Emits compiler warning (not error) when drift detected
+- [x] Never mutates migration files or snapshots directly
+- [x] Stages pending composition artifacts under `target/djogi_pending/` for explicit CLI review
 
 ### 7d: CLI
 
-- [ ] `djogi migrations compose` — compose pending up/down SQL pairs from descriptor drift
-- [ ] `djogi migrations apply` — apply pending migrations for one database target, update snapshot
-- [ ] `djogi migrations rollback` — roll back the last applied migration for one target
-- [ ] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
-- [ ] `djogi migrations verify` — verify snapshot, history, and live DB alignment for one target
-- [ ] `djogi migrations repair` — repair failed or partially applied target-local migration state
-- [ ] `djogi migrations baseline` — mark an existing schema as adopted without replay
-- [ ] `djogi migrations attune [target]` — attune local migration-history Git state to a chosen local or remote target; may fetch if needed; does not mutate the DB unless `--apply` is passed
-- [ ] `djogi migrations attune --squash` — dev-gated history squashing with the same safety contract as `db reset`
-- [ ] `djogi migrations apply --fake NNNN` — mark applied without running
-- [ ] `djogi db reset` — drop + recreate + migrate (dev only, triple-gated)
-- [ ] `djogi db seed` — run `seeds.rhai`
+- [x] `djogi migrations compose` — compose pending up/down SQL pairs from descriptor drift
+- [x] `djogi migrations apply` — apply pending migrations for one database target, update snapshot
+- [x] `djogi migrations rollback` — roll back the last applied migration for one target
+- [x] `djogi migrations status` — show file / snapshot / ledger / live-DB state for one target
+- [x] `djogi migrations verify` — verify snapshot, history, and live DB alignment for one target
+- [x] `djogi migrations repair` — repair failed or partially applied target-local migration state
+- [x] `djogi migrations baseline` — mark an existing schema as adopted without replay
+- [x] `djogi migrations attune` — `--record` / `--squash --from <ver>` with `--publish`; localhost + dev-profile gates on squash
+- [x] `djogi migrations apply --fake` — mark applied without running (T5 path)
+- [x] `djogi db reset` — drop + recreate + migrate (triple-gated: localhost + non-production profile + explicit `--yes`)
+- [x] `djogi db seed` — run `seeds/<database>/*.sql` files; `djogi_seed_runs` ledger; checksum-drift refusal; `--allow-non-localhost` opt-in
+- [x] `djogi docs` — render Markdown reference pages from `inventory::iter::<ModelDescriptor>()` to `target/djogi-docs/<app>/<Model>.md`
 
 Phase 7's migration CLI is explicitly target-scoped. App, CRUD-log, and event-log databases each have their own migration ledger, snapshot, and advisory-lock boundary. Cross-database foreign keys are rejected rather than modeled as first-class relations.
 
 ### 7e: Data Migrations
 
-- [ ] Support raw SQL data migrations (hand-written `.sql` files in `migrations/`)
-- [ ] Support Rhai script data migrations (`.rhai` files using shell model API)
+- [x] Support raw SQL data migrations (hand-written `.sql` files in `migrations/`)
+- [ ] Support Rhai script data migrations (`.rhai` files using shell model API) — deferred to the Rhai shell phase
 
 ### 7f: Online / Zero-Downtime Migration Patterns
 
-- [ ] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 7f phased-migration model") rather than a silent SQLSTATE from Postgres
-- [ ] Advisory-lock-based single-active-migration coordination (no two `djogi migrations apply` invocations apply concurrently against the same database target)
-- [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL)
-- [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]`
+- [x] Phased migration execution model: the migration runner splits each generated migration into ordered step groups tagged transactional vs non-transactional. Transactional groups run inside `BEGIN/COMMIT`; non-transactional steps — `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, certain `CREATE EXTENSION` cases, some `ALTER TYPE ADD VALUE` operations — run outside any transaction. `atomic()` is available only around transactional steps; attempting to wrap a non-transactional step in `atomic()` produces a clear error ("this step cannot run inside a transaction — see Phase 7f phased-migration model") rather than a silent SQLSTATE from Postgres
+- [x] Advisory-lock-based single-active-migration coordination (no two `djogi migrations apply` invocations apply concurrently against the same database target)
+- [ ] Lock-timeout on DDL statements so blocked migrations back off rather than queue behind long transactions (`SET lock_timeout = '5s'` around each DDL) — folded into Phase 7.5's online-safety classification work
+- [ ] Two-phase column rename: emit `ADD COLUMN new_name` + backfill from `old_name` + runtime reads both + drop `old_name` in a follow-up migration. Driven by `#[field(renamed_from = "old_name")]` + an opt-in `#[field(rename_strategy = "two_phase")]` — Phase 7.5 (`ExpandContract` classification)
 - [ ] Two-phase type widening: add new-type column, backfill, cut over, drop old (analogous pattern)
 - [ ] Safe NOT NULL addition: `ADD COLUMN ... DEFAULT value` (Postgres 11+ makes this fast-path without table rewrite) plus a `VALIDATE` pass for pre-existing-table columns
 - [ ] Constraint addition with `NOT VALID` + `VALIDATE` as separate steps

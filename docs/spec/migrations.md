@@ -104,16 +104,21 @@ Failure marker protocol:
 
 Migration files are plain SQL and always generated as a pair:
 
-- `NNNN_description_up.sql`
-- `NNNN_description_down.sql`
+- up file: `V<YYYYMMDDHHMMSS>__<slug>.sql`
+- down file: `V<YYYYMMDDHHMMSS>__<slug>.down.sql`
+
+The leading `V` plus 14-digit UTC timestamp gives lexical = chronological ordering across versions; the slug is operator-supplied (sanitised through the byte-level rules documented in `djogi::migrate::naming::sanitize_slug`). Example pair:
+
+- `V20260425010203__add_vehicle_horsepower.sql`
+- `V20260425010203__add_vehicle_horsepower.down.sql`
 
 Example UP file:
 
 ```sql
--- Migration: 0005_add_vehicle_horsepower
+-- Migration: V20260425010203__add_vehicle_horsepower
 -- Direction: UP
 -- Execution-Mode: transactional
--- Generated: 2026-04-22T10:00:00Z
+-- Generated: 2026-04-25T01:02:03Z
 
 ALTER TABLE vehicles ADD COLUMN horsepower INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX vehicles_horsepower_idx ON vehicles (horsepower);
@@ -122,7 +127,7 @@ CREATE INDEX vehicles_horsepower_idx ON vehicles (horsepower);
 Example DOWN file:
 
 ```sql
--- Migration: 0005_add_vehicle_horsepower
+-- Migration: V20260425010203__add_vehicle_horsepower
 -- Direction: DOWN
 -- Execution-Mode: transactional
 -- WARNING: dropping a column is irreversible — schema shape can be restored, data cannot

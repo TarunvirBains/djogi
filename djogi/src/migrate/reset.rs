@@ -1,0 +1,921 @@
+//! `db reset` orchestrator — Phase 7 v3 §8 / T8.
+//!
+//! `db reset` is the destructive triple-gated path: it drops the
+//! application database, recreates it, and replays every committed
+//! migration found under `migrations/<database>/<app>/`. The triple
+//! gate per the v3 §8 brief:
+//!
+//! 1. `DATABASE_URL` MUST resolve to localhost (reused
+//!    [`super::policy::is_localhost_connection`]).
+//! 2. `Djogi.toml::profile` MUST NOT equal `"production"`.
+//! 3. The caller MUST supply explicit confirmation (a `--yes` flag in
+//!    the CLI; programmatic callers pass [`ResetRequest::confirmed`]
+//!    `= true`).
+//!
+//! All three gates are enforced before any I/O. A refusal returns a
+//! typed [`ResetError::Refused`] so the operator-facing message is
+//! actionable.
+//!
+//! # Logging-DB isolation
+//!
+//! Per CLAUDE.md, the CRUD-log and event-log databases survive every
+//! `db reset` invocation. Today the runner is single-context (Phase 4)
+//! so this module only operates on the application DB; the seam is
+//! documented at [`reset_app_database`] for the day the three-database
+//! `DjogiContext::pool_for(database)` API lands.
+//!
+//! # `DROP DATABASE` connection plumbing
+//!
+//! Postgres refuses to drop the database the current session is
+//! connected to. We follow the standard libpq idiom: connect to the
+//! `postgres` maintenance database with the same credentials, issue
+//! `DROP DATABASE … WITH (FORCE)` (Postgres 13+; we target 18+ per
+//! `docs/spec/decisions.md`), then `CREATE DATABASE …`. The forced
+//! variant terminates other sessions to avoid the classic "another
+//! session is connected" bounce.
+//!
+//! After recreation the runner re-points at the fresh database via
+//! [`crate::pg::pool::DjogiPool::connect`] and replays each migration
+//! file pair in lexical order — the `V<ts>__<slug>.sql` filename
+//! convention from [`super::naming`] guarantees lexical = chronological.
+//!
+//! # No regex
+//!
+//! URL parsing reuses the byte-level extractor in
+//! [`super::policy::extract_host`] for the localhost gate, plus a
+//! minimal forward-scan helper to split out the `<host>/<dbname>` parts.
+//! No regex engine, no regex notation.
+
+// `ResetError` carries an embedded `RunnerError`, which itself embeds
+// boxed and string-rich variants; the resulting `Result` payload
+// exceeds clippy's default 128-byte threshold for `result_large_err`.
+// Boxing the whole error type would force every caller to indirect
+// through a heap allocation just to discriminate among the variants —
+// the signal-vs-cost tradeoff favours allowing the lint at file
+// scope here, mirroring the same `#[allow(clippy::result_large_err)]`
+// pattern that `crate::config` and `crate::migrate::projection` use.
+#![allow(clippy::result_large_err)]
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use tokio_postgres::NoTls;
+
+use crate::config::MigrateConfig;
+use crate::context::DjogiContext;
+use crate::error::{DbError, DjogiError};
+use crate::pg::pool::DjogiPool;
+
+use super::ledger::compute_checksum;
+use super::naming::{down_filename, up_filename};
+use super::policy::{OutOfOrderPolicy, is_localhost_connection};
+use super::projection::BucketKey;
+use super::runner::{RunnerCtx, apply_plan};
+use super::segment::{MigrationPlan, Segment, SegmentKind};
+use super::sql::OperationSql;
+use super::target::{app_label_from_dirname, migrations_root};
+
+// ── Public types ──────────────────────────────────────────────────────────
+
+/// Configuration handed to [`reset_app_database`].
+///
+/// Constructed by the CLI glue from the resolved workspace, the
+/// loaded [`crate::config::DjogiConfig`], and the operator's `--yes`
+/// flag.
+pub struct ResetRequest<'a> {
+    /// Workspace root — `migrations/<database>/<app>/` lives below it.
+    pub workspace_root: &'a Path,
+    /// The operator's full `DATABASE_URL` — used for the localhost
+    /// gate and for deriving the maintenance + reconnection URLs.
+    pub database_url: &'a str,
+    /// `Djogi.toml::profile` — production refuses unconditionally.
+    pub profile: &'a str,
+    /// `true` when the operator passed `--yes` (or the programmatic
+    /// caller has otherwise confirmed). The default is `false`; the
+    /// runner refuses without it.
+    pub confirmed: bool,
+    /// Maintenance database name. Defaults to `"postgres"` when
+    /// the caller has nothing more specific (the conventional
+    /// administrative DB present on every cluster).
+    pub maintenance_database: &'a str,
+    /// Migration-engine config the runner consults during the replay
+    /// phase. Operators rarely override this; the CLI default is the
+    /// loaded `Djogi.toml::migrate` block.
+    pub migrate_config: MigrateConfig,
+}
+
+/// Successful-reset report. Names every replayed migration so the
+/// operator can confirm the post-reset state matches expectation.
+#[derive(Debug, Clone)]
+pub struct ResetReport {
+    /// The application database name that was dropped + recreated.
+    pub database: String,
+    /// One entry per replayed migration version in apply order.
+    pub replayed_versions: Vec<ReplayedMigration>,
+}
+
+/// Per-replay record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayedMigration {
+    /// Bucket — `(database, app)` identity.
+    pub bucket: BucketKey,
+    /// Version id — `V<ts>__<slug>`.
+    pub version: String,
+}
+
+/// Errors surfaced by [`reset_app_database`].
+#[derive(Debug)]
+pub enum ResetError {
+    /// One of the three triple-gates rejected the request. The
+    /// embedded variant names which gate refused so the operator
+    /// message is precise.
+    Refused(ResetRefusal),
+    /// Connecting to the maintenance database failed (admin URL
+    /// unreachable, credentials wrong, ssl handshake failed, …).
+    MaintenanceConnectFailed { source: DjogiError },
+    /// `DROP DATABASE` or `CREATE DATABASE` returned an error from the
+    /// server — typically permission denied (the connecting role lacks
+    /// CREATEDB) or another session is still connected.
+    MaintenanceSqlFailed { sql: String, source: DjogiError },
+    /// Connecting to the freshly-created database failed.
+    AppConnectFailed { source: DjogiError },
+    /// Walking `migrations/<database>/` failed (I/O error reading the
+    /// committed migration tree).
+    MigrationScanFailed {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// Reading one of the on-disk SQL files failed.
+    SqlReadFailed {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// Replay of one migration via [`apply_plan`] failed. Carries the
+    /// version id and the underlying runner error so the operator can
+    /// see which migration broke the replay.
+    ReplayFailed {
+        version: String,
+        source: super::runner::RunnerError,
+    },
+    /// The supplied `DATABASE_URL` is missing the database-name
+    /// component that `db reset` would otherwise drop. Surfaces a
+    /// typed error rather than a panic deep inside `replace_db_in_url`.
+    DatabaseUrlMalformed { database_url: String },
+    /// Workspace lock acquisition failed before the replay could run.
+    WorkspaceLockFailed { source: super::guard::GuardError },
+}
+
+/// Specific refusal kind for [`ResetError::Refused`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResetRefusal {
+    /// `DATABASE_URL` does not resolve to localhost.
+    NotLocalhost { database_url: String },
+    /// `Djogi.toml::profile = "production"`.
+    ProductionProfile { profile: String },
+    /// The caller did not supply explicit confirmation.
+    NotConfirmed,
+}
+
+impl std::fmt::Display for ResetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResetError::Refused(r) => write!(f, "db reset refused: {r}"),
+            ResetError::MaintenanceConnectFailed { source } => write!(
+                f,
+                "db reset: connect to maintenance database failed: {source}"
+            ),
+            ResetError::MaintenanceSqlFailed { sql, source } => {
+                write!(f, "db reset: maintenance SQL `{sql}` failed: {source}")
+            }
+            ResetError::AppConnectFailed { source } => {
+                write!(
+                    f,
+                    "db reset: connect to fresh app database failed: {source}"
+                )
+            }
+            ResetError::MigrationScanFailed { path, source } => write!(
+                f,
+                "db reset: scanning {} for migration files failed: {source}",
+                path.display(),
+            ),
+            ResetError::SqlReadFailed { path, source } => write!(
+                f,
+                "db reset: reading migration SQL at {} failed: {source}",
+                path.display(),
+            ),
+            ResetError::ReplayFailed { version, source } => write!(
+                f,
+                "db reset: replay of `{version}` failed: {source}; the database \
+                 has been recreated but is now in a partial state — fix the \
+                 underlying issue and re-run db reset",
+            ),
+            ResetError::DatabaseUrlMalformed { database_url } => write!(
+                f,
+                "db reset: DATABASE_URL `{database_url}` does not contain a \
+                 database-name component (no `/` after the host); db reset \
+                 cannot derive the database name to drop"
+            ),
+            ResetError::WorkspaceLockFailed { source } => {
+                write!(f, "db reset: workspace lock acquisition failed: {source}")
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ResetRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResetRefusal::NotLocalhost { database_url } => write!(
+                f,
+                "DATABASE_URL is not localhost (got `{database_url}`); db reset is \
+                 a destructive operation and must not be invoked against a remote \
+                 database"
+            ),
+            ResetRefusal::ProductionProfile { profile } => write!(
+                f,
+                "Djogi.toml::profile = `{profile}`; db reset refuses to run on a \
+                 production profile"
+            ),
+            ResetRefusal::NotConfirmed => f.write_str(
+                "db reset requires explicit confirmation — pass `--yes` (or set \
+                 ResetRequest::confirmed = true) to acknowledge that the entire \
+                 application database will be dropped",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResetError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ResetError::MaintenanceConnectFailed { source } => Some(source),
+            ResetError::MaintenanceSqlFailed { source, .. } => Some(source),
+            ResetError::AppConnectFailed { source } => Some(source),
+            ResetError::MigrationScanFailed { source, .. } => Some(source),
+            ResetError::SqlReadFailed { source, .. } => Some(source),
+            ResetError::ReplayFailed { source, .. } => Some(source),
+            ResetError::WorkspaceLockFailed { source } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+// ── Public entry point ────────────────────────────────────────────────────
+
+/// Drop, recreate, and replay every committed migration against the
+/// application database in `req.database_url`.
+///
+/// Triple-gated per the module docs. Returns a [`ResetReport`] on
+/// success or a [`ResetError`] on any failure mode — including a
+/// gate refusal, which is surfaced as `ResetError::Refused` rather
+/// than as a successful no-op.
+pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, ResetError> {
+    // 1. Triple gate — every gate runs BEFORE any I/O so a refusal
+    //    leaves zero side effects on the workspace OR the database.
+    if !is_localhost_connection(req.database_url) {
+        return Err(ResetError::Refused(ResetRefusal::NotLocalhost {
+            database_url: req.database_url.to_string(),
+        }));
+    }
+    if req.profile == "production" {
+        return Err(ResetError::Refused(ResetRefusal::ProductionProfile {
+            profile: req.profile.to_string(),
+        }));
+    }
+    if !req.confirmed {
+        return Err(ResetError::Refused(ResetRefusal::NotConfirmed));
+    }
+
+    // 2. Derive the app database name and the maintenance URL.
+    let database = extract_database_from_url(req.database_url).ok_or_else(|| {
+        ResetError::DatabaseUrlMalformed {
+            database_url: req.database_url.to_string(),
+        }
+    })?;
+    let maintenance_url = replace_db_in_url(req.database_url, req.maintenance_database)
+        .ok_or_else(|| ResetError::DatabaseUrlMalformed {
+            database_url: req.database_url.to_string(),
+        })?;
+
+    // 3. Acquire workspace lock — replay mutates ledger state on the
+    //    fresh DB; concurrent compose / apply / repair operations
+    //    against the same workspace must not interleave with reset.
+    let lock_path = req.workspace_root.join(super::guard::LOCK_FILE_NAME);
+    let _guard = super::guard::acquire(&lock_path, super::guard::DEFAULT_TIMEOUT)
+        .map_err(|e| ResetError::WorkspaceLockFailed { source: e })?;
+
+    // 4. Drop + recreate the application database via the maintenance
+    //    connection. A fresh tokio_postgres client is opened just for
+    //    the two DDLs — the maintenance pool is intentionally NOT
+    //    cached because db reset is interactive / one-shot.
+    drop_and_create_database(&maintenance_url, &database).await?;
+
+    // 5. Connect to the freshly-created application DB and replay
+    //    every committed migration.
+    let pool = DjogiPool::connect(req.database_url)
+        .await
+        .map_err(|e| ResetError::AppConnectFailed { source: e })?;
+    let mut ctx = DjogiContext::from_pool(pool);
+
+    let buckets = scan_committed_migrations(req.workspace_root, &database)?;
+    let mut replayed: Vec<ReplayedMigration> = Vec::new();
+
+    for (bucket, versions) in buckets {
+        for version in versions {
+            replay_one_migration(
+                &mut ctx,
+                req.workspace_root,
+                &bucket,
+                &version,
+                &req.migrate_config,
+                &_guard,
+            )
+            .await?;
+            replayed.push(ReplayedMigration {
+                bucket: bucket.clone(),
+                version,
+            });
+        }
+    }
+
+    Ok(ResetReport {
+        database,
+        replayed_versions: replayed,
+    })
+}
+
+// ── Internals ─────────────────────────────────────────────────────────────
+
+/// Tokio-postgres-based DROP + CREATE helper. Connects to the
+/// maintenance database, issues both statements via `batch_execute`
+/// (the simple-query protocol — Postgres refuses to prepare DROP /
+/// CREATE DATABASE), and returns once both succeed.
+async fn drop_and_create_database(maintenance_url: &str, database: &str) -> Result<(), ResetError> {
+    let (client, conn) = tokio_postgres::connect(maintenance_url, NoTls)
+        .await
+        .map_err(|e| ResetError::MaintenanceConnectFailed {
+            source: DjogiError::Db(DbError::other(format!(
+                "tokio-postgres connect to maintenance DB failed: {e}"
+            ))),
+        })?;
+    // The connection task must run for the lifetime of the client.
+    let driver = tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            tracing::error!("[db reset] maintenance connection error: {e}");
+        }
+    });
+
+    // Quote the database name for safety. Postgres identifier rules
+    // allow `"` to appear inside a quoted identifier only as an
+    // escaped `""` pair. We replace each `"` byte with `""` so an
+    // operator who somehow has a quote in the database name still
+    // gets a syntactically-valid identifier; in practice the database
+    // grammar (set by the connection URL parser upstream) precludes
+    // that, but the defensive escape is free.
+    let quoted_db = quote_identifier(database);
+
+    let drop_sql = format!("DROP DATABASE IF EXISTS {quoted_db} WITH (FORCE)");
+    client
+        .batch_execute(&drop_sql)
+        .await
+        .map_err(|e| ResetError::MaintenanceSqlFailed {
+            sql: drop_sql.clone(),
+            source: DjogiError::Db(DbError::other(format!("{e}"))),
+        })?;
+
+    let create_sql = format!("CREATE DATABASE {quoted_db}");
+    client
+        .batch_execute(&create_sql)
+        .await
+        .map_err(|e| ResetError::MaintenanceSqlFailed {
+            sql: create_sql.clone(),
+            source: DjogiError::Db(DbError::other(format!("{e}"))),
+        })?;
+
+    // Drop the client so the connection task finishes; await the task
+    // so the connection close lands deterministically.
+    drop(client);
+    let _ = driver.await;
+    Ok(())
+}
+
+/// Walk `migrations/<database>/` and collect every committed
+/// `V<ts>__<slug>.sql` migration grouped by `(database, app)` bucket.
+///
+/// Returns a `BTreeMap` so iteration order is deterministic across
+/// runs — key order is `(database, app)` ASCII-sorted; per-bucket
+/// migration lists are version-sorted (lexical = chronological per
+/// the [`super::naming`] convention).
+///
+/// Files matching the down-side suffix (`.down.sql`) are skipped —
+/// the up-side filename serves as the canonical version identifier.
+fn scan_committed_migrations(
+    workspace_root: &Path,
+    database: &str,
+) -> Result<BTreeMap<BucketKey, Vec<String>>, ResetError> {
+    let mut out: BTreeMap<BucketKey, Vec<String>> = BTreeMap::new();
+    let database_dir = migrations_root(workspace_root).join(database);
+    let app_entries = match fs::read_dir(&database_dir) {
+        Ok(e) => e,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => {
+            return Err(ResetError::MigrationScanFailed {
+                path: database_dir,
+                source: err,
+            });
+        }
+    };
+    for app_entry in app_entries {
+        let app_entry = app_entry.map_err(|err| ResetError::MigrationScanFailed {
+            path: database_dir.clone(),
+            source: err,
+        })?;
+        let ft = app_entry
+            .file_type()
+            .map_err(|err| ResetError::MigrationScanFailed {
+                path: app_entry.path(),
+                source: err,
+            })?;
+        if !ft.is_dir() {
+            continue;
+        }
+        let Some(dirname) = app_entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let app_label = app_label_from_dirname(&dirname).to_string();
+        let bucket = BucketKey {
+            database: database.to_string(),
+            app: app_label,
+        };
+        let mut versions: Vec<String> = Vec::new();
+        let bucket_dir = app_entry.path();
+        let sql_entries = match fs::read_dir(&bucket_dir) {
+            Ok(e) => e,
+            Err(err) => {
+                return Err(ResetError::MigrationScanFailed {
+                    path: bucket_dir,
+                    source: err,
+                });
+            }
+        };
+        for sql_entry in sql_entries {
+            let sql_entry = sql_entry.map_err(|err| ResetError::MigrationScanFailed {
+                path: bucket_dir.clone(),
+                source: err,
+            })?;
+            let Some(name) = sql_entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            // Skip the snapshot file and any non-`.sql` artifact.
+            if !name.ends_with(".sql") {
+                continue;
+            }
+            // Skip down-side files — the version is identified by the
+            // up-side filename.
+            if name.ends_with(".down.sql") {
+                continue;
+            }
+            // Strip the trailing `.sql` to recover the version id.
+            let version = match name.strip_suffix(".sql") {
+                Some(v) if !v.is_empty() => v.to_string(),
+                _ => continue,
+            };
+            // Reject anything that isn't a `V`-prefixed version. This
+            // filters out hand-written `seed.sql`-style files an
+            // operator may have left in the bucket directory.
+            if !version.starts_with('V') {
+                continue;
+            }
+            versions.push(version);
+        }
+        versions.sort();
+        if !versions.is_empty() {
+            out.insert(bucket, versions);
+        }
+    }
+    Ok(out)
+}
+
+/// Read one migration's up SQL, build a single-statement
+/// transactional [`MigrationPlan`], and apply it through the runner.
+///
+/// The replayed plan is a single transactional segment because db
+/// reset operates against a fresh database — there are no concurrent
+/// writers so the relpages probe + non-transactional split machinery
+/// is unnecessary. We trust the on-disk SQL byte-for-byte; the runner
+/// still computes its own checksum and verifies it matches what we
+/// pre-supplied, so an unexpected file edit during replay surfaces
+/// as a typed error.
+async fn replay_one_migration(
+    ctx: &mut DjogiContext,
+    workspace_root: &Path,
+    bucket: &BucketKey,
+    version: &str,
+    migrate_config: &MigrateConfig,
+    guard: &super::guard::WorkspaceGuard,
+) -> Result<(), ResetError> {
+    let bucket_dir = super::target::bucket_dir(workspace_root, bucket);
+    let up_path = bucket_dir.join(up_filename(version));
+    let down_path = bucket_dir.join(down_filename(version));
+
+    let up_sql = fs::read_to_string(&up_path).map_err(|e| ResetError::SqlReadFailed {
+        path: up_path.clone(),
+        source: e,
+    })?;
+    // Down side may not exist for some baseline migrations; treat
+    // absence as an empty-string placeholder so the plan still
+    // compiles. The replay path itself only runs the up side.
+    let down_sql = match fs::read_to_string(&down_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(ResetError::SqlReadFailed {
+                path: down_path,
+                source: e,
+            });
+        }
+    };
+
+    let plan = MigrationPlan {
+        bucket: bucket.clone(),
+        classification: super::diff::Classification::Additive,
+        segments: vec![Segment {
+            kind: SegmentKind::Transactional,
+            statements: vec![OperationSql {
+                label: format!("replay {version}"),
+                up: up_sql.clone(),
+                down: down_sql,
+                lossy: None,
+            }],
+        }],
+    };
+    let checksum_up = compute_checksum([up_sql.as_str()]);
+
+    let runner_ctx = RunnerCtx {
+        bucket: bucket.clone(),
+        version: version.to_string(),
+        description: format!("db reset replay of {version}"),
+        checksum_up,
+        checksum_down: None,
+        snapshot: None,
+        snapshot_path: None,
+        // `MigrateConfig` does not derive `Clone` (the type carries
+        // a small fixed-size payload but the wider Phase 7 stance is
+        // to construct it explicitly per call so future changes
+        // surface at every callsite). We mirror the operator's
+        // settings into a fresh instance.
+        config: MigrateConfig {
+            concurrent_warn_relpages: migrate_config.concurrent_warn_relpages,
+            strict_concurrent_warnings: migrate_config.strict_concurrent_warnings,
+        },
+        // Replay applies in lexical order, so the runner's
+        // out-of-order detection should never trip — but supplying
+        // `AllowWithDiagnostic` matches the usual dev default and
+        // means a bug here surfaces as a warning rather than a hard
+        // failure during the time-sensitive reset window.
+        out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
+    };
+
+    apply_plan(ctx, &plan, &runner_ctx, guard)
+        .await
+        .map_err(|e| ResetError::ReplayFailed {
+            version: version.to_string(),
+            source: e,
+        })?;
+    Ok(())
+}
+
+// ── URL helpers ───────────────────────────────────────────────────────────
+
+/// Extract the database-name component from a Postgres URL.
+///
+/// Returns `None` when the URL has no path-component database name
+/// (e.g. `postgres://localhost`) — `db reset` cannot derive a database
+/// to drop in that case.
+///
+/// **No regex.** Walks the URL bytes from the rightmost `/` once.
+fn extract_database_from_url(url: &str) -> Option<String> {
+    let bytes = url.as_bytes();
+    // Confirm the URL has a recognised scheme. We accept both
+    // `postgres://` and `postgresql://`. Anything else is treated as
+    // libpq parameter form, which db reset doesn't support today
+    // (the operator would need the URL form for the libpq path).
+    let body = url
+        .strip_prefix("postgres://")
+        .or_else(|| url.strip_prefix("postgresql://"))?;
+    // Skip past the authority — the database name follows the FIRST
+    // `/` after the scheme. Authority byte indexing within `body`
+    // walks until that slash or end-of-string.
+    let mut idx = 0usize;
+    let body_bytes = body.as_bytes();
+    while idx < body_bytes.len() && body_bytes[idx] != b'/' {
+        idx += 1;
+    }
+    if idx >= body_bytes.len() {
+        return None; // no path component
+    }
+    // Path starts after the slash; database name runs until the next
+    // `?` (query parameters) or end-of-string.
+    let path_start = idx + 1;
+    let mut path_end = path_start;
+    while path_end < body_bytes.len() && body_bytes[path_end] != b'?' {
+        path_end += 1;
+    }
+    if path_end == path_start {
+        return None; // empty database name
+    }
+    // Reverify nothing breaks our index assumptions.
+    let _ = bytes; // suppresses unused-warning; we kept the slice for future tweaks.
+    Some(body[path_start..path_end].to_string())
+}
+
+/// Replace the database-name component in a Postgres URL with a new
+/// value. Preserves the scheme, authority, and any trailing query
+/// string.
+///
+/// Returns `None` when the URL has no recognisable database component.
+fn replace_db_in_url(url: &str, new_db: &str) -> Option<String> {
+    let body = url
+        .strip_prefix("postgres://")
+        .or_else(|| url.strip_prefix("postgresql://"))?;
+    let scheme = if url.starts_with("postgres://") {
+        "postgres://"
+    } else {
+        "postgresql://"
+    };
+    // Find the path slash.
+    let mut idx = 0usize;
+    let body_bytes = body.as_bytes();
+    while idx < body_bytes.len() && body_bytes[idx] != b'/' {
+        idx += 1;
+    }
+    if idx >= body_bytes.len() {
+        return None;
+    }
+    let authority = &body[..idx];
+    // Capture any trailing `?query` from the original path.
+    let path_start = idx + 1;
+    let mut path_end = path_start;
+    while path_end < body_bytes.len() && body_bytes[path_end] != b'?' {
+        path_end += 1;
+    }
+    let trailing = &body[path_end..]; // includes leading `?` if present, else empty.
+    Some(format!("{scheme}{authority}/{new_db}{trailing}"))
+}
+
+/// Quote a Postgres identifier for embedding in DDL. Doubles each
+/// internal `"` byte and wraps the result in `"`. The byte-level
+/// approach matches the rest of the migrate substrate.
+fn quote_identifier(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 2);
+    out.push('"');
+    for b in name.bytes() {
+        if b == b'"' {
+            out.push('"');
+            out.push('"');
+        } else {
+            out.push(b as char);
+        }
+    }
+    out.push('"');
+    out
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn temp_root(tag: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let p = std::env::temp_dir().join(format!("djogi-reset-{tag}-{nanos}-{n}"));
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn req<'a>(
+        workspace: &'a Path,
+        url: &'a str,
+        profile: &'a str,
+        confirmed: bool,
+    ) -> ResetRequest<'a> {
+        ResetRequest {
+            workspace_root: workspace,
+            database_url: url,
+            profile,
+            confirmed,
+            maintenance_database: "postgres",
+            migrate_config: MigrateConfig::default(),
+        }
+    }
+
+    /// Gate 1 — non-localhost URLs must refuse before any I/O.
+    #[tokio::test]
+    async fn refuses_when_url_is_not_localhost() {
+        let work = temp_root("not_localhost");
+        let res = reset_app_database(req(
+            &work,
+            "postgres://prod.example.com:5432/main",
+            "development",
+            true,
+        ))
+        .await;
+        match res {
+            Err(ResetError::Refused(ResetRefusal::NotLocalhost { database_url })) => {
+                assert_eq!(database_url, "postgres://prod.example.com:5432/main");
+            }
+            other => panic!("expected NotLocalhost refusal, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Gate 2 — production profile refuses even against localhost
+    /// (production-looking infra running locally is still production
+    /// from a policy perspective).
+    #[tokio::test]
+    async fn refuses_when_profile_is_production() {
+        let work = temp_root("production");
+        let res =
+            reset_app_database(req(&work, "postgres://localhost/main", "production", true)).await;
+        match res {
+            Err(ResetError::Refused(ResetRefusal::ProductionProfile { profile })) => {
+                assert_eq!(profile, "production");
+            }
+            other => panic!("expected ProductionProfile refusal, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Gate 3 — unconfirmed invocation refuses. The default for
+    /// `confirmed` (in CLI usage: when `--yes` is absent) is `false`.
+    #[tokio::test]
+    async fn refuses_when_not_confirmed() {
+        let work = temp_root("not_confirmed");
+        let res = reset_app_database(req(
+            &work,
+            "postgres://localhost/main",
+            "development",
+            false,
+        ))
+        .await;
+        match res {
+            Err(ResetError::Refused(ResetRefusal::NotConfirmed)) => {}
+            other => panic!("expected NotConfirmed refusal, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Gate ordering — a request that fails multiple gates should
+    /// surface the FIRST gate's refusal (localhost > production >
+    /// confirmation). Operators get a single, deterministic refusal
+    /// reason rather than a moving target.
+    #[tokio::test]
+    async fn gates_evaluate_in_documented_order() {
+        let work = temp_root("gate_order");
+        // Non-localhost + production + unconfirmed — every gate
+        // refuses. The localhost gate should fire first.
+        let res = reset_app_database(req(
+            &work,
+            "postgres://prod.example.com/main",
+            "production",
+            false,
+        ))
+        .await;
+        match res {
+            Err(ResetError::Refused(ResetRefusal::NotLocalhost { .. })) => {}
+            other => panic!("expected NotLocalhost first, got {other:?}"),
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn extract_database_from_url_basic() {
+        assert_eq!(
+            extract_database_from_url("postgres://localhost/main"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            extract_database_from_url("postgres://user:pass@localhost:5432/main"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            extract_database_from_url("postgresql://localhost/main?sslmode=disable"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_database_from_url_missing_path() {
+        // Authority-only URL (no path component) → None.
+        assert_eq!(extract_database_from_url("postgres://localhost"), None);
+        // Trailing slash but empty database → None.
+        assert_eq!(extract_database_from_url("postgres://localhost/"), None);
+        // Non-postgres scheme → None.
+        assert_eq!(extract_database_from_url("mysql://localhost/main"), None);
+    }
+
+    #[test]
+    fn replace_db_in_url_round_trips() {
+        assert_eq!(
+            replace_db_in_url("postgres://localhost/main", "postgres"),
+            Some("postgres://localhost/postgres".to_string())
+        );
+        assert_eq!(
+            replace_db_in_url("postgres://user:pass@localhost:5432/main", "postgres"),
+            Some("postgres://user:pass@localhost:5432/postgres".to_string())
+        );
+        // Query string preserved.
+        assert_eq!(
+            replace_db_in_url("postgresql://localhost/main?sslmode=disable", "postgres"),
+            Some("postgresql://localhost/postgres?sslmode=disable".to_string())
+        );
+    }
+
+    #[test]
+    fn quote_identifier_doubles_internal_quotes() {
+        assert_eq!(quote_identifier("main"), "\"main\"");
+        // Defensive — Postgres URL parsers don't emit quote bytes in
+        // database names, but the escape is still correct.
+        assert_eq!(quote_identifier("a\"b"), "\"a\"\"b\"");
+    }
+
+    #[test]
+    fn scan_committed_migrations_returns_versions_in_lexical_order() {
+        use super::super::target::{GLOBAL_BUCKET_DIRNAME, MIGRATIONS_DIR};
+        let work = temp_root("scan");
+        // Lay down two buckets with two up files each.
+        let main_global = work.join(format!("{MIGRATIONS_DIR}/main/{GLOBAL_BUCKET_DIRNAME}"));
+        let main_billing = work.join(format!("{MIGRATIONS_DIR}/main/billing"));
+        fs::create_dir_all(&main_global).unwrap();
+        fs::create_dir_all(&main_billing).unwrap();
+        fs::write(
+            main_global.join("V20260301000000__init.sql"),
+            "-- up\nCREATE TABLE foo (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+        fs::write(
+            main_global.join("V20260301000000__init.down.sql"),
+            "-- down\nDROP TABLE foo;",
+        )
+        .unwrap();
+        fs::write(
+            main_global.join("V20260201000000__earlier.sql"),
+            "-- up\nCREATE TABLE bar (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+        fs::write(
+            main_billing.join("V20260401000000__widgets.sql"),
+            "-- up\nCREATE TABLE widgets (id BIGINT PRIMARY KEY);",
+        )
+        .unwrap();
+        // Hand-written `seed.sql` (no `V` prefix) should be skipped.
+        fs::write(main_global.join("seed.sql"), "-- not a migration").unwrap();
+        // The schema_snapshot.json should be skipped (no `.sql`
+        // suffix).
+        fs::write(main_global.join("schema_snapshot.json"), "{}").unwrap();
+
+        let scanned = scan_committed_migrations(&work, "main").unwrap();
+        // Two buckets, in BTreeMap order.
+        let mut buckets: Vec<&BucketKey> = scanned.keys().collect();
+        buckets.sort();
+        assert_eq!(buckets.len(), 2);
+        // Global bucket — versions sorted ascending.
+        let global_bucket = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let billing_bucket = BucketKey {
+            database: "main".to_string(),
+            app: "billing".to_string(),
+        };
+        assert_eq!(
+            scanned[&global_bucket],
+            vec![
+                "V20260201000000__earlier".to_string(),
+                "V20260301000000__init".to_string(),
+            ]
+        );
+        assert_eq!(
+            scanned[&billing_bucket],
+            vec!["V20260401000000__widgets".to_string()]
+        );
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn scan_committed_migrations_handles_missing_database_dir() {
+        let work = temp_root("missing_db");
+        // No migrations/ tree at all → empty map, no error.
+        let scanned = scan_committed_migrations(&work, "main").unwrap();
+        assert!(scanned.is_empty());
+        let _ = fs::remove_dir_all(&work);
+    }
+}

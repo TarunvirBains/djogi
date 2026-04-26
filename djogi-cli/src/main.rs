@@ -6,14 +6,15 @@
 //! library; argument parsing is the only meaningful logic here.
 //!
 //! Phase 7 T6 wires up `migrations compose` and `migrations status`.
-//! Other subcommands remain stubbed out — they land with their
-//! respective phases.
+//! T7 adds `migrations attune`. T8 adds `db reset`, `db seed`, and
+//! the top-level `docs` subcommand.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod db;
 mod migrations;
 
 #[derive(Parser)]
@@ -39,14 +40,68 @@ enum TopCommand {
         #[command(subcommand)]
         command: MigrationsCommand,
     },
+    /// Render Markdown documentation from the descriptor inventory.
+    ///
+    /// One file per registered model under `<output>/<app>/`, plus a
+    /// top-level `README.md` index. Output is byte-deterministic
+    /// against the same descriptor set.
+    Docs {
+        /// Output directory. Defaults to
+        /// `<workspace>/target/djogi-docs/`.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Workspace root override. Defaults to the current working
+        /// directory.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
 enum DbCommand {
-    /// Drop, recreate, and migrate the database (dev only).
-    Reset,
-    /// Run seed script.
-    Seed,
+    /// Drop, recreate, and replay every committed migration against
+    /// the application database. **Triple-gated** — refuses unless
+    /// (a) `DATABASE_URL` resolves to localhost, (b)
+    /// `Djogi.toml::profile != "production"`, and (c) explicit
+    /// confirmation is supplied via `--yes` or the interactive
+    /// prompt. Logging databases (`crud_log`, `event_log`) are NOT
+    /// touched.
+    Reset {
+        /// Skip the interactive y/N prompt and proceed. Required for
+        /// non-interactive invocations (e.g. CI integration suites
+        /// that call `db reset` between tests).
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+        /// Maintenance database to connect to for the `DROP DATABASE`
+        /// then `CREATE DATABASE` round-trip. Defaults to `postgres`,
+        /// the conventional administrative DB present on every
+        /// cluster. Override only if the cluster has a different
+        /// administrative DB (e.g. AWS RDS uses `rdsadmin`).
+        #[arg(long, default_value = "postgres")]
+        maintenance_database: String,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Run operator-authored SQL seed files in `seeds/<database>/`.
+    /// Idempotent — re-runs skip seeds whose `V1:<sha256>` checksum
+    /// matches the `djogi_seed_runs` ledger; refuses on checksum
+    /// drift. Localhost-gated by default.
+    Seed {
+        /// Database name whose seeds directory should be run. The
+        /// runner walks `seeds/<database>/*.sql` in alphabetical
+        /// order.
+        #[arg(long, default_value = "main")]
+        database: String,
+        /// Allow seeds to run against a non-localhost database. The
+        /// gate is lighter than `db reset`'s — useful for CI
+        /// integration suites seeding a remote test database.
+        #[arg(long, default_value_t = false)]
+        allow_non_localhost: bool,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -140,15 +195,18 @@ fn main() -> ExitCode {
             ExitCode::from(0)
         }
         TopCommand::Db { command } => match command {
-            DbCommand::Reset => {
-                eprintln!("djogi db reset: not yet implemented");
-                ExitCode::from(0)
-            }
-            DbCommand::Seed => {
-                eprintln!("djogi db seed: not yet implemented");
-                ExitCode::from(0)
-            }
+            DbCommand::Reset {
+                yes,
+                maintenance_database,
+                workspace,
+            } => db::reset_cmd(yes, maintenance_database, workspace),
+            DbCommand::Seed {
+                database,
+                allow_non_localhost,
+                workspace,
+            } => db::seed_cmd(database, allow_non_localhost, workspace),
         },
+        TopCommand::Docs { output, workspace } => db::docs_cmd(output, workspace),
         TopCommand::Migrations { command } => match command {
             MigrationsCommand::Compose {
                 name,
