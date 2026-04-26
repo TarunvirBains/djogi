@@ -516,6 +516,7 @@ async fn relpages_probe_warns_when_threshold_exceeded(mut ctx: djogi::DjogiConte
     let config = MigrateConfig {
         concurrent_warn_relpages: 0, // anything > 0 triggers
         strict_concurrent_warnings: false,
+        ..MigrateConfig::default()
     };
     let runner_ctx = make_runner_ctx(&plan, "V20260425000005__relpages_warn", None, None, config);
     // WARN path: runner returns Ok and only emits a tracing::warn!.
@@ -553,6 +554,7 @@ async fn relpages_probe_aborts_in_strict_mode(mut ctx: djogi::DjogiContext) {
     let config = MigrateConfig {
         concurrent_warn_relpages: 0,
         strict_concurrent_warnings: true,
+        ..MigrateConfig::default()
     };
     let runner_ctx = make_runner_ctx(
         &plan,

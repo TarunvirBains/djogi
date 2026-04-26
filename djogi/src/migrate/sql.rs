@@ -153,6 +153,14 @@ pub enum LossyRollbackKind {
     /// `DropIndex` — the index definition is gone; queries that
     /// relied on the index will go back to sequential scans.
     DropIndex,
+    /// PK-type-flip cutover (T9 segment 5) committed — the prior PK
+    /// column, its DEFAULT, and the autofill trigger are gone.
+    /// Rollback requires an inverse migration: add the previous-
+    /// direction column back, install a reverse autofill trigger,
+    /// re-run `heeranjid_bulk_backfill`, and run a second cutover.
+    /// Surfaces in `migrations status` as the "POINT OF NO RETURN"
+    /// marker.
+    PkTypeFlipPostCutover,
 }
 
 /// Errors the SQL emitter surfaces.
@@ -292,6 +300,56 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                 table: table.clone(),
                 from: from.clone(),
                 to: to.clone(),
+            })
+        }
+        SchemaOperation::PkTypeFlipGroup(group) => {
+            // The group's full lowering produces a multi-segment
+            // plan via [`crate::migrate::pk_flip::lower_pk_flip_group`].
+            // From a per-operation perspective we emit a SUMMARY
+            // OperationSql whose `up` is a comment block describing
+            // the contained statements; the segment planner then
+            // SUPERSEDES this summary with the real multi-segment
+            // plan when it sees `PkTypeFlipGroup` in the delta.
+            // Direct callers of `lower_delta` (e.g. compose's SQL
+            // file writer) get a comment summary that documents the
+            // structure — the matching segment plan provides the
+            // executable SQL.
+            let mut summary = String::new();
+            let _ = std::fmt::Write::write_fmt(
+                &mut summary,
+                format_args!(
+                    "-- PkTypeFlipGroup parent={parent} {from:?} -> {to:?}\n\
+                     -- children={children}, self_fk={self_fk}, join_tables={join},\n\
+                     -- cycles={cycles}, partitioned={partitioned}.\n\
+                     -- See the segment plan for the executable SQL (preparation,\n\
+                     -- backfill, concurrent index, NOT NULL proof, cutover).",
+                    parent = group.parent_table,
+                    from = group.parent_from,
+                    to = group.parent_to,
+                    children = group.children.len(),
+                    self_fk = group.self_fk.is_some(),
+                    join = group.join_tables.len(),
+                    cycles = group.cycles.len(),
+                    partitioned = group.partitioned_parent.is_some(),
+                ),
+            );
+            Ok(OperationSql {
+                label: format!("PkTypeFlipGroup {}", group.parent_table),
+                up: summary,
+                down: format!(
+                    "-- PkTypeFlipGroup parent={} — see cutover segment for the\n\
+                     -- POINT OF NO RETURN marker; rollback requires an inverse\n\
+                     -- migration.",
+                    group.parent_table,
+                ),
+                lossy: Some(LossyRollbackWarning {
+                    kind: LossyRollbackKind::PkTypeFlipPostCutover,
+                    detail: format!(
+                        "PkTypeFlipGroup `{}` cutover removes the prior PK column \
+                         and trigger; rollback requires an inverse migration",
+                        group.parent_table,
+                    ),
+                }),
             })
         }
         SchemaOperation::RenameApp { from, to } => Ok(emit_rename_app(from, to)),

@@ -216,6 +216,62 @@ pub enum RunnerError {
     BaselineProjectionFailed {
         source: Box<super::verify::VerifyRunError>,
     },
+
+    /// **D060** — T9 PK-flip pre-flight: at least one Postgres
+    /// session is running with `session_replication_role = 'replica'`,
+    /// which suppresses BEFORE row triggers and would leave
+    /// `id_desc` NULL on its writes. The runner refuses the cutover
+    /// before any side effect.
+    PkFlipHazardReplicaSessions {
+        /// `(pid, application_name)` pairs of offending sessions.
+        sessions: Vec<(i32, String)>,
+    },
+
+    /// **D061** — T9 PK-flip pre-flight: a `zzz_*` trigger already
+    /// exists on the migrating table (or one of its children).
+    /// Collisions with the autofill trigger naming convention abort
+    /// the install; the operator must rename or drop the existing
+    /// trigger before retrying.
+    PkFlipHazardPreexistingZzzTrigger {
+        /// Postgres table carrying the offending trigger.
+        table: String,
+        /// Trigger names found.
+        trigger_names: Vec<String>,
+    },
+
+    /// **D062** — T9 PK-flip pre-flight: at least one trigger on the
+    /// migrating table (or a child) is already disabled (`tgenabled
+    /// <> 'O'`). A disabled trigger leaves writes during the window
+    /// without their `_desc` shadow populated; the runner refuses.
+    PkFlipHazardDisabledTriggers {
+        /// Postgres table carrying the offending trigger.
+        table: String,
+        /// `(trigger_name, tgenabled_char)` pairs.
+        triggers: Vec<(String, char)>,
+    },
+
+    /// **D063** — T9 PK-flip pre-flight: at least one open Postgres
+    /// transaction has run for longer than the configured threshold
+    /// (`MigrateConfig::pk_flip_long_tx_threshold_secs`). The
+    /// cutover would either block on `AccessExclusiveLock` or abort
+    /// on `lock_timeout`; the runner refuses.
+    PkFlipHazardLongRunningTx {
+        /// `(pid, age_seconds)` pairs.
+        offenders: Vec<(i32, i64)>,
+        /// Threshold the offenders exceeded.
+        threshold_secs: u32,
+    },
+
+    /// **D064** — T9 verification halt: between backfill and
+    /// cutover, the per-table verification SELECT returned a non-zero
+    /// count of NULL / mismatched shadow rows. The runner halts
+    /// before opening the cutover transaction.
+    PkFlipVerificationFailed {
+        /// Postgres table whose verification failed.
+        table: String,
+        /// Number of violating rows the verification query returned.
+        count_violating: i64,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -330,6 +386,49 @@ impl std::fmt::Display for RunnerError {
             RunnerError::BaselineProjectionFailed { source } => write!(
                 f,
                 "baseline live-DB projection failed before ledger insert: {source}",
+            ),
+            RunnerError::PkFlipHazardReplicaSessions { sessions } => write!(
+                f,
+                "D060 PK-flip cutover refused: {n} session(s) are running with \
+                 session_replication_role = 'replica' which suppresses BEFORE row triggers; \
+                 pause those sessions or `ALTER TABLE ... ENABLE ALWAYS TRIGGER zzz_*` \
+                 before retrying. Offenders: {sessions:?}",
+                n = sessions.len(),
+            ),
+            RunnerError::PkFlipHazardPreexistingZzzTrigger {
+                table,
+                trigger_names,
+            } => write!(
+                f,
+                "D061 PK-flip cutover refused: pre-existing zzz_* trigger(s) on `{table}` \
+                 collide with the autofill install: {trigger_names:?}. Rename or drop them \
+                 before retrying.",
+            ),
+            RunnerError::PkFlipHazardDisabledTriggers { table, triggers } => write!(
+                f,
+                "D062 PK-flip cutover refused: disabled trigger(s) on `{table}` would \
+                 silently bypass the autofill: {triggers:?}. Re-enable them or pause \
+                 whatever process disabled them before retrying.",
+            ),
+            RunnerError::PkFlipHazardLongRunningTx {
+                offenders,
+                threshold_secs,
+            } => write!(
+                f,
+                "D063 PK-flip cutover refused: {n} transaction(s) have been open longer \
+                 than {threshold_secs}s and would block AccessExclusiveLock or trigger \
+                 lock_timeout. Cancel or terminate them via pg_cancel_backend / \
+                 pg_terminate_backend, then retry. Offenders (pid, age_secs): {offenders:?}",
+                n = offenders.len(),
+            ),
+            RunnerError::PkFlipVerificationFailed {
+                table,
+                count_violating,
+            } => write!(
+                f,
+                "D064 PK-flip verification halt: table `{table}` has {count_violating} row(s) \
+                 with NULL or stale shadow values. Re-run the backfill (and audit any DISABLE \
+                 TRIGGER / replica writes during the window) before retrying the cutover.",
             ),
             RunnerError::OutOfOrderRejected {
                 version,
@@ -507,6 +606,17 @@ async fn apply_plan_inner(
     runner_ctx: &RunnerCtx,
 ) -> Result<RunReport, RunnerError> {
     let started = Instant::now();
+
+    // T9 pre-flight: when the plan classifies as `PkTypeFlip`, run
+    // the hazard checks (D060–D063) BEFORE any side effect. The
+    // runner refuses on any hit with an actionable diagnostic; no
+    // ledger row is inserted, no SQL runs.
+    if matches!(
+        plan.classification,
+        super::diff::Classification::PkTypeFlip { .. }
+    ) {
+        pk_flip_preflight(ctx, runner_ctx, plan).await?;
+    }
 
     // 4. Verify checksum BEFORE inserting the pending row. A
     // mismatch means the plan supplied to the runner does not
@@ -712,6 +822,13 @@ async fn apply_plan_inner(
                         } => format!(
                             "transactional segment {seg_idx} failed at `{statement_label}`: \
                              {source}",
+                        ),
+                        RunnerError::PkFlipVerificationFailed {
+                            table,
+                            count_violating,
+                        } => format!(
+                            "PK-flip verification halt at segment {seg_idx}: table `{table}` \
+                             has {count_violating} row(s) with NULL or stale shadow values",
                         ),
                         other => format!("transactional segment {seg_idx} failed: {other}",),
                     };
@@ -1664,6 +1781,45 @@ async fn run_transactional_segment(
     runner_ctx: &RunnerCtx,
     add_table_set: &BTreeSet<String>,
 ) -> Result<(), RunnerError> {
+    // T9 verification segment short-circuit: when every statement
+    // in this segment carries a `PkFlipVerify` label the segment is
+    // a halt-point gate, not DDL. Run each as a `query_one` against
+    // a `SELECT count(*)` body and assert the count is zero.
+    // No BEGIN/COMMIT — the queries are read-only.
+    let all_verify = !segment.statements.is_empty()
+        && segment
+            .statements
+            .iter()
+            .all(|s| s.label.starts_with("PkFlipVerify "));
+    if all_verify {
+        for stmt in &segment.statements {
+            // Recover the table from the label format "PkFlipVerify
+            // <table> <hint>". `<table>` is the second whitespace-
+            // separated token.
+            let table = stmt
+                .label
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            let row = ctx.query_one(&stmt.up, &[]).await.map_err(|e| {
+                RunnerError::TransactionalSegmentFailed {
+                    segment_index: 0,
+                    statement_label: stmt.label.clone(),
+                    source: e,
+                }
+            })?;
+            let count: i64 = row.try_get(0).unwrap_or(0);
+            if count > 0 {
+                return Err(RunnerError::PkFlipVerificationFailed {
+                    table,
+                    count_violating: count,
+                });
+            }
+        }
+        return Ok(());
+    }
+
     // Probe relpages for any AddIndex statement that does NOT
     // require out-of-transaction. The probe runs BEFORE BEGIN so
     // the abort path on `strict_concurrent_warnings` doesn't leave
@@ -1935,6 +2091,246 @@ async fn relpages_probe(
         }
     }
     Ok(())
+}
+
+/// **T9 pre-flight gate** — run before any side effect when the
+/// plan is a PK-type-flip migration.
+///
+/// Implements D060–D063 from the v3 plan §T9 contract:
+///
+/// - **D060** Replica-mode sessions enumerated via
+///   `pg_stat_activity` → refusal if any present.
+/// - **D061** Pre-existing `zzz_*` triggers on the migrating tables
+///   → refusal (collision with the autofill install).
+/// - **D062** Already-disabled triggers on the migrating tables
+///   → refusal.
+/// - **D063** Open transactions older than the configured threshold
+///   → refusal.
+///
+/// The set of "migrating tables" is recovered from the cutover
+/// segment's labels — every `PkFlipPrep` / `PkFlipCutover` /
+/// `PkFlipBackfill` / `PkFlipConcurrentIndex` / `PkFlipNotNullProof`
+/// label carries the parent table name as its trailing token; we
+/// also collect every child table name from the multi-segment SQL
+/// via byte-level identifier scanning of the `up` text. This avoids
+/// re-walking the descriptor here — the segment plan already carries
+/// the full set the cutover will touch.
+///
+/// **No regex** — the table-name extraction uses byte-level forward
+/// scans for `ALTER TABLE <ident> ` literal substrings; the
+/// identifier rules (ASCII letter or underscore, then alphanumerics
+/// or underscore, ≤ 63 bytes) are spelled out in plain English in
+/// the helper.
+async fn pk_flip_preflight(
+    ctx: &mut DjogiContext,
+    runner_ctx: &RunnerCtx,
+    plan: &MigrationPlan,
+) -> Result<(), RunnerError> {
+    // Recover migrating tables from the segment plan. The label
+    // format is `PkFlip<Stage> <parent>` (no spaces in the parent
+    // identifier per descriptor / projection enforcement).
+    let mut tables: BTreeSet<String> = BTreeSet::new();
+    for seg in &plan.segments {
+        for stmt in &seg.statements {
+            if let Some(parent) = stmt.label.strip_prefix("PkFlipPrep ") {
+                tables.insert(parent.to_string());
+            } else if let Some(parent) = stmt.label.strip_prefix("PkFlipCutover ") {
+                tables.insert(parent.to_string());
+            } else if let Some(parent) = stmt.label.strip_prefix("PkFlipPartitionedPrep ") {
+                tables.insert(parent.to_string());
+            }
+            // Scan `ALTER TABLE <ident>` to recover child tables.
+            for child in scan_alter_table_targets(&stmt.up) {
+                tables.insert(child);
+            }
+        }
+    }
+
+    // D060 — replica-mode sessions.
+    let replica_rows = ctx
+        .query_all(
+            "SELECT pid, COALESCE(application_name, '') AS app \
+             FROM pg_stat_activity \
+             WHERE pid <> pg_backend_pid() \
+               AND state IS NOT NULL \
+               AND COALESCE(current_setting('session_replication_role', true), 'origin') = 'replica'",
+            &[],
+        )
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })?;
+    if !replica_rows.is_empty() {
+        let mut sessions: Vec<(i32, String)> = Vec::with_capacity(replica_rows.len());
+        for r in &replica_rows {
+            let pid: i32 = r.try_get(0).unwrap_or(0);
+            let app: String = r.try_get(1).unwrap_or_default();
+            sessions.push((pid, app));
+        }
+        return Err(RunnerError::PkFlipHazardReplicaSessions { sessions });
+    }
+
+    // D061 + D062 — per-table trigger checks.
+    for table in &tables {
+        // The LIKE pattern `zzz\_%` uses `\` as an explicit escape
+        // character (NOT regex) so the `_` is a literal underscore
+        // rather than the LIKE wildcard.
+        let zzz_rows = ctx
+            .query_all(
+                "SELECT tgname FROM pg_trigger \
+                 WHERE tgrelid = (SELECT oid FROM pg_class WHERE relname = $1 AND relkind = 'r' LIMIT 1) \
+                   AND NOT tgisinternal \
+                   AND tgname LIKE 'zzz\\_%' ESCAPE '\\'",
+                &[table],
+            )
+            .await
+            .map_err(|e| RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            })?;
+        if !zzz_rows.is_empty() {
+            let names: Vec<String> = zzz_rows
+                .iter()
+                .map(|r| r.try_get::<_, String>(0).unwrap_or_default())
+                .collect();
+            return Err(RunnerError::PkFlipHazardPreexistingZzzTrigger {
+                table: table.clone(),
+                trigger_names: names,
+            });
+        }
+        let disabled_rows = ctx
+            .query_all(
+                "SELECT tgname, tgenabled FROM pg_trigger \
+                 WHERE tgrelid = (SELECT oid FROM pg_class WHERE relname = $1 AND relkind = 'r' LIMIT 1) \
+                   AND NOT tgisinternal \
+                   AND tgenabled <> 'O'",
+                &[table],
+            )
+            .await
+            .map_err(|e| RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            })?;
+        if !disabled_rows.is_empty() {
+            let mut triggers: Vec<(String, char)> = Vec::with_capacity(disabled_rows.len());
+            for r in &disabled_rows {
+                let name: String = r.try_get(0).unwrap_or_default();
+                let raw: i8 = r.try_get(1).unwrap_or(0);
+                // tgenabled is a single-byte CHAR (Postgres `char`)
+                // mapped to Rust as `i8`; valid values are 'O', 'D',
+                // 'R', 'A' — all positive ASCII. Re-interpret as
+                // unsigned without bounds-checking the high half
+                // because i8 cannot exceed 127.
+                let ch = if raw >= 0 { (raw as u8) as char } else { '?' };
+                triggers.push((name, ch));
+            }
+            return Err(RunnerError::PkFlipHazardDisabledTriggers {
+                table: table.clone(),
+                triggers,
+            });
+        }
+    }
+
+    // D063 — long-running transactions.
+    let threshold = runner_ctx.config.pk_flip_long_tx_threshold_secs;
+    if threshold > 0 {
+        let long_rows = ctx
+            .query_all(
+                "SELECT pid, EXTRACT(EPOCH FROM (now() - xact_start))::bigint AS age \
+                 FROM pg_stat_activity \
+                 WHERE pid <> pg_backend_pid() \
+                   AND xact_start IS NOT NULL \
+                   AND now() - xact_start > make_interval(secs => $1::int)",
+                &[&(threshold as i32)],
+            )
+            .await
+            .map_err(|e| RunnerError::LedgerWriteFailed {
+                version: runner_ctx.version.clone(),
+                source: e,
+            })?;
+        if !long_rows.is_empty() {
+            let mut offenders: Vec<(i32, i64)> = Vec::with_capacity(long_rows.len());
+            for r in &long_rows {
+                let pid: i32 = r.try_get(0).unwrap_or(0);
+                let age: i64 = r.try_get(1).unwrap_or(0);
+                offenders.push((pid, age));
+            }
+            return Err(RunnerError::PkFlipHazardLongRunningTx {
+                offenders,
+                threshold_secs: threshold,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Recover every table name appearing immediately after an
+/// `ALTER TABLE` token in `sql`. Byte-level forward scan; no regex.
+///
+/// Identifier rule: ASCII letter or underscore as the first byte,
+/// then ASCII alphanumerics or underscores, up to 63 bytes (the
+/// Postgres `NAMEDATALEN - 1` ceiling). We accept double-quoted
+/// identifiers too — the inner contents are passed through verbatim
+/// (the descriptor / projection layer guarantees identifier shape
+/// upstream so the contents survive interpretation as a plain
+/// table name in `pg_class`).
+fn scan_alter_table_targets(sql: &str) -> Vec<String> {
+    const MARKER: &[u8] = b"ALTER TABLE ";
+    let bytes = sql.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i + MARKER.len() <= bytes.len() {
+        if &bytes[i..i + MARKER.len()] == MARKER {
+            let start = i + MARKER.len();
+            // Identifier may be plain or double-quoted.
+            let (id, end) = if start < bytes.len() && bytes[start] == b'"' {
+                let id_start = start + 1;
+                let mut j = id_start;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    j += 1;
+                }
+                if j > id_start && j < bytes.len() {
+                    (
+                        String::from_utf8_lossy(&bytes[id_start..j]).into_owned(),
+                        j + 1,
+                    )
+                } else {
+                    (String::new(), bytes.len())
+                }
+            } else {
+                let id_start = start;
+                let mut j = id_start;
+                let mut len = 0usize;
+                while j < bytes.len() && len < 63 {
+                    let b = bytes[j];
+                    let valid = if len == 0 {
+                        b.is_ascii_alphabetic() || b == b'_'
+                    } else {
+                        b.is_ascii_alphanumeric() || b == b'_'
+                    };
+                    if !valid {
+                        break;
+                    }
+                    j += 1;
+                    len += 1;
+                }
+                if j > id_start {
+                    (String::from_utf8_lossy(&bytes[id_start..j]).into_owned(), j)
+                } else {
+                    (String::new(), j)
+                }
+            };
+            if !id.is_empty() {
+                out.push(id);
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

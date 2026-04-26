@@ -605,6 +605,8 @@ async fn replay_one_migration(
         config: MigrateConfig {
             concurrent_warn_relpages: migrate_config.concurrent_warn_relpages,
             strict_concurrent_warnings: migrate_config.strict_concurrent_warnings,
+            pk_flip_long_tx_threshold_secs: migrate_config.pk_flip_long_tx_threshold_secs,
+            pk_flip_join_table_option: migrate_config.pk_flip_join_table_option,
         },
         // Replay applies in lexical order, so the runner's
         // out-of-order detection should never trip — but supplying

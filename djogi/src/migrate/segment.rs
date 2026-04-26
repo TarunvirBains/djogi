@@ -158,6 +158,26 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
         });
     }
 
+    // T9 fast-path: a delta carrying a `PkTypeFlipGroup` consumes
+    // the entire migration (whole-migration non-transactional, per
+    // 7-Zero §6.2 deterministic A). Route to the dedicated
+    // multi-segment emitter and ignore the standard per-operation
+    // path. Multiple groups in one delta are lowered into back-to-
+    // back segment lists in the order the differ emitted them.
+    let mut group_segments: Vec<Segment> = Vec::new();
+    for op in &delta.operations {
+        if let SchemaOperation::PkTypeFlipGroup(g) = op {
+            group_segments.extend(super::pk_flip::build_segments(g));
+        }
+    }
+    if !group_segments.is_empty() {
+        return Ok(MigrationPlan {
+            bucket: delta.bucket.clone(),
+            classification: delta.classification.clone(),
+            segments: group_segments,
+        });
+    }
+
     // Step 1 — order the operations into a dependency-respecting
     // sequence. Ordering is independent of segment classification.
     let ordered = order_operations(&delta.operations);
@@ -525,7 +545,9 @@ fn operation_phase(op: &SchemaOperation) -> usize {
         // segment is materialized. Pin to the end so a future
         // refactor that ignores the error still puts them in a
         // sensible spot.
-        SchemaOperation::PkTypeFlip { .. } | SchemaOperation::Unsupported { .. } => 12,
+        SchemaOperation::PkTypeFlip { .. }
+        | SchemaOperation::PkTypeFlipGroup(_)
+        | SchemaOperation::Unsupported { .. } => 12,
     }
 }
 

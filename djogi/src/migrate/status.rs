@@ -25,7 +25,9 @@
 
 use std::collections::BTreeMap;
 
+use super::diff::Classification;
 use super::ledger::{LedgerStatus, LedgerSummaryRow};
+use super::segment::MigrationPlan;
 
 /// Output of [`render`]. Pre-formatted lines + the exit code so the
 /// CLI just prints and exits.
@@ -143,6 +145,42 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
         d010_warnings,
         exit_code,
     }
+}
+
+/// Render the T9 PK-flip warning lines for a pending migration plan.
+///
+/// **Inputs.** The caller passes the [`MigrationPlan`] returned by
+/// [`super::segment::plan_delta`]. When the plan classifies as
+/// `PkTypeFlip`, this fn returns the operator-facing warning lines:
+///
+/// - `"⚠ POINT OF NO RETURN: reverse requires inverse migration"`
+///   for every flip plan.
+/// - `"⚠ Partitioned-table cutover is seconds-to-minutes class —
+///   benchmark in staging first"` when any segment in the plan
+///   carries a partitioned-cutover label
+///   (`PkFlipPartitionedCutover`).
+///
+/// Non-flip plans return an empty `Vec`. The warnings are
+/// pre-formatted strings ready to print; the CLI prepends them to
+/// the regular status output for the affected pending plan.
+pub fn render_pending_plan_warnings(plan: &MigrationPlan) -> Vec<String> {
+    if !matches!(plan.classification, Classification::PkTypeFlip { .. }) {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    out.push("⚠ POINT OF NO RETURN: reverse requires inverse migration".to_string());
+    let has_partitioned = plan.segments.iter().any(|s| {
+        s.statements
+            .iter()
+            .any(|stmt| stmt.label.starts_with("PkFlipPartitionedCutover "))
+    });
+    if has_partitioned {
+        out.push(
+            "⚠ Partitioned-table cutover is seconds-to-minutes class — benchmark in staging first"
+                .to_string(),
+        );
+    }
+    out
 }
 
 /// Truncate a run_id BIGINT to a stable short token (last 8 hex

@@ -81,6 +81,35 @@ pub struct MigrateConfig {
     /// Default `false` so dev iteration is unblocked; production
     /// configs typically flip this on.
     pub strict_concurrent_warnings: bool,
+
+    /// Threshold (in seconds) above which an open transaction
+    /// triggers the pre-flight refusal in T9's PK-flip orchestration.
+    /// The runner enumerates `pg_stat_activity` rows whose
+    /// `xact_start` is older than `now() - INTERVAL <threshold>`
+    /// before opening the cutover transaction; any rows found refuse
+    /// the cutover with `RunnerError::PkFlipHazardLongRunningTx`.
+    /// Default `60` seconds. Set to `0` to disable the check.
+    #[serde(default = "default_pk_flip_long_tx_threshold_secs")]
+    pub pk_flip_long_tx_threshold_secs: u32,
+
+    /// Join-table cutover layout for T9's PK-flip orchestration.
+    /// `'A'` (default — uppercase ASCII letter A) emits a single
+    /// mega-transaction across both parents and the join table per
+    /// playbook §7. `'B'` emits sequential per-parent migrations
+    /// each of which is a self-contained PkTypeFlipGroup. The
+    /// compose pipeline reads this knob to decide between the two
+    /// layouts. Operators flip to `'B'` when their reviewers prefer
+    /// narrower windows over the atomic mega-tx invariant.
+    #[serde(default = "default_pk_flip_join_table_option")]
+    pub pk_flip_join_table_option: char,
+}
+
+fn default_pk_flip_long_tx_threshold_secs() -> u32 {
+    60
+}
+
+fn default_pk_flip_join_table_option() -> char {
+    'A'
 }
 
 impl Default for MigrateConfig {
@@ -88,6 +117,8 @@ impl Default for MigrateConfig {
         Self {
             concurrent_warn_relpages: 128,
             strict_concurrent_warnings: false,
+            pk_flip_long_tx_threshold_secs: default_pk_flip_long_tx_threshold_secs(),
+            pk_flip_join_table_option: default_pk_flip_join_table_option(),
         }
     }
 }

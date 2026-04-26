@@ -63,6 +63,7 @@ pub mod docs;
 pub mod guard;
 pub mod ledger;
 pub mod naming;
+pub mod pk_flip;
 pub mod policy;
 pub mod projection;
 pub mod repair;
@@ -91,8 +92,9 @@ pub use compose::{
     parse_pending_bytes,
 };
 pub use diff::{
-    Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, SchemaDelta,
-    SchemaOperation, diff_bucket_maps,
+    Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, PkFlipChild,
+    PkFlipCycle, PkFlipDirection, PkFlipFamily, PkFlipJoinTable, PkFlipPartitionedMeta,
+    PkFlipSelfFk, PkTypeFlipGroup, SchemaDelta, SchemaOperation, diff_bucket_maps,
 };
 pub use docs::{DocsError, DocsReport, generate_docs, render_inventory, render_model_page};
 pub use guard::{
@@ -112,6 +114,7 @@ pub use naming::{
     MAX_SLUG_LEN, down_filename, pending_json_filename, sanitize_slug, up_filename, version_id,
     version_prefix,
 };
+pub use pk_flip::lower_pk_flip_group;
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use repair::{
@@ -144,7 +147,7 @@ pub use snapshot::{
     SnapshotError, load_snapshot, parse_snapshot_bytes, save_snapshot, serialize_snapshot,
 };
 pub use sql::{LossyRollbackKind, LossyRollbackWarning, OperationSql, SqlEmitError, lower_delta};
-pub use status::{StatusReport, render as render_status};
+pub use status::{StatusReport, render as render_status, render_pending_plan_warnings};
 pub use target::{
     FilesystemBucket, GLOBAL_BUCKET_DIRNAME, MIGRATIONS_DIR, MODELS_INVENTORY_FILENAME,
     PENDING_DIR, SNAPSHOT_FILENAME, app_dirname, app_label_from_dirname, bucket_dir, database_dir,

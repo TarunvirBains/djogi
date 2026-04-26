@@ -136,6 +136,8 @@ async fn run_reset(
         migrate_config: djogi::config::MigrateConfig {
             concurrent_warn_relpages: config.migrate.concurrent_warn_relpages,
             strict_concurrent_warnings: config.migrate.strict_concurrent_warnings,
+            pk_flip_long_tx_threshold_secs: config.migrate.pk_flip_long_tx_threshold_secs,
+            pk_flip_join_table_option: config.migrate.pk_flip_join_table_option,
         },
     };
     match reset_app_database(req).await {

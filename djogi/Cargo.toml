@@ -246,3 +246,8 @@ harness = true
 name = "phase7_t8_seed_docs_live"
 path = "../tests/integration/phase7_t8_seed_docs_live.rs"
 harness = true
+
+[[test]]
+name = "phase7_t9_pk_flip_live"
+path = "../tests/integration/phase7_t9_pk_flip_live.rs"
+harness = true

@@ -218,11 +218,47 @@ pub enum SchemaOperation {
     /// HeerIdRecencyBiased, RanjId ↔ RanjIdRecencyBiased). Triggers
     /// `Classification::PkTypeFlip` and is the entry point for T9's
     /// expand/contract orchestration.
+    ///
+    /// **Production lifecycle.** The per-table flip op is emitted by
+    /// the per-table differ ([`diff_pk_in_table`]). At the bucket-walk
+    /// finalisation step ([`diff_bucket_maps`]) every per-table
+    /// `PkTypeFlip` is **promoted** into a single
+    /// [`SchemaOperation::PkTypeFlipGroup`] for that bucket — the
+    /// group payload carries the parent table plus every dependent
+    /// child / self-FK / join-table / partitioned-parent shape so T9's
+    /// segment planner has the full transitive closure available
+    /// without re-walking the schema. The standalone `PkTypeFlip`
+    /// variant survives for unit-test reach-in fixtures and for
+    /// snapshot-level differ assertions; production callers (compose,
+    /// runner) only ever see `PkTypeFlipGroup` after the post-walk
+    /// finalisation runs.
     PkTypeFlip {
         table: String,
         from: PkKindSchema,
         to: PkKindSchema,
     },
+
+    /// Aggregated PK-type flip across one parent table and every
+    /// dependent child whose FK references the parent's PK. Emitted
+    /// by [`diff_bucket_maps`] from per-table [`PkTypeFlip`] ops at
+    /// finalisation time. T9's segment planner consumes this single
+    /// op to emit the multi-stage flip plan (preparation, autofill
+    /// trigger install, backfill, concurrent unique index, NOT NULL
+    /// proof, cutover) verbatim from the HeeRanjID playbook.
+    ///
+    /// **Why a group, not per-table.** The cutover transaction in
+    /// the playbook (§4 / §6 / §7 / §9) is **one atomic Postgres
+    /// transaction across parent and every child**. Without the
+    /// grouping the segment planner would emit one isolated cutover
+    /// per table and the shared atomic invariant would not hold.
+    ///
+    /// **Cycles + self-FK + join-table + partitioned** — the group
+    /// records each via a typed sub-shape so the planner can switch
+    /// on the playbook section that applies. A single delta typically
+    /// carries one group per migrating parent; multi-parent flips
+    /// (e.g. `tags` and `authors` migrating together) emit one group
+    /// per parent and the operator composes them as one migration.
+    PkTypeFlipGroup(PkTypeFlipGroup),
 
     /// App rename via `#[app(renamed_from = "old_label")]`. The
     /// migration engine emits both a `git mv` of the per-app folder
@@ -305,6 +341,188 @@ pub enum EnumVariantAnchorKind {
     /// `ALTER TYPE ... ADD VALUE 'new' AFTER 'anchor'` — anchor is
     /// the variant that should sort immediately BEFORE the new one.
     After,
+}
+
+/// Aggregated PK-type-flip group payload — see
+/// [`SchemaOperation::PkTypeFlipGroup`] for the lifecycle contract.
+///
+/// **Determinism.** Every collection inside this struct is sorted
+/// (table names alphabetically; column pairs by source column name)
+/// so two runs of the differ produce byte-identical output. The
+/// segment planner depends on this — its emitted SQL must be
+/// reproducible across runs to satisfy the byte-equality regression
+/// tests against the HeeRanjID playbook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PkTypeFlipGroup {
+    /// Postgres table name of the parent whose PK is flipping.
+    pub parent_table: String,
+    /// Source PK kind (e.g. `HeerId`).
+    pub parent_from: PkKindSchema,
+    /// Target PK kind (e.g. `HeerIdRecencyBiased`).
+    pub parent_to: PkKindSchema,
+    /// Direction of the flip — derived from `parent_from` /
+    /// `parent_to` for convenience. Asc→Desc uses `heerid_to_desc` /
+    /// `ranjid_to_desc`; Desc→Asc uses `heerid_to_asc` / `ranjid_to_asc`.
+    pub direction: PkFlipDirection,
+    /// Children with a single ascending-side FK pointing at
+    /// `parent_table.id`. Each child gets its own `_desc` shadow
+    /// column, NOT-VALID FK, backfill, index — all assembled into
+    /// the shared cutover transaction. Sorted by table name then
+    /// FK column for determinism.
+    pub children: Vec<PkFlipChild>,
+    /// Self-FK pairs — when `parent_table` has at least one FK
+    /// pointing back at itself, those pairs migrate alongside the PK
+    /// via a single multi-pair trigger install. `None` when the
+    /// parent has no self-FK; when present, the `(src, dst)` list
+    /// always begins with `("id", "id_desc")` followed by each
+    /// self-FK column in alphabetical order.
+    pub self_fk: Option<PkFlipSelfFk>,
+    /// Join tables — junction tables whose `is_through` flag is set
+    /// AND whose two FK columns both point at this parent (rare —
+    /// most join tables span two parents) OR participate via
+    /// `join_table_partner`. Drives §7 of the playbook.
+    pub join_tables: Vec<PkFlipJoinTable>,
+    /// Cycles — pairs of tables with mutual FKs. Each cycle entry
+    /// records the peer table name; the planner emits both FKs as
+    /// `DEFERRABLE INITIALLY DEFERRED` and prefixes the cutover with
+    /// `SET CONSTRAINTS ALL DEFERRED`. Sorted alphabetically.
+    pub cycles: Vec<PkFlipCycle>,
+    /// Partitioned-parent metadata — `Some(...)` when `parent_table`
+    /// has a `PARTITION BY` declaration. The planner emits the §9
+    /// PG 13+ shape (parent-level shadow column, parent-level
+    /// trigger, per-partition backfill, per-partition unique index +
+    /// parent UNIQUE placeholder + ATTACH, partitioned-parent PK via
+    /// `ADD PRIMARY KEY (...)`). Per-partition leaf names are
+    /// supplied at runtime via the runner because partition leaves
+    /// are live-DB state, not descriptor state. The presence of
+    /// `Some` here is the trigger; the runner reads `pg_inherits`
+    /// to enumerate leaves at apply time.
+    pub partitioned_parent: Option<PkFlipPartitionedMeta>,
+    /// Co-existing destructive ops in the same delta. Mirrors the
+    /// per-delta `co_destructive` flag — duplicated here so the SQL
+    /// emitter / runner can decide gating without re-walking the
+    /// delta classification.
+    pub co_destructive: bool,
+    /// Co-existing lossy ops in the same delta.
+    pub co_lossy: bool,
+}
+
+/// Direction of a PK-type flip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkFlipDirection {
+    /// Ascending → descending. Uses `heerid_to_desc` /
+    /// `ranjid_to_desc` and `heerid_next_desc()` / `ranjid_next_desc()`
+    /// as the new column DEFAULT.
+    AscToDesc,
+    /// Descending → ascending. Uses `heerid_to_asc` / `ranjid_to_asc`
+    /// and `heerid_next()` / `ranjid_next()` as the new column
+    /// DEFAULT. The autofill trigger SQL is the symmetric mirror —
+    /// `IdKind::Heer.flip_fn()` always returns `heerid_to_desc` so
+    /// the reverse-direction emitter substitutes `heerid_to_asc`
+    /// directly in the trigger body it generates.
+    DescToAsc,
+}
+
+/// Which family of generators (HeerId vs RanjId) the flip uses.
+/// Derived from the PK kind variants on the group; cached on the
+/// child / self-FK / join-table records so the planner can emit
+/// the right generator name without re-deriving from the parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkFlipFamily {
+    /// `BIGINT` PK, `heerid_to_desc` / `heerid_to_asc` /
+    /// `heerid_next` / `heerid_next_desc`.
+    Heer,
+    /// `UUID` PK, `ranjid_to_desc` / `ranjid_to_asc` /
+    /// `ranjid_next` / `ranjid_next_desc`.
+    Ranj,
+}
+
+/// One child table whose FK to the migrating parent must follow the
+/// flip into the shared cutover transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PkFlipChild {
+    /// Postgres table name of the child.
+    pub table: String,
+    /// FK column on the child (e.g. `"author_id"` for a
+    /// `books → authors` relation).
+    pub fk_column: String,
+    /// FK constraint name as recorded in the live DB. Composed via
+    /// `<child_table>_<fk_column>_fkey` (Postgres' default convention
+    /// when the schema didn't supply an explicit name); the runtime
+    /// drops this exact constraint name during the cutover. The
+    /// emitter uses this verbatim so a hand-named constraint that
+    /// matches the convention round-trips unchanged.
+    pub fk_constraint_name: String,
+    /// Original FK cascade discipline, preserved through the cutover.
+    pub on_delete: super::schema::OnDeleteSchema,
+    /// Whether the child's FK column is nullable. Drives the
+    /// playbook's §3.3 NULL-tracking invariant choice — nullable FKs
+    /// allow NULL on the desc shadow.
+    pub fk_nullable: bool,
+    /// Whether the child's FK column is unique (enforced). Affects
+    /// the index emitted on the desc shadow column (UNIQUE vs
+    /// non-unique). Composite UNIQUE constraints on the FK column
+    /// are not modelled here; the playbook's §3.4 emits a non-unique
+    /// index on FK shadows by default.
+    pub fk_unique: bool,
+    /// HeerId vs RanjId family — derived from the child's column
+    /// SQL type. Mirrors the parent's family in practice.
+    pub family: PkFlipFamily,
+}
+
+/// Self-FK metadata for a parent that references itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PkFlipSelfFk {
+    /// Self-FK columns on the parent. Each entry is the FK column
+    /// name (e.g. `"parent_id"` for a `nodes(parent_id REFERENCES
+    /// nodes(id))`). Sorted alphabetically.
+    pub fk_columns: Vec<String>,
+    /// FK constraint names matching `fk_columns` index-for-index.
+    pub fk_constraint_names: Vec<String>,
+}
+
+/// Join-table metadata for a many-to-many junction whose two FK
+/// columns reference the migrating parent (or one parent + one
+/// non-migrating peer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PkFlipJoinTable {
+    /// Postgres table name of the join table.
+    pub table: String,
+    /// The FK column on this join table that points at the migrating
+    /// parent. Always populated.
+    pub fk_to_parent_column: String,
+    /// FK constraint name for `fk_to_parent_column`.
+    pub fk_to_parent_constraint: String,
+    /// The other FK column on this join table — either points at a
+    /// second migrating parent (`Some(...)`) or at a non-migrating
+    /// peer (`None`). When `Some`, the join table participates in
+    /// **both** parents' migrations and the planner emits the
+    /// multi-pair shadow-column install per §7 of the playbook.
+    pub fk_to_partner_column: Option<String>,
+    /// FK constraint name for `fk_to_partner_column`. `None` when
+    /// `fk_to_partner_column` is `None`.
+    pub fk_to_partner_constraint: Option<String>,
+    /// Family of the migrating parent's PK.
+    pub family: PkFlipFamily,
+}
+
+/// One peer in an FK cycle that is migrating alongside this parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PkFlipCycle {
+    /// Postgres table name of the cycle peer.
+    pub peer_table: String,
+    /// FK column on `peer_table` pointing at this parent.
+    pub peer_fk_column: String,
+    /// FK column on this parent pointing at `peer_table`.
+    pub self_fk_column: String,
+}
+
+/// Partitioned-parent metadata, set when the parent table has a
+/// `PARTITION BY` declaration in its descriptor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PkFlipPartitionedMeta {
+    /// Partition strategy as recorded in the schema snapshot.
+    pub partition: super::schema::PartitionSchema,
 }
 
 /// Aggregate flavour of a [`SchemaDelta`].
@@ -532,11 +750,256 @@ pub fn diff_bucket_maps(
             }
         }
 
+        // T9 finalisation: aggregate every per-table `PkTypeFlip` op
+        // into a `PkTypeFlipGroup` enriched with FK cascade /
+        // self-FK / join-table / cycle / partition metadata. The
+        // grouping uses the new schema (`a`) as the source of truth
+        // for FK relations because that is the post-migration shape
+        // every child has to align with — pulling FK metadata from
+        // `before` would miss children that gained their FK in this
+        // same migration (rare but legal).
+        promote_pk_flips_to_groups(a, &mut delta.operations);
+
         // Re-classify after the suppression + emission step.
         delta.classification = classify(&delta.operations);
         out.push(delta);
     }
     out
+}
+
+/// Walk a delta's operation list, find every per-table
+/// [`SchemaOperation::PkTypeFlip`], and promote them to
+/// [`SchemaOperation::PkTypeFlipGroup`] with full FK cascade /
+/// self-FK / join-table / cycle / partition metadata.
+///
+/// **In-place rewrite.** The per-table flip op is removed; the new
+/// group op is pushed onto the operation list (after every other op
+/// to preserve the existing ordering invariants — the segment
+/// planner will hoist the group into its own dedicated multi-segment
+/// plan regardless of position). When no flip is present the fn is a
+/// pure no-op.
+///
+/// **Determinism.** Children, self-FK columns, join tables, and
+/// cycles are sorted alphabetically before being attached to the
+/// group so the byte-equality regression tests against the playbook
+/// SQL are reproducible run-to-run.
+fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperation>) {
+    // Collect parents — `(table, from, to)` for every PkTypeFlip op.
+    let mut parents: Vec<(String, PkKindSchema, PkKindSchema)> = Vec::new();
+    ops.retain(|op| match op {
+        SchemaOperation::PkTypeFlip { table, from, to } => {
+            parents.push((table.clone(), from.clone(), to.clone()));
+            false
+        }
+        _ => true,
+    });
+    if parents.is_empty() {
+        return;
+    }
+    // Migrating-parent set — used by join-table detection (a join
+    // table's "partner" FK column points at another migrating parent
+    // when both tables are flipping in this delta). Owned strings
+    // because we move `parents` below.
+    let migrating_parents: BTreeSet<String> = parents.iter().map(|(t, _, _)| t.clone()).collect();
+
+    // Helper: which family does this PK kind belong to?
+    fn family_for_kind(k: &PkKindSchema) -> Option<PkFlipFamily> {
+        match k {
+            PkKindSchema::HeerId | PkKindSchema::HeerIdRecencyBiased => Some(PkFlipFamily::Heer),
+            PkKindSchema::RanjId | PkKindSchema::RanjIdRecencyBiased => Some(PkFlipFamily::Ranj),
+            _ => None,
+        }
+    }
+
+    for (parent_table, parent_from, parent_to) in parents {
+        let direction = match (&parent_from, &parent_to) {
+            (PkKindSchema::HeerId, PkKindSchema::HeerIdRecencyBiased)
+            | (PkKindSchema::RanjId, PkKindSchema::RanjIdRecencyBiased) => {
+                PkFlipDirection::AscToDesc
+            }
+            (PkKindSchema::HeerIdRecencyBiased, PkKindSchema::HeerId)
+            | (PkKindSchema::RanjIdRecencyBiased, PkKindSchema::RanjId) => {
+                PkFlipDirection::DescToAsc
+            }
+            // Should never happen — `is_pk_kind_flip` gates the
+            // PkTypeFlip emission to only the four supported pairs.
+            // Pin to AscToDesc as a defensive default; the planner
+            // will surface a hard error if the parent kinds are
+            // inconsistent with the rest of the group.
+            _ => PkFlipDirection::AscToDesc,
+        };
+        let family = family_for_kind(&parent_from).unwrap_or(PkFlipFamily::Heer);
+
+        // Children: every other table whose column.foreign_key
+        // points at `parent_table`. Skip the parent itself (handled
+        // via self_fk).
+        let mut children: Vec<PkFlipChild> = Vec::new();
+        let mut self_fk_cols: Vec<String> = Vec::new();
+        let mut self_fk_constraints: Vec<String> = Vec::new();
+        let mut join_tables: Vec<PkFlipJoinTable> = Vec::new();
+        let mut cycles: Vec<PkFlipCycle> = Vec::new();
+
+        for (other_table_name, other_table) in &after.models {
+            for col in &other_table.columns {
+                let Some(fk) = col.foreign_key.as_ref() else {
+                    continue;
+                };
+                if fk.ref_table != parent_table {
+                    continue;
+                }
+                let constraint_name = format!("{}_{}_fkey", other_table_name, col.name);
+                if other_table_name == &parent_table {
+                    // Self-FK pair.
+                    self_fk_cols.push(col.name.clone());
+                    self_fk_constraints.push(constraint_name);
+                    continue;
+                }
+                // Detect cycle: does the parent reference back at
+                // `other_table_name` via one of its own FK columns?
+                let cycle_back = if let Some(parent_schema) = after.models.get(&parent_table) {
+                    parent_schema.columns.iter().find_map(|pc| {
+                        let pfk = pc.foreign_key.as_ref()?;
+                        if pfk.ref_table == *other_table_name {
+                            Some(pc.name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
+                if let Some(self_fk_col) = cycle_back {
+                    cycles.push(PkFlipCycle {
+                        peer_table: other_table_name.clone(),
+                        peer_fk_column: col.name.clone(),
+                        self_fk_column: self_fk_col,
+                    });
+                    // Cycle peers are not added as ordinary children
+                    // — they take the deferred-FK path instead.
+                    continue;
+                }
+                // Detect join-table: through-table whose two FKs
+                // both reference parents in the migrating set OR a
+                // through-table whose other FK references a peer
+                // outside the migrating set.
+                if other_table.is_through {
+                    // Find the partner FK column (the OTHER FK on
+                    // this through-table that does NOT point at
+                    // this parent).
+                    let partner = other_table.columns.iter().find_map(|pc| {
+                        if pc.name == col.name {
+                            return None;
+                        }
+                        let pfk = pc.foreign_key.as_ref()?;
+                        if pfk.ref_table == parent_table {
+                            return None;
+                        }
+                        Some((pc.name.clone(), pfk.ref_table.clone()))
+                    });
+                    let (partner_col, partner_constraint) = match partner {
+                        Some((pcol, partner_target))
+                            if migrating_parents.contains(&partner_target) =>
+                        {
+                            // The other parent is also migrating —
+                            // join-table participates in both
+                            // migrations. Recorded with `Some(...)`.
+                            let pcons = format!("{}_{}_fkey", other_table_name, pcol);
+                            (Some(pcol), Some(pcons))
+                        }
+                        _ => (None, None),
+                    };
+                    join_tables.push(PkFlipJoinTable {
+                        table: other_table_name.clone(),
+                        fk_to_parent_column: col.name.clone(),
+                        fk_to_parent_constraint: constraint_name,
+                        fk_to_partner_column: partner_col,
+                        fk_to_partner_constraint: partner_constraint,
+                        family,
+                    });
+                    continue;
+                }
+                // Ordinary child.
+                children.push(PkFlipChild {
+                    table: other_table_name.clone(),
+                    fk_column: col.name.clone(),
+                    fk_constraint_name: constraint_name,
+                    on_delete: fk.on_delete,
+                    fk_nullable: col.nullable,
+                    fk_unique: col.unique,
+                    family,
+                });
+            }
+        }
+
+        // Determinism: sort each collection.
+        children.sort_by(|a, b| a.table.cmp(&b.table).then(a.fk_column.cmp(&b.fk_column)));
+        join_tables.sort_by(|a, b| {
+            a.table
+                .cmp(&b.table)
+                .then(a.fk_to_parent_column.cmp(&b.fk_to_parent_column))
+        });
+        cycles.sort_by(|a, b| a.peer_table.cmp(&b.peer_table));
+        // Self-FK: pair the cols/constraints in alphabetical order.
+        let mut self_fk_zipped: Vec<(String, String)> =
+            self_fk_cols.into_iter().zip(self_fk_constraints).collect();
+        self_fk_zipped.sort_by(|a, b| a.0.cmp(&b.0));
+        let self_fk = if self_fk_zipped.is_empty() {
+            None
+        } else {
+            let (cols, cons): (Vec<String>, Vec<String>) = self_fk_zipped.into_iter().unzip();
+            Some(PkFlipSelfFk {
+                fk_columns: cols,
+                fk_constraint_names: cons,
+            })
+        };
+
+        // Partitioned-parent metadata — pulled from the post-flip
+        // schema where the partition declaration lives.
+        let partitioned_parent = after
+            .models
+            .get(&parent_table)
+            .and_then(|t| t.partition.as_ref())
+            .map(|p| PkFlipPartitionedMeta {
+                partition: p.clone(),
+            });
+
+        // Co-flag values: re-derive locally because this fn runs
+        // before `classify()` would have computed them. Walk the
+        // remaining ops and check.
+        let co_destructive = ops.iter().any(|op| {
+            matches!(
+                op,
+                SchemaOperation::DropTable(_)
+                    | SchemaOperation::DropColumn { .. }
+                    | SchemaOperation::DropEnum(_)
+                    | SchemaOperation::DropIndex(_)
+                    | SchemaOperation::DropForeignKey { .. }
+            )
+        });
+        let co_lossy = ops.iter().any(|op| match op {
+            SchemaOperation::AlterColumn { change, .. } => {
+                matches!(change, ColumnChange::SetNullable(false))
+            }
+            SchemaOperation::AddColumn { column, .. } => {
+                !column.nullable && column.default_sql.is_none()
+            }
+            _ => false,
+        });
+
+        ops.push(SchemaOperation::PkTypeFlipGroup(PkTypeFlipGroup {
+            parent_table,
+            parent_from,
+            parent_to,
+            direction,
+            children,
+            self_fk,
+            join_tables,
+            cycles,
+            partitioned_parent,
+            co_destructive,
+            co_lossy,
+        }));
+    }
 }
 
 fn diff_tables(
@@ -1057,7 +1520,9 @@ fn classify(ops: &[SchemaOperation]) -> Classification {
 
     for op in ops {
         match op {
-            SchemaOperation::PkTypeFlip { .. } => has_pk_flip = true,
+            SchemaOperation::PkTypeFlip { .. } | SchemaOperation::PkTypeFlipGroup(_) => {
+                has_pk_flip = true;
+            }
             SchemaOperation::DropTable(_) => has_destructive = true,
             SchemaOperation::DropColumn { .. } => {
                 // A DropColumn is at minimum Destructive. We don't
