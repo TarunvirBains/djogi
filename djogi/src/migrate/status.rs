@@ -28,6 +28,8 @@ use std::collections::BTreeMap;
 use super::diff::Classification;
 use super::ledger::{LedgerStatus, LedgerSummaryRow};
 use super::segment::MigrationPlan;
+use crate::DjogiContext;
+use crate::error::DjogiError;
 
 /// Output of [`render`]. Pre-formatted lines + the exit code so the
 /// CLI just prints and exits.
@@ -153,8 +155,8 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
 /// [`super::segment::plan_delta`]. When the plan classifies as
 /// `PkTypeFlip`, this fn returns the operator-facing warning lines:
 ///
-/// - `"⚠ POINT OF NO RETURN: reverse requires inverse migration"`
-///   for every flip plan.
+/// - The exact PoNR sentence for every flip plan — see
+///   [`POINT_OF_NO_RETURN_WARNING`] for the verbatim byte string.
 /// - `"⚠ Partitioned-table cutover is seconds-to-minutes class —
 ///   benchmark in staging first"` when any segment in the plan
 ///   carries a partitioned-cutover label
@@ -163,12 +165,17 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
 /// Non-flip plans return an empty `Vec`. The warnings are
 /// pre-formatted strings ready to print; the CLI prepends them to
 /// the regular status output for the affected pending plan.
+///
+/// The PoNR sentence wording is contractual — operators cite it in
+/// runbooks. The unit test `point_of_no_return_warning_byte_exact`
+/// asserts the exact bytes so review-driven wording drift produces a
+/// loud test failure rather than silent rephrasing.
 pub fn render_pending_plan_warnings(plan: &MigrationPlan) -> Vec<String> {
     if !matches!(plan.classification, Classification::PkTypeFlip { .. }) {
         return Vec::new();
     }
     let mut out: Vec<String> = Vec::new();
-    out.push("⚠ POINT OF NO RETURN: reverse requires inverse migration".to_string());
+    out.push(POINT_OF_NO_RETURN_WARNING.to_string());
     let has_partitioned = plan.segments.iter().any(|s| {
         s.statements
             .iter()
@@ -180,8 +187,78 @@ pub fn render_pending_plan_warnings(plan: &MigrationPlan) -> Vec<String> {
                 .to_string(),
         );
     }
+    // INVALID-index advisories live alongside the PoNR/partitioned
+    // warnings here only when the caller wants them inline in the
+    // pending-plan render. Status-time invalid-index detection lives
+    // in [`render_invalid_index_warnings`] which queries the live DB.
     out
 }
+
+/// Query the live database for any `INVALID` indexes and render an
+/// operator-facing warning line per index found.
+///
+/// **Scope.** Postgres marks an index `pg_index.indisvalid = false`
+/// when a `CREATE INDEX CONCURRENTLY` was interrupted (operator
+/// cancel, deadlock-cancel, crash, or constraint violation). Such
+/// indexes are present in `pg_class` but unusable — query planner
+/// skips them, and a re-run of the same `CREATE INDEX CONCURRENTLY`
+/// will collide on the index name. They are forensic litter from
+/// failed concurrent index builds and the operator must explicitly
+/// `REINDEX INDEX CONCURRENTLY` or `DROP INDEX` + recreate.
+///
+/// **Output shape.** One line per invalid index, format:
+/// `"⚠ INVALID index detected: <schema>.<index> on <table> — likely
+/// an interrupted CREATE INDEX CONCURRENTLY. Run \`REINDEX INDEX
+/// CONCURRENTLY <schema>.<index>\` or DROP and recreate."`
+///
+/// The warning is unconditional (not just for pending PK-flips):
+/// invalid indexes can come from any interrupted concurrent build,
+/// not only flips. Status surfacing is the operator-visible signal
+/// the catalog still carries the broken entry.
+///
+/// **Read-only.** No DDL is issued; only `pg_index` / `pg_class` /
+/// `pg_namespace` SELECTs.
+pub async fn render_invalid_index_warnings(
+    ctx: &mut DjogiContext,
+) -> Result<Vec<String>, DjogiError> {
+    let rows = ctx
+        .query_all(
+            "SELECT n.nspname, c.relname, i.indrelid::regclass::text \
+             FROM pg_index i \
+             JOIN pg_class c ON c.oid = i.indexrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE NOT i.indisvalid \
+             ORDER BY n.nspname, c.relname",
+            &[],
+        )
+        .await?;
+    let mut out: Vec<String> = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let schema: String = r.try_get(0).unwrap_or_default();
+        let index_name: String = r.try_get(1).unwrap_or_default();
+        let table_name: String = r.try_get(2).unwrap_or_default();
+        out.push(format!(
+            "\u{26a0} INVALID index detected: {schema}.{index} on {table} \u{2014} likely \
+             an interrupted CREATE INDEX CONCURRENTLY. Run \
+             `REINDEX INDEX CONCURRENTLY {schema}.{index}` or DROP and recreate.",
+            schema = schema,
+            index = index_name,
+            table = table_name,
+        ));
+    }
+    Ok(out)
+}
+
+/// Exact byte string of the POINT OF NO RETURN warning emitted ahead
+/// of any pending PK-type-flip plan. The wording is **contractual**:
+/// runbooks and operator dashboards cite this sentence verbatim, so
+/// any change here MUST be paired with a v3 plan amendment AND the
+/// `point_of_no_return_warning_byte_exact` regression test update.
+///
+/// The leading codepoint is U+26A0 (warning sign) followed by U+0020.
+/// The em dash between "commits" and "reverse" is U+2014.
+pub const POINT_OF_NO_RETURN_WARNING: &str =
+    "⚠ POINT OF NO RETURN after this cutover commits — reverse requires an inverse migration";
 
 /// Truncate a run_id BIGINT to a stable short token (last 8 hex
 /// digits of the unsigned reinterpretation). Long-form available via
@@ -444,6 +521,45 @@ mod tests {
         assert_eq!(
             report.exit_code, 0,
             "[ooo] applied row must not cause non-zero exit"
+        );
+    }
+
+    #[test]
+    fn point_of_no_return_warning_byte_exact() {
+        // The PoNR sentence is contractual — operators cite it in
+        // runbooks. Any wording drift must be paired with a v3 plan
+        // amendment AND this fixture update; we assert the exact byte
+        // sequence so silent rephrasing fails loud.
+        let expected = "\u{26a0} POINT OF NO RETURN after this cutover commits \u{2014} \
+                        reverse requires an inverse migration";
+        assert_eq!(POINT_OF_NO_RETURN_WARNING, expected);
+        assert_eq!(POINT_OF_NO_RETURN_WARNING.as_bytes()[0], 0xE2);
+        assert_eq!(POINT_OF_NO_RETURN_WARNING.as_bytes()[1], 0x9A);
+        assert_eq!(POINT_OF_NO_RETURN_WARNING.as_bytes()[2], 0xA0);
+    }
+
+    #[test]
+    fn render_pending_plan_warnings_uses_exact_ponr_constant() {
+        use crate::migrate::diff::Classification;
+        use crate::migrate::projection::BucketKey;
+        use crate::migrate::segment::MigrationPlan;
+        let plan = MigrationPlan {
+            bucket: BucketKey {
+                database: "main".to_string(),
+                app: String::new(),
+            },
+            classification: Classification::PkTypeFlip {
+                co_destructive: false,
+                co_lossy: false,
+            },
+            segments: Vec::new(),
+        };
+        let warnings = render_pending_plan_warnings(&plan);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.as_str() == POINT_OF_NO_RETURN_WARNING),
+            "PoNR warning must match the contractual byte string verbatim; got {warnings:?}",
         );
     }
 

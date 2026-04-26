@@ -217,14 +217,26 @@ pub enum RunnerError {
         source: Box<super::verify::VerifyRunError>,
     },
 
-    /// **D060** — T9 PK-flip pre-flight: at least one Postgres
-    /// session is running with `session_replication_role = 'replica'`,
-    /// which suppresses BEFORE row triggers and would leave
-    /// `id_desc` NULL on its writes. The runner refuses the cutover
-    /// before any side effect.
+    /// **D060** — T9 PK-flip pre-flight: logical-replication apply
+    /// machinery is active in this database. Walsenders surfaced via
+    /// `pg_stat_replication` and/or local subscriptions surfaced via
+    /// `pg_subscription` (`subenabled = true`) signal that a separate
+    /// session may be applying replicated changes with
+    /// `session_replication_role = 'replica'` — that mode suppresses
+    /// the BEFORE row triggers the cutover relies on. Postgres does
+    /// not let one backend introspect another backend's GUC settings
+    /// from `pg_stat_activity`, so we surface the broader replication
+    /// signal as the hazard. Operator action: pause the apply
+    /// worker(s) (or `ALTER TABLE ... ENABLE ALWAYS TRIGGER zzz_*`)
+    /// before retrying.
     PkFlipHazardReplicaSessions {
-        /// `(pid, application_name)` pairs of offending sessions.
-        sessions: Vec<(i32, String)>,
+        /// Active walsenders observed via `pg_stat_replication`.
+        /// `(application_name, client_addr_text)` pairs.
+        walsenders: Vec<(String, String)>,
+        /// Enabled local subscriptions observed via `pg_subscription`
+        /// (subscribers run an apply worker in `replica` role). Each
+        /// entry is the subscription name.
+        subscriptions: Vec<String>,
     },
 
     /// **D061** — T9 PK-flip pre-flight: a `zzz_*` trigger already
@@ -387,13 +399,19 @@ impl std::fmt::Display for RunnerError {
                 f,
                 "baseline live-DB projection failed before ledger insert: {source}",
             ),
-            RunnerError::PkFlipHazardReplicaSessions { sessions } => write!(
+            RunnerError::PkFlipHazardReplicaSessions {
+                walsenders,
+                subscriptions,
+            } => write!(
                 f,
-                "D060 PK-flip cutover refused: {n} session(s) are running with \
-                 session_replication_role = 'replica' which suppresses BEFORE row triggers; \
-                 pause those sessions or `ALTER TABLE ... ENABLE ALWAYS TRIGGER zzz_*` \
-                 before retrying. Offenders: {sessions:?}",
-                n = sessions.len(),
+                "D060 PK-flip cutover refused: logical-replication machinery is active and \
+                 may be applying changes with session_replication_role = 'replica' (which \
+                 suppresses BEFORE row triggers and would leave the autofill skipped). \
+                 Pause the apply worker(s) or `ALTER TABLE ... ENABLE ALWAYS TRIGGER zzz_*` \
+                 before retrying. Walsenders ({nw}): {walsenders:?}; \
+                 enabled subscriptions ({ns}): {subscriptions:?}",
+                nw = walsenders.len(),
+                ns = subscriptions.len(),
             ),
             RunnerError::PkFlipHazardPreexistingZzzTrigger {
                 table,
@@ -782,6 +800,23 @@ async fn apply_plan_inner(
     // plan" (legit `relpages = None`) from "typo / mis-quoted
     // identifier" (hard `TargetTableNotFound`).
     let add_table_set = collect_add_table_targets(plan);
+
+    // B-2: expand `<EACH_LEAF_TABLE>` placeholders inside any
+    // partitioned-flip segment. Each partitioned label tells us the
+    // parent table; we walk `pg_inherits` for that parent at apply
+    // time, sort leaves by `regclass::text`, and rewrite the segment
+    // statements to carry one concrete-leaf statement per leaf.
+    //
+    // Why apply time: partitioned descriptors only know the
+    // partition strategy (Hash/Range), not the leaf names — those
+    // can be created and dropped between compose and apply. Looking
+    // them up at apply gives the runner the live truth.
+    //
+    // Determinism: leaves ordered by `regclass::text` so re-running
+    // the same flip against the same DB emits the same statement
+    // sequence.
+    let plan_owned = expand_partition_leaf_placeholders(ctx, plan).await?;
+    let plan = &plan_owned;
 
     for (seg_idx, segment) in plan.segments.iter().enumerate() {
         match segment.kind {
@@ -2098,8 +2133,11 @@ async fn relpages_probe(
 ///
 /// Implements D060–D063 from the v3 plan §T9 contract:
 ///
-/// - **D060** Replica-mode sessions enumerated via
-///   `pg_stat_activity` → refusal if any present.
+/// - **D060** Logical-replication machinery active — `pg_stat_replication`
+///   walsenders OR enabled rows in `pg_subscription` for the current
+///   database → refusal. Postgres does not expose another backend's
+///   `session_replication_role` GUC via `pg_stat_activity`, so we
+///   detect the apply machinery itself rather than the GUC value.
 /// - **D061** Pre-existing `zzz_*` triggers on the migrating tables
 ///   → refusal (collision with the autofill install).
 /// - **D062** Already-disabled triggers on the migrating tables
@@ -2146,14 +2184,24 @@ async fn pk_flip_preflight(
         }
     }
 
-    // D060 — replica-mode sessions.
-    let replica_rows = ctx
+    // D060 — logical-replication machinery active in this DB.
+    //
+    // Why the indirection: Postgres does not let one backend read
+    // another backend's `session_replication_role` GUC from
+    // `pg_stat_activity`. The playbook §12.3 hazard names "Logical
+    // replication apply workers" as the concrete failure mode, and
+    // those are observable via:
+    //   - `pg_stat_replication` — every active walsender (the apply
+    //     side runs with role = 'replica' by default).
+    //   - `pg_subscription`     — subscriptions with `subenabled =
+    //     true` indicate an apply worker may be running in this DB.
+    //
+    // We surface BOTH as the D060 hazard so the operator knows which
+    // signal fired. Either alone is sufficient to refuse.
+    let walsender_rows = ctx
         .query_all(
-            "SELECT pid, COALESCE(application_name, '') AS app \
-             FROM pg_stat_activity \
-             WHERE pid <> pg_backend_pid() \
-               AND state IS NOT NULL \
-               AND COALESCE(current_setting('session_replication_role', true), 'origin') = 'replica'",
+            "SELECT COALESCE(application_name, ''), COALESCE(client_addr::text, '') \
+             FROM pg_stat_replication",
             &[],
         )
         .await
@@ -2161,14 +2209,36 @@ async fn pk_flip_preflight(
             version: runner_ctx.version.clone(),
             source: e,
         })?;
-    if !replica_rows.is_empty() {
-        let mut sessions: Vec<(i32, String)> = Vec::with_capacity(replica_rows.len());
-        for r in &replica_rows {
-            let pid: i32 = r.try_get(0).unwrap_or(0);
-            let app: String = r.try_get(1).unwrap_or_default();
-            sessions.push((pid, app));
-        }
-        return Err(RunnerError::PkFlipHazardReplicaSessions { sessions });
+    let mut walsenders: Vec<(String, String)> = Vec::with_capacity(walsender_rows.len());
+    for r in &walsender_rows {
+        let app: String = r.try_get(0).unwrap_or_default();
+        let client: String = r.try_get(1).unwrap_or_default();
+        walsenders.push((app, client));
+    }
+
+    let sub_rows = ctx
+        .query_all(
+            "SELECT subname FROM pg_subscription \
+             WHERE subdbid = (SELECT oid FROM pg_database WHERE datname = current_database()) \
+               AND subenabled = true",
+            &[],
+        )
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: runner_ctx.version.clone(),
+            source: e,
+        })?;
+    let mut subscriptions: Vec<String> = Vec::with_capacity(sub_rows.len());
+    for r in &sub_rows {
+        let name: String = r.try_get(0).unwrap_or_default();
+        subscriptions.push(name);
+    }
+
+    if !walsenders.is_empty() || !subscriptions.is_empty() {
+        return Err(RunnerError::PkFlipHazardReplicaSessions {
+            walsenders,
+            subscriptions,
+        });
     }
 
     // D061 + D062 — per-table trigger checks.
@@ -2535,6 +2605,391 @@ fn collect_add_table_targets(plan: &MigrationPlan) -> BTreeSet<String> {
         }
     }
     out
+}
+
+// ── B-2: partition leaf-placeholder expansion ─────────────────────────────
+
+/// Walk every segment and expand the `<EACH_LEAF_TABLE>` placeholder
+/// inside any partitioned-flip statement into one concrete-leaf
+/// statement per leaf, sorted by `regclass::text` for determinism.
+///
+/// Statements affected (by label prefix):
+/// - `PkFlipPartitionedBackfill <parent>` — body carries
+///   `CALL heeranjid_bulk_backfill('<EACH_LEAF_TABLE>', ...)`. Each
+///   leaf gets its own CALL line.
+/// - `PkFlipPartitionedIndex <parent>` — body carries the parent
+///   UNIQUE-on-ONLY placeholder plus a comment block describing the
+///   per-leaf `CREATE UNIQUE INDEX CONCURRENTLY` + `ALTER INDEX
+///   ATTACH PARTITION` pattern. The comment is replaced with two
+///   concrete statements per leaf.
+///
+/// Statements with no placeholder (`PkFlipPartitionedPrep`,
+/// `PkFlipPartitionedCutover`) are passed through untouched.
+///
+/// **No regex.** Placeholder substitution uses byte-level
+/// `String::replace` semantics with a fixed literal token. Per-leaf
+/// statement composition uses straight string concatenation and the
+/// `writeln!` macro.
+///
+/// **Failure modes.** If `pg_inherits` returns no leaves for a
+/// declared partitioned parent, expansion produces a single comment
+/// line so the segment SQL surfaces the empty-leaves state cleanly
+/// rather than running an `<EACH_LEAF_TABLE>` literal that would
+/// fail with `undefined_table`. Operator's job is to attach
+/// partitions before retrying.
+async fn expand_partition_leaf_placeholders(
+    ctx: &mut DjogiContext,
+    plan: &MigrationPlan,
+) -> Result<MigrationPlan, RunnerError> {
+    // Cache leaves per parent so multiple statements pointing at the
+    // same partitioned parent share one query.
+    let mut leaves_cache: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    let mut new_plan = plan.clone();
+    for segment in &mut new_plan.segments {
+        let mut new_stmts: Vec<OperationSql> = Vec::with_capacity(segment.statements.len());
+        for stmt in std::mem::take(&mut segment.statements) {
+            let parent_for_label = partitioned_parent_from_label(&stmt.label);
+            match parent_for_label {
+                Some(parent) => {
+                    if !leaves_cache.contains_key(&parent) {
+                        let leaves = lookup_partition_leaves(ctx, &parent).await?;
+                        leaves_cache.insert(parent.clone(), leaves);
+                    }
+                    let leaves = leaves_cache.get(&parent).expect("just inserted");
+                    new_stmts.extend(expand_partition_statement(&stmt, &parent, leaves));
+                }
+                None => new_stmts.push(stmt),
+            }
+        }
+        segment.statements = new_stmts;
+    }
+    Ok(new_plan)
+}
+
+/// Recover the partitioned parent name from a `PkFlipPartitioned…`
+/// label. Returns `None` for non-partitioned labels (which carry no
+/// `<EACH_LEAF_TABLE>` placeholder).
+fn partitioned_parent_from_label(label: &str) -> Option<String> {
+    // We expand only the labels whose bodies the emitter populates
+    // with the `<EACH_LEAF_TABLE>` placeholder. Prep and cutover
+    // operate on the partitioned parent directly via Postgres'
+    // partition-aware DDL and do not need expansion.
+    for prefix in ["PkFlipPartitionedBackfill ", "PkFlipPartitionedIndex "] {
+        if let Some(rest) = label.strip_prefix(prefix) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Query `pg_inherits` for the leaf partitions of `parent`,
+/// deterministically sorted by `regclass::text`.
+///
+/// **Why a two-step lookup.** Postgres rejects a TEXT bind in the
+/// binary-protocol position where it expects `regclass`
+/// (tokio-postgres surfaces `WrongType { postgres: Regclass, rust:
+/// "&str" }`). Resolving the parent's OID first via `to_regclass`
+/// in a separate `query_one` lets us bind the OID as `oid` in the
+/// second query against `pg_inherits`, matching the catalog's
+/// column type exactly.
+async fn lookup_partition_leaves(
+    ctx: &mut DjogiContext,
+    parent: &str,
+) -> Result<Vec<String>, RunnerError> {
+    // 1. Resolve parent's OID. `to_regclass` returns NULL for an
+    //    unknown / non-relation name; we surface that as an empty
+    //    leaf list so callers see "no leaves" rather than a hard
+    //    error during plan composition.
+    let oid_row = ctx
+        .query_one("SELECT to_regclass($1)::oid", &[&parent])
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: parent.to_string(),
+            source: e,
+        })?;
+    let oid_opt: Option<u32> = oid_row.try_get(0).ok();
+    let Some(oid) = oid_opt else {
+        return Ok(Vec::new());
+    };
+
+    // 2. Fetch leaves keyed off the resolved OID. `inhparent` is
+    //    `oid`; binding an `Oid` (u32 in tokio-postgres mapping)
+    //    matches by type and avoids the regclass binary-protocol
+    //    coercion path.
+    let rows = ctx
+        .query_all(
+            "SELECT inhrelid::regclass::text \
+             FROM pg_inherits \
+             WHERE inhparent = $1 \
+             ORDER BY inhrelid::regclass::text",
+            &[&oid],
+        )
+        .await
+        .map_err(|e| RunnerError::LedgerWriteFailed {
+            version: parent.to_string(),
+            source: e,
+        })?;
+    let mut out: Vec<String> = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let leaf: String = r.try_get(0).unwrap_or_default();
+        if !leaf.is_empty() {
+            out.push(leaf);
+        }
+    }
+    Ok(out)
+}
+
+/// Produce one concrete-leaf [`OperationSql`] per leaf for a
+/// partitioned-flip statement. The original statement carries
+/// `<EACH_LEAF_TABLE>` as a literal placeholder; we substitute and
+/// emit one statement per leaf so the runner walks them in sequence.
+///
+/// For the index segment we ALSO emit the per-leaf `ATTACH PARTITION`
+/// statement immediately after each leaf's CONCURRENTLY index build
+/// so the partitioned parent's UNIQUE index becomes valid as soon as
+/// the last leaf attaches.
+fn expand_partition_statement(
+    stmt: &OperationSql,
+    parent: &str,
+    leaves: &[String],
+) -> Vec<OperationSql> {
+    if leaves.is_empty() {
+        // Empty-leaves edge: surface the state but DO NOT issue the
+        // literal `<EACH_LEAF_TABLE>` SQL. The runner emits a comment
+        // line that `raw_ddl` accepts harmlessly.
+        return vec![OperationSql {
+            label: format!("{} (no leaves)", stmt.label),
+            up: format!(
+                "-- pg_inherits returned 0 leaves for partitioned parent {parent}; nothing to expand"
+            ),
+            down: stmt.down.clone(),
+            lossy: stmt.lossy.clone(),
+        }];
+    }
+
+    let mut out: Vec<OperationSql> = Vec::with_capacity(leaves.len());
+
+    if stmt.label.starts_with("PkFlipPartitionedBackfill ") {
+        // The body carries one CALL with `<EACH_LEAF_TABLE>` plus a
+        // multi-line comment header. Replace the placeholder once per
+        // leaf and emit one OperationSql per CALL so the simple-query
+        // batch never wraps multiple CALLs in a tx (the procedure's
+        // internal COMMIT would fire `2D000`).
+        for leaf in leaves {
+            let body = stmt.up.replace("<EACH_LEAF_TABLE>", leaf);
+            // Strip any trailing semicolon — runner_ctx dispatches via
+            // raw_ddl which accepts a single statement.
+            let body = strip_trailing_semicolon(&body);
+            // Prefer just the CALL line for the per-leaf statement so
+            // the procedure runs cleanly without the multi-line
+            // header comment muddying the per-statement record. We
+            // recompose the comment as the first leaf's prefix only.
+            let upper = format!(
+                "-- partitioned backfill, leaf {leaf}\n{body}",
+                leaf = leaf,
+                body = extract_call_line(&body),
+            );
+            out.push(OperationSql {
+                label: format!("PkFlipPartitionedBackfill {parent} leaf={leaf}"),
+                up: upper,
+                down: stmt.down.clone(),
+                lossy: stmt.lossy.clone(),
+            });
+        }
+        return out;
+    }
+
+    if stmt.label.starts_with("PkFlipPartitionedIndex ") {
+        // The body carries the parent-level `CREATE UNIQUE INDEX … ON
+        // ONLY <parent> (...)` plus a comment block describing the
+        // per-leaf pattern. Keep the parent-level statement as the
+        // FIRST OperationSql (transactional-friendly catalog op), then
+        // emit one CONCURRENTLY + ATTACH per leaf.
+        //
+        // Recover the parent index name from the parent-level
+        // statement: it's `idx_<parent>_<part_col>_id_desc_idx` (or
+        // similar). Rather than parse, pull the marker line that
+        // begins with `CREATE UNIQUE INDEX ` and ends at the first `;`.
+        let parent_stmt = extract_first_statement_starting_with(&stmt.up, "CREATE UNIQUE INDEX ");
+        let parent_index_name = recover_parent_index_name(&parent_stmt);
+        let (part_col, suffix) = recover_partition_columns(&parent_stmt);
+
+        out.push(OperationSql {
+            label: format!("PkFlipPartitionedIndex {parent} (parent-level)"),
+            up: parent_stmt.clone(),
+            down: stmt.down.clone(),
+            lossy: stmt.lossy.clone(),
+        });
+
+        for leaf in leaves {
+            let leaf_idx = format!(
+                "{leaf}_{pkey}_id{suffix}_idx",
+                leaf = strip_schema_prefix(leaf),
+                pkey = part_col,
+                suffix = suffix,
+            );
+            let create_concurrent = format!(
+                "CREATE UNIQUE INDEX CONCURRENTLY {leaf_idx} ON {leaf} ({pkey}, id{suffix})",
+                leaf_idx = leaf_idx,
+                leaf = leaf,
+                pkey = part_col,
+                suffix = suffix,
+            );
+            out.push(OperationSql {
+                label: format!("PkFlipPartitionedIndex {parent} leaf={leaf} (concurrent)"),
+                up: create_concurrent,
+                down: format!("DROP INDEX IF EXISTS {leaf_idx}"),
+                lossy: None,
+            });
+            let attach = format!(
+                "ALTER INDEX {parent_index_name} ATTACH PARTITION {leaf_idx}",
+                parent_index_name = parent_index_name,
+                leaf_idx = leaf_idx,
+            );
+            out.push(OperationSql {
+                label: format!("PkFlipPartitionedIndex {parent} leaf={leaf} (attach)"),
+                up: attach,
+                down: String::new(),
+                lossy: None,
+            });
+        }
+        return out;
+    }
+
+    // Unknown partitioned label — pass through unchanged. Defensive:
+    // future emitters that add new `PkFlipPartitioned…` labels keep
+    // working without forcing this fn to learn about them.
+    vec![stmt.clone()]
+}
+
+/// Strip a single trailing `;` (with optional trailing whitespace).
+/// The runner's `raw_ddl` accepts statements with or without a
+/// terminator, but stripping keeps the per-leaf record tidy.
+fn strip_trailing_semicolon(s: &str) -> String {
+    let trimmed = s.trim_end();
+    trimmed.strip_suffix(';').unwrap_or(trimmed).to_string()
+}
+
+/// Pull the FIRST line that contains `CALL heeranjid_bulk_backfill(`
+/// from a multi-line body. Falls back to the whole body if the marker
+/// is absent.
+fn extract_call_line(s: &str) -> String {
+    for line in s.lines() {
+        if line.contains("CALL heeranjid_bulk_backfill(") {
+            return strip_trailing_semicolon(line);
+        }
+    }
+    strip_trailing_semicolon(s)
+}
+
+/// Pull the FIRST statement (terminated by the first `;`) that
+/// starts with `start_marker`. Falls back to an empty string if not
+/// found. Used to extract the parent-level `CREATE UNIQUE INDEX ON
+/// ONLY <parent>` from the multi-line index segment body.
+fn extract_first_statement_starting_with(body: &str, start_marker: &str) -> String {
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Skip leading whitespace + comments on this line.
+        while i < bytes.len() && bytes[i] == b' ' {
+            i += 1;
+        }
+        if i + start_marker.len() <= bytes.len()
+            && &bytes[i..i + start_marker.len()] == start_marker.as_bytes()
+        {
+            // Find the terminating `;`.
+            let start = i;
+            let mut j = i + start_marker.len();
+            while j < bytes.len() && bytes[j] != b';' {
+                j += 1;
+            }
+            // Include the `;` if present, normalize internal whitespace.
+            let raw = String::from_utf8_lossy(&bytes[start..j]).into_owned();
+            return raw;
+        }
+        // Skip to next line.
+        while i < bytes.len() && bytes[i] != b'\n' {
+            i += 1;
+        }
+        if i < bytes.len() {
+            i += 1;
+        }
+    }
+    String::new()
+}
+
+/// Recover the parent index name from the `CREATE UNIQUE INDEX
+/// <name> ON ONLY ...` body. Falls back to `parent_pkey_idx` if the
+/// scan fails.
+fn recover_parent_index_name(parent_stmt: &str) -> String {
+    let bytes = parent_stmt.as_bytes();
+    const MARKER: &[u8] = b"CREATE UNIQUE INDEX ";
+    if bytes.len() < MARKER.len() {
+        return String::new();
+    }
+    // Find the marker, then read the identifier after it.
+    let mut i = 0usize;
+    while i + MARKER.len() <= bytes.len() {
+        if &bytes[i..i + MARKER.len()] == MARKER {
+            let start = i + MARKER.len();
+            let mut j = start;
+            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                j += 1;
+            }
+            if j > start {
+                return String::from_utf8_lossy(&bytes[start..j]).into_owned();
+            }
+            break;
+        }
+        i += 1;
+    }
+    String::new()
+}
+
+/// Recover the partition column + shadow suffix from the parent
+/// index statement. The expected form is
+/// `CREATE UNIQUE INDEX <idx> ON ONLY <parent> (<pkey>, id<suffix>)`.
+/// Returns `(pkey, suffix)`; falls back to `("partition_key", "_desc")`
+/// when the body cannot be parsed.
+fn recover_partition_columns(parent_stmt: &str) -> (String, String) {
+    let bytes = parent_stmt.as_bytes();
+    // Find `(` and `)`.
+    let mut open = None;
+    let mut close = None;
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'(' && open.is_none() {
+            open = Some(i + 1);
+        } else if *b == b')' {
+            close = Some(i);
+            break;
+        }
+    }
+    let (Some(o), Some(c)) = (open, close) else {
+        return ("partition_key".to_string(), "_desc".to_string());
+    };
+    if o >= c {
+        return ("partition_key".to_string(), "_desc".to_string());
+    }
+    let inside = String::from_utf8_lossy(&bytes[o..c]).into_owned();
+    // Split by `,` and trim. First is pkey, second is `id<suffix>`.
+    let mut parts = inside.splitn(2, ',');
+    let pkey = parts.next().unwrap_or("").trim().to_string();
+    let id_col = parts.next().unwrap_or("").trim();
+    let suffix = id_col.strip_prefix("id").unwrap_or("_desc").to_string();
+    if pkey.is_empty() || suffix.is_empty() {
+        return ("partition_key".to_string(), "_desc".to_string());
+    }
+    (pkey, suffix)
+}
+
+/// Strip a `schema.` prefix from a regclass-rendered name. Postgres
+/// `regclass::text` qualifies a name only when the schema is not on
+/// the search path; we pick the unqualified leaf name for the
+/// per-leaf index name suffix to keep names short.
+fn strip_schema_prefix(name: &str) -> &str {
+    name.rsplit('.').next().unwrap_or(name)
 }
 
 #[cfg(test)]

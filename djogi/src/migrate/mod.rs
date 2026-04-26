@@ -147,7 +147,10 @@ pub use snapshot::{
     SnapshotError, load_snapshot, parse_snapshot_bytes, save_snapshot, serialize_snapshot,
 };
 pub use sql::{LossyRollbackKind, LossyRollbackWarning, OperationSql, SqlEmitError, lower_delta};
-pub use status::{StatusReport, render as render_status, render_pending_plan_warnings};
+pub use status::{
+    POINT_OF_NO_RETURN_WARNING, StatusReport, render as render_status,
+    render_invalid_index_warnings, render_pending_plan_warnings,
+};
 pub use target::{
     FilesystemBucket, GLOBAL_BUCKET_DIRNAME, MIGRATIONS_DIR, MODELS_INVENTORY_FILENAME,
     PENDING_DIR, SNAPSHOT_FILENAME, app_dirname, app_label_from_dirname, bucket_dir, database_dir,

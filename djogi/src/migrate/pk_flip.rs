@@ -195,50 +195,655 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Vec<Segment> {
 }
 
 /// Build the segment list for a partitioned parent flip per
-/// playbook §9. The shape mirrors [`build_segments`] but the
-/// preparation segment installs the parent-level shadow column
-/// (which propagates to leaves), the backfill segment emits per-leaf
-/// `CALL` invocations (the runner enumerates leaves from
-/// `pg_inherits` at apply time — the descriptor only knows the
-/// partition strategy), the index segment emits the parent-level
-/// UNIQUE placeholder + per-leaf `CONCURRENTLY` + `ATTACH PARTITION`,
-/// and the cutover uses `ADD PRIMARY KEY (...)` instead of
-/// `USING INDEX` because Postgres does not support `USING INDEX` on
-/// a partitioned parent.
+/// playbook §9 — composes the partitioned-parent specifics with the
+/// cascade emitters used by [`build_segments`] so a partitioned
+/// parent that ALSO has children, self-FK, join tables, or cycle
+/// peers gets the full cutover orchestration in one plan.
+///
+/// **Composition (B-4).** The partitioned variant re-uses
+/// `emit_preparation` (children/self-FK/join shadow columns +
+/// triggers), `emit_backfill_statements` (per-table CALLs / DO
+/// blocks for children/self-FK/join/cycles), `emit_verification_statements`
+/// (per-table verification SELECTs marked PkFlipVerify), and
+/// `emit_child_fk_statements` (NOT VALID FK + VALIDATE pairs), then
+/// adds the partitioned-parent-specific extras for the parent table
+/// itself (parent-level UNIQUE placeholder + per-leaf
+/// CONCURRENTLY + ATTACH PARTITION expanded by the runner).
+///
+/// **Cutover.** The atomic cutover transaction touches the
+/// partitioned parent (using `ADD PRIMARY KEY (partition_key,
+/// id_desc)` because `USING INDEX` is illegal on a partitioned
+/// parent) plus every cascade table.
 fn build_segments_partitioned(
     group: &PkTypeFlipGroup,
     part: &super::diff::PkFlipPartitionedMeta,
 ) -> Vec<Segment> {
-    // Phase 7 deliverable: emit the §9 shape with placeholder
-    // per-leaf invocations. The runner replaces the
-    // `<EACH_LEAF_TABLE>` token with concrete leaf names at apply
-    // time — see runner pre-flight. Operators reviewing the SQL file
-    // see the placeholder + a comment block explaining the
-    // substitution; running the file directly without the runner
-    // will fail loudly on the placeholder, which is the intended
-    // safety: partitioned flips MUST go through the runner.
-    vec![
+    // 1. Preparation: parent-level shadow column + multi-pair
+    //    trigger via partitioned emitter, plus children/self-FK/join
+    //    shadow columns + triggers via the cascade preparation
+    //    emitter. The partitioned-parent shadow column propagates
+    //    automatically to every leaf via the shared parent storage
+    //    layout (PG13+).
+    let mut prep_op = emit_partitioned_preparation(group, part);
+    let cascade_prep = emit_preparation_children_only(group);
+    if !cascade_prep.up.is_empty() {
+        prep_op.up.push_str(&cascade_prep.up);
+        prep_op.down = format!("{}\n{}", cascade_prep.down, prep_op.down);
+    }
+
+    // 2. Backfill: per-leaf CALLs for the parent (placeholder
+    //    expanded by the runner) + per-table CALLs for every cascade
+    //    member.
+    let mut backfill_stmts: Vec<OperationSql> = Vec::new();
+    backfill_stmts.push(emit_partitioned_backfill_only(group, part));
+    let cascade_bf = emit_backfill_statements_cascade_only(group);
+    backfill_stmts.extend(cascade_bf);
+
+    // 3. Verification — runner short-circuits via PkFlipVerify
+    //    labels.  Parent verification + cascade verification merged.
+    let mut verify_stmts: Vec<OperationSql> = Vec::new();
+    verify_stmts.push(emit_partitioned_verify(group));
+    let cascade_verify = emit_verification_statements_cascade_only(group);
+    verify_stmts.extend(cascade_verify);
+
+    // 4. Concurrent indexes — parent UNIQUE placeholder (per-leaf
+    //    expansion at apply time) + cascade member indexes.
+    let mut index_stmts: Vec<OperationSql> = Vec::new();
+    index_stmts.push(emit_partitioned_indexes(group, part));
+    let cascade_idx = emit_concurrent_index_statements_cascade_only(group);
+    index_stmts.extend(cascade_idx);
+
+    // 5. Child FK creation (NOT VALID + VALIDATE) — same as the
+    //    non-partitioned cascade flow.
+    let fk_stmts = emit_child_fk_statements(group);
+
+    // 6. NOT NULL proof — parent + non-nullable children.
+    let nn_op = emit_not_null_proof(group);
+
+    // 7. Cutover — partitioned parent + cascade finalisation in ONE
+    //    transactional segment. The runner wraps the whole segment
+    //    in a single Postgres tx; the body below is the statement
+    //    list only.
+    let cutover_op = emit_partitioned_cutover_with_cascade(group, part);
+
+    let mut segments: Vec<Segment> = vec![
         Segment {
             kind: SegmentKind::Transactional,
-            statements: vec![emit_partitioned_preparation(group, part)],
+            statements: vec![prep_op],
         },
         Segment {
             kind: SegmentKind::NonTransactional,
-            statements: vec![emit_partitioned_backfill_and_verification(group, part)],
+            statements: backfill_stmts,
+        },
+        Segment {
+            kind: SegmentKind::Transactional,
+            statements: verify_stmts,
         },
         Segment {
             kind: SegmentKind::NonTransactional,
-            statements: vec![emit_partitioned_indexes(group, part)],
+            statements: index_stmts,
         },
-        Segment {
+    ];
+    if !fk_stmts.is_empty() {
+        segments.push(Segment {
             kind: SegmentKind::Transactional,
-            statements: vec![emit_not_null_proof(group)],
+            statements: fk_stmts,
+        });
+    }
+    segments.push(Segment {
+        kind: SegmentKind::Transactional,
+        statements: vec![nn_op],
+    });
+    segments.push(Segment {
+        kind: SegmentKind::Transactional,
+        statements: vec![cutover_op],
+    });
+    segments
+}
+
+/// Cascade-only preparation: children + self-FK + join-table shadow
+/// columns and triggers, omitting the parent's parent-level work
+/// (which the partitioned emitter owns). Returns an empty
+/// [`OperationSql`] when the group has no cascade members.
+fn emit_preparation_children_only(group: &PkTypeFlipGroup) -> OperationSql {
+    let parent = group.parent_table.as_str();
+    let direction = group.direction;
+    let p_family = parent_family(group);
+    let _ = p_family; // currently used only by full emitter; future-proofing
+    let mut up = String::new();
+    let mut down = String::new();
+
+    for child in &group.children {
+        let cf = child_family(child, group);
+        let cty = pg_id_type(cf);
+        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {child_t} ADD COLUMN {dst} {ty};",
+            child_t = child.table,
+            dst = dst,
+            ty = cty,
+        );
+        up.push_str(&render_autofill_trigger(
+            &child.table,
+            &[(child.fk_column.as_str(), dst.as_str())],
+            cf,
+            direction,
+        ));
+        let _ = writeln!(
+            down,
+            "DROP TRIGGER IF EXISTS zzz_{child_t}_autofill_desc ON {child_t};",
+            child_t = child.table,
+        );
+        let _ = writeln!(
+            down,
+            "DROP FUNCTION IF EXISTS zzz_{child_t}_autofill_desc() CASCADE;",
+            child_t = child.table,
+        );
+        let _ = writeln!(
+            down,
+            "ALTER TABLE {child_t} DROP COLUMN IF EXISTS {dst};",
+            child_t = child.table,
+            dst = dst,
+        );
+    }
+    for jt in &group.join_tables {
+        let dst = format!("{}{}", jt.fk_to_parent_column, SHADOW_SUFFIX);
+        let id_type = pg_id_type(jt.family);
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} ADD COLUMN {dst} {ty};",
+            tbl = jt.table,
+            dst = dst,
+            ty = id_type,
+        );
+        up.push_str(&render_autofill_trigger(
+            &jt.table,
+            &[(jt.fk_to_parent_column.as_str(), dst.as_str())],
+            jt.family,
+            direction,
+        ));
+        let _ = writeln!(
+            down,
+            "DROP TRIGGER IF EXISTS zzz_{tbl}_autofill_desc ON {tbl};",
+            tbl = jt.table,
+        );
+        let _ = writeln!(
+            down,
+            "DROP FUNCTION IF EXISTS zzz_{tbl}_autofill_desc() CASCADE;",
+            tbl = jt.table,
+        );
+        let _ = writeln!(
+            down,
+            "ALTER TABLE {tbl} DROP COLUMN IF EXISTS {dst};",
+            tbl = jt.table,
+            dst = dst,
+        );
+    }
+    OperationSql {
+        label: format!("PkFlipPrepCascade {parent}"),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+/// Cascade-only backfill: children, self-FK, join tables, cycle
+/// peers. Omits the parent table (handled by the partitioned
+/// per-leaf emitter).
+fn emit_backfill_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
+    let parent = group.parent_table.as_str();
+    let p_family = parent_family(group);
+    let direction = group.direction;
+    let mut out: Vec<OperationSql> = Vec::new();
+    let down_note = "-- Backfill is idempotent under `WHERE dst IS NULL`; the\n\
+                     -- down side has no inverse beyond dropping the shadow\n\
+                     -- column itself, which segment 1's down already covers."
+        .to_string();
+    if let Some(self_fk) = &group.self_fk {
+        for col in &self_fk.fk_columns {
+            let dst = format!("{}{}", col, SHADOW_SUFFIX);
+            out.push(OperationSql {
+                label: format!("PkFlipBackfill {parent} {col}"),
+                up: emit_backfill_body(parent, col, &dst, p_family, direction),
+                down: down_note.clone(),
+                lossy: None,
+            });
+        }
+    }
+    for child in &group.children {
+        let cf = child_family(child, group);
+        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
+        out.push(OperationSql {
+            label: format!("PkFlipBackfill {tbl}", tbl = child.table),
+            up: emit_backfill_body(&child.table, &child.fk_column, &dst, cf, direction),
+            down: down_note.clone(),
+            lossy: None,
+        });
+    }
+    for jt in &group.join_tables {
+        let dst = format!("{}{}", jt.fk_to_parent_column, SHADOW_SUFFIX);
+        out.push(OperationSql {
+            label: format!("PkFlipBackfill {tbl}", tbl = jt.table),
+            up: emit_backfill_body(
+                &jt.table,
+                &jt.fk_to_parent_column,
+                &dst,
+                jt.family,
+                direction,
+            ),
+            down: down_note.clone(),
+            lossy: None,
+        });
+    }
+    for cyc in &group.cycles {
+        let dst = format!("{}{}", cyc.peer_fk_column, SHADOW_SUFFIX);
+        out.push(OperationSql {
+            label: format!("PkFlipBackfill {tbl}", tbl = cyc.peer_table),
+            up: emit_backfill_body(
+                &cyc.peer_table,
+                &cyc.peer_fk_column,
+                &dst,
+                p_family,
+                direction,
+            ),
+            down: down_note.clone(),
+            lossy: None,
+        });
+    }
+    out
+}
+
+/// Cascade-only verification: same shapes as
+/// [`emit_verification_statements`] but excluding the parent PK
+/// non-null check (the partitioned emitter owns that).
+fn emit_verification_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
+    let parent = group.parent_table.as_str();
+    let p_family = parent_family(group);
+    let mut out: Vec<OperationSql> = Vec::new();
+    if let Some(self_fk) = &group.self_fk {
+        for col in &self_fk.fk_columns {
+            let dst = format!("{}{}", col, SHADOW_SUFFIX);
+            out.push(OperationSql {
+                label: format!("PkFlipVerify {parent} {col}"),
+                up: format!(
+                    "SELECT count(*) FROM {parent} \
+                     WHERE ({col} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
+                        OR ({col} IS NOT NULL AND {dst} <> {flip}({col}))",
+                    parent = parent,
+                    col = col,
+                    dst = dst,
+                    flip = flip_fn_name(p_family, group.direction),
+                ),
+                down: String::new(),
+                lossy: None,
+            });
+        }
+    }
+    for child in &group.children {
+        let cf = child_family(child, group);
+        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
+        if child.fk_nullable {
+            out.push(OperationSql {
+                label: format!(
+                    "PkFlipVerify {tbl} {col}",
+                    tbl = child.table,
+                    col = child.fk_column
+                ),
+                up: format!(
+                    "SELECT count(*) FROM {tbl} \
+                     WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
+                        OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
+                    tbl = child.table,
+                    src = child.fk_column,
+                    dst = dst,
+                    flip = flip_fn_name(cf, group.direction),
+                ),
+                down: String::new(),
+                lossy: None,
+            });
+        } else {
+            out.push(OperationSql {
+                label: format!(
+                    "PkFlipVerify {tbl} {col}",
+                    tbl = child.table,
+                    col = child.fk_column
+                ),
+                up: format!(
+                    "SELECT count(*) FROM {tbl} WHERE {dst} IS NULL",
+                    tbl = child.table,
+                    dst = dst,
+                ),
+                down: String::new(),
+                lossy: None,
+            });
+        }
+    }
+    for jt in &group.join_tables {
+        let dst = format!("{}{}", jt.fk_to_parent_column, SHADOW_SUFFIX);
+        out.push(OperationSql {
+            label: format!(
+                "PkFlipVerify {tbl} {col}",
+                tbl = jt.table,
+                col = jt.fk_to_parent_column
+            ),
+            up: format!(
+                "SELECT count(*) FROM {tbl} \
+                 WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
+                    OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
+                tbl = jt.table,
+                src = jt.fk_to_parent_column,
+                dst = dst,
+                flip = flip_fn_name(jt.family, group.direction),
+            ),
+            down: String::new(),
+            lossy: None,
+        });
+    }
+    out
+}
+
+/// Cascade-only concurrent indexes: same shapes as
+/// [`emit_concurrent_index_statements`] but excluding the parent's
+/// own UNIQUE index (the partitioned emitter owns it via the
+/// parent-level UNIQUE-on-ONLY placeholder + per-leaf
+/// CONCURRENTLY + ATTACH PARTITION lines).
+fn emit_concurrent_index_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
+    let parent = group.parent_table.as_str();
+    let mut out: Vec<OperationSql> = Vec::new();
+    if let Some(self_fk) = &group.self_fk {
+        for col in &self_fk.fk_columns {
+            out.push(OperationSql {
+                label: format!("PkFlipConcurrentIndex {parent} {col}"),
+                up: format!(
+                    "CREATE INDEX CONCURRENTLY idx_{parent}_{col}{suffix} ON {parent} ({col}{suffix})",
+                    parent = parent,
+                    col = col,
+                    suffix = SHADOW_SUFFIX,
+                ),
+                down: format!(
+                    "DROP INDEX IF EXISTS idx_{parent}_{col}{suffix}",
+                    parent = parent,
+                    col = col,
+                    suffix = SHADOW_SUFFIX,
+                ),
+                lossy: None,
+            });
+        }
+    }
+    for child in &group.children {
+        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
+        let unique_kw = if child.fk_unique { "UNIQUE " } else { "" };
+        out.push(OperationSql {
+            label: format!(
+                "PkFlipConcurrentIndex {tbl} {col}",
+                tbl = child.table,
+                col = child.fk_column
+            ),
+            up: format!(
+                "CREATE {uniq}INDEX CONCURRENTLY idx_{tbl}_{dst} ON {tbl} ({dst})",
+                uniq = unique_kw,
+                tbl = child.table,
+                dst = dst,
+            ),
+            down: format!(
+                "DROP INDEX IF EXISTS idx_{tbl}_{dst}",
+                tbl = child.table,
+                dst = dst,
+            ),
+            lossy: None,
+        });
+    }
+    for jt in &group.join_tables {
+        let dst = format!("{}{}", jt.fk_to_parent_column, SHADOW_SUFFIX);
+        out.push(OperationSql {
+            label: format!(
+                "PkFlipConcurrentIndex {tbl} {col}",
+                tbl = jt.table,
+                col = jt.fk_to_parent_column
+            ),
+            up: format!(
+                "CREATE INDEX CONCURRENTLY idx_{tbl}_{dst} ON {tbl} ({dst})",
+                tbl = jt.table,
+                dst = dst,
+            ),
+            down: format!(
+                "DROP INDEX IF EXISTS idx_{tbl}_{dst}",
+                tbl = jt.table,
+                dst = dst,
+            ),
+            lossy: None,
+        });
+    }
+    out
+}
+
+/// Partitioned cutover that ALSO finalises every cascade member.
+/// Body: drop child FKs, partitioned parent promotion + DEFAULT
+/// flip + drop of old PK column + RENAME, then per-child / join /
+/// self-FK finalisation (DROP old col, DROP TRIGGER + FUNCTION,
+/// RENAME shadow back, ADD CONSTRAINT pointing at the renamed
+/// `parent.id`). All within ONE Postgres tx.
+fn emit_partitioned_cutover_with_cascade(
+    group: &PkTypeFlipGroup,
+    _part: &super::diff::PkFlipPartitionedMeta,
+) -> OperationSql {
+    let parent = group.parent_table.as_str();
+    let p_family = parent_family(group);
+    let next_fn = next_fn_name(p_family, group.direction);
+    let part_col = match &group.partitioned_parent {
+        Some(meta) => match &meta.partition {
+            PartitionSchema::Range { column } => column.clone(),
+            PartitionSchema::Hash { column, .. } => column.clone(),
         },
-        Segment {
-            kind: SegmentKind::Transactional,
-            statements: vec![emit_partitioned_cutover(group, part)],
-        },
-    ]
+        None => "partition_key".to_string(),
+    };
+    let mut up = String::new();
+
+    // Cycle handling — defer all constraints if any cycles exist.
+    if !group.cycles.is_empty() {
+        up.push_str("SET CONSTRAINTS ALL DEFERRED;\n");
+    }
+
+    // 1. Drop every child's old FK.
+    for child in &group.children {
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
+            tbl = child.table,
+            cons = child.fk_constraint_name,
+        );
+    }
+    for jt in &group.join_tables {
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
+            tbl = jt.table,
+            cons = jt.fk_to_parent_constraint,
+        );
+    }
+    if let Some(self_fk) = &group.self_fk {
+        for cons in &self_fk.fk_constraint_names {
+            let _ = writeln!(
+                up,
+                "ALTER TABLE {parent} DROP CONSTRAINT {cons};",
+                parent = parent,
+                cons = cons,
+            );
+        }
+    }
+
+    // 2. Promote the partitioned parent. ADD PRIMARY KEY (...) form
+    //    because USING INDEX is illegal on a partitioned parent.
+    let _ = writeln!(
+        up,
+        "ALTER TABLE {parent} DROP CONSTRAINT {parent}_pkey;",
+        parent = parent,
+    );
+    let _ = writeln!(
+        up,
+        "ALTER TABLE {parent} ADD PRIMARY KEY ({pkey}, id{suffix});",
+        parent = parent,
+        pkey = part_col,
+        suffix = SHADOW_SUFFIX,
+    );
+    let _ = writeln!(
+        up,
+        "ALTER TABLE {parent} ALTER COLUMN id{suffix} SET DEFAULT {next}();",
+        parent = parent,
+        suffix = SHADOW_SUFFIX,
+        next = next_fn,
+    );
+    let _ = writeln!(
+        up,
+        "ALTER TABLE {parent} ALTER COLUMN id DROP DEFAULT;",
+        parent = parent,
+    );
+    let _ = writeln!(up, "ALTER TABLE {parent} DROP COLUMN id;", parent = parent);
+    let _ = writeln!(
+        up,
+        "DROP TRIGGER zzz_{parent}_autofill_desc ON {parent};",
+        parent = parent,
+    );
+    let _ = writeln!(
+        up,
+        "DROP FUNCTION zzz_{parent}_autofill_desc() CASCADE;",
+        parent = parent,
+    );
+    let _ = writeln!(
+        up,
+        "ALTER TABLE {parent} RENAME COLUMN id{suffix} TO id;",
+        parent = parent,
+        suffix = SHADOW_SUFFIX,
+    );
+
+    // 3. Self-FK column rename + constraint re-add.
+    if let Some(self_fk) = &group.self_fk {
+        for col in &self_fk.fk_columns {
+            let _ = writeln!(
+                up,
+                "ALTER TABLE {parent} DROP COLUMN {col};",
+                parent = parent,
+                col = col,
+            );
+        }
+        for col in &self_fk.fk_columns {
+            let _ = writeln!(
+                up,
+                "ALTER TABLE {parent} RENAME COLUMN {col}{suffix} TO {col};",
+                parent = parent,
+                col = col,
+                suffix = SHADOW_SUFFIX,
+            );
+        }
+        for (col, cons) in self_fk
+            .fk_columns
+            .iter()
+            .zip(self_fk.fk_constraint_names.iter())
+        {
+            let _ = writeln!(
+                up,
+                "ALTER TABLE {parent} ADD CONSTRAINT {cons} \
+                 FOREIGN KEY ({col}) REFERENCES {parent}(id);",
+                parent = parent,
+                col = col,
+                cons = cons,
+            );
+        }
+    }
+
+    // 4. Finalise every child.
+    for child in &group.children {
+        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} DROP COLUMN {col};",
+            tbl = child.table,
+            col = child.fk_column,
+        );
+        let _ = writeln!(
+            up,
+            "DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
+            tbl = child.table,
+        );
+        let _ = writeln!(
+            up,
+            "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
+            tbl = child.table,
+        );
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
+            tbl = child.table,
+            dst = dst,
+            col = child.fk_column,
+        );
+        let cascade = render_on_delete(child.on_delete);
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
+             FOREIGN KEY ({col}) REFERENCES {parent}(id) {cascade};",
+            tbl = child.table,
+            cons = child.fk_constraint_name,
+            col = child.fk_column,
+            parent = parent,
+            cascade = cascade,
+        );
+    }
+
+    // 5. Finalise every join table.
+    for jt in &group.join_tables {
+        let dst = format!("{}{}", jt.fk_to_parent_column, SHADOW_SUFFIX);
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} DROP COLUMN {col};",
+            tbl = jt.table,
+            col = jt.fk_to_parent_column,
+        );
+        let _ = writeln!(
+            up,
+            "DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
+            tbl = jt.table,
+        );
+        let _ = writeln!(
+            up,
+            "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
+            tbl = jt.table,
+        );
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
+            tbl = jt.table,
+            dst = dst,
+            col = jt.fk_to_parent_column,
+        );
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
+             FOREIGN KEY ({col}) REFERENCES {parent}(id);",
+            tbl = jt.table,
+            cons = jt.fk_to_parent_constraint,
+            col = jt.fk_to_parent_column,
+            parent = parent,
+        );
+    }
+
+    OperationSql {
+        label: format!("PkFlipPartitionedCutover {parent}"),
+        up,
+        down: format!(
+            "-- POINT OF NO RETURN — partitioned cutover for {parent} cannot be\n\
+             -- reversed by `down` SQL alone. Inverse migration required.",
+        ),
+        lossy: Some(LossyRollbackWarning {
+            kind: LossyRollbackKind::PkTypeFlipPostCutover,
+            detail: format!(
+                "POINT OF NO RETURN: partitioned cutover for `{parent}` removes the prior \
+                 PK column and trigger; rollback requires an inverse migration. \
+                 Partitioned-table cutover is seconds-to-minutes class — benchmark first.",
+            ),
+        }),
+    }
 }
 
 // ── Helpers shared across emitters ───────────────────────────────────────
@@ -754,16 +1359,32 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
     }
 }
 
-/// Emit one [`OperationSql`] per backfill statement (CALL / VALIDATE)
-/// so the runner can dispatch each via single-statement `raw_ddl`.
-/// Without this split the simple-query protocol wraps multiple
-/// statements in an implicit transaction; the procedure's internal
-/// `COMMIT` then fires `2D000 invalid transaction termination` per
-/// the playbook's "must not be wrapped in pool.begin()" warning.
+/// Emit one [`OperationSql`] per backfill statement (CALL or
+/// hand-rolled DO block) so the runner can dispatch each via
+/// single-statement `raw_ddl`. Without this split the simple-query
+/// protocol wraps multiple statements in an implicit transaction;
+/// the procedure's internal `COMMIT` then fires `2D000 invalid
+/// transaction termination` per the playbook's "must not be wrapped
+/// in pool.begin()" warning.
+///
+/// **Forward direction (Asc → Desc).** The HeeRanjID procedure
+/// `heeranjid_bulk_backfill` ships with a `'heer'` / `'ranj'`
+/// `kind` parameter that dispatches to `heerid_to_desc` /
+/// `ranjid_to_desc` server-side. Forward backfills emit one CALL
+/// per `(table, src_col, dst_col)` tuple.
+///
+/// **Reverse direction (Desc → Asc).** The shipped procedure does
+/// NOT cover this — its `kind` switch only handles the desc flip
+/// primitives. Rather than depend on an unreleased
+/// `heeranjid_bulk_backfill_to_asc`, we emit a hand-rolled `DO $$
+/// ... $$` block that mirrors the procedure's two-loop pattern:
+/// fast-path with `SKIP LOCKED`, cleanup pass without. Both reissue
+/// `SET LOCAL lock_timeout = '30s'` per batch (transaction-scoped).
+/// This keeps the reverse path self-contained and reviewable.
 fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
-    let p_kind = backfill_kind_literal(p_family);
+    let direction = group.direction;
     let mut out: Vec<OperationSql> = Vec::new();
 
     let down_note = "-- Backfill is idempotent under `WHERE dst IS NULL`; the\n\
@@ -773,11 +1394,12 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
 
     out.push(OperationSql {
         label: format!("PkFlipBackfill {parent}"),
-        up: format!(
-            "CALL heeranjid_bulk_backfill('{parent}', 'id', 'id{suffix}', {kind}, 10000)",
-            parent = parent,
-            suffix = SHADOW_SUFFIX,
-            kind = p_kind,
+        up: emit_backfill_body(
+            parent,
+            "id",
+            &format!("id{}", SHADOW_SUFFIX),
+            p_family,
+            direction,
         ),
         down: down_note.clone(),
         lossy: None,
@@ -788,13 +1410,7 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
             let dst = format!("{}{}", col, SHADOW_SUFFIX);
             out.push(OperationSql {
                 label: format!("PkFlipBackfill {parent} {col}"),
-                up: format!(
-                    "CALL heeranjid_bulk_backfill('{parent}', '{col}', '{dst}', {kind}, 10000)",
-                    parent = parent,
-                    col = col,
-                    dst = dst,
-                    kind = p_kind,
-                ),
+                up: emit_backfill_body(parent, col, &dst, p_family, direction),
                 down: down_note.clone(),
                 lossy: None,
             });
@@ -804,16 +1420,9 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     for child in &group.children {
         let cf = child_family(child, group);
         let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        let kind_lit = backfill_kind_literal(cf);
         out.push(OperationSql {
             label: format!("PkFlipBackfill {tbl}", tbl = child.table),
-            up: format!(
-                "CALL heeranjid_bulk_backfill('{tbl}', '{src}', '{dst}', {kind}, 10000)",
-                tbl = child.table,
-                src = child.fk_column,
-                dst = dst,
-                kind = kind_lit,
-            ),
+            up: emit_backfill_body(&child.table, &child.fk_column, &dst, cf, direction),
             down: down_note.clone(),
             lossy: None,
         });
@@ -824,15 +1433,14 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
 
     for jt in &group.join_tables {
         let dst = format!("{}{}", jt.fk_to_parent_column, SHADOW_SUFFIX);
-        let kind_lit = backfill_kind_literal(jt.family);
         out.push(OperationSql {
             label: format!("PkFlipBackfill {tbl}", tbl = jt.table),
-            up: format!(
-                "CALL heeranjid_bulk_backfill('{tbl}', '{src}', '{dst}', {kind}, 10000)",
-                tbl = jt.table,
-                src = jt.fk_to_parent_column,
-                dst = dst,
-                kind = kind_lit,
+            up: emit_backfill_body(
+                &jt.table,
+                &jt.fk_to_parent_column,
+                &dst,
+                jt.family,
+                direction,
             ),
             down: down_note.clone(),
             lossy: None,
@@ -849,12 +1457,12 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
         let dst = format!("{}{}", cyc.peer_fk_column, SHADOW_SUFFIX);
         out.push(OperationSql {
             label: format!("PkFlipBackfill {tbl}", tbl = cyc.peer_table),
-            up: format!(
-                "CALL heeranjid_bulk_backfill('{tbl}', '{src}', '{dst}', {kind}, 10000)",
-                tbl = cyc.peer_table,
-                src = cyc.peer_fk_column,
-                dst = dst,
-                kind = p_kind,
+            up: emit_backfill_body(
+                &cyc.peer_table,
+                &cyc.peer_fk_column,
+                &dst,
+                p_family,
+                direction,
             ),
             down: down_note.clone(),
             lossy: None,
@@ -862,6 +1470,102 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     }
 
     out
+}
+
+/// Pick the right backfill body for `(family, direction)`.
+///
+/// AscToDesc → forward CALL into the shipped HeeRanjID procedure.
+/// DescToAsc → hand-rolled DO block (the procedure ships only the
+/// desc direction; see [`emit_reverse_backfill`] for the loop body).
+fn emit_backfill_body(
+    table: &str,
+    src_col: &str,
+    dst_col: &str,
+    family: PkFlipFamily,
+    direction: PkFlipDirection,
+) -> String {
+    match direction {
+        PkFlipDirection::AscToDesc => {
+            let kind = backfill_kind_literal(family);
+            format!(
+                "CALL heeranjid_bulk_backfill('{table}', '{src}', '{dst}', {kind}, 10000)",
+                table = table,
+                src = src_col,
+                dst = dst_col,
+                kind = kind,
+            )
+        }
+        PkFlipDirection::DescToAsc => emit_reverse_backfill(table, src_col, dst_col, family),
+    }
+}
+
+/// Hand-rolled DO block mirroring `heeranjid_bulk_backfill`'s
+/// two-loop pattern but using the asc-direction flip primitives
+/// (`heerid_to_asc` / `ranjid_to_asc`).
+///
+/// Loop 1 — fast path with `FOR UPDATE SKIP LOCKED`. Fires
+/// `lock_timeout = '30s'` per batch (SET LOCAL is transaction-scoped
+/// so it must be reissued after every COMMIT).
+/// Loop 2 — cleanup pass without SKIP LOCKED to drain rows that were
+/// always locked by a long-running concurrent transaction.
+///
+/// Both loops filter `WHERE <dst> IS NULL AND <src> IS NOT NULL` so
+/// nullable FK shadows skip rows where the source is itself NULL.
+///
+/// The DO block carries its own COMMITs because LOOP-with-COMMIT in
+/// PL/pgSQL is allowed only inside procedures or DO blocks at the
+/// top level. The runner dispatches this block via `raw_ddl` outside
+/// any explicit BEGIN, identical to the CALL path.
+fn emit_reverse_backfill(
+    table: &str,
+    src_col: &str,
+    dst_col: &str,
+    family: PkFlipFamily,
+) -> String {
+    let flip_fn = match family {
+        PkFlipFamily::Heer => "heerid_to_asc",
+        PkFlipFamily::Ranj => "ranjid_to_asc",
+    };
+    format!(
+        "DO $$\n\
+         DECLARE\n    \
+         rows_done int;\n\
+         BEGIN\n    \
+         LOOP\n        \
+         SET LOCAL lock_timeout = '30s';\n        \
+         WITH batch AS (\n            \
+         SELECT ctid FROM {table}\n            \
+         WHERE {dst} IS NULL AND {src} IS NOT NULL\n            \
+         LIMIT 10000\n            \
+         FOR UPDATE SKIP LOCKED\n        \
+         )\n        \
+         UPDATE {table} t SET {dst} = {flip}(t.{src})\n        \
+         FROM batch WHERE t.ctid = batch.ctid;\n        \
+         GET DIAGNOSTICS rows_done = ROW_COUNT;\n        \
+         COMMIT;\n        \
+         EXIT WHEN rows_done = 0;\n    \
+         END LOOP;\n    \
+         LOOP\n        \
+         SET LOCAL lock_timeout = '30s';\n        \
+         WITH batch AS (\n            \
+         SELECT ctid FROM {table}\n            \
+         WHERE {dst} IS NULL AND {src} IS NOT NULL\n            \
+         LIMIT 10000\n            \
+         FOR UPDATE\n        \
+         )\n        \
+         UPDATE {table} t SET {dst} = {flip}(t.{src})\n        \
+         FROM batch WHERE t.ctid = batch.ctid;\n        \
+         GET DIAGNOSTICS rows_done = ROW_COUNT;\n        \
+         COMMIT;\n        \
+         EXIT WHEN rows_done = 0;\n    \
+         END LOOP;\n\
+         END;\n\
+         $$",
+        table = table,
+        dst = dst_col,
+        src = src_col,
+        flip = flip_fn,
+    )
 }
 
 /// Emit one [`OperationSql`] per verification table the runner must
@@ -1413,18 +2117,30 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
     let next_fn = next_fn_name(p_family, direction);
     let mut up = String::new();
 
-    up.push_str("BEGIN;\n");
+    // No `BEGIN;` here — the runner's
+    // `run_transactional_segment` already wraps every statement in
+    // a single Postgres transaction. Embedding `BEGIN;` here would
+    // double-wrap and produce a `WARNING: there is already a
+    // transaction in progress`. The segment is declared
+    // `SegmentKind::Transactional` precisely so the runner owns the
+    // tx boundary; the body below is the cutover statement list
+    // only.
 
     // Cycle handling — defer all constraints if any cycles exist.
+    // SET CONSTRAINTS ALL DEFERRED is the FIRST statement inside the
+    // outer BEGIN the runner opens; deferred-FK peers on either side
+    // of the cycle remain tolerant of intermediate FK states until
+    // the runner-emitted `COMMIT` lands.
     if !group.cycles.is_empty() {
-        up.push_str("    SET CONSTRAINTS ALL DEFERRED;\n");
+        up.push_str("SET CONSTRAINTS ALL DEFERRED;\n");
     }
 
-    // 1. Drop every child's old FK.
+    // 1. Drop every child's old FK. (No leading indent — the runner
+    //    owns the BEGIN/COMMIT pair around the whole cutover body.)
     for child in &group.children {
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
+            "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
             tbl = child.table,
             cons = child.fk_constraint_name,
         );
@@ -1432,7 +2148,7 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
     for jt in &group.join_tables {
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
+            "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
             tbl = jt.table,
             cons = jt.fk_to_parent_constraint,
         );
@@ -1441,7 +2157,7 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         for cons in &self_fk.fk_constraint_names {
             let _ = writeln!(
                 up,
-                "    ALTER TABLE {parent} DROP CONSTRAINT {cons};",
+                "ALTER TABLE {parent} DROP CONSTRAINT {cons};",
                 parent = parent,
                 cons = cons,
             );
@@ -1451,38 +2167,34 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
     // 2. Promote the parent.
     let _ = writeln!(
         up,
-        "    ALTER TABLE {parent} DROP CONSTRAINT {parent}_pkey;",
+        "ALTER TABLE {parent} DROP CONSTRAINT {parent}_pkey;",
         parent = parent,
     );
     let _ = writeln!(
         up,
-        "    ALTER TABLE {parent} ADD CONSTRAINT {parent}_pkey \
+        "ALTER TABLE {parent} ADD CONSTRAINT {parent}_pkey \
          PRIMARY KEY USING INDEX idx_{parent}_id{suffix};",
         parent = parent,
         suffix = SHADOW_SUFFIX,
     );
     let _ = writeln!(
         up,
-        "    ALTER TABLE {parent} ALTER COLUMN id{suffix} SET DEFAULT {next}();",
+        "ALTER TABLE {parent} ALTER COLUMN id{suffix} SET DEFAULT {next}();",
         parent = parent,
         suffix = SHADOW_SUFFIX,
         next = next_fn,
     );
     let _ = writeln!(
         up,
-        "    ALTER TABLE {parent} ALTER COLUMN id DROP DEFAULT;",
+        "ALTER TABLE {parent} ALTER COLUMN id DROP DEFAULT;",
         parent = parent,
     );
-    let _ = writeln!(
-        up,
-        "    ALTER TABLE {parent} DROP COLUMN id;",
-        parent = parent,
-    );
+    let _ = writeln!(up, "ALTER TABLE {parent} DROP COLUMN id;", parent = parent);
     if let Some(self_fk) = &group.self_fk {
         for col in &self_fk.fk_columns {
             let _ = writeln!(
                 up,
-                "    ALTER TABLE {parent} DROP COLUMN {col};",
+                "ALTER TABLE {parent} DROP COLUMN {col};",
                 parent = parent,
                 col = col,
             );
@@ -1490,17 +2202,17 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
     }
     let _ = writeln!(
         up,
-        "    DROP TRIGGER zzz_{parent}_autofill_desc ON {parent};",
+        "DROP TRIGGER zzz_{parent}_autofill_desc ON {parent};",
         parent = parent,
     );
     let _ = writeln!(
         up,
-        "    DROP FUNCTION zzz_{parent}_autofill_desc() CASCADE;",
+        "DROP FUNCTION zzz_{parent}_autofill_desc() CASCADE;",
         parent = parent,
     );
     let _ = writeln!(
         up,
-        "    ALTER TABLE {parent} RENAME COLUMN id{suffix} TO id;",
+        "ALTER TABLE {parent} RENAME COLUMN id{suffix} TO id;",
         parent = parent,
         suffix = SHADOW_SUFFIX,
     );
@@ -1508,7 +2220,7 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         for col in &self_fk.fk_columns {
             let _ = writeln!(
                 up,
-                "    ALTER TABLE {parent} RENAME COLUMN {col}{suffix} TO {col};",
+                "ALTER TABLE {parent} RENAME COLUMN {col}{suffix} TO {col};",
                 parent = parent,
                 col = col,
                 suffix = SHADOW_SUFFIX,
@@ -1523,7 +2235,7 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         {
             let _ = writeln!(
                 up,
-                "    ALTER TABLE {parent}\n      ADD CONSTRAINT {cons}\n      \
+                "ALTER TABLE {parent} ADD CONSTRAINT {cons} \
                  FOREIGN KEY ({col}) REFERENCES {parent}(id);",
                 parent = parent,
                 col = col,
@@ -1537,23 +2249,23 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl} DROP COLUMN {col};",
+            "ALTER TABLE {tbl} DROP COLUMN {col};",
             tbl = child.table,
             col = child.fk_column,
         );
         let _ = writeln!(
             up,
-            "    DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
+            "DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
             tbl = child.table,
         );
         let _ = writeln!(
             up,
-            "    DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
+            "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
             tbl = child.table,
         );
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
+            "ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
             tbl = child.table,
             dst = dst,
             col = child.fk_column,
@@ -1561,7 +2273,7 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         let cascade = render_on_delete(child.on_delete);
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl}\n      ADD CONSTRAINT {cons}\n      \
+            "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
              FOREIGN KEY ({col}) REFERENCES {parent}(id) {cascade};",
             tbl = child.table,
             cons = child.fk_constraint_name,
@@ -1576,30 +2288,30 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         let dst = format!("{}{}", jt.fk_to_parent_column, SHADOW_SUFFIX);
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl} DROP COLUMN {col};",
+            "ALTER TABLE {tbl} DROP COLUMN {col};",
             tbl = jt.table,
             col = jt.fk_to_parent_column,
         );
         let _ = writeln!(
             up,
-            "    DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
+            "DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
             tbl = jt.table,
         );
         let _ = writeln!(
             up,
-            "    DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
+            "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
             tbl = jt.table,
         );
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
+            "ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
             tbl = jt.table,
             dst = dst,
             col = jt.fk_to_parent_column,
         );
         let _ = writeln!(
             up,
-            "    ALTER TABLE {tbl}\n      ADD CONSTRAINT {cons}\n      \
+            "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
              FOREIGN KEY ({col}) REFERENCES {parent}(id);",
             tbl = jt.table,
             cons = jt.fk_to_parent_constraint,
@@ -1608,7 +2320,9 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         );
     }
 
-    up.push_str("COMMIT;\n");
+    // No trailing `COMMIT;` — the runner emits the final COMMIT
+    // for the transactional segment after every statement runs. See
+    // the matching comment above the cycle-deferral block.
 
     let down = format!(
         "-- POINT OF NO RETURN — segment 5 (cutover) for {parent} cannot be\n\
@@ -1684,41 +2398,68 @@ fn emit_partitioned_preparation(
     }
 }
 
-fn emit_partitioned_backfill_and_verification(
+/// Emit the partitioned-parent backfill step ONLY (no verification).
+///
+/// The verification SELECT lives in a sibling [`emit_partitioned_verify`]
+/// step so the runner's transactional-segment short-circuit picks it up
+/// and halts on count > 0 via [`super::runner::RunnerError::PkFlipVerificationFailed`].
+/// Bundling the SELECT into the backfill step would route it through
+/// `raw_ddl` and discard the count silently (B-7).
+fn emit_partitioned_backfill_only(
     group: &PkTypeFlipGroup,
     _part: &super::diff::PkFlipPartitionedMeta,
 ) -> OperationSql {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
-    let p_kind = backfill_kind_literal(p_family);
+    let direction = group.direction;
     let mut up = String::new();
     let _ = writeln!(
         up,
-        "-- Partitioned parent: invoke heeranjid_bulk_backfill once per leaf\n\
+        "-- Partitioned parent: invoke the backfill primitive once per leaf\n\
          -- partition. The runner enumerates leaves from pg_inherits at apply\n\
-         -- time and substitutes <EACH_LEAF_TABLE> with the concrete\n\
-         -- partition name. Operators hand-running this file MUST replace\n\
-         -- the placeholder with each leaf name before executing.",
+         -- time and emits one statement per leaf in deterministic\n\
+         -- regclass::text order, replacing the <EACH_LEAF_TABLE> placeholder\n\
+         -- with the concrete partition name. Operators hand-running this\n\
+         -- file MUST expand the placeholder themselves before executing.",
     );
-    let _ = writeln!(
-        up,
-        "CALL heeranjid_bulk_backfill('<EACH_LEAF_TABLE>', 'id', 'id{suffix}', {kind}, 10000);",
-        suffix = SHADOW_SUFFIX,
-        kind = p_kind,
+    // Direction-aware body: forward dispatches to the shipped CALL,
+    // reverse uses the hand-rolled DO block.
+    let body = emit_backfill_body(
+        "<EACH_LEAF_TABLE>",
+        "id",
+        &format!("id{}", SHADOW_SUFFIX),
+        p_family,
+        direction,
     );
-    let _ = writeln!(
-        up,
-        "SELECT count(*) FROM {parent} WHERE id{suffix} IS NULL;",
-        parent = parent,
-        suffix = SHADOW_SUFFIX,
-    );
-    let _ = writeln!(up, "-- expect: 0 (aggregated across partitions)");
+    let _ = writeln!(up, "{body};", body = body);
     OperationSql {
         label: format!("PkFlipPartitionedBackfill {parent}"),
         up,
         down: "-- Partitioned backfill is idempotent under `WHERE dst IS NULL`;\n\
                -- the down side has no inverse beyond dropping the shadow column."
             .to_string(),
+        lossy: None,
+    }
+}
+
+/// Emit the partitioned-parent verification SELECT as a standalone
+/// `PkFlipVerify` step. The runner's transactional-segment dispatcher
+/// matches the `PkFlipVerify <table> ...` label prefix, runs the
+/// statement as `query_one`, and surfaces
+/// [`super::runner::RunnerError::PkFlipVerificationFailed`] on any
+/// non-zero count. The SELECT runs against the partitioned parent and
+/// aggregates across leaves automatically (Postgres routes through
+/// pg_inherits transparently).
+fn emit_partitioned_verify(group: &PkTypeFlipGroup) -> OperationSql {
+    let parent = group.parent_table.as_str();
+    OperationSql {
+        label: format!("PkFlipVerify {parent} pk-non-null-aggregate"),
+        up: format!(
+            "SELECT count(*) FROM {parent} WHERE id{suffix} IS NULL",
+            parent = parent,
+            suffix = SHADOW_SUFFIX,
+        ),
+        down: String::new(),
         lossy: None,
     }
 }
@@ -1772,85 +2513,13 @@ fn emit_partitioned_indexes(
     }
 }
 
-fn emit_partitioned_cutover(
-    group: &PkTypeFlipGroup,
-    _part: &super::diff::PkFlipPartitionedMeta,
-) -> OperationSql {
-    let parent = group.parent_table.as_str();
-    let p_family = parent_family(group);
-    let next_fn = next_fn_name(p_family, group.direction);
-    let part_col = match &group.partitioned_parent {
-        Some(meta) => match &meta.partition {
-            PartitionSchema::Range { column } => column.clone(),
-            PartitionSchema::Hash { column, .. } => column.clone(),
-        },
-        None => "partition_key".to_string(),
-    };
-    let mut up = String::new();
-    up.push_str("BEGIN;\n");
-    let _ = writeln!(
-        up,
-        "    ALTER TABLE {parent} DROP CONSTRAINT {parent}_pkey;",
-        parent = parent,
-    );
-    let _ = writeln!(
-        up,
-        "    ALTER TABLE {parent} ADD PRIMARY KEY ({pkey}, id{suffix});",
-        parent = parent,
-        pkey = part_col,
-        suffix = SHADOW_SUFFIX,
-    );
-    let _ = writeln!(
-        up,
-        "    ALTER TABLE {parent} ALTER COLUMN id{suffix} SET DEFAULT {next}();",
-        parent = parent,
-        suffix = SHADOW_SUFFIX,
-        next = next_fn,
-    );
-    let _ = writeln!(
-        up,
-        "    ALTER TABLE {parent} ALTER COLUMN id DROP DEFAULT;",
-        parent = parent,
-    );
-    let _ = writeln!(
-        up,
-        "    ALTER TABLE {parent} DROP COLUMN id;",
-        parent = parent,
-    );
-    let _ = writeln!(
-        up,
-        "    DROP TRIGGER zzz_{parent}_autofill_desc ON {parent};",
-        parent = parent,
-    );
-    let _ = writeln!(
-        up,
-        "    DROP FUNCTION zzz_{parent}_autofill_desc() CASCADE;",
-        parent = parent,
-    );
-    let _ = writeln!(
-        up,
-        "    ALTER TABLE {parent} RENAME COLUMN id{suffix} TO id;",
-        parent = parent,
-        suffix = SHADOW_SUFFIX,
-    );
-    up.push_str("COMMIT;\n");
-    OperationSql {
-        label: format!("PkFlipPartitionedCutover {parent}"),
-        up,
-        down: format!(
-            "-- POINT OF NO RETURN — partitioned cutover for {parent} cannot be\n\
-             -- reversed by `down` SQL alone. Inverse migration required.",
-        ),
-        lossy: Some(LossyRollbackWarning {
-            kind: LossyRollbackKind::PkTypeFlipPostCutover,
-            detail: format!(
-                "POINT OF NO RETURN: partitioned cutover for `{parent}` removes the prior \
-                 PK column and trigger; rollback requires an inverse migration. \
-                 Partitioned-table cutover is seconds-to-minutes class — benchmark first.",
-            ),
-        }),
-    }
-}
+// `emit_partitioned_cutover` (the parent-only cutover for a
+// partitioned flip without cascade members) was folded into
+// [`emit_partitioned_cutover_with_cascade`] as part of B-4. The
+// composed emitter handles both the cascade-empty and
+// cascade-populated cases — when `group.children`, `self_fk`,
+// `join_tables`, and `cycles` are all empty the body matches the
+// original parent-only shape byte-for-byte.
 
 #[cfg(test)]
 mod tests {
@@ -2306,9 +2975,19 @@ mod tests {
         assert!(n.contains("DROP TRIGGER zzz_tbl_autofill_desc ON tbl;"));
         assert!(n.contains("DROP FUNCTION zzz_tbl_autofill_desc() CASCADE;"));
         assert!(n.contains("ALTER TABLE tbl RENAME COLUMN id_desc TO id;"));
-        // Cutover is wrapped in an atomic transaction.
-        assert!(n.starts_with("BEGIN;"));
-        assert!(n.ends_with("COMMIT;"));
+        // Cutover body MUST NOT carry its own BEGIN/COMMIT — the
+        // runner's `run_transactional_segment` wraps every statement
+        // in a single Postgres tx already. Embedding our own pair
+        // here would double-wrap and produce `WARNING: there is
+        // already a transaction in progress` (B-9).
+        assert!(
+            !n.contains("BEGIN;"),
+            "cutover body must not carry BEGIN; got: {n}"
+        );
+        assert!(
+            !n.contains("COMMIT;"),
+            "cutover body must not carry COMMIT; got: {n}"
+        );
         // Lossy marker for the point-of-no-return.
         let warn = cut.lossy.expect("cutover lossy warning");
         assert_eq!(warn.kind, LossyRollbackKind::PkTypeFlipPostCutover);
@@ -2496,14 +3175,32 @@ mod tests {
             },
         });
         let segments = build_segments(&group);
+        // B-7 split: segments are [prep, backfill, verify, index,
+        // not_null_proof, cutover]. The verification SELECT is its
+        // own `PkFlipVerify` segment so the runner's transactional
+        // dispatcher halts on count > 0.
+        assert_eq!(segments.len(), 6, "expected 6 segments post-B-7 split");
         let cut_stmt = &segments.last().expect("cutover segment").statements[0];
         let n = whitespace_normalize(&cut_stmt.up);
         assert!(
             n.contains("ALTER TABLE events ADD PRIMARY KEY (ts, id_desc);"),
             "partitioned cutover must use ADD PRIMARY KEY (...) form (not USING INDEX); got: {n}"
         );
-        // Index segment must reference parent-level UNIQUE placeholder.
-        let idx_stmt = &segments[2].statements[0];
+        assert!(
+            !n.contains("BEGIN;"),
+            "partitioned cutover body must not carry BEGIN (B-9); got: {n}"
+        );
+        // Verify segment carries the PkFlipVerify label so the runner
+        // intercepts via the count-assert short-circuit (B-7).
+        let verify_stmt = &segments[2].statements[0];
+        assert!(
+            verify_stmt.label.starts_with("PkFlipVerify "),
+            "expected verify segment with PkFlipVerify label; got: {}",
+            verify_stmt.label
+        );
+        // Index segment (position 3 after the verify split) must
+        // reference parent-level UNIQUE placeholder.
+        let idx_stmt = &segments[3].statements[0];
         let nidx = whitespace_normalize(&idx_stmt.up);
         assert!(
             nidx.contains(
@@ -2620,5 +3317,344 @@ mod tests {
             operations: Vec::new(),
             classification: Classification::NoOp,
         };
+    }
+
+    // ── B-5: whole-plan whitespace-normalised byte-equality ──────────
+    //
+    // These regressions concatenate every statement in every segment
+    // of the lowered plan, normalise whitespace (collapse runs of
+    // ASCII whitespace to a single space, drop empty lines, trim),
+    // and assert the result equals a contractual fixture. The
+    // fixtures live inline as `&str` constants so a wording / SQL
+    // shape change shows up as a loud `assert_eq!` mismatch with the
+    // diff embedded in the test output. Operators or reviewers
+    // changing the emitter MUST update the matching fixture in the
+    // same commit.
+    //
+    // Whitespace normalisation rule (no regex):
+    //   - Walk bytes left-to-right.
+    //   - Replace any run of ASCII whitespace (space, tab, CR, LF)
+    //     with exactly one space.
+    //   - Trim the result.
+    //
+    // The helper `whitespace_normalize` defined above implements the
+    // rule.
+
+    /// Concatenate every segment's `up` SQL with newline separators,
+    /// then normalise whitespace. Used as the input side of every
+    /// byte-equality regression below.
+    fn whole_plan_normalised(plan: &MigrationPlan) -> String {
+        let mut combined = String::new();
+        for seg in &plan.segments {
+            for stmt in &seg.statements {
+                combined.push_str(&stmt.up);
+                combined.push('\n');
+            }
+        }
+        whitespace_normalize(&combined)
+    }
+
+    /// Build a single-table forward (Asc → Desc) plan rooted at
+    /// table `tbl`. Used by the §3 regressions and reused as the
+    /// base case for §4–§7 fixtures.
+    fn lowered_plan_section_3() -> MigrationPlan {
+        let group = synth_group_single_table();
+        super::lower_pk_flip_group(&group, bucket())
+    }
+
+    /// Forward-direction §3 fixture. Captures the actual emitter
+    /// output post-whitespace-normalise. Re-run the test after any
+    /// emitter change and update this constant if the emitter's
+    /// output shape changed deliberately.
+    const PLAYBOOK_SECTION_3_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_playbook_section_3.sql");
+
+    // ── Fixture regeneration helper ──────────────────────────────────
+    //
+    // Run with `DJOGI_DUMP_PK_FLIP_FIXTURES=1 cargo test -p djogi
+    // --lib pk_flip::tests::dump_pk_flip_fixtures` to overwrite every
+    // playbook fixture with the current emitter's output. Off by
+    // default so the regression tests above stay deterministic.
+    #[test]
+    fn dump_pk_flip_fixtures() {
+        if std::env::var("DJOGI_DUMP_PK_FLIP_FIXTURES").ok().as_deref() != Some("1") {
+            return;
+        }
+        let out_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/migrate/fixtures");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let write = |name: &str, body: String| {
+            let path = out_dir.join(name);
+            // Persist with a trailing newline for tidy diffs.
+            let mut s = body;
+            if !s.ends_with('\n') {
+                s.push('\n');
+            }
+            std::fs::write(path, s).unwrap();
+        };
+
+        // §3 forward.
+        let plan_3 = lowered_plan_section_3();
+        write(
+            "pk_flip_playbook_section_3.sql",
+            whole_plan_normalised(&plan_3),
+        );
+
+        // §3 reverse.
+        let mut g3r = synth_group_single_table();
+        g3r.parent_from = PkKindSchema::HeerIdRecencyBiased;
+        g3r.parent_to = PkKindSchema::HeerId;
+        g3r.direction = PkFlipDirection::DescToAsc;
+        let plan_3r = super::lower_pk_flip_group(&g3r, bucket());
+        write(
+            "pk_flip_playbook_section_3_reverse.sql",
+            whole_plan_normalised(&plan_3r),
+        );
+
+        // §4 parent + child.
+        let mut g4 = synth_group_single_table();
+        g4.parent_table = "parent".to_string();
+        g4.children.push(PkFlipChild {
+            table: "c".to_string(),
+            fk_column: "p_id".to_string(),
+            fk_constraint_name: "c_p_id_fkey".to_string(),
+            on_delete: OnDeleteSchema::Restrict,
+            fk_nullable: false,
+            fk_unique: false,
+            family: PkFlipFamily::Heer,
+        });
+        let plan_4 = super::lower_pk_flip_group(&g4, bucket());
+        write(
+            "pk_flip_playbook_section_4.sql",
+            whole_plan_normalised(&plan_4),
+        );
+
+        // §6 self-FK.
+        let mut g6 = synth_group_single_table();
+        g6.parent_table = "nodes".to_string();
+        g6.self_fk = Some(PkFlipSelfFk {
+            fk_columns: vec!["parent_id".to_string()],
+            fk_constraint_names: vec!["nodes_parent_id_fkey".to_string()],
+        });
+        let plan_6 = super::lower_pk_flip_group(&g6, bucket());
+        write(
+            "pk_flip_playbook_section_6.sql",
+            whole_plan_normalised(&plan_6),
+        );
+
+        // §7 join.
+        let mut g7 = synth_group_single_table();
+        g7.parent_table = "tags".to_string();
+        g7.join_tables.push(PkFlipJoinTable {
+            table: "book_tags".to_string(),
+            fk_to_parent_column: "tag_id".to_string(),
+            fk_to_parent_constraint: "book_tags_tag_id_fkey".to_string(),
+            fk_to_partner_column: None,
+            fk_to_partner_constraint: None,
+            family: PkFlipFamily::Heer,
+        });
+        let plan_7 = super::lower_pk_flip_group(&g7, bucket());
+        write(
+            "pk_flip_playbook_section_7.sql",
+            whole_plan_normalised(&plan_7),
+        );
+
+        // §8 cycle.
+        let mut g8 = synth_group_single_table();
+        g8.parent_table = "a".to_string();
+        g8.children.push(PkFlipChild {
+            table: "b".to_string(),
+            fk_column: "a_id".to_string(),
+            fk_constraint_name: "b_a_id_fkey".to_string(),
+            on_delete: OnDeleteSchema::Restrict,
+            fk_nullable: true,
+            fk_unique: false,
+            family: PkFlipFamily::Heer,
+        });
+        g8.cycles.push(PkFlipCycle {
+            peer_table: "b".to_string(),
+            peer_fk_column: "a_id".to_string(),
+            self_fk_column: "b_id".to_string(),
+        });
+        let plan_8 = super::lower_pk_flip_group(&g8, bucket());
+        write(
+            "pk_flip_playbook_section_8.sql",
+            whole_plan_normalised(&plan_8),
+        );
+
+        // §9 partitioned.
+        let mut g9 = synth_group_single_table();
+        g9.parent_table = "events".to_string();
+        g9.partitioned_parent = Some(super::super::diff::PkFlipPartitionedMeta {
+            partition: PartitionSchema::Range {
+                column: "ts".to_string(),
+            },
+        });
+        let plan_9 = super::lower_pk_flip_group(&g9, bucket());
+        write(
+            "pk_flip_playbook_section_9.sql",
+            whole_plan_normalised(&plan_9),
+        );
+    }
+
+    #[test]
+    fn whole_plan_byte_equality_section_3_forward() {
+        let plan = lowered_plan_section_3();
+        let actual = whole_plan_normalised(&plan);
+        let expected = whitespace_normalize(PLAYBOOK_SECTION_3_NORMALIZED);
+        assert_eq!(
+            actual, expected,
+            "whole-plan §3 forward output drifted from fixture; \
+             update tests/fixtures/pk_flip_playbook_section_3.sql or fix emitter",
+        );
+    }
+
+    /// Reverse-direction §3 fixture. The hand-rolled DO block lives
+    /// here verbatim so any future `heeranjid_bulk_backfill_to_asc`
+    /// substrate addition must update both.
+    const PLAYBOOK_SECTION_3_REVERSE_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_playbook_section_3_reverse.sql");
+
+    #[test]
+    fn whole_plan_byte_equality_section_3_reverse() {
+        let mut group = synth_group_single_table();
+        group.parent_from = PkKindSchema::HeerIdRecencyBiased;
+        group.parent_to = PkKindSchema::HeerId;
+        group.direction = PkFlipDirection::DescToAsc;
+        let plan = super::lower_pk_flip_group(&group, bucket());
+        let actual = whole_plan_normalised(&plan);
+        let expected = whitespace_normalize(PLAYBOOK_SECTION_3_REVERSE_NORMALIZED);
+        assert_eq!(
+            actual, expected,
+            "whole-plan §3 reverse output drifted from fixture; \
+             update tests/fixtures/pk_flip_playbook_section_3_reverse.sql or fix emitter",
+        );
+    }
+
+    /// §4 parent + child fixture (forward direction).
+    const PLAYBOOK_SECTION_4_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_playbook_section_4.sql");
+
+    #[test]
+    fn whole_plan_byte_equality_section_4_parent_child() {
+        let mut group = synth_group_single_table();
+        group.parent_table = "parent".to_string();
+        group.children.push(PkFlipChild {
+            table: "c".to_string(),
+            fk_column: "p_id".to_string(),
+            fk_constraint_name: "c_p_id_fkey".to_string(),
+            on_delete: OnDeleteSchema::Restrict,
+            fk_nullable: false,
+            fk_unique: false,
+            family: PkFlipFamily::Heer,
+        });
+        let plan = super::lower_pk_flip_group(&group, bucket());
+        let actual = whole_plan_normalised(&plan);
+        let expected = whitespace_normalize(PLAYBOOK_SECTION_4_NORMALIZED);
+        assert_eq!(
+            actual, expected,
+            "whole-plan §4 output drifted from fixture; update fixture or fix emitter",
+        );
+    }
+
+    /// §6 self-FK fixture (forward direction).
+    const PLAYBOOK_SECTION_6_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_playbook_section_6.sql");
+
+    #[test]
+    fn whole_plan_byte_equality_section_6_self_fk() {
+        let mut group = synth_group_single_table();
+        group.parent_table = "nodes".to_string();
+        group.self_fk = Some(PkFlipSelfFk {
+            fk_columns: vec!["parent_id".to_string()],
+            fk_constraint_names: vec!["nodes_parent_id_fkey".to_string()],
+        });
+        let plan = super::lower_pk_flip_group(&group, bucket());
+        let actual = whole_plan_normalised(&plan);
+        let expected = whitespace_normalize(PLAYBOOK_SECTION_6_NORMALIZED);
+        assert_eq!(
+            actual, expected,
+            "whole-plan §6 output drifted from fixture; update fixture or fix emitter",
+        );
+    }
+
+    /// §7 join-table fixture (forward direction).
+    const PLAYBOOK_SECTION_7_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_playbook_section_7.sql");
+
+    #[test]
+    fn whole_plan_byte_equality_section_7_join_table() {
+        let mut group = synth_group_single_table();
+        group.parent_table = "tags".to_string();
+        group.join_tables.push(PkFlipJoinTable {
+            table: "book_tags".to_string(),
+            fk_to_parent_column: "tag_id".to_string(),
+            fk_to_parent_constraint: "book_tags_tag_id_fkey".to_string(),
+            fk_to_partner_column: None,
+            fk_to_partner_constraint: None,
+            family: PkFlipFamily::Heer,
+        });
+        let plan = super::lower_pk_flip_group(&group, bucket());
+        let actual = whole_plan_normalised(&plan);
+        let expected = whitespace_normalize(PLAYBOOK_SECTION_7_NORMALIZED);
+        assert_eq!(
+            actual, expected,
+            "whole-plan §7 output drifted from fixture; update fixture or fix emitter",
+        );
+    }
+
+    /// §8 cycle fixture (forward direction).
+    const PLAYBOOK_SECTION_8_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_playbook_section_8.sql");
+
+    #[test]
+    fn whole_plan_byte_equality_section_8_cycle() {
+        let mut group = synth_group_single_table();
+        group.parent_table = "a".to_string();
+        group.children.push(PkFlipChild {
+            table: "b".to_string(),
+            fk_column: "a_id".to_string(),
+            fk_constraint_name: "b_a_id_fkey".to_string(),
+            on_delete: OnDeleteSchema::Restrict,
+            fk_nullable: true,
+            fk_unique: false,
+            family: PkFlipFamily::Heer,
+        });
+        group.cycles.push(PkFlipCycle {
+            peer_table: "b".to_string(),
+            peer_fk_column: "a_id".to_string(),
+            self_fk_column: "b_id".to_string(),
+        });
+        let plan = super::lower_pk_flip_group(&group, bucket());
+        let actual = whole_plan_normalised(&plan);
+        let expected = whitespace_normalize(PLAYBOOK_SECTION_8_NORMALIZED);
+        assert_eq!(
+            actual, expected,
+            "whole-plan §8 output drifted from fixture; update fixture or fix emitter",
+        );
+    }
+
+    /// §9 partitioned fixture (forward direction). The fixture
+    /// captures the placeholder-bearing emitter output (operators
+    /// applying through the runner see the placeholder expanded at
+    /// apply time via pg_inherits — see runner B-2).
+    const PLAYBOOK_SECTION_9_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_playbook_section_9.sql");
+
+    #[test]
+    fn whole_plan_byte_equality_section_9_partitioned() {
+        let mut group = synth_group_single_table();
+        group.parent_table = "events".to_string();
+        group.partitioned_parent = Some(super::super::diff::PkFlipPartitionedMeta {
+            partition: PartitionSchema::Range {
+                column: "ts".to_string(),
+            },
+        });
+        let plan = super::lower_pk_flip_group(&group, bucket());
+        let actual = whole_plan_normalised(&plan);
+        let expected = whitespace_normalize(PLAYBOOK_SECTION_9_NORMALIZED);
+        assert_eq!(
+            actual, expected,
+            "whole-plan §9 output drifted from fixture; update fixture or fix emitter",
+        );
     }
 }
