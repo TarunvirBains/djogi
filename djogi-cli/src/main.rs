@@ -66,6 +66,10 @@ enum DbCommand {
     /// confirmation is supplied via `--yes` or the interactive
     /// prompt. Logging databases (`crud_log`, `event_log`) are NOT
     /// touched.
+    ///
+    /// Exit codes: 0 on success, 1 on error (config / network / SQL
+    /// / replay), 2 on gate refusal (not localhost, production
+    /// profile, missing `--yes`).
     Reset {
         /// Skip the interactive y/N prompt and proceed. Required for
         /// non-interactive invocations (e.g. CI integration suites
@@ -87,6 +91,16 @@ enum DbCommand {
     /// Idempotent — re-runs skip seeds whose `V1:<sha256>` checksum
     /// matches the `djogi_seed_runs` ledger; refuses on checksum
     /// drift. Localhost-gated by default.
+    ///
+    /// `--database <name>` selects BOTH the seed directory and the
+    /// connection target. The CLI splices `<name>` into
+    /// `database.url`'s path component so seeds always land on the
+    /// matching DB; a malformed application URL refuses with exit
+    /// code 1.
+    ///
+    /// Exit codes: 0 on success, 1 on error (config / network / SQL
+    /// / checksum drift / malformed URL), 2 on gate refusal
+    /// (non-localhost without `--allow-non-localhost`).
     Seed {
         /// Database name whose seeds directory should be run. The
         /// runner walks `seeds/<database>/*.sql` in alphabetical

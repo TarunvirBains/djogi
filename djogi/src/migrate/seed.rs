@@ -84,6 +84,16 @@ pub enum SeedError {
     },
     /// Seed-ledger CRUD failure (bootstrap, INSERT, SELECT).
     LedgerWrite { source: DjogiError },
+    /// A seed-ledger row decode failed — the column was present but
+    /// the byte payload could not be deserialised into the expected
+    /// type. Distinct from [`SeedError::LedgerWrite`] so the operator
+    /// message can name the specific column at fault. Codex round-1
+    /// A-2: previously decode failures collapsed to `LedgerWrite`,
+    /// losing specificity.
+    LedgerDecode {
+        column: String,
+        source: tokio_postgres::Error,
+    },
     /// A seed body's `raw_ddl` apply failed. Carries the seed name and
     /// the underlying error.
     ApplyFailed {
@@ -106,6 +116,12 @@ pub enum SeedError {
     /// preserves the connection string verbatim for the operator
     /// message.
     LocalhostGate { database_url: String },
+    /// The operator-supplied application URL has no path component
+    /// the CLI can splice `--database <name>` into. Codex round-1
+    /// B-1: the splice is what routes seed SQL to the matching
+    /// per-database connection; refuse rather than fall back to the
+    /// wrong DB.
+    MalformedApplicationUrl { application_url: String },
 }
 
 impl std::fmt::Display for SeedError {
@@ -117,6 +133,13 @@ impl std::fmt::Display for SeedError {
             SeedError::LedgerWrite { source } => {
                 write!(f, "seed ledger write failed: {source}")
             }
+            SeedError::LedgerDecode { column, source } => write!(
+                f,
+                "seed ledger row decode failed for column `{column}`: {source}; \
+                 the column is present in `djogi_seed_runs` but the bytes do not \
+                 deserialise into the expected type — typically the row was \
+                 written by an older Djogi or hand-edited",
+            ),
             SeedError::ApplyFailed { seed_name, source } => write!(
                 f,
                 "seed `{seed_name}` failed to apply: {source}; \
@@ -140,6 +163,14 @@ impl std::fmt::Display for SeedError {
                  to override (typical use: a CI integration suite seeding a \
                  remote test database)",
             ),
+            SeedError::MalformedApplicationUrl { application_url } => write!(
+                f,
+                "djogi db seed: application URL `{application_url}` has no \
+                 database-name component the runner can splice `--database \
+                 <name>` into; the URL must be of the form \
+                 `postgres://<authority>/<database>` so per-database routing \
+                 can derive the connection target",
+            ),
         }
     }
 }
@@ -149,6 +180,7 @@ impl std::error::Error for SeedError {
         match self {
             SeedError::Io { source, .. } => Some(source),
             SeedError::LedgerWrite { source } => Some(source),
+            SeedError::LedgerDecode { source, .. } => Some(source),
             SeedError::ApplyFailed { source, .. } => Some(source),
             _ => None,
         }
@@ -182,6 +214,28 @@ pub enum SeedOutcome {
     /// Previously applied with a matching checksum — the runner
     /// skipped this seed.
     SkippedAlreadyApplied,
+}
+
+/// Derive the per-database connection URL for `db seed` from the
+/// application URL and the operator-supplied `--database <name>`.
+///
+/// The CLI accepts `--database <name>` to pick which seed directory
+/// (`seeds/<name>/`) to walk. Codex round-1 B-1 surfaced that prior
+/// to T8 Round 2 the same flag did NOT route the SQL execution to a
+/// matching connection — every seed ran against `database.url`
+/// regardless of `--database`. The pragmatic fix (config has no
+/// per-database URL fields today) is to splice the operator's
+/// `<name>` into the URL's path component, producing a URL that
+/// targets the matching database on the same authority.
+///
+/// Returns `None` when the URL has no recognisable database
+/// component (the same condition `replace_db_in_url` flags). The
+/// caller surfaces this as `db seed: malformed DATABASE_URL`.
+///
+/// **No regex.** Wraps [`super::reset::replace_db_in_url`] which
+/// itself walks the URL bytes once.
+pub fn derive_per_database_url(application_url: &str, database: &str) -> Option<String> {
+    super::reset::replace_db_in_url(application_url, database)
 }
 
 /// Walk `<workspace_root>/<SEEDS_DIRNAME>/<database>/` and return every
@@ -270,23 +324,34 @@ pub async fn bootstrap(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
 /// helper (the same surface the runner uses for `load_applied_at`).
 /// Mirrors the in-crate convention rather than constructing a
 /// `FromPgRow` impl over a 1-tuple.
+///
+/// Errors are surfaced as [`SeedError`] directly:
+/// - [`SeedError::LedgerWrite`] when the SELECT itself fails (relation
+///   missing, network drop, …).
+/// - [`SeedError::LedgerDecode`] when the row exists but the
+///   `checksum_up` column does not deserialise into a `String` (a
+///   row written by an older Djogi or hand-edited). Codex round-1
+///   A-2: previously the decode failure collapsed to `LedgerWrite`,
+///   losing specificity.
 pub async fn fetch_recorded_checksum(
     ctx: &mut DjogiContext,
     seed_name: &str,
-) -> Result<Option<String>, DjogiError> {
+) -> Result<Option<String>, SeedError> {
     let row_opt = ctx
         .query_opt(
             "SELECT checksum_up FROM djogi_seed_runs WHERE seed_name = $1",
             &[&seed_name],
         )
-        .await?;
+        .await
+        .map_err(|e| SeedError::LedgerWrite { source: e })?;
     match row_opt {
         Some(row) => {
-            let checksum: String = row.try_get::<_, String>("checksum_up").map_err(|e| {
-                DjogiError::Db(crate::error::DbError::other(format!(
-                    "djogi_seed_runs.checksum_up decode failed: {e}"
-                )))
-            })?;
+            let checksum: String =
+                row.try_get::<_, String>("checksum_up")
+                    .map_err(|e| SeedError::LedgerDecode {
+                        column: "checksum_up".to_string(),
+                        source: e,
+                    })?;
             Ok(Some(checksum))
         }
         None => Ok(None),
@@ -374,9 +439,7 @@ pub async fn run_seeds(
         let body = String::from_utf8_lossy(&body_bytes).into_owned();
         let on_disk_checksum = compute_seed_checksum(&body);
 
-        let recorded = fetch_recorded_checksum(ctx, &seed.seed_name)
-            .await
-            .map_err(|e| SeedError::LedgerWrite { source: e })?;
+        let recorded = fetch_recorded_checksum(ctx, &seed.seed_name).await?;
         match recorded {
             Some(stored) if stored == on_disk_checksum => {
                 entries.push(SeedReportEntry {
@@ -507,5 +570,67 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("postgres://prod.example.com/main"));
         assert!(msg.contains("--allow-non-localhost"));
+    }
+
+    /// Codex round-1 B-1 — the `derive_per_database_url` helper is
+    /// the linchpin of per-database routing. It must splice the
+    /// operator-supplied database name into the URL path so the CLI
+    /// can connect to the matching DB.
+    #[test]
+    fn derive_per_database_url_replaces_path_component() {
+        assert_eq!(
+            derive_per_database_url("postgres://localhost/main", "crud_log"),
+            Some("postgres://localhost/crud_log".to_string())
+        );
+        assert_eq!(
+            derive_per_database_url("postgres://user:pass@localhost:5432/main", "event_log"),
+            Some("postgres://user:pass@localhost:5432/event_log".to_string())
+        );
+        // Query string preserved on splice — the route still keeps
+        // the operator's sslmode etc.
+        assert_eq!(
+            derive_per_database_url("postgresql://localhost/main?sslmode=disable", "audit"),
+            Some("postgresql://localhost/audit?sslmode=disable".to_string())
+        );
+    }
+
+    #[test]
+    fn derive_per_database_url_returns_none_for_pathless_urls() {
+        // Authority-only URL — no path component to replace.
+        assert_eq!(
+            derive_per_database_url("postgres://localhost", "crud_log"),
+            None
+        );
+        // Non-postgres scheme.
+        assert_eq!(
+            derive_per_database_url("mysql://localhost/main", "crud_log"),
+            None
+        );
+    }
+
+    /// Codex round-1 A-2 — the LedgerDecode variant carries the
+    /// column name and a `tokio_postgres::Error` source. We can't
+    /// fabricate a real `tokio_postgres::Error` here without a live
+    /// DB, but we CAN exercise the Display formatting from the
+    /// happy-path enum variants. The column name surfaces verbatim
+    /// in the message so an operator triaging the failure sees what
+    /// to look at.
+    #[test]
+    fn ledger_decode_variant_threads_error_source() {
+        // The `LedgerDecode` source is `tokio_postgres::Error`, which
+        // has no public constructor outside the live driver. The
+        // variant exists so the seed runner can name the failing
+        // column without collapsing to `LedgerWrite`. The integration
+        // test in `tests/integration/phase7_t8_seed_docs_live.rs`
+        // exercises the live path; here we exercise the matchability
+        // of the variant: a `LedgerWrite` and a `LedgerDecode` over
+        // the same underlying mishap discriminate at the type level.
+        let write = SeedError::LedgerWrite {
+            source: DjogiError::Db(crate::error::DbError::other("boom".to_string())),
+        };
+        match write {
+            SeedError::LedgerWrite { .. } => {}
+            other => panic!("expected LedgerWrite, got {other:?}"),
+        }
     }
 }

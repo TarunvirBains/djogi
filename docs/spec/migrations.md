@@ -275,20 +275,33 @@ Advisory lock contract:
 Canonical CLI surface:
 
 ```bash
+# Registered in djogi-cli today (Phase 7 T6 / T7 / T8)
 djogi migrations compose
-djogi migrations apply
-djogi migrations apply --fake 0005_add_vehicle_horsepower
-djogi migrations rollback
 djogi migrations status
-djogi migrations verify
-djogi migrations repair
-djogi migrations repair --rebuild-snapshot
-djogi migrations baseline 0001_initial
 djogi migrations attune
 djogi migrations attune <target>
 djogi migrations attune <target> --record
 djogi migrations attune <target> --verify
 djogi migrations attune --squash
+djogi db reset --yes
+djogi db seed
+djogi db seed --database crud_log
+djogi docs
+
+# Phase-7-deferred — library APIs ship today; CLI dispatch lands in a follow-up
+# task (see Codex round-1 A-4 / A-5 closeout in T8). The runtime entry points
+# (`apply_plan`, `rollback_plan`, `verify`, `repair_*`, `baseline_plan`) are
+# all public and exercised by the integration test suite; the gap is the
+# config / snapshot / plan / ledger plumbing the CLI dispatch needs around
+# them. Adopters who need these flows ahead of the CLI registration can wire
+# the library APIs directly today.
+# djogi migrations apply
+# djogi migrations apply --fake 0005_add_vehicle_horsepower
+# djogi migrations rollback
+# djogi migrations verify
+# djogi migrations repair
+# djogi migrations repair --rebuild-snapshot
+# djogi migrations baseline 0001_initial
 ```
 
 `migrations attune` is the migration-history state-management command.

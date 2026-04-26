@@ -134,7 +134,8 @@ pub use schema::{
 };
 pub use seed::{
     DiscoveredSeed, SEED_LEDGER_TABLE_DDL, SEEDS_DIRNAME, SeedError, SeedOutcome, SeedReport,
-    SeedReportEntry, bootstrap as bootstrap_seed_ledger, compute_seed_checksum, discover_seeds,
+    SeedReportEntry, bootstrap as bootstrap_seed_ledger, compute_seed_checksum,
+    derive_per_database_url, discover_seeds,
     fetch_recorded_checksum as fetch_recorded_seed_checksum,
     insert_recorded as insert_recorded_seed, run_seeds,
 };

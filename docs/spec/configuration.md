@@ -83,42 +83,72 @@ Installed once, used everywhere:
 cargo install djogi-cli
 ```
 ```bash
-# Migrations
+# Migrations — registered in djogi-cli today (Phase 7 T6 / T7 / T8)
 djogi migrations compose               # generate migration files from current drift
 djogi migrations compose --dry-run     # preview SQL without writing files
 djogi migrations compose --allow-destructive
-djogi migrations apply                 # apply pending migrations, update snapshot
-djogi migrations apply --fake 0005     # mark applied without running SQL
-djogi migrations rollback              # roll back last migration, rewind snapshot
 djogi migrations status                # show file/ledger/snapshot state
-djogi migrations verify                # compare snapshot expectations to the live DB
-djogi migrations repair                # resolve partial apply or rebuild snapshot state
-djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
 
-# Migration-history state management
+# Migration-history state management — registered today (T7)
 djogi migrations attune                # attune local migration-history files to the repo-default target
 djogi migrations attune                # diff-only ledger / disk reconciliation
 djogi migrations attune --record       # insert ledger rows for unrecorded SQL files
 djogi migrations attune --squash --from V<ts>   # dev-only local squash of migration history
 djogi migrations attune --squash --from V<ts> --publish   # squash and push the rewritten submodule
 
-# Database (dev only — triple-gated)
+# Migrations — Phase-7-deferred (library APIs ship today; CLI dispatch lands later)
+# The library entry points (`apply_plan`, `rollback_plan`, `verify`, `repair_*`,
+# `baseline_plan`) are public and exercised by the integration test suite. The
+# matching `djogi migrations <subcommand>` CLI dispatch is deferred to a Phase 7
+# follow-up: the dispatch needs config-loading, snapshot-loading, plan-construction,
+# ledger-context plumbing, and a `MigrationPlan` builder that walks the workspace
+# — non-trivial wiring that is out of scope for T8's "documentation + db reset
+# + db seed" surface. Tracking the deferral as Phase 7 follow-up T9; the library
+# APIs are stable and adopters can wire them directly until then.
+# djogi migrations apply                 # apply pending migrations, update snapshot
+# djogi migrations apply --fake 0005     # mark applied without running SQL
+# djogi migrations rollback              # roll back last migration, rewind snapshot
+# djogi migrations verify                # compare snapshot expectations to the live DB
+# djogi migrations repair                # resolve partial apply or rebuild snapshot state
+# djogi migrations baseline 0001_initial # adopt an existing DB without replaying SQL
+
+# Database (dev only — triple-gated) — registered today (T8)
 djogi db reset                         # drop → recreate → replay; refuses without --yes / interactive y
 djogi db reset --yes                   # non-interactive — typical for CI
 djogi db seed                          # run seeds/<database>/*.sql files; idempotent via djogi_seed_runs ledger
+djogi db seed --database crud_log      # operator-supplied database — splices into URL path for routing
 djogi db seed --allow-non-localhost    # opt in to remote DBs (CI integration suites)
 
-# Documentation
+# Documentation — registered today (T8)
 djogi docs                             # render Markdown reference pages from descriptor inventory
 
-# Shell
+# Shell — Phase 8+
 djogi shell
 
-# Project scaffolding
+# Project scaffolding — Phase 7+ follow-up
 djogi new my-project                   # scaffold project + init migrations submodule
 djogi init                             # add Djogi to existing project
 ```
+
+### CLI exit-code matrix (Codex round-1 A-1)
+
+Every `db` and `migrations` subcommand obeys a uniform three-value exit-code
+matrix so shell integrations can distinguish "operation refused" from
+"operation failed":
+
+| Code | Meaning |
+|------|---------|
+| `0`  | Success — the command completed and any post-state was applied. |
+| `1`  | Error — config load failure, network, SQL, replay, or any other underlying failure. |
+| `2`  | Gate refusal — a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect. |
+
+The `2` code mirrors clap's argument-error convention; CI scripts can branch
+on `if [ $? -eq 2 ]` and treat a refusal as a soft "skipped" signal rather than
+a hard failure. Subcommands document the matrix in their `--help` output.
+
 `db reset` hard-errors unless all three guards pass: `DATABASE_URL` resolves to localhost (per the byte-level libpq + URL parser shared with `attune --squash`), `Djogi.toml::profile != "production"`, and the operator supplies explicit confirmation (either `--yes` on the command line or types `yes` at the interactive prompt). Logging databases (`crud_log`, `event_log`) are NEVER touched by `db reset`.
+
+`db seed` uses `--database <name>` to select BOTH the seed directory (`seeds/<name>/`) and the connection target. The CLI splices `<name>` into `database.url`'s path component (via `djogi::migrate::derive_per_database_url`) so seeds always run against the matching DB; a malformed application URL refuses with exit code 1 rather than falling back to the application database. Per-database routing is the linchpin of the three-database architecture (`url` / `crud_log_url` / `event_log_url`) — until config exposes per-DB URL fields directly, the splice gives operators a deterministic route to every cluster database from a single application URL.
 
 `migrations attune` manages local migration-history Git state. It may fetch remote refs when needed to resolve a target, but it does not mutate the database unless `--apply` is explicitly passed. Parent-repo submodule-pointer changes are explicit via `--record` or options that clearly imply recording, such as `--squash`.
 

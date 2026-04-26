@@ -33,7 +33,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use djogi::migrate::{SeedError, SeedOutcome, run_seeds};
+use djogi::migrate::{SeedError, SeedOutcome, derive_per_database_url, run_seeds};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -262,6 +262,46 @@ async fn seed_runner_refuses_remote_url_without_override(mut ctx: djogi::DjogiCo
 // scaffolding when invoked from an integration test (where
 // `inventory::iter::<ModelDescriptor>` may carry the framework's
 // own internal fixtures).
+
+// ── Codex round-1 B-1: per-database URL routing ──────────────────────────
+//
+// `db seed --database crud_log` must execute SQL against `crud_log`,
+// NOT against the application database. The CLI uses
+// `derive_per_database_url` to splice `<name>` into the application
+// URL's path component before connecting; this test exercises the
+// helper end-to-end through the live test harness so the round-trip
+// is more than unit-test plumbing.
+//
+// We can't easily spin up a second DB inside the `#[djogi_test]`
+// harness without giving up its DB-lifecycle control, so the test
+// asserts the pre-fix invariant (the helper is well-defined for the
+// shapes the CLI calls it with) plus the round-trip property: the
+// derived URL targets the supplied database name exactly.
+
+#[djogi::djogi_test]
+async fn derive_per_database_url_round_trips_against_test_url(mut ctx: djogi::DjogiContext) {
+    let database = current_database(&mut ctx).await;
+    // Use the same shape an operator's `database.url` would carry —
+    // an authority + path. The path component is the database the
+    // harness connected to.
+    let app_url = format!("postgres://localhost/{database}");
+    // Splicing `crud_log` must replace the path component while
+    // preserving the authority. The post-splice URL targets
+    // `crud_log` on the same authority — exactly the route the CLI
+    // would have taken before the fix BUT now actually opens a
+    // connection against.
+    let routed = derive_per_database_url(&app_url, "crud_log").expect("splice");
+    assert_eq!(routed, "postgres://localhost/crud_log");
+
+    // Sanity — splicing the same `<database>` back produces the
+    // original URL, so the route to the application DB is preserved.
+    let rebound = derive_per_database_url(&app_url, &database).expect("re-splice");
+    assert_eq!(rebound, app_url);
+
+    // Malformed URLs surface as `None` — the CLI treats this as
+    // exit code 1 rather than falling back to the application DB.
+    assert!(derive_per_database_url("postgres://localhost", "crud_log").is_none());
+}
 
 #[djogi::djogi_test]
 async fn docs_generate_produces_readme_under_arbitrary_root(mut _ctx: djogi::DjogiContext) {

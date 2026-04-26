@@ -216,16 +216,28 @@ pub fn render_model_page(desc: &ModelDescriptor) -> String {
     }
 
     // Field table.
+    //
+    // Codex round-1 A-3 — the T8 docs contract requires a `Default`
+    // column. `FieldDescriptor` itself does not carry a default-SQL
+    // string; the projection layer (`migrate::projection`) injects
+    // the PK column's `generate_id()` / `generate_id_desc()` /
+    // `generate_ranj_id()` / `generate_ranj_id_desc()` /
+    // `<custom>` default at the snapshot boundary. The renderer
+    // mirrors that policy so the generated reference page reflects
+    // what the operator will actually see on the live table — for
+    // every other column we render an em-dash (no descriptor-side
+    // default).
     s.push_str("\n## Fields\n\n");
-    s.push_str("| Name | SQL type | Nullable | Notes |\n");
-    s.push_str("|------|----------|----------|-------|\n");
+    s.push_str("| Name | SQL type | Nullable | Default | Notes |\n");
+    s.push_str("|------|----------|----------|---------|-------|\n");
     for f in desc.fields {
         let _ = writeln!(
             s,
-            "| `{name}` | `{ty}` | {nullable} | {notes} |",
+            "| `{name}` | `{ty}` | {nullable} | {default} | {notes} |",
             name = f.name,
             ty = f.sql_type,
             nullable = if f.nullable { "yes" } else { "no" },
+            default = render_field_default(f, desc),
             notes = render_field_notes(f),
         );
     }
@@ -384,6 +396,56 @@ fn display_index_target(target: &IndexTarget) -> String {
     }
 }
 
+/// Compose the per-field "Default" cell.
+///
+/// The descriptor surface intentionally does NOT carry a per-column
+/// default-SQL string — Phase 1 / Phase 5 chose to push the
+/// PK-default expansion (`generate_id()`, `generate_id_desc()`, …)
+/// down into the projection layer instead so the snapshot stays the
+/// single source of truth for `default_sql`. The renderer mirrors
+/// that policy here: the `id` column's default is derived from the
+/// model's [`PkType`] just like
+/// [`super::projection::project_column`] does, and every other
+/// field renders as an em-dash (`—`) for "no descriptor-side
+/// default".
+///
+/// The two functions stay in lock-step by design — if a future
+/// phase adds per-field defaults to `FieldDescriptor`, both this
+/// renderer and the projection grow the new branch together.
+///
+/// Codex round-1 A-3.
+fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String {
+    if f.name == "id" {
+        match pk_default_sql(&parent.pk_type) {
+            Some(sql) => format!("`{sql}`"),
+            None => "—".to_string(),
+        }
+    } else {
+        "—".to_string()
+    }
+}
+
+/// PK-default-SQL helper, mirrored from
+/// [`super::projection::project_column`] (kept private there). The
+/// renderer needs a parallel enum dispatch for the `id` column so
+/// the doc page reflects the generated DDL default.
+///
+/// Behaviour mirror — change here only if
+/// `projection::pk_default_sql` changes too.
+fn pk_default_sql(pk: &PkType) -> Option<&'static str> {
+    match pk {
+        PkType::HeerId => Some("generate_id()"),
+        PkType::HeerIdDesc => Some("generate_id_desc()"),
+        PkType::RanjId => Some("generate_ranj_id()"),
+        PkType::RanjIdDesc => Some("generate_ranj_id_desc()"),
+        PkType::Serial => None,
+        PkType::None => None,
+        PkType::Composite(_) => None,
+        PkType::Custom(c) if c.default_sql.is_empty() => None,
+        PkType::Custom(c) => Some(c.default_sql),
+    }
+}
+
 /// Compose the per-field "notes" cell — primary surface for the
 /// flags that don't get their own column. Empty cells render as a
 /// single space so the markdown table stays aligned.
@@ -459,10 +521,12 @@ fn join_quoted(items: &[&&str]) -> String {
 
 /// Map a model type name to a filesystem-safe markdown filename.
 ///
-/// Replaces any non-`[A-Za-z0-9_]` byte with `_`. The Rust grammar
-/// already restricts type names to ASCII identifiers, so this is a
-/// belt-and-braces normaliser; in practice the mapping is the
-/// identity for every realistic input.
+/// Any byte that is not an ASCII letter, ASCII digit, or underscore
+/// is replaced with `_`. The Rust grammar already restricts type
+/// names to ASCII identifiers, so this is a belt-and-braces
+/// normaliser; in practice the mapping is the identity for every
+/// realistic input. Codex round-1 N-1 — phrased in plain English
+/// per `docs/spec/decisions.md` (no regex notation in comments).
 fn model_filename(type_name: &str) -> String {
     let mut out = String::with_capacity(type_name.len() + 3);
     for byte in type_name.bytes() {
@@ -628,7 +692,9 @@ mod tests {
         assert!(body.contains("**PK kind:** HeerId (recency-biased)"));
         assert!(body.contains("**Tenant key:** `org_id`"));
         // Field table headers + at least one row.
-        assert!(body.contains("| Name | SQL type | Nullable | Notes |"));
+        // Codex round-1 A-3: the field table now carries a `Default`
+        // column.
+        assert!(body.contains("| Name | SQL type | Nullable | Default | Notes |"));
         assert!(body.contains("`email`"));
         assert!(body.contains("UNIQUE"));
         assert!(body.contains("max 254 bytes"));
@@ -636,6 +702,40 @@ mod tests {
         assert!(body.contains("## Indexes"));
         assert!(body.contains("`users_email_uidx`"));
         assert!(body.contains("WHERE `deleted_at IS NULL`"));
+    }
+
+    /// Codex round-1 A-3 — the `Default` column must surface the
+    /// PK column's `generate_id_desc()` (or whichever PK kind the
+    /// model declares) and an em-dash for every other field.
+    #[test]
+    fn render_model_page_default_column_renders_pk_default_and_em_dash() {
+        let user = fixture_users(); // PkType::HeerIdDesc → generate_id_desc()
+        let body = render_model_page(&user);
+        // The PK row carries the matching DEFAULT expression.
+        assert!(
+            body.contains("`generate_id_desc()`"),
+            "PK default must render as `generate_id_desc()` for HeerIdDesc; \
+             body was:\n{body}",
+        );
+        // The non-PK row (`email`) carries an em-dash.
+        let email_row = body
+            .lines()
+            .find(|l| l.contains("`email`"))
+            .expect("email row");
+        assert!(
+            email_row.contains(" — "),
+            "non-PK rows must render Default as em-dash; got:\n{email_row}",
+        );
+
+        // A `PkType::HeerId` model emits `generate_id()` (ascending
+        // variant — projection-side parity).
+        let post = fixture_global_post();
+        let body = render_model_page(&post);
+        assert!(
+            body.contains("`generate_id()`"),
+            "PK default must render as `generate_id()` for HeerId; \
+             body was:\n{body}",
+        );
     }
 
     #[test]

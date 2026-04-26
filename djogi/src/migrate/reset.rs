@@ -162,6 +162,17 @@ pub enum ResetError {
     /// component that `db reset` would otherwise drop. Surfaces a
     /// typed error rather than a panic deep inside `replace_db_in_url`.
     DatabaseUrlMalformed { database_url: String },
+    /// The decoded database name is not a valid Postgres identifier.
+    /// Defence-in-depth against URL-injection — we percent-decode the
+    /// path component first, then check the resulting bytes match the
+    /// strict grammar (ASCII letter or underscore, followed by ASCII
+    /// alphanumerics / underscores, up to 63 bytes). Anything else
+    /// refuses BEFORE we splice the value into `DROP DATABASE` /
+    /// `CREATE DATABASE` DDL. Surfaced separately from
+    /// `DatabaseUrlMalformed` so the operator can tell "no database
+    /// component" from "the component decodes to something we won't
+    /// quote into DDL".
+    InvalidDatabaseName { name: String },
     /// Workspace lock acquisition failed before the replay could run.
     WorkspaceLockFailed { source: super::guard::GuardError },
 }
@@ -215,6 +226,14 @@ impl std::fmt::Display for ResetError {
                 "db reset: DATABASE_URL `{database_url}` does not contain a \
                  database-name component (no `/` after the host); db reset \
                  cannot derive the database name to drop"
+            ),
+            ResetError::InvalidDatabaseName { name } => write!(
+                f,
+                "db reset: decoded database name `{name}` is not a valid \
+                 Postgres identifier (expected: ASCII letter or underscore, \
+                 followed by ASCII alphanumerics or underscores, up to 63 \
+                 bytes); db reset refuses to splice arbitrary bytes into \
+                 DROP DATABASE / CREATE DATABASE DDL"
             ),
             ResetError::WorkspaceLockFailed { source } => {
                 write!(f, "db reset: workspace lock acquisition failed: {source}")
@@ -288,15 +307,33 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     }
 
     // 2. Derive the app database name and the maintenance URL.
-    let database = extract_database_from_url(req.database_url).ok_or_else(|| {
-        ResetError::DatabaseUrlMalformed {
-            database_url: req.database_url.to_string(),
-        }
-    })?;
-    let maintenance_url = replace_db_in_url(req.database_url, req.maintenance_database)
-        .ok_or_else(|| ResetError::DatabaseUrlMalformed {
+    //
+    //    Two-step parse: first extract+percent-decode the path
+    //    component, then validate the decoded bytes against the strict
+    //    Postgres-identifier grammar. We refuse weird-looking names
+    //    BEFORE splicing them into `DROP DATABASE` / `CREATE DATABASE`
+    //    DDL — defence-in-depth against URL-injection where a crafted
+    //    URL like `postgres://localhost/'; DROP TABLE foo; --` could
+    //    otherwise reach the DDL builder. The maintenance database
+    //    name flows from operator config (`--maintenance-database`,
+    //    default `postgres`) so it's validated separately.
+    let database =
+        extract_database_from_url(req.database_url).ok_or(ResetError::DatabaseUrlMalformed {
             database_url: req.database_url.to_string(),
         })?;
+    if !is_valid_pg_identifier(&database) {
+        return Err(ResetError::InvalidDatabaseName { name: database });
+    }
+    if !is_valid_pg_identifier(req.maintenance_database) {
+        return Err(ResetError::InvalidDatabaseName {
+            name: req.maintenance_database.to_string(),
+        });
+    }
+    let maintenance_url = replace_db_in_url(req.database_url, req.maintenance_database).ok_or(
+        ResetError::DatabaseUrlMalformed {
+            database_url: req.database_url.to_string(),
+        },
+    )?;
 
     // 3. Acquire workspace lock — replay mutates ledger state on the
     //    fresh DB; concurrent compose / apply / repair operations
@@ -594,9 +631,27 @@ async fn replay_one_migration(
 /// (e.g. `postgres://localhost`) — `db reset` cannot derive a database
 /// to drop in that case.
 ///
-/// **No regex.** Walks the URL bytes from the rightmost `/` once.
+/// **Percent-decoding.** The path-component bytes are percent-decoded
+/// before being returned: a path of `my%2Fdb` decodes to `my/db`.
+/// Without this step a URL like `postgres://localhost/my%2Fdb` would
+/// make the runner drop the literal identifier `my%2Fdb` (with a
+/// `%2F` byte sequence in it) while the post-recreate reconnection
+/// would target the correctly-decoded `my/db` — different databases.
+/// Decoding produces the SAME byte sequence libpq itself sees when it
+/// connects, so the maintenance-DB DROP target matches what the runner
+/// re-connects to. Returns `None` on malformed escapes (a `%` not
+/// followed by two hex digits) — refusing rather than guessing keeps
+/// the destructive path defensive.
+///
+/// Validation against the Postgres identifier grammar (ASCII letter
+/// or underscore followed by ASCII alphanumerics or underscores, up
+/// to 63 bytes) is layered on top by [`is_valid_pg_identifier`] —
+/// extraction returns the raw decoded string so error messages can
+/// surface what the operator actually supplied.
+///
+/// **No regex.** Walks the URL bytes from the rightmost `/` once and
+/// then walks the path bytes once more during the percent-decode.
 fn extract_database_from_url(url: &str) -> Option<String> {
-    let bytes = url.as_bytes();
     // Confirm the URL has a recognised scheme. We accept both
     // `postgres://` and `postgresql://`. Anything else is treated as
     // libpq parameter form, which db reset doesn't support today
@@ -625,9 +680,85 @@ fn extract_database_from_url(url: &str) -> Option<String> {
     if path_end == path_start {
         return None; // empty database name
     }
-    // Reverify nothing breaks our index assumptions.
-    let _ = bytes; // suppresses unused-warning; we kept the slice for future tweaks.
-    Some(body[path_start..path_end].to_string())
+    percent_decode_strict(&body_bytes[path_start..path_end])
+}
+
+/// Percent-decode a byte slice strictly. A `%` must be followed by
+/// exactly two hex digits (case-insensitive ASCII); any other shape
+/// returns `None`. Output is treated as UTF-8 — non-UTF-8 byte
+/// sequences also return `None`.
+///
+/// Kept private to this module so the destructive `db reset` path is
+/// the only consumer; if a future caller needs the same primitive we
+/// can promote it without churning the public surface.
+fn percent_decode_strict(bytes: &[u8]) -> Option<String> {
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%' {
+            // Need exactly two hex digits after the `%`.
+            if i + 2 >= bytes.len() {
+                return None;
+            }
+            let hi = hex_digit_value(bytes[i + 1])?;
+            let lo = hex_digit_value(bytes[i + 2])?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Map an ASCII hex digit byte to its 0..=15 value. Returns `None`
+/// for any non-hex byte — used by [`percent_decode_strict`] to refuse
+/// malformed escapes outright.
+fn hex_digit_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(10 + (b - b'a')),
+        b'A'..=b'F' => Some(10 + (b - b'A')),
+        _ => None,
+    }
+}
+
+/// Validate a string against the strict Postgres-identifier grammar:
+///
+/// > ASCII letter or underscore, followed by zero-or-more ASCII
+/// > alphanumerics or underscores, up to 63 bytes total.
+///
+/// **No regex.** Byte-level checks per `docs/spec/decisions.md` —
+/// `u8::is_ascii_alphabetic`, `u8::is_ascii_alphanumeric`, and
+/// explicit byte equality against `b'_'`.
+///
+/// Postgres' own grammar is technically more permissive (it accepts
+/// any byte sequence inside double-quoted identifiers), but the
+/// grammar above is the one every Djogi-emitted identifier obeys.
+/// Refusing anything wider keeps the `DROP DATABASE` /
+/// `CREATE DATABASE` paths free of operator-supplied bytes that the
+/// double-quote escape elsewhere in the codebase wouldn't otherwise
+/// surface.
+fn is_valid_pg_identifier(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    // Length: 1..=63 bytes (the standard Postgres `NAMEDATALEN - 1`).
+    if bytes.is_empty() || bytes.len() > 63 {
+        return false;
+    }
+    // Leading byte: ASCII letter or underscore.
+    let first = bytes[0];
+    if !first.is_ascii_alphabetic() && first != b'_' {
+        return false;
+    }
+    // Trailing bytes: ASCII alphanumerics or underscore.
+    for &b in &bytes[1..] {
+        if !b.is_ascii_alphanumeric() && b != b'_' {
+            return false;
+        }
+    }
+    true
 }
 
 /// Replace the database-name component in a Postgres URL with a new
@@ -635,7 +766,12 @@ fn extract_database_from_url(url: &str) -> Option<String> {
 /// string.
 ///
 /// Returns `None` when the URL has no recognisable database component.
-fn replace_db_in_url(url: &str, new_db: &str) -> Option<String> {
+///
+/// Visible to the rest of the crate so the seed runner (Codex B-1)
+/// can reuse the same splice — `db seed --database <name>` derives
+/// the per-database connection URL from the application URL by
+/// replacing the path component in place.
+pub(crate) fn replace_db_in_url(url: &str, new_db: &str) -> Option<String> {
     let body = url
         .strip_prefix("postgres://")
         .or_else(|| url.strip_prefix("postgresql://"))?;
@@ -820,6 +956,143 @@ mod tests {
         assert_eq!(extract_database_from_url("postgres://localhost/"), None);
         // Non-postgres scheme → None.
         assert_eq!(extract_database_from_url("mysql://localhost/main"), None);
+    }
+
+    /// Codex round-1 B-2 — percent-decoding has to happen BEFORE the
+    /// runner sees the database name, otherwise the maintenance-DB
+    /// drop and the post-recreate reconnect target two different
+    /// strings (one literal-percent, one decoded). The extractor MUST
+    /// surface the decoded string so the validator can refuse it.
+    #[test]
+    fn extract_database_from_url_percent_decodes_path_bytes() {
+        // `my%2Fdb` decodes to `my/db` — this is exactly what libpq
+        // sees when it parses the same URL.
+        assert_eq!(
+            extract_database_from_url("postgres://localhost/my%2Fdb"),
+            Some("my/db".to_string())
+        );
+        // Mixed case hex digits round-trip identically.
+        assert_eq!(
+            extract_database_from_url("postgres://localhost/foo%2fbar"),
+            Some("foo/bar".to_string())
+        );
+        // A multi-byte UTF-8 sequence (`é` = `c3 a9`) decodes back to
+        // the same sequence the operator would have typed unencoded.
+        assert_eq!(
+            extract_database_from_url("postgres://localhost/caf%C3%A9"),
+            Some("café".to_string())
+        );
+    }
+
+    /// Codex round-1 B-2 — malformed `%XX` escapes must refuse rather
+    /// than silently fall through to a literal `%`. A `%Z9` is not a
+    /// valid escape; we don't pretend it is.
+    #[test]
+    fn extract_database_from_url_rejects_malformed_percent_escapes() {
+        // Trailing `%` with no following bytes.
+        assert_eq!(
+            extract_database_from_url("postgres://localhost/main%"),
+            None
+        );
+        // `%` followed by a single hex digit, then end-of-string.
+        assert_eq!(
+            extract_database_from_url("postgres://localhost/main%2"),
+            None
+        );
+        // Non-hex bytes after the `%`.
+        assert_eq!(
+            extract_database_from_url("postgres://localhost/main%ZZ"),
+            None
+        );
+    }
+
+    /// Codex round-1 B-2 — the strict-identifier grammar covers the
+    /// happy path (typical names) and refuses anything we won't
+    /// emit into DDL.
+    #[test]
+    fn is_valid_pg_identifier_accepts_typical_names() {
+        assert!(is_valid_pg_identifier("main"));
+        assert!(is_valid_pg_identifier("crud_log"));
+        assert!(is_valid_pg_identifier("event_log"));
+        assert!(is_valid_pg_identifier("_underscore_lead"));
+        assert!(is_valid_pg_identifier("a"));
+        assert!(is_valid_pg_identifier("MyDatabase42"));
+        // Boundary — exactly 63 bytes is accepted (the Postgres
+        // NAMEDATALEN-1 limit).
+        let sixty_three: String = std::iter::repeat_n('a', 63).collect();
+        assert!(is_valid_pg_identifier(&sixty_three));
+    }
+
+    #[test]
+    fn is_valid_pg_identifier_refuses_invalid_inputs() {
+        // Empty.
+        assert!(!is_valid_pg_identifier(""));
+        // 64 bytes — one over the limit.
+        let sixty_four: String = std::iter::repeat_n('a', 64).collect();
+        assert!(!is_valid_pg_identifier(&sixty_four));
+        // Leading digit.
+        assert!(!is_valid_pg_identifier("1main"));
+        // Internal slash (this is what `my%2Fdb` percent-decodes to).
+        assert!(!is_valid_pg_identifier("my/db"));
+        // SQL-injection shape — a single quote is not an identifier
+        // byte, so the validator rejects the whole string.
+        assert!(!is_valid_pg_identifier("'; DROP TABLE foo; --"));
+        // Spaces.
+        assert!(!is_valid_pg_identifier("my db"));
+        // Hyphen.
+        assert!(!is_valid_pg_identifier("my-db"));
+        // Multi-byte UTF-8 (`café`).
+        assert!(!is_valid_pg_identifier("café"));
+    }
+
+    /// Codex round-1 B-2 — `reset_app_database` must surface
+    /// `InvalidDatabaseName` rather than splicing decoded bytes into
+    /// DDL. We exercise three failure shapes plus the maintenance-DB
+    /// override path through the public entry.
+    #[tokio::test]
+    async fn reset_refuses_when_decoded_database_name_is_not_an_identifier() {
+        // `my%2Fdb` decodes to `my/db` — gate-passing localhost URL
+        // but the decoded name fails the identifier grammar.
+        let work = temp_root("invalid_decoded");
+        let res = reset_app_database(req(
+            &work,
+            "postgres://localhost/my%2Fdb",
+            "development",
+            true,
+        ))
+        .await;
+        match res {
+            Err(ResetError::InvalidDatabaseName { name }) => assert_eq!(name, "my/db"),
+            other => panic!("expected InvalidDatabaseName for `my/db`, got {other:?}"),
+        }
+
+        // The `--maintenance-database` operator-supplied value flows
+        // through the same validator; a crafted value must refuse.
+        let bogus_maint = ResetRequest {
+            workspace_root: &work,
+            database_url: "postgres://localhost/main",
+            profile: "development",
+            confirmed: true,
+            maintenance_database: "'; DROP DATABASE main; --",
+            migrate_config: MigrateConfig::default(),
+        };
+        match reset_app_database(bogus_maint).await {
+            Err(ResetError::InvalidDatabaseName { name }) => {
+                assert_eq!(name, "'; DROP DATABASE main; --");
+            }
+            other => panic!("expected InvalidDatabaseName for maintenance, got {other:?}"),
+        }
+
+        // Boundary — a 64-character all-`a` database refuses (over
+        // the 63-byte NAMEDATALEN-1 limit).
+        let too_long: String = std::iter::repeat_n('a', 64).collect();
+        let url = format!("postgres://localhost/{too_long}");
+        match reset_app_database(req(&work, &url, "development", true)).await {
+            Err(ResetError::InvalidDatabaseName { name }) => assert_eq!(name, too_long),
+            other => panic!("expected InvalidDatabaseName, got {other:?}"),
+        }
+
+        let _ = fs::remove_dir_all(&work);
     }
 
     #[test]

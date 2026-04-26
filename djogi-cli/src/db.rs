@@ -13,6 +13,25 @@
 //! All three flow through public APIs in `djogi::migrate` (or
 //! `::config`) so integration tests can exercise the underlying logic
 //! without spawning subprocesses.
+//!
+//! # Exit codes (Codex round-1 A-1)
+//!
+//! Every subcommand in this module obeys a uniform three-value matrix
+//! so shell integrations can distinguish "operation refused" from
+//! "operation failed":
+//!
+//! | Code | Meaning |
+//! |------|---------|
+//! | `0`  | Success — the command completed and any post-state was applied. |
+//! | `1`  | Error — config load failure, network, SQL, or any other underlying failure. |
+//! | `2`  | Gate refusal — a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect. |
+//!
+//! The `2` code mirrors clap's argument-error convention so a CI
+//! script can branch on `if [ $? -eq 2 ]` and treat a refusal as a
+//! soft "skipped" signal rather than a hard failure. The matrix is
+//! also documented in `ReadMe.MD` and `docs/spec/configuration.md` so
+//! the operator-facing surface stays in sync with the source of
+//! truth.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -214,14 +233,42 @@ pub fn seed_cmd(
 }
 
 /// Async body of [`seed_cmd`]. Returns the desired exit code.
+///
+/// **Per-database routing (Codex round-1 B-1).** The `--database
+/// <name>` flag selects BOTH the `seeds/<name>/` directory the
+/// runner walks AND the connection URL the SQL fires against. The
+/// CLI derives the per-database URL by splicing `<name>` into
+/// `database.url`'s path component (via
+/// [`djogi::migrate::derive_per_database_url`]) — without that
+/// splice, `db seed --database crud_log` would silently run
+/// crud-log seed SQL against the application database. A malformed
+/// application URL (no path component) is surfaced as a typed
+/// [`SeedError::MalformedApplicationUrl`] rather than a default to
+/// the wrong DB.
 async fn run_seed(
     workspace: &Path,
     config: &DjogiConfig,
     database: &str,
     allow_non_localhost: bool,
 ) -> i32 {
-    // Build a context against the application DB.
-    let pool = match djogi::pg::pool::DjogiPool::connect(&config.database.url).await {
+    // Splice the operator's `--database <name>` into the application
+    // URL. The result is the connection target AND the URL the
+    // localhost gate inside `run_seeds` evaluates against — both
+    // gate and SQL execution stay on the same database.
+    let routed_url = match djogi::migrate::derive_per_database_url(&config.database.url, database) {
+        Some(u) => u,
+        None => {
+            eprintln!(
+                "djogi db seed: application URL `{}` has no database-name \
+                 component the runner can splice `--database {database}` into",
+                config.database.url,
+            );
+            return 1;
+        }
+    };
+
+    // Build a context against the routed (per-database) URL.
+    let pool = match djogi::pg::pool::DjogiPool::connect(&routed_url).await {
         Ok(p) => p,
         Err(e) => {
             eprintln!("djogi db seed: connect: {e}");
@@ -234,7 +281,7 @@ async fn run_seed(
         &mut ctx,
         workspace,
         database,
-        &config.database.url,
+        &routed_url,
         allow_non_localhost,
     )
     .await
