@@ -511,7 +511,14 @@ pub async fn sync_models(
         .map(|bucket| (bucket.clone(), empty_applied_schema()))
         .collect();
 
-    let deltas = diff_bucket_maps(&before, &target);
+    // B-4r: differ now returns Result. The PK-flip cascade-depth
+    // contract can fail here even though `sync_models` only ever
+    // produces additive deltas (empty before-schema), because the
+    // differ runs the closure unconditionally — the empty-target
+    // path just happens to always produce `Additive` ops, but the
+    // closure still validates the FK shape.
+    let deltas = diff_bucket_maps(&before, &target)
+        .map_err(|e| DjogiError::Db(DbError::other(format!("sync_models differ failed: {e}"))))?;
 
     // ── Step 4 — invariant + classification check. The empty-target
     //              path can only produce `Additive` or `NoOp`

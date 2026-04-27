@@ -1896,7 +1896,7 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
         );
         m
     };
-    let deltas = djogi::migrate::diff_bucket_maps(&before, &after);
+    let deltas = djogi::migrate::diff_bucket_maps(&before, &after).expect("differ");
     let delta = deltas
         .iter()
         .find(|d| d.bucket == bucket_key)
@@ -2227,7 +2227,7 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
     // Run the differ once and clone the result so we can apply
     // each option independently. `apply_pk_flip_join_table_option`
     // mutates in place.
-    let base_deltas = diff_bucket_maps(&before, &after);
+    let base_deltas = diff_bucket_maps(&before, &after).expect("differ");
 
     let mut deltas_a = base_deltas.clone();
     apply_pk_flip_join_table_option(&mut deltas_a, PkFlipJoinTableOption::OptionA);
@@ -2642,8 +2642,8 @@ async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiCont
         m
     };
 
-    // Drive the differ — closure must not panic.
-    let deltas = diff_bucket_maps(&before, &after);
+    // Drive the differ — closure must not panic / return Err.
+    let deltas = diff_bucket_maps(&before, &after).expect("closure must terminate cleanly");
     let delta = deltas
         .iter()
         .find(|d| d.bucket == bucket_key)

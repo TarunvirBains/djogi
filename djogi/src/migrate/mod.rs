@@ -92,7 +92,7 @@ pub use compose::{
     parse_pending_bytes,
 };
 pub use diff::{
-    Classification, ColumnChange, EnumVariantAnchor, EnumVariantAnchorKind, PkFlipChild,
+    Classification, ColumnChange, DiffError, EnumVariantAnchor, EnumVariantAnchorKind, PkFlipChild,
     PkFlipCycle, PkFlipDirection, PkFlipFamily, PkFlipJoinTable, PkFlipJoinTableOption,
     PkFlipPartitionedMeta, PkFlipSelfFk, PkTypeFlipGroup, SchemaDelta, SchemaOperation,
     apply_pk_flip_join_table_option, diff_bucket_maps,

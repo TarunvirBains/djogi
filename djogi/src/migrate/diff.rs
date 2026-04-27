@@ -513,6 +513,65 @@ pub fn apply_pk_flip_join_table_option(deltas: &mut [SchemaDelta], option: PkFli
 /// re-walking the operation list while mutating it.
 type GroupJoinTableSnapshot = (String, Option<String>);
 
+/// Errors the differ surfaces.
+///
+/// Distinct from [`super::sql::SqlEmitError`] — `DiffError`
+/// reports failures that occur BEFORE SQL emission, during the
+/// per-bucket walk and the PK-flip group promotion. Every variant
+/// carries enough context for an actionable operator message.
+///
+/// # B-4r — panic → Result migration (Codex round-3)
+///
+/// [`promote_pk_flips_to_groups`] previously panicked on the
+/// depth-65 contract violation. The panic prevented compose / build
+/// from surfacing a structured error to the operator and broke the
+/// general principle that the differ never panics on user-shaped
+/// input. This enum carries the chain of tables that drove the
+/// blow-out so the operator can identify the offending FK cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffError {
+    /// The PK-flip transitive FK closure walked more levels than
+    /// [`promote_pk_flips_to_groups`]'s `MAX_CLOSURE_DEPTH` allows.
+    /// The graph is pathological — likely an unbounded fan-out or
+    /// a cycle the visited-set protection failed to short-circuit
+    /// in time. The differ refuses to compose a migration over a
+    /// graph it cannot reason about.
+    PkFlipCascadeDepthExceeded {
+        /// Postgres table name of the migrating parent that rooted
+        /// the closure walk.
+        parent_table: String,
+        /// Trail of one representative table per depth level. The
+        /// first entry is `parent_table`; subsequent entries are
+        /// one (alphabetically-first) member of each next-frontier
+        /// pass. Operators read this to identify the FK shape that
+        /// triggered the depth blow-out.
+        chain: Vec<String>,
+        /// The maximum depth the closure was allowed to walk.
+        /// Captured here so the operator-facing message can render
+        /// the contract limit alongside the chain.
+        max_depth: u32,
+    },
+}
+
+impl std::fmt::Display for DiffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DiffError::PkFlipCascadeDepthExceeded {
+                parent_table,
+                chain,
+                max_depth,
+            } => write!(
+                f,
+                "PK-flip transitive FK closure exceeded {max_depth} levels rooted at \
+                 {parent_table}; table_chain={chain:?}; graph likely has a pathological \
+                 cycle or unbounded fan-out — refusing to compose the migration",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DiffError {}
+
 /// Helper for [`apply_pk_flip_join_table_option`] under Option A —
 /// hand the join table's full migration to the first group
 /// (alphabetical by parent_table) and remove it from the partner
@@ -874,7 +933,7 @@ pub(crate) fn diff_schemas(
 pub fn diff_bucket_maps(
     before: &BTreeMap<BucketKey, AppliedSchema>,
     after: &BTreeMap<BucketKey, AppliedSchema>,
-) -> Vec<SchemaDelta> {
+) -> Result<Vec<SchemaDelta>, DiffError> {
     // Stage 1 — pre-scan for cross-bucket moves driven by
     // `TableSchema.moved_from_app`. A model with `moved_from_app =
     // Some("billing")` in the after-schema, whose table name was
@@ -968,13 +1027,17 @@ pub fn diff_bucket_maps(
         // every child has to align with — pulling FK metadata from
         // `before` would miss children that gained their FK in this
         // same migration (rare but legal).
-        promote_pk_flips_to_groups(a, &mut delta.operations);
+        // B-4r (Codex round-3): closure depth blow-out propagates
+        // as a structured `DiffError` rather than panicking — the
+        // caller (compose / build) renders the chain in the
+        // operator-facing error message.
+        promote_pk_flips_to_groups(a, &mut delta.operations)?;
 
         // Re-classify after the suppression + emission step.
         delta.classification = classify(&delta.operations);
         out.push(delta);
     }
-    out
+    Ok(out)
 }
 
 /// Walk a delta's operation list, find every per-table
@@ -993,7 +1056,10 @@ pub fn diff_bucket_maps(
 /// cycles are sorted alphabetically before being attached to the
 /// group so the byte-equality regression tests against the playbook
 /// SQL are reproducible run-to-run.
-fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperation>) {
+fn promote_pk_flips_to_groups(
+    after: &AppliedSchema,
+    ops: &mut Vec<SchemaOperation>,
+) -> Result<(), DiffError> {
     // Collect parents — `(table, from, to)` for every PkTypeFlip op.
     let mut parents: Vec<(String, PkKindSchema, PkKindSchema)> = Vec::new();
     ops.retain(|op| match op {
@@ -1004,7 +1070,7 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
         _ => true,
     });
     if parents.is_empty() {
-        return;
+        return Ok(());
     }
     // Migrating-parent set — used by join-table detection (a join
     // table's "partner" FK column points at another migrating parent
@@ -1273,18 +1339,17 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
                 visited_tables.insert(t.clone());
             }
             frontier = next_frontier;
-            // The depth-65 contract: once we have iterated the
-            // maximum number of times AND the frontier is still
-            // adding tables, the graph is pathological — panic with
-            // the chain so tests + CI catch it.
+            // B-4r (Codex round-3): the depth-65 contract returns
+            // a structured error rather than panicking. The
+            // operator-facing message renders the chain so the
+            // offending FK shape is identifiable; compose / build
+            // surface the error verbatim instead of unwinding.
             if depth == MAX_CLOSURE_DEPTH {
-                panic!(
-                    "PkFlipCascadeDepthExceeded: PK-flip transitive FK closure exceeded \
-                     {MAX_CLOSURE_DEPTH} levels rooted at {parent_table}; \
-                     table_chain={depth_chain:?}; \
-                     graph likely has a pathological cycle or unbounded fan-out — \
-                     refusing to compose the migration",
-                );
+                return Err(DiffError::PkFlipCascadeDepthExceeded {
+                    parent_table: parent_table.clone(),
+                    chain: depth_chain.clone(),
+                    max_depth: MAX_CLOSURE_DEPTH,
+                });
             }
         }
 
@@ -1364,6 +1429,7 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
             join_table_option: PkFlipJoinTableOption::OptionA,
         }));
     }
+    Ok(())
 }
 
 fn diff_tables(
@@ -2328,7 +2394,7 @@ mod tests {
         let before = BTreeMap::new();
         let mut after = BTreeMap::new();
         after.insert(empty_global(), project_one(&m));
-        let deltas = diff_bucket_maps(&before, &after);
+        let deltas = diff_bucket_maps(&before, &after).expect("differ must succeed in this test");
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].bucket, empty_global());
         assert!(matches!(deltas[0].classification, Classification::Additive));
@@ -2586,7 +2652,7 @@ mod tests {
         )
         .expect("project after");
 
-        let deltas = diff_bucket_maps(&before, &after);
+        let deltas = diff_bucket_maps(&before, &after).expect("differ must succeed in this test");
 
         // Source bucket (billing): no spurious DropTable.
         let billing_bucket = BucketKey {
@@ -3025,7 +3091,7 @@ mod tests {
             to: PkKindSchema::HeerIdRecencyBiased,
         }];
         // Closure must terminate without panicking.
-        promote_pk_flips_to_groups(&after, &mut ops);
+        promote_pk_flips_to_groups(&after, &mut ops).expect("closure must not error in this test");
         // Resulting group: B is a direct child of A; C and D are NOT
         // children for the asc↔desc flip (their FKs point at B's /
         // C's `id`, not A's). The transitive closure walked them but
@@ -3075,7 +3141,7 @@ mod tests {
         }];
         // Must not loop indefinitely — visited-set + frontier
         // tracking guarantees termination.
-        promote_pk_flips_to_groups(&after, &mut ops);
+        promote_pk_flips_to_groups(&after, &mut ops).expect("closure must not error in this test");
         let group = ops
             .iter()
             .find_map(|op| match op {
@@ -3112,7 +3178,7 @@ mod tests {
             from: PkKindSchema::HeerId,
             to: PkKindSchema::HeerIdRecencyBiased,
         }];
-        promote_pk_flips_to_groups(&after, &mut ops);
+        promote_pk_flips_to_groups(&after, &mut ops).expect("closure must not error in this test");
         let group = ops
             .iter()
             .find_map(|op| match op {
@@ -3123,5 +3189,72 @@ mod tests {
         // Depth-1 children only (asc↔desc invariant).
         assert_eq!(group.children.len(), 1);
         assert_eq!(group.children[0].table, "c1");
+    }
+
+    /// B-4r (Codex round-3): a chain longer than the closure's
+    /// `MAX_CLOSURE_DEPTH` returns a structured
+    /// [`DiffError::PkFlipCascadeDepthExceeded`] rather than
+    /// panicking. Build a 70-level chain (well past the 65-level
+    /// contract), drive the differ, and assert the error variant.
+    #[test]
+    fn promote_pk_flips_emits_pk_flip_cascade_depth_exceeded_on_deep_graph() {
+        use crate::migrate::schema::PkKindSchema;
+        // Build P → T1 → T2 → ... → T70 — a strictly linear FK
+        // chain. Each table's only FK points at the previous
+        // table; the BFS extends one new frontier table per pass.
+        let mut tables: Vec<crate::migrate::schema::TableSchema> = Vec::new();
+        tables.push(synth_table_with_fks("p", &[], PkKindSchema::HeerId));
+        for i in 1..=70u32 {
+            let prev = if i == 1 {
+                "p".to_string()
+            } else {
+                format!("t{}", i - 1)
+            };
+            let name = format!("t{i}");
+            // synth_table_with_fks takes `&[(col, ref_table)]` —
+            // borrow the prev string for the duration of the call.
+            let prev_str = prev.as_str();
+            let table = synth_table_with_fks(&name, &[("ref_id", prev_str)], PkKindSchema::HeerId);
+            tables.push(table);
+        }
+        let after = synth_schema_with_tables(tables);
+        let mut ops = vec![SchemaOperation::PkTypeFlip {
+            table: "p".to_string(),
+            from: PkKindSchema::HeerId,
+            to: PkKindSchema::HeerIdRecencyBiased,
+        }];
+        let err = promote_pk_flips_to_groups(&after, &mut ops)
+            .expect_err("70-level chain must trigger depth contract");
+        match err {
+            DiffError::PkFlipCascadeDepthExceeded {
+                parent_table,
+                chain,
+                max_depth,
+            } => {
+                assert_eq!(parent_table, "p");
+                assert_eq!(max_depth, 65);
+                // Chain must include the parent + at least one
+                // entry per depth level; final length depends on
+                // whether the BFS picked p itself as depth-0.
+                assert!(
+                    chain.len() >= 2,
+                    "chain must record at least the parent and one descendant: {chain:?}",
+                );
+                assert_eq!(chain[0], "p");
+            }
+        }
+        // The Display impl renders the chain so operators can
+        // identify the offending FK shape.
+        let display = format!(
+            "{}",
+            DiffError::PkFlipCascadeDepthExceeded {
+                parent_table: "p".to_string(),
+                chain: vec!["p".to_string(), "t1".to_string()],
+                max_depth: 65,
+            }
+        );
+        assert!(display.contains("rooted at p"));
+        assert!(display.contains("65 levels"));
+        assert!(display.contains("table_chain"));
     }
 }

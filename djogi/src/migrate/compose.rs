@@ -322,6 +322,11 @@ pub enum ComposeError {
         /// move or delete it before re-running compose.
         offending_entry: String,
     },
+    /// B-4r (Codex round-3) — the differ surfaced a structured
+    /// `DiffError` (e.g. a PK-flip transitive FK closure exceeded
+    /// the depth contract). Compose rendered the error verbatim
+    /// rather than letting the panic unwind the run.
+    Diff(super::diff::DiffError),
 }
 
 impl std::fmt::Display for ComposeError {
@@ -362,6 +367,7 @@ impl std::fmt::Display for ComposeError {
                 from_path = from.display(),
                 to_path = to.display(),
             ),
+            Self::Diff(e) => write!(f, "differ refused: {e}"),
         }
     }
 }
@@ -708,7 +714,11 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     let snapshots_for_diff = remap_snapshots_for_renames(req.snapshots, req.apps);
 
     // 3. Run the differ across the (possibly remapped) bucket map.
-    let mut deltas = diff_bucket_maps(&snapshots_for_diff, req.models);
+    //    B-4r (Codex round-3): the differ now returns Result;
+    //    cascade-depth blow-outs surface as `ComposeError::Diff`
+    //    rather than panicking.
+    let mut deltas =
+        diff_bucket_maps(&snapshots_for_diff, req.models).map_err(ComposeError::Diff)?;
 
     // 3b. Apply operator-configured join-table cutover layout to every
     //     PK-flip group the differ emitted. Without this step the

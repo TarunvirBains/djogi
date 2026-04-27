@@ -5,16 +5,36 @@
 //!
 //! Lowering of [`SchemaOperation::PkTypeFlipGroup`] into the
 //! multi-segment [`MigrationPlan`] required by the HeeRanjID
-//! `asc-to-desc` playbook. Every emitted SQL string is reproduced
-//! **verbatim** from the playbook's worked examples so byte-equality
-//! regression tests against the playbook fixtures pass without
-//! whitespace fixups beyond a single normalisation pass.
+//! `asc-to-desc` playbook. Each emitted SQL statement matches the
+//! playbook's worked-example shape semantically; the playbook is
+//! prose with worked-example identifiers (`tbl` / `id` / `id_desc`)
+//! and this module emits SQL parameterised by per-group state, so
+//! the two are NOT byte-identical. The regression net is split
+//! into two layers (B-5r, Codex round-3):
+//!
+//!   * **Emitter-output drift detector** — fixtures under
+//!     `fixtures/pk_flip_emitter_output_section_*.sql` capture the
+//!     CURRENT emitter's whitespace-normalised output for the
+//!     canonical worked examples. Tests under
+//!     `tests::whole_plan_byte_equality_section_*` and
+//!     `tests::emitter_output_drift_check_section_*` assert the
+//!     emitter's output equals these fixtures byte-for-byte after
+//!     normalisation. ANY emitter change without a paired fixture
+//!     update fails loud.
+//!   * **Playbook structural anchors** — tests under
+//!     `tests::fixture_section_*_carries_every_playbook_anchor_substring`
+//!     walk each fixture and assert the presence of every
+//!     load-bearing playbook substring (specific
+//!     `CALL heeranjid_bulk_backfill(...)` / `ALTER TABLE ... SET
+//!     NOT NULL` / `CREATE UNIQUE INDEX CONCURRENTLY` shapes). If
+//!     the playbook adds or removes a step, that test must be
+//!     updated. The two-sided invariant catches both emitter
+//!     drift AND playbook drift.
 //!
 //! The playbook lives at
 //! `../HeeRanjID/docs/migrations/asc-to-desc.md`. Where this module
-//! and the playbook disagree, the playbook wins; the unit tests in
-//! `tests::sql_byte_equality_vs_playbook_*` are the regression net
-//! against drift.
+//! and the playbook disagree on a load-bearing rule, the playbook
+//! wins.
 //!
 //! # Plan shape (single-table flip — playbook §3)
 //!
@@ -2863,7 +2883,7 @@ mod tests {
             after
                 .models
                 .insert("authors".to_string(), parent_table("authors", to.clone()));
-            let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after));
+            let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after)).expect("differ");
             let group_op = deltas
                 .iter()
                 .flat_map(|d| d.operations.iter())
@@ -2889,7 +2909,7 @@ mod tests {
         after
             .models
             .insert("t".to_string(), parent_table("t", PkKindSchema::Serial));
-        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after));
+        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after)).expect("differ");
         let has_group = deltas
             .iter()
             .flat_map(|d| d.operations.iter())
@@ -2925,7 +2945,7 @@ mod tests {
             "books".to_string(),
             child_table("books", "authors", "author_id", false),
         );
-        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after));
+        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after)).expect("differ");
         let group = deltas
             .iter()
             .flat_map(|d| d.operations.iter())
@@ -2950,7 +2970,7 @@ mod tests {
         after_nodes.columns.push(fk_col("parent_id", "nodes", true));
         let mut after = empty_schema();
         after.models.insert("nodes".to_string(), after_nodes);
-        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after));
+        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after)).expect("differ");
         let group = deltas
             .iter()
             .flat_map(|d| d.operations.iter())
@@ -3000,7 +3020,7 @@ mod tests {
             parent_table("tags", PkKindSchema::HeerIdRecencyBiased),
         );
         after.models.insert("book_tags".to_string(), book_tags);
-        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after));
+        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after)).expect("differ");
         let group = deltas
             .iter()
             .flat_map(|d| d.operations.iter())
@@ -3028,7 +3048,7 @@ mod tests {
         let mut after = empty_schema();
         after.models.insert("a".to_string(), after_a);
         after.models.insert("b".to_string(), b);
-        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after));
+        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after)).expect("differ");
         let group = deltas
             .iter()
             .flat_map(|d| d.operations.iter())
@@ -3081,7 +3101,7 @@ mod tests {
     }
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_3_preparation() {
+    fn emitter_output_drift_check_section_3_preparation() {
         let group = synth_group_single_table();
         let prep = emit_preparation(&group);
         let normalised = whitespace_normalize(&prep.up);
@@ -3096,7 +3116,7 @@ mod tests {
     }
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_3_backfill() {
+    fn emitter_output_drift_check_section_3_backfill() {
         let group = synth_group_single_table();
         let bf = emit_backfill_and_verification(&group);
         let n = whitespace_normalize(&bf.up);
@@ -3113,7 +3133,7 @@ mod tests {
     }
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_3_concurrent_index() {
+    fn emitter_output_drift_check_section_3_concurrent_index() {
         let group = synth_group_single_table();
         let idx = emit_concurrent_indexes(&group);
         let n = whitespace_normalize(&idx.up);
@@ -3124,7 +3144,7 @@ mod tests {
     }
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_3_not_null_proof() {
+    fn emitter_output_drift_check_section_3_not_null_proof() {
         let group = synth_group_single_table();
         let proof = emit_not_null_proof(&group);
         let n = whitespace_normalize(&proof.up);
@@ -3137,7 +3157,7 @@ mod tests {
     }
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_3_cutover() {
+    fn emitter_output_drift_check_section_3_cutover() {
         let group = synth_group_single_table();
         let cut = emit_cutover(&group);
         let n = whitespace_normalize(&cut.up);
@@ -3173,7 +3193,7 @@ mod tests {
     // ── §4 parent + child ────────────────────────────────────────────
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_4_parent_child() {
+    fn emitter_output_drift_check_section_4_parent_child() {
         let mut group = synth_group_single_table();
         group.children.push(PkFlipChild {
             table: "c".to_string(),
@@ -3235,7 +3255,7 @@ mod tests {
     // ── §6 self-FK ───────────────────────────────────────────────────
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_6_self_fk() {
+    fn emitter_output_drift_check_section_6_self_fk() {
         let mut group = synth_group_single_table();
         group.parent_table = "nodes".to_string();
         group.self_fk = Some(PkFlipSelfFk {
@@ -3287,7 +3307,7 @@ mod tests {
     // ── §7 join tables ───────────────────────────────────────────────
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_7_join_table() {
+    fn emitter_output_drift_check_section_7_join_table() {
         let mut group = synth_group_single_table();
         group.parent_table = "tags".to_string();
         group.join_tables.push(PkFlipJoinTable {
@@ -3317,7 +3337,7 @@ mod tests {
     // ── §8 cycles ─────────────────────────────────────────────────────
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_8_cycles_uses_deferrable() {
+    fn emitter_output_drift_check_section_8_cycles_uses_deferrable() {
         let mut group = synth_group_single_table();
         group.parent_table = "a".to_string();
         group.children.push(PkFlipChild {
@@ -3348,7 +3368,7 @@ mod tests {
     // ── §9 partitioned ────────────────────────────────────────────────
 
     #[test]
-    fn sql_byte_equality_vs_playbook_section_9_partitioned_uses_add_primary_key() {
+    fn emitter_output_drift_check_section_9_partitioned_uses_add_primary_key() {
         let mut group = synth_group_single_table();
         group.parent_table = "events".to_string();
         group.partitioned_parent = Some(super::super::diff::PkFlipPartitionedMeta {
@@ -3453,7 +3473,7 @@ mod tests {
             "authors".to_string(),
             parent_table("authors", PkKindSchema::HeerIdRecencyBiased),
         );
-        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after));
+        let deltas = diff_bucket_maps(&bucket_map(before), &bucket_map(after)).expect("differ");
         let group = deltas
             .iter()
             .flat_map(|d| d.operations.iter())
@@ -3545,40 +3565,41 @@ mod tests {
         super::lower_pk_flip_group(&group, bucket())
     }
 
-    /// Forward-direction §3 fixture — playbook-anchored.
+    /// Forward-direction §3 fixture — **emitter-output drift
+    /// detector** (B-5r, Codex round-3). The fixture is the
+    /// whitespace-normalised SQL the planner currently emits for a
+    /// single-table HeerId asc → desc flip, NOT a verbatim copy of
+    /// the playbook prose at `HeeRanjID-reference/docs/migrations/
+    /// asc-to-desc.md` §3. The byte-equality regression below
+    /// catches emitter drift across emitter changes; the structural
+    /// anchor tests further down assert the fixture carries each
+    /// load-bearing playbook substring (e.g. `CALL
+    /// heeranjid_bulk_backfill`, `CREATE UNIQUE INDEX
+    /// CONCURRENTLY`, `ALTER TABLE ... ALTER COLUMN ... SET NOT
+    /// NULL`) so emitter divergence from the playbook is caught
+    /// even when the new emitter output happens to byte-match the
+    /// fixture (which would be impossible — the emitter generated
+    /// the fixture in the first place).
     ///
-    /// **Provenance.** Anchored to `HeeRanjID-reference/docs/migrations/
-    /// asc-to-desc.md` §3 (single-table recipe), lines 75–193. The
-    /// fixture's whitespace-normalised SQL is the literal byte-for-
-    /// byte representation of every statement the playbook prescribes
-    /// for the worked example using identifiers `tbl` / `id` / `id_desc`,
-    /// in playbook order:
-    ///
-    ///   §3.1 — `ALTER TABLE tbl ADD COLUMN id_desc bigint`
-    ///   §3.1 — `install_autofill_trigger_for_table` expansion
-    ///          (CREATE OR REPLACE FUNCTION + CREATE TRIGGER)
-    ///   §3.2 — `CALL heeranjid_bulk_backfill('tbl', 'id', 'id_desc',
-    ///          'heer', 10000)`
-    ///   §3.3 — `SELECT count(*) FROM tbl WHERE id_desc IS NULL`
-    ///   §3.4 — `CREATE UNIQUE INDEX CONCURRENTLY idx_tbl_id_desc`
-    ///   §3.5 — `ALTER TABLE tbl ADD CONSTRAINT ... CHECK ... NOT
-    ///          VALID; VALIDATE CONSTRAINT; SET NOT NULL; DROP
-    ///          CONSTRAINT` (4-statement non-blocking NOT NULL proof)
-    ///   §3.6 — atomic cutover (drop old PK, promote shadow, rename)
+    /// **Provenance.** Generated by the dumper helper below from
+    /// the current emitter; the playbook §3 (lines 75–193 of
+    /// asc-to-desc.md) covers the SAME logical recipe but with
+    /// human prose, code-block formatting, and a worked-example
+    /// table named `tbl` — the fixture matches the playbook's
+    /// statement set semantically, not byte-for-byte.
     ///
     /// **Drift detector — playbook side.** A separate test below
-    /// (`fixture_section_3_contains_every_playbook_statement`) walks
-    /// the fixture and asserts the presence of every load-bearing
-    /// statement the playbook requires. If the playbook adds or
-    /// removes a step, that test must be updated — that is the gate
-    /// against fixture-from-emitter self-reference.
+    /// (`fixture_section_3_carries_every_playbook_anchor_substring`)
+    /// walks the fixture and asserts the presence of every
+    /// load-bearing playbook statement substring. If the playbook
+    /// adds or removes a step, that test must be updated.
     ///
     /// **Drift detector — emitter side.** The byte-equality test
     /// (`whole_plan_byte_equality_section_3_forward`) asserts the
     /// emitter's output equals the fixture exactly. Any emitter
     /// change without a paired fixture update fails loud here.
-    const PLAYBOOK_SECTION_3_NORMALIZED: &str =
-        include_str!("fixtures/pk_flip_playbook_section_3.sql");
+    const EMITTER_OUTPUT_SECTION_3_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_emitter_output_section_3.sql");
 
     // ── Fixture regeneration helper ──────────────────────────────────
     //
@@ -3590,12 +3611,14 @@ mod tests {
     // **WARNING — PLAYBOOK DRIFT.** The dumper writes the EMITTER's
     // output, NOT the playbook's. After re-dumping, the operator
     // MUST re-read `asc-to-desc.md` for the section in question and
-    // verify the new fixture contents reproduce every playbook
-    // statement verbatim. The companion test
-    // `fixture_section_3_contains_every_playbook_statement` (and its
-    // siblings for §4 / §6 / §7 / §8 / §9) acts as a second-side
-    // drift detector — any deletion of a load-bearing statement in
-    // the fixture fails that test. Run BOTH tests after dumping.
+    // verify the new fixture contents preserve every playbook
+    // load-bearing statement substring. The companion tests
+    // `fixture_section_3_carries_every_playbook_anchor_substring`
+    // (and its siblings for §4 / §6 / §7 / §8 / §9) act as a
+    // second-side drift detector — any deletion of a load-bearing
+    // playbook substring from the fixture fails that test. Run
+    // BOTH the byte-equality tests AND the anchor-substring tests
+    // after dumping.
     #[test]
     fn dump_pk_flip_fixtures() {
         if std::env::var("DJOGI_DUMP_PK_FLIP_FIXTURES").ok().as_deref() != Some("1") {
@@ -3616,7 +3639,7 @@ mod tests {
         // §3 forward.
         let plan_3 = lowered_plan_section_3();
         write(
-            "pk_flip_playbook_section_3.sql",
+            "pk_flip_emitter_output_section_3.sql",
             whole_plan_normalised(&plan_3),
         );
 
@@ -3627,7 +3650,7 @@ mod tests {
         g3r.direction = PkFlipDirection::DescToAsc;
         let plan_3r = super::lower_pk_flip_group(&g3r, bucket());
         write(
-            "pk_flip_playbook_section_3_reverse.sql",
+            "pk_flip_emitter_output_section_3_reverse.sql",
             whole_plan_normalised(&plan_3r),
         );
 
@@ -3646,7 +3669,7 @@ mod tests {
         });
         let plan_4 = super::lower_pk_flip_group(&g4, bucket());
         write(
-            "pk_flip_playbook_section_4.sql",
+            "pk_flip_emitter_output_section_4.sql",
             whole_plan_normalised(&plan_4),
         );
 
@@ -3659,7 +3682,7 @@ mod tests {
         });
         let plan_6 = super::lower_pk_flip_group(&g6, bucket());
         write(
-            "pk_flip_playbook_section_6.sql",
+            "pk_flip_emitter_output_section_6.sql",
             whole_plan_normalised(&plan_6),
         );
 
@@ -3677,7 +3700,7 @@ mod tests {
         });
         let plan_7 = super::lower_pk_flip_group(&g7, bucket());
         write(
-            "pk_flip_playbook_section_7.sql",
+            "pk_flip_emitter_output_section_7.sql",
             whole_plan_normalised(&plan_7),
         );
 
@@ -3705,7 +3728,7 @@ mod tests {
         });
         let plan_8 = super::lower_pk_flip_group(&g8, bucket());
         write(
-            "pk_flip_playbook_section_8.sql",
+            "pk_flip_emitter_output_section_8.sql",
             whole_plan_normalised(&plan_8),
         );
 
@@ -3719,7 +3742,7 @@ mod tests {
         });
         let plan_9 = super::lower_pk_flip_group(&g9, bucket());
         write(
-            "pk_flip_playbook_section_9.sql",
+            "pk_flip_emitter_output_section_9.sql",
             whole_plan_normalised(&plan_9),
         );
     }
@@ -3728,19 +3751,19 @@ mod tests {
     fn whole_plan_byte_equality_section_3_forward() {
         let plan = lowered_plan_section_3();
         let actual = whole_plan_normalised(&plan);
-        let expected = whitespace_normalize(PLAYBOOK_SECTION_3_NORMALIZED);
+        let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_3_NORMALIZED);
         assert_eq!(
             actual, expected,
             "whole-plan §3 forward output drifted from fixture; \
-             update tests/fixtures/pk_flip_playbook_section_3.sql or fix emitter",
+             update tests/fixtures/pk_flip_emitter_output_section_3.sql or fix emitter",
         );
     }
 
     /// Reverse-direction §3 fixture. The hand-rolled DO block lives
     /// here verbatim so any future `heeranjid_bulk_backfill_to_asc`
     /// substrate addition must update both.
-    const PLAYBOOK_SECTION_3_REVERSE_NORMALIZED: &str =
-        include_str!("fixtures/pk_flip_playbook_section_3_reverse.sql");
+    const EMITTER_OUTPUT_SECTION_3_REVERSE_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_emitter_output_section_3_reverse.sql");
 
     #[test]
     fn whole_plan_byte_equality_section_3_reverse() {
@@ -3750,17 +3773,17 @@ mod tests {
         group.direction = PkFlipDirection::DescToAsc;
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
-        let expected = whitespace_normalize(PLAYBOOK_SECTION_3_REVERSE_NORMALIZED);
+        let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_3_REVERSE_NORMALIZED);
         assert_eq!(
             actual, expected,
             "whole-plan §3 reverse output drifted from fixture; \
-             update tests/fixtures/pk_flip_playbook_section_3_reverse.sql or fix emitter",
+             update tests/fixtures/pk_flip_emitter_output_section_3_reverse.sql or fix emitter",
         );
     }
 
     /// §4 parent + child fixture (forward direction).
-    const PLAYBOOK_SECTION_4_NORMALIZED: &str =
-        include_str!("fixtures/pk_flip_playbook_section_4.sql");
+    const EMITTER_OUTPUT_SECTION_4_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_emitter_output_section_4.sql");
 
     #[test]
     fn whole_plan_byte_equality_section_4_parent_child() {
@@ -3778,7 +3801,7 @@ mod tests {
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
-        let expected = whitespace_normalize(PLAYBOOK_SECTION_4_NORMALIZED);
+        let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_4_NORMALIZED);
         assert_eq!(
             actual, expected,
             "whole-plan §4 output drifted from fixture; update fixture or fix emitter",
@@ -3786,8 +3809,8 @@ mod tests {
     }
 
     /// §6 self-FK fixture (forward direction).
-    const PLAYBOOK_SECTION_6_NORMALIZED: &str =
-        include_str!("fixtures/pk_flip_playbook_section_6.sql");
+    const EMITTER_OUTPUT_SECTION_6_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_emitter_output_section_6.sql");
 
     #[test]
     fn whole_plan_byte_equality_section_6_self_fk() {
@@ -3799,7 +3822,7 @@ mod tests {
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
-        let expected = whitespace_normalize(PLAYBOOK_SECTION_6_NORMALIZED);
+        let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_6_NORMALIZED);
         assert_eq!(
             actual, expected,
             "whole-plan §6 output drifted from fixture; update fixture or fix emitter",
@@ -3807,8 +3830,8 @@ mod tests {
     }
 
     /// §7 join-table fixture (forward direction).
-    const PLAYBOOK_SECTION_7_NORMALIZED: &str =
-        include_str!("fixtures/pk_flip_playbook_section_7.sql");
+    const EMITTER_OUTPUT_SECTION_7_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_emitter_output_section_7.sql");
 
     #[test]
     fn whole_plan_byte_equality_section_7_join_table() {
@@ -3825,7 +3848,7 @@ mod tests {
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
-        let expected = whitespace_normalize(PLAYBOOK_SECTION_7_NORMALIZED);
+        let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_7_NORMALIZED);
         assert_eq!(
             actual, expected,
             "whole-plan §7 output drifted from fixture; update fixture or fix emitter",
@@ -3833,8 +3856,8 @@ mod tests {
     }
 
     /// §8 cycle fixture (forward direction).
-    const PLAYBOOK_SECTION_8_NORMALIZED: &str =
-        include_str!("fixtures/pk_flip_playbook_section_8.sql");
+    const EMITTER_OUTPUT_SECTION_8_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_emitter_output_section_8.sql");
 
     #[test]
     fn whole_plan_byte_equality_section_8_cycle() {
@@ -3859,7 +3882,7 @@ mod tests {
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
-        let expected = whitespace_normalize(PLAYBOOK_SECTION_8_NORMALIZED);
+        let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_8_NORMALIZED);
         assert_eq!(
             actual, expected,
             "whole-plan §8 output drifted from fixture; update fixture or fix emitter",
@@ -3870,8 +3893,8 @@ mod tests {
     /// captures the placeholder-bearing emitter output (operators
     /// applying through the runner see the placeholder expanded at
     /// apply time via pg_inherits — see runner B-2).
-    const PLAYBOOK_SECTION_9_NORMALIZED: &str =
-        include_str!("fixtures/pk_flip_playbook_section_9.sql");
+    const EMITTER_OUTPUT_SECTION_9_NORMALIZED: &str =
+        include_str!("fixtures/pk_flip_emitter_output_section_9.sql");
 
     #[test]
     fn whole_plan_byte_equality_section_9_partitioned() {
@@ -3884,7 +3907,7 @@ mod tests {
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
-        let expected = whitespace_normalize(PLAYBOOK_SECTION_9_NORMALIZED);
+        let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_9_NORMALIZED);
         assert_eq!(
             actual, expected,
             "whole-plan §9 output drifted from fixture; update fixture or fix emitter",
@@ -3909,11 +3932,11 @@ mod tests {
     /// §3 single-table forward — every playbook statement from §3.1
     /// through §3.6 must be present in the fixture.
     #[test]
-    fn fixture_section_3_contains_every_playbook_statement() {
+    fn fixture_section_3_carries_every_playbook_anchor_substring() {
         // Whitespace-normalise the fixture so substring matches are
         // robust against formatting changes (multi-space → single
         // space, newlines stripped).
-        let fx = whitespace_normalize(PLAYBOOK_SECTION_3_NORMALIZED);
+        let fx = whitespace_normalize(EMITTER_OUTPUT_SECTION_3_NORMALIZED);
         // §3.1 — ADD COLUMN.
         assert!(
             fx.contains("ALTER TABLE tbl ADD COLUMN id_desc bigint"),
@@ -4000,7 +4023,7 @@ mod tests {
     /// asc-side default) — applied to the §3 forward fixture.
     #[test]
     fn fixture_section_3_reverse_applies_documented_substitution() {
-        let fx = whitespace_normalize(PLAYBOOK_SECTION_3_REVERSE_NORMALIZED);
+        let fx = whitespace_normalize(EMITTER_OUTPUT_SECTION_3_REVERSE_NORMALIZED);
         // The reverse direction substitutes the trigger body to use
         // `heerid_to_asc` (NOT `heerid_to_desc`).
         assert!(
@@ -4028,8 +4051,8 @@ mod tests {
     /// §4 parent + child — every playbook statement for the worked
     /// example with parent=`parent` and child=`c`.
     #[test]
-    fn fixture_section_4_contains_every_playbook_statement() {
-        let fx = whitespace_normalize(PLAYBOOK_SECTION_4_NORMALIZED);
+    fn fixture_section_4_carries_every_playbook_anchor_substring() {
+        let fx = whitespace_normalize(EMITTER_OUTPUT_SECTION_4_NORMALIZED);
         // Parent section (§3 statements applied to `parent`).
         assert!(fx.contains("ALTER TABLE parent ADD COLUMN id_desc bigint"));
         assert!(fx.contains("zzz_parent_autofill_desc"));
@@ -4060,8 +4083,8 @@ mod tests {
 
     /// §6 self-FK — multi-pair trigger + cutover with FK re-creation.
     #[test]
-    fn fixture_section_6_contains_every_playbook_statement() {
-        let fx = whitespace_normalize(PLAYBOOK_SECTION_6_NORMALIZED);
+    fn fixture_section_6_carries_every_playbook_anchor_substring() {
+        let fx = whitespace_normalize(EMITTER_OUTPUT_SECTION_6_NORMALIZED);
         // Two shadow columns on the same table.
         assert!(fx.contains("ALTER TABLE nodes ADD COLUMN id_desc bigint"));
         assert!(fx.contains("ALTER TABLE nodes ADD COLUMN parent_id_desc bigint"));
@@ -4098,8 +4121,8 @@ mod tests {
     /// §7 join table — preparation + cutover for the worked
     /// example tags/book_tags.
     #[test]
-    fn fixture_section_7_contains_every_playbook_statement() {
-        let fx = whitespace_normalize(PLAYBOOK_SECTION_7_NORMALIZED);
+    fn fixture_section_7_carries_every_playbook_anchor_substring() {
+        let fx = whitespace_normalize(EMITTER_OUTPUT_SECTION_7_NORMALIZED);
         // Parent shadow + trigger.
         assert!(fx.contains("ALTER TABLE tags ADD COLUMN id_desc bigint"));
         assert!(fx.contains("zzz_tags_autofill_desc"));
@@ -4128,8 +4151,8 @@ mod tests {
 
     /// §8 cycle — DEFERRABLE FKs + SET CONSTRAINTS ALL DEFERRED.
     #[test]
-    fn fixture_section_8_contains_every_playbook_statement() {
-        let fx = whitespace_normalize(PLAYBOOK_SECTION_8_NORMALIZED);
+    fn fixture_section_8_carries_every_playbook_anchor_substring() {
+        let fx = whitespace_normalize(EMITTER_OUTPUT_SECTION_8_NORMALIZED);
         // The cutover MUST begin with SET CONSTRAINTS ALL DEFERRED
         // when cycles are present. (The fixture's whitespace-
         // normalised form puts everything on one line, so a
@@ -4151,8 +4174,8 @@ mod tests {
     /// shadow, parent-level UNIQUE placeholder, ATTACH PARTITION
     /// expansion via runner, ADD PRIMARY KEY (NOT USING INDEX).
     #[test]
-    fn fixture_section_9_contains_every_playbook_statement() {
-        let fx = whitespace_normalize(PLAYBOOK_SECTION_9_NORMALIZED);
+    fn fixture_section_9_carries_every_playbook_anchor_substring() {
+        let fx = whitespace_normalize(EMITTER_OUTPUT_SECTION_9_NORMALIZED);
         // Parent-level shadow column.
         assert!(fx.contains("ALTER TABLE events ADD COLUMN id_desc bigint"));
         // Parent-level UNIQUE placeholder via ON ONLY (key §9.5
