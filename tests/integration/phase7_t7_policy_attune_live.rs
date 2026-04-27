@@ -2539,3 +2539,183 @@ async fn u5_attune_squash_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::Djog
     );
     let _ = std::fs::remove_dir_all(&work);
 }
+
+// ── Codex umbrella U-7: --squash implies recording ───────────────────────
+
+/// Codex umbrella round-2 U-7: `--squash` clearly implies
+/// `--record` per `docs/spec/configuration.md` §15 ("parent-repo
+/// submodule-pointer changes are explicit via `--record` or options
+/// that clearly imply recording, such as `--squash`") and
+/// `docs/spec/migrations.md` §"migrations attune" ("a command mode
+/// clearly implies recording, such as `--squash`").
+///
+/// Pre-U-7 the implementation only honoured the explicit `req.record`
+/// flag — an operator running `attune --squash --apply --target <ref>`
+/// saw the squash succeed but the parent's recorded submodule
+/// pointer stayed put. This test pins the post-fix invariant: a
+/// Squash-mode invocation with a resolved target writes the parent
+/// pointer WITHOUT requiring the operator to also pass `--record`.
+///
+/// The squash itself can be a no-op (no later versions to subsume) —
+/// we don't care about the squash mutation here. We care that the
+/// recording side-effect fires on Squash mode regardless of whether
+/// `req.record` was explicitly set.
+#[djogi::djogi_test]
+async fn u7_attune_squash_implies_recording_without_explicit_flag(mut ctx: djogi::DjogiContext) {
+    if !u1_git_available() {
+        eprintln!(
+            "[u7] skipping u7_attune_squash_implies_recording_without_explicit_flag: \
+             git not on PATH"
+        );
+        return;
+    }
+    let work = temp_workspace("u7_squash_implies_record");
+    let db = current_database(&mut ctx).await;
+    let initial_sha = init_parent_with_migrations_submodule(&work, &db);
+
+    // Make a SECOND commit on the migrations submodule so we can
+    // attune the parent to the NEW SHA distinct from the seeded
+    // pointer (otherwise the assertion can't tell "no write" from
+    // "wrote the same SHA back").
+    let bucket_dir = work.join(format!("migrations/{db}/_global_"));
+    std::fs::write(
+        bucket_dir.join("V20260201000000__u7_second.sql"),
+        "CREATE TABLE u7_second(id INT);",
+    )
+    .unwrap();
+    let migrations_root = work.join("migrations");
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("add")
+        .arg(".")
+        .output()
+        .expect("git add second");
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("commit")
+        .arg("-m")
+        .arg("u7 second migration")
+        .output()
+        .expect("git commit second");
+    let head_out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .expect("rev-parse HEAD second");
+    let new_sha = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+    assert_ne!(initial_sha, new_sha, "second commit must produce a new SHA");
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        // Squash from the FIRST seeded migration. With only that one
+        // up file on disk in the seeded bucket, the squash is a
+        // no-op (to_squash.len() <= 1 path) — but the parent-pointer
+        // recording side-effect must still fire because Squash
+        // implies --record.
+        mode: AttuneMode::Squash {
+            from: "V20260101000000__init".to_string(),
+            publish: false,
+            app: None,
+        },
+        target: Some(new_sha.as_str()),
+        apply: true,
+        // CRITICAL: --record is FALSE. Pre-U-7 this meant the parent
+        // pointer would NOT be updated; post-U-7 Squash mode auto-
+        // implies recording so the pointer DOES get written.
+        record: false,
+        dev_mode: true,
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert_eq!(report.resolved_target, Some(new_sha.clone()));
+    assert!(
+        report.parent_pointer_updated,
+        "U-7: --squash with a resolved target must auto-write the parent \
+         pointer even without explicit --record"
+    );
+
+    // Verify the parent's index entry now records new_sha at the
+    // `migrations` path. Pre-U-7 this would still be initial_sha
+    // because the recording side-effect was gated on req.record.
+    let ls = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&work)
+        .arg("ls-files")
+        .arg("--stage")
+        .arg("migrations")
+        .output()
+        .expect("git ls-files");
+    let stdout = String::from_utf8_lossy(&ls.stdout).into_owned();
+    assert!(
+        stdout.contains(&new_sha),
+        "U-7: parent index must record new_sha {new_sha} at migrations path; got: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella round-2 U-7: the dry-run side of the auto-imply
+/// fires too — `attune --squash --target <ref>` (NO --apply, NO
+/// --record) surfaces the `DryRunRecordSkipped` diagnostic. Pre-U-7
+/// the diagnostic only surfaced when the operator typed `--record`
+/// explicitly; the new effective-record computation makes Squash
+/// mode behave as if `--record` were always present, both for the
+/// apply-side mutation AND for the dry-run diagnostic surface.
+#[djogi::djogi_test]
+async fn u7_attune_squash_dry_run_surfaces_record_skipped_without_explicit_flag(
+    mut ctx: djogi::DjogiContext,
+) {
+    if !u1_git_available() {
+        eprintln!(
+            "[u7] skipping u7_attune_squash_dry_run_surfaces_record_skipped: \
+             git not on PATH"
+        );
+        return;
+    }
+    let work = temp_workspace("u7_squash_dry_record_skipped");
+    let db = current_database(&mut ctx).await;
+    let initial_sha = init_parent_with_migrations_submodule(&work, &db);
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        mode: AttuneMode::Squash {
+            from: "V20260101000000__init".to_string(),
+            publish: false,
+            app: None,
+        },
+        target: Some(initial_sha.as_str()),
+        apply: false,  // dry-run
+        record: false, // and explicit record is OFF — Squash auto-implies
+        dev_mode: true,
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert!(!report.mutated, "dry-run must not mutate");
+    assert!(
+        !report.parent_pointer_updated,
+        "dry-run must not write the parent pointer regardless of effective_record"
+    );
+    // The DryRunRecordSkipped diagnostic must surface even though
+    // req.record was false — because Squash auto-implies recording.
+    assert!(
+        report.diagnostics.iter().any(|d| matches!(
+            d,
+            djogi::migrate::AttuneDiagnostic::DryRunRecordSkipped { resolved_target } if resolved_target.as_deref() == Some(initial_sha.as_str())
+        )),
+        "U-7: Squash dry-run must surface DryRunRecordSkipped even without \
+         explicit --record (because Squash implies recording): {:?}",
+        report.diagnostics
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}

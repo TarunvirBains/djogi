@@ -639,6 +639,16 @@ pub struct AttuneRequest<'a> {
     /// dry-run that prints the would-be parent pointer update without
     /// touching the parent index. Without `--apply`, the parent
     /// pointer is NEVER mutated regardless of `--record`.
+    ///
+    /// Codex umbrella round-2 U-7: `--squash` clearly implies
+    /// recording per `docs/spec/configuration.md` §15 and
+    /// `docs/spec/migrations.md` §"migrations attune". The runtime
+    /// computes an `effective_record` boolean as
+    /// `req.record || matches!(req.mode, AttuneMode::Squash { .. })`,
+    /// so an operator running `attune --squash --apply --target <ref>`
+    /// gets the parent pointer write WITHOUT also typing `--record`.
+    /// The explicit `req.record` flag is still honoured (and required)
+    /// for `Record` / `DiffOnly` modes.
     pub record: bool,
     /// Mode selector — see [`AttuneMode`].
     pub mode: AttuneMode,
@@ -855,6 +865,30 @@ pub async fn attune(
     // ledger / disk mutation and the diff is the only output.
     let apply = req.apply;
 
+    // Codex umbrella round-2 U-7: `--squash` clearly implies recording
+    // per `docs/spec/configuration.md` §15 ("parent-repo
+    // submodule-pointer changes are explicit via `--record` or options
+    // that clearly imply recording, such as `--squash`") and
+    // `docs/spec/migrations.md` §"migrations attune" ("a command mode
+    // clearly implies recording, such as `--squash`"). Pre-fix the
+    // implementation only honoured the explicit `req.record` flag, so
+    // an operator running `attune --squash --apply --target <ref>`
+    // saw the squash succeed but the parent's recorded submodule
+    // pointer stayed put — the spec said one thing, the code did
+    // another. This effective-record boolean closes the gap: a Squash
+    // mode with a resolved target writes the pointer regardless of
+    // whether `--record` was passed explicitly. The operator's
+    // explicit `--record` still works as before for Record / DiffOnly
+    // modes.
+    //
+    // The choice ((a) — auto-imply rather than (b) — strip the spec
+    // clause) was made deliberately: squash genuinely needs the parent
+    // pointer to track the rewritten history. After `--publish` lands
+    // the new HEAD on `origin`, the parent's recorded pointer would
+    // otherwise still reference a SHA the migrations submodule no
+    // longer carries — operator coherence would silently drift.
+    let effective_record = req.record || matches!(req.mode, AttuneMode::Squash { .. });
+
     match &req.mode {
         AttuneMode::DiffOnly => {
             entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
@@ -972,7 +1006,13 @@ pub async fn attune(
                 report
                     .diagnostics
                     .push(AttuneDiagnostic::DryRunMutationsSkipped { mode: "Squash" });
-                if req.record && resolved_target.is_some() {
+                // Codex umbrella round-2 U-7: surface the would-be
+                // parent-pointer skip on Squash dry-run too. Squash
+                // implies recording, so an operator running
+                // `attune --squash --target <ref>` (no --apply)
+                // should see "would record SHA X" alongside the
+                // dry-run mutations notice.
+                if effective_record && resolved_target.is_some() {
                     report
                         .diagnostics
                         .push(AttuneDiagnostic::DryRunRecordSkipped {
@@ -992,11 +1032,13 @@ pub async fn attune(
                 entries,
             )
             .await?;
-            // After a successful squash, --record updates the parent
-            // submodule pointer if a target was resolved.
-            if req.record
-                && let Some(sha) = &resolved_target
-            {
+            // Codex umbrella round-2 U-7: after a successful squash
+            // the parent submodule pointer is updated when a target
+            // was resolved — `--squash` implies `--record`, so we
+            // gate on `effective_record` rather than `req.record`.
+            // The operator no longer needs to type both flags; one
+            // does the work of two per the spec contract.
+            if effective_record && let Some(sha) = &resolved_target {
                 update_parent_submodule_pointer(req.workspace_root, sha)?;
                 report.parent_pointer_updated = true;
             }
