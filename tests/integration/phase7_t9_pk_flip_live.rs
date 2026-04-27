@@ -2101,6 +2101,72 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
         );
     }
 
+    // ── B-13 partial (Codex round-4) — full two-way FK integrity ─────
+    //
+    // Round-3 only counted rows + checked one direction's linkage.
+    // The round-4 strengthening verifies BOTH directions: every
+    // cyc_a row with a non-null `b_id` has a matching cyc_b row,
+    // and every cyc_b row with a non-null `a_id` has a matching
+    // cyc_a row. A 3-way JOIN through both FK columns proves the
+    // post-flip schema preserves cycle integrity end-to-end.
+    let dangling_a_b: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM cyc_a a \
+             WHERE a.b_id IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM cyc_b b WHERE b.id = a.b_id)",
+            &[],
+        )
+        .await
+        .expect("dangling a→b");
+    assert_eq!(
+        dangling_a_b, 0,
+        "post-cutover: every cyc_a.b_id must resolve to a real cyc_b.id",
+    );
+    let dangling_b_a: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM cyc_b b \
+             WHERE b.a_id IS NOT NULL \
+               AND NOT EXISTS (SELECT 1 FROM cyc_a a WHERE a.id = b.a_id)",
+            &[],
+        )
+        .await
+        .expect("dangling b→a");
+    assert_eq!(
+        dangling_b_a, 0,
+        "post-cutover: every cyc_b.a_id must resolve to a real cyc_a.id",
+    );
+    let n_b_linked: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM cyc_b WHERE a_id IS NOT NULL",
+            &[],
+        )
+        .await
+        .expect("linked b");
+    assert_eq!(
+        n_b_linked, 50,
+        "cyc_b.a_id linkage preserved (50 rows had NULL FK at seed time)",
+    );
+    // 3-way JOIN through both FK columns. The seed deliberately
+    // links the SAME 50 rows on both sides (rn-paired in the
+    // seeding WITH clause), so all 50 paired rows must round-trip
+    // through `cyc_a → cyc_b → cyc_a`. Pre-fix the round-3 test
+    // never asserted both directions; a half-broken cutover that
+    // preserved one FK and silently dropped the other would have
+    // slipped through.
+    let n_3way: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM cyc_a a \
+             JOIN cyc_b b ON a.b_id = b.id \
+             JOIN cyc_a a2 ON b.a_id = a2.id",
+            &[],
+        )
+        .await
+        .expect("3-way join");
+    assert_eq!(
+        n_3way, 50,
+        "post-cutover: 3-way JOIN through both FK columns must round-trip \
+         the 50 seeded paired rows",
+    );
 }
 
 // ── Test 22 — B-12 (Codex round-3): Option A vs B produce DIFFERENT SQL ──
