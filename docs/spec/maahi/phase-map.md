@@ -8,7 +8,7 @@ Phase 10 ships a real, production-grade admin:
 
 - Dioxus full-stack renderer on Axum, `cargo djogi admin build` integration
 - Hybrid `_admin_users` / `_admin_sessions` substrate in the audit DB
-- Visage-grant RBAC with single-parent inheritance — `_admin_role_visage_perms` per `(role, app, model, visage)`; visages remain pure compile-time projections
+- Visage-grant RBAC with single-parent inheritance — `_admin_role_visage_perms` per `(role, app, model, visage)`; visages remain pure compile-time projections, sourced from the canonical visages emitted by `expose(...)` annotations (no custom user-defined visage structs in v1 — see Phase 10.5 deferral below)
 - Six-action permission model with per-model overrides
 - Multi-tenant aware login, session, and query path
 - Compile-time feasibility analysis surfaced as `AppDiagnostic` entries
@@ -30,6 +30,7 @@ Phase 10.5 layers compliance polish atop Phase 10 without breaking changes:
 
 | Deferral                                                                | Reason                                                         |
 |-------------------------------------------------------------------------|----------------------------------------------------------------|
+| Custom user-defined visage structs (hand-rolled visages with arbitrary field sets, distinct from canonical `expose(...)` emission) | Visages are developer-designed views; v1 binds operator RBAC to canonical visages only. Custom visages require new framework surface (visages.md amendment + macro work) and a separate design pass on field-level grant semantics |
 | Multi-parent role inheritance (diamond resolution rules)                | Substantial conflict-resolution design; thin slice of value    |
 | Frozen / locked roles                                                   | Defensive feature; cascade-impact UX in v1 covers most cases   |
 | `manage_roles` system permission with transitive upper-bound delegation | Subtle correctness; deserves dedicated escalation-path testing |

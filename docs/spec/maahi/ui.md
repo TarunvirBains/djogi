@@ -10,7 +10,7 @@ Defaults:
 
 - Page size: 25 rows
 - Sortable: every column header for which the descriptor reports a sortable type
-- Search: case-insensitive `ILIKE` across all `String` fields in the requesting role's effective visible field set on the model (per the resolution in [RBAC](./rbac.md))
+- Search: case-insensitive `ILIKE` across all `String` fields in the requesting role's effective visible field set on the model (per the resolution in [RBAC](./rbac.md)). When `admin_search_fields` is configured, fields named in that list but absent from the role's visible set are silently dropped from the ILIKE — search never reaches into non-visible fields, even as a probe oracle. If the entire `admin_search_fields` list is non-visible to the role, the search input is hidden from the list view for that role
 - Default sort: most recently created first
 
 Per-model overrides via `#[model(...)]` attributes:

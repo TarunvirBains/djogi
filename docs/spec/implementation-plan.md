@@ -683,7 +683,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 ### 10c: Field-Visibility Substrate + Label Trait
 
 - [ ] `expose(none)` enforced as the absolute floor — never UI-rendered, never editable, even for superuser, even with `view_full_struct` / `write_full_struct`
-- [ ] `Label` trait + `VisibleFields` parameter live in `djogi` (not `djogi-maahi`); macro emission per `#[derive(Model)]` honors the four-rule resolution chain (`label_fn` > `#[field(label)]` > `String`-fallback > ID-only); concurrent `label_fn` and `#[field(label)]` is a compile error
+- [ ] `Label` trait + `VisibleFields` parameter live in `djogi` (not `djogi-maahi`); `#[model]` macro emits the impl per the four-rule resolution chain (`label_fn` > `#[field(label)]` > `String`-fallback > ID-only); concurrent `label_fn` and `#[field(label)]` is a compile error
 - [ ] FK widget tier resolution (preload / typeahead based on `[admin].fk_preload_threshold`); optional `AdminFkFilter` trait + `#[field(admin_fk_filter = "...")]` override; FK dropdowns render row labels via `Label::label(&visible)` with `visible` constructed from the requesting role's effective visibility on the FK target
 - [ ] List view default column and audit-log entry rendering route through `Label::label(&visible)` constructed from the *viewer's* visibility on the source model
 

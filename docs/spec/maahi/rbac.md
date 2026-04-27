@@ -6,7 +6,7 @@
 
 Maahi is a runtime authorization system that *consumes* compile-time descriptor metadata; it does not own the field-visibility shape itself. Visages — the compile-time projections defined in [Visages](../visages.md) — remain narrow per their existing spec: they are descriptor data plus transport-type generators. Authorization is an explicit non-goal of visages.
 
-Maahi has its own permission system. Within Maahi, visages are the unit of visibility: a role's view-and-edit access to a model is expressed as a set of *visage grants*, not as per-field grants directly. Engineering owns what fields are visible by defining the compiled visages; operators own which roles can see which visages by checking boxes in the Maahi UI. There is no runtime visage management.
+Maahi has its own permission system. Within Maahi, visages are the unit of visibility: a role's view-and-edit access to a model is expressed as a set of *visage grants*, not as per-field grants directly. Engineering owns what fields are visible by writing `expose(...)` annotations on model fields, which drive the canonical visage generation defined in [Visages](../visages.md); operators own which roles can see which visages by checking boxes in the Maahi UI. There is no runtime visage management and no custom-visage definition surface in v1 — visages are exactly the developer-designed views that `expose(...)` produces.
 
 ```rust
 #[model(table = "vehicles")]
@@ -16,7 +16,7 @@ pub struct Vehicle {
     pub vin: String,                    // canonical visage membership
 
     pub make: String,                   // no expose() — only visible via view_full_struct
-                                        //   or a hand-defined #[derive(Visage)] that includes it
+                                        //   or to superuser
 
     #[field(expose(admin))]
     pub registration_state: String,
@@ -24,22 +24,18 @@ pub struct Vehicle {
     #[field(expose(none))]
     pub internal_audit_id: String,      // never visible to anyone, including superuser
 }
-
-// Custom compiled visage for a narrower admin tier
-#[derive(Visage)]
-#[visage(model = Vehicle, fields(vin, make))]
-pub struct VehicleSupportView;
 ```
 
 The compiled-visage registry collected at startup for the example above:
 
 ```text
-fleet_app.Vehicle.VehiclePublic       = ["vin"]                    (from expose(public))
-fleet_app.Vehicle.VehicleAdmin        = ["vin", "registration_state"] (from expose(admin))
-fleet_app.Vehicle.VehicleSupportView  = ["vin", "make"]            (from #[derive(Visage)])
+fleet_app.Vehicle.VehiclePublic = ["vin"]                          (from expose(public))
+fleet_app.Vehicle.VehicleAdmin  = ["vin", "registration_state"]    (from expose(admin))
 ```
 
-Field-visibility decisions stay under code review — adding a new view tier requires a code change to add a new `#[derive(Visage)]`, exactly where security-relevant decisions about what fields go where should live. Operators get expressiveness through the combinatorial space of (compiled visages × role grants × per-model action overrides) without bypassing engineering.
+Field-visibility decisions stay under code review — adding a new view tier requires a code change that adds an `expose(...)` annotation on the relevant fields, exactly where security-relevant decisions about what fields go where should live. Operators get expressiveness through the combinatorial space of (canonical visages × role grants × per-model action overrides × the `view_full_struct` / `write_full_struct` system permissions) without bypassing engineering.
+
+Custom user-defined visage structs (a hand-rolled visage with an arbitrary field set, distinct from the canonical visages emitted by `expose(...)`) are deferred to Phase 10.5 — see [Phase Map](./phase-map.md). The deferral keeps Maahi v1 strictly aligned with the existing Phase 4.5 / 7-Zero-2 visage surface, which emits only the canonical visages (`{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`).
 
 The lone whole-model exception is `#[model(admin = false)]`, which removes a model from Maahi entirely regardless of any visage grant.
 
@@ -50,9 +46,8 @@ Visages live in the natural ownership hierarchy from the apps subsystem (Phase 7
 ```
 fleet_app/
 ├── Vehicle/
-│   ├── VehiclePublic         (compiled, canonical)
-│   ├── VehicleAdmin          (compiled, canonical)
-│   └── VehicleSupportView    (compiled, custom — hand-defined for support tier)
+│   ├── VehiclePublic    (canonical, from expose(public))
+│   └── VehicleAdmin     (canonical, from expose(admin))
 └── Owner/
     ├── OwnerPublic
     ├── OwnerSelfView
@@ -65,7 +60,9 @@ billing_app/
 └── ...
 ```
 
-Each visage is fully qualified by `(app_name, model_name, visage_name)`. The qualifier is what permission grants reference. Cross-app references are impossible by construction — visage names within an app's namespace can only reference fields on models owned by that app, which falls out of Phase 7-Zero apps-subsystem ownership rules without any extra Maahi runtime check.
+Each visage is fully qualified by `(app_name, model_name, visage_name)`. The qualifier is what permission grants reference. The `(app, model)` half of the qualifier comes from the apps subsystem's app→model ownership rules (Phase 7-Zero); Maahi reads the registry without owning the qualification logic. The `visage_name` half is one of the canonical visage names (`Public`, `SelfView`, `Admin`, `Export`) emitted from `expose(...)` annotations.
+
+Cross-app references are prevented by registry validation: the live compile-time visage registry is keyed by `(app, model, visage_name)` and the role-config write path rejects any triple absent from the registry. A `_admin_role_visage_perms` row referencing `billing_app.User.UserPublic` is invalid because the user model lives in another app's registry entry and the runtime check catches the mismatch on save. The barrier is not purely structural — it is enforced at write time, intentionally, so that schema migrations that re-home a model between apps surface the dangling grants instead of silently rebinding them.
 
 ## Roles and Visage-Grant Tables
 
@@ -89,6 +86,13 @@ CREATE TABLE _admin_roles (
 
     -- System-level grants. Phase 10 ships view_audit_log, manage_users,
     -- view_full_struct, write_full_struct (see operations.md).
+    -- Shape: JSONB object mapping permission name to boolean,
+    --   e.g. {"view_audit_log": true, "manage_users": false,
+    --         "view_full_struct": true, "write_full_struct": false}.
+    -- Absent keys default to false. Unknown keys are rejected at write time
+    -- against the live registry of valid permission names. Subset comparisons
+    -- in the manage_users upper-bound rule (see operations.md) compute
+    -- "set of true-valued keys is a subset of the holder's true-valued keys."
     system_perms      JSONB NOT NULL DEFAULT '{}'::JSONB,
 
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -108,7 +112,7 @@ CREATE TABLE _admin_role_visage_perms (
 );
 ```
 
-The `(app_name, model_name, visage_name)` triple is validated at write time against the live registry of compiled visages — a compile-time-collected list (via `inventory`) of every visage emitted by `#[derive(Visage)]` plus the canonical built-ins. Granting a role a visage that doesn't exist (typo, removed visage) returns a form error naming the offending qualifier.
+The `(app_name, model_name, visage_name)` triple is validated at write time against the live registry of compiled visages — a compile-time-collected list (via `inventory`) of every canonical visage emitted from `expose(...)` annotations on registered models, qualified by the owning app per the Phase 7-Zero apps-subsystem rules. Granting a role a visage that doesn't exist (typo, removed `expose(...)` annotation, model re-homed to a different app) returns a form error naming the offending qualifier.
 
 `is_superuser` on `_admin_users` bypasses all role filtering: a superuser sees the raw struct on every model (modulo `expose(none)`), every action is granted, every tenant is reachable, every system permission held implicitly. Superuser is provisioned via the bootstrap CLI and explicit `is_superuser = TRUE` flips by an existing superuser. No role row, no visage grant, can promote a user to superuser; that flip never goes through the role surface.
 
@@ -143,7 +147,7 @@ CREATE TABLE _admin_role_model_perms (
 );
 ```
 
-Visage perms govern *which fields* the role can see and edit; model perms govern *which actions* the role can take. The two are orthogonal axes: a role with `VehicleSupportView` view+edit grants but no `Update` action on Vehicle can see those fields read-only; a role with `Update` on Vehicle but no view grants on any Vehicle visage cannot see the model at all (and therefore cannot exercise the action).
+Visage perms govern *which fields* the role can see and edit; model perms govern *which actions* the role can take. The two are orthogonal axes: a role with `VehicleAdmin` view+edit grants but no `Update` action on Vehicle can see those fields read-only; a role with `Update` on Vehicle but no view grants on any Vehicle visage cannot see the model at all (and therefore cannot exercise the action).
 
 The admin UI surfaces both flows. "Uniform across model" sets the role-row defaults and writes no per-model rows — the simple case. "Per-model" lets the operator override individual models — the realistic admin case where a support agent reads-and-edits customers but only reads billing.
 
@@ -199,16 +203,16 @@ Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. 
 Failures surface at startup as `AppDiagnostic` entries (the diagnostic registry shipped in Phase 7-Zero):
 
 ```text
-maahi: role 'support_editor' cannot create Vehicle —
+maahi: role 'admin_lite' cannot create Vehicle —
        required field `make` (NOT NULL, no DEFAULT) is not in any granted visage and
-       `write_full_struct` is not held. To fix: grant a visage that includes `make`
-       (e.g., VehicleSupportView), grant write_full_struct, or remove Create from this role.
+       `write_full_struct` is not held. To fix: add `expose(admin)` to `make` so
+       VehicleAdmin covers it, grant write_full_struct, or remove Create from this role.
 
-maahi: role 'support_viewer' cannot expose Vehicle.fuel_type_id —
+maahi: role 'public_viewer' cannot expose Vehicle.fuel_type_id —
        FK target FuelType has no visible label-bearing field under this role's
-       effective visibility. To fix: grant a visage on FuelType whose field set
-       includes a Label-eligible field, or remove fuel_type_id from the granted
-       visage on Vehicle.
+       effective visibility on FuelType. To fix: grant a visage on FuelType whose
+       canonical field set includes a Label-eligible field, or remove fuel_type_id
+       from the granted visage on Vehicle.
 ```
 
 The corresponding UI affordances (the "New" button on the Vehicle list, the "Save" button on the empty create form, the bulk-create action menu, the `fuel_type_id` FK dropdown) are hidden at render time. Operators discover misconfiguration at deploy time, not when an end user clicks a button that does nothing.

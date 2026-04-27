@@ -55,7 +55,7 @@ Forgot-password via email is not part of v1 — the framework has no notificatio
 
 1. Provision the audit database (already required by [Logging](../logging.md))
 2. Set the env vars: `DJOGI_ADMIN_CSRF_SECRET`, `DJOGI_ADMIN_SESSION_SECRET`, `DATABASE_URL`, `CRUD_LOG_URL`
-3. Run `cargo djogi migrations apply --target crud_log` — applies Maahi's tables (`_admin_users`, `_admin_roles`, `_admin_role_model_perms`, `_admin_sessions`, `_admin_pending_actions`) into the audit DB. Per the per-target migration model documented in [Logging](../logging.md), `migrations apply` operates on one database target at a time; Maahi's tables live in the `crud_log` target. Apply main-DB migrations separately with `--target main` if this is a greenfield deployment
+3. Run `cargo djogi migrations apply --target crud_log` — applies Maahi's tables (`_admin_users`, `_admin_roles`, `_admin_role_visage_perms`, `_admin_role_model_perms`, `_admin_sessions`, `_admin_pending_actions`) into the audit DB. Per the per-target migration model documented in [Logging](../logging.md), `migrations apply` operates on one database target at a time; Maahi's tables live in the `crud_log` target. Apply main-DB migrations separately with `--target main` if this is a greenfield deployment
 4. Run `cargo djogi admin set-password --superuser <email>` — creates the first user; prompts interactively for the password, hashes via argon2, writes to `_admin_users` with `is_superuser = TRUE`
 5. Start the application; navigate to `/_admin/`; log in with the bootstrap credentials
 6. From inside Maahi, the superuser creates additional roles and users

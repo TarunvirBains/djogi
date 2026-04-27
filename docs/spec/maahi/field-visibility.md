@@ -4,7 +4,7 @@
 
 Field visibility in Maahi has two layers, kept deliberately separate:
 
-1. **Data classification — `expose(none)`.** A field marked `#[field(expose(none))]` is invisible to *everyone*, including superuser and including any explicit visage grant. This is the absolute floor and lives at the field annotation, not in any runtime table. Use for password hashes, internal token bytes, anything that must never render in any UI surface.
+1. **Data classification — `expose(none)`.** A field marked `#[field(expose(none))]` is invisible to *everyone*, including superuser and including any explicit visage grant. This is the absolute floor and lives at the field annotation, not in any runtime table. Use for password hashes, internal token bytes, anything that must never render in any UI surface. `expose(internal)` is a grammar sentinel equivalent to `expose(none)` per [Visages](../visages.md) — no `{Model}Internal` struct is generated; the floor applies the same way.
 2. **Authorization — visage grants.** Every other visibility decision (which roles see which fields, in which form, with what actions) is expressed as visage grants on `_admin_role_visage_perms` (see [RBAC](./rbac.md)). Visages bundle field sets; permissions reference visages.
 
 Visages themselves are pure compile-time projections (see [Visages](../visages.md)). They are descriptor data plus transport-type generators, not a runtime permission system. Maahi consumes them at the visibility-grant boundary; it does not extend their meaning.
@@ -24,9 +24,10 @@ pub vin: String,
 
 // Case 3: no expose() — field belongs to no canonical compiled visage. It is
 //                        visible to superuser (modulo expose(none)) and to any
-//                        non-superuser role holding view_full_struct. It can also
-//                        be added to a hand-defined #[derive(Visage)] that grants
-//                        targeted access without expanding the canonical scopes.
+//                        non-superuser role holding view_full_struct. To make
+//                        such a field visible to a specific role tier, add an
+//                        expose(...) annotation pointing at the relevant
+//                        canonical scope.
 pub make: String,
 ```
 
@@ -49,7 +50,7 @@ Both permissions stop at the `expose(none)` floor — neither reveals nor allows
 
 ## The `Label` Trait — Visibility-Aware
 
-Every `#[derive(Model)]` model implements `Label`, a model-level trait — *not* Maahi-specific — that returns a single human-readable string for the row. Used by FK dropdowns, list views, search-result snippets, audit log entries, shell display defaults, and any future surface that needs a one-line row label.
+Every `#[model]`-annotated struct implements `Label`, a model-level trait — *not* Maahi-specific — that returns a single human-readable string for the row. Used by FK dropdowns, list views, search-result snippets, audit log entries, shell display defaults, and any future surface that needs a one-line row label.
 
 **Critical: `Label` is visibility-aware.** A naively unconditional `label()` would leak hidden field values through FK dropdowns and audit-log views — any caller who can list rows on a model would see labeled fields they have no read permission on. The trait method takes a `VisibleFields` parameter and contractually must not return values from fields outside that set:
 
@@ -61,7 +62,7 @@ pub trait Label {
 pub struct VisibleFields { /* sorted set of field names */ }
 ```
 
-`Label` and `VisibleFields` live in `djogi` (the framework crate), not `djogi-maahi`, so non-admin surfaces (shell, audit, future subapps) consume them without depending on the admin crate. The macro emits the impl as part of `#[derive(Model)]` using these resolution rules, in priority order, **with every step gated on field visibility**:
+`Label` and `VisibleFields` live in `djogi` (the framework crate), not `djogi-maahi`, so non-admin surfaces (shell, audit, future subapps) consume them without depending on the admin crate. The `#[model]` macro emits the impl using these resolution rules, in priority order, **with every step gated on field visibility**:
 
 1. **`#[model(label_fn = "Vehicle::compute_label")]`** present → the named function is responsible for honoring `VisibleFields` and not returning values from non-visible fields.
 2. **`#[field(label)]`** present on a single field F → emitted impl is `if visible.contains("F") { self.F.to_string() } else { fallback() }`.
