@@ -2201,6 +2201,13 @@ fn cross_flipping_join_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSche
 
 #[test]
 fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
+    // Codex round-4 B-15: Option A now emits a SINGLE
+    // `PkTypeFlipMultiGroup` per cluster (the merger interleaves
+    // all parents at every stage so the cutover is one mega-tx).
+    // Option B keeps the per-parent `PkTypeFlipGroup` shape so
+    // each group's cutover only re-points its own FK column on
+    // the join table — sequential semantics. This test pins the
+    // shape difference and the resulting SQL divergence.
     use djogi::migrate::diff::{
         PkFlipJoinTableOption, PkTypeFlipGroup, SchemaOperation, apply_pk_flip_join_table_option,
         diff_bucket_maps,
@@ -2234,7 +2241,9 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
     let mut deltas_b = base_deltas.clone();
     apply_pk_flip_join_table_option(&mut deltas_b, PkFlipJoinTableOption::OptionB);
 
-    let groups_for = |deltas: &[djogi::migrate::SchemaDelta]| -> Vec<PkTypeFlipGroup> {
+    // Helper: extract every `PkTypeFlipGroup` (single-parent) op
+    // from a delta list. Used for Option B's expected shape.
+    let single_groups_for = |deltas: &[djogi::migrate::SchemaDelta]| -> Vec<PkTypeFlipGroup> {
         let delta = deltas
             .iter()
             .find(|d| d.bucket == bucket_key)
@@ -2248,44 +2257,75 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
             })
             .collect()
     };
+    // Helper: extract every `PkTypeFlipMultiGroup` (cluster) op.
+    // Used for Option A's expected shape.
+    let multi_groups_for = |deltas: &[djogi::migrate::SchemaDelta]| -> Vec<Vec<PkTypeFlipGroup>> {
+        let delta = deltas
+            .iter()
+            .find(|d| d.bucket == bucket_key)
+            .expect("delta for cross-flip bucket");
+        delta
+            .operations
+            .iter()
+            .filter_map(|op| match op {
+                SchemaOperation::PkTypeFlipMultiGroup(groups) => Some(groups.clone()),
+                _ => None,
+            })
+            .collect()
+    };
 
-    let groups_a = groups_for(&deltas_a);
-    let groups_b = groups_for(&deltas_b);
+    // ---- Option A — single MultiGroup cluster ----
+    let multi_a = multi_groups_for(&deltas_a);
+    let single_a = single_groups_for(&deltas_a);
     assert_eq!(
-        groups_a.len(),
-        2,
-        "Option A still emits two groups (one per parent); ownership transfer only \
-         redistributes join_tables membership between them",
+        multi_a.len(),
+        1,
+        "Option A merges the cross-flipping cluster into ONE PkTypeFlipMultiGroup",
     );
+    assert!(
+        single_a.is_empty(),
+        "Option A leaves NO standalone PkTypeFlipGroup (every member moved into the multi-group)",
+    );
+    let cluster_a = &multi_a[0];
     assert_eq!(
-        groups_b.len(),
+        cluster_a.len(),
         2,
-        "Option B emits two groups, each retaining its own join-table entry",
+        "Option A cluster covers both jt_books and jt_tags",
     );
-
-    // Option A — winner is alphabetically smaller `parent_table`
-    // (jt_books) and owns the join table fully; loser (jt_tags)
-    // has empty join_tables.
-    let winner_a = groups_a
-        .iter()
-        .find(|g| g.parent_table == "jt_books")
-        .expect("Option A winner");
-    let loser_a = groups_a
-        .iter()
-        .find(|g| g.parent_table == "jt_tags")
-        .expect("Option A loser");
+    let parents_a: Vec<&str> = cluster_a.iter().map(|g| g.parent_table.as_str()).collect();
+    assert_eq!(
+        parents_a,
+        vec!["jt_books", "jt_tags"],
+        "cluster members are alphabetical for determinism",
+    );
+    // Winner-takes-all: jt_books retains the join_table entry,
+    // jt_tags has its cross-flipping entry stripped.
+    let winner_a = &cluster_a[0];
+    let loser_a = &cluster_a[1];
     assert_eq!(
         winner_a.join_tables.len(),
         1,
-        "Option A winner (jt_books) owns the join table",
+        "Option A winner (jt_books) retains join-table ownership inside the cluster",
     );
     assert!(
         loser_a.join_tables.is_empty(),
-        "Option A loser (jt_tags) has no join-table work",
+        "Option A loser (jt_tags) has its cross-flipping join-table stripped \
+         (the multi-group lowering emits the join-table SQL exactly once via the winner)",
     );
 
-    // Option B — both groups retain their join-table entry.
-    for g in &groups_b {
+    // ---- Option B — two single-parent groups ----
+    let multi_b = multi_groups_for(&deltas_b);
+    let single_b = single_groups_for(&deltas_b);
+    assert!(
+        multi_b.is_empty(),
+        "Option B never merges — sequential per-parent layout is the entire point of the knob",
+    );
+    assert_eq!(
+        single_b.len(),
+        2,
+        "Option B emits two standalone PkTypeFlipGroups, each retaining its own join-table entry",
+    );
+    for g in &single_b {
         assert_eq!(
             g.join_tables.len(),
             1,
@@ -2294,38 +2334,56 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
         );
     }
 
-    // Lower both shapes and compare rendered SQL. The Option A
-    // winner's preparation emits ALTER TABLE ADD COLUMN for BOTH
-    // book_id_desc AND tag_id_desc; the Option B groups each emit
-    // ALTER TABLE ADD COLUMN for only ONE of them.
-    let plan_a_winner = lower_pk_flip_group(winner_a, bucket_key.clone());
-    let plan_a_loser = lower_pk_flip_group(loser_a, bucket_key.clone());
-    let prep_a_winner = &plan_a_winner.segments[0].statements[0].up;
-    let prep_a_loser = &plan_a_loser.segments[0].statements[0].up;
+    // ---- Lower and compare SQL ----
+    use djogi::migrate::plan_delta;
+    let plan_a = plan_delta(
+        deltas_a
+            .iter()
+            .find(|d| d.bucket == bucket_key)
+            .expect("delta a"),
+    )
+    .expect("plan a");
+    // Stage 1 of Option A's multi-group plan must add BOTH
+    // shadow columns on the join table. With a single
+    // OperationSql per stage the prep body is segments[0]
+    // statements[0].up.
+    let prep_a = &plan_a.segments[0].statements[0].up;
     assert!(
-        prep_a_winner.contains("ALTER TABLE jt_book_tags ADD COLUMN book_id_desc bigint"),
-        "Option A winner preparation must add book_id_desc; got:\n{prep_a_winner}",
+        prep_a.contains("ALTER TABLE jt_book_tags ADD COLUMN book_id_desc bigint"),
+        "Option A multi-group prep must add book_id_desc; got:\n{prep_a}",
     );
     assert!(
-        prep_a_winner.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
-        "Option A winner preparation must ALSO add tag_id_desc (single mega-tx); \
-         got:\n{prep_a_winner}",
+        prep_a.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
+        "Option A multi-group prep must ALSO add tag_id_desc (single mega-tx prep stage); \
+         got:\n{prep_a}",
+    );
+    // Stage 1 must also prep BOTH parents (jt_books AND jt_tags
+    // shadow columns) — interleaving's whole point.
+    assert!(
+        prep_a.contains("ALTER TABLE jt_books ADD COLUMN id_desc bigint"),
+        "Option A multi-group prep must add jt_books.id_desc; got:\n{prep_a}",
     );
     assert!(
-        !prep_a_loser.contains("ALTER TABLE jt_book_tags ADD COLUMN"),
-        "Option A loser must NOT touch the join table (transferred); got:\n{prep_a_loser}",
+        prep_a.contains("ALTER TABLE jt_tags ADD COLUMN id_desc bigint"),
+        "Option A multi-group prep must add jt_tags.id_desc; got:\n{prep_a}",
     );
 
-    let group_b_books = groups_b
-        .iter()
-        .find(|g| g.parent_table == "jt_books")
-        .expect("Option B books");
-    let group_b_tags = groups_b
-        .iter()
-        .find(|g| g.parent_table == "jt_tags")
-        .expect("Option B tags");
-    let plan_b_books = lower_pk_flip_group(group_b_books, bucket_key.clone());
-    let plan_b_tags = lower_pk_flip_group(group_b_tags, bucket_key.clone());
+    // Option B — two separate plans, each preparing one parent +
+    // one join-table FK column.
+    let plan_b_books = lower_pk_flip_group(
+        single_b
+            .iter()
+            .find(|g| g.parent_table == "jt_books")
+            .unwrap(),
+        bucket_key.clone(),
+    );
+    let plan_b_tags = lower_pk_flip_group(
+        single_b
+            .iter()
+            .find(|g| g.parent_table == "jt_tags")
+            .unwrap(),
+        bucket_key.clone(),
+    );
     let prep_b_books = &plan_b_books.segments[0].statements[0].up;
     let prep_b_tags = &plan_b_tags.segments[0].statements[0].up;
     assert!(
@@ -2334,8 +2392,8 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
     );
     assert!(
         !prep_b_books.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
-        "Option B books-group prep must NOT add tag_id_desc \
-         (sequential — that's the tags-group's job); got:\n{prep_b_books}",
+        "Option B books-group prep must NOT add tag_id_desc (that's the tags-group's job); \
+         got:\n{prep_b_books}",
     );
     assert!(
         prep_b_tags.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
@@ -2344,23 +2402,21 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
     assert!(
         !prep_b_tags.contains("ALTER TABLE jt_book_tags ADD COLUMN book_id_desc bigint"),
         "Option B tags-group prep must NOT add book_id_desc \
-         (sequential — that was already added by the books-group); got:\n{prep_b_tags}",
+         (sequential — already added by books-group); got:\n{prep_b_tags}",
     );
 
-    // Cutover divergence — Option A winner's cutover RENAMEs both
-    // shadows back; Option B's per-group cutover only renames its
-    // own. Same for the layout marker comment.
-    let cut_a_winner = &plan_a_winner.segments.last().unwrap().statements[0].up;
+    // ---- Cutover divergence ----
+    let cut_a = &plan_a.segments.last().unwrap().statements[0].up;
     assert!(
-        cut_a_winner.contains("RENAME COLUMN book_id_desc TO book_id"),
-        "Option A winner cutover renames book_id_desc; got:\n{cut_a_winner}",
+        cut_a.contains("RENAME COLUMN book_id_desc TO book_id"),
+        "Option A multi-group cutover renames book_id_desc; got:\n{cut_a}",
     );
     assert!(
-        cut_a_winner.contains("RENAME COLUMN tag_id_desc TO tag_id"),
-        "Option A winner cutover renames tag_id_desc; got:\n{cut_a_winner}",
+        cut_a.contains("RENAME COLUMN tag_id_desc TO tag_id"),
+        "Option A multi-group cutover renames tag_id_desc; got:\n{cut_a}",
     );
     assert!(
-        cut_a_winner.contains("Join-table layout: OptionA"),
+        cut_a.contains("Join-table layout: OptionA"),
         "Option A cutover bears OptionA marker",
     );
 
@@ -2381,23 +2437,49 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
         "Option B cutover bears OptionB marker",
     );
 
-    // Direct byte-inequality: the lowered SQL for the SAME logical
-    // group set must DIFFER between A and B. Render the full
-    // segment plans of all groups and compare.
-    let render_all = |plans: &[MigrationPlan]| -> String {
+    // ---- Stage-3b ordering proof ----
+    // Walk the Option A multi-group plan and verify the FK-creation
+    // segment (stage 3b) emits the partner-FK statement AFTER both
+    // parents' shadow columns landed (stage 1) AND both parents'
+    // unique indexes ran (stage 3). The "after" is structural —
+    // stages run in plan order — so we only need to check that the
+    // FK-creation segment exists at all and its body references
+    // both parents' `id_desc`.
+    let mut found_fk_seg = false;
+    for seg in &plan_a.segments {
+        for stmt in &seg.statements {
+            if stmt.label.starts_with("PkFlipAddFk jt_book_tags") {
+                found_fk_seg = true;
+                assert!(
+                    stmt.up.contains("REFERENCES jt_books(id_desc)")
+                        || stmt.up.contains("REFERENCES jt_tags(id_desc)"),
+                    "Option A stage 3b FK must reference one of the parents' id_desc; \
+                     got:\n{}",
+                    stmt.up,
+                );
+            }
+        }
+    }
+    assert!(
+        found_fk_seg,
+        "Option A multi-group plan must include stage 3b FK statements on jt_book_tags",
+    );
+
+    // Direct byte-inequality: lowered SQL for the SAME logical
+    // input must DIFFER between A and B.
+    let render_plan = |plan: &MigrationPlan| -> String {
         let mut out = String::new();
-        for p in plans {
-            for s in &p.segments {
-                for stmt in &s.statements {
-                    out.push_str(&stmt.up);
-                    out.push('\n');
-                }
+        for s in &plan.segments {
+            for stmt in &s.statements {
+                out.push_str(&stmt.up);
+                out.push('\n');
             }
         }
         out
     };
-    let sql_a = render_all(&[plan_a_winner, plan_a_loser]);
-    let sql_b = render_all(&[plan_b_books, plan_b_tags]);
+    let sql_a = render_plan(&plan_a);
+    let mut sql_b = render_plan(&plan_b_books);
+    sql_b.push_str(&render_plan(&plan_b_tags));
     assert_ne!(
         sql_a, sql_b,
         "Option A and Option B must produce DIFFERENT SQL for the same input \
@@ -2714,4 +2796,317 @@ async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiCont
         .await
         .expect("count chain");
     assert_eq!(n_chain, 20, "FK chain p_root → c_mid → gc_leaf intact");
+}
+
+// ── Test 24 — Codex round-4 B-15: Option A multi-parent live apply ───────
+//
+// The structurally-correct fix for the B-15 finding. Drives the
+// FULL pipeline:
+//
+//   1. Build before/after `AppliedSchema`s for two parents +
+//      cross-flipping join table (HeerId asc → HeerIdRecencyBiased
+//      on both parents).
+//   2. Run `diff_bucket_maps` → `apply_pk_flip_join_table_option`
+//      with `OptionA` so the merger emits a single
+//      `PkTypeFlipMultiGroup` covering both parents + the join
+//      table.
+//   3. Lower the delta via `plan_delta` and apply against a real
+//      Postgres 18 instance.
+//   4. Assert: row counts preserved, `pg_type` shows the new PK
+//      DEFAULT (`heerid_next_desc()`), join-table FK columns survive
+//      the rename, both FK constraints exist on the join table
+//      pointing at the post-flip parents, the data round-trips
+//      cleanly via a JOIN through both FK columns.
+//
+// **Why this test is necessary.** The previous round-3 test exercised
+// `winner_a` and `loser_a` independently via `lower_pk_flip_group`
+// — never running them as a combined plan and never applying the
+// combined output. The bug was in segment lowering (segment 3b
+// referenced partner shadows that didn't exist when each group was
+// run sequentially). Only an end-to-end `plan_delta` + `apply_plan`
+// path catches that class of bug.
+
+#[djogi::djogi_test]
+async fn flip_option_a_multi_parent_via_diff_bucket_maps_end_to_end(mut ctx: djogi::DjogiContext) {
+    use djogi::migrate::diff::{
+        PkFlipJoinTableOption, SchemaOperation, apply_pk_flip_join_table_option, diff_bucket_maps,
+    };
+    use djogi::migrate::plan_delta;
+
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    // 1. Provision the live schema (two parents + cross-flipping
+    //    junction). Both parents start at HeerId asc.
+    ctx.raw_ddl(
+        "CREATE TABLE jt_books (id BIGINT PRIMARY KEY DEFAULT generate_id(), \
+         title TEXT NOT NULL)",
+    )
+    .await
+    .expect("create jt_books");
+    ctx.raw_ddl(
+        "CREATE TABLE jt_tags (id BIGINT PRIMARY KEY DEFAULT generate_id(), \
+         label TEXT NOT NULL)",
+    )
+    .await
+    .expect("create jt_tags");
+    ctx.raw_ddl(
+        "CREATE TABLE jt_book_tags ( \
+         book_id BIGINT NOT NULL REFERENCES jt_books(id), \
+         tag_id BIGINT NOT NULL REFERENCES jt_tags(id), \
+         PRIMARY KEY (book_id, tag_id))",
+    )
+    .await
+    .expect("create jt_book_tags");
+
+    // Seed: 50 books, 20 tags, 100 (book, tag) pairs.
+    ctx.raw_ddl("INSERT INTO jt_books (title) SELECT 'b' || g FROM generate_series(1, 50) g")
+        .await
+        .expect("seed books");
+    ctx.raw_ddl("INSERT INTO jt_tags (label) SELECT 't' || g FROM generate_series(1, 20) g")
+        .await
+        .expect("seed tags");
+    // Cross-product subset — random pairing of 100 entries.
+    ctx.raw_ddl(
+        "INSERT INTO jt_book_tags (book_id, tag_id) \
+         SELECT b.id, t.id \
+         FROM jt_books b CROSS JOIN jt_tags t \
+         ORDER BY b.id, t.id LIMIT 100",
+    )
+    .await
+    .expect("seed pairs");
+
+    let n_books: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM jt_books", &[])
+        .await
+        .expect("count books pre");
+    let n_tags: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM jt_tags", &[])
+        .await
+        .expect("count tags pre");
+    let n_pairs: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM jt_book_tags", &[])
+        .await
+        .expect("count pairs pre");
+    assert_eq!(n_books, 50);
+    assert_eq!(n_tags, 20);
+    assert_eq!(n_pairs, 100);
+
+    // 2. Build before/after schemas + drive diff_bucket_maps.
+    let bucket_key = bucket();
+    let before: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            cross_flipping_join_schema_with_pk_kind(PkKindSchema::HeerId),
+        );
+        m
+    };
+    let after: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            cross_flipping_join_schema_with_pk_kind(PkKindSchema::HeerIdRecencyBiased),
+        );
+        m
+    };
+    let mut deltas = diff_bucket_maps(&before, &after).expect("differ");
+    apply_pk_flip_join_table_option(&mut deltas, PkFlipJoinTableOption::OptionA);
+
+    // 3. Confirm the merger produced a single MultiGroup (the
+    //    structural fix for B-15).
+    let delta = deltas
+        .iter()
+        .find(|d| d.bucket == bucket_key)
+        .expect("delta for cross-flipping bucket");
+    let multi_group_count = delta
+        .operations
+        .iter()
+        .filter(|op| matches!(op, SchemaOperation::PkTypeFlipMultiGroup(_)))
+        .count();
+    let single_group_count = delta
+        .operations
+        .iter()
+        .filter(|op| matches!(op, SchemaOperation::PkTypeFlipGroup(_)))
+        .count();
+    assert_eq!(
+        multi_group_count, 1,
+        "Option A merges the cross-flipping cluster into ONE PkTypeFlipMultiGroup",
+    );
+    assert_eq!(
+        single_group_count, 0,
+        "Option A leaves NO standalone PkTypeFlipGroup (every member moved into the multi-group)",
+    );
+
+    // 4. Lower via the segment planner — the multi-group MUST
+    //    interleave stages so segment 3b sees both parents' shadows.
+    let plan = plan_delta(delta).expect("plan_delta");
+
+    // Walk the plan. Stage labels expected (in order):
+    //   - PkFlipPrepMulti [jt_books,jt_tags]   (transactional)
+    //   - per-parent backfill statements        (non-transactional)
+    //   - per-parent verification SELECTs       (transactional)
+    //   - per-parent CREATE INDEX CONCURRENTLY  (non-transactional)
+    //   - per-parent NOT VALID FK + VALIDATE    (transactional)
+    //   - PkFlipNotNullProofMulti [...]         (transactional)
+    //   - PkFlipCutoverMulti [...]              (transactional)
+    let prep_seg = &plan.segments[0];
+    assert_eq!(
+        prep_seg.statements[0].label, "PkFlipPrepMulti [jt_books,jt_tags]",
+        "segment 1 is the multi-parent preparation",
+    );
+    let prep_up = &prep_seg.statements[0].up;
+    // Both parents AND both join-table FK columns prepared in one tx.
+    assert!(
+        prep_up.contains("ALTER TABLE jt_books ADD COLUMN id_desc bigint"),
+        "stage 1 prepares jt_books.id_desc; got:\n{prep_up}",
+    );
+    assert!(
+        prep_up.contains("ALTER TABLE jt_tags ADD COLUMN id_desc bigint"),
+        "stage 1 prepares jt_tags.id_desc; got:\n{prep_up}",
+    );
+    assert!(
+        prep_up.contains("ALTER TABLE jt_book_tags ADD COLUMN book_id_desc bigint"),
+        "stage 1 prepares jt_book_tags.book_id_desc; got:\n{prep_up}",
+    );
+    assert!(
+        prep_up.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
+        "stage 1 prepares jt_book_tags.tag_id_desc; got:\n{prep_up}",
+    );
+
+    // The cutover label must be the multi-parent variant.
+    let cutover_seg = plan.segments.last().expect("cutover segment");
+    assert_eq!(
+        cutover_seg.statements[0].label, "PkFlipCutoverMulti [jt_books,jt_tags]",
+        "final segment is the multi-parent cutover",
+    );
+
+    // 5. Apply the plan end-to-end.
+    let runner_ctx = make_runner_ctx(&plan, "V20260426900100__multi_parent_option_a");
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply multi-parent plan");
+
+    // 6. Post-cutover assertions.
+    // 6a. Both PKs flipped — DEFAULT now points at heerid_next_desc().
+    for tbl in &["jt_books", "jt_tags"] {
+        let default_sql: Option<String> = ctx
+            .raw_scalar(
+                "SELECT column_default FROM information_schema.columns \
+                 WHERE table_name = $1 AND column_name = 'id'",
+                &[tbl],
+            )
+            .await
+            .expect("default lookup");
+        assert!(
+            default_sql
+                .as_deref()
+                .unwrap_or("")
+                .contains("heerid_next_desc"),
+            "{tbl}.id default must call heerid_next_desc(); got: {default_sql:?}",
+        );
+    }
+
+    // 6b. Row counts preserved on every table.
+    let n_books_post: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM jt_books", &[])
+        .await
+        .expect("count books post");
+    let n_tags_post: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM jt_tags", &[])
+        .await
+        .expect("count tags post");
+    let n_pairs_post: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM jt_book_tags", &[])
+        .await
+        .expect("count pairs post");
+    assert_eq!(n_books_post, 50, "books row count preserved");
+    assert_eq!(n_tags_post, 20, "tags row count preserved");
+    assert_eq!(n_pairs_post, 100, "join-table row count preserved");
+
+    // 6c. Both FK columns survive the rename — they're now
+    //     `book_id` / `tag_id` again (post-cutover the shadows
+    //     became the live columns).
+    let book_id_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+             WHERE table_name = 'jt_book_tags' AND column_name = 'book_id')",
+            &[],
+        )
+        .await
+        .expect("book_id check");
+    assert!(book_id_exists, "jt_book_tags.book_id survives the rename");
+    let tag_id_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+             WHERE table_name = 'jt_book_tags' AND column_name = 'tag_id')",
+            &[],
+        )
+        .await
+        .expect("tag_id check");
+    assert!(tag_id_exists, "jt_book_tags.tag_id survives the rename");
+    // Shadow columns must NOT survive the cutover.
+    let shadow_b_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+             WHERE table_name = 'jt_book_tags' AND column_name = 'book_id_desc')",
+            &[],
+        )
+        .await
+        .expect("book_id_desc check");
+    assert!(
+        !shadow_b_exists,
+        "jt_book_tags.book_id_desc must be dropped post-cutover",
+    );
+    let shadow_t_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+             WHERE table_name = 'jt_book_tags' AND column_name = 'tag_id_desc')",
+            &[],
+        )
+        .await
+        .expect("tag_id_desc check");
+    assert!(
+        !shadow_t_exists,
+        "jt_book_tags.tag_id_desc must be dropped post-cutover",
+    );
+
+    // 6d. Both FK constraints exist on the join table, pointing at
+    //     the post-flip parents.
+    // Both canonical FK constraints exist on the join table,
+    // pointing at the post-flip parents. Cutover phase 4 dropped
+    // the segment-3b `_desc_fkey` constraints so there should be
+    // EXACTLY two FK constraints — `jt_book_tags_book_id_fkey`
+    // and `jt_book_tags_tag_id_fkey`.
+    let fk_names_text: String = ctx
+        .raw_scalar(
+            "SELECT string_agg(c.conname::text, ',' ORDER BY c.conname) \
+             FROM pg_constraint c \
+             JOIN pg_class t ON t.oid = c.conrelid \
+             WHERE c.contype = 'f' AND t.relname = 'jt_book_tags'",
+            &[],
+        )
+        .await
+        .expect("FK names");
+    assert_eq!(
+        fk_names_text, "jt_book_tags_book_id_fkey,jt_book_tags_tag_id_fkey",
+        "post-cutover jt_book_tags has exactly the canonical FK constraint set; \
+         the segment-3b `_desc_fkey` shadows must have been dropped",
+    );
+
+    // 6e. Data round-trip through a 3-way JOIN. If either FK is
+    //     broken or pointing at the wrong column, this returns 0.
+    let n_join: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM jt_book_tags bt \
+             JOIN jt_books b ON bt.book_id = b.id \
+             JOIN jt_tags t ON bt.tag_id = t.id",
+            &[],
+        )
+        .await
+        .expect("3-way join");
+    assert_eq!(
+        n_join, 100,
+        "all 100 (book, tag) pairs round-trip through the new FK chain",
+    );
 }

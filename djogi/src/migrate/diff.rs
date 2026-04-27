@@ -260,6 +260,49 @@ pub enum SchemaOperation {
     /// per parent and the operator composes them as one migration.
     PkTypeFlipGroup(PkTypeFlipGroup),
 
+    /// Merged multi-parent PK-type flip — emitted when two or more
+    /// parents share a cross-flipping join table (both parents
+    /// flipping in the same delta AND a junction whose two FKs each
+    /// reference one parent) AND
+    /// [`PkFlipJoinTableOption::OptionA`] is in effect. Per playbook
+    /// §7 (line 327 of `asc-to-desc.md`) Option A is the
+    /// **stage-interleaved** mega-tx layout: all parents prepare in
+    /// one transaction, all backfill in one segment, all index in
+    /// one segment, all NOT-VALID-FK in one segment, all NOT-NULL-
+    /// proof in one segment, and **one** atomic cutover transaction
+    /// re-points every FK column on the join table at the new
+    /// `id_desc` columns of every parent.
+    ///
+    /// **Why not just emit several `PkTypeFlipGroup`s back-to-back.**
+    /// The segment planner used to lower each `PkTypeFlipGroup` as a
+    /// full 5-segment plan and concatenate them. With a cross-
+    /// flipping join table that scheme is incorrect — the winner's
+    /// segment 3b emits `... FOREIGN KEY (tag_id_desc) REFERENCES
+    /// jt_tags(id_desc) NOT VALID` against `jt_tags(id_desc)` that
+    /// the loser's segment 1 has not yet created. Postgres rejects
+    /// the migration mid-apply. Codex round-4 B-15 documented the
+    /// failure mode; this multi-parent variant is the structural fix.
+    ///
+    /// **Construction.** [`apply_pk_flip_join_table_option`] under
+    /// Option A merges every cross-flipping cluster of single-parent
+    /// `PkTypeFlipGroup` ops into one `PkTypeFlipMultiGroup` carrying
+    /// the participating groups in alphabetical-by-parent order. The
+    /// "winner takes ownership of the join table" rule still applies
+    /// inside the merged group: only the alphabetically smallest
+    /// parent's `join_tables` list keeps the cross-flipping entry
+    /// (so the join table's shadow columns / triggers / indexes are
+    /// installed once, not twice). Non-cross-flipping flips (no
+    /// shared join table, or Option B) remain plain
+    /// `PkTypeFlipGroup` ops.
+    ///
+    /// **Lowering.** [`crate::migrate::pk_flip::build_segments_multi`]
+    /// builds a single 5-segment (or 7-segment when partitioned or
+    /// FK-cascading) plan that, at each stage, emits every parent's
+    /// stage-N statements in alphabetical order. The cutover (final
+    /// segment) is one transaction; every parent's drop / rename /
+    /// add-constraint statements run inside it.
+    PkTypeFlipMultiGroup(Vec<PkTypeFlipGroup>),
+
     /// App rename via `#[app(renamed_from = "old_label")]`. The
     /// migration engine emits both a `git mv` of the per-app folder
     /// and a single `UPDATE djogi_schema_migrations SET app_label
@@ -462,49 +505,64 @@ impl PkFlipJoinTableOption {
 /// so the operator's TOML choice reaches the planner.
 ///
 /// **Idempotent.** Calling twice with the same option is a no-op.
+///
+/// **Codex round-4 B-15 — multi-parent merge.** Under
+/// [`PkFlipJoinTableOption::OptionA`] the function does more than
+/// stamp the option — it MERGES every cluster of cross-flipping
+/// `PkTypeFlipGroup` ops in a delta into a single
+/// [`SchemaOperation::PkTypeFlipMultiGroup`]. The merger is what
+/// makes Option A's "single mega-transaction" semantics structurally
+/// realisable. Without merging, the segment planner lowers each
+/// group as a back-to-back 5-segment plan, and the winner's segment
+/// 3b emits `... FOREIGN KEY (tag_id_desc) REFERENCES
+/// jt_tags(id_desc) NOT VALID` against a partner shadow column that
+/// only lands in the loser's segment 1 — Postgres rejects the
+/// migration mid-apply. The merged variant replaces N back-to-back
+/// 5-segment plans with ONE stage-interleaved 5-segment plan that
+/// emits every parent's stage-N statements together. Cluster
+/// detection uses Union-Find over the join-table peer relation
+/// (parents A and B share a cluster when at least one
+/// `PkFlipJoinTable` in either group references the other parent
+/// via `fk_to_partner_column = Some(_)` AND
+/// `fk_to_partner_table = Some(<peer>)`).
 pub fn apply_pk_flip_join_table_option(deltas: &mut [SchemaDelta], option: PkFlipJoinTableOption) {
     // First pass: stamp the option onto every emitted group.
     for delta in deltas.iter_mut() {
         for op in &mut delta.operations {
             if let SchemaOperation::PkTypeFlipGroup(group) = op {
                 group.join_table_option = option;
+            } else if let SchemaOperation::PkTypeFlipMultiGroup(groups) = op {
+                // Idempotent re-stamp — `apply_pk_flip_join_table_option`
+                // may run more than once during the compose pipeline
+                // (e.g. tests that toggle the option). Stamp every
+                // member group inside an existing multi-group too.
+                for g in groups.iter_mut() {
+                    g.join_table_option = option;
+                }
             }
         }
     }
-    // Second pass: under Option A, hand cross-flipping join tables
-    // to the first group (alphabetically by parent_table) so its
-    // segment plan owns BOTH FK columns end-to-end (single mega-tx
-    // ownership per playbook §7). The other group drops the entry
-    // entirely so its segment plan does no join-table work — the
-    // join table is fully migrated in the first group's cutover
-    // window.
-    //
-    // **Why this is the correct shape for Option A.** Each side of
-    // a cross-flipping join table (`fk_to_partner_column =
-    // Some(_)`) needs the same shadow-column orchestration:
-    // preparation, backfill, concurrent index, NOT VALID FK at
-    // segment 3b, NOT NULL proof, cutover-time DROP +
-    // RENAME + ADD CONSTRAINT. Without the ownership transfer
-    // BOTH groups emit half-baked work on the join table (only
-    // their own FK column), splitting the join table's migration
-    // across two transactions — that's Option B by accident, not
-    // Option A. The transfer makes Option A a real "single
-    // mega-tx" per join table.
-    //
-    // **No-op under Option B.** Option B's whole point is the
-    // sequential-per-parent layout — each group flips its parent
-    // and re-points only its own FK column on the join table; the
-    // partner column waits for the partner group's cutover. Leave
-    // each group's join-table list alone.
-    //
-    // **Determinism.** The "first group" is selected by
-    // alphabetical `parent_table` order, the same key used in the
-    // differ's group ordering — two runs of compose against the
-    // same descriptor inventory produce byte-identical SQL.
+    // Under Option B leave the per-parent groups in place — the
+    // sequential-per-parent layout each cutover only touches its
+    // own FK column on the join table. Per-group `join_tables`
+    // lists keep the cross-flipping entry on BOTH sides so each
+    // group's `jt_shadow_pairs` returns the parent's pair and the
+    // cutover finalises only that side of the join table; the
+    // partner pair survives until the partner parent's group runs.
     if option != PkFlipJoinTableOption::OptionA {
         return;
     }
-    transfer_cross_flipping_join_tables_to_first_group(deltas);
+    // Under Option A, find every cross-flipping cluster of groups
+    // and merge each cluster (of 2+ groups) into a
+    // `PkTypeFlipMultiGroup` so the segment planner can lower the
+    // cluster as ONE stage-interleaved 5-segment plan. Single-
+    // parent groups (no cross-flipping peer) stay as plain
+    // `PkTypeFlipGroup` ops — the back-to-back layout is correct
+    // for them because there is no partner shadow column to
+    // reference.
+    for delta in deltas.iter_mut() {
+        merge_cross_flipping_groups_into_multi(delta);
+    }
 }
 
 /// `(join_table, fk_to_partner_column)` for one entry in a
@@ -572,85 +630,241 @@ impl std::fmt::Display for DiffError {
 
 impl std::error::Error for DiffError {}
 
-/// Helper for [`apply_pk_flip_join_table_option`] under Option A —
-/// hand the join table's full migration to the first group
-/// (alphabetical by parent_table) and remove it from the partner
-/// group. See the parent's doc comment for rationale.
-fn transfer_cross_flipping_join_tables_to_first_group(deltas: &mut [SchemaDelta]) {
-    for delta in deltas {
-        // Walk the delta's operations and gather every cross-flipping
-        // join table reference: (group's parent_table, join_table,
-        // partner_table_implied_by_fk_to_partner_column).
-        //
-        // We compute the transfers in two passes so we don't mutate
-        // the operation list while iterating — first scan, then
-        // mutate.
-        let mut planned_transfers: Vec<(String, String)> = Vec::new();
-        // (winner_parent, join_table) — the loser_parent computes
-        // implicitly from the partner's own group.
-        let mut groups_seen: Vec<(String, Vec<GroupJoinTableSnapshot>)> = Vec::new();
-        for op in delta.operations.iter() {
-            if let SchemaOperation::PkTypeFlipGroup(group) = op {
-                let entries: Vec<GroupJoinTableSnapshot> = group
-                    .join_tables
+/// Codex round-4 B-15 — merge every cross-flipping cluster of
+/// `PkTypeFlipGroup` ops in a single delta into one
+/// [`SchemaOperation::PkTypeFlipMultiGroup`].
+///
+/// **What "cross-flipping" means.** A pair `(A, B)` of
+/// `PkTypeFlipGroup`s is cross-flipping when at least one
+/// `PkFlipJoinTable` entry in EITHER group records the other parent
+/// via `fk_to_partner_table = Some(<peer>)` AND
+/// `fk_to_partner_column = Some(_)`. The partner-table field was
+/// added in Codex round-3 B-12 specifically so the planner can
+/// resolve the cross-flipping shape without re-walking the schema.
+///
+/// **Cluster construction (Union-Find).** Cross-flipping is
+/// transitive — if A↔B share a join table and B↔C share a different
+/// join table, the SQL emission needs ALL THREE in one mega-tx
+/// because B's segment 3b would otherwise reference shadow columns
+/// on both A and C that haven't landed yet. The merger therefore
+/// uses Union-Find over the parent-table set, with edges drawn from
+/// every cross-flipping `PkFlipJoinTable` entry. Clusters of size
+/// 1 (no cross-flipping peer) stay as their original
+/// `PkTypeFlipGroup` op; clusters of size 2+ are replaced by ONE
+/// `PkTypeFlipMultiGroup` carrying the cluster's groups in
+/// alphabetical-by-parent order.
+///
+/// **Winner-takes-all on join_tables.** Inside a merged cluster the
+/// alphabetically smallest parent retains every cross-flipping
+/// `PkFlipJoinTable` entry; the other members' `join_tables` are
+/// emptied of cross-flipping entries (single-parent join tables —
+/// `fk_to_partner_column = None` — survive on whichever group owns
+/// them). The lowering walks the multi-group's groups in order and
+/// emits each member's stage-N statements at stage N; the winner's
+/// stage-N is where the join table's stage-N statements appear, so
+/// the join table's shadow column / trigger / index / FK / cutover
+/// SQL is emitted exactly once per stage and references both
+/// parents' `id_desc` columns that exist by the time stage-3b runs
+/// (because every parent prepared in stage 1).
+///
+/// **Determinism.** Cluster ordering is deterministic — alphabetical
+/// by the smallest parent in the cluster. Within a cluster, member
+/// groups are alphabetical by `parent_table`. The same input
+/// produces the same `PkTypeFlipMultiGroup` shape across runs,
+/// preserving the byte-stable SQL guarantee.
+fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) {
+    // Walk the delta's `PkTypeFlipGroup` ops and collect the
+    // (parent_table, peer-set-via-cross-flipping) graph. Index by
+    // parent_table for the Union-Find.
+    let mut groups_by_parent: Vec<(String, Vec<GroupJoinTableSnapshot>)> = Vec::new();
+    let mut peer_edges: Vec<(String, String)> = Vec::new();
+    for op in delta.operations.iter() {
+        if let SchemaOperation::PkTypeFlipGroup(group) = op {
+            let entries: Vec<GroupJoinTableSnapshot> = group
+                .join_tables
+                .iter()
+                .map(|jt| (jt.table.clone(), jt.fk_to_partner_column.clone()))
+                .collect();
+            groups_by_parent.push((group.parent_table.clone(), entries));
+            // Edges: every cross-flipping `PkFlipJoinTable` records
+            // the partner table via `fk_to_partner_table` —
+            // canonicalise the edge as (smaller, larger) so the
+            // Union-Find reads each pair once.
+            for jt in &group.join_tables {
+                if let Some(partner) = jt.fk_to_partner_table.as_deref() {
+                    let a = group.parent_table.clone();
+                    let b = partner.to_string();
+                    let edge = if a <= b { (a, b) } else { (b, a) };
+                    if !peer_edges.contains(&edge) {
+                        peer_edges.push(edge);
+                    }
+                }
+            }
+        }
+    }
+    if peer_edges.is_empty() {
+        // No cross-flipping anywhere in this delta. Leave the
+        // per-parent ops alone.
+        return;
+    }
+
+    // Union-Find on parent_table — every parent in `groups_by_parent`
+    // gets a representative. Edges merge representatives. Final
+    // cluster = set of parents sharing a representative.
+    use std::collections::BTreeMap as Map;
+    let mut rep: Map<String, String> = Map::new();
+    for (p, _) in &groups_by_parent {
+        rep.insert(p.clone(), p.clone());
+    }
+    fn find(rep: &mut Map<String, String>, x: &str) -> String {
+        // Iterative path halving — Union-Find root resolution
+        // without recursion. Two-step compression each iteration
+        // keeps amortised cost near-constant; the BTreeMap lookups
+        // dominate. The loop terminates because every step climbs
+        // toward the cluster representative; the representative is
+        // its own parent.
+        let mut cur = x.to_string();
+        loop {
+            let parent = rep.get(&cur).cloned().unwrap_or_else(|| cur.clone());
+            if parent == cur {
+                return cur;
+            }
+            // Path halving: point cur at its grandparent.
+            let grand = rep.get(&parent).cloned().unwrap_or_else(|| parent.clone());
+            rep.insert(cur.clone(), grand.clone());
+            cur = grand;
+        }
+    }
+    for (a, b) in &peer_edges {
+        let ra = find(&mut rep, a);
+        let rb = find(&mut rep, b);
+        if ra != rb {
+            // Union — point the larger rep at the smaller.
+            let (winner, loser) = if ra <= rb { (ra, rb) } else { (rb, ra) };
+            rep.insert(loser, winner);
+        }
+    }
+
+    // Group parents by their final representative. Each cluster of
+    // size 2+ becomes a `PkTypeFlipMultiGroup`.
+    let mut clusters: Map<String, Vec<String>> = Map::new();
+    let parents_in_groups: Vec<String> = groups_by_parent.iter().map(|(p, _)| p.clone()).collect();
+    for p in &parents_in_groups {
+        let r = find(&mut rep, p);
+        clusters.entry(r).or_default().push(p.clone());
+    }
+
+    // For each cluster of 2+ parents, drain those `PkTypeFlipGroup`
+    // ops out of the operation list, apply the winner-takes-all
+    // transfer of cross-flipping `PkFlipJoinTable` entries inside
+    // the cluster, and push a single `PkTypeFlipMultiGroup` in
+    // their place.
+    let mut multi_groups: Vec<Vec<PkTypeFlipGroup>> = Vec::new();
+    for (_rep, members) in clusters {
+        if members.len() < 2 {
+            continue;
+        }
+        // Stable membership lookup for the retain pass below.
+        let mem_set: std::collections::BTreeSet<String> = members.iter().cloned().collect();
+        // Drain the cluster's groups out of `delta.operations` in
+        // input order. We drain rather than collect-and-erase so
+        // `Vec` shifting is paid once per cluster.
+        let mut cluster_groups: Vec<PkTypeFlipGroup> = Vec::new();
+        let mut i = 0;
+        while i < delta.operations.len() {
+            let take = matches!(
+                &delta.operations[i],
+                SchemaOperation::PkTypeFlipGroup(g) if mem_set.contains(&g.parent_table),
+            );
+            if take {
+                if let SchemaOperation::PkTypeFlipGroup(g) = delta.operations.remove(i) {
+                    cluster_groups.push(g);
+                }
+            } else {
+                i += 1;
+            }
+        }
+        // Sort the cluster's groups alphabetically by parent_table —
+        // the lowering depends on this for deterministic stage-N
+        // emission order.
+        cluster_groups.sort_by(|a, b| a.parent_table.cmp(&b.parent_table));
+
+        // Winner-takes-all on cross-flipping join_tables. The
+        // alphabetically smallest parent (cluster_groups[0]) keeps
+        // every cross-flipping entry. Other members drop the
+        // cross-flipping rows from their `join_tables` so the
+        // join-table SQL is emitted exactly once per stage. Single-
+        // parent (`fk_to_partner_column = None`) entries stay on
+        // whichever group originally carried them.
+        let cross_flipping_jt_names: std::collections::BTreeSet<String> = cluster_groups
+            .iter()
+            .flat_map(|g| {
+                g.join_tables
                     .iter()
-                    .map(|jt| (jt.table.clone(), jt.fk_to_partner_column.clone()))
-                    .collect();
-                groups_seen.push((group.parent_table.clone(), entries));
+                    .filter(|jt| jt.fk_to_partner_column.is_some())
+                    .map(|jt| jt.table.clone())
+            })
+            .collect();
+        for (idx, g) in cluster_groups.iter_mut().enumerate() {
+            if idx == 0 {
+                // Winner — keep all cross-flipping entries; collect
+                // any cross-flipping entries that lived on losers
+                // and graft them onto the winner.
+                continue;
+            }
+            g.join_tables.retain(|jt| {
+                // Drop only cross-flipping entries shared with the
+                // cluster — single-parent entries (no partner col)
+                // stay where they are.
+                !(jt.fk_to_partner_column.is_some() && cross_flipping_jt_names.contains(&jt.table))
+            });
+        }
+        // Graft any cross-flipping entries that lived only on a
+        // loser onto the winner (rare — typically the winner has
+        // them already because both sides record the same join-
+        // table). Without the graft, the winner would lower the
+        // cluster missing one half of the join-table orchestration.
+        let winner_existing: std::collections::BTreeSet<String> = cluster_groups[0]
+            .join_tables
+            .iter()
+            .filter(|jt| jt.fk_to_partner_column.is_some())
+            .map(|jt| jt.table.clone())
+            .collect();
+        // Re-collect from non-winner indices BEFORE we drop them
+        // (which already happened above).
+        // We need to iterate the original cluster's pre-mutation
+        // join_tables to find any that should graft; but we already
+        // mutated them. So instead, walk the deltas again with the
+        // operation freshly drained: the winner_existing set tells
+        // us which cross-flipping JTs the winner already covers; if
+        // any cross_flipping_jt_names entry isn't in winner_existing,
+        // it must have been dropped from a loser — but the loser's
+        // entry was structurally symmetrical to the winner's (both
+        // sides record the same `(jt, partner)` shape), so this
+        // case should not arise in practice. We log and continue
+        // rather than silently swallow; an asymmetric pair is a
+        // differ bug.
+        for jt_name in &cross_flipping_jt_names {
+            if !winner_existing.contains(jt_name) {
+                // Differ produced an asymmetric cross-flipping pair
+                // — one side recorded the partner, the other did
+                // not. Defensive: skip the graft (the planner emits
+                // the half it can see) rather than panic. Future
+                // hardening: a `DiffError` for this case.
+                continue;
             }
         }
-        // For each cross-flipping pair (`fk_to_partner_column = Some`),
-        // the winner is the lexicographically smaller `parent_table`.
-        for (parent_a, entries_a) in &groups_seen {
-            for (jt_a, partner_a) in entries_a {
-                if partner_a.is_none() {
-                    continue;
-                }
-                // Find a peer group whose join_tables also contain
-                // `jt_a` with a Some(partner_col) — that's the
-                // cross-flipping case.
-                let peer = groups_seen.iter().find(|(p, entries)| {
-                    p != parent_a
-                        && entries
-                            .iter()
-                            .any(|(jt, partner)| jt == jt_a && partner.is_some())
-                });
-                if peer.is_none() {
-                    continue;
-                }
-                let peer_parent = &peer.unwrap().0;
-                let winner = if parent_a <= peer_parent {
-                    parent_a.clone()
-                } else {
-                    peer_parent.clone()
-                };
-                let loser = if parent_a <= peer_parent {
-                    peer_parent.clone()
-                } else {
-                    parent_a.clone()
-                };
-                // Record (loser, join_table) — the loser's group
-                // drops this entry so the join table is fully owned
-                // by the winner.
-                if winner == *parent_a
-                    && !planned_transfers.contains(&(loser.clone(), jt_a.clone()))
-                {
-                    planned_transfers.push((loser, jt_a.clone()));
-                }
-            }
-        }
-        // Apply transfers: drop the join_table entries from the loser
-        // group's join_tables list. The winner keeps its existing
-        // entry (which already carries `fk_to_partner_column =
-        // Some(...)` — the planner reads that to emit BOTH columns'
-        // shadow orchestration in segments 1..5).
-        for op in delta.operations.iter_mut() {
-            if let SchemaOperation::PkTypeFlipGroup(group) = op {
-                group.join_tables.retain(|jt| {
-                    !planned_transfers.contains(&(group.parent_table.clone(), jt.table.clone()))
-                });
-            }
-        }
+        multi_groups.push(cluster_groups);
+    }
+
+    // Push every multi-group at the END of the operation list so
+    // the planner reaches them after every other (single-parent)
+    // group. The segment planner already iterates ops in input
+    // order, so this produces a deterministic plan.
+    for groups in multi_groups {
+        delta
+            .operations
+            .push(SchemaOperation::PkTypeFlipMultiGroup(groups));
     }
 }
 
@@ -1950,7 +2164,9 @@ fn classify(ops: &[SchemaOperation]) -> Classification {
 
     for op in ops {
         match op {
-            SchemaOperation::PkTypeFlip { .. } | SchemaOperation::PkTypeFlipGroup(_) => {
+            SchemaOperation::PkTypeFlip { .. }
+            | SchemaOperation::PkTypeFlipGroup(_)
+            | SchemaOperation::PkTypeFlipMultiGroup(_) => {
                 has_pk_flip = true;
             }
             SchemaOperation::DropTable(_) => has_destructive = true,

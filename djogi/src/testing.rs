@@ -637,6 +637,7 @@ fn additive_op_label(op: &SchemaOperation) -> &'static str {
         SchemaOperation::MoveModelBetweenApps { .. } => "MoveModelBetweenApps",
         SchemaOperation::PkTypeFlip { .. } => "PkTypeFlip",
         SchemaOperation::PkTypeFlipGroup(_) => "PkTypeFlipGroup",
+        SchemaOperation::PkTypeFlipMultiGroup(_) => "PkTypeFlipMultiGroup",
         SchemaOperation::Unsupported { .. } => "Unsupported",
     }
 }

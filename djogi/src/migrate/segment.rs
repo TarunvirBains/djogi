@@ -158,16 +158,33 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
         });
     }
 
-    // T9 fast-path: a delta carrying a `PkTypeFlipGroup` consumes
-    // the entire migration (whole-migration non-transactional, per
-    // 7-Zero §6.2 deterministic A). Route to the dedicated
-    // multi-segment emitter and ignore the standard per-operation
-    // path. Multiple groups in one delta are lowered into back-to-
-    // back segment lists in the order the differ emitted them.
+    // T9 fast-path: a delta carrying a `PkTypeFlipGroup` /
+    // `PkTypeFlipMultiGroup` consumes the entire migration (whole-
+    // migration non-transactional, per 7-Zero §6.2 deterministic
+    // A). Route to the dedicated multi-segment emitter and ignore
+    // the standard per-operation path.
+    //
+    // **Single-parent groups** (`PkTypeFlipGroup`) lower as
+    // back-to-back 5-segment plans in input order — correct because
+    // single-parent groups never reference partner shadow columns.
+    //
+    // **Multi-parent groups** (`PkTypeFlipMultiGroup`, Codex round-4
+    // B-15) lower as ONE stage-interleaved 5-segment plan — at each
+    // stage, every member group's stage-N statements are emitted
+    // together. Required because the cross-flipping join-table FKs
+    // at stage 3b reference shadow columns on every parent, and
+    // those shadow columns must already exist (i.e. every parent's
+    // stage 1 must have run) before the FK statements run.
     let mut group_segments: Vec<Segment> = Vec::new();
     for op in &delta.operations {
-        if let SchemaOperation::PkTypeFlipGroup(g) = op {
-            group_segments.extend(super::pk_flip::build_segments(g));
+        match op {
+            SchemaOperation::PkTypeFlipGroup(g) => {
+                group_segments.extend(super::pk_flip::build_segments(g));
+            }
+            SchemaOperation::PkTypeFlipMultiGroup(groups) => {
+                group_segments.extend(super::pk_flip::build_segments_multi(groups));
+            }
+            _ => {}
         }
     }
     if !group_segments.is_empty() {
@@ -547,6 +564,7 @@ fn operation_phase(op: &SchemaOperation) -> usize {
         // sensible spot.
         SchemaOperation::PkTypeFlip { .. }
         | SchemaOperation::PkTypeFlipGroup(_)
+        | SchemaOperation::PkTypeFlipMultiGroup(_)
         | SchemaOperation::Unsupported { .. } => 12,
     }
 }

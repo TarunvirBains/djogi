@@ -352,6 +352,72 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
                 }),
             })
         }
+        SchemaOperation::PkTypeFlipMultiGroup(groups) => {
+            // Codex round-4 B-15 — the multi-parent variant. Same
+            // summary shape as the single-parent group, repeated
+            // per cluster member; the executable SQL lives in the
+            // stage-interleaved segment plan that
+            // [`crate::migrate::pk_flip::build_segments_multi`]
+            // produces. Direct callers of `lower_delta` see a
+            // comment block here so the migration file documents
+            // the cluster's shape; the segment planner supersedes
+            // this summary with the real interleaved plan when it
+            // sees `PkTypeFlipMultiGroup` in the delta.
+            let mut summary = String::new();
+            let _ = std::fmt::Write::write_fmt(
+                &mut summary,
+                format_args!(
+                    "-- PkTypeFlipMultiGroup parents={count}\n\
+                     -- See the stage-interleaved segment plan for the executable SQL\n\
+                     -- (one prep / backfill / index / FK / NOT NULL / cutover\n\
+                     -- segment touching every cluster member at each stage, per\n\
+                     -- HeeRanjID asc-to-desc playbook §7).\n",
+                    count = groups.len(),
+                ),
+            );
+            for g in groups {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut summary,
+                    format_args!(
+                        "-- member parent={parent} {from:?} -> {to:?} children={children},\n\
+                         --        self_fk={self_fk}, join_tables={join}, cycles={cycles},\n\
+                         --        partitioned={partitioned}.\n",
+                        parent = g.parent_table,
+                        from = g.parent_from,
+                        to = g.parent_to,
+                        children = g.children.len(),
+                        self_fk = g.self_fk.is_some(),
+                        join = g.join_tables.len(),
+                        cycles = g.cycles.len(),
+                        partitioned = g.partitioned_parent.is_some(),
+                    ),
+                );
+            }
+            // Cluster label = comma-joined parent_table names.
+            let mut label = String::from("PkTypeFlipMultiGroup ");
+            let names: Vec<&str> = groups.iter().map(|g| g.parent_table.as_str()).collect();
+            label.push_str(&names.join(","));
+            let detail = format!(
+                "PkTypeFlipMultiGroup [{names}] cutover removes prior PK columns and \
+                 triggers across every cluster member; rollback requires an inverse \
+                 migration",
+                names = names.join(","),
+            );
+            Ok(OperationSql {
+                label,
+                up: summary,
+                down: format!(
+                    "-- PkTypeFlipMultiGroup [{names}] — see cutover segment for the\n\
+                     -- POINT OF NO RETURN marker; rollback requires an inverse\n\
+                     -- migration.",
+                    names = names.join(","),
+                ),
+                lossy: Some(LossyRollbackWarning {
+                    kind: LossyRollbackKind::PkTypeFlipPostCutover,
+                    detail,
+                }),
+            })
+        }
         SchemaOperation::RenameApp { from, to } => Ok(emit_rename_app(from, to)),
         SchemaOperation::MoveModelBetweenApps {
             model,

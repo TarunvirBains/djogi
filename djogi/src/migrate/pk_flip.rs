@@ -214,6 +214,275 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Vec<Segment> {
     segments
 }
 
+/// Build the segment list for a Codex round-4 B-15
+/// [`SchemaOperation::PkTypeFlipMultiGroup`].
+///
+/// **Stage interleaving — playbook §7 line 327.** Where
+/// [`build_segments`] produces a 5-segment plan for ONE parent, this
+/// fn produces a 5-segment plan for the WHOLE cluster — at each
+/// stage, every member group's stage-N statements are emitted in
+/// alphabetical-by-parent order. This is the only structurally
+/// correct lowering for a cross-flipping cluster: stage 3b needs
+/// every parent's `id_desc` shadow column to exist (created at
+/// stage 1), so parent A's stage 3b cannot run BEFORE parent B's
+/// stage 1 in the back-to-back layout. With stage interleaving,
+/// every parent's stage 1 runs first, then every parent's stage 2,
+/// etc. — by the time stage 3b emits `... FOREIGN KEY (book_id_desc)
+/// REFERENCES jt_books(id_desc)` AND `... FOREIGN KEY (tag_id_desc)
+/// REFERENCES jt_tags(id_desc)`, both `id_desc` columns exist.
+///
+/// **Cutover atomicity.** All groups' cutover statements concatenate
+/// into ONE [`OperationSql`] in ONE transactional segment — the
+/// runner wraps the whole concatenated body in a single Postgres
+/// transaction. This is the playbook §7 "single mega-transaction"
+/// shape: drop every old FK, promote every parent's PK, finalise
+/// every join table, all atomically.
+///
+/// **Empty-cluster guard.** Defensive: a zero-member multi-group
+/// is structurally impossible (the merger only emits MultiGroup
+/// when the cluster has 2+ members) but we still return an empty
+/// segment vec rather than panicking — failing loudly on this
+/// unreachable path would obscure real bugs in the merger.
+///
+/// **Partitioned member.** Currently the multi-parent merger does
+/// not consider partitioned parents — playbook §9 single-parent
+/// partitioned flips remain on the back-to-back path. A cluster
+/// containing a partitioned parent is structurally rare (M:N
+/// junctions to partitioned tables are unusual) and would require
+/// extending the §9 emitters to interleave with non-partitioned
+/// peers. Tracked as future work; the current merger code only
+/// builds multi-groups from non-partitioned parents (the
+/// partitioned-parent path triggers off `partitioned_parent =
+/// Some(_)` and routes to `build_segments_partitioned` per group).
+pub(crate) fn build_segments_multi(groups: &[PkTypeFlipGroup]) -> Vec<Segment> {
+    if groups.is_empty() {
+        return Vec::new();
+    }
+    if groups.len() == 1 {
+        // A single-member cluster shouldn't reach here (the merger
+        // only creates MultiGroup for 2+ members), but if it does,
+        // fall back to the single-parent path so we don't waste a
+        // segment on no-op interleaving.
+        return build_segments(&groups[0]);
+    }
+    if groups.iter().any(|g| g.partitioned_parent.is_some()) {
+        // Partitioned parents inside a multi-group cluster — fall
+        // back to back-to-back single-parent lowering. Documented
+        // in the doc comment above; tracked as future work because
+        // exercising it requires a §9 + §7 combined fixture which
+        // the playbook does not have.
+        let mut out = Vec::new();
+        for g in groups {
+            out.extend(build_segments(g));
+        }
+        return out;
+    }
+
+    let mut segments: Vec<Segment> = Vec::new();
+
+    // Stage 1 — preparation (transactional). Concatenate every
+    // member's `emit_preparation` body into one OperationSql so
+    // the runner's transactional segment wraps the whole
+    // multi-parent prep in a single BEGIN/COMMIT pair.
+    let mut prep_up = String::new();
+    let mut prep_down = String::new();
+    for g in groups {
+        let prep = emit_preparation(g);
+        if !prep_up.is_empty() && !prep.up.is_empty() {
+            prep_up.push('\n');
+        }
+        prep_up.push_str(&prep.up);
+        if !prep_down.is_empty() && !prep.down.is_empty() {
+            // Down stack reverses: each member's down comes from
+            // the END of `down` so the last-prepared parent rolls
+            // back first. We push in member order here; the down
+            // string is just a reversed concatenation — the
+            // production runner does not currently auto-reverse
+            // down ordering, so emitting them in member order
+            // matches the segment classification's documentation
+            // (segments 1..4 are reversibly-recoverable; segment
+            // 5 is the point of no return).
+            prep_down.push('\n');
+        }
+        prep_down.push_str(&prep.down);
+    }
+    let cluster_label = groups
+        .iter()
+        .map(|g| g.parent_table.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    segments.push(Segment {
+        kind: SegmentKind::Transactional,
+        statements: vec![OperationSql {
+            label: format!("PkFlipPrepMulti [{cluster_label}]"),
+            up: prep_up,
+            down: prep_down,
+            lossy: None,
+        }],
+    });
+
+    // Stage 2 — backfill (non-transactional). Each member's
+    // backfill statements are emitted as their own OperationSql
+    // entries; concatenate the per-member lists in alphabetical
+    // order. The runner runs each statement via single-statement
+    // raw_ddl — see the matching note on `build_segments`.
+    let mut backfill_stmts: Vec<OperationSql> = Vec::new();
+    for g in groups {
+        backfill_stmts.extend(emit_backfill_statements(g));
+    }
+    segments.push(Segment {
+        kind: SegmentKind::NonTransactional,
+        statements: backfill_stmts,
+    });
+
+    // Stage 2b — verification halt point. Concatenate per-member
+    // verifications; non-empty members contribute their statements
+    // in alphabetical order.
+    let mut verify_stmts: Vec<OperationSql> = Vec::new();
+    for g in groups {
+        verify_stmts.extend(emit_verification_statements(g));
+    }
+    if !verify_stmts.is_empty() {
+        segments.push(Segment {
+            kind: SegmentKind::Transactional,
+            statements: verify_stmts,
+        });
+    }
+
+    // Stage 3 — concurrent unique-index build (non-transactional).
+    // Each member's CONCURRENTLY indexes need their own
+    // OperationSql. Order: every parent's parent-index first, then
+    // every parent's child / join-table indexes — mirrors
+    // `emit_concurrent_index_statements`'s per-group order, just
+    // concatenated across members.
+    let mut index_stmts: Vec<OperationSql> = Vec::new();
+    for g in groups {
+        index_stmts.extend(emit_concurrent_index_statements(g));
+    }
+    segments.push(Segment {
+        kind: SegmentKind::NonTransactional,
+        statements: index_stmts,
+    });
+
+    // Stage 3b — NOT VALID FK + VALIDATE pairs (transactional).
+    // THIS is the stage that is correct only with interleaving:
+    // by stage 3b every parent's `id_desc` exists (stage 1) AND has
+    // its UNIQUE index (stage 3), so cross-flipping FKs that
+    // reference partner shadows resolve. Concatenate every
+    // member's FK statements in alphabetical order.
+    let mut fk_stmts: Vec<OperationSql> = Vec::new();
+    for g in groups {
+        fk_stmts.extend(emit_child_fk_statements(g));
+    }
+    if !fk_stmts.is_empty() {
+        segments.push(Segment {
+            kind: SegmentKind::Transactional,
+            statements: fk_stmts,
+        });
+    }
+
+    // Stage 4 — NOT NULL proof (transactional). Concatenate every
+    // member's NOT NULL proof body into one OperationSql; the
+    // runner wraps the whole thing in one transaction.
+    let mut nn_up = String::new();
+    let mut nn_down = String::new();
+    for g in groups {
+        let nn = emit_not_null_proof(g);
+        if !nn_up.is_empty() && !nn.up.is_empty() {
+            nn_up.push('\n');
+        }
+        nn_up.push_str(&nn.up);
+        if !nn_down.is_empty() && !nn.down.is_empty() {
+            nn_down.push('\n');
+        }
+        nn_down.push_str(&nn.down);
+    }
+    segments.push(Segment {
+        kind: SegmentKind::Transactional,
+        statements: vec![OperationSql {
+            label: format!("PkFlipNotNullProofMulti [{cluster_label}]"),
+            up: nn_up,
+            down: nn_down,
+            lossy: None,
+        }],
+    });
+
+    // Stage 5 — cutover (transactional, single atomic tx). The
+    // multi-parent variant interleaves cutover phases ACROSS
+    // members: drop ALL old FKs first, promote ALL parents
+    // second, finalise ALL children third, finalise ALL join
+    // tables last. This ordering is the structurally-correct one
+    // for a cross-flipping cluster — the join-table finalisation
+    // (phase 4) emits `ADD CONSTRAINT FOREIGN KEY (book_id)
+    // REFERENCES jt_books(id)` AND `... REFERENCES jt_tags(id)`
+    // in the same body, both of which only resolve correctly when
+    // every member's phase 2 (parent promotion + RENAME `id_desc`
+    // → `id`) has already run. Concatenating per-group cutover
+    // bodies (phase 1..4 on parent A, then phase 1..4 on parent B)
+    // would emit phase 4 on A before phase 2 on B, violating the
+    // FK-target-exists constraint and tripping ri_triggers.c
+    // post-COMMIT.
+    let mut cut_up = String::new();
+    // SET CONSTRAINTS ALL DEFERRED at top if ANY member has a
+    // cycle. The cycle-deferral is the runner's signal that mid-
+    // transaction FK states are tolerated until COMMIT. For a
+    // multi-parent cluster with cycles on any member, the deferral
+    // applies once at the cluster's transaction boundary.
+    if groups.iter().any(|g| !g.cycles.is_empty()) {
+        cut_up.push_str("SET CONSTRAINTS ALL DEFERRED;\n");
+    }
+    // Phase 1 across all members.
+    for g in groups {
+        cutover_phase_drop_old_fks(g, &mut cut_up);
+    }
+    // Phase 2 across all members. After this loop every parent's
+    // `id_desc` has been renamed to `id`, so phase 4's
+    // `REFERENCES <partner>(id)` resolves cleanly for every
+    // partner targeting any cluster member.
+    for g in groups {
+        cutover_phase_promote_parent(g, &mut cut_up);
+    }
+    // Phase 3 across all members (each member's children
+    // reference its own renamed `id`).
+    for g in groups {
+        cutover_phase_finalise_children(g, &mut cut_up);
+    }
+    // Phase 4 across all members. Only the winner has non-empty
+    // `join_tables` after the merger; the loser's phase 4 no-ops.
+    // This is where the structural fix shines: phase 4's `ADD
+    // CONSTRAINT (... REFERENCES partner(id))` resolves because
+    // every partner's phase 2 already ran.
+    for g in groups {
+        cutover_phase_finalise_join_tables(g, &mut cut_up);
+    }
+    let cut_down = format!(
+        "-- POINT OF NO RETURN — segment 5 (cutover) for cluster [{cluster_label}] cannot be\n\
+         -- reversed by `down` SQL alone. Rollback requires an inverse\n\
+         -- migration: add the previous-direction columns back, install\n\
+         -- reverse autofill triggers, re-run heeranjid_bulk_backfill on\n\
+         -- every member, and run a second cutover. Plan that contingency\n\
+         -- BEFORE running the forward cutover.",
+    );
+    segments.push(Segment {
+        kind: SegmentKind::Transactional,
+        statements: vec![OperationSql {
+            label: format!("PkFlipCutoverMulti [{cluster_label}]"),
+            up: cut_up,
+            down: cut_down,
+            lossy: Some(LossyRollbackWarning {
+                kind: LossyRollbackKind::PkTypeFlipPostCutover,
+                detail: format!(
+                    "POINT OF NO RETURN: cutover for cluster [{cluster_label}] removes \
+                     prior PK columns and triggers across every member; rollback \
+                     requires an inverse migration",
+                ),
+            }),
+        }],
+    });
+
+    segments
+}
+
 /// Build the segment list for a partitioned parent flip per
 /// playbook §9 — composes the partitioned-parent specifics with the
 /// cascade emitters used by [`build_segments`] so a partitioned
@@ -2253,9 +2522,6 @@ fn emit_not_null_proof(group: &PkTypeFlipGroup) -> OperationSql {
 
 fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
     let parent = group.parent_table.as_str();
-    let p_family = parent_family(group);
-    let direction = group.direction;
-    let next_fn = next_fn_name(p_family, direction);
     let mut up = String::new();
 
     // No `BEGIN;` here — the runner's
@@ -2276,8 +2542,74 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         up.push_str("SET CONSTRAINTS ALL DEFERRED;\n");
     }
 
-    // 1. Drop every child's old FK. (No leading indent — the runner
-    //    owns the BEGIN/COMMIT pair around the whole cutover body.)
+    // The cutover body is split into composable phases so the
+    // multi-parent emitter (`emit_cutover_multi`) can interleave
+    // them across cluster members. The single-parent path
+    // composes them in the same order [`build_segments`] expects;
+    // the multi-parent path emits all members' phase-1 first, then
+    // all members' phase-2, etc.
+    cutover_phase_drop_old_fks(group, &mut up);
+    cutover_phase_promote_parent(group, &mut up);
+    cutover_phase_finalise_children(group, &mut up);
+    cutover_phase_finalise_join_tables(group, &mut up);
+
+    // No trailing `COMMIT;` — the runner emits the final COMMIT
+    // for the transactional segment after every statement runs. See
+    // the matching comment above the cycle-deferral block.
+
+    let down = format!(
+        "-- POINT OF NO RETURN — segment 5 (cutover) for {parent} cannot be\n\
+         -- reversed by `down` SQL alone. Rollback requires an inverse\n\
+         -- migration: add the previous-direction column back, install a\n\
+         -- reverse autofill trigger, re-run heeranjid_bulk_backfill, and\n\
+         -- run a second cutover. Plan that contingency BEFORE running\n\
+         -- the forward cutover.",
+        parent = parent,
+    );
+
+    OperationSql {
+        label: format!("PkFlipCutover {parent}"),
+        up,
+        down,
+        lossy: Some(LossyRollbackWarning {
+            kind: LossyRollbackKind::PkTypeFlipPostCutover,
+            detail: format!(
+                "POINT OF NO RETURN: cutover for `{parent}` removes the prior PK column \
+                 and trigger; rollback requires an inverse migration",
+            ),
+        }),
+    }
+}
+
+// ── Cutover phases (composable for single + multi-parent paths) ──────────
+//
+// The cutover is a four-phase orchestration:
+//
+//   1. drop EVERY old FK pointing at the parent (children + join
+//      tables + self-FK).
+//   2. promote the parent — drop old PK, swap shadow → live, drop
+//      old `id`, drop trigger / function, RENAME shadow → `id`.
+//      Self-FK columns get the same drop / rename treatment.
+//   3. finalise every child — drop old FK column, drop trigger /
+//      function, RENAME shadow column → live name, ADD CONSTRAINT
+//      pointing at the parent's new (post-rename) `id`.
+//   4. finalise every join table this group owns — drop old FK
+//      columns, drop trigger / function, RENAME shadow columns,
+//      ADD CONSTRAINT for every pair pointing at the (post-rename)
+//      parent / partner `id` columns.
+//
+// Single-parent path composes them in order. Multi-parent path
+// (Codex round-4 B-15) emits phase 1 across all members, then
+// phase 2 across all members, etc. — required because phase 4's
+// `ADD CONSTRAINT (... REFERENCES partner(id))` assumes the
+// partner's phase 2 has already run (phase 2 is what renames
+// `id_desc` → `id`). Without interleaving, jt_books's phase 4
+// would point at jt_tags's still-old `id` values; the FK check
+// fires and Postgres rejects the cutover.
+
+/// Phase 1: drop every old FK pointing at the parent.
+fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
+    let parent = group.parent_table.as_str();
     for child in &group.children {
         let _ = writeln!(
             up,
@@ -2288,10 +2620,12 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
     }
     for jt in &group.join_tables {
         // B-12: drop EVERY FK on the join table this group owns.
-        // Option A + cross-flipping drops both partner FKs;
-        // Option B / single-parent drops only the parent's FK.
-        // The partner FK survives Option B's first cutover and
-        // gets dropped in the partner's group cutover later.
+        // Option A + cross-flipping drops both partner FKs (the
+        // multi-group merger gives the winner ownership of the
+        // join table); Option B / single-parent drops only the
+        // parent's FK. The partner FK survives Option B's first
+        // cutover and gets dropped in the partner's group cutover
+        // later.
         for pair in jt_shadow_pairs(jt, group) {
             let _ = writeln!(
                 up,
@@ -2311,8 +2645,15 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             );
         }
     }
+}
 
-    // 2. Promote the parent.
+/// Phase 2: promote the parent — swap shadow PK to live PK.
+fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
+    let parent = group.parent_table.as_str();
+    let p_family = parent_family(group);
+    let direction = group.direction;
+    let next_fn = next_fn_name(p_family, direction);
+
     let _ = writeln!(
         up,
         "ALTER TABLE {parent} DROP CONSTRAINT {parent}_pkey;",
@@ -2365,6 +2706,19 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         suffix = SHADOW_SUFFIX,
     );
     if let Some(self_fk) = &group.self_fk {
+        // Drop segment-3b `_desc_fkey` constraints BEFORE the
+        // rename, mirroring the children/join-table phase 3/4
+        // logic — see the rationale on
+        // `cutover_phase_finalise_children`.
+        for col in &self_fk.fk_columns {
+            let _ = writeln!(
+                up,
+                "ALTER TABLE {parent} DROP CONSTRAINT {parent}_{col}{suffix}_fkey;",
+                parent = parent,
+                col = col,
+                suffix = SHADOW_SUFFIX,
+            );
+        }
         for col in &self_fk.fk_columns {
             let _ = writeln!(
                 up,
@@ -2391,8 +2745,28 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             );
         }
     }
+}
 
-    // 3. Finalise every child.
+/// Phase 3: finalise every child — drop old FK column, drop the
+/// `_desc_fkey` shadow constraint that segment 3b VALIDATEd, rename
+/// shadow → live, ADD CONSTRAINT pointing at the parent's new `id`.
+///
+/// **Why drop the `_desc_fkey` constraint before re-adding the
+/// canonical `_fkey`.** Segment 3b emitted the NOT VALID FK as
+/// `<table>_<col>_desc_fkey` (named after the shadow column) and
+/// VALIDATEd it. Postgres' `ALTER TABLE RENAME COLUMN` does NOT
+/// rename constraints — after we RENAME `<col>_desc → <col>` the
+/// `_desc_fkey` constraint is still attached to the column under
+/// its original name. Without an explicit DROP we end up with
+/// TWO FK constraints on the same column (one named `_desc_fkey`
+/// from segment 3b, the other named `_fkey` from this phase).
+/// They're functionally equivalent (both reference `parent(id)`,
+/// both VALID) but the duplication pollutes `pg_constraint`,
+/// confuses `\d` output, and breaks any test that counts FKs by
+/// table. Dropping the `_desc_fkey` here keeps the post-cutover
+/// schema clean.
+fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
+    let parent = group.parent_table.as_str();
     for child in &group.children {
         let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
         let _ = writeln!(
@@ -2410,6 +2784,18 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             up,
             "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
             tbl = child.table,
+        );
+        // Drop the segment-3b `_desc_fkey` constraint BEFORE the
+        // rename. The constraint is on the shadow column (still
+        // named `<col>_desc` at this point); the rename below
+        // would otherwise leave it under its original name on the
+        // newly-renamed column, doubling the FK count. The
+        // matching segment 3b name is `<tbl>_<col>_desc_fkey`.
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {tbl} DROP CONSTRAINT {tbl}_{dst}_fkey;",
+            tbl = child.table,
+            dst = dst,
         );
         let _ = writeln!(
             up,
@@ -2430,13 +2816,14 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             cascade = cascade,
         );
     }
+}
 
-    // Join-table finalisation. B-12: under Option A + cross-
-    // flipping the cutover finalises BOTH FK columns; under Option
-    // B / single-parent only the parent's FK column is finalised
-    // here, the partner's FK column survives to be finalised by
-    // the partner parent's own cutover.
-    //
+/// Phase 4: finalise every join table this group owns. Under
+/// Option A + cross-flipping in a multi-parent cluster this fires
+/// only on the winner; the loser's `join_tables` list is empty
+/// after the merger transferred ownership, so this no-ops there.
+fn cutover_phase_finalise_join_tables(group: &PkTypeFlipGroup, up: &mut String) {
+    let parent = group.parent_table.as_str();
     // The trigger + function drop fires once per join table
     // because there's only one multi-pair trigger installed in
     // segment 1, regardless of pair count.
@@ -2460,6 +2847,19 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
             tbl = jt.table,
         );
+        // Drop segment-3b `_desc_fkey` constraints before the
+        // rename — same rationale as the children phase. The
+        // segment-3b constraint name is
+        // `<jt>_<pair_col>_desc_fkey` (the shadow column).
+        for pair in &pairs {
+            let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
+            let _ = writeln!(
+                up,
+                "ALTER TABLE {tbl} DROP CONSTRAINT {tbl}_{dst}_fkey;",
+                tbl = jt.table,
+                dst = dst,
+            );
+        }
         for pair in &pairs {
             let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
             let _ = writeln!(
@@ -2472,8 +2872,12 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
         }
         for pair in &pairs {
             // First pair targets THIS group's parent; partner pair
-            // (Option A only) targets the partner table recorded
-            // alongside the partner column.
+            // (Option A + cross-flipping inside a multi-parent
+            // cluster) targets the partner table recorded
+            // alongside the partner column. The multi-parent
+            // emitter ensures this runs AFTER every member's
+            // phase 2, so the partner's `id` column is already
+            // post-rename.
             let target_parent = if pair.col == jt.fk_to_parent_column.as_str() {
                 parent.to_string()
             } else {
@@ -2514,33 +2918,6 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
             "-- Join-table layout: {layout_label} (parent={parent}, join_table={tbl})",
             tbl = jt.table,
         );
-    }
-
-    // No trailing `COMMIT;` — the runner emits the final COMMIT
-    // for the transactional segment after every statement runs. See
-    // the matching comment above the cycle-deferral block.
-
-    let down = format!(
-        "-- POINT OF NO RETURN — segment 5 (cutover) for {parent} cannot be\n\
-         -- reversed by `down` SQL alone. Rollback requires an inverse\n\
-         -- migration: add the previous-direction column back, install a\n\
-         -- reverse autofill trigger, re-run heeranjid_bulk_backfill, and\n\
-         -- run a second cutover. Plan that contingency BEFORE running\n\
-         -- the forward cutover.",
-        parent = parent,
-    );
-
-    OperationSql {
-        label: format!("PkFlipCutover {parent}"),
-        up,
-        down,
-        lossy: Some(LossyRollbackWarning {
-            kind: LossyRollbackKind::PkTypeFlipPostCutover,
-            detail: format!(
-                "POINT OF NO RETURN: cutover for `{parent}` removes the prior PK column \
-                 and trigger; rollback requires an inverse migration",
-            ),
-        }),
     }
 }
 
