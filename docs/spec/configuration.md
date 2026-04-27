@@ -168,7 +168,7 @@ the matrix in their `--help` output.
 - `--record` updates the parent repo's recorded submodule pointer after successful attunement
 - `--squash` is hard-gated by the conjunction of FOUR conditions: localhost URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"` (Codex umbrella U-2 — pre-fix only the first two gates were enforced; `dev_mode` was documented but never read, and `DJOGI_ENV` was unwired entirely)
 - `--squash` should refuse when the migration history is already treated as shared staging/production history
-- `--squash --push` requires a configured remote
+- `--squash --publish` requires a configured remote (the spec previously used `--push`; the CLI canonicalised on `--publish` per the OQ-04 ruling in `docs/spec/decisions.md` — `--publish` matches `cargo publish` vocabulary and avoids overloading git's `push` verb)
 ---
 
 ## 16. Web Framework Integration

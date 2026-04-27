@@ -316,7 +316,7 @@ Contract:
 - `--squash` is a dev-history operation for creating a new squashed migration set
 - `--squash` is hard-gated behind a four-condition safety contract: localhost database URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"`. All four gates are enforced before any I/O so a refusal produces zero side effects on disk or in the ledger
 - `--squash` must refuse when the migration history is already treated as shared staging/production history
-- publishing a squashed history requires explicit push behavior and a configured remote
+- publishing a squashed history requires the explicit `--publish` flag and a configured remote (the CLI verb is `--publish`, not `--push`, per the OQ-04 ruling in `docs/spec/decisions.md`)
 
 Apply semantics:
 
