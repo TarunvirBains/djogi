@@ -1147,22 +1147,10 @@ async fn repair_snapshot_rebuild_writes_live_projection(mut ctx: djogi::DjogiCon
         !gamma_alpha_id.nullable,
         "gamma.alpha_id was declared NOT NULL; must round-trip as such"
     );
-    // TODO(T8): when `verify::project_live_schema` populates FK
-    // metadata from `pg_constraint`, assert here that
-    // `gamma_alpha_id.foreign_key == Some(ForeignKeySchema {
-    // ref_table: "t5_b12_alpha", ref_column: "id", on_delete: ... })`.
-    // Today's projection leaves `column.foreign_key: None` because FK
-    // catalog reads were deferred to T8 per the v3 stop condition;
-    // the test cannot assert the FK round-trip until that lands. The
-    // declared FK in the migration plan IS exercised by the apply
-    // path (the table is created with the constraint in PG), so the
-    // gap is in the projection, not in apply or rebuild.
     assert!(
         gamma_alpha_id.foreign_key.is_none(),
-        "T8 will populate gamma.alpha_id.foreign_key; today the \
-         projection must leave it None — getting a populated value here \
-         means T8 has shipped and this assertion should flip to a \
-         positive check (delete the assert + add the TODO'd check)"
+        "rebuild projection must leave gamma.alpha_id without FK metadata here \
+         because this plan does not create a live FK constraint"
     );
 
     // (4) `t5_b12_gamma_alpha_id_idx` — NON-unique BTree on `["alpha_id"]`,
@@ -1656,6 +1644,144 @@ async fn verify_detects_pk_mismatch_as_d608(mut ctx: djogi::DjogiContext) {
     );
 
     let _ = ctx.raw_ddl("DROP TABLE IF EXISTS t5_b6_pk").await;
+}
+
+// ── B-9: verify detects FK deferrability drift (D609) ────────────────────
+
+#[djogi::djogi_test]
+async fn verify_detects_deferrable_fk_drift_as_d609(mut ctx: djogi::DjogiContext) {
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+    ctx.raw_ddl(
+        "CREATE TABLE t5_fk_parent (id BIGINT PRIMARY KEY); \
+         CREATE TABLE t5_fk_child ( \
+             id BIGINT PRIMARY KEY, \
+             parent_id BIGINT NOT NULL, \
+             CONSTRAINT t5_fk_child_parent_id_fkey \
+                 FOREIGN KEY (parent_id) REFERENCES t5_fk_parent(id) \
+                 ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED \
+         )",
+    )
+    .await
+    .expect("create tables with deferrable FK");
+
+    let id_col = djogi::migrate::ColumnSchema {
+        check: None,
+        default_sql: None,
+        foreign_key: None,
+        index_type: None,
+        indexed: false,
+        max_length: None,
+        name: "id".to_string(),
+        nullable: false,
+        on_delete: None,
+        outbox_exclude: false,
+        rationale: None,
+        relation_kind: None,
+        renamed_from: None,
+        sequence_within: None,
+        sql_type: "BIGINT".to_string(),
+        unique: false,
+    };
+    let mut snap = empty_snapshot();
+    snap.models.insert(
+        "t5_fk_parent".to_string(),
+        djogi::migrate::TableSchema {
+            app: None,
+            columns: vec![id_col.clone()],
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: djogi::migrate::PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: djogi::migrate::PkKindSchema::HeerId,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "t5_fk_parent".to_string(),
+            tenant_key: None,
+        },
+    );
+    snap.models.insert(
+        "t5_fk_child".to_string(),
+        djogi::migrate::TableSchema {
+            app: None,
+            columns: vec![
+                id_col,
+                djogi::migrate::ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: Some(djogi::migrate::ForeignKeySchema {
+                        deferrable: true,
+                        initially_deferred: true,
+                        on_delete: djogi::migrate::OnDeleteSchema::Restrict,
+                        ref_column: "id".to_string(),
+                        ref_table: "t5_fk_parent".to_string(),
+                    }),
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "parent_id".to_string(),
+                    nullable: false,
+                    on_delete: Some(djogi::migrate::OnDeleteSchema::Restrict),
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: Some(djogi::migrate::RelationKindSchema::ForeignKey),
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                },
+            ],
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: djogi::migrate::PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: djogi::migrate::PkKindSchema::HeerId,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "t5_fk_child".to_string(),
+            tenant_key: None,
+        },
+    );
+
+    let clean = verify(&mut ctx, &snap).await.expect("verify clean");
+    assert!(
+        !clean.diagnostics.iter().any(|d| d.code == "D609"),
+        "matching deferrable FK must not drift: {:?}",
+        clean.diagnostics
+    );
+
+    ctx.raw_ddl(
+        "ALTER TABLE t5_fk_child DROP CONSTRAINT t5_fk_child_parent_id_fkey; \
+         ALTER TABLE t5_fk_child ADD CONSTRAINT t5_fk_child_parent_id_fkey \
+             FOREIGN KEY (parent_id) REFERENCES t5_fk_parent(id) \
+             ON DELETE RESTRICT",
+    )
+    .await
+    .expect("replace FK with non-deferrable variant");
+
+    let drifted = verify(&mut ctx, &snap).await.expect("verify drifted");
+    assert!(
+        drifted
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "D609" && d.location.as_deref() == Some("t5_fk_child.parent_id")),
+        "expected D609 for FK deferrability drift; got {:?}",
+        drifted.diagnostics,
+    );
+
+    let _ = ctx
+        .raw_ddl(
+            "DROP TABLE IF EXISTS t5_fk_child; \
+             DROP TABLE IF EXISTS t5_fk_parent",
+        )
+        .await;
 }
 
 // ── B-7: verify detects index shape mismatch ─────────────────────────────

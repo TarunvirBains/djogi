@@ -35,9 +35,8 @@
 //! - **Indexes.** Name + table + columns (in order) + uniqueness +
 //!   method — diffed (B-7). `INCLUDE` and partial-predicate surface
 //!   as `Info` (T5 stop condition).
-//! - **Foreign keys.** Name + source `(table, column)` + target
-//!   `(table, column)` + cascade — projection ready, diff deferred to
-//!   T8.
+//! - **Foreign keys.** Source `(table, column)` + target
+//!   `(table, column)` + cascade + deferrability — diffed as D609.
 //!
 //! Other fields ([`crate::migrate::schema::TableSchema::fts`],
 //! [`crate::migrate::schema::TableSchema::partition`],
@@ -66,6 +65,7 @@
 //! | D606 | Warning  | SQL-type rendering drift (advisory). |
 //! | D607 | Error    | Column DEFAULT differs between snapshot and live. |
 //! | D608 | Error    | Primary key column list differs. |
+//! | D609 | Error    | Foreign-key shape differs. |
 //! | D610 | Error    | Snapshot index missing from live DB. |
 //! | D611 | Warning  | Live index not present in snapshot. |
 //! | D612 | Error    | Index columns differ (shape mismatch). |
@@ -120,9 +120,9 @@ use crate::error::DjogiError;
 use super::ledger::{LedgerRow, LedgerStatus};
 use super::projection::BucketKey;
 use super::schema::{
-    AppliedSchema, ColumnSchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
-    IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, PrimaryKeySchema,
-    TableSchema,
+    AppliedSchema, ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
+    IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
+    OnDeleteSchema, PrimaryKeySchema, TableSchema,
 };
 
 /// Sorted allowlist of HeeRanjID artifact table names. Verify
@@ -539,7 +539,8 @@ async fn ledger_table_exists(ctx: &mut DjogiContext) -> Result<bool, VerifyRunEr
 /// `djogi_schema_migrations` table is bookkeeping, not user schema —
 /// surfacing it as drift would noise up every verify run.
 async fn project_live_schema(ctx: &mut DjogiContext) -> Result<AppliedSchema, VerifyRunError> {
-    let tables = read_tables(ctx).await?;
+    let foreign_keys = read_foreign_keys(ctx).await?;
+    let tables = read_tables(ctx, &foreign_keys).await?;
     let mut models: BTreeMap<String, TableSchema> = BTreeMap::new();
     for t in tables {
         models.insert(t.table.clone(), t);
@@ -565,7 +566,10 @@ async fn project_live_schema(ctx: &mut DjogiContext) -> Result<AppliedSchema, Ve
 /// - HeeRanjID artifact tables — see [`HEERANJID_ARTIFACT_TABLES`].
 ///   Adopter-owned tables that legitimately start with `heer_` are
 ///   preserved (A-1 fix).
-async fn read_tables(ctx: &mut DjogiContext) -> Result<Vec<TableSchema>, VerifyRunError> {
+async fn read_tables(
+    ctx: &mut DjogiContext,
+    foreign_keys: &[LiveForeignKey],
+) -> Result<Vec<TableSchema>, VerifyRunError> {
     // Step 1 — table names. Postgres 18 only; we rely on
     // `pg_class.relkind = 'r'` for ordinary tables and filter out
     // the ledger here. HeeRanjID artifact tables are filtered in
@@ -601,7 +605,8 @@ async fn read_tables(ctx: &mut DjogiContext) -> Result<Vec<TableSchema>, VerifyR
         if is_heeranjid_artifact_table(&table_name) {
             continue;
         }
-        let columns = read_columns(ctx, &table_name).await?;
+        let mut columns = read_columns(ctx, &table_name).await?;
+        attach_foreign_keys(&table_name, &mut columns, foreign_keys);
         let primary_key_columns = read_primary_key_columns(ctx, &table_name).await?;
 
         out.push(TableSchema {
@@ -713,6 +718,28 @@ async fn read_columns(
         });
     }
     Ok(out)
+}
+
+fn attach_foreign_keys(
+    table_name: &str,
+    columns: &mut [ColumnSchema],
+    foreign_keys: &[LiveForeignKey],
+) {
+    for column in columns {
+        if let Some(fk) = foreign_keys
+            .iter()
+            .find(|fk| fk.table == table_name && fk.column == column.name)
+        {
+            column.foreign_key = Some(ForeignKeySchema {
+                deferrable: fk.deferrable,
+                initially_deferred: fk.initially_deferred,
+                on_delete: fk.on_delete,
+                ref_column: fk.ref_column.clone(),
+                ref_table: fk.ref_table.clone(),
+            });
+            column.on_delete = Some(fk.on_delete);
+        }
+    }
 }
 
 /// Read the primary key column list for a table (in PK order).
@@ -1027,25 +1054,29 @@ async fn read_applied_ledger(ctx: &mut DjogiContext) -> Result<Vec<LedgerRow>, V
     Ok(out)
 }
 
-/// Read every foreign-key constraint in `public`. Returns
-/// `(table, column, ref_table, ref_column)` tuples in alphabetical
-/// `(table, column)` order.
-///
-/// Reserved for the FK-drift diagnostic path that T8 will turn from
-/// advisory `Info` into an `Error`-level check. Phase 7 keeps the
-/// projection small by never calling this directly — the helper
-/// exists so the SQL is reviewed and pinned now and the upgrade in T8
-/// flips a single boolean rather than re-deriving the catalog query.
-#[allow(dead_code)]
-async fn read_foreign_keys(
-    ctx: &mut DjogiContext,
-) -> Result<Vec<(String, String, String, String)>, VerifyRunError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveForeignKey {
+    table: String,
+    column: String,
+    ref_table: String,
+    ref_column: String,
+    on_delete: OnDeleteSchema,
+    deferrable: bool,
+    initially_deferred: bool,
+}
+
+/// Read every foreign-key constraint in `public`, including the
+/// deferrability bits needed to detect D609 drift.
+async fn read_foreign_keys(ctx: &mut DjogiContext) -> Result<Vec<LiveForeignKey>, VerifyRunError> {
     let rows = ctx
         .query_all(
             "SELECT c.relname::text, \
                     a.attname::text, \
                     rc.relname::text, \
-                    ra.attname::text \
+                    ra.attname::text, \
+                    con.confdeltype::text, \
+                    con.condeferrable, \
+                    con.condeferred \
              FROM pg_constraint con \
              JOIN pg_class c ON c.oid = con.conrelid \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -1067,7 +1098,7 @@ async fn read_foreign_keys(
             source: e,
         })?;
 
-    let mut out: Vec<(String, String, String, String)> = Vec::with_capacity(rows.len());
+    let mut out: Vec<LiveForeignKey> = Vec::with_capacity(rows.len());
     for row in &rows {
         let table: String = row
             .try_get(0)
@@ -1093,12 +1124,53 @@ async fn read_foreign_keys(
                     query_label: "foreign_keys.ref_column",
                     source: DjogiError::from(e),
                 })?;
+        let on_delete_code: String =
+            row.try_get(4)
+                .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                    query_label: "foreign_keys.confdeltype",
+                    source: DjogiError::from(e),
+                })?;
+        let deferrable: bool = row
+            .try_get(5)
+            .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                query_label: "foreign_keys.condeferrable",
+                source: DjogiError::from(e),
+            })?;
+        let initially_deferred: bool =
+            row.try_get(6)
+                .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                    query_label: "foreign_keys.condeferred",
+                    source: DjogiError::from(e),
+                })?;
         // A-1: filter HeeRanjID artifact tables in Rust against the
         // sorted allowlist rather than via SQL prefix matching.
         if is_heeranjid_artifact_table(&table) || is_heeranjid_artifact_table(&ref_table) {
             continue;
         }
-        out.push((table, column, ref_table, ref_column));
+        let on_delete = match on_delete_code.as_bytes().first().copied() {
+            Some(b'r') => OnDeleteSchema::Restrict,
+            Some(b'c') => OnDeleteSchema::Cascade,
+            Some(b'n') => OnDeleteSchema::SetNull,
+            Some(b'd') => OnDeleteSchema::SetDefault,
+            Some(b'a') => OnDeleteSchema::NoAction,
+            _ => {
+                return Err(VerifyRunError::CatalogQueryFailed {
+                    query_label: "foreign_keys.confdeltype",
+                    source: DjogiError::Db(crate::error::DbError::other(format!(
+                        "unexpected pg_constraint.confdeltype value {on_delete_code:?}"
+                    ))),
+                });
+            }
+        };
+        out.push(LiveForeignKey {
+            table,
+            column,
+            ref_table,
+            ref_column,
+            on_delete,
+            deferrable,
+            initially_deferred,
+        });
     }
     Ok(out)
 }
@@ -1115,6 +1187,7 @@ async fn read_foreign_keys(
 /// - D606       — column type-string drift (Warning).
 /// - D607       — column DEFAULT differs (Error, B-5).
 /// - D608       — primary key column list differs (Error, B-6).
+/// - D609       — foreign-key shape differs (Error).
 fn diff_tables(
     snapshot: &AppliedSchema,
     live: &AppliedSchema,
@@ -1262,6 +1335,20 @@ fn diff_tables(
                          snapshot {s}, live {l}",
                         s = render_default_for_message(&snap_default),
                         l = render_default_for_message(&live_default),
+                    ),
+                    location: Some(format!("{name}.{col_name}")),
+                });
+            }
+
+            if snap_col.foreign_key != live_col.foreign_key {
+                diagnostics.push(VerifyDiagnostic {
+                    code: "D609".to_string(),
+                    severity: VerifySeverity::Error,
+                    message: format!(
+                        "column `{name}.{col_name}` foreign key differs: \
+                         snapshot {s:?}, live {l:?}",
+                        s = snap_col.foreign_key,
+                        l = live_col.foreign_key,
                     ),
                     location: Some(format!("{name}.{col_name}")),
                 });
@@ -1788,8 +1875,9 @@ pub(super) async fn live_schema_for_repair(
 mod tests {
     use super::*;
     use crate::migrate::schema::{
-        ColumnSchema, IndexKindSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
-        PkKindSchema, PrimaryKeySchema, TableSchema,
+        ColumnSchema, ForeignKeySchema, IndexKindSchema, IndexSchema, IndexTargetSchema,
+        IndexTypeSchema, OnDeleteSchema, PkKindSchema, PrimaryKeySchema, RelationKindSchema,
+        TableSchema,
     };
 
     fn empty_snapshot() -> AppliedSchema {
@@ -1822,6 +1910,28 @@ mod tests {
             sequence_within: None,
             sql_type: sql_type.to_string(),
             unique: false,
+        }
+    }
+
+    fn fk_column(
+        name: &str,
+        ref_table: &str,
+        ref_column: &str,
+        on_delete: OnDeleteSchema,
+        deferrable: bool,
+        initially_deferred: bool,
+    ) -> ColumnSchema {
+        ColumnSchema {
+            foreign_key: Some(ForeignKeySchema {
+                deferrable,
+                initially_deferred,
+                on_delete,
+                ref_column: ref_column.to_string(),
+                ref_table: ref_table.to_string(),
+            }),
+            on_delete: Some(on_delete),
+            relation_kind: Some(RelationKindSchema::ForeignKey),
+            ..col(name, "BIGINT", false)
         }
     }
 
@@ -2036,6 +2146,56 @@ mod tests {
             .find(|d| d.code == "D606")
             .expect("D606 expected");
         assert_eq!(d606.severity, VerifySeverity::Warning);
+    }
+
+    #[test]
+    fn diff_tables_surfaces_foreign_key_drift_as_d609() {
+        let mut snap = empty_snapshot();
+        snap.models.insert(
+            "posts".to_string(),
+            table(
+                "posts",
+                vec![
+                    col("id", "BIGINT", false),
+                    fk_column(
+                        "author_id",
+                        "users",
+                        "id",
+                        OnDeleteSchema::Restrict,
+                        true,
+                        true,
+                    ),
+                ],
+            ),
+        );
+        let mut live = empty_snapshot();
+        live.models.insert(
+            "posts".to_string(),
+            table(
+                "posts",
+                vec![
+                    col("id", "bigint", false),
+                    fk_column(
+                        "author_id",
+                        "users",
+                        "id",
+                        OnDeleteSchema::Restrict,
+                        true,
+                        false,
+                    ),
+                ],
+            ),
+        );
+
+        let mut diagnostics = Vec::new();
+        diff_tables(&snap, &live, &mut diagnostics);
+
+        let d609 = diagnostics
+            .iter()
+            .find(|d| d.code == "D609")
+            .expect("D609 expected");
+        assert_eq!(d609.severity, VerifySeverity::Error);
+        assert_eq!(d609.location.as_deref(), Some("posts.author_id"));
     }
 
     // ── diff_indexes ─────────────────────────────────────────────────────
@@ -2713,6 +2873,7 @@ mod tests {
         ("D606", "type-string drift (advisory)"),
         ("D607", "default value drift"),
         ("D608", "primary key column list drift"),
+        ("D609", "foreign-key shape drift"),
         ("D610", "snapshot index missing in live"),
         ("D611", "live index not in snapshot (advisory)"),
         ("D612", "index columns differ"),

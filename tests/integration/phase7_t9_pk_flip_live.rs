@@ -37,10 +37,11 @@ use std::time::Duration;
 use djogi::config::MigrateConfig;
 use djogi::migrate::schema::PkKindSchema;
 use djogi::migrate::{
-    AppliedSchema, BucketKey, Classification, MigrationPlan, OperationSql, PkFlipChild,
-    PkFlipDirection, PkFlipFamily, PkTypeFlipGroup, RunnerCtx, RunnerError,
-    SNAPSHOT_FORMAT_VERSION, WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger,
-    compute_checksum, lower_pk_flip_group,
+    AppliedSchema, BucketKey, Classification, ColumnSchema, ForeignKeySchema, MigrationPlan,
+    OnDeleteSchema, OperationSql, PkFlipChild, PkFlipDirection, PkFlipFamily, PkTypeFlipGroup,
+    PrimaryKeySchema, RelationKindSchema, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment,
+    SegmentKind, TableSchema, WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger,
+    compute_checksum, diff_bucket_maps, lower_delta, lower_pk_flip_group,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -142,6 +143,70 @@ fn synth_single_group(parent: &str, from: PkKindSchema, to: PkKindSchema) -> PkT
     }
 }
 
+fn basic_column(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
+    ColumnSchema {
+        check: None,
+        default_sql: None,
+        foreign_key: None,
+        index_type: None,
+        indexed: false,
+        max_length: None,
+        name: name.to_string(),
+        nullable,
+        on_delete: None,
+        outbox_exclude: false,
+        rationale: None,
+        relation_kind: None,
+        renamed_from: None,
+        sequence_within: None,
+        sql_type: sql_type.to_string(),
+        unique: false,
+    }
+}
+
+fn basic_table(name: &str, columns: Vec<ColumnSchema>) -> TableSchema {
+    TableSchema {
+        app: None,
+        columns,
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: PkKindSchema::HeerId,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: name.to_string(),
+        tenant_key: None,
+    }
+}
+
+fn lowered_plan_from_bucket_schemas(before: AppliedSchema, after: AppliedSchema) -> MigrationPlan {
+    let mut before_buckets = BTreeMap::new();
+    before_buckets.insert(bucket(), before);
+
+    let mut after_buckets = BTreeMap::new();
+    after_buckets.insert(bucket(), after);
+
+    let deltas = diff_bucket_maps(&before_buckets, &after_buckets).expect("diff bucket maps");
+    let delta = deltas
+        .into_iter()
+        .find(|d| d.bucket == bucket())
+        .expect("main bucket delta");
+    let statements = lower_delta(&delta).expect("lower delta");
+    MigrationPlan {
+        bucket: bucket(),
+        classification: delta.classification,
+        segments: vec![Segment {
+            kind: SegmentKind::Transactional,
+            statements,
+        }],
+    }
+}
+
 // ── Test 1 — single-table HeerId asc → desc on 10k rows ───────────────────
 
 #[djogi::djogi_test]
@@ -225,6 +290,72 @@ async fn flip_single_table_heer_asc_to_desc(mut ctx: djogi::DjogiContext) {
         .await
         .expect("ledger lookup");
     assert_eq!(status, "applied");
+}
+
+#[djogi::djogi_test]
+async fn deferrable_fk_roundtrip_live(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    let before = empty_snapshot();
+    let mut after = empty_snapshot();
+
+    after.models.insert(
+        "phase7_t9_parent".to_string(),
+        basic_table(
+            "phase7_t9_parent",
+            vec![basic_column("id", "BIGINT", false)],
+        ),
+    );
+
+    let child_fk = ColumnSchema {
+        foreign_key: Some(ForeignKeySchema {
+            deferrable: true,
+            initially_deferred: true,
+            on_delete: OnDeleteSchema::Restrict,
+            ref_column: "id".to_string(),
+            ref_table: "phase7_t9_parent".to_string(),
+        }),
+        on_delete: Some(OnDeleteSchema::Restrict),
+        relation_kind: Some(RelationKindSchema::ForeignKey),
+        ..basic_column("parent_id", "BIGINT", false)
+    };
+    after.models.insert(
+        "phase7_t9_child".to_string(),
+        basic_table(
+            "phase7_t9_child",
+            vec![basic_column("id", "BIGINT", false), child_fk],
+        ),
+    );
+
+    let plan = lowered_plan_from_bucket_schemas(before, after);
+    let runner_ctx = make_runner_ctx(&plan, "V20260427910001__deferrable_fk_roundtrip");
+
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply plan");
+
+    let condeferrable: bool = ctx
+        .raw_scalar(
+            "SELECT condeferrable \
+             FROM pg_constraint \
+             WHERE conname = 'phase7_t9_child_parent_id_fkey'",
+            &[],
+        )
+        .await
+        .expect("condeferrable");
+    assert!(condeferrable, "FK must be marked DEFERRABLE");
+
+    let condeferred: bool = ctx
+        .raw_scalar(
+            "SELECT condeferred \
+             FROM pg_constraint \
+             WHERE conname = 'phase7_t9_child_parent_id_fkey'",
+            &[],
+        )
+        .await
+        .expect("condeferred");
+    assert!(condeferred, "FK must be INITIALLY DEFERRED");
 }
 
 // ── Test 2 — reverse direction HeerId desc → asc ─────────────────────────

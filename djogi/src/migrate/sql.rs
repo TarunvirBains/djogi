@@ -752,11 +752,22 @@ fn render_add_fk(table: &str, column: &str, fk: &ForeignKeySchema) -> String {
     let qref_t = quote_ident(&fk.ref_table);
     let qref_c = quote_ident(&fk.ref_column);
     let cascade = on_delete_sql(fk.on_delete);
+    let deferrable = render_deferrable_clause(fk.deferrable, fk.initially_deferred);
     format!(
         "ALTER TABLE {qt} ADD CONSTRAINT {qcons} \
          FOREIGN KEY ({qc}) REFERENCES {qref_t} ({qref_c}) \
-         ON DELETE {cascade};"
+         ON DELETE {cascade}{deferrable};"
     )
+}
+
+fn render_deferrable_clause(deferrable: bool, initially_deferred: bool) -> &'static str {
+    if !deferrable {
+        ""
+    } else if initially_deferred {
+        " DEFERRABLE INITIALLY DEFERRED"
+    } else {
+        " DEFERRABLE INITIALLY IMMEDIATE"
+    }
 }
 
 fn emit_add_index(idx: &IndexSchema) -> OperationSql {
@@ -1109,6 +1120,10 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema) {
         let qref_c = quote_ident(&fk.ref_column);
         let _ = write!(out, " REFERENCES {qref_t} ({qref_c})");
         let _ = write!(out, " ON DELETE {}", on_delete_sql(fk.on_delete));
+        out.push_str(render_deferrable_clause(
+            fk.deferrable,
+            fk.initially_deferred,
+        ));
     }
 }
 
@@ -1489,6 +1504,84 @@ mod tests {
         }
     }
 
+    #[test]
+    fn render_create_table_with_deferrable_fk() {
+        let fk_col = ColumnSchema {
+            foreign_key: Some(ForeignKeySchema {
+                deferrable: true,
+                initially_deferred: true,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            }),
+            on_delete: Some(OnDeleteSchema::Restrict),
+            relation_kind: Some(RelationKindSchema::ForeignKey),
+            ..col("user_id", "BIGINT", false)
+        };
+        let mut t = synth_table("posts");
+        t.columns = vec![id_column_heerid(), fk_col];
+        let sql = emit_add_table(&t);
+        assert!(
+            sql.up.contains(
+                "REFERENCES \"users\" (\"id\") ON DELETE RESTRICT \
+                 DEFERRABLE INITIALLY DEFERRED"
+            ),
+            "got: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn render_create_table_with_immediately_deferrable_fk() {
+        let fk_col = ColumnSchema {
+            foreign_key: Some(ForeignKeySchema {
+                deferrable: true,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            }),
+            on_delete: Some(OnDeleteSchema::Restrict),
+            relation_kind: Some(RelationKindSchema::ForeignKey),
+            ..col("user_id", "BIGINT", false)
+        };
+        let mut t = synth_table("posts");
+        t.columns = vec![id_column_heerid(), fk_col];
+        let sql = emit_add_table(&t);
+        assert!(
+            sql.up.contains(
+                "REFERENCES \"users\" (\"id\") ON DELETE RESTRICT \
+                 DEFERRABLE INITIALLY IMMEDIATE"
+            ),
+            "got: {}",
+            sql.up
+        );
+    }
+
+    #[test]
+    fn render_create_table_with_non_deferrable_fk() {
+        let fk_col = ColumnSchema {
+            foreign_key: Some(ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
+                on_delete: OnDeleteSchema::Restrict,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            }),
+            on_delete: Some(OnDeleteSchema::Restrict),
+            relation_kind: Some(RelationKindSchema::ForeignKey),
+            ..col("user_id", "BIGINT", false)
+        };
+        let mut t = synth_table("posts");
+        t.columns = vec![id_column_heerid(), fk_col];
+        let sql = emit_add_table(&t);
+        assert!(
+            !sql.up.contains("DEFERRABLE"),
+            "non-deferrable FK must not emit a deferrability clause: {}",
+            sql.up
+        );
+    }
+
     // ── DropTable + lossy ──────────────────────────────────────────────
 
     #[test]
@@ -1647,6 +1740,27 @@ mod tests {
                 sql.up
             );
         }
+    }
+
+    #[test]
+    fn render_alter_table_add_deferrable_fk() {
+        let sql = emit_add_foreign_key(
+            "posts",
+            "author_id",
+            &ForeignKeySchema {
+                deferrable: true,
+                initially_deferred: true,
+                on_delete: OnDeleteSchema::Cascade,
+                ref_column: "id".to_string(),
+                ref_table: "users".to_string(),
+            },
+        );
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"posts\" ADD CONSTRAINT \"posts_author_id_fkey\" \
+             FOREIGN KEY (\"author_id\") REFERENCES \"users\" (\"id\") \
+             ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;"
+        );
     }
 
     #[test]
