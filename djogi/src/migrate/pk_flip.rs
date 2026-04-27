@@ -4701,4 +4701,214 @@ mod tests {
             "§9.7 partitioned-parent must NOT use USING INDEX (illegal on partitioned parent)",
         );
     }
+
+    // ── Codex round-4 B-5r PARTIAL — canonical playbook fixtures ─────────
+    //
+    // Round-3 picked option (b) and renamed the existing fixtures
+    // to `pk_flip_emitter_output_section_*.sql` (drift detector
+    // for the EMITTER) plus anchor-substring tests vs the
+    // playbook. The SECOND half of option (b) — separate
+    // verbatim-canonical fixtures locking the PLAYBOOK against
+    // silent edits — was deferred to round-4. This test set
+    // closes that gap.
+    //
+    // **Provenance.** Each `playbook_canonical_section_*.sql`
+    // fixture is a verbatim copy of the corresponding SQL code
+    // fence in `HeeRanjID-reference/docs/migrations/asc-to-desc.md`
+    // — the cutover block where the playbook section has one
+    // (sections 3, 4, 6, 9), or the load-bearing FK creation
+    // block where it doesn't (section 8's deferrable cycle FK
+    // pair). Section 7 is intentionally absent — its SQL content
+    // is a Rust `install_autofill_trigger_for_table` invocation,
+    // not a SQL block, so there's nothing to lock at the
+    // SQL-byte level.
+    //
+    // **Two-sided invariant.** The earlier
+    // `fixture_section_*_carries_every_playbook_anchor_substring`
+    // tests catch the case where the playbook prose changes a
+    // statement and the fixture falls behind (the anchor walks
+    // load-bearing substrings). These canonical-fixture tests
+    // catch the case where the playbook AND the fixture both
+    // change in lock-step but the stored fixture text drifts
+    // from what the playbook actually says — a regression that
+    // would slip past the substring anchors because both sides
+    // agree on the (wrong) text.
+    //
+    // **Path probe + skip.** The playbook .md file is NOT
+    // distributed with the djogi crate — it lives in the sibling
+    // `HeeRanjID-reference` repo (or at the workspace root via a
+    // symlink, per the project memory rule). When the test runs
+    // in an environment without that file, the test skips
+    // gracefully with a clear `eprintln!` rather than failing —
+    // CI environments that haven't set up the symlink should
+    // not block the build, but the test is informative when the
+    // playbook IS present (typical local dev flow).
+
+    /// Resolve the path to `asc-to-desc.md` relative to
+    /// `CARGO_MANIFEST_DIR` (the djogi crate). Tries two well-
+    /// known locations:
+    ///
+    ///   1. `<workspace>/HeeRanjID-reference/docs/migrations/asc-to-desc.md`
+    ///      — the symlink at the project root (per project
+    ///      memory rule).
+    ///   2. `<workspace>/../HeeRanjID/docs/migrations/asc-to-desc.md`
+    ///      — the sibling-workspace layout (per CLAUDE.md
+    ///      "Workspace Layout" section).
+    ///
+    /// Returns `None` if neither path resolves to an existing
+    /// file. Caller skips the test with a clear message.
+    fn locate_playbook_md() -> Option<std::path::PathBuf> {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        // djogi/Cargo.toml → workspace root is one up.
+        let workspace = manifest.parent()?;
+        let candidates = [
+            workspace.join("HeeRanjID-reference/docs/migrations/asc-to-desc.md"),
+            workspace
+                .parent()?
+                .join("HeeRanjID/docs/migrations/asc-to-desc.md"),
+        ];
+        candidates.into_iter().find(|p| p.is_file())
+    }
+
+    /// Locate the SQL block at `start_line .. end_line` in the
+    /// playbook .md file (1-based inclusive line numbers). The
+    /// test fixture must equal this excerpt byte-for-byte.
+    fn extract_playbook_lines(md: &str, start_line: usize, end_line: usize) -> String {
+        md.lines()
+            .skip(start_line - 1)
+            .take(end_line - start_line + 1)
+            .collect::<Vec<_>>()
+            .join("\n")
+            // Trailing newline matches the fixture file's UNIX
+            // line ending convention (every `cat` of an SQL
+            // fixture appends one).
+            + "\n"
+    }
+
+    /// Run a single canonical-fixture byte-equality check. The
+    /// fixture is `include_str!`-d at compile time so the test
+    /// cannot drift independently of the binary; the playbook
+    /// is `read_to_string`-d at runtime so the test catches
+    /// playbook edits without recompilation.
+    fn assert_canonical_section(
+        section_label: &str,
+        playbook: &str,
+        start_line: usize,
+        end_line: usize,
+        fixture_bytes: &str,
+    ) {
+        let excerpt = extract_playbook_lines(playbook, start_line, end_line);
+        if excerpt != fixture_bytes {
+            // Render the divergence inline. The body is short
+            // enough that printing both sides keeps the operator
+            // signal readable.
+            panic!(
+                "Codex round-4 B-5r: canonical fixture for {section_label} \
+                 drifted from playbook text (lines {start_line}..={end_line}).\n\
+                 Either the playbook edited a load-bearing SQL block — update\n\
+                 the matching `playbook_canonical_section_*.sql` fixture to\n\
+                 the new excerpt — or the fixture itself drifted, in which\n\
+                 case revert the fixture.\n\n\
+                 ---- playbook excerpt ({start_line}..={end_line}) ----\n{excerpt}\n\
+                 ---- fixture ----\n{fixture_bytes}",
+            );
+        }
+    }
+
+    #[test]
+    fn playbook_canonical_section_3_locks_against_silent_edits() {
+        let Some(md_path) = locate_playbook_md() else {
+            eprintln!(
+                "[skip] B-5r canonical fixture §3 — playbook asc-to-desc.md not\n\
+                 reachable from djogi/. Set up the HeeRanjID-reference symlink at\n\
+                 the workspace root (or the sibling HeeRanjID workspace) to\n\
+                 enable this lock.",
+            );
+            return;
+        };
+        let md = std::fs::read_to_string(&md_path).expect("read playbook");
+        // §3.6 cutover code fence body — lines 178–187 inclusive.
+        // Trailing newline appended by `extract_playbook_lines`
+        // matches the fixture file's UNIX EOF convention.
+        assert_canonical_section(
+            "§3 cutover",
+            &md,
+            178,
+            187,
+            include_str!("fixtures/playbook_canonical_section_3.sql"),
+        );
+    }
+
+    #[test]
+    fn playbook_canonical_section_4_locks_against_silent_edits() {
+        let Some(md_path) = locate_playbook_md() else {
+            eprintln!("[skip] B-5r §4 — see §3 skip note for setup");
+            return;
+        };
+        let md = std::fs::read_to_string(&md_path).expect("read playbook");
+        // §4 cutover code fence body — lines 232–254 inclusive.
+        assert_canonical_section(
+            "§4 cutover",
+            &md,
+            232,
+            254,
+            include_str!("fixtures/playbook_canonical_section_4.sql"),
+        );
+    }
+
+    #[test]
+    fn playbook_canonical_section_6_locks_against_silent_edits() {
+        let Some(md_path) = locate_playbook_md() else {
+            eprintln!("[skip] B-5r §6 — see §3 skip note for setup");
+            return;
+        };
+        let md = std::fs::read_to_string(&md_path).expect("read playbook");
+        // §6 cutover code fence body — lines 307–322 inclusive.
+        assert_canonical_section(
+            "§6 cutover",
+            &md,
+            307,
+            322,
+            include_str!("fixtures/playbook_canonical_section_6.sql"),
+        );
+    }
+
+    #[test]
+    fn playbook_canonical_section_8_locks_against_silent_edits() {
+        let Some(md_path) = locate_playbook_md() else {
+            eprintln!("[skip] B-5r §8 — see §3 skip note for setup");
+            return;
+        };
+        let md = std::fs::read_to_string(&md_path).expect("read playbook");
+        // §8 deferred FK creation code fence body — lines
+        // 362–372 inclusive. Section 8 has no cutover SQL block
+        // (the cycle case piggy-backs on §3.6 / §4 with the
+        // SET CONSTRAINTS ALL DEFERRED prologue described in
+        // prose).
+        assert_canonical_section(
+            "§8 deferrable FK pair",
+            &md,
+            362,
+            372,
+            include_str!("fixtures/playbook_canonical_section_8.sql"),
+        );
+    }
+
+    #[test]
+    fn playbook_canonical_section_9_locks_against_silent_edits() {
+        let Some(md_path) = locate_playbook_md() else {
+            eprintln!("[skip] B-5r §9 — see §3 skip note for setup");
+            return;
+        };
+        let md = std::fs::read_to_string(&md_path).expect("read playbook");
+        // §9.7 partitioned-parent cutover code fence body —
+        // lines 459–477 inclusive.
+        assert_canonical_section(
+            "§9 partitioned cutover",
+            &md,
+            459,
+            477,
+            include_str!("fixtures/playbook_canonical_section_9.sql"),
+        );
+    }
 }
