@@ -13,8 +13,9 @@ use std::process::ExitCode;
 
 use djogi::apps::AppRegistry;
 use djogi::migrate::{
-    AppLifecycle, AttuneMode, AttuneRequest, ComposeError, ComposeRequest, GUARD_DEFAULT_TIMEOUT,
-    LOCK_FILE_NAME, acquire_workspace_lock, attune, compose, project_from_inventory,
+    AppLifecycle, AttuneError, AttuneMode, AttuneRequest, ComposeError, ComposeRequest,
+    GUARD_DEFAULT_TIMEOUT, LOCK_FILE_NAME, acquire_workspace_lock, attune, compose,
+    project_from_inventory,
 };
 
 /// Resolve the workspace root from the `--workspace` flag. When the
@@ -478,8 +479,37 @@ async fn run_attune(workspace: &Path, mode: AttuneMode) -> i32 {
         }
         Err(e) => {
             eprintln!("djogi migrations attune: {e}");
-            1
+            attune_error_exit_code(&e)
         }
+    }
+}
+
+/// Map an [`AttuneError`] variant onto the documented exit-code matrix
+/// (Codex umbrella U-1 / U-3 — `docs/spec/configuration.md` §14):
+///
+/// - Refusal variants → exit code `2` ("operator must intervene;
+///   nothing happened"). Today every refusal flows through
+///   [`AttuneError::Refused`]; the localhost gate, the dev-profile
+///   gate, the missing-version refusal, and the ambiguous-version
+///   refusal are all reachable through that variant.
+/// - Runtime variants → exit code `1` ("we tried; something broke" —
+///   filesystem scan, ledger query, SQL read/write/delete, git
+///   publish). CI may safely retry these.
+///
+/// Pulled out as a free function so unit tests can pin every variant
+/// without spinning a Tokio runtime; the prior implementation
+/// flattened every error to `1`, which umbrella U-3 flagged as a
+/// blocker because operators could not distinguish "refused before
+/// any side effect" from "ran and failed mid-flight".
+fn attune_error_exit_code(err: &AttuneError) -> i32 {
+    match err {
+        AttuneError::Refused(_) => 2,
+        AttuneError::FilesystemScanFailed { .. }
+        | AttuneError::LedgerQueryFailed { .. }
+        | AttuneError::SqlReadFailed { .. }
+        | AttuneError::SqlWriteFailed { .. }
+        | AttuneError::SqlDeleteFailed { .. }
+        | AttuneError::GitPublishFailed { .. } => 1,
     }
 }
 
@@ -741,5 +771,76 @@ mod tests {
             "malformed workspace Djogi.toml must surface as config load error"
         );
         let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Codex umbrella U-3: AttuneError → exit code matrix ───────────────
+
+    /// Every `AttuneError::Refused(_)` variant must map to exit code `2`
+    /// per `docs/spec/configuration.md` §14. The pre-fix implementation
+    /// flattened every error to `1`, so an operator running attune in CI
+    /// could not distinguish "policy gate refused before any side effect"
+    /// from "ran half a step and failed mid-flight". Codex umbrella U-3
+    /// flagged this as a blocker.
+    #[test]
+    fn u3_attune_refusal_variants_map_to_exit_code_two() {
+        use djogi::migrate::AttuneRefusal;
+        let cases = [
+            AttuneError::Refused(AttuneRefusal::SquashNotLocalhost {
+                database_url: "postgres://prod.example.com/main".to_string(),
+            }),
+            AttuneError::Refused(AttuneRefusal::SquashNotDevProfile {
+                profile: "production".to_string(),
+            }),
+            AttuneError::Refused(AttuneRefusal::SquashFromVersionNotFound {
+                version: "V20260101000000__missing".to_string(),
+            }),
+            AttuneError::Refused(AttuneRefusal::SquashFromVersionAmbiguous {
+                version: "V20260101000000__shared".to_string(),
+                buckets: vec!["main/users".to_string(), "main/billing".to_string()],
+            }),
+        ];
+        for err in &cases {
+            assert_eq!(
+                attune_error_exit_code(err),
+                2,
+                "refusal variant must map to exit 2: {err}"
+            );
+        }
+    }
+
+    /// Every runtime `AttuneError` variant must map to exit code `1`
+    /// per `docs/spec/configuration.md` §14. CI may safely retry runtime
+    /// failures; a refusal (exit `2`) signals "operator must intervene"
+    /// and retrying without operator action would just refuse again.
+    #[test]
+    fn u3_attune_runtime_variants_map_to_exit_code_one() {
+        let cases = [
+            AttuneError::FilesystemScanFailed {
+                source: std::io::Error::other("disk full"),
+            },
+            AttuneError::SqlReadFailed {
+                path: PathBuf::from("/tmp/x.sql"),
+                source: std::io::Error::other("permission denied"),
+            },
+            AttuneError::SqlWriteFailed {
+                path: PathBuf::from("/tmp/x.sql"),
+                source: std::io::Error::other("read-only fs"),
+            },
+            AttuneError::SqlDeleteFailed {
+                path: PathBuf::from("/tmp/x.sql"),
+                source: std::io::Error::other("not found"),
+            },
+            AttuneError::GitPublishFailed {
+                stderr: "fatal: refusing to push".to_string(),
+                status_code: Some(128),
+            },
+        ];
+        for err in &cases {
+            assert_eq!(
+                attune_error_exit_code(err),
+                1,
+                "runtime variant must map to exit 1: {err}"
+            );
+        }
     }
 }
