@@ -1575,40 +1575,117 @@ mod tests {
     /// Phase 7 T10 — non-FK columns pass through `f.sql_type` verbatim.
     /// Ensures the substitution only fires when `relation_kind` is
     /// `Some(_)` AND `target_type_name` resolves in the type map.
+    ///
+    /// Codex T10 round-2 sharpened scenario: a non-FK column on the
+    /// SAME model where another field is a FK to a model with a DIFFERENT
+    /// PK SQL type. If a regression in the substitution rule walked
+    /// every column instead of only relation columns, the non-FK column
+    /// here (`SmallInt` placeholder type) would be incorrectly
+    /// rewritten to the target's PK type. Asserting the original
+    /// `SMALLINT` survives proves the per-field guard at projection.rs
+    /// where `relation_kind.is_some()` gates the substitution.
     #[test]
     fn non_fk_column_sql_type_passes_through_verbatim() {
-        const FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-            name: "name",
-            sql_type: FieldSqlType::Text,
-            nullable: false,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-        }];
-        let m = ModelDescriptor {
+        const FIELDS: &[FieldDescriptor] = &[
+            // Real FK column — substitution applies; ends up as UUID
+            // because Owner has a RanjId PK below.
+            FieldDescriptor {
+                name: "owner_id",
+                sql_type: FieldSqlType::BigInt,
+                nullable: false,
+                unique: false,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: Some(RelationKind::ForeignKey),
+                on_delete: Some(OnDelete::Restrict),
+                target_type_name: Some("Owner"),
+                visage_map: &[],
+            },
+            // Non-FK SmallInt — must NOT be rewritten to UUID (or to
+            // anything else) just because it lives on a model with FK
+            // fields. The substitution rule is per-field, gated on
+            // `relation_kind.is_some()`.
+            FieldDescriptor {
+                name: "sort_order",
+                sql_type: FieldSqlType::SmallInt,
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            },
+            // Non-FK Text — also must pass through verbatim.
+            FieldDescriptor {
+                name: "name",
+                sql_type: FieldSqlType::Text,
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            },
+        ];
+        let owner = ModelDescriptor {
+            // RanjId PK so the substitution target type (UUID) is
+            // visibly different from the non-FK column's declared
+            // SmallInt — a regression that swept the substitution
+            // across non-relation columns would jump out.
+            pk_type: PkType::RanjId,
+            ..synth_model("owners", "Owner")
+        };
+        let widget = ModelDescriptor {
             fields: FIELDS,
             ..synth_model("widgets", "Widget")
         };
         let buckets = project_from_iters(
-            [&m],
+            [&owner, &widget],
             std::iter::empty::<&EnumDescriptor>(),
             std::iter::empty::<&AppDescriptor>(),
             "2026-04-25T00:00:00Z".to_string(),
         )
         .expect("ok");
-        let name = &buckets[&empty_global()].models["widgets"].columns[0];
+        let cols = &buckets[&empty_global()].models["widgets"].columns;
+        let owner_id = cols.iter().find(|c| c.name == "owner_id").unwrap();
+        let sort_order = cols.iter().find(|c| c.name == "sort_order").unwrap();
+        let name = cols.iter().find(|c| c.name == "name").unwrap();
+        // FK column: substituted to UUID (Owner's RanjId PK SQL type).
+        assert_eq!(
+            owner_id.sql_type, "UUID",
+            "FK to Owner (RanjId PK) must substitute to UUID; got {}",
+            owner_id.sql_type
+        );
+        // Non-FK columns: passed through verbatim, NOT rewritten to
+        // UUID even though they live alongside an FK column whose
+        // target has a UUID PK.
+        assert_eq!(
+            sort_order.sql_type, "SMALLINT",
+            "non-FK SmallInt column must pass through unchanged; got {}",
+            sort_order.sql_type
+        );
         assert_eq!(
             name.sql_type, "TEXT",
-            "non-FK Text column must pass through verbatim, got {}",
+            "non-FK Text column must pass through unchanged; got {}",
             name.sql_type
         );
     }

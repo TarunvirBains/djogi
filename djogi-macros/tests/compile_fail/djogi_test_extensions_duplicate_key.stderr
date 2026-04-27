@@ -1,0 +1,5 @@
+error: #[djogi_test] `extensions` specified more than once
+  --> tests/compile_fail/djogi_test_extensions_duplicate_key.rs:10:47
+   |
+10 | #[djogi::djogi_test(extensions = ["postgis"], extensions = ["pg_trgm"])]
+   |                                               ^^^^^^^^^^

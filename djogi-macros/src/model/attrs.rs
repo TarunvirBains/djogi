@@ -1717,6 +1717,28 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
 /// Called by `descriptor::expand` and `inject::expand` starting in Tasks 4–6.
 #[allow(dead_code)]
 pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
+    // Structural recognition for `Jsonb<T>` wrappers — runs BEFORE the
+    // string-based match so any path-form `Jsonb<…>` resolves to JSONB
+    // regardless of how it was spelled. Catches `Jsonb<T>`,
+    // `djogi::Jsonb<T>`, `djogi::jsonb::Jsonb<T>`, `crate::Jsonb<T>`,
+    // `super::Jsonb<T>`, `::djogi::Jsonb<T>`, etc. — anywhere the path's
+    // last segment is `Jsonb` AND it carries angle-bracket generic
+    // arguments.
+    //
+    // Codex T10 round-2 N-1: the previous string-prefix matcher only
+    // recognized three exact prefixes (`Jsonb<`, `djogi::Jsonb<`,
+    // `djogi::jsonb::Jsonb<`), silently mapping `crate::Jsonb<T>` /
+    // `super::Jsonb<T>` to TEXT and producing INSERT failures on the
+    // typed Jsonb round-trip. Switching to last-segment ident check
+    // closes the family.
+    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
+        && let Some(last) = path.segments.last()
+        && last.ident == "Jsonb"
+        && matches!(last.arguments, syn::PathArguments::AngleBracketed(_))
+    {
+        return Some("JSONB");
+    }
+
     // Normalise whitespace and strip an optional leading `::` so absolute
     // paths (`::djogi::types::HeerId`) match the same arms as their
     // relative counterparts (`djogi::types::HeerId`).
@@ -1794,21 +1816,9 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         | "djogi::MultiPolygon" => Some("GEOGRAPHY(MultiPolygon, 4326)"),
         // Option<T> is handled at call site — strip and recurse via unwrap_option
         _ if s.starts_with("Option<") => None,
-        // `Jsonb<T>` for any `T: JsonbSchema` lowers to a Postgres
-        // `JSONB` column. The runtime descriptor's `sql_type` slot
-        // therefore needs `FieldSqlType::Jsonb`. Detect the wrapper by
-        // its head ident, accepting bare `Jsonb<…>`, `djogi::Jsonb<…>`,
-        // and `::djogi::Jsonb<…>` forms (the leading `::` is stripped
-        // above). Surfaced by Phase 7 T10 — without this rule, every
-        // `sync_models`'d table with a `Jsonb<T>` field rendered the
-        // column as `TEXT` and round-tripping the typed Jsonb value
-        // failed at INSERT time.
-        _ if s.starts_with("Jsonb<")
-            || s.starts_with("djogi::Jsonb<")
-            || s.starts_with("djogi::jsonb::Jsonb<") =>
-        {
-            Some("JSONB")
-        }
+        // (Jsonb<T> recognition lives at the top of this fn — structural
+        // last-segment match handles bare / djogi:: / djogi::jsonb:: /
+        // crate:: / super:: / ::djogi:: forms uniformly.)
         _ => None,
     }
 }
@@ -2122,10 +2132,10 @@ mod tests {
     }
 
     /// Phase 7 T10 — leading `::` absolute path forms must match the
-    /// same arm as their relative counterparts. Locks in the
-    /// strip-prefix normalization the function applies before the
-    /// match, since `Jsonb<T>` recognition uses `starts_with(...)` on
-    /// the normalized string.
+    /// same arm as their relative counterparts. Locks in the structural
+    /// last-segment matcher's path-walking semantics (the leading `::`
+    /// only changes `path.leading_colon`, not the segment list, so the
+    /// last-segment ident check fires identically).
     #[test]
     fn jsonb_wrapper_absolute_paths_match() {
         let abs_djogi: syn::Type = parse_quote!(::djogi::Jsonb<P>);
@@ -2134,19 +2144,62 @@ mod tests {
         assert_eq!(rust_type_to_sql(&abs_jsonb), Some("JSONB"));
     }
 
-    /// Negative case — types that just *contain* the substring `Jsonb`
-    /// but aren't the wrapper must NOT fall into the JSONB arm. The
-    /// recognition uses `starts_with("Jsonb<")` (etc.) precisely to
-    /// avoid this kind of accidental match.
+    /// Phase 7 T10 round-2 N-1 — `crate::Jsonb<T>` and `super::Jsonb<T>`
+    /// path forms must also resolve to `JSONB`. The previous
+    /// string-prefix matcher only recognized `Jsonb<` / `djogi::Jsonb<`
+    /// / `djogi::jsonb::Jsonb<` and silently mapped these crate-relative
+    /// shapes to TEXT, producing INSERT failures at runtime. The
+    /// structural last-segment matcher closes that gap because both
+    /// `crate` and `super` keywords are valid path-segment idents in
+    /// `syn::Type::Path` and the last segment is still `Jsonb`.
+    #[test]
+    fn jsonb_wrapper_crate_relative_path_forms_match() {
+        let crate_path: syn::Type = parse_quote!(crate::Jsonb<P>);
+        let super_path: syn::Type = parse_quote!(super::Jsonb<P>);
+        let nested_crate: syn::Type = parse_quote!(crate::jsonb::Jsonb<P>);
+        let deep_module: syn::Type = parse_quote!(crate::models::common::Jsonb<P>);
+        assert_eq!(rust_type_to_sql(&crate_path), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&super_path), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&nested_crate), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&deep_module), Some("JSONB"));
+    }
+
+    /// Negative case — types that just *contain* `Jsonb` somewhere but
+    /// aren't the wrapper must NOT fall into the JSONB arm. The
+    /// structural matcher checks `path.segments.last().ident == "Jsonb"`
+    /// AND that the last segment carries angle-bracket generics, so:
+    ///
+    /// - `MyJsonb<T>` — last segment ident is `MyJsonb`, not `Jsonb` →
+    ///   no match.
+    /// - `Vec<Jsonb<T>>` — last segment ident is `Vec` (the inner
+    ///   `Jsonb<T>` lives inside `Vec`'s generic args, not on the
+    ///   outer path) → no match.
+    /// - `Jsonb` (no generics) — fails the `AngleBracketed` arm guard
+    ///   so a hypothetical non-generic `Jsonb` type is not coerced to
+    ///   JSONB just because the ident matches.
     #[test]
     fn jsonb_lookalikes_do_not_match() {
-        // `MyJsonb<T>` is a hypothetical user wrapper — must not lower
-        // to JSONB just because the string contains "Jsonb".
         let lookalike: syn::Type = parse_quote!(MyJsonb<P>);
-        // Type that mentions Jsonb only inside generics shouldn't
-        // either, since the head-ident is `Vec`.
         let in_generic: syn::Type = parse_quote!(Vec<Jsonb<P>>);
+        let no_generics: syn::Type = parse_quote!(Jsonb);
         assert_eq!(rust_type_to_sql(&lookalike), None);
         assert_eq!(rust_type_to_sql(&in_generic), None);
+        assert_eq!(rust_type_to_sql(&no_generics), None);
+    }
+
+    /// Phase 7 T10 round-2 N-1 — `Option<Jsonb<T>>` returns `None`
+    /// directly because callers strip the `Option<…>` wrapper via
+    /// `unwrap_option` before calling `rust_type_to_sql`. This locks
+    /// in the convention so a refactor that bypasses `unwrap_option`
+    /// surfaces here. (The structural Jsonb check at the top of the
+    /// fn does NOT recurse through `Option`'s generic args — last
+    /// segment of `Option<Jsonb<T>>` is `Option`, not `Jsonb`.)
+    #[test]
+    fn jsonb_inside_option_is_unwrap_responsibility() {
+        let optioned: syn::Type = parse_quote!(Option<Jsonb<P>>);
+        // `rust_type_to_sql` itself returns None — Option-stripping is
+        // a caller concern. The string-based fallback then matches the
+        // `_ if s.starts_with("Option<") => None` arm.
+        assert_eq!(rust_type_to_sql(&optioned), None);
     }
 }
