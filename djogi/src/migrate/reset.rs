@@ -46,6 +46,26 @@
 //! the last apply) sort lexically afterwards. Fresh DBs with no
 //! ledger fall back to lexical sort safely.
 //!
+//! # Historical-order capture error policy (Codex umbrella round-2 U-6)
+//!
+//! The pre-flight capture step has TWO qualitatively different
+//! failure modes that pre-U-6 collapsed to the same outcome:
+//!
+//! - **Ledger genuinely missing** (the `pg_class` probe returns
+//!   `false`): legitimate fresh-DB fallback. Reset proceeds with an
+//!   empty historical map, and `build_replay_plan` falls back to
+//!   lexical version sort.
+//! - **Anything else** — connection failure, query failure, decode
+//!   failure, permission denied: opaque. Reset propagates as
+//!   [`ResetError::HistoricalOrderCaptureFailed`] and refuses to
+//!   drop / recreate.
+//!
+//! Pre-U-6 every failure mode swallowed itself via `unwrap_or_default()`
+//! at the call site, so a flaky ledger read on a populated DB still
+//! triggered the destructive operation. The fix is the
+//! [`HistoricalCaptureError`] split: `LedgerMissing` is the only
+//! legitimate fall-back signal; `Transient(DjogiError)` propagates.
+//!
 //! # No regex
 //!
 //! URL parsing reuses the byte-level extractor in
@@ -182,6 +202,24 @@ pub enum ResetError {
     InvalidDatabaseName { name: String },
     /// Workspace lock acquisition failed before the replay could run.
     WorkspaceLockFailed { source: super::guard::GuardError },
+    /// Codex umbrella round-2 U-6: capturing the live ledger's
+    /// historical apply order failed for a reason that is NOT
+    /// "ledger table is missing on a fresh DB". Pre-fix every
+    /// failure mode of the capture step (connection error, decode
+    /// error, generic SQL error, …) collapsed to an empty map via
+    /// `unwrap_or_default()`, which silently fell through to the
+    /// drop / recreate path on a transient error. That re-opens the
+    /// U-4 hazard: a flaky ledger read that swallows itself, then
+    /// the destructive operation runs anyway against a database
+    /// whose true state we never confirmed.
+    ///
+    /// Post-fix: the ONLY legitimate fall-back-to-lexical signal is
+    /// the `pg_class` probe returning `false` (genuinely fresh DB
+    /// or freshly-recreated DB without bootstrap yet). Every other
+    /// failure mode propagates through this variant, refusing the
+    /// destructive operation. The operator-facing message names the
+    /// underlying `DjogiError` so the failure point is unambiguous.
+    HistoricalOrderCaptureFailed { source: DjogiError },
 }
 
 /// Specific refusal kind for [`ResetError::Refused`].
@@ -245,6 +283,15 @@ impl std::fmt::Display for ResetError {
             ResetError::WorkspaceLockFailed { source } => {
                 write!(f, "db reset: workspace lock acquisition failed: {source}")
             }
+            ResetError::HistoricalOrderCaptureFailed { source } => write!(
+                f,
+                "db reset: capturing the live ledger's historical apply order \
+                 failed: {source}; refusing to proceed with the destructive \
+                 drop / recreate because we cannot confirm the live state — \
+                 fix the underlying connection / query failure and re-run, or \
+                 (if the database genuinely does not exist yet) create it \
+                 first then re-run db reset"
+            ),
         }
     }
 }
@@ -282,6 +329,7 @@ impl std::error::Error for ResetError {
             ResetError::SqlReadFailed { source, .. } => Some(source),
             ResetError::ReplayFailed { source, .. } => Some(source),
             ResetError::WorkspaceLockFailed { source } => Some(source),
+            ResetError::HistoricalOrderCaptureFailed { source } => Some(source),
             _ => None,
         }
     }
@@ -367,13 +415,24 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     //    order (e.g. files added on disk after the last apply) sort
     //    AFTER any historical entry, lexically among themselves.
     //
-    //    Failure to capture the historical order is non-fatal — the
-    //    most common case is a fresh DB where the ledger table does
-    //    not exist yet. We treat any error here as "no historical
-    //    order to honour" and fall back to lexical sort.
-    let historical_order = capture_historical_apply_order(req.database_url)
-        .await
-        .unwrap_or_default();
+    //    Codex umbrella round-2 U-6 — error-policy split:
+    //    `HistoricalCaptureError::LedgerMissing` is the ONLY legitimate
+    //    fall-back-to-lexical signal (`pg_class` probe returned false:
+    //    genuinely fresh DB). Every OTHER failure mode (connection
+    //    failure, decode failure, generic SQL error, permission
+    //    denied) surfaces as `Transient(..)` and propagates through
+    //    `ResetError::HistoricalOrderCaptureFailed`. Pre-U-6 every
+    //    error collapsed to `()` and the reset proceeded with an
+    //    empty map — which re-opened the U-4 hazard for transient
+    //    failures (the empty map masquerades as "fresh DB with no
+    //    history" and the destructive drop / recreate runs anyway).
+    let historical_order = match capture_historical_apply_order(req.database_url).await {
+        Ok(map) => map,
+        Err(HistoricalCaptureError::LedgerMissing) => BTreeMap::new(),
+        Err(HistoricalCaptureError::Transient(e)) => {
+            return Err(ResetError::HistoricalOrderCaptureFailed { source: e });
+        }
+    };
 
     // 5. Drop + recreate the application database via the maintenance
     //    connection. A fresh tokio_postgres client is opened just for
@@ -417,28 +476,69 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     })
 }
 
-/// Codex umbrella U-4 — capture the historical apply order from the
-/// live ledger before the drop.
+/// Internal error classifier for [`capture_historical_apply_order`]
+/// per Codex umbrella round-2 U-6.
 ///
-/// Connects to the application DB at `database_url`, queries
-/// `djogi_schema_migrations` ordered by `applied_at ASC, id ASC`,
-/// and returns a `(bucket, version) -> rank` map where lower ranks
-/// applied first historically.
+/// The capture step has two qualitatively different failure modes:
 ///
-/// Returns an empty map (NOT an error) when the ledger table does
-/// not exist or the query fails. The caller treats absence of a
-/// historical order as "fall back to lexical" so a fresh DB still
-/// resets cleanly.
+/// - **`LedgerMissing`** — the `pg_class` probe came back `false`.
+///   The connection succeeded, the catalog query succeeded, and the
+///   answer was "no `djogi_schema_migrations` table here". This is
+///   the legitimate fresh-DB / freshly-recreated-DB signal. The
+///   caller falls back to lexical sort and the destructive drop /
+///   recreate proceeds.
+/// - **`Transient(DjogiError)`** — anything else: tokio_postgres
+///   connect failure (DB unreachable, auth fail, network drop, DB
+///   does not exist), `current_database()` query failure, probe
+///   query failure, decode error, generic SELECT failure. None of
+///   these prove the DB is fresh; they prove we cannot CONFIRM the
+///   live state. The caller propagates as
+///   `ResetError::HistoricalOrderCaptureFailed` and refuses to
+///   drop / recreate.
+///
+/// Pre-U-6 the helper returned `Result<_, ()>` and `unwrap_or_default()`
+/// at the call site collapsed every failure mode to "empty map →
+/// proceed with lexical fallback". That re-opened the U-4 hazard
+/// under a transient connection / query failure: the destructive
+/// path runs against a database whose history we never read.
+#[derive(Debug)]
+enum HistoricalCaptureError {
+    /// `pg_class` probe returned `false` — ledger genuinely absent.
+    LedgerMissing,
+    /// Connection / query / decode failure — treat as opaque, do
+    /// NOT proceed with the destructive operation.
+    Transient(DjogiError),
+}
+
+/// Codex umbrella U-4 + round-2 U-6 — capture the historical apply
+/// order from the live ledger before the drop.
+///
+/// Connects to the application DB at `database_url`, probes for the
+/// presence of `djogi_schema_migrations`, and (when present) queries
+/// it ordered by `applied_at ASC, id ASC`. Returns a
+/// `(bucket, version) -> rank` map where lower ranks applied first
+/// historically.
+///
+/// Per U-6, the error classification is intentional and load-bearing:
+///
+/// - Probe says ledger absent → `Err(HistoricalCaptureError::LedgerMissing)`
+///   (caller falls back to lexical).
+/// - Anything else → `Err(HistoricalCaptureError::Transient(..))`
+///   (caller propagates and refuses the destructive drop).
 ///
 /// Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
 /// `Failed`, `RolledBack` do not represent migrations whose effect
 /// the live DB carries forward.
 async fn capture_historical_apply_order(
     database_url: &str,
-) -> Result<BTreeMap<(BucketKey, String), u64>, ()> {
+) -> Result<BTreeMap<(BucketKey, String), u64>, HistoricalCaptureError> {
     let (client, conn) = tokio_postgres::connect(database_url, NoTls)
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "tokio-postgres connect failed during historical-order capture: {e}"
+            ))))
+        })?;
     let driver = tokio::spawn(async move {
         if let Err(e) = conn.await {
             tracing::debug!("[db reset] historical-order driver: {e}");
@@ -450,12 +550,22 @@ async fn capture_historical_apply_order(
     let db_row = client
         .query_one("SELECT current_database()::text", &[])
         .await
-        .map_err(|_| ())?;
-    let database: String = db_row.try_get(0).map_err(|_| ())?;
+        .map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "current_database() failed during historical-order capture: {e}"
+            ))))
+        })?;
+    let database: String = db_row.try_get(0).map_err(|e| {
+        HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+            "decoding current_database() result failed: {e}"
+        ))))
+    })?;
 
-    // Probe the ledger table — fresh DBs have no
-    // `djogi_schema_migrations` so the SELECT below would fail. The
-    // probe + early return keeps the error path silent.
+    // Probe the ledger table. THIS is the canonical fresh-DB decision
+    // point: the connection succeeded AND the catalog query returned
+    // a typed answer. A `false` here means the ledger has not been
+    // bootstrapped yet — legitimate fresh-DB fallback. A failure of
+    // the probe itself is opaque and propagates as Transient.
     let probe = client
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM pg_class \
@@ -463,12 +573,20 @@ async fn capture_historical_apply_order(
             &[],
         )
         .await
-        .map_err(|_| ())?;
-    let exists: bool = probe.try_get(0).map_err(|_| ())?;
+        .map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "pg_class probe for djogi_schema_migrations failed: {e}"
+            ))))
+        })?;
+    let exists: bool = probe.try_get(0).map_err(|e| {
+        HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+            "decoding pg_class probe result failed: {e}"
+        ))))
+    })?;
     if !exists {
         drop(client);
         let _ = driver.await;
-        return Ok(BTreeMap::new());
+        return Err(HistoricalCaptureError::LedgerMissing);
     }
 
     let rows = client
@@ -480,12 +598,24 @@ async fn capture_historical_apply_order(
             &[],
         )
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "SELECT djogi_schema_migrations failed during historical-order capture: {e}"
+            ))))
+        })?;
 
     let mut out: BTreeMap<(BucketKey, String), u64> = BTreeMap::new();
     for (rank, row) in rows.iter().enumerate() {
-        let version: String = row.try_get("version").map_err(|_| ())?;
-        let app_label: String = row.try_get("app_label").map_err(|_| ())?;
+        let version: String = row.try_get("version").map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "decoding ledger version column failed at rank {rank}: {e}"
+            ))))
+        })?;
+        let app_label: String = row.try_get("app_label").map_err(|e| {
+            HistoricalCaptureError::Transient(DjogiError::Db(DbError::other(format!(
+                "decoding ledger app_label column failed at rank {rank}: {e}"
+            ))))
+        })?;
         let bucket = BucketKey {
             database: database.clone(),
             app: app_label,
@@ -1457,6 +1587,121 @@ mod tests {
                 "V20260201000000__b", // no rank, lexical first among non-historical
                 "V20260401000000__d", // no rank, lexical second
             ],
+        );
+    }
+
+    // ── Codex umbrella round-2 U-6: error-policy classification ─────────
+
+    /// Connecting to a syntactically valid but unreachable URL must
+    /// classify as `Transient`, NOT `LedgerMissing`. Pre-U-6 the
+    /// connect-failure path collapsed to an empty map and the
+    /// destructive operation would proceed; post-U-6 the call surfaces
+    /// the failure so the caller refuses to drop / recreate.
+    ///
+    /// We point at a port nobody listens on (TCP `:1` is the standard
+    /// "discard" pseudo-port — kernels reject the connect immediately).
+    #[tokio::test]
+    async fn u6_capture_failure_unreachable_url_classifies_as_transient() {
+        let url = "postgres://djogi:djogi@127.0.0.1:1/nonexistent_db";
+        let res = capture_historical_apply_order(url).await;
+        match res {
+            Err(HistoricalCaptureError::Transient(e)) => {
+                let msg = format!("{e}");
+                assert!(
+                    msg.contains("connect failed")
+                        || msg.contains("connect")
+                        || msg.contains("Connection")
+                        || msg.contains("connection")
+                        || msg.contains("refused"),
+                    "Transient message must surface the connect failure: {msg}"
+                );
+            }
+            Err(HistoricalCaptureError::LedgerMissing) => {
+                panic!(
+                    "U-6: connect failure must classify as Transient, NOT LedgerMissing — \
+                     pre-fix the unwrap_or_default() collapsed both into the same fallback"
+                );
+            }
+            Ok(_) => panic!("U-6: connect to :1 must fail"),
+        }
+    }
+
+    /// `ResetError::HistoricalOrderCaptureFailed` is plumbed through
+    /// `reset_app_database` end-to-end. We construct a request that
+    /// passes every gate (localhost URL with valid identifier name,
+    /// development profile, confirmed) but points at an unreachable
+    /// port — the historical-order capture's connect step fails and
+    /// the variant must propagate.
+    ///
+    /// CRITICAL invariant: pre-fix this same scenario would have
+    /// `unwrap_or_default()` ed the failure and proceeded into the
+    /// destructive `drop_and_create_database` call. Post-fix the
+    /// request returns `HistoricalOrderCaptureFailed` BEFORE any
+    /// destructive operation runs.
+    #[tokio::test]
+    async fn u6_reset_propagates_capture_failure_before_destructive_op() {
+        let work = temp_root("u6_capture_propagate");
+        // Localhost with a deliberately-wrong port so the gate passes
+        // but the connect fails. The is_localhost_connection helper
+        // accepts host=127.0.0.1 / host=localhost regardless of port.
+        let url = "postgres://djogi:djogi@127.0.0.1:1/main";
+        let res = reset_app_database(req(&work, url, "development", true)).await;
+        match res {
+            Err(ResetError::HistoricalOrderCaptureFailed { source }) => {
+                let msg = format!("{source}");
+                assert!(
+                    msg.contains("connect")
+                        || msg.contains("connection")
+                        || msg.contains("refused"),
+                    "source message must surface the underlying connect failure: {msg}"
+                );
+            }
+            other => panic!(
+                "U-6: expected HistoricalOrderCaptureFailed; got {other:?} \
+                 (pre-fix this would have proceeded into the destructive drop)"
+            ),
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// The Display impl for `HistoricalOrderCaptureFailed` carries
+    /// operator-actionable language: it names the underlying source,
+    /// explains why we refused, and tells the operator what to do
+    /// next. This is the message a CI script or human will see when
+    /// the gate fires.
+    #[test]
+    fn u6_historical_order_capture_failed_display_is_actionable() {
+        let e = ResetError::HistoricalOrderCaptureFailed {
+            source: DjogiError::Db(DbError::other("connection refused".to_string())),
+        };
+        let s = format!("{e}");
+        assert!(s.contains("connection refused"), "must echo source: {s}");
+        assert!(
+            s.contains("refusing to proceed") || s.contains("refusing"),
+            "must explain we refused: {s}"
+        );
+        assert!(
+            s.contains("re-run") || s.contains("rerun"),
+            "must guide remediation: {s}"
+        );
+    }
+
+    /// `ResetError::source()` returns the underlying `DjogiError` for
+    /// the U-6 variant — the `?` operator and `tracing` style error
+    /// chains depend on that. The pre-existing variants in the impl
+    /// already do this; the test guards against forgetting the new
+    /// arm if someone touches the match block later.
+    #[test]
+    fn u6_historical_order_capture_failed_carries_source() {
+        use std::error::Error;
+        let e = ResetError::HistoricalOrderCaptureFailed {
+            source: DjogiError::Db(DbError::other("decode failed".to_string())),
+        };
+        let src = e.source().expect("must have source");
+        assert!(
+            src.to_string().contains("decode failed"),
+            "source must carry inner message: {}",
+            src
         );
     }
 
