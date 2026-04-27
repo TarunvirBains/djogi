@@ -1,0 +1,5 @@
+error: #[djogi_test] `sync_models` specified more than once
+ --> tests/compile_fail/djogi_test_sync_models_duplicate_key.rs:7:45
+  |
+7 | #[djogi::djogi_test(sync_models = [Widget], sync_models = [Other])]
+  |                                             ^^^^^^^^^^^

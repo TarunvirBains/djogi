@@ -2092,3 +2092,61 @@ pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
         },
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::rust_type_to_sql;
+    use syn::parse_quote;
+
+    /// Phase 7 T10 — `Jsonb<T>` for any `T: JsonbSchema` must lower to
+    /// `JSONB`. Codex round-1 Concern 1 PARTIAL flagged that the three
+    /// substrate fixes T10 made (this one + framework-col defaults +
+    /// FK type substitution) only had indirect coverage through the
+    /// live integration suite. Direct lock-in here so a regression
+    /// surfaces without needing Postgres.
+    ///
+    /// All three accepted path forms are covered: bare ident, the
+    /// `djogi::Jsonb<T>` re-export, and the canonical
+    /// `djogi::jsonb::Jsonb<T>` path. The leading `::` form rides on
+    /// the function's strip-prefix normalization (line ~1724) so it
+    /// shares a code path with the relative form and one assertion
+    /// across the three is sufficient.
+    #[test]
+    fn jsonb_wrapper_lowers_to_jsonb_across_path_forms() {
+        let bare: syn::Type = parse_quote!(Jsonb<MyPayload>);
+        let djogi: syn::Type = parse_quote!(djogi::Jsonb<MyPayload>);
+        let djogi_jsonb: syn::Type = parse_quote!(djogi::jsonb::Jsonb<MyPayload>);
+        assert_eq!(rust_type_to_sql(&bare), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&djogi_jsonb), Some("JSONB"));
+    }
+
+    /// Phase 7 T10 — leading `::` absolute path forms must match the
+    /// same arm as their relative counterparts. Locks in the
+    /// strip-prefix normalization the function applies before the
+    /// match, since `Jsonb<T>` recognition uses `starts_with(...)` on
+    /// the normalized string.
+    #[test]
+    fn jsonb_wrapper_absolute_paths_match() {
+        let abs_djogi: syn::Type = parse_quote!(::djogi::Jsonb<P>);
+        let abs_jsonb: syn::Type = parse_quote!(::djogi::jsonb::Jsonb<P>);
+        assert_eq!(rust_type_to_sql(&abs_djogi), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&abs_jsonb), Some("JSONB"));
+    }
+
+    /// Negative case — types that just *contain* the substring `Jsonb`
+    /// but aren't the wrapper must NOT fall into the JSONB arm. The
+    /// recognition uses `starts_with("Jsonb<")` (etc.) precisely to
+    /// avoid this kind of accidental match.
+    #[test]
+    fn jsonb_lookalikes_do_not_match() {
+        // `MyJsonb<T>` is a hypothetical user wrapper — must not lower
+        // to JSONB just because the string contains "Jsonb".
+        let lookalike: syn::Type = parse_quote!(MyJsonb<P>);
+        // Type that mentions Jsonb only inside generics shouldn't
+        // either, since the head-ident is `Vec`.
+        let in_generic: syn::Type = parse_quote!(Vec<Jsonb<P>>);
+        assert_eq!(rust_type_to_sql(&lookalike), None);
+        assert_eq!(rust_type_to_sql(&in_generic), None);
+    }
+}

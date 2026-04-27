@@ -1374,4 +1374,242 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
     }
+
+    // ── Codex T10 round-1 regression tests ──────────────────────────
+    //
+    // The three substrate fixes shipped with T10 (framework-col
+    // defaults, FK column SQL type substitution, `Jsonb<T>` recognition
+    // in the macros' `rust_type_to_sql`) only had indirect coverage
+    // through the live `phase7_t10_sync_models_live.rs` integration
+    // suite. The Codex round-1 review flagged this gap (Concern 1
+    // PARTIAL) — the rules now have direct unit tests so a regression
+    // surfaces here without needing a Postgres-backed run.
+
+    /// Phase 7 T10 — framework-injected timestamp columns must carry
+    /// `DEFAULT now()` so a typed `Model::create` round-trip without an
+    /// explicit value picks up server time. Without this the first
+    /// INSERT into a freshly-`sync_models`'d table fails with `null
+    /// value in column "created_at"`.
+    #[test]
+    fn framework_timestamp_cols_get_now_default() {
+        const FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor {
+                name: "created_at",
+                sql_type: FieldSqlType::Timestamptz,
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            },
+            FieldDescriptor {
+                name: "updated_at",
+                sql_type: FieldSqlType::Timestamptz,
+                nullable: false,
+                unique: false,
+                indexed: false,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: None,
+                on_delete: None,
+                target_type_name: None,
+                visage_map: &[],
+            },
+        ];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let columns = &buckets[&empty_global()].models["widgets"].columns;
+        let created = columns.iter().find(|c| c.name == "created_at").unwrap();
+        let updated = columns.iter().find(|c| c.name == "updated_at").unwrap();
+        assert_eq!(
+            created.default_sql.as_deref(),
+            Some("now()"),
+            "created_at must get DEFAULT now()"
+        );
+        assert_eq!(
+            updated.default_sql.as_deref(),
+            Some("now()"),
+            "updated_at must get DEFAULT now()"
+        );
+    }
+
+    /// Phase 7 T10 — only the two framework-injected timestamp columns
+    /// (`created_at`, `updated_at`) receive the `now()` default. A
+    /// user-declared Timestamptz column with a different name passes
+    /// through with `default_sql = None` so the descriptor layer's
+    /// "no per-field defaults today" contract still holds.
+    #[test]
+    fn non_framework_timestamptz_col_has_no_default() {
+        const FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            name: "shipped_at",
+            sql_type: FieldSqlType::Timestamptz,
+            nullable: true,
+            unique: false,
+            indexed: false,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            visage_map: &[],
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let shipped = &buckets[&empty_global()].models["widgets"].columns[0];
+        assert_eq!(
+            shipped.default_sql, None,
+            "user-declared Timestamptz must NOT get the framework default"
+        );
+    }
+
+    /// Phase 7 T10 — FK column's SQL type is substituted to match the
+    /// target model's PK SQL type. The descriptor layer cannot do this
+    /// lookup (each model's descriptor is emitted in isolation; the FK
+    /// target may live in a separate crate), so the projection is the
+    /// canonical resolution site. Covers the four built-in PK shapes
+    /// plus a Custom PK with a verbatim sql_type.
+    #[test]
+    fn fk_column_sql_type_substituted_from_target_pk() {
+        const FK_TO_OWNER: &[FieldDescriptor] = &[FieldDescriptor {
+            name: "owner_id",
+            // Macro emits a placeholder type — projection must replace
+            // it with the target's PK SQL type. Use BigInt as the
+            // placeholder so a regression where substitution silently
+            // skips would leave `BIGINT` and the RanjId/Serial assertions
+            // would fail.
+            sql_type: FieldSqlType::BigInt,
+            nullable: false,
+            unique: false,
+            indexed: true,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            target_type_name: Some("Owner"),
+            visage_map: &[],
+        }];
+
+        // Each row: target PK type, expected substituted SQL on the FK
+        // column. (HeerId / HeerIdDesc → BIGINT; RanjId / RanjIdDesc →
+        // UUID; Serial → INTEGER; Custom → that type's `sql_type`
+        // verbatim — `CITEXT` is a Postgres extension type chosen here
+        // to make a "no substitution" regression jump out.)
+        const CUSTOM_PK: crate::descriptor::CustomPrimaryKeyKind =
+            crate::descriptor::CustomPrimaryKeyKind {
+                type_name: "crate::ids::OwnerId",
+                sql_type: "CITEXT",
+                default_sql: "",
+            };
+        let cases: [(PkType, &str); 6] = [
+            (PkType::HeerId, "BIGINT"),
+            (PkType::HeerIdDesc, "BIGINT"),
+            (PkType::RanjId, "UUID"),
+            (PkType::RanjIdDesc, "UUID"),
+            (PkType::Serial, "INTEGER"),
+            (PkType::Custom(CUSTOM_PK), "CITEXT"),
+        ];
+
+        for (pk, expected_sql) in cases {
+            let owner = ModelDescriptor {
+                pk_type: pk,
+                ..synth_model("owners", "Owner")
+            };
+            let vehicle = ModelDescriptor {
+                fields: FK_TO_OWNER,
+                ..synth_model("vehicles", "Vehicle")
+            };
+            let buckets = project_from_iters(
+                [&owner, &vehicle],
+                std::iter::empty::<&EnumDescriptor>(),
+                std::iter::empty::<&AppDescriptor>(),
+                "2026-04-25T00:00:00Z".to_string(),
+            )
+            .expect("ok");
+            let owner_id_col = &buckets[&empty_global()].models["vehicles"].columns[0];
+            assert_eq!(
+                owner_id_col.sql_type, expected_sql,
+                "FK to Owner with PK {pk:?} must project owner_id.sql_type = {expected_sql}; got {}",
+                owner_id_col.sql_type
+            );
+        }
+    }
+
+    /// Phase 7 T10 — non-FK columns pass through `f.sql_type` verbatim.
+    /// Ensures the substitution only fires when `relation_kind` is
+    /// `Some(_)` AND `target_type_name` resolves in the type map.
+    #[test]
+    fn non_fk_column_sql_type_passes_through_verbatim() {
+        const FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            name: "name",
+            sql_type: FieldSqlType::Text,
+            nullable: false,
+            unique: false,
+            indexed: false,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            visage_map: &[],
+        }];
+        let m = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let buckets = project_from_iters(
+            [&m],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let name = &buckets[&empty_global()].models["widgets"].columns[0];
+        assert_eq!(
+            name.sql_type, "TEXT",
+            "non-FK Text column must pass through verbatim, got {}",
+            name.sql_type
+        );
+    }
 }
