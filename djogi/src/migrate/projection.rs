@@ -552,18 +552,8 @@ fn project_column(
                 on_delete: projected_on_delete.unwrap_or(OnDeleteSchema::Restrict),
                 ref_column: "id".to_string(),
                 ref_table,
-                // Codex round-4 B-16: descriptor-driven projection
-                // does not yet expose deferrability. Adopters who
-                // need deferrable FKs from the descriptor side will
-                // wire it through a future `#[field(deferrable)]` /
-                // `#[field(initially_deferred)]` knob; for now both
-                // default to `false` (matching Postgres' default
-                // for a plain `REFERENCES` clause). The PK-flip
-                // cycle path forces both to `true` regardless of
-                // descriptor input — see the `ForeignKeySchema`
-                // type-level doc.
-                deferrable: false,
-                initially_deferred: false,
+                deferrable: f.deferrable,
+                initially_deferred: f.initially_deferred,
             }
         })
     } else {
@@ -1077,6 +1067,8 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: Some("Owner"),
                 visage_map: &[],
             }],
@@ -1113,6 +1105,8 @@ mod tests {
             index_type: None,
             relation_kind: Some(RelationKind::ForeignKey),
             on_delete: Some(on_delete),
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: Some("Owner"),
             visage_map: &[],
         }
@@ -1169,6 +1163,46 @@ mod tests {
     }
 
     #[test]
+    fn fk_deferrability_round_trips_through_foreign_key_schema() {
+        let owner = synth_model("owners", "Owner");
+        let vehicle = ModelDescriptor {
+            fields: &[FieldDescriptor {
+                name: "owner_id",
+                sql_type: FieldSqlType::BigInt,
+                nullable: false,
+                unique: false,
+                indexed: true,
+                max_length: None,
+                renamed_from: None,
+                rationale: None,
+                outbox_exclude: false,
+                sequence_within: None,
+                index_type: None,
+                relation_kind: Some(RelationKind::ForeignKey),
+                on_delete: Some(OnDelete::Restrict),
+                deferrable: true,
+                initially_deferred: true,
+                target_type_name: Some("Owner"),
+                visage_map: &[],
+            }],
+            ..synth_model("vehicles", "Vehicle")
+        };
+        let buckets = project_from_iters(
+            [&owner, &vehicle],
+            [],
+            [],
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let fk = buckets[&empty_global()].models["vehicles"].columns[0]
+            .foreign_key
+            .as_ref()
+            .expect("fk");
+        assert!(fk.deferrable);
+        assert!(fk.initially_deferred);
+    }
+
+    #[test]
     fn cross_bucket_fk_resolves_via_global_type_lookup() {
         let billing = synth_app("billing", "main");
         let users = synth_app("users", "main");
@@ -1192,6 +1226,8 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: Some("User"),
                 visage_map: &[],
             }],
@@ -1232,6 +1268,8 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             }],
@@ -1358,6 +1396,8 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: Some("AuditRow"),
                 visage_map: &[],
             }],
@@ -1419,6 +1459,8 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1436,6 +1478,8 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1487,6 +1531,8 @@ mod tests {
             index_type: None,
             relation_kind: None,
             on_delete: None,
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: None,
             visage_map: &[],
         }];
@@ -1535,6 +1581,8 @@ mod tests {
             index_type: None,
             relation_kind: Some(RelationKind::ForeignKey),
             on_delete: Some(OnDelete::Restrict),
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: Some("Owner"),
             visage_map: &[],
         }];
@@ -1615,6 +1663,8 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: Some("Owner"),
                 visage_map: &[],
             },
@@ -1636,6 +1686,8 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1654,6 +1706,8 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },

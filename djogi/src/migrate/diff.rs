@@ -561,8 +561,123 @@ pub fn apply_pk_flip_join_table_option(deltas: &mut [SchemaDelta], option: PkFli
     // for them because there is no partner shadow column to
     // reference.
     for delta in deltas.iter_mut() {
-        merge_cross_flipping_groups_into_multi(delta);
+        merge_cross_flipping_groups_into_multi(delta).expect(
+            "partitioned multi-parent clusters must already be rejected by diff_bucket_maps",
+        );
     }
+}
+
+pub(crate) fn partitioned_multi_parent_cluster_error(
+    groups: &[PkTypeFlipGroup],
+) -> Option<DiffError> {
+    if groups.len() < 2 {
+        return None;
+    }
+    let mut partitioned_parents: Vec<String> = groups
+        .iter()
+        .filter(|g| g.partitioned_parent.is_some())
+        .map(|g| g.parent_table.clone())
+        .collect();
+    if partitioned_parents.is_empty() {
+        return None;
+    }
+    partitioned_parents.sort();
+    partitioned_parents.dedup();
+
+    let mut cross_flipping_partners: Vec<String> =
+        groups.iter().map(|g| g.parent_table.clone()).collect();
+    cross_flipping_partners.sort();
+    cross_flipping_partners.dedup();
+
+    Some(DiffError::PartitionedMultiParentClusterUnsupported {
+        partitioned_parents,
+        cross_flipping_partners,
+    })
+}
+
+fn reject_partitioned_multi_parent_clusters(ops: &[SchemaOperation]) -> Result<(), DiffError> {
+    use std::collections::{BTreeMap as Map, BTreeSet};
+
+    let groups: Vec<PkTypeFlipGroup> = ops
+        .iter()
+        .filter_map(|op| match op {
+            SchemaOperation::PkTypeFlipGroup(group) => Some(group.clone()),
+            _ => None,
+        })
+        .collect();
+    if groups.len() < 2 {
+        return Ok(());
+    }
+
+    let mut peer_edges: Vec<(String, String)> = Vec::new();
+    for group in &groups {
+        for jt in &group.join_tables {
+            if let Some(partner) = jt.fk_to_partner_table.as_deref() {
+                let a = group.parent_table.clone();
+                let b = partner.to_string();
+                let edge = if a <= b { (a, b) } else { (b, a) };
+                if !peer_edges.contains(&edge) {
+                    peer_edges.push(edge);
+                }
+            }
+        }
+    }
+    if peer_edges.is_empty() {
+        return Ok(());
+    }
+
+    let mut rep: Map<String, String> = Map::new();
+    for group in &groups {
+        rep.insert(group.parent_table.clone(), group.parent_table.clone());
+    }
+    fn find(rep: &mut Map<String, String>, x: &str) -> String {
+        let mut cur = x.to_string();
+        loop {
+            let parent = rep.get(&cur).cloned().unwrap_or_else(|| cur.clone());
+            if parent == cur {
+                return cur;
+            }
+            let grand = rep.get(&parent).cloned().unwrap_or_else(|| parent.clone());
+            rep.insert(cur.clone(), grand.clone());
+            cur = grand;
+        }
+    }
+    for (a, b) in &peer_edges {
+        let ra = find(&mut rep, a);
+        let rb = find(&mut rep, b);
+        if ra != rb {
+            let (winner, loser) = if ra <= rb { (ra, rb) } else { (rb, ra) };
+            rep.insert(loser, winner);
+        }
+    }
+
+    let mut clusters: Map<String, Vec<PkTypeFlipGroup>> = Map::new();
+    for group in groups {
+        let root = find(&mut rep, &group.parent_table);
+        clusters.entry(root).or_default().push(group);
+    }
+    for (_root, mut cluster) in clusters {
+        if cluster.len() < 2 {
+            continue;
+        }
+        cluster.sort_by(|a, b| a.parent_table.cmp(&b.parent_table));
+        let member_set: BTreeSet<String> = cluster.iter().map(|g| g.parent_table.clone()).collect();
+        let has_internal_cross_flip = cluster.iter().any(|group| {
+            group.join_tables.iter().any(|jt| {
+                jt.fk_to_partner_table
+                    .as_ref()
+                    .is_some_and(|partner| member_set.contains(partner))
+            })
+        });
+        if !has_internal_cross_flip {
+            continue;
+        }
+        if let Some(err) = partitioned_multi_parent_cluster_error(&cluster) {
+            return Err(err);
+        }
+    }
+
+    Ok(())
 }
 
 /// `(join_table, fk_to_partner_column)` for one entry in a
@@ -609,6 +724,16 @@ pub enum DiffError {
         /// the contract limit alongside the chain.
         max_depth: u32,
     },
+    /// A cross-flipping cluster includes one or more partitioned
+    /// parents. Phase 7 rejects this shape because the multi-parent
+    /// lowerer cannot safely interleave partitioned cutovers with
+    /// partner-referencing join-table work.
+    PartitionedMultiParentClusterUnsupported {
+        /// Every partitioned parent in the cluster.
+        partitioned_parents: Vec<String>,
+        /// Every parent participating in the cross-flipping cluster.
+        cross_flipping_partners: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for DiffError {
@@ -623,6 +748,15 @@ impl std::fmt::Display for DiffError {
                 "PK-flip transitive FK closure exceeded {max_depth} levels rooted at \
                  {parent_table}; table_chain={chain:?}; graph likely has a pathological \
                  cycle or unbounded fan-out — refusing to compose the migration",
+            ),
+            DiffError::PartitionedMultiParentClusterUnsupported {
+                partitioned_parents,
+                cross_flipping_partners,
+            } => write!(
+                f,
+                "PK-flip cross-flipping cluster mixes partitioned parents \
+                 {partitioned_parents:?} with partners {cross_flipping_partners:?}; \
+                 Phase 7 rejects this unsupported multi-parent partitioned shape",
             ),
         }
     }
@@ -672,7 +806,7 @@ impl std::error::Error for DiffError {}
 /// groups are alphabetical by `parent_table`. The same input
 /// produces the same `PkTypeFlipMultiGroup` shape across runs,
 /// preserving the byte-stable SQL guarantee.
-fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) {
+fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) -> Result<(), DiffError> {
     // Walk the delta's `PkTypeFlipGroup` ops and collect the
     // (parent_table, peer-set-via-cross-flipping) graph. Index by
     // parent_table for the Union-Find.
@@ -705,7 +839,7 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) {
     if peer_edges.is_empty() {
         // No cross-flipping anywhere in this delta. Leave the
         // per-parent ops alone.
-        return;
+        return Ok(());
     }
 
     // Union-Find on parent_table — every parent in `groups_by_parent`
@@ -788,6 +922,9 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) {
         // the lowering depends on this for deterministic stage-N
         // emission order.
         cluster_groups.sort_by(|a, b| a.parent_table.cmp(&b.parent_table));
+        if let Some(err) = partitioned_multi_parent_cluster_error(&cluster_groups) {
+            return Err(err);
+        }
 
         // Winner-takes-all on cross-flipping join_tables. The
         // alphabetically smallest parent (cluster_groups[0]) keeps
@@ -866,6 +1003,7 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) {
             .operations
             .push(SchemaOperation::PkTypeFlipMultiGroup(groups));
     }
+    Ok(())
 }
 
 /// Direction of a PK-type flip.
@@ -1278,6 +1416,7 @@ pub fn diff_bucket_maps(
         // caller (compose / build) renders the chain in the
         // operator-facing error message.
         promote_pk_flips_to_groups(a, &mut delta.operations)?;
+        reject_partitioned_multi_parent_clusters(&delta.operations)?;
 
         // Re-classify after the suppression + emission step.
         delta.classification = classify(&delta.operations);
@@ -2528,6 +2667,8 @@ mod tests {
             index_type: None,
             relation_kind: None,
             on_delete: None,
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: None,
             visage_map: &[],
         }
@@ -2752,6 +2893,8 @@ mod tests {
             index_type: None,
             relation_kind: None,
             on_delete: None,
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: None,
             visage_map: &[],
         };
@@ -3405,6 +3548,159 @@ mod tests {
         }
     }
 
+    fn synth_partitioned_cross_flipping_schema(
+        left_pk: crate::migrate::schema::PkKindSchema,
+        right_pk: crate::migrate::schema::PkKindSchema,
+    ) -> crate::migrate::schema::AppliedSchema {
+        use crate::migrate::schema::{
+            ColumnSchema, ForeignKeySchema, OnDeleteSchema, PartitionSchema, PrimaryKeySchema,
+            TableSchema,
+        };
+
+        let left = TableSchema {
+            app: None,
+            columns: vec![
+                ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "id".to_string(),
+                    nullable: false,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                },
+                ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "ts".to_string(),
+                    nullable: false,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "TIMESTAMPTZ".to_string(),
+                    unique: false,
+                },
+            ],
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: Some(PartitionSchema::Range {
+                column: "ts".to_string(),
+            }),
+            primary_key: PrimaryKeySchema {
+                columns: vec!["ts".to_string(), "id".to_string()],
+                kind: left_pk,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "left_events".to_string(),
+            tenant_key: None,
+        };
+        let right = synth_table_with_fks("right_tags", &[], right_pk);
+        let join = TableSchema {
+            app: None,
+            columns: vec![
+                ColumnSchema {
+                    check: None,
+                    default_sql: Some("generate_id()".to_string()),
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "id".to_string(),
+                    nullable: false,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                },
+                ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: Some(ForeignKeySchema {
+                        deferrable: false,
+                        initially_deferred: false,
+                        on_delete: OnDeleteSchema::Restrict,
+                        ref_column: "id".to_string(),
+                        ref_table: "left_events".to_string(),
+                    }),
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "left_event_id".to_string(),
+                    nullable: false,
+                    on_delete: Some(OnDeleteSchema::Restrict),
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                },
+                ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: Some(ForeignKeySchema {
+                        deferrable: false,
+                        initially_deferred: false,
+                        on_delete: OnDeleteSchema::Restrict,
+                        ref_column: "id".to_string(),
+                        ref_table: "right_tags".to_string(),
+                    }),
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "right_tag_id".to_string(),
+                    nullable: false,
+                    on_delete: Some(OnDeleteSchema::Restrict),
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                },
+            ],
+            fts: None,
+            is_through: true,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["left_event_id".to_string(), "right_tag_id".to_string()],
+                kind: crate::migrate::schema::PkKindSchema::Serial,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "event_tags".to_string(),
+            tenant_key: None,
+        };
+        synth_schema_with_tables(vec![left, right, join])
+    }
+
     /// 4-level cascade A → B → C → D where A flips. The closure
     /// should walk through every level (visited_tables grows to
     /// include B, C, D) without panicking. For asc↔desc the
@@ -3613,6 +3909,53 @@ mod tests {
                 );
                 assert_eq!(chain[0], "p");
             }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diff_bucket_maps_rejects_partitioned_cross_flipping_cluster() {
+        use crate::migrate::projection::BucketKey;
+        use crate::migrate::schema::PkKindSchema;
+
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        };
+        let before: BTreeMap<BucketKey, AppliedSchema> = {
+            let mut m = BTreeMap::new();
+            m.insert(
+                bucket.clone(),
+                synth_partitioned_cross_flipping_schema(PkKindSchema::HeerId, PkKindSchema::HeerId),
+            );
+            m
+        };
+        let after: BTreeMap<BucketKey, AppliedSchema> = {
+            let mut m = BTreeMap::new();
+            m.insert(
+                bucket.clone(),
+                synth_partitioned_cross_flipping_schema(
+                    PkKindSchema::HeerIdRecencyBiased,
+                    PkKindSchema::HeerIdRecencyBiased,
+                ),
+            );
+            m
+        };
+
+        let err = diff_bucket_maps(&before, &after)
+            .expect_err("partitioned + cross-flipping cluster must reject");
+        match err {
+            DiffError::PartitionedMultiParentClusterUnsupported {
+                partitioned_parents,
+                cross_flipping_partners,
+            } => {
+                assert_eq!(partitioned_parents, vec!["left_events".to_string()]);
+                assert_eq!(
+                    cross_flipping_partners,
+                    vec!["left_events".to_string(), "right_tags".to_string()]
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 

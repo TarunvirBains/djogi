@@ -182,7 +182,9 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
                 group_segments.extend(super::pk_flip::build_segments(g));
             }
             SchemaOperation::PkTypeFlipMultiGroup(groups) => {
-                group_segments.extend(super::pk_flip::build_segments_multi(groups));
+                group_segments.extend(
+                    super::pk_flip::build_segments_multi(groups).map_err(SqlEmitError::Diff)?,
+                );
             }
             _ => {}
         }
@@ -572,7 +574,9 @@ fn operation_phase(op: &SchemaOperation) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::migrate::diff::{ColumnChange, SchemaDelta};
+    use crate::migrate::diff::{
+        ColumnChange, PkFlipJoinTableOption, PkFlipPartitionedMeta, PkTypeFlipGroup, SchemaDelta,
+    };
     use crate::migrate::projection::BucketKey;
     use crate::migrate::schema::{
         ColumnSchema, EnumSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
@@ -956,6 +960,81 @@ mod tests {
         };
         let err = plan_delta(&delta).expect_err("must error");
         assert!(matches!(err, SqlEmitError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn partitioned_multi_parent_cluster_errors_during_planning() {
+        let mut left = PkTypeFlipGroup {
+            parent_table: "left_events".to_string(),
+            parent_from: PkKindSchema::HeerId,
+            parent_to: PkKindSchema::HeerIdRecencyBiased,
+            direction: crate::migrate::diff::PkFlipDirection::AscToDesc,
+            children: Vec::new(),
+            self_fk: None,
+            join_tables: Vec::new(),
+            cycles: Vec::new(),
+            partitioned_parent: Some(PkFlipPartitionedMeta {
+                partition: crate::migrate::schema::PartitionSchema::Range {
+                    column: "ts".to_string(),
+                },
+            }),
+            co_destructive: false,
+            co_lossy: false,
+            join_table_option: PkFlipJoinTableOption::OptionA,
+        };
+        let right = PkTypeFlipGroup {
+            parent_table: "right_tags".to_string(),
+            parent_from: PkKindSchema::HeerId,
+            parent_to: PkKindSchema::HeerIdRecencyBiased,
+            direction: crate::migrate::diff::PkFlipDirection::AscToDesc,
+            children: Vec::new(),
+            self_fk: None,
+            join_tables: Vec::new(),
+            cycles: Vec::new(),
+            partitioned_parent: None,
+            co_destructive: false,
+            co_lossy: false,
+            join_table_option: PkFlipJoinTableOption::OptionA,
+        };
+        let delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![SchemaOperation::PkTypeFlipMultiGroup(vec![
+                left.clone(),
+                right.clone(),
+            ])],
+            classification: Classification::PkTypeFlip {
+                co_destructive: false,
+                co_lossy: false,
+            },
+        };
+        let err = plan_delta(&delta).expect_err("must reject partitioned multi-parent cluster");
+        match err {
+            SqlEmitError::Diff(
+                crate::migrate::diff::DiffError::PartitionedMultiParentClusterUnsupported {
+                    partitioned_parents,
+                    cross_flipping_partners,
+                },
+            ) => {
+                assert_eq!(partitioned_parents, vec!["left_events".to_string()]);
+                assert_eq!(
+                    cross_flipping_partners,
+                    vec!["left_events".to_string(), "right_tags".to_string()]
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        left.partitioned_parent = None;
+        let ok_delta = SchemaDelta {
+            bucket: bucket(),
+            operations: vec![SchemaOperation::PkTypeFlipMultiGroup(vec![left, right])],
+            classification: Classification::PkTypeFlip {
+                co_destructive: false,
+                co_lossy: false,
+            },
+        };
+        let plan = plan_delta(&ok_delta).expect("non-partitioned multi-group should still lower");
+        assert!(!plan.segments.is_empty());
     }
 
     // ── Determinism ──────────────────────────────────────────────────

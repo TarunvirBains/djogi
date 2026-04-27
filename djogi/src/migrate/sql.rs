@@ -200,6 +200,9 @@ pub enum SqlEmitError {
         /// Operator-facing detail.
         detail: String,
     },
+    /// The differ or PK-flip lowerer rejected a cluster before SQL
+    /// emission could proceed.
+    Diff(super::diff::DiffError),
 }
 
 impl std::fmt::Display for SqlEmitError {
@@ -219,6 +222,7 @@ impl std::fmt::Display for SqlEmitError {
                 "table `{table}`: partition shape change cannot be lowered automatically: \
                  {detail}"
             ),
+            SqlEmitError::Diff(err) => write!(f, "{err}"),
         }
     }
 }

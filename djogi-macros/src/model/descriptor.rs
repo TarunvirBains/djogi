@@ -91,6 +91,8 @@ pub fn expand(
                 // per-user-field only.
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -115,6 +117,8 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -143,6 +147,8 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -167,6 +173,8 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -191,6 +199,8 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -223,6 +233,8 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -249,6 +261,8 @@ pub fn expand(
             index_type: None,
             relation_kind: None,
             on_delete: None,
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: None,
             visage_map: &[
                 ("admin", "created_at"),
@@ -273,6 +287,8 @@ pub fn expand(
             index_type: None,
             relation_kind: None,
             on_delete: None,
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: None,
             visage_map: &[
                 ("admin", "updated_at"),
@@ -367,6 +383,8 @@ pub fn expand(
             // column's name; relation scopes map to the peer visage
             // type name. Empty / suppressed specs emit `&[]`.
             let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
+            let deferrable = fa.deferrable;
+            let initially_deferred = fa.initially_deferred;
 
             // Relation metadata — `None`/`&[]` for scalar columns.
             //
@@ -422,6 +440,8 @@ pub fn expand(
                     // columns. Non-relation columns keep `None`/`&[]`.
                     relation_kind: #relation_kind_tokens,
                     on_delete: #on_delete_tokens,
+                    deferrable: #deferrable,
+                    initially_deferred: #initially_deferred,
                     target_type_name: #target_type_name_tokens,
                     visage_map: #projection_map_tokens,
                 }

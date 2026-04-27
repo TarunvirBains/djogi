@@ -3430,6 +3430,207 @@ fn partitioned_parent_schema(pk_kind: PkKindSchema) -> AppliedSchema {
     }
 }
 
+fn partitioned_cross_flipping_schema_with_pk_kind(
+    left_pk: PkKindSchema,
+    right_pk: PkKindSchema,
+) -> AppliedSchema {
+    use djogi::migrate::schema::{
+        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PartitionSchema, PrimaryKeySchema,
+        TableSchema,
+    };
+
+    let left = TableSchema {
+        app: None,
+        columns: vec![
+            ColumnSchema {
+                check: None,
+                default_sql: Some("generate_id()".to_string()),
+                foreign_key: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "id".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "ts".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "TIMESTAMPTZ".to_string(),
+                unique: false,
+            },
+        ],
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: Some(PartitionSchema::Range {
+            column: "ts".to_string(),
+        }),
+        primary_key: PrimaryKeySchema {
+            columns: vec!["ts".to_string(), "id".to_string()],
+            kind: left_pk,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: "left_events".to_string(),
+        tenant_key: None,
+    };
+
+    let right = TableSchema {
+        app: None,
+        columns: vec![ColumnSchema {
+            check: None,
+            default_sql: Some("generate_id()".to_string()),
+            foreign_key: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+        }],
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: right_pk,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: "right_tags".to_string(),
+        tenant_key: None,
+    };
+
+    let join = TableSchema {
+        app: None,
+        columns: vec![
+            ColumnSchema {
+                check: None,
+                default_sql: Some("generate_id()".to_string()),
+                foreign_key: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "id".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: "left_events".to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "left_event_id".to_string(),
+                nullable: false,
+                on_delete: Some(OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: "right_tags".to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "right_tag_id".to_string(),
+                nullable: false,
+                on_delete: Some(OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+        ],
+        fts: None,
+        is_through: true,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            columns: vec!["left_event_id".to_string(), "right_tag_id".to_string()],
+            kind: PkKindSchema::Serial,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: "event_tags".to_string(),
+        tenant_key: None,
+    };
+
+    let mut models = BTreeMap::new();
+    models.insert(left.table.clone(), left);
+    models.insert(right.table.clone(), right);
+    models.insert(join.table.clone(), join);
+    AppliedSchema {
+        djogi_version: "0.1.0".to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: "2026-04-26T00:00:00Z".to_string(),
+        indexes: Vec::new(),
+        models,
+        registered_apps: vec!["".to_string()],
+    }
+}
+
 #[djogi::djogi_test]
 async fn flip_partitioned_parent_via_diff_bucket_maps(mut ctx: djogi::DjogiContext) {
     use djogi::migrate::diff::{PkTypeFlipGroup, SchemaOperation, diff_bucket_maps};
@@ -3619,4 +3820,49 @@ async fn flip_partitioned_parent_via_diff_bucket_maps(mut ctx: djogi::DjogiConte
             .contains("heerid_next_desc"),
         "p_events.id default must call heerid_next_desc(); got: {default_sql:?}",
     );
+}
+
+#[test]
+fn diff_bucket_maps_rejects_partitioned_cross_flipping_cluster() {
+    use djogi::migrate::diff::{DiffError, diff_bucket_maps};
+
+    let bucket_key = bucket();
+    let before: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            partitioned_cross_flipping_schema_with_pk_kind(
+                PkKindSchema::HeerId,
+                PkKindSchema::HeerId,
+            ),
+        );
+        m
+    };
+    let after: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            partitioned_cross_flipping_schema_with_pk_kind(
+                PkKindSchema::HeerIdRecencyBiased,
+                PkKindSchema::HeerIdRecencyBiased,
+            ),
+        );
+        m
+    };
+
+    let err = diff_bucket_maps(&before, &after)
+        .expect_err("partitioned + cross-flipping cluster must reject");
+    match err {
+        DiffError::PartitionedMultiParentClusterUnsupported {
+            partitioned_parents,
+            cross_flipping_partners,
+        } => {
+            assert_eq!(partitioned_parents, vec!["left_events".to_string()]);
+            assert_eq!(
+                cross_flipping_partners,
+                vec!["left_events".to_string(), "right_tags".to_string()]
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }

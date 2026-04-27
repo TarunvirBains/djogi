@@ -813,6 +813,13 @@ pub struct FieldAttrs {
     /// set (darling's derive alone cannot constrain a `String` domain).
     #[darling(default)]
     pub on_delete: Option<String>,
+    /// `#[field(deferrable)]` — mark a relation FK as DEFERRABLE.
+    #[darling(default)]
+    pub deferrable: bool,
+    /// `#[field(initially_deferred)]` — only valid together with
+    /// `deferrable`; emits INITIALLY DEFERRED instead of INITIALLY IMMEDIATE.
+    #[darling(default)]
+    pub initially_deferred: bool,
     /// `#[field(outbox = "ignore")]` — strip this column from the
     /// transactional outbox payload emitted by models with
     /// `#[model(events)]`.
@@ -1368,6 +1375,8 @@ impl FieldAttrs {
             "max_length",
             "renamed_from",
             "on_delete",
+            "deferrable",
+            "initially_deferred",
             "outbox",
             "sequence_within",
             "expose",
@@ -1502,6 +1511,15 @@ impl FieldAttrs {
                     ),
                 ));
             }
+        }
+
+        if attrs.initially_deferred && !attrs.deferrable {
+            let span = find_path_only_attr_span(field, "initially_deferred")
+                .unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(initially_deferred)]` requires `#[field(deferrable)]` on the same field",
+            ));
         }
 
         if let Some(outbox) = &attrs.outbox {
@@ -1670,6 +1688,25 @@ fn is_gin_compatible_type(ty: &syn::Type) -> bool {
 /// the callsite.
 fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
     find_named_str_lit_span(field, "on_delete")
+}
+
+fn find_path_only_attr_span(field: &syn::Field, key: &str) -> Option<proc_macro2::Span> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("field") {
+            continue;
+        }
+        let metas = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .ok()?;
+        for meta in &metas {
+            if let Meta::Path(path) = meta
+                && path.is_ident(key)
+            {
+                return Some(path.span());
+            }
+        }
+    }
+    None
 }
 
 /// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of

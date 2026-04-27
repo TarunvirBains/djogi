@@ -908,6 +908,8 @@ mod tests {
             index_type: None,
             relation_kind: None,
             on_delete: None,
+            deferrable: false,
+            initially_deferred: false,
             target_type_name: None,
             visage_map: &[],
         }];
@@ -964,6 +966,8 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -981,6 +985,8 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
+                deferrable: false,
+                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1057,6 +1063,8 @@ mod tests {
         index_type: None,
         relation_kind: None,
         on_delete: None,
+        deferrable: false,
+        initially_deferred: false,
         target_type_name: None,
         visage_map: &[],
     };
@@ -1075,6 +1083,8 @@ mod tests {
         index_type: None,
         relation_kind: None,
         on_delete: None,
+        deferrable: false,
+        initially_deferred: false,
         target_type_name: None,
         visage_map: &[],
     };
@@ -1290,6 +1300,11 @@ pub struct FieldDescriptor {
     /// descriptor stores the parsed value (not the raw string) so every
     /// downstream consumer works from the same enum.
     pub on_delete: Option<OnDelete>,
+    /// `#[field(deferrable)]` — only meaningful for relation fields.
+    pub deferrable: bool,
+    /// `#[field(initially_deferred)]` — only meaningful when
+    /// `deferrable` is true.
+    pub initially_deferred: bool,
 
     /// Fully-qualified target type name (e.g. `"Owner"` for
     /// `ForeignKey<Owner>`). `None` for scalar columns. Used by the Phase 6

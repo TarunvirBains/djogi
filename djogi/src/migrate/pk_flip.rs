@@ -254,28 +254,21 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Vec<Segment> {
 /// builds multi-groups from non-partitioned parents (the
 /// partitioned-parent path triggers off `partitioned_parent =
 /// Some(_)` and routes to `build_segments_partitioned` per group).
-pub(crate) fn build_segments_multi(groups: &[PkTypeFlipGroup]) -> Vec<Segment> {
+pub(crate) fn build_segments_multi(
+    groups: &[PkTypeFlipGroup],
+) -> Result<Vec<Segment>, super::diff::DiffError> {
     if groups.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     if groups.len() == 1 {
         // A single-member cluster shouldn't reach here (the merger
         // only creates MultiGroup for 2+ members), but if it does,
         // fall back to the single-parent path so we don't waste a
         // segment on no-op interleaving.
-        return build_segments(&groups[0]);
+        return Ok(build_segments(&groups[0]));
     }
-    if groups.iter().any(|g| g.partitioned_parent.is_some()) {
-        // Partitioned parents inside a multi-group cluster — fall
-        // back to back-to-back single-parent lowering. Documented
-        // in the doc comment above; tracked as future work because
-        // exercising it requires a §9 + §7 combined fixture which
-        // the playbook does not have.
-        let mut out = Vec::new();
-        for g in groups {
-            out.extend(build_segments(g));
-        }
-        return out;
+    if let Some(err) = super::diff::partitioned_multi_parent_cluster_error(groups) {
+        return Err(err);
     }
 
     let mut segments: Vec<Segment> = Vec::new();
@@ -480,7 +473,7 @@ pub(crate) fn build_segments_multi(groups: &[PkTypeFlipGroup]) -> Vec<Segment> {
         }],
     });
 
-    segments
+    Ok(segments)
 }
 
 /// Build the segment list for a partitioned parent flip per
