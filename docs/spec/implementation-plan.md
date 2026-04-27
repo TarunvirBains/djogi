@@ -677,7 +677,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 - [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, app, model)` overrides via `_admin_role_model_perms` (keyed `(role_id, app_name, model_name)` to match the visage-grant qualification axis — two apps with the same model name resolve independently)
 - [ ] Visage-grant resolution: `_admin_role_visage_perms` rows per `(role_id, app_name, model_name, visage_name, can_view, can_edit)`; effective visible / editable field sets computed as the union across granted visages, optionally extended by `view_full_struct` / `write_full_struct`, always minus `expose(none)`
 - [ ] Single-parent role inheritance with cycle rejection on save and "this affects N child roles" save-time preview; role-deletion UX (reassign-first) for users and child roles
-- [ ] Compile-time / startup feasibility analysis: five checks per `(role, model)` pair (`can_actually_read` / `_update` / `_create` / `_delete` plus `fk_label_reachable` for FK fields) surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
+- [ ] Compile-time / startup feasibility analysis: five checks per `(role, app, model)` triple (`can_actually_read` / `_update` / `_create` / `_delete` plus `fk_label_reachable` for FK fields, with FK targets resolved through the apps registry to the owning `(target_app, target_model)`) surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
 - [ ] Visage-drift handling on deploy: missing compiled visages flagged as `AppDiagnostic`, dangling `_admin_role_visage_perms` rows treated as no-op until removed or the visage restored
 
 ### 10c: Field-Visibility Substrate + Label Trait

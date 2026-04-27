@@ -18,7 +18,7 @@ Phase 10 ships a real, production-grade admin. Acknowledged v1 expressiveness li
 - Triple-stack CSRF + session rotation discipline + server-side write enforcement
 - List view, ModelForm, M2M inline, `AdminClean`, JSONB nested editor — full descriptor-driven UI surface
 - Visibility-aware `Label` trait + `VisibleFields` substrate (lives in `djogi`, consumed by Maahi for FK dropdowns, list view default columns, and audit log entries)
-- Four v1 system permissions: `view_audit_log` (visibility-filtered audit access), `manage_users` (five-clause upper-bound covering `is_superuser`, `system_perms` subset, per-(model, action) subset, visage-grant subset, and tenant-reach), `view_full_struct` (raw-struct read independent of visage grants), `write_full_struct` (raw-struct write; requires `view_full_struct`)
+- Four v1 system permissions: `view_audit_log` (visibility-filtered audit access), `manage_users` (five-clause upper-bound covering `is_superuser`, `system_perms` subset, per-`(app, model, action)` subset, visage-grant subset, and tenant-reach), `view_full_struct` (raw-struct read independent of visage grants), `write_full_struct` (raw-struct write; requires `view_full_struct`)
 - `_admin_pending_actions` table + approval gates on two action kinds in v1:
   - `BulkDelete` — changelist-initiated mass deletion
   - `InlineSave` — M2M inline edits at or above `[admin].inline_bulk_threshold` (default 25 total inline removals across the parent save), with approver-coverage of the full action set the package requires

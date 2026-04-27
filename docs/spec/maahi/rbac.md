@@ -143,11 +143,14 @@ Per-model overrides are first-class, not an extension. The role row carries a `(
 ```sql
 CREATE TABLE _admin_role_model_perms (
     role_id           BIGINT NOT NULL REFERENCES _admin_roles(id) ON DELETE CASCADE,
-    app_name          TEXT NOT NULL,            -- app qualifier per Phase 7-Zero apps subsystem;
-                                                -- model_name alone is not globally unique (two apps may
-                                                -- both define a `User` model). The qualified pair
-                                                -- (app_name, model_name) matches the visage-grant
-                                                -- table's qualification axis.
+    app_name          TEXT NOT NULL,            -- app qualifier per Phase 7-Zero apps subsystem; the
+                                                -- qualified pair (app_name, model_name) matches the
+                                                -- visage-grant table's axis. v1 enforces workspace-wide
+                                                -- model-name uniqueness (apps-and-database-domains.md
+                                                -- "Cross-App FK Graph (T9)"), so app_name is over-keying
+                                                -- today; carrying it now keeps the schema forward-compat
+                                                -- with the deferred descriptor-shape change that lets
+                                                -- two apps share a short name.
     model_name        TEXT NOT NULL,            -- e.g., "Vehicle"; validated against the live
                                                 -- ModelDescriptor registry under app_name.
     can_create        BOOLEAN NOT NULL,
@@ -175,7 +178,7 @@ Multi-parent inheritance, frozen/locked roles, and the transitive upper-bound `m
 For a request from user `U` against model `M` owned by app `A`:
 
 1. Resolve `U`'s effective role chain (self + parent inheritance — single-parent in v1).
-2. Compute the effective `(action_bits, per_model_overrides)` from the role chain — gives us "can U Create / Read / Update / Delete / BulkUpdate / BulkDelete on `(A, M)`?" Per-model overrides are keyed `(role_id, app_name, model_name)` so two apps with the same model name resolve independently.
+2. Compute the effective `(action_bits, per_model_overrides)` from the role chain — gives us "can U Create / Read / Update / Delete / BulkUpdate / BulkDelete on `(A, M)`?" Per-model overrides are keyed `(role_id, app_name, model_name)`; v1 enforces workspace-wide model-name uniqueness so the lookup is unambiguous on `M` alone today, but the resolver always carries `A` to stay forward-compatible with the deferred descriptor-shape change in [Apps and Database Domains](../apps-and-database-domains.md#cross-app-fk-graph-t9).
 3. Compute the effective **visage grant set** — union of all `_admin_role_visage_perms` rows across the role chain whose `(app_name, model_name)` matches `(A, M)`.
 4. Compute the effective **visible field set on M**:
    - Start with the union of fields across all granted-view visages.
@@ -194,24 +197,24 @@ The role-config UI surfaces this resolution as a hierarchical checkbox grid: per
 
 ## Compile-Time Feasibility Analysis
 
-Permission intent and visage grants don't always agree. A role with `can_create = TRUE` on `Vehicle` whose granted visages cover only `vin` cannot actually create a `Vehicle` — `make` is `NOT NULL` without a database default and not in the role's editable field set. Maahi computes this at startup, not at form-submit, and surfaces the result as a diagnostic.
+Permission intent and visage grants don't always agree. A role with `can_create = TRUE` on `(core, Vehicle)` whose granted visages cover only `vin` cannot actually create a `Vehicle` — `make` is `NOT NULL` without a database default and not in the role's editable field set. Maahi computes this at startup, not at form-submit, and surfaces the result as a diagnostic.
 
-For each `(role, model)` pair, Maahi resolves five feasibilities:
+For each `(role, app, model)` triple — feasibility resolution mirrors the `(app, model)` keying used by `_admin_role_visage_perms` and `_admin_role_model_perms` for forward-compat with the deferred descriptor-shape change in [Apps and Database Domains](../apps-and-database-domains.md#cross-app-fk-graph-t9); v1 still enforces workspace-wide model-name uniqueness so `app_name` is over-keying today, but the resolver treats it as authoritative — Maahi resolves five feasibilities:
 
 ```text
-can_actually_read(role, model)   = role.read    AND ≥1 visible field on model
-can_actually_update(role, model) = role.update  AND ≥1 visible field is not admin_readonly
-can_actually_create(role, model) = role.create  AND visible field set covers all NOT NULL,
-                                                     no-database-default fields
-can_actually_delete(role, model) = role.delete  AND ≥1 visible field on model
-                                   (delete is row-scope, but the model must be visible at all)
-fk_label_reachable(role, model, fk_field) =
-                                   target_model_of(fk_field) yields ≥1 visible field
-                                   under the role's effective visibility on the target
-                                   (per the Label rule in field-visibility.md)
+can_actually_read(role, app, model)   = role.read    AND ≥1 visible field on (app, model)
+can_actually_update(role, app, model) = role.update  AND ≥1 visible field is not admin_readonly
+can_actually_create(role, app, model) = role.create  AND visible field set covers all NOT NULL,
+                                                          no-database-default fields
+can_actually_delete(role, app, model) = role.delete  AND ≥1 visible field on (app, model)
+                                        (delete is row-scope, but the model must be visible at all)
+fk_label_reachable(role, app, model, fk_field) =
+                                        target_(app, model)_of(fk_field) yields ≥1 visible field
+                                        under the role's effective visibility on the target
+                                        (per the Label rule in field-visibility.md)
 ```
 
-Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. The fifth feasibility runs once per FK field on each visible model.
+FK targets resolve through the apps subsystem: `target_(app, model)_of(fk_field)` walks the registry-recorded relation, so a FK from `(core, Vehicle).fuel_type_id` resolves against whichever `(target_app, FuelType)` actually owns the target model. Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. The fifth feasibility runs once per FK field on each visible `(app, model)`.
 
 Failures surface at startup as `AppDiagnostic` entries (the diagnostic registry shipped in Phase 7-Zero):
 
