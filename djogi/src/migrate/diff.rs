@@ -3530,37 +3530,72 @@ mod tests {
     /// B-4r (Codex round-3): a chain longer than the closure's
     /// `MAX_CLOSURE_DEPTH` returns a structured
     /// [`DiffError::PkFlipCascadeDepthExceeded`] rather than
-    /// panicking. Build a 70-level chain (well past the 65-level
-    /// contract), drive the differ, and assert the error variant.
+    /// panicking.
+    ///
+    /// **Codex round-4 B-4r PARTIAL — depth test routes through
+    /// `diff_bucket_maps`.** Round-3's test invoked
+    /// `promote_pk_flips_to_groups` directly. Codex round-4
+    /// flagged this as a missed round-trip: the differ's
+    /// `diff_bucket_maps` is the only call path production
+    /// callers (compose / build / runner) ever take. Routing the
+    /// test through that path proves the depth-65 contract holds
+    /// when the differ owns op promotion (it does: the per-bucket
+    /// finalisation step in `diff_bucket_maps` calls
+    /// `promote_pk_flips_to_groups` with `?` propagation, so the
+    /// `DiffError` surfaces unchanged).
+    ///
+    /// Test setup:
+    ///   * `before`: 70-level FK chain (P → T1 → ... → T70) with
+    ///     P's PK kind set to `HeerId`.
+    ///   * `after`: SAME 70-level chain with P's PK kind flipped
+    ///     to `HeerIdRecencyBiased`. The differ emits one
+    ///     `PkTypeFlip` op for `p` and the closure walks the
+    ///     chain.
+    ///   * Assert `diff_bucket_maps` returns
+    ///     `Err(DiffError::PkFlipCascadeDepthExceeded { ... })`
+    ///     with the chain populated.
     #[test]
-    fn promote_pk_flips_emits_pk_flip_cascade_depth_exceeded_on_deep_graph() {
+    fn diff_bucket_maps_emits_pk_flip_cascade_depth_exceeded_on_deep_graph() {
+        use crate::migrate::projection::BucketKey;
         use crate::migrate::schema::PkKindSchema;
-        // Build P → T1 → T2 → ... → T70 — a strictly linear FK
-        // chain. Each table's only FK points at the previous
-        // table; the BFS extends one new frontier table per pass.
-        let mut tables: Vec<crate::migrate::schema::TableSchema> = Vec::new();
-        tables.push(synth_table_with_fks("p", &[], PkKindSchema::HeerId));
-        for i in 1..=70u32 {
-            let prev = if i == 1 {
-                "p".to_string()
-            } else {
-                format!("t{}", i - 1)
-            };
-            let name = format!("t{i}");
-            // synth_table_with_fks takes `&[(col, ref_table)]` —
-            // borrow the prev string for the duration of the call.
-            let prev_str = prev.as_str();
-            let table = synth_table_with_fks(&name, &[("ref_id", prev_str)], PkKindSchema::HeerId);
-            tables.push(table);
-        }
-        let after = synth_schema_with_tables(tables);
-        let mut ops = vec![SchemaOperation::PkTypeFlip {
-            table: "p".to_string(),
-            from: PkKindSchema::HeerId,
-            to: PkKindSchema::HeerIdRecencyBiased,
-        }];
-        let err = promote_pk_flips_to_groups(&after, &mut ops)
-            .expect_err("70-level chain must trigger depth contract");
+        // Helper: build the 70-level chain with parametric P PK
+        // kind so before/after differ only on P's PK.
+        let build_chain = |p_pk: PkKindSchema| -> AppliedSchema {
+            let mut tables: Vec<crate::migrate::schema::TableSchema> = Vec::new();
+            tables.push(synth_table_with_fks("p", &[], p_pk));
+            for i in 1..=70u32 {
+                let prev = if i == 1 {
+                    "p".to_string()
+                } else {
+                    format!("t{}", i - 1)
+                };
+                let name = format!("t{i}");
+                let prev_str = prev.as_str();
+                let table =
+                    synth_table_with_fks(&name, &[("ref_id", prev_str)], PkKindSchema::HeerId);
+                tables.push(table);
+            }
+            synth_schema_with_tables(tables)
+        };
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: "".to_string(),
+        };
+        let before: BTreeMap<BucketKey, AppliedSchema> = {
+            let mut m = BTreeMap::new();
+            m.insert(bucket.clone(), build_chain(PkKindSchema::HeerId));
+            m
+        };
+        let after: BTreeMap<BucketKey, AppliedSchema> = {
+            let mut m = BTreeMap::new();
+            m.insert(
+                bucket.clone(),
+                build_chain(PkKindSchema::HeerIdRecencyBiased),
+            );
+            m
+        };
+        let err = diff_bucket_maps(&before, &after)
+            .expect_err("70-level chain must trigger depth contract via diff_bucket_maps");
         match err {
             DiffError::PkFlipCascadeDepthExceeded {
                 parent_table,
@@ -3579,8 +3614,14 @@ mod tests {
                 assert_eq!(chain[0], "p");
             }
         }
-        // The Display impl renders the chain so operators can
-        // identify the offending FK shape.
+    }
+
+    /// Display rendering of `DiffError::PkFlipCascadeDepthExceeded`
+    /// — the operator-facing message identifies the chain root,
+    /// reports the contract limit, and prints the trail. Pure
+    /// formatting test, no differ invocation needed.
+    #[test]
+    fn pk_flip_cascade_depth_exceeded_display_renders_operator_message() {
         let display = format!(
             "{}",
             DiffError::PkFlipCascadeDepthExceeded {
