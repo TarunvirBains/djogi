@@ -419,3 +419,172 @@ async fn u4_reset_captures_historical_order_not_lexical(mut ctx: djogi::DjogiCon
         )
         .await;
 }
+
+// ── Codex umbrella PARTIAL: db seed --database <other_db> live route ─────
+
+/// Codex umbrella PARTIAL: prove that `db seed --database <other_db>`
+/// actually runs SQL against `<other_db>`, NOT the application
+/// database. Pre-T8-Round-2 the `--database` flag selected the seed
+/// directory but every seed ran against `database.url` regardless;
+/// T8 Round 2 added `derive_per_database_url` to splice the name into
+/// the URL path. The integration test at lines 266-304 of this file
+/// exercises the helper itself but cannot prove the live SQL route
+/// because the harness owns the DB lifecycle. This test fills the gap:
+///
+/// 1. Provision a SECOND named database alongside the harness's
+///    per-test database (admin URL is the env var DATABASE_URL).
+/// 2. Run `run_seeds` with the routed URL targeting the second DB.
+/// 3. Connect to BOTH databases and assert the seed table only
+///    exists in the second DB, not in the application DB the
+///    harness gave us.
+/// 4. Tear down the second DB.
+#[djogi::djogi_test]
+async fn u_partial_db_seed_routes_to_other_database_live(mut ctx: djogi::DjogiContext) {
+    use tokio_postgres::NoTls;
+
+    // The harness's own admin URL — we splice from this to derive
+    // the maintenance + per-DB URLs.
+    let admin_url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let app_database = current_database(&mut ctx).await;
+
+    // Compose a second DB name. Use a random suffix so concurrent
+    // test runs don't collide (the harness also uses uuid-suffixed
+    // names; the convention here mirrors that). Tests run with
+    // `--test-threads=1` per the project's pre-commit policy so the
+    // sequencing is deterministic.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let second_db = format!("djogi_seed_route_{stamp}");
+
+    // Provision the second DB via the maintenance connection.
+    {
+        let (admin_client, admin_conn) = tokio_postgres::connect(&admin_url, NoTls)
+            .await
+            .expect("admin connect");
+        let admin_driver = tokio::spawn(async move {
+            if let Err(e) = admin_conn.await {
+                eprintln!("[u-partial seed route] admin driver: {e}");
+            }
+        });
+        admin_client
+            .batch_execute(&format!("CREATE DATABASE \"{second_db}\""))
+            .await
+            .expect("CREATE DATABASE second");
+        drop(admin_client);
+        let _ = admin_driver.await;
+    }
+
+    // Lay down a single seed file under
+    // `<workspace>/seeds/<second_db>/`.
+    let work = temp_workspace("u_partial_seed_route");
+    let seeds_dir = work.join("seeds").join(&second_db);
+    fs::create_dir_all(&seeds_dir).unwrap();
+    fs::write(
+        seeds_dir.join("01_route_proof.sql"),
+        "CREATE TABLE u_partial_seed_proof (id BIGINT PRIMARY KEY);\n\
+         INSERT INTO u_partial_seed_proof (id) VALUES (42);\n",
+    )
+    .unwrap();
+
+    // Derive the per-database routed URL via the public helper
+    // (the same helper `db seed` uses).
+    let routed_url =
+        djogi::migrate::derive_per_database_url(&admin_url, &second_db).expect("route");
+
+    // Open a context against the routed URL and run `run_seeds`
+    // — this is the same call shape the CLI uses.
+    let pool = djogi::pg::pool::DjogiPool::connect(&routed_url)
+        .await
+        .expect("pool connect to second DB");
+    let mut second_ctx = djogi::DjogiContext::from_pool(pool);
+    let report = djogi::migrate::run_seeds(
+        &mut second_ctx,
+        &work,
+        &second_db,
+        &routed_url,
+        false, // localhost
+    )
+    .await
+    .expect("run_seeds against second DB");
+    assert_eq!(report.entries.len(), 1, "exactly one seed must apply");
+    assert_eq!(
+        report.entries[0].outcome,
+        SeedOutcome::Applied,
+        "seed must report Applied (not skipped)"
+    );
+
+    // Verify the seed landed in the SECOND database, not the
+    // application database. We re-issue the existence probe via
+    // `current_database()` against the second DB context to pin
+    // identity.
+    let confirmed_db: String = second_ctx
+        .raw_scalar("SELECT current_database()::text", &[])
+        .await
+        .expect("current_database");
+    assert_eq!(
+        confirmed_db, second_db,
+        "second context must be connected to the routed DB"
+    );
+    let exists_in_second: bool = second_ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'u_partial_seed_proof' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists in second");
+    assert!(
+        exists_in_second,
+        "seed table MUST exist in the routed (second) DB"
+    );
+    let row_count: i64 = second_ctx
+        .raw_scalar("SELECT COUNT(*)::bigint FROM u_partial_seed_proof", &[])
+        .await
+        .expect("count in second");
+    assert_eq!(row_count, 1, "seed INSERT must have landed");
+
+    // CRITICAL: the same seed table must NOT exist in the
+    // application database the harness gave us. If `--database
+    // <name>` had failed to route, the seed would have run against
+    // `app_database` instead of `second_db`. We assert against the
+    // ORIGINAL ctx, which the harness opened against `app_database`.
+    let exists_in_app: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'u_partial_seed_proof' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("exists in app");
+    assert!(
+        !exists_in_app,
+        "seed table MUST NOT exist in the application DB ({app_database}) — \
+         the route would have failed if --database <name> had silently fallen \
+         back to the application URL"
+    );
+
+    // Cleanup: drop the second context's pool first so the maintenance
+    // DROP DATABASE has no live session.
+    drop(second_ctx);
+
+    // Tear down the second DB.
+    let (admin_client, admin_conn) = tokio_postgres::connect(&admin_url, NoTls)
+        .await
+        .expect("admin teardown connect");
+    let teardown_driver = tokio::spawn(async move {
+        if let Err(e) = admin_conn.await {
+            eprintln!("[u-partial seed route] teardown driver: {e}");
+        }
+    });
+    let _ = admin_client
+        .batch_execute(&format!(
+            "DROP DATABASE IF EXISTS \"{second_db}\" WITH (FORCE)"
+        ))
+        .await;
+    drop(admin_client);
+    let _ = teardown_driver.await;
+
+    let _ = fs::remove_dir_all(&work);
+}

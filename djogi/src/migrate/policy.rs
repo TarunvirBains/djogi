@@ -168,15 +168,75 @@ const LOCALHOST_ALLOWLIST: &[&str] = &["", "127.0.0.1", "::1", "localhost"];
 ///
 /// The host extraction is byte-level — explicit forward scans, no
 /// regex. Comparisons against [`LOCALHOST_ALLOWLIST`] use binary
-/// search.
+/// search; addresses in the IPv4 `127.0.0.0/8` loopback range (e.g.
+/// `127.5.10.20`) match via the byte-level [`is_ipv4_loopback_range`]
+/// helper that walks the four octets without parsing into a numeric
+/// type.
 ///
-/// **Used by `attune --squash`.** The squash path refuses to run when
-/// this returns `false`, so a misconfigured DATABASE_URL pointing at a
-/// shared dev server cannot accidentally rewrite history that other
+/// **Used by `attune --squash`** (and, post-Codex umbrella PARTIAL,
+/// by `db reset` + `db seed`). The squash path refuses to run when
+/// this returns `false`, so a misconfigured DATABASE_URL pointing at
+/// a shared dev server cannot accidentally rewrite history that other
 /// developers also pull from.
 pub fn is_localhost_connection(conn: &str) -> bool {
     let host = extract_host(conn);
-    LOCALHOST_ALLOWLIST.binary_search(&host).is_ok()
+    if LOCALHOST_ALLOWLIST.binary_search(&host).is_ok() {
+        return true;
+    }
+    // Codex umbrella PARTIAL: extend the loopback recognition to the
+    // entire `127.0.0.0/8` range so an operator running a Postgres on
+    // `127.5.10.20` (a perfectly valid loopback address per RFC 5735)
+    // is recognised as localhost. Allowlist is sorted + binary-searched
+    // for the canonical names; the loopback-range walk handles the
+    // numeric IPv4 case without parsing into a numeric type.
+    is_ipv4_loopback_range(host)
+}
+
+/// Codex umbrella PARTIAL: returns `true` when `host` is an IPv4
+/// dotted-quad whose first octet is `127`. The remaining three
+/// octets must each be one to three ASCII decimal digits in the 0..=255
+/// range; anything else (non-digit byte, octet out of range, wrong
+/// number of dots) returns `false`.
+///
+/// **No regex.** The walk is a four-octet forward scan — split on `.`,
+/// confirm each segment is decimal, parse via accumulator, range-check.
+/// `127.0.0.1` is in [`LOCALHOST_ALLOWLIST`] (the binary-search path
+/// catches it first); this helper is for the broader `127.x.y.z` shape.
+fn is_ipv4_loopback_range(host: &str) -> bool {
+    let bytes = host.as_bytes();
+    let mut octets = [0u16; 4];
+    let mut octet_idx = 0usize;
+    let mut acc: u16 = 0;
+    let mut digits_in_octet: u8 = 0;
+    for &b in bytes {
+        if b == b'.' {
+            if digits_in_octet == 0 || octet_idx >= 3 {
+                return false;
+            }
+            octets[octet_idx] = acc;
+            octet_idx += 1;
+            acc = 0;
+            digits_in_octet = 0;
+            continue;
+        }
+        if !b.is_ascii_digit() {
+            return false;
+        }
+        if digits_in_octet >= 3 {
+            return false;
+        }
+        acc = acc * 10 + (b - b'0') as u16;
+        if acc > 255 {
+            return false;
+        }
+        digits_in_octet += 1;
+    }
+    // Closing octet — must be present and non-empty.
+    if octet_idx != 3 || digits_in_octet == 0 {
+        return false;
+    }
+    octets[3] = acc;
+    octets[0] == 127
 }
 
 /// Pull the host component out of a libpq parameter string or URL.
@@ -846,5 +906,69 @@ mod tests {
         // The localhost predicate then refuses this — `dbname=test`
         // is not in the allowlist, so the gate fails closed.
         assert!(!is_localhost_connection("host= dbname=test"));
+    }
+
+    // ── Codex umbrella PARTIAL: 127.0.0.0/8 IPv4 loopback range ──────────
+
+    /// Every host in the IPv4 loopback range (`127.0.0.0/8` per
+    /// RFC 5735) must be recognised as localhost. The allowlist
+    /// already carries `127.0.0.1`; the helper extends the recognition
+    /// to the entire range without parsing into a numeric type.
+    #[test]
+    fn u_partial_is_ipv4_loopback_range_accepts_127_dot_x_y_z() {
+        assert!(is_ipv4_loopback_range("127.0.0.1"));
+        assert!(is_ipv4_loopback_range("127.0.0.0"));
+        assert!(is_ipv4_loopback_range("127.5.10.20"));
+        assert!(is_ipv4_loopback_range("127.255.255.254"));
+        assert!(is_ipv4_loopback_range("127.255.255.255"));
+        assert!(is_ipv4_loopback_range("127.1.1.1"));
+    }
+
+    /// Non-127 IPv4 addresses must NOT match the helper.
+    #[test]
+    fn u_partial_is_ipv4_loopback_range_rejects_non_127_addresses() {
+        assert!(!is_ipv4_loopback_range("128.0.0.1"));
+        assert!(!is_ipv4_loopback_range("10.0.0.1"));
+        assert!(!is_ipv4_loopback_range("192.168.1.1"));
+        assert!(!is_ipv4_loopback_range("0.0.0.0"));
+        assert!(!is_ipv4_loopback_range("126.255.255.255"));
+        assert!(!is_ipv4_loopback_range("255.255.255.255"));
+    }
+
+    /// Malformed inputs must NOT match (defence-in-depth — a host
+    /// string that does not parse as an IPv4 dotted-quad falls through
+    /// to a closed gate).
+    #[test]
+    fn u_partial_is_ipv4_loopback_range_rejects_malformed_inputs() {
+        assert!(!is_ipv4_loopback_range(""));
+        assert!(!is_ipv4_loopback_range("127"));
+        assert!(!is_ipv4_loopback_range("127.0"));
+        assert!(!is_ipv4_loopback_range("127.0.0"));
+        assert!(!is_ipv4_loopback_range("127.0.0.1.5")); // 5 octets
+        assert!(!is_ipv4_loopback_range("127.0.0."));
+        assert!(!is_ipv4_loopback_range(".127.0.0.1"));
+        assert!(!is_ipv4_loopback_range("127..0.1"));
+        assert!(!is_ipv4_loopback_range("127.0.0.256")); // octet out of range
+        assert!(!is_ipv4_loopback_range("127.0.0.999"));
+        assert!(!is_ipv4_loopback_range("127.a.0.1")); // non-digit
+        assert!(!is_ipv4_loopback_range("127.0.0.0001")); // 4 digits in an octet
+        assert!(!is_ipv4_loopback_range("localhost")); // not a dotted-quad
+        // `[::1]` looks loopback but is IPv6 — recognised separately
+        // via the `LOCALHOST_ALLOWLIST` exact match path.
+        assert!(!is_ipv4_loopback_range("::1"));
+    }
+
+    /// `is_localhost_connection` integrates the new helper so URL
+    /// and libpq forms with a `127.x.y.z` host both pass the gate.
+    #[test]
+    fn u_partial_is_localhost_connection_recognises_full_127_range() {
+        assert!(is_localhost_connection("postgres://127.5.10.20:5432/test"));
+        assert!(is_localhost_connection("postgres://127.0.42.1/test"));
+        assert!(is_localhost_connection("postgres://127.255.255.254/test"));
+        assert!(is_localhost_connection("host=127.5.10.20 dbname=test"));
+        assert!(is_localhost_connection("host='127.0.42.1' dbname=test"));
+        // Non-127 address must still refuse.
+        assert!(!is_localhost_connection("postgres://10.0.0.5/test"));
+        assert!(!is_localhost_connection("host=128.0.0.1 dbname=test"));
     }
 }
