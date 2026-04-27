@@ -674,7 +674,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 ### 10b: Permission Model + Feasibility Analysis
 
-- [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, model)` overrides via `_admin_role_model_perms`
+- [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, app, model)` overrides via `_admin_role_model_perms` (keyed `(role_id, app_name, model_name)` to match the visage-grant qualification axis — two apps with the same model name resolve independently)
 - [ ] Visage-grant resolution: `_admin_role_visage_perms` rows per `(role_id, app_name, model_name, visage_name, can_view, can_edit)`; effective visible / editable field sets computed as the union across granted visages, optionally extended by `view_full_struct` / `write_full_struct`, always minus `expose(none)`
 - [ ] Single-parent role inheritance with cycle rejection on save and "this affects N child roles" save-time preview; role-deletion UX (reassign-first) for users and child roles
 - [ ] Compile-time / startup feasibility analysis: five checks per `(role, model)` pair (`can_actually_read` / `_update` / `_create` / `_delete` plus `fk_label_reachable` for FK fields) surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
@@ -713,7 +713,7 @@ The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the
 
 ### 10g: System Permissions + Audit Access
 
-- [ ] Four v1 system permissions: `view_audit_log` (visibility-filtered read of `_logs.{model}` tables), `manage_users` (five-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective `(model, action)` subset, effective visage-grant subset, and tenant-reach), `view_full_struct` (read all non-`expose(none)` fields independent of visage view grants), `write_full_struct` (edit all non-`expose(none)`, non-`admin_readonly` fields independent of visage edit grants; requires `view_full_struct`)
+- [ ] Four v1 system permissions: `view_audit_log` (visibility-filtered read of `_logs.{model}` tables), `manage_users` (five-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective per-`(app, model, action)` subset, effective visage-grant subset, and tenant-reach — both subset axes app-qualified to match the apps subsystem), `view_full_struct` (read all non-`expose(none)` fields independent of visage view grants), `write_full_struct` (edit all non-`expose(none)`, non-`admin_readonly` fields independent of visage edit grants; requires `view_full_struct`)
 - [ ] `_logs.{model}` read access through Maahi UI for `view_audit_log` holders, with field-level visibility computed from the viewer's effective visage grants plus any `view_full_struct`, scoped to their tenant
 
 **Deliverable:** Production-grade Maahi admin console with visage-grant-driven visibility, multi-tenancy with secure cross-tenant login handoff, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave` with approver-coverage discipline, and four v1 system permissions (`view_audit_log`, `manage_users`, `view_full_struct`, `write_full_struct`).

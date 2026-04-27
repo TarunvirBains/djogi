@@ -10,7 +10,9 @@ Defaults:
 
 - Page size: 25 rows
 - Sortable: every column header for which the descriptor reports a sortable type
-- Search: case-insensitive `ILIKE` across all `String` fields in the requesting role's effective visible field set on the model (per the resolution in [RBAC](./rbac.md)). When `admin_search_fields` is configured, fields named in that list but absent from the role's visible set are silently dropped from the ILIKE — search never reaches into non-visible fields, even as a probe oracle. If the entire `admin_search_fields` list is non-visible to the role, the search input is hidden from the list view for that role
+- Search: case-insensitive `ILIKE` across all `String` fields in the requesting role's effective visible field set on the model (per the resolution in [RBAC](./rbac.md)), with two anti-oracle exclusions:
+  - Fields marked `#[field(sensitive)] #[field(redact_in(admin))]` are excluded from the ILIKE even when otherwise visible. A redacted field renders as a placeholder in list and detail views; permitting search would let an attacker existence-probe the underlying raw value through ILIKE hit/miss patterns. Searchability is a strictly narrower set than visibility for this exact reason.
+  - When `admin_search_fields` is configured, fields named in that list but absent from the role's visible set are silently dropped from the ILIKE — search never reaches into non-visible fields, even as a probe oracle. If the entire `admin_search_fields` list is non-visible (or all entries are redacted) for the role, the search input is hidden from the list view for that role
 - Default sort: most recently created first
 
 Per-model overrides via `#[model(...)]` attributes:
@@ -43,6 +45,73 @@ Filter widgets auto-typed by field:
 | `Jsonb<T>` subfield               | Per-subfield widget recursively                |
 
 Foreign-key dropdowns for large tables debounce 300 ms client-side and dispatch a server function that returns the top N matching rows; the response respects the requesting role's effective visibility on the target model. Rows are rendered via `Label::label(&visible)` (see [Field Visibility](./field-visibility.md)), with `visible` constructed from that effective visibility.
+
+## FK Widget Tiers
+
+`ForeignKey<T>` fields render as autocomplete-style dropdowns in admin forms and filter widgets. Maahi auto-tiers the dropdown behavior based on target-table size:
+
+- **Preload tier** (target rowcount below `[admin].fk_preload_threshold`, default `200`) — all rows fetched at form-render time, options materialized in a static `<select>`. No server round-trip per keystroke. Typical for status enums, region tables, role / category lookups.
+- **Typeahead tier** (target rowcount at or above the threshold) — debounced 300 ms client-side, dispatches a server function that returns the top N matching rows by `Label::label(&visible)`. The visible result set honors the requesting role's effective visibility on the target model, plus any `AdminFkFilter` (see below).
+
+Auto-detection runs at startup using `pg_class.reltuples`. The threshold is configurable in [Configuration](./configuration.md). Per-FK override via attribute:
+
+```rust
+#[field(admin_fk_widget = "preload")]
+pub fuel_type_id: ForeignKey<FuelType>,
+
+#[field(admin_fk_widget = "typeahead")]
+pub owner_id: ForeignKey<User>,
+```
+
+A third behavior (paginated browse with no typeahead, virtualized infinite scroll, etc.) is out of v1 — adopters can extend through the future `AdminFieldWidget` surface, anchored to Phase 10.5 (see [Phase Map](./phase-map.md)).
+
+## FK Dropdown Filters — `AdminFkFilter`
+
+Beyond role-based visibility filtering, FK dropdowns often need to apply domain-specific filters — "show only active users", "exclude soft-deleted records", "limit to non-archived rows." Models opt in via the optional `AdminFkFilter` trait, paralleling the `AdminClean` opt-in:
+
+```rust
+pub trait AdminFkFilter: Model {
+    /// Applied to every FK dropdown query targeting this model.
+    /// AND-combined with the requester's role visibility filter and
+    /// any per-field override; Maahi never bypasses it.
+    fn admin_fk_filter(ctx: &DjogiContext) -> Condition<Self>;
+}
+```
+
+Models that don't implement the trait have no FK dropdown filter — Maahi skips the step entirely. Models that do, apply the filter to every FK dropdown targeting them, in both preload and typeahead tiers.
+
+Per-FK-field override via attribute, for cases where the same target needs different filters at different call sites:
+
+```rust
+#[field(admin_fk_filter = "Vehicle::active_owners_filter")]
+pub owner: ForeignKey<User>,
+
+#[field(admin_fk_filter = "Vehicle::any_user_filter")]
+pub last_modifier: ForeignKey<User>,
+```
+
+Signature for both forms: `fn(&DjogiContext) -> Condition<Target>`. The named function must exist in the model's module or be path-qualified.
+
+**Resolution order**, highest priority first:
+
+1. Per-field `#[field(admin_fk_filter = "...")]` attribute on the FK field
+2. Target model's `AdminFkFilter` trait impl
+3. No additional filter
+
+**Composition.** Filters AND-combine with role visibility into a single query the dropdown server function executes:
+
+```text
+final_dropdown_query =
+    Target::filter()
+        .where(role_visibility_filter(ctx))      // always applied
+        .where(model_or_field_filter(ctx))       // if AdminFkFilter or override exists
+```
+
+A role's "what rows can I see in this dropdown?" answer is therefore the intersection of "fields-visible-to-role" rows AND "model-says-active" rows AND any field-specific narrowing.
+
+**Out of v1.** Filters that need access to the parent form's *in-progress state* (e.g., filter children by the parent's tenant value before save) are not v1 — `DjogiContext` already carries authenticated user, role, and tenant, but not in-flight form values. Phase 10.5 candidate; the signature would extend with an additional parameter once the pattern is documented.
+
+The trait pattern matches `AdminClean` — same opt-in shape, same discovery model. Discovery / registration mechanism (inventory submission, macro-emitted descriptor slot, etc.) is an implementation detail; the spec captures only the user-facing contract.
 
 ## ModelForms — Field Widget Mapping
 

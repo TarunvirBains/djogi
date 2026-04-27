@@ -29,7 +29,7 @@ Phase 10 system permissions surfaced in `_admin_roles.system_perms`:
 
 1. Grant `is_superuser = TRUE` (only an existing superuser can flip that bit).
 2. Assign a role whose `system_perms` are not a subset of the holder's own `system_perms`. This bounds escalation through `view_full_struct` and `write_full_struct` along with all other system permissions: a holder lacking `write_full_struct` cannot manufacture a user who holds it.
-3. Assign a role whose **effective per-(model, action) permission set** — defaults plus `_admin_role_model_perms` overrides, resolved recursively through `parent_role_id` inheritance — is not a subset of the holder's own effective per-(model, action) permission set.
+3. Assign a role whose **effective per-`(app, model, action)` permission set** — defaults plus `_admin_role_model_perms` overrides (keyed `(role_id, app_name, model_name)` per [RBAC](./rbac.md)), resolved recursively through `parent_role_id` inheritance — is not a subset of the holder's own effective per-`(app, model, action)` permission set. The `app_name` qualifier matches the visage-grant axis from clause 4 — two apps with a `User` model resolve independently on both axes, so a holder bounded to `fleet_app` cannot manufacture a user with action authority on `billing_app.User`.
 4. Assign a role whose **effective visage-grant set** — the union of `_admin_role_visage_perms` rows resolved recursively through `parent_role_id` inheritance, with `can_view` / `can_edit` carried per row — is not a subset of the holder's own effective visage-grant set. The subset check operates per-bit per `(app, model, visage_name)` triple: every `can_view = TRUE` in the assigned role must be matched by `can_view = TRUE` for the same triple in the holder's chain, and likewise for `can_edit`. There is no implicit ordering between visages (no "VehicleAdmin > VehiclePublic"); the only way one grant covers another is the system-permission expansion below. The check is computed against *effective* grants after expansion, so a holder who holds `view_full_struct` trivially satisfies the view side of every specific visage grant on every model (modulo `expose(none)` / `expose(internal)`); same for `write_full_struct` on the edit side. A holder whose own grants cover only `VehiclePublic` view cannot manufacture a user who sees `VehicleAdmin` view, since `VehicleAdmin` is a distinct triple that is not covered by either the holder's specific grants or any held system permission — this prevents the holder from materializing a user who sees fields the holder cannot.
 5. **Tenant reach**: assign a role with `cross_tenant = TRUE` unless the holder's own effective authority is also cross-tenant (either `is_superuser = TRUE` or assigned to a role with `cross_tenant = TRUE`). In multi-tenant mode, additionally cannot create or retarget a user into a `tenant_scope` the holder could not themselves operate in — a single-tenant `manage_users` holder can only place users into their own tenant (or NULL when both holder and assigned role are cross-tenant).
 
@@ -52,8 +52,12 @@ CREATE TABLE _admin_pending_actions (
     id              BIGINT PRIMARY KEY DEFAULT generate_id(),
     requested_by    BIGINT NOT NULL REFERENCES _admin_users(id),
     action_kind     TEXT NOT NULL,            -- v1: "BulkDelete" or "InlineSave"; Phase 10.5 extends
+    app_name        TEXT NOT NULL,            -- app qualifier per Phase 7-Zero apps subsystem;
+                                              -- matches the (app_name, model_name) qualification axis
+                                              -- on _admin_role_visage_perms and _admin_role_model_perms.
     model_name      TEXT NOT NULL,            -- target model: for BulkDelete, the model rows are deleted from;
-                                              -- for InlineSave, the parent model whose save is being approved
+                                              -- for InlineSave, the parent model whose save is being approved.
+                                              -- Validated against the live ModelDescriptor registry under app_name.
     payload         JSONB NOT NULL,           -- shape varies by action_kind (see below)
     requested_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at      TIMESTAMPTZ NOT NULL,     -- pending requests auto-expire

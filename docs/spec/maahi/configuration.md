@@ -17,6 +17,8 @@ pending_action_ttl    = "24h"                 # approval-queue expiry
 inline_page_size      = 10                    # M2M inline default
 inline_bulk_threshold = 25                    # inline removals at-or-above this count route a parent save through the dual-control approval flow as an `InlineSave` pending action (sibling to `BulkDelete`)
 default_page_size     = 25                    # list view default
+fk_preload_threshold  = 200                   # FK target rowcount at-or-above which the dropdown switches from preload to typeahead — see UI Surface
+                                              # Auto-detected at startup from pg_class.reltuples; per-FK override via #[field(admin_fk_widget = "preload" | "typeahead")]
 login_rate_limit_per_ip    = "20/5m"          # per-IP limiter (caps total auth volume from one source)
 login_rate_limit_per_email = "10/5m"          # per-email limiter (caps total auth volume against one account)
                                               # Both must accept; either failing returns 429.

@@ -4,7 +4,9 @@
 
 ## Phase 10 — Maahi v1
 
-Phase 10 ships a real, production-grade admin:
+Phase 10 ships a real, production-grade admin. Acknowledged v1 expressiveness limit: visage grants resolve against the four canonical visages only (`Public`, `SelfView`, `Admin`, `Export`). Intermediate admin-only field bundles ("support tier sees status + notes but not finance fields", "auditor sees a few non-public columns on one model") are not cleanly expressible in v1 — adopters either overload an existing canonical scope (which broadens that scope across all consumers, not just Maahi) or grant `view_full_struct` / `write_full_struct` (which are global escape hatches, not fine-grained tiers). The first-class fix is the custom-visage feature deferred below; v1 documents the gap so adopters can plan around it. See [RBAC](./rbac.md) for the full discussion.
+
+
 
 - Dioxus full-stack renderer on Axum, `cargo djogi admin build` integration
 - Hybrid `_admin_users` / `_admin_sessions` substrate in the audit DB

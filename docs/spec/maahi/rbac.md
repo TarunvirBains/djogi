@@ -37,6 +37,13 @@ Field-visibility decisions stay under code review — adding a new view tier req
 
 Custom user-defined visage structs (a hand-rolled visage with an arbitrary field set, distinct from the canonical visages emitted by `expose(...)`) are deferred to Phase 10.5 — see [Phase Map](./phase-map.md). The deferral keeps Maahi v1 strictly aligned with the existing Phase 4.5 / 7-Zero-2 visage surface, which emits only the canonical visages (`{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`).
 
+**v1 expressiveness limit.** Real RBAC needs that fall between canonical tiers — "support tier sees status + notes but not finance fields" or "auditor sees a few non-public internal columns on one model without raw-struct read everywhere" — cannot be expressed cleanly in v1. The two available paths each have honest tradeoffs:
+
+- Overload an existing canonical scope (e.g., add the support-relevant fields to `expose(admin)`), which broadens that scope across every consumer of `{Model}Admin` (other admin roles, `manage_users` upper-bound checks, transport projections) — not just Maahi.
+- Grant `view_full_struct` / `write_full_struct`, which are global across every model and intentionally broad (operational-tier escape hatches for "data ops engineer" / "deep auditor" roles, not fine-grained admin tiers).
+
+Adopters who need intermediate admin-only field bundles wait for Phase 10.5's custom-visage feature, which will let `#[derive(Visage)]` (or equivalent) define hand-rolled field sets distinct from the canonical four. v1 ships with the limit acknowledged so adopters can plan around it instead of discovering it at deploy.
+
 The lone whole-model exception is `#[model(admin = false)]`, which removes a model from Maahi entirely regardless of any visage grant.
 
 ## Hierarchy: App → Model → Visage
@@ -136,14 +143,20 @@ Per-model overrides are first-class, not an extension. The role row carries a `(
 ```sql
 CREATE TABLE _admin_role_model_perms (
     role_id           BIGINT NOT NULL REFERENCES _admin_roles(id) ON DELETE CASCADE,
-    model_name        TEXT NOT NULL,            -- e.g., "Vehicle"; validated against descriptors
+    app_name          TEXT NOT NULL,            -- app qualifier per Phase 7-Zero apps subsystem;
+                                                -- model_name alone is not globally unique (two apps may
+                                                -- both define a `User` model). The qualified pair
+                                                -- (app_name, model_name) matches the visage-grant
+                                                -- table's qualification axis.
+    model_name        TEXT NOT NULL,            -- e.g., "Vehicle"; validated against the live
+                                                -- ModelDescriptor registry under app_name.
     can_create        BOOLEAN NOT NULL,
     can_read          BOOLEAN NOT NULL,
     can_update        BOOLEAN NOT NULL,
     can_delete        BOOLEAN NOT NULL,
     can_bulk_update   BOOLEAN NOT NULL,
     can_bulk_delete   BOOLEAN NOT NULL,
-    PRIMARY KEY (role_id, model_name)
+    PRIMARY KEY (role_id, app_name, model_name)
 );
 ```
 
@@ -159,11 +172,11 @@ Multi-parent inheritance, frozen/locked roles, and the transitive upper-bound `m
 
 ## Effective Permission Resolution
 
-For a request from user `U` against model `M`:
+For a request from user `U` against model `M` owned by app `A`:
 
 1. Resolve `U`'s effective role chain (self + parent inheritance — single-parent in v1).
-2. Compute the effective `(action_bits, per_model_overrides)` from the role chain — gives us "can U Create / Read / Update / Delete / BulkUpdate / BulkDelete on M?"
-3. Compute the effective **visage grant set** — union of all `_admin_role_visage_perms` rows across the role chain whose `(app_name, model_name)` matches M.
+2. Compute the effective `(action_bits, per_model_overrides)` from the role chain — gives us "can U Create / Read / Update / Delete / BulkUpdate / BulkDelete on `(A, M)`?" Per-model overrides are keyed `(role_id, app_name, model_name)` so two apps with the same model name resolve independently.
+3. Compute the effective **visage grant set** — union of all `_admin_role_visage_perms` rows across the role chain whose `(app_name, model_name)` matches `(A, M)`.
 4. Compute the effective **visible field set on M**:
    - Start with the union of fields across all granted-view visages.
    - If `view_full_struct` is in the effective `system_perms`, add all fields on M except those marked `#[field(expose(none))]`.
