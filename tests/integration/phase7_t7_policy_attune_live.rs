@@ -2708,37 +2708,33 @@ async fn u7_attune_squash_dry_run_surfaces_record_skipped_without_explicit_flag(
     );
     // The DryRunRecordSkipped diagnostic must surface even though
     // req.record was false — because Squash auto-implies recording.
-    // Codex round-3 U-9: ALSO assert record_source = SquashImplied
-    // so the prose says "`--squash` implies recording", not
-    // "`--record` requested" — the latter would be a lie when the
-    // operator never passed --record.
     let squash_implied_diagnostic = report.diagnostics.iter().find(|d| {
         matches!(
             d,
-            djogi::migrate::AttuneDiagnostic::DryRunRecordSkipped { resolved_target, record_source }
+            djogi::migrate::AttuneDiagnostic::DryRunRecordSkipped { resolved_target }
                 if resolved_target.as_deref() == Some(initial_sha.as_str())
-                    && matches!(record_source, djogi::migrate::RecordSource::SquashImplied)
         )
     });
     assert!(
         squash_implied_diagnostic.is_some(),
-        "U-7 + U-9: Squash dry-run must surface DryRunRecordSkipped with \
-         RecordSource::SquashImplied (operator never passed --record, so \
-         saying \"`--record` requested\" would be inaccurate): {:?}",
+        "U-7 + U-9: Squash dry-run must surface DryRunRecordSkipped with the \
+         resolved target SHA: {:?}",
         report.diagnostics
     );
-    // Verify the rendered prose actually says "squash implies", not
-    // "--record requested" — defense in depth against a regression
-    // that swaps the source but keeps the wrong wording.
+    // Verify the rendered prose stays neutral across both the direct
+    // `--record` and squash-implied code paths.
     let rendered = squash_implied_diagnostic.unwrap().to_string();
     assert!(
-        rendered.contains("`--squash` implies recording"),
-        "U-9 prose must mention squash implication: {rendered}"
+        rendered.contains(&format!(
+            "would update parent submodule pointer to `{}` but `--apply` was not \
+                 provided; no parent index mutation happened",
+            initial_sha
+        )),
+        "U-9 prose must use the neutral wording: {rendered}"
     );
     assert!(
-        !rendered.contains("`--record` requested"),
-        "U-9 prose must NOT say `--record` requested in squash-implied \
-         case: {rendered}"
+        !rendered.contains("--record requested"),
+        "U-9 prose must NOT say `--record` requested: {rendered}"
     );
     let _ = std::fs::remove_dir_all(&work);
 }

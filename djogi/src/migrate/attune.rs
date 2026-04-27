@@ -251,7 +251,6 @@ pub struct AttuneReport {
 
 /// Structured operator-facing diagnostic surfaced by [`attune`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum AttuneDiagnostic {
     /// The `djogi_schema_migrations` table does not exist in the
     /// connected database. Attune's read-only dry-run contract
@@ -276,31 +275,7 @@ pub enum AttuneDiagnostic {
     /// written. Distinct from `DryRunMutationsSkipped` so the operator
     /// sees both messages when they pass `--record` (or `--squash`)
     /// without `--apply`.
-    ///
-    /// Codex umbrella round-3 U-9: `record_source` differentiates the
-    /// two cases so the rendered prose is accurate. An operator running
-    /// `attune --squash --target <ref>` (record: false, squash: true)
-    /// must NOT see the message "`--record` requested without `--apply`"
-    /// — recording was implied by squash, not explicit.
-    DryRunRecordSkipped {
-        resolved_target: Option<String>,
-        record_source: RecordSource,
-    },
-}
-
-/// Why was recording effective on this attune invocation? Drives the
-/// operator-facing prose in [`AttuneDiagnostic::DryRunRecordSkipped`].
-///
-/// Codex umbrella round-3 U-9: prior to this split the diagnostic always
-/// said "--record requested without --apply", which mis-described the
-/// `--squash` (implicit-record) case introduced by U-7.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum RecordSource {
-    /// Operator passed `--record` explicitly.
-    Explicit,
-    /// `--squash` mode auto-implied recording (per U-7 spec contract).
-    SquashImplied,
+    DryRunRecordSkipped { resolved_target: Option<String> },
 }
 
 impl AttuneDiagnostic {
@@ -333,32 +308,22 @@ impl std::fmt::Display for AttuneDiagnostic {
                  no database or disk mutation happened — re-run with `--apply` to commit",
                 self.code(),
             ),
-            AttuneDiagnostic::DryRunRecordSkipped {
-                resolved_target,
-                record_source,
-            } => {
-                // Codex umbrella round-3 U-9: prose differentiates
-                // explicit `--record` from squash-implied recording.
-                let trigger = match record_source {
-                    RecordSource::Explicit => "`--record` requested",
-                    RecordSource::SquashImplied => "`--squash` implies recording",
-                };
-                match resolved_target {
-                    Some(sha) => write!(
-                        f,
-                        "[{}] {trigger} but `--apply` was not provided; would update \
-                         parent submodule pointer to `{sha}`, but no parent index \
-                         mutation happened — re-run with `--apply` to commit",
-                        self.code(),
-                    ),
-                    None => write!(
-                        f,
-                        "[{}] {trigger} but `--apply` was not provided and no target \
-                         was resolved; nothing to record",
-                        self.code(),
-                    ),
-                }
-            }
+            AttuneDiagnostic::DryRunRecordSkipped { resolved_target } => match resolved_target {
+                Some(sha) => write!(
+                    f,
+                    "[{}] would update parent submodule pointer to `{sha}` but `--apply` \
+                     was not provided; no parent index mutation happened — re-run with \
+                     `--apply` to commit",
+                    self.code(),
+                ),
+                None => write!(
+                    f,
+                    "[{}] would update parent submodule pointer but `--apply` was not \
+                     provided; no parent index mutation happened — re-run with `--apply` \
+                     to commit",
+                    self.code(),
+                ),
+            },
         }
     }
 }
@@ -941,7 +906,6 @@ pub async fn attune(
                     .diagnostics
                     .push(AttuneDiagnostic::DryRunRecordSkipped {
                         resolved_target: resolved_target.clone(),
-                        record_source: RecordSource::Explicit,
                     });
             }
             // When `--record` AND `--apply` are both set on a
@@ -1020,7 +984,6 @@ pub async fn attune(
                         .diagnostics
                         .push(AttuneDiagnostic::DryRunRecordSkipped {
                             resolved_target: resolved_target.clone(),
-                            record_source: RecordSource::Explicit,
                         });
                 }
             } else if req.record {
@@ -1054,21 +1017,10 @@ pub async fn attune(
                 // should see "would record SHA X" alongside the
                 // dry-run mutations notice.
                 if effective_record && resolved_target.is_some() {
-                    // Codex umbrella round-3 U-9: differentiate the
-                    // record-source so the rendered prose is accurate.
-                    // In Squash dry-run, the operator may NOT have
-                    // passed --record (squash auto-implies it via U-7);
-                    // saying "--record requested" is wrong in that case.
-                    let record_source = if req.record {
-                        RecordSource::Explicit
-                    } else {
-                        RecordSource::SquashImplied
-                    };
                     report
                         .diagnostics
                         .push(AttuneDiagnostic::DryRunRecordSkipped {
                             resolved_target: resolved_target.clone(),
-                            record_source,
                         });
                 }
                 return Ok(report);
@@ -2051,7 +2003,6 @@ mod tests {
         assert_eq!(
             AttuneDiagnostic::DryRunRecordSkipped {
                 resolved_target: None,
-                record_source: RecordSource::Explicit,
             }
             .code(),
             "ATTUNE-003"
@@ -2070,7 +2021,6 @@ mod tests {
 
         let d_with = AttuneDiagnostic::DryRunRecordSkipped {
             resolved_target: Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()),
-            record_source: RecordSource::Explicit,
         };
         let s_with = d_with.to_string();
         assert!(
@@ -2078,45 +2028,85 @@ mod tests {
             "must echo resolved SHA: {s_with}"
         );
         assert!(s_with.contains("--apply"));
+        assert!(
+            s_with.contains("would update parent submodule pointer"),
+            "must describe skipped parent-pointer update: {s_with}"
+        );
+        assert!(
+            !s_with.contains("--record requested"),
+            "must stay neutral across record sources: {s_with}"
+        );
 
         let d_none = AttuneDiagnostic::DryRunRecordSkipped {
             resolved_target: None,
-            record_source: RecordSource::Explicit,
         };
         let s_none = d_none.to_string();
         assert!(
-            s_none.contains("nothing to record"),
-            "must surface no-op explainer: {s_none}"
+            s_none.contains("would update parent submodule pointer"),
+            "must still describe skipped parent-pointer update: {s_none}"
+        );
+        assert!(s_none.contains("--apply"));
+        assert!(
+            !s_none.contains("--record requested"),
+            "must stay neutral when no SHA resolved: {s_none}"
         );
     }
 
-    /// Codex umbrella round-3 U-9: `RecordSource::Explicit` and
-    /// `RecordSource::SquashImplied` produce DIFFERENT prose so an
-    /// operator running `attune --squash --target <ref>` (no
-    /// explicit `--record`) does not see "`--record` requested".
+    /// Codex umbrella round-5 U-9: both the direct `--record` path
+    /// and the squash-implied path render the same neutral prose, and
+    /// neither may mention "`--record` requested".
     #[test]
     fn u9_record_source_drives_diagnostic_wording() {
         let explicit = AttuneDiagnostic::DryRunRecordSkipped {
             resolved_target: Some("abcd".to_string()),
-            record_source: RecordSource::Explicit,
         }
         .to_string();
         let squash = AttuneDiagnostic::DryRunRecordSkipped {
             resolved_target: Some("abcd".to_string()),
-            record_source: RecordSource::SquashImplied,
         }
         .to_string();
         assert!(
-            explicit.contains("`--record` requested"),
-            "explicit case must say `--record` requested: {explicit}"
+            explicit.contains(
+                "would update parent submodule pointer to `abcd` but `--apply` was not \
+                 provided; no parent index mutation happened"
+            ),
+            "direct --record wording must be neutral: {explicit}"
         );
         assert!(
-            squash.contains("`--squash` implies recording"),
-            "squash case must mention squash implication: {squash}"
+            squash.contains(
+                "would update parent submodule pointer to `abcd` but `--apply` was not \
+                 provided; no parent index mutation happened"
+            ),
+            "squash-implied wording must match neutral prose: {squash}"
         );
         assert!(
-            !squash.contains("`--record` requested"),
-            "squash case must NOT say `--record` requested: {squash}"
+            !explicit.contains("--record requested"),
+            "direct --record wording must NOT say --record requested: {explicit}"
+        );
+        assert!(
+            !squash.contains("--record requested"),
+            "squash-implied wording must NOT say --record requested: {squash}"
+        );
+    }
+
+    #[test]
+    fn attune_diagnostic_dry_run_record_skipped_api_stability() {
+        let diagnostic = AttuneDiagnostic::DryRunRecordSkipped {
+            resolved_target: Some("abc123".to_string()),
+        };
+        let resolved_target = match diagnostic.clone() {
+            AttuneDiagnostic::DryRunRecordSkipped { resolved_target } => resolved_target,
+            AttuneDiagnostic::LedgerTableMissing { .. }
+            | AttuneDiagnostic::DryRunMutationsSkipped { .. } => {
+                panic!("expected DryRunRecordSkipped")
+            }
+        };
+        assert_eq!(resolved_target.as_deref(), Some("abc123"));
+        assert_eq!(
+            diagnostic.to_string(),
+            "[ATTUNE-003] would update parent submodule pointer to `abc123` but `--apply` \
+             was not provided; no parent index mutation happened — re-run with `--apply` \
+             to commit"
         );
     }
 
