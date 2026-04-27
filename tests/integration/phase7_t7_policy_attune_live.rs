@@ -696,6 +696,9 @@ async fn attune_diff_only_does_not_mutate(mut ctx: djogi::DjogiContext) {
         database_url: "postgres://localhost/main",
         profile: "development",
         mode: AttuneMode::DiffOnly,
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -751,6 +754,9 @@ async fn attune_record_inserts_row_without_running_sql(mut ctx: djogi::DjogiCont
         mode: AttuneMode::Record {
             reason: "operator asserted".to_string(),
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -808,6 +814,9 @@ async fn attune_squash_refuses_on_remote_db(mut ctx: djogi::DjogiContext) {
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -837,6 +846,9 @@ async fn attune_squash_refuses_on_production_profile(mut ctx: djogi::DjogiContex
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -872,6 +884,9 @@ async fn u2_attune_squash_refuses_when_dev_mode_off(mut ctx: djogi::DjogiContext
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: false, // the gate under test
         _guard: &guard,
     };
@@ -917,6 +932,9 @@ async fn u2_attune_squash_refuses_when_djogi_env_is_production(mut ctx: djogi::D
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -953,6 +971,9 @@ async fn u2_attune_squash_gate_order_localhost_before_others(mut ctx: djogi::Djo
         database_url: "postgres://prod.example.com/main", // gate 1
         profile: "production",                            // gate 2
         dev_mode: false,                                  // gate 3
+        target: None,
+        apply: true,
+        record: false,
         mode: AttuneMode::Squash {
             from: "V20260101000000__init".to_string(),
             publish: false,
@@ -995,6 +1016,9 @@ async fn attune_squash_refuses_on_missing_from_version(mut ctx: djogi::DjogiCont
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1089,6 +1113,9 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1190,6 +1217,9 @@ async fn attune_squash_refuses_remote_via_padded_equals(mut ctx: djogi::DjogiCon
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1224,6 +1254,9 @@ async fn attune_diff_only_does_not_bootstrap_ledger(mut ctx: djogi::DjogiContext
         database_url: "postgres://localhost/main",
         profile: "development",
         mode: AttuneMode::DiffOnly,
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1289,6 +1322,9 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
         mode: AttuneMode::Record {
             reason: "B-2 regression coverage".to_string(),
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1366,6 +1402,9 @@ async fn attune_squash_refuses_ambiguous_from_across_buckets(mut ctx: djogi::Djo
             publish: false,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1434,6 +1473,9 @@ async fn attune_squash_with_app_filter_only_collapses_target_bucket(mut ctx: djo
             publish: false,
             app: Some("users".to_string()),
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1669,6 +1711,9 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
             publish: true,
             app: None,
         },
+        target: None,
+        apply: true,
+        record: false,
         dev_mode: true,
         _guard: &guard,
     };
@@ -1806,4 +1851,448 @@ fn cross_database_fk_rejected_at_projection_integration_smoke() {
     assert!(msg.contains("cross-database"), "{msg}");
     assert!(msg.contains("invoices"), "{msg}");
     assert!(msg.contains("audit_rows"), "{msg}");
+}
+
+// ── Codex umbrella U-1: target / --apply / --record live coverage ────────
+
+/// Helper — initialise a parent git repo with a `migrations/` submodule
+/// (working repo) at the supplied workspace root. Returns the SHA of
+/// the migrations submodule's initial commit so tests can resolve
+/// targets against it.
+fn init_parent_with_migrations_submodule(work: &std::path::Path, db: &str) -> String {
+    use std::process::Command;
+    // Parent repo init.
+    let init_parent = Command::new("git")
+        .arg("init")
+        .arg("-b")
+        .arg("main")
+        .arg(work)
+        .output()
+        .expect("git init parent");
+    assert!(init_parent.status.success());
+    for (k, v) in [("user.email", "u1@kindnudge.app"), ("user.name", "U1")] {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(work)
+            .arg("config")
+            .arg(k)
+            .arg(v)
+            .output();
+    }
+
+    // Migrations working repo.
+    let migrations_root = work.join("migrations");
+    let init_migs = Command::new("git")
+        .arg("init")
+        .arg("-b")
+        .arg("main")
+        .arg(&migrations_root)
+        .output()
+        .expect("git init migrations");
+    assert!(init_migs.status.success());
+    for (k, v) in [("user.email", "u1@kindnudge.app"), ("user.name", "U1")] {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(&migrations_root)
+            .arg("config")
+            .arg(k)
+            .arg(v)
+            .output();
+    }
+
+    // Lay one SQL file under `<active_db>/_global_/` so attune has
+    // something to scan. Commit it so the migrations submodule has a
+    // resolvable HEAD SHA.
+    let bucket_dir = migrations_root.join(db).join("_global_");
+    std::fs::create_dir_all(&bucket_dir).unwrap();
+    std::fs::write(
+        bucket_dir.join("V20260101000000__init.sql"),
+        "CREATE TABLE u1_target_widget (id BIGINT PRIMARY KEY);",
+    )
+    .unwrap();
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("add")
+        .arg(".")
+        .output()
+        .expect("git add");
+    let commit = Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("commit")
+        .arg("-m")
+        .arg("init migration history")
+        .output()
+        .expect("git commit");
+    assert!(
+        commit.status.success(),
+        "migrations init commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+    let head = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .expect("rev-parse HEAD");
+    let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+
+    // Stage the submodule pointer in the parent so `git update-index
+    // --cacheinfo` has something to overwrite. We use `git add` of a
+    // gitlink to register the path.
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(work)
+        .arg("update-index")
+        .arg("--add")
+        .arg("--cacheinfo")
+        .arg(format!("160000,{sha},migrations"))
+        .output()
+        .expect("seed parent submodule pointer");
+
+    sha
+}
+
+/// `git_available()` — reuse the existing helper above. (No-op stub
+/// here so the test reads naturally; the real impl is at line ~1340.)
+fn u1_git_available() -> bool {
+    git_available()
+}
+
+/// Codex umbrella U-1: when `target` is supplied, attune resolves it
+/// against the local migrations submodule. The resolved SHA is
+/// surfaced in `report.resolved_target`.
+#[djogi::djogi_test]
+async fn u1_attune_resolves_local_target(mut ctx: djogi::DjogiContext) {
+    if !u1_git_available() {
+        eprintln!("[u1] skipping u1_attune_resolves_local_target: git not on PATH");
+        return;
+    }
+    let work = temp_workspace("u1_target_local");
+    let db = current_database(&mut ctx).await;
+    let initial_sha = init_parent_with_migrations_submodule(&work, &db);
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: Some(initial_sha.as_str()),
+        apply: false, // dry-run
+        record: false,
+        dev_mode: true,
+        mode: AttuneMode::DiffOnly,
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert_eq!(
+        report.resolved_target,
+        Some(initial_sha.clone()),
+        "resolved_target must echo the local SHA"
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella U-1: a target that does not exist locally AND has
+/// no remote configured surfaces `GitFetchFailed` after the local
+/// rev-parse fails. (`git fetch --all` exits 0 with no remotes, so we
+/// hit the retry path's `GitTargetResolveFailed` instead. We exercise
+/// THAT path here.)
+#[djogi::djogi_test]
+async fn u1_attune_missing_target_surfaces_typed_error(mut ctx: djogi::DjogiContext) {
+    if !u1_git_available() {
+        eprintln!("[u1] skipping u1_attune_missing_target_surfaces_typed_error: git not on PATH");
+        return;
+    }
+    let work = temp_workspace("u1_target_missing");
+    let db = current_database(&mut ctx).await;
+    let _initial = init_parent_with_migrations_submodule(&work, &db);
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: Some("nonexistent_branch_or_sha"),
+        apply: false,
+        record: false,
+        dev_mode: true,
+        mode: AttuneMode::DiffOnly,
+        _guard: &guard,
+    };
+    let err = attune(&mut ctx, req).await.expect_err("must error");
+    match err {
+        AttuneError::GitTargetResolveFailed { target, .. } => {
+            assert_eq!(target, "nonexistent_branch_or_sha");
+        }
+        // Acceptable alternative: if `git fetch --all` itself errors
+        // (e.g. CI sandbox has constrained git binary), we surface
+        // `GitFetchFailed`. Both flow to exit 1.
+        AttuneError::GitFetchFailed { .. } => {}
+        other => panic!("expected GitTargetResolveFailed or GitFetchFailed, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella U-1: `--apply false` must keep Record mode read-only.
+/// The `Unrecorded` entry is reported but no ledger row is inserted.
+#[djogi::djogi_test]
+async fn u1_attune_record_without_apply_is_dry_run(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u1_record_dry_run");
+    let db = current_database(&mut ctx).await;
+    // Lay an unrecorded SQL file.
+    let bucket_dir = work.join(format!("migrations/{db}/_global_"));
+    std::fs::create_dir_all(&bucket_dir).unwrap();
+    std::fs::write(
+        bucket_dir.join("V20260101000003__dry_run.sql"),
+        "CREATE TABLE u1_dry_table(id INT);",
+    )
+    .unwrap();
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: None,
+        apply: false, // the gate under test
+        record: false,
+        dev_mode: true,
+        mode: AttuneMode::Record {
+            reason: "u1 dry-run test".to_string(),
+        },
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert!(!report.mutated, "dry-run must not mutate");
+    // The DryRunMutationsSkipped diagnostic must be present.
+    assert!(
+        report.diagnostics.iter().any(|d| matches!(
+            d,
+            djogi::migrate::AttuneDiagnostic::DryRunMutationsSkipped { mode } if *mode == "Record"
+        )),
+        "must surface DryRunMutationsSkipped: {:?}",
+        report.diagnostics
+    );
+    // CRITICAL: ledger has NO row for the unrecorded version.
+    let count: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*)::bigint FROM djogi_schema_migrations WHERE version = $1",
+            &[&"V20260101000003__dry_run".to_string()],
+        )
+        .await
+        .expect("count");
+    assert_eq!(count, 0, "dry-run must NOT insert a ledger row");
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella U-1: `--apply true` mutates as before. Same
+/// fixture as the dry-run test; flipping the flag flips the outcome.
+#[djogi::djogi_test]
+async fn u1_attune_record_with_apply_mutates_ledger(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u1_record_apply");
+    let db = current_database(&mut ctx).await;
+    let bucket_dir = work.join(format!("migrations/{db}/_global_"));
+    std::fs::create_dir_all(&bucket_dir).unwrap();
+    std::fs::write(
+        bucket_dir.join("V20260101000004__apply.sql"),
+        "CREATE TABLE u1_apply_table(id INT);",
+    )
+    .unwrap();
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: None,
+        apply: true,
+        record: false,
+        dev_mode: true,
+        mode: AttuneMode::Record {
+            reason: "u1 apply test".to_string(),
+        },
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert!(report.mutated, "--apply must mutate");
+    let count: i64 = ctx
+        .raw_scalar(
+            "SELECT COUNT(*)::bigint FROM djogi_schema_migrations WHERE version = $1",
+            &[&"V20260101000004__apply".to_string()],
+        )
+        .await
+        .expect("count");
+    assert_eq!(count, 1, "--apply must insert a ledger row");
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella U-1: `--record --apply` with a resolved target
+/// updates the parent repo's recorded submodule pointer. This is the
+/// load-bearing test for the umbrella verdict — pre-fix `--record`
+/// only inserted ledger rows; the parent pointer was never written.
+#[djogi::djogi_test]
+async fn u1_attune_record_apply_updates_parent_submodule_pointer(mut ctx: djogi::DjogiContext) {
+    if !u1_git_available() {
+        eprintln!(
+            "[u1] skipping u1_attune_record_apply_updates_parent_submodule_pointer: \
+             git not on PATH"
+        );
+        return;
+    }
+    let work = temp_workspace("u1_record_pointer");
+    let db = current_database(&mut ctx).await;
+    let initial_sha = init_parent_with_migrations_submodule(&work, &db);
+
+    // Make a SECOND commit on the migrations submodule so we can
+    // attune the parent to the NEW SHA, distinct from the seeded
+    // pointer. Append a second SQL file then commit.
+    let bucket_dir = work.join(format!("migrations/{db}/_global_"));
+    std::fs::write(
+        bucket_dir.join("V20260201000000__second.sql"),
+        "CREATE TABLE u1_second(id INT);",
+    )
+    .unwrap();
+    let migrations_root = work.join("migrations");
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("add")
+        .arg(".")
+        .output()
+        .expect("git add second");
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("commit")
+        .arg("-m")
+        .arg("second migration")
+        .output()
+        .expect("git commit second");
+    let head_out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .expect("rev-parse HEAD second");
+    let new_sha = String::from_utf8_lossy(&head_out.stdout).trim().to_string();
+    assert_ne!(initial_sha, new_sha, "second commit must produce a new SHA");
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: Some(new_sha.as_str()),
+        apply: true,
+        record: true,
+        dev_mode: true,
+        mode: AttuneMode::DiffOnly,
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert_eq!(report.resolved_target, Some(new_sha.clone()));
+    assert!(
+        report.parent_pointer_updated,
+        "parent submodule pointer must be updated"
+    );
+
+    // Verify the parent's index entry now records new_sha at the
+    // `migrations` path (160000 mode). `git ls-files --stage` prints
+    // `<mode> <sha> <stage>\t<path>`.
+    let ls = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&work)
+        .arg("ls-files")
+        .arg("--stage")
+        .arg("migrations")
+        .output()
+        .expect("git ls-files");
+    let stdout = String::from_utf8_lossy(&ls.stdout).into_owned();
+    assert!(
+        stdout.contains(&new_sha),
+        "parent index must record new_sha {new_sha} at migrations path; got: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella U-1: `--record` without `--apply` is a dry-run for
+/// the parent pointer too. The DryRunRecordSkipped diagnostic
+/// surfaces; the parent's recorded pointer stays unchanged.
+#[djogi::djogi_test]
+async fn u1_attune_record_without_apply_does_not_touch_parent(mut ctx: djogi::DjogiContext) {
+    if !u1_git_available() {
+        eprintln!(
+            "[u1] skipping u1_attune_record_without_apply_does_not_touch_parent: \
+             git not on PATH"
+        );
+        return;
+    }
+    let work = temp_workspace("u1_record_no_apply");
+    let db = current_database(&mut ctx).await;
+    let initial_sha = init_parent_with_migrations_submodule(&work, &db);
+
+    // Capture the parent's recorded migrations pointer BEFORE the
+    // attune call.
+    let pre = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&work)
+        .arg("ls-files")
+        .arg("--stage")
+        .arg("migrations")
+        .output()
+        .expect("git ls-files pre");
+    let pre_stdout = String::from_utf8_lossy(&pre.stdout).into_owned();
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: Some(initial_sha.as_str()),
+        apply: false, // dry-run
+        record: true,
+        dev_mode: true,
+        mode: AttuneMode::DiffOnly,
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert!(
+        !report.parent_pointer_updated,
+        "dry-run must not write parent pointer"
+    );
+    assert!(
+        report.diagnostics.iter().any(|d| matches!(
+            d,
+            djogi::migrate::AttuneDiagnostic::DryRunRecordSkipped { resolved_target } if resolved_target.as_deref() == Some(initial_sha.as_str())
+        )),
+        "must surface DryRunRecordSkipped: {:?}",
+        report.diagnostics
+    );
+
+    // Parent's recorded pointer is byte-identical to the pre-attune
+    // state.
+    let post = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&work)
+        .arg("ls-files")
+        .arg("--stage")
+        .arg("migrations")
+        .output()
+        .expect("git ls-files post");
+    let post_stdout = String::from_utf8_lossy(&post.stdout).into_owned();
+    assert_eq!(
+        pre_stdout, post_stdout,
+        "parent index entry for `migrations` must be unchanged after a dry-run"
+    );
+    let _ = std::fs::remove_dir_all(&work);
 }

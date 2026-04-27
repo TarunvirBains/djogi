@@ -158,22 +158,56 @@ enum MigrationsCommand {
     },
     /// Reconcile local migration history with the ledger. Default
     /// mode is a read-only diff between the on-disk SQL files and
-    /// the ledger. `--record` inserts ledger rows for unrecorded SQL
-    /// files. `--squash --from <ver>` collapses local history into a
-    /// single migration (localhost + dev profile only).
+    /// the ledger. Per Codex umbrella U-1, attune is read-only by
+    /// default — pass `--apply` to commit ledger inserts / squash /
+    /// parent-pointer writes. `--record` updates the parent repo's
+    /// recorded submodule pointer to the resolved Git target after
+    /// successful attunement. `--squash --from <ver>` collapses local
+    /// history into a single migration (localhost + dev_mode + dev
+    /// profile + DJOGI_ENV gates per umbrella U-2).
+    ///
+    /// Exit codes: 0 on success, 1 on runtime error (config / network
+    /// / SQL / git), 2 on refusal (gate failure or arg validation).
     Attune {
-        /// Insert ledger rows for SQL files present on disk but
-        /// absent from the ledger. Records the operator-supplied
-        /// reason in `partial_apply_note`. Does NOT execute SQL.
-        #[arg(long, default_value_t = false, conflicts_with = "squash")]
+        /// Optional Git target to attune the local migration history
+        /// to — a local or remote commit / tag / branch (Codex
+        /// umbrella U-1). When omitted, attune reconciles against the
+        /// current on-disk state. Resolution: tries local first, then
+        /// `git fetch --all` + retries on failure.
+        target: Option<String>,
+        /// Mutate the database / parent index. Without `--apply`,
+        /// attune is a dry-run — it scans, prints the diff, and
+        /// exits without inserting / deleting ledger rows or updating
+        /// the parent submodule pointer (Codex umbrella U-1 per
+        /// `docs/spec/configuration.md` §14: "does not mutate the
+        /// database unless `--apply` is explicitly passed").
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// In Record mode (`--record-ledger`), insert ledger rows for
+        /// SQL files present on disk but absent from the ledger. With
+        /// a resolved `<target>` argument AND `--apply`, also update
+        /// the parent repo's recorded submodule pointer to the target
+        /// SHA (Codex umbrella U-1).
+        #[arg(long, default_value_t = false)]
         record: bool,
-        /// When `--record` is set, the rationale recorded on every
-        /// inserted ledger row's `partial_apply_note`.
+        /// Activate Record mode — insert ledger rows for SQL files
+        /// present on disk but absent from the ledger. Distinct from
+        /// `--record` (which controls the parent submodule pointer).
+        /// Records the operator-supplied reason in `partial_apply_note`.
+        /// Does NOT execute SQL.
+        #[arg(
+            long = "record-ledger",
+            default_value_t = false,
+            conflicts_with = "squash"
+        )]
+        record_ledger: bool,
+        /// When `--record-ledger` is set, the rationale recorded on
+        /// every inserted ledger row's `partial_apply_note`.
         #[arg(long, default_value = "operator asserted out-of-band apply")]
         record_reason: String,
         /// Coalesce every committed migration from `--from` to HEAD
         /// into a single squashed migration. HISTORY REWRITE — gated
-        /// on localhost + dev profile.
+        /// on localhost + dev profile + dev_mode + DJOGI_ENV.
         #[arg(long, default_value_t = false)]
         squash: bool,
         /// Inclusive starting version for `--squash` (e.g.
@@ -230,7 +264,10 @@ fn main() -> ExitCode {
             } => migrations::compose_cmd(&name, allow_destructive, force_overwrite, workspace),
             MigrationsCommand::Status { workspace } => migrations::status_cmd(workspace),
             MigrationsCommand::Attune {
+                target,
+                apply,
                 record,
+                record_ledger,
                 record_reason,
                 squash,
                 from,
@@ -238,7 +275,10 @@ fn main() -> ExitCode {
                 app,
                 workspace,
             } => migrations::attune_cmd(
+                target.as_deref(),
+                apply,
                 record,
+                record_ledger,
                 &record_reason,
                 squash,
                 from.as_deref(),

@@ -210,12 +210,27 @@ pub struct AttuneReport {
     /// `true` when the squashed history was pushed to the remote.
     /// Only set in `Squash { publish: true }` after a successful push.
     pub published: bool,
+    /// Resolved Git SHA of the operator-supplied target (Codex
+    /// umbrella U-1). `Some(sha)` when `target` was supplied AND
+    /// resolution succeeded; `None` otherwise. Operators consume this
+    /// to confirm the rev-parse landed on the SHA they expected.
+    pub resolved_target: Option<String>,
+    /// `true` when the parent repo's recorded submodule pointer was
+    /// updated to `resolved_target` (Codex umbrella U-1). Only set
+    /// when both `record` AND `apply` were `true` in the request, AND
+    /// the target resolved successfully, AND the parent index update
+    /// succeeded.
+    pub parent_pointer_updated: bool,
     /// Structured diagnostics surfaced alongside the diff entries.
     /// Today this carries [`AttuneDiagnostic::LedgerTableMissing`] (B-3)
     /// when DiffOnly runs on a fresh database — the report is still
     /// produced, but the operator sees an actionable note that they
     /// must run `apply` or `attune --record` to bootstrap the ledger
-    /// before subsequent diffs are meaningful.
+    /// before subsequent diffs are meaningful. Per Codex umbrella
+    /// U-1 the report also carries
+    /// [`AttuneDiagnostic::DryRunMutationsSkipped`] when a Record /
+    /// Squash mode was invoked WITHOUT `--apply`: the diff is reported
+    /// but no DB / disk mutation happened.
     pub diagnostics: Vec<AttuneDiagnostic>,
 }
 
@@ -231,6 +246,19 @@ pub enum AttuneDiagnostic {
     /// `current_database()` so a multi-database workspace's diagnostic
     /// is unambiguous.
     LedgerTableMissing { database: String },
+    /// A Record or Squash mode was invoked without `--apply` (Codex
+    /// umbrella U-1). The diff was computed and reported but no DB /
+    /// disk mutation happened. The operator re-runs with `--apply` to
+    /// commit. The `mode` field surfaces the mode the operator asked
+    /// for so the message is unambiguous in mixed-mode runs.
+    DryRunMutationsSkipped { mode: &'static str },
+    /// `--record` was passed without `--apply` (Codex umbrella U-1).
+    /// The would-be parent submodule pointer update is described but
+    /// not actually written. Distinct from
+    /// `DryRunMutationsSkipped` so the operator sees both messages
+    /// when they pass `--record` without `--apply` on a Record /
+    /// Squash invocation.
+    DryRunRecordSkipped { resolved_target: Option<String> },
 }
 
 impl AttuneDiagnostic {
@@ -239,6 +267,8 @@ impl AttuneDiagnostic {
     pub fn code(&self) -> &'static str {
         match self {
             AttuneDiagnostic::LedgerTableMissing { .. } => "ATTUNE-001",
+            AttuneDiagnostic::DryRunMutationsSkipped { .. } => "ATTUNE-002",
+            AttuneDiagnostic::DryRunRecordSkipped { .. } => "ATTUNE-003",
         }
     }
 }
@@ -252,6 +282,27 @@ impl std::fmt::Display for AttuneDiagnostic {
                  `{database}`; ledger not bootstrapped — run `apply` or `attune --record` first",
                 self.code(),
             ),
+            AttuneDiagnostic::DryRunMutationsSkipped { mode } => write!(
+                f,
+                "[{}] {mode} mode requested without `--apply`; diff reported, \
+                 no database or disk mutation happened — re-run with `--apply` to commit",
+                self.code(),
+            ),
+            AttuneDiagnostic::DryRunRecordSkipped { resolved_target } => match resolved_target {
+                Some(sha) => write!(
+                    f,
+                    "[{}] `--record` requested without `--apply`; would update parent \
+                     submodule pointer to `{sha}`, but no parent index mutation happened \
+                     — re-run with `--apply` to commit",
+                    self.code(),
+                ),
+                None => write!(
+                    f,
+                    "[{}] `--record` requested without `--apply` and no target was \
+                     resolved; nothing to record",
+                    self.code(),
+                ),
+            },
         }
     }
 }
@@ -285,6 +336,34 @@ pub enum AttuneError {
     /// `git push` failed during `--publish`. Carries the captured
     /// stderr so the operator can diagnose without re-running.
     GitPublishFailed {
+        stderr: String,
+        status_code: Option<i32>,
+    },
+    /// Target resolution failed (Codex umbrella U-1). Either the local
+    /// `git rev-parse <target>` failed AND the remote fetch + retry
+    /// also failed, or the migrations submodule has no remote configured
+    /// and the target is not locally available.
+    GitTargetResolveFailed {
+        target: String,
+        stderr: String,
+        status_code: Option<i32>,
+    },
+    /// `git fetch` failed during target resolution (Codex umbrella
+    /// U-1). The local resolution failed; the fetch attempt also
+    /// failed (network, auth, missing remote, …). The captured stderr
+    /// names the precise failure.
+    GitFetchFailed {
+        stderr: String,
+        status_code: Option<i32>,
+    },
+    /// Updating the parent repo's recorded submodule pointer failed
+    /// (Codex umbrella U-1). The new SHA was resolved successfully
+    /// but `git update-index --cacheinfo` against the parent repo
+    /// returned non-zero. Most often: the parent has uncommitted
+    /// staged changes to the submodule path that conflict with the
+    /// intended pointer write.
+    GitUpdateSubmodulePointerFailed {
+        new_sha: String,
         stderr: String,
         status_code: Option<i32>,
     },
@@ -376,6 +455,52 @@ impl std::fmt::Display for AttuneError {
                     "attune --publish: git push terminated by signal: {stderr}"
                 ),
             },
+            AttuneError::GitTargetResolveFailed {
+                target,
+                stderr,
+                status_code,
+            } => match status_code {
+                Some(c) => write!(
+                    f,
+                    "attune target `{target}`: git rev-parse failed locally and after \
+                     a remote fetch retry (status {c}): {stderr}; either the target \
+                     does not exist on any configured remote, or `migrations/` has no \
+                     remote at all"
+                ),
+                None => write!(
+                    f,
+                    "attune target `{target}`: git rev-parse terminated by signal: {stderr}"
+                ),
+            },
+            AttuneError::GitFetchFailed {
+                stderr,
+                status_code,
+            } => match status_code {
+                Some(c) => write!(
+                    f,
+                    "attune target resolution: git fetch failed (status {c}): {stderr}"
+                ),
+                None => write!(
+                    f,
+                    "attune target resolution: git fetch terminated by signal: {stderr}"
+                ),
+            },
+            AttuneError::GitUpdateSubmodulePointerFailed {
+                new_sha,
+                stderr,
+                status_code,
+            } => match status_code {
+                Some(c) => write!(
+                    f,
+                    "attune --record: failed to update parent repo's submodule \
+                     pointer to `{new_sha}` (status {c}): {stderr}"
+                ),
+                None => write!(
+                    f,
+                    "attune --record: parent submodule pointer update terminated \
+                     by signal: {stderr}"
+                ),
+            },
         }
     }
 }
@@ -434,6 +559,14 @@ impl std::error::Error for AttuneError {
             AttuneError::SqlReadFailed { source, .. } => Some(source),
             AttuneError::SqlWriteFailed { source, .. } => Some(source),
             AttuneError::SqlDeleteFailed { source, .. } => Some(source),
+            // Codex umbrella U-1: the new git-related variants do not
+            // wrap a `std::io::Error` we can return as a source — they
+            // wrap a captured stderr string from the child git
+            // process. The Display impl is the operator-actionable
+            // surface.
+            AttuneError::GitTargetResolveFailed { .. }
+            | AttuneError::GitFetchFailed { .. }
+            | AttuneError::GitUpdateSubmodulePointerFailed { .. } => None,
             _ => None,
         }
     }
@@ -456,6 +589,40 @@ pub struct AttuneRequest<'a> {
     /// spec but not previously enforced). Read only for
     /// [`AttuneMode::Squash`]; ignored by `DiffOnly` and `Record`.
     pub dev_mode: bool,
+    /// Optional Git target to attune the local migration history to —
+    /// a local or remote commit / tag / branch (Codex umbrella U-1
+    /// per `docs/spec/configuration.md` §14). When `None`, attune
+    /// reconciles against the current on-disk state.
+    ///
+    /// **Resolution order.** The target string is resolved first
+    /// against the local migrations submodule (`git rev-parse <target>`).
+    /// If that fails, attune fetches every configured remote
+    /// (`git fetch --all`) and retries the resolution. A target that
+    /// resolves locally never triggers a fetch — operators who deliberately
+    /// kept their submodule offline can still attune to a known-local
+    /// SHA.
+    ///
+    /// **No regex.** The target string is passed verbatim to
+    /// `git rev-parse`; Djogi never parses it.
+    pub target: Option<&'a str>,
+    /// `true` when the operator passed `--apply`. Without `--apply`,
+    /// attune is read-only — it scans, prints the diff, and exits
+    /// without inserting / deleting ledger rows or updating the
+    /// parent repo's submodule pointer (Codex umbrella U-1 per
+    /// `docs/spec/configuration.md` §14: "does not mutate the database
+    /// unless `--apply` is explicitly passed"). The dry-run path is
+    /// the operator-friendly default — review the proposed mutation
+    /// before committing to it.
+    pub apply: bool,
+    /// `true` when the operator passed `--record`. After a successful
+    /// attunement, attune updates the parent repo's recorded
+    /// submodule pointer to the resolved target SHA (Codex umbrella
+    /// U-1 per `docs/spec/configuration.md` §14). `--record` is
+    /// orthogonal to `--apply`: `--record` without `--apply` is a
+    /// dry-run that prints the would-be parent pointer update without
+    /// touching the parent index. Without `--apply`, the parent
+    /// pointer is NEVER mutated regardless of `--record`.
+    pub record: bool,
     /// Mode selector — see [`AttuneMode`].
     pub mode: AttuneMode,
     /// Witness-typed proof that the workspace lock is held. Attune
@@ -626,24 +793,67 @@ pub async fn attune(
         });
     }
 
+    // Codex umbrella U-1: resolve the operator-supplied target (if any)
+    // before any DB / disk mutation. Resolution is read-only — local
+    // first, fetch + retry only when the local rev-parse failed. A
+    // resolution failure surfaces as a typed error BEFORE any mutation
+    // path runs so the operator-facing message names the missing
+    // target instead of a partial side effect.
+    let resolved_target = match req.target {
+        Some(t) if !t.is_empty() => Some(resolve_git_target(req.workspace_root, t)?),
+        _ => None,
+    };
+
     let mut report = AttuneReport {
         entries: Vec::new(),
         mutated: false,
         squashed_to: None,
         published: false,
+        resolved_target: resolved_target.clone(),
+        parent_pointer_updated: false,
         diagnostics,
     };
+
+    // Codex umbrella U-1: dry-run gate. Mutations only happen when
+    // `--apply` is set. Without it, Record / Squash skip every
+    // ledger / disk mutation and the diff is the only output.
+    let apply = req.apply;
 
     match &req.mode {
         AttuneMode::DiffOnly => {
             entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
             report.entries = entries;
+            // Codex umbrella U-1 (--record without --apply on
+            // DiffOnly): the parent submodule pointer would be a
+            // dry-run note. Surface it as a structured diagnostic so
+            // the operator knows nothing was written.
+            if req.record && !apply && resolved_target.is_some() {
+                report
+                    .diagnostics
+                    .push(AttuneDiagnostic::DryRunRecordSkipped {
+                        resolved_target: resolved_target.clone(),
+                    });
+            }
+            // When `--record` AND `--apply` are both set on a
+            // DiffOnly run with a resolved target, write the parent
+            // submodule pointer. DiffOnly itself never mutates the DB,
+            // but `--record` is orthogonal — it touches the parent
+            // repo's index, not the connected database.
+            if req.record
+                && apply
+                && let Some(sha) = resolved_target.as_ref()
+            {
+                update_parent_submodule_pointer(req.workspace_root, sha)?;
+                report.parent_pointer_updated = true;
+            }
             Ok(report)
         }
         AttuneMode::Record { reason } => {
             // Reuse the diff entries but split: every Unrecorded gets
             // an INSERT + flips to Recorded; Orphaned passes through
-            // unchanged.
+            // unchanged. Per Codex umbrella U-1 the INSERT only fires
+            // when `--apply` is set; without it we surface the would-be
+            // entries without writing.
             let mut out: Vec<AttuneEntry> = Vec::new();
             for entry in entries {
                 match entry.kind {
@@ -653,25 +863,88 @@ pub async fn attune(
                             .and_then(|m| m.get(&entry.version))
                             .cloned();
                         if let Some(path) = path {
-                            insert_recorded_row(ctx, &entry.bucket, &entry.version, &path, reason)
+                            if apply {
+                                insert_recorded_row(
+                                    ctx,
+                                    &entry.bucket,
+                                    &entry.version,
+                                    &path,
+                                    reason,
+                                )
                                 .await?;
-                            report.mutated = true;
+                                report.mutated = true;
+                                out.push(AttuneEntry {
+                                    kind: AttuneEntryKind::Recorded,
+                                    ..entry
+                                });
+                                continue;
+                            }
+                            // Dry-run: surface the entry as still
+                            // Unrecorded so the operator sees what
+                            // would change. Annotate later via the
+                            // DryRunMutationsSkipped diagnostic.
                             out.push(AttuneEntry {
-                                kind: AttuneEntryKind::Recorded,
+                                kind: AttuneEntryKind::Unrecorded,
                                 ..entry
                             });
-                        } else {
-                            out.push(entry);
+                            continue;
                         }
+                        out.push(entry);
                     }
                     _ => out.push(entry),
                 }
             }
             out.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
             report.entries = out;
+
+            // Diagnostics for the dry-run path. If there were no
+            // Unrecorded entries to record, we still surface
+            // DryRunMutationsSkipped because the operator's intent
+            // was to mutate.
+            if !apply {
+                report
+                    .diagnostics
+                    .push(AttuneDiagnostic::DryRunMutationsSkipped { mode: "Record" });
+                if req.record && resolved_target.is_some() {
+                    report
+                        .diagnostics
+                        .push(AttuneDiagnostic::DryRunRecordSkipped {
+                            resolved_target: resolved_target.clone(),
+                        });
+                }
+            } else if req.record {
+                // `--apply --record` with a resolved target writes the
+                // parent submodule pointer AFTER the ledger inserts
+                // succeeded. Without a resolved target we have nothing
+                // to record (the operator can still re-run with
+                // `--target <ref>` to populate it).
+                if let Some(sha) = &resolved_target {
+                    update_parent_submodule_pointer(req.workspace_root, sha)?;
+                    report.parent_pointer_updated = true;
+                }
+            }
             Ok(report)
         }
         AttuneMode::Squash { from, publish, app } => {
+            // Squash mutates BOTH the ledger and on-disk files. Per
+            // Codex umbrella U-1, mutation only happens when --apply
+            // is set; without it we report the would-be squash and
+            // exit clean.
+            if !apply {
+                entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+                report.entries = entries;
+                report
+                    .diagnostics
+                    .push(AttuneDiagnostic::DryRunMutationsSkipped { mode: "Squash" });
+                if req.record && resolved_target.is_some() {
+                    report
+                        .diagnostics
+                        .push(AttuneDiagnostic::DryRunRecordSkipped {
+                            resolved_target: resolved_target.clone(),
+                        });
+                }
+                return Ok(report);
+            }
             run_squash(
                 ctx,
                 req.workspace_root,
@@ -683,6 +956,14 @@ pub async fn attune(
                 entries,
             )
             .await?;
+            // After a successful squash, --record updates the parent
+            // submodule pointer if a target was resolved.
+            if req.record
+                && let Some(sha) = &resolved_target
+            {
+                update_parent_submodule_pointer(req.workspace_root, sha)?;
+                report.parent_pointer_updated = true;
+            }
             Ok(report)
         }
     }
@@ -1311,6 +1592,133 @@ fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), A
     Ok(())
 }
 
+// ── Codex umbrella U-1: target resolution + parent pointer write ─────────
+
+/// Resolve a Git target string against the migrations submodule.
+///
+/// Tries `git -C <migrations_root> rev-parse <target>^{commit}` first;
+/// on failure falls back to `git fetch --all` then retries the
+/// rev-parse. The `^{commit}` peel ensures the result is a concrete
+/// commit SHA — operators who pass tag names get the SHA the tag
+/// points at, not the tag object's SHA.
+///
+/// Returns the lowercase 40-char SHA on success.
+///
+/// **No regex.** The target string is passed verbatim to git; we
+/// never parse it. The captured stdout is trimmed only.
+fn resolve_git_target(workspace_root: &Path, target: &str) -> Result<String, AttuneError> {
+    let migrations_root = super::target::migrations_root(workspace_root);
+
+    // Local rev-parse first. The `^{commit}` peel is critical —
+    // `git rev-parse v1.2.3` on a tag returns the tag-object SHA, but
+    // `git rev-parse v1.2.3^{commit}` returns the underlying commit
+    // SHA, which is what the parent submodule pointer needs.
+    let local_arg = format!("{target}^{{commit}}");
+    let local = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg(&local_arg)
+        .output()
+        .map_err(|e| AttuneError::GitTargetResolveFailed {
+            target: target.to_string(),
+            stderr: format!("failed to spawn `git rev-parse`: {e}"),
+            status_code: None,
+        })?;
+    if local.status.success() {
+        return Ok(String::from_utf8_lossy(&local.stdout).trim().to_string());
+    }
+
+    // Local resolution failed. Try a remote fetch, then retry.
+    let fetch = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("fetch")
+        .arg("--all")
+        .arg("--tags")
+        .output()
+        .map_err(|e| AttuneError::GitFetchFailed {
+            stderr: format!("failed to spawn `git fetch`: {e}"),
+            status_code: None,
+        })?;
+    if !fetch.status.success() {
+        // Distinguish "no remote configured" (an arguably-clean state
+        // — the operator may want a local-only attune) from "fetch
+        // tried and failed" (network / auth / ref-spec problem).
+        // `git fetch --all` exits 0 when no remotes exist, so any
+        // non-zero status here is a real fetch failure.
+        return Err(AttuneError::GitFetchFailed {
+            stderr: String::from_utf8_lossy(&fetch.stderr).into_owned(),
+            status_code: fetch.status.code(),
+        });
+    }
+
+    // Retry the local rev-parse against the now-updated refs.
+    let retry = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg(&local_arg)
+        .output()
+        .map_err(|e| AttuneError::GitTargetResolveFailed {
+            target: target.to_string(),
+            stderr: format!("failed to spawn `git rev-parse` (retry): {e}"),
+            status_code: None,
+        })?;
+    if retry.status.success() {
+        return Ok(String::from_utf8_lossy(&retry.stdout).trim().to_string());
+    }
+    Err(AttuneError::GitTargetResolveFailed {
+        target: target.to_string(),
+        stderr: String::from_utf8_lossy(&retry.stderr).into_owned(),
+        status_code: retry.status.code(),
+    })
+}
+
+/// Update the parent repo's recorded submodule pointer to `new_sha`.
+///
+/// Walks `git update-index --cacheinfo 160000,<sha>,<path>` against
+/// the parent repo (the workspace root) so the next parent-side
+/// `git diff --staged` shows the submodule pointer move. The 160000
+/// mode is git's gitlink-mode marker for submodules; the path is
+/// `migrations` (the submodule directory name on disk).
+///
+/// **No regex.** The new SHA is interpolated as-is into the cacheinfo
+/// argument; nothing else is parsed.
+///
+/// **Failure modes.** The most common is the parent repo having
+/// uncommitted staged changes to the submodule path that conflict
+/// with the intended pointer write. The captured stderr surfaces the
+/// precise reason verbatim.
+fn update_parent_submodule_pointer(
+    workspace_root: &Path,
+    new_sha: &str,
+) -> Result<(), AttuneError> {
+    let cacheinfo = format!("160000,{new_sha},migrations");
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("update-index")
+        .arg("--cacheinfo")
+        .arg(&cacheinfo)
+        .output()
+        .map_err(|e| AttuneError::GitUpdateSubmodulePointerFailed {
+            new_sha: new_sha.to_string(),
+            stderr: format!("failed to spawn `git update-index`: {e}"),
+            status_code: None,
+        })?;
+    if !out.status.success() {
+        return Err(AttuneError::GitUpdateSubmodulePointerFailed {
+            new_sha: new_sha.to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            status_code: out.status.code(),
+        });
+    }
+    Ok(())
+}
+
 // ── Sort key ──────────────────────────────────────────────────────────────
 
 /// Stable sort key for [`AttuneEntry`]. The CLI prints entries in
@@ -1497,6 +1905,84 @@ mod tests {
         let s = format!("{r}");
         assert!(s.contains("DJOGI_ENV"), "must name the env-var: {s}");
         assert!(s.contains("production"), "must echo the value: {s}");
+    }
+
+    // ── Codex umbrella U-1: dry-run diagnostics + git target shape ──────
+
+    /// `DryRunMutationsSkipped` and `DryRunRecordSkipped` carry codes
+    /// that are stable across runs so operator-facing tooling can
+    /// branch on them without parsing the message body.
+    #[test]
+    fn u1_dry_run_diagnostic_codes_are_stable() {
+        assert_eq!(
+            AttuneDiagnostic::DryRunMutationsSkipped { mode: "Record" }.code(),
+            "ATTUNE-002"
+        );
+        assert_eq!(
+            AttuneDiagnostic::DryRunRecordSkipped {
+                resolved_target: None
+            }
+            .code(),
+            "ATTUNE-003"
+        );
+    }
+
+    /// `DryRunMutationsSkipped` mentions the mode + the `--apply`
+    /// remediation; `DryRunRecordSkipped` mentions the resolved SHA
+    /// when present and falls back to a sensible message when absent.
+    #[test]
+    fn u1_dry_run_diagnostic_messages_are_actionable() {
+        let d = AttuneDiagnostic::DryRunMutationsSkipped { mode: "Squash" };
+        let s = d.to_string();
+        assert!(s.contains("Squash"), "must name mode: {s}");
+        assert!(s.contains("--apply"), "must hint at remediation: {s}");
+
+        let d_with = AttuneDiagnostic::DryRunRecordSkipped {
+            resolved_target: Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string()),
+        };
+        let s_with = d_with.to_string();
+        assert!(
+            s_with.contains("deadbeef"),
+            "must echo resolved SHA: {s_with}"
+        );
+        assert!(s_with.contains("--apply"));
+
+        let d_none = AttuneDiagnostic::DryRunRecordSkipped {
+            resolved_target: None,
+        };
+        let s_none = d_none.to_string();
+        assert!(
+            s_none.contains("nothing to record"),
+            "must surface no-op explainer: {s_none}"
+        );
+    }
+
+    /// New `AttuneError` variants render operator-actionable messages
+    /// naming the failed step + status code (when available).
+    #[test]
+    fn u1_git_target_resolve_failed_message_names_target() {
+        let e = AttuneError::GitTargetResolveFailed {
+            target: "feature/branch".to_string(),
+            stderr: "fatal: ambiguous argument".to_string(),
+            status_code: Some(128),
+        };
+        let s = e.to_string();
+        assert!(s.contains("feature/branch"));
+        assert!(s.contains("128"));
+        assert!(s.contains("rev-parse"));
+    }
+
+    #[test]
+    fn u1_git_update_submodule_pointer_failed_message_names_sha() {
+        let e = AttuneError::GitUpdateSubmodulePointerFailed {
+            new_sha: "deadbeef".to_string(),
+            stderr: "fatal: refusing to overwrite".to_string(),
+            status_code: Some(128),
+        };
+        let s = e.to_string();
+        assert!(s.contains("deadbeef"));
+        assert!(s.contains("--record"));
+        assert!(s.contains("submodule pointer"));
     }
 
     /// `djogi_env_is_production` returns `Some(value)` only for a

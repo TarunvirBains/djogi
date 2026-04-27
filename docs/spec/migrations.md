@@ -280,9 +280,10 @@ djogi migrations compose
 djogi migrations status
 djogi migrations attune
 djogi migrations attune <target>
-djogi migrations attune <target> --record
-djogi migrations attune <target> --verify
-djogi migrations attune --squash
+djogi migrations attune <target> --apply
+djogi migrations attune <target> --apply --record
+djogi migrations attune --record-ledger --apply
+djogi migrations attune --squash --from V<ts> --apply
 djogi db reset --yes
 djogi db seed
 djogi db seed --database crud_log

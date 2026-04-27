@@ -90,11 +90,13 @@ djogi migrations compose --allow-destructive
 djogi migrations status                # show file/ledger/snapshot state
 
 # Migration-history state management — registered today (T7)
-djogi migrations attune                # attune local migration-history files to the repo-default target
-djogi migrations attune                # diff-only ledger / disk reconciliation
-djogi migrations attune --record       # insert ledger rows for unrecorded SQL files
-djogi migrations attune --squash --from V<ts>   # dev-only local squash of migration history
-djogi migrations attune --squash --from V<ts> --publish   # squash and push the rewritten submodule
+djogi migrations attune                                    # diff-only ledger / disk reconciliation (read-only)
+djogi migrations attune <target>                           # resolve target (Git commit / tag / branch); diff-only without --apply
+djogi migrations attune <target> --apply                   # diff + commit ledger / disk mutations
+djogi migrations attune <target> --apply --record          # also update parent repo's recorded submodule pointer
+djogi migrations attune --record-ledger --apply            # insert ledger rows for unrecorded SQL files
+djogi migrations attune --squash --from V<ts> --apply      # dev-only local squash of migration history
+djogi migrations attune --squash --from V<ts> --apply --publish   # squash and push the rewritten submodule
 
 # Migrations — Phase-7-deferred (library APIs ship today; CLI dispatch lands later)
 # The library entry points (`apply_plan`, `rollback_plan`, `verify`, `repair_*`,

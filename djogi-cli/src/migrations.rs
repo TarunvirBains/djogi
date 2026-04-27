@@ -342,17 +342,38 @@ async fn build_status_context(url: &str) -> Result<djogi::context::DjogiContext,
 ///
 /// Mode selection (per CLI flags):
 ///
-/// | `--record` | `--squash` | resolved mode |
+/// | `--record-ledger` | `--squash` | resolved mode |
 /// |-----------|-----------|---------------|
 /// | false | false | [`AttuneMode::DiffOnly`] (read-only diff) |
 /// | true  | false | [`AttuneMode::Record`] |
-/// | false | true  | [`AttuneMode::Squash { from, publish }`] |
+/// | false | true  | [`AttuneMode::Squash { from, publish, app }`] |
 /// | true  | true  | rejected by clap (`conflicts_with`) |
+///
+/// Per Codex umbrella U-1:
+/// - `target` is an optional positional Git target (commit / tag /
+///   branch). When supplied, attune resolves it (local first, fetch
+///   on miss) before any DB / disk mutation.
+/// - `apply` gates DB / disk mutation. Without it, every mode is a
+///   dry-run.
+/// - `record` controls the parent repo's recorded submodule pointer
+///   (separate from `record_ledger`, which controls the
+///   `djogi_schema_migrations` ledger inserts).
 ///
 /// `--squash` requires `--from <ver>`; an absent `from` while
 /// `--squash` is set surfaces as a CLI error before any work happens.
+// Codex umbrella U-1: the CLI dispatch carries 11 inputs because the
+// attune surface is the broadest in the migrations CLI — target
+// resolution + dry-run + record-ledger + record-pointer + squash +
+// publish all live on the same command. Folding them into a struct
+// would push the same fields onto the caller; the dispatch above
+// already passes them positionally and a struct refactor would be
+// churn for no clarity gain.
+#[allow(clippy::too_many_arguments)]
 pub fn attune_cmd(
+    target: Option<&str>,
+    apply: bool,
     record: bool,
+    record_ledger: bool,
     record_reason: &str,
     squash: bool,
     from: Option<&str>,
@@ -361,7 +382,7 @@ pub fn attune_cmd(
     workspace: Option<PathBuf>,
 ) -> ExitCode {
     let workspace = resolve_workspace(workspace);
-    let mode = match (record, squash) {
+    let mode = match (record_ledger, squash) {
         (false, false) => AttuneMode::DiffOnly,
         (true, false) => AttuneMode::Record {
             reason: record_reason.to_string(),
@@ -383,7 +404,9 @@ pub fn attune_cmd(
         (true, true) => {
             // Already rejected by clap's `conflicts_with`; this branch
             // is defensive in case the flag is added programmatically.
-            eprintln!("djogi migrations attune: --record and --squash are mutually exclusive");
+            eprintln!(
+                "djogi migrations attune: --record-ledger and --squash are mutually exclusive"
+            );
             return ExitCode::from(2);
         }
     };
@@ -399,13 +422,21 @@ pub fn attune_cmd(
         }
     };
 
-    let exit = runtime.block_on(async { run_attune(&workspace, mode).await });
+    let target_owned = target.map(str::to_string);
+    let exit =
+        runtime.block_on(async { run_attune(&workspace, mode, target_owned, apply, record).await });
     ExitCode::from(exit as u8)
 }
 
 /// Async body of [`attune_cmd`]. Loads config, builds the context,
 /// acquires the workspace lock, invokes the library entry point.
-async fn run_attune(workspace: &Path, mode: AttuneMode) -> i32 {
+async fn run_attune(
+    workspace: &Path,
+    mode: AttuneMode,
+    target: Option<String>,
+    apply: bool,
+    record: bool,
+) -> i32 {
     use djogi::config::DjogiConfig;
 
     let config = match DjogiConfig::load_from_workspace(workspace) {
@@ -444,6 +475,13 @@ async fn run_attune(workspace: &Path, mode: AttuneMode) -> i32 {
         // squash gate. Read-only modes (`DiffOnly`, `Record`) ignore
         // it; `Squash` mode refuses unless this is `true`.
         dev_mode: config.database.dev_mode,
+        // Codex umbrella U-1: the operator-supplied target + the
+        // `--apply` / `--record` gates flow through to the library
+        // entry point. The library owns the resolution + parent-pointer
+        // update; the CLI is just plumbing.
+        target: target.as_deref(),
+        apply,
+        record,
         mode,
         _guard: &guard,
     };
@@ -473,11 +511,17 @@ async fn run_attune(workspace: &Path, mode: AttuneMode) -> i32 {
             for diag in &report.diagnostics {
                 println!("  diagnostic: {diag}");
             }
+            if let Some(sha) = &report.resolved_target {
+                println!("resolved target: {sha}");
+            }
             if let Some(squashed) = &report.squashed_to {
                 println!("squashed to: {squashed}");
             }
             if report.published {
                 println!("published to remote");
+            }
+            if report.parent_pointer_updated {
+                println!("parent submodule pointer updated");
             }
             0
         }
@@ -513,7 +557,10 @@ fn attune_error_exit_code(err: &AttuneError) -> i32 {
         | AttuneError::SqlReadFailed { .. }
         | AttuneError::SqlWriteFailed { .. }
         | AttuneError::SqlDeleteFailed { .. }
-        | AttuneError::GitPublishFailed { .. } => 1,
+        | AttuneError::GitPublishFailed { .. }
+        | AttuneError::GitTargetResolveFailed { .. }
+        | AttuneError::GitFetchFailed { .. }
+        | AttuneError::GitUpdateSubmodulePointerFailed { .. } => 1,
     }
 }
 
