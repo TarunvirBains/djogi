@@ -696,6 +696,7 @@ async fn attune_diff_only_does_not_mutate(mut ctx: djogi::DjogiContext) {
         database_url: "postgres://localhost/main",
         profile: "development",
         mode: AttuneMode::DiffOnly,
+        dev_mode: true,
         _guard: &guard,
     };
     let report = attune(&mut ctx, req).await.expect("attune ok");
@@ -750,6 +751,7 @@ async fn attune_record_inserts_row_without_running_sql(mut ctx: djogi::DjogiCont
         mode: AttuneMode::Record {
             reason: "operator asserted".to_string(),
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let report = attune(&mut ctx, req).await.expect("attune ok");
@@ -806,6 +808,7 @@ async fn attune_squash_refuses_on_remote_db(mut ctx: djogi::DjogiContext) {
             publish: false,
             app: None,
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let err = attune(&mut ctx, req).await.expect_err("must refuse");
@@ -834,6 +837,7 @@ async fn attune_squash_refuses_on_production_profile(mut ctx: djogi::DjogiContex
             publish: false,
             app: None,
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let err = attune(&mut ctx, req).await.expect_err("must refuse");
@@ -842,6 +846,124 @@ async fn attune_squash_refuses_on_production_profile(mut ctx: djogi::DjogiContex
             assert_eq!(profile, "production");
         }
         other => panic!("expected SquashNotDevProfile, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+// ── Codex umbrella U-2: --squash refuses when dev_mode is off ─────────────
+
+/// Codex umbrella U-2 BLOCK: `attune --squash` must refuse when
+/// `[database].dev_mode = false`. Pre-fix the field was documented in
+/// `docs/spec/configuration.md` §14 but never read; an operator who
+/// forgot to flip the flag still got the rewrite. This test exercises
+/// the third gate — localhost + dev profile pass, but `dev_mode = false`
+/// must surface `SquashDevModeOff` before any disk I/O.
+#[djogi::djogi_test]
+async fn u2_attune_squash_refuses_when_dev_mode_off(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u2_squash_dev_mode_off");
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        mode: AttuneMode::Squash {
+            from: "V20260101000000__init".to_string(),
+            publish: false,
+            app: None,
+        },
+        dev_mode: false, // the gate under test
+        _guard: &guard,
+    };
+    let err = attune(&mut ctx, req).await.expect_err("must refuse");
+    match err {
+        AttuneError::Refused(AttuneRefusal::SquashDevModeOff) => {}
+        other => panic!("expected SquashDevModeOff, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+// ── Codex umbrella U-2: --squash refuses when DJOGI_ENV=production ────────
+
+/// Codex umbrella U-2 BLOCK: `attune --squash` must refuse when the
+/// `DJOGI_ENV` environment variable is set to `"production"`
+/// (case-insensitive ASCII compare). The env var is the
+/// deployment-time signal that overrides the `Djogi.toml` profile —
+/// CI / orchestration sets it before invoking `djogi`. This test
+/// pins the env-var gate independently from the profile gate by
+/// passing `profile = "development"` and `dev_mode = true`; the only
+/// gate that should trip is the env-var one.
+///
+/// Tests run with `--test-threads=1` per the project's pre-commit
+/// policy so concurrent env mutation is not a concern in this
+/// configuration.
+#[djogi::djogi_test]
+async fn u2_attune_squash_refuses_when_djogi_env_is_production(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u2_squash_djogi_env_prod");
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+
+    // Save / restore DJOGI_ENV so the test does not leak state.
+    let prior = std::env::var("DJOGI_ENV").ok();
+    // SAFETY: serial test execution; no other thread reads DJOGI_ENV.
+    unsafe { std::env::set_var("DJOGI_ENV", "production") };
+
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        mode: AttuneMode::Squash {
+            from: "V20260101000000__init".to_string(),
+            publish: false,
+            app: None,
+        },
+        dev_mode: true,
+        _guard: &guard,
+    };
+    let err = attune(&mut ctx, req).await.expect_err("must refuse");
+    match err {
+        AttuneError::Refused(AttuneRefusal::SquashEnvIsProduction { env_value }) => {
+            assert_eq!(env_value, "production");
+        }
+        other => panic!("expected SquashEnvIsProduction, got {other:?}"),
+    }
+
+    match prior {
+        Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
+        None => unsafe { std::env::remove_var("DJOGI_ENV") },
+    }
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+// ── Codex umbrella U-2: gate ordering — localhost evaluated first ─────────
+
+/// When MULTIPLE squash gates would refuse, the localhost gate must
+/// fire FIRST. Operators get a single deterministic refusal reason
+/// rather than a moving target. This pins the gate-1 → gate-4 order
+/// documented in the `attune` module header so a future refactor that
+/// reshuffles the gate evaluation surfaces immediately.
+#[djogi::djogi_test]
+async fn u2_attune_squash_gate_order_localhost_before_others(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u2_squash_gate_order");
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        // All four gates would refuse this:
+        database_url: "postgres://prod.example.com/main", // gate 1
+        profile: "production",                            // gate 2
+        dev_mode: false,                                  // gate 3
+        mode: AttuneMode::Squash {
+            from: "V20260101000000__init".to_string(),
+            publish: false,
+            app: None,
+        },
+        _guard: &guard,
+    };
+    let err = attune(&mut ctx, req).await.expect_err("must refuse");
+    match err {
+        AttuneError::Refused(AttuneRefusal::SquashNotLocalhost { .. }) => {}
+        other => panic!("expected SquashNotLocalhost first, got {other:?}"),
     }
     let _ = std::fs::remove_dir_all(&work);
 }
@@ -873,6 +995,7 @@ async fn attune_squash_refuses_on_missing_from_version(mut ctx: djogi::DjogiCont
             publish: false,
             app: None,
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let err = attune(&mut ctx, req).await.expect_err("must refuse");
@@ -966,6 +1089,7 @@ async fn attune_squash_collapses_local_files(mut ctx: djogi::DjogiContext) {
             publish: false,
             app: None,
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let report = attune(&mut ctx, req).await.expect("squash ok");
@@ -1066,6 +1190,7 @@ async fn attune_squash_refuses_remote_via_padded_equals(mut ctx: djogi::DjogiCon
             publish: false,
             app: None,
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let err = attune(&mut ctx, req).await.expect_err("must refuse");
@@ -1099,6 +1224,7 @@ async fn attune_diff_only_does_not_bootstrap_ledger(mut ctx: djogi::DjogiContext
         database_url: "postgres://localhost/main",
         profile: "development",
         mode: AttuneMode::DiffOnly,
+        dev_mode: true,
         _guard: &guard,
     };
     let report = attune(&mut ctx, req).await.expect("DiffOnly ok");
@@ -1163,6 +1289,7 @@ async fn attune_record_filters_disk_scan_by_active_database(mut ctx: djogi::Djog
         mode: AttuneMode::Record {
             reason: "B-2 regression coverage".to_string(),
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let report = attune(&mut ctx, req).await.expect("attune ok");
@@ -1239,6 +1366,7 @@ async fn attune_squash_refuses_ambiguous_from_across_buckets(mut ctx: djogi::Djo
             publish: false,
             app: None,
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let err = attune(&mut ctx, req).await.expect_err("must refuse");
@@ -1306,6 +1434,7 @@ async fn attune_squash_with_app_filter_only_collapses_target_bucket(mut ctx: djo
             publish: false,
             app: Some("users".to_string()),
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let report = attune(&mut ctx, req).await.expect("squash ok");
@@ -1540,6 +1669,7 @@ async fn attune_squash_with_publish_pushes_to_remote_origin(mut ctx: djogi::Djog
             publish: true,
             app: None,
         },
+        dev_mode: true,
         _guard: &guard,
     };
     let report = match attune(&mut ctx, req).await {

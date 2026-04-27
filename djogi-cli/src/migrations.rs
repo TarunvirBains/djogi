@@ -440,6 +440,10 @@ async fn run_attune(workspace: &Path, mode: AttuneMode) -> i32 {
         workspace_root: workspace,
         database_url: &config.database.url,
         profile: &config.profile,
+        // Codex umbrella U-2: thread `[database].dev_mode` to the
+        // squash gate. Read-only modes (`DiffOnly`, `Record`) ignore
+        // it; `Squash` mode refuses unless this is `true`.
+        dev_mode: config.database.dev_mode,
         mode,
         _guard: &guard,
     };
@@ -790,6 +794,13 @@ mod tests {
             }),
             AttuneError::Refused(AttuneRefusal::SquashNotDevProfile {
                 profile: "production".to_string(),
+            }),
+            // Codex umbrella U-2 — dev_mode and DJOGI_ENV gates added
+            // in the same fixup chain. Both are `AttuneError::Refused(_)`
+            // so they share the exit-code-2 mapping.
+            AttuneError::Refused(AttuneRefusal::SquashDevModeOff),
+            AttuneError::Refused(AttuneRefusal::SquashEnvIsProduction {
+                env_value: "production".to_string(),
             }),
             AttuneError::Refused(AttuneRefusal::SquashFromVersionNotFound {
                 version: "V20260101000000__missing".to_string(),

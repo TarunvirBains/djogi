@@ -313,7 +313,7 @@ Contract:
 - it does not mutate the database unless `--apply` is explicitly passed
 - it does not update the parent repo's recorded submodule pointer unless `--record` is explicitly passed or a command mode clearly implies recording, such as `--squash`
 - `--squash` is a dev-history operation for creating a new squashed migration set
-- `--squash` is hard-gated behind the same environment safety contract as `db reset`: `dev_mode = true`, localhost database URL resolution, and `DJOGI_ENV != production`
+- `--squash` is hard-gated behind a four-condition safety contract: localhost database URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"`. All four gates are enforced before any I/O so a refusal produces zero side effects on disk or in the ledger
 - `--squash` must refuse when the migration history is already treated as shared staging/production history
 - publishing a squashed history requires explicit push behavior and a configured remote
 

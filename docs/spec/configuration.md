@@ -164,7 +164,7 @@ the matrix in their `--help` output.
 - target may be a local or remote commit, tag, or branch
 - if `migrations/` has no remote configured, attune is limited to locally available Git targets
 - `--record` updates the parent repo's recorded submodule pointer after successful attunement
-- `--squash` is hard-gated exactly like `db reset`: `dev_mode = true`, localhost URL resolution, and `DJOGI_ENV != production`
+- `--squash` is hard-gated by the conjunction of FOUR conditions: localhost URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"` (Codex umbrella U-2 — pre-fix only the first two gates were enforced; `dev_mode` was documented but never read, and `DJOGI_ENV` was unwired entirely)
 - `--squash` should refuse when the migration history is already treated as shared staging/production history
 - `--squash --push` requires a configured remote
 ---

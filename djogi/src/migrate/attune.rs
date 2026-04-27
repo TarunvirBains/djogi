@@ -302,6 +302,23 @@ pub enum AttuneRefusal {
     /// `Squash` mode was invoked but `Djogi.toml::profile` is
     /// `"production"`.
     SquashNotDevProfile { profile: String },
+    /// `Squash` mode was invoked but `Djogi.toml::[database].dev_mode`
+    /// is `false`. Per `docs/spec/configuration.md` §14 the squash
+    /// gate is the conjunction of three conditions: localhost,
+    /// `dev_mode = true`, and `DJOGI_ENV != "production"`. Pre-umbrella
+    /// the `dev_mode` half was documented but never read; this variant
+    /// surfaces a refusal that names the field the operator must flip
+    /// to opt-in to local history rewrites.
+    SquashDevModeOff,
+    /// `Squash` mode was invoked but the `DJOGI_ENV` environment
+    /// variable is set to `"production"` (case-insensitive ASCII
+    /// compare). The env var is the deployment-time signal — it
+    /// overrides the `Djogi.toml` profile when CI / orchestration sets
+    /// it before invoking `djogi`. Refusing on the env var means a
+    /// staging cluster running with `DJOGI_ENV=production` cannot
+    /// accidentally rewrite local migration history even if a developer
+    /// shells in and runs `attune --squash`.
+    SquashEnvIsProduction { env_value: String },
     /// `Squash --from` named a version that does not exist on disk in
     /// any bucket scoped to the connected database (B-5). The squash
     /// refuses rather than silently no-op because the version argument
@@ -378,6 +395,19 @@ impl std::fmt::Display for AttuneRefusal {
                  is dev-only — set `profile = \"development\"` (or remove the \
                  production override) before retrying"
             ),
+            AttuneRefusal::SquashDevModeOff => f.write_str(
+                "attune --squash refuses to run when `[database].dev_mode = false` \
+                 in Djogi.toml; squash is a destructive history rewrite and the \
+                 `dev_mode` flag is the explicit opt-in. Set `dev_mode = true` in \
+                 the `[database]` block before retrying",
+            ),
+            AttuneRefusal::SquashEnvIsProduction { env_value } => write!(
+                f,
+                "attune --squash refuses to run when DJOGI_ENV=`{env_value}` \
+                 (case-insensitive `production`); the deployment-environment \
+                 signal overrides any local Djogi.toml profile override. Unset \
+                 DJOGI_ENV (or set it to a non-production value) before retrying"
+            ),
             AttuneRefusal::SquashFromVersionNotFound { version } => write!(
                 f,
                 "attune --squash --from `{version}` did not match any version on disk \
@@ -420,6 +450,12 @@ pub struct AttuneRequest<'a> {
     /// Operator profile string from [`crate::config::DjogiConfig::profile`].
     /// Squash refuses on production.
     pub profile: &'a str,
+    /// `[database].dev_mode` flag from `Djogi.toml`. Squash mode
+    /// refuses when this is `false` per `docs/spec/configuration.md`
+    /// §14 (Codex umbrella U-2 — the third gate documented in the
+    /// spec but not previously enforced). Read only for
+    /// [`AttuneMode::Squash`]; ignored by `DiffOnly` and `Record`.
+    pub dev_mode: bool,
     /// Mode selector — see [`AttuneMode`].
     pub mode: AttuneMode,
     /// Witness-typed proof that the workspace lock is held. Attune
@@ -427,6 +463,35 @@ pub struct AttuneRequest<'a> {
     /// lock so a concurrent compose / apply cannot mutate the tree
     /// mid-scan.
     pub _guard: &'a WorkspaceGuard,
+}
+
+// ── DJOGI_ENV gate (Codex umbrella U-2) ───────────────────────────────────
+
+/// Returns `Some(value)` when the `DJOGI_ENV` env var is set to a
+/// case-insensitive `"production"` byte sequence; `None` otherwise.
+///
+/// **Why a separate helper.** The squash gate refuses in this case
+/// (umbrella U-2). Pulling the comparison into a free function keeps
+/// the gate's intent obvious at the call site and gives unit tests a
+/// stable surface to pin the case-insensitive ASCII compare without
+/// allocating a `to_lowercase` String.
+///
+/// **No regex.** Byte-level case-insensitive equality (mirrors the
+/// `ascii_eq_ignore_case` helper inside `policy.rs`). The env-var
+/// payload is read once, compared, and dropped.
+fn djogi_env_is_production() -> Option<String> {
+    let raw = std::env::var("DJOGI_ENV").ok()?;
+    let bytes = raw.as_bytes();
+    let target = b"production";
+    if bytes.len() != target.len() {
+        return None;
+    }
+    for (i, b) in bytes.iter().enumerate() {
+        if !b.eq_ignore_ascii_case(&target[i]) {
+            return None;
+        }
+    }
+    Some(raw)
 }
 
 // ── Public entry point ────────────────────────────────────────────────────
@@ -446,7 +511,22 @@ pub async fn attune(
     req: AttuneRequest<'_>,
 ) -> Result<AttuneReport, AttuneError> {
     // Squash mode runs all its gates BEFORE any I/O so a refusal
-    // produces zero side effects.
+    // produces zero side effects. Per `docs/spec/configuration.md`
+    // §14 the gate is the conjunction of FOUR conditions, all enforced
+    // here in deterministic order so an operator-facing refusal is
+    // single-cause and reproducible:
+    //
+    // 1. `database_url` resolves to localhost.
+    // 2. `Djogi.toml::profile != "production"`.
+    // 3. `Djogi.toml::[database].dev_mode == true` (Codex umbrella
+    //    U-2 — was documented but never read; now enforced).
+    // 4. `DJOGI_ENV` env var is NOT case-insensitive `"production"`
+    //    (Codex umbrella U-2 — env-var override for the deployment
+    //    environment; previously absent).
+    //
+    // The order is gate-1 → gate-4 deliberately: failing the cheapest
+    // checks first means an operator typo on URL or profile surfaces
+    // before the more nuanced env-var probe.
     if let AttuneMode::Squash { .. } = &req.mode {
         if !super::policy::is_localhost_connection(req.database_url) {
             return Err(AttuneError::Refused(AttuneRefusal::SquashNotLocalhost {
@@ -456,6 +536,14 @@ pub async fn attune(
         if req.profile == "production" {
             return Err(AttuneError::Refused(AttuneRefusal::SquashNotDevProfile {
                 profile: req.profile.to_string(),
+            }));
+        }
+        if !req.dev_mode {
+            return Err(AttuneError::Refused(AttuneRefusal::SquashDevModeOff));
+        }
+        if let Some(env_value) = djogi_env_is_production() {
+            return Err(AttuneError::Refused(AttuneRefusal::SquashEnvIsProduction {
+                env_value,
             }));
         }
     }
@@ -1384,5 +1472,79 @@ mod tests {
         let s2 = format!("{r2}");
         assert!(s2.contains("production"));
         assert!(s2.contains("dev-only"));
+    }
+
+    // ── Codex umbrella U-2: --squash gate trio ───────────────────────────
+
+    /// Both new gate refusals render an operator-actionable message
+    /// naming the field/env-var the operator must adjust to opt-in.
+    #[test]
+    fn u2_squash_dev_mode_off_message_names_field() {
+        let r = AttuneRefusal::SquashDevModeOff;
+        let s = format!("{r}");
+        assert!(s.contains("dev_mode"), "must name the dev_mode field: {s}");
+        assert!(
+            s.contains("Djogi.toml") || s.contains("[database]"),
+            "must hint at the config location: {s}"
+        );
+    }
+
+    #[test]
+    fn u2_squash_env_is_production_message_names_env_value() {
+        let r = AttuneRefusal::SquashEnvIsProduction {
+            env_value: "production".to_string(),
+        };
+        let s = format!("{r}");
+        assert!(s.contains("DJOGI_ENV"), "must name the env-var: {s}");
+        assert!(s.contains("production"), "must echo the value: {s}");
+    }
+
+    /// `djogi_env_is_production` returns `Some(value)` only for a
+    /// case-insensitive `"production"` byte sequence; everything else
+    /// resolves to `None`. Walks both happy and adversarial inputs to
+    /// pin the exact ASCII case-insensitive contract — without
+    /// allocating (no `to_lowercase`) and without regex.
+    #[test]
+    fn u2_djogi_env_is_production_predicate_matches_only_exact_word() {
+        // Save / restore the env var so the test does not leak state.
+        // Tests run with `--test-threads=1` per the project's
+        // pre-commit policy so concurrent env mutation is not a
+        // concern in this configuration.
+        let prior = std::env::var("DJOGI_ENV").ok();
+
+        // Unset → None.
+        // SAFETY: serial test execution; no other thread reads DJOGI_ENV.
+        unsafe { std::env::remove_var("DJOGI_ENV") };
+        assert_eq!(djogi_env_is_production(), None);
+
+        // Exact match (lowercase) → Some(value).
+        unsafe { std::env::set_var("DJOGI_ENV", "production") };
+        assert_eq!(djogi_env_is_production(), Some("production".to_string()));
+
+        // Mixed case still matches (case-insensitive ASCII compare).
+        unsafe { std::env::set_var("DJOGI_ENV", "Production") };
+        assert_eq!(djogi_env_is_production(), Some("Production".to_string()));
+        unsafe { std::env::set_var("DJOGI_ENV", "PRODUCTION") };
+        assert_eq!(djogi_env_is_production(), Some("PRODUCTION".to_string()));
+
+        // Length mismatch → None (prefix / suffix do not match).
+        unsafe { std::env::set_var("DJOGI_ENV", "prod") };
+        assert_eq!(djogi_env_is_production(), None);
+        unsafe { std::env::set_var("DJOGI_ENV", "productionx") };
+        assert_eq!(djogi_env_is_production(), None);
+
+        // Unrelated values → None.
+        unsafe { std::env::set_var("DJOGI_ENV", "development") };
+        assert_eq!(djogi_env_is_production(), None);
+        unsafe { std::env::set_var("DJOGI_ENV", "staging") };
+        assert_eq!(djogi_env_is_production(), None);
+        unsafe { std::env::set_var("DJOGI_ENV", "") };
+        assert_eq!(djogi_env_is_production(), None);
+
+        // Restore.
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
+            None => unsafe { std::env::remove_var("DJOGI_ENV") },
+        }
     }
 }
