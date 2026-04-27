@@ -895,6 +895,8 @@ mod tests {
                     table: "posts".to_string(),
                     column: "author_id".to_string(),
                     fk: ForeignKeySchema {
+                        deferrable: false,
+                        initially_deferred: false,
                         on_delete: OnDeleteSchema::Restrict,
                         ref_column: "id".to_string(),
                         ref_table: "users".to_string(),
@@ -1033,6 +1035,8 @@ mod tests {
             check: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
                 on_delete: OnDeleteSchema::Restrict,
                 ref_column: "id".to_string(),
                 ref_table: target.to_string(),

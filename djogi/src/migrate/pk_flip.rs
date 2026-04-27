@@ -1584,20 +1584,13 @@ fn jt_shadow_pairs<'a>(
     out
 }
 
-fn child_in_cycle(group: &PkTypeFlipGroup, table: &str) -> bool {
-    // B-13 (Codex round-3): cycle peers are now first-class children
-    // (`PkFlipChild::cycle_flag = true`). Either the per-child marker
-    // or the legacy `group.cycles` vec is authoritative — both are
-    // populated by the differ for the same peer, so checking either
-    // is correct. We keep the `cycles` lookup as a defensive
-    // fallback for hand-built test groups that populate `cycles`
-    // without the matching child entry; production paths set both.
-    group
-        .children
-        .iter()
-        .any(|c| c.cycle_flag && c.table == table)
-        || group.cycles.iter().any(|c| c.peer_table == table)
-}
+// `child_in_cycle` removed in Codex round-4 B-16 — segment 3b's
+// FK-deferrability decision now reads from `PkFlipChild::fk_deferrable`
+// / `PkFlipChild::fk_initially_deferred` directly. The differ's cycle
+// path forces `(true, true)` upstream; non-cycle children pass their
+// descriptor flags through unchanged. The previous heuristic looked up
+// the cycle membership at SQL emission time and silently downgraded
+// descriptor-deferrable plain children to non-deferrable.
 
 // ── Segment 2 — backfill + verification ──────────────────────────────────
 
@@ -2079,10 +2072,14 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
     let parent = group.parent_table.as_str();
     let mut out: Vec<OperationSql> = Vec::new();
 
-    // Self-FK constraints — DEFERRABLE INITIALLY DEFERRED only when
-    // the parent participates in a cycle (rare and explicit).
+    // Self-FK constraints — per-FK deferrability (Codex round-4
+    // B-16). The cycle path forces deferrable + initially_deferred
+    // upstream in the differ; descriptor-declared deferrable FKs
+    // round-trip through the per-FK arrays. Pre-B-16 the gate was
+    // `!group.cycles.is_empty()` and silently downgraded
+    // descriptor-deferrable self-FKs to non-deferrable.
     if let Some(self_fk) = &group.self_fk {
-        for col in &self_fk.fk_columns {
+        for (i, col) in self_fk.fk_columns.iter().enumerate() {
             // The self-FK shadow column was created in segment 1
             // alongside the parent's `id_desc`. Its name follows the
             // `<col>_desc` convention via the SHADOW_SUFFIX, which
@@ -2090,11 +2087,14 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
             // through `{col}{suffix}`. We do not need a separate
             // `dst` binding because the SQL builder reaches both
             // names via the format args.
-            let cycle_clause = if !group.cycles.is_empty() {
-                " DEFERRABLE INITIALLY DEFERRED"
-            } else {
-                ""
-            };
+            let deferrable_clause = render_deferrable_clause(
+                self_fk.fk_deferrable.get(i).copied().unwrap_or(false),
+                self_fk
+                    .fk_initially_deferred
+                    .get(i)
+                    .copied()
+                    .unwrap_or(false),
+            );
             out.push(OperationSql {
                 label: format!("PkFlipAddFk {parent} {col}"),
                 up: format!(
@@ -2103,7 +2103,7 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
                     parent = parent,
                     col = col,
                     suffix = SHADOW_SUFFIX,
-                    cycle = cycle_clause,
+                    cycle = deferrable_clause,
                 ),
                 down: format!(
                     "ALTER TABLE {parent} DROP CONSTRAINT IF EXISTS {parent}_{col}{suffix}_fkey",
@@ -2129,11 +2129,13 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
 
     for child in &group.children {
         let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        let cycle_clause = if child_in_cycle(group, &child.table) {
-            " DEFERRABLE INITIALLY DEFERRED"
-        } else {
-            ""
-        };
+        // Codex round-4 B-16: per-child deferrability flags. The
+        // differ sets `(true, true)` for cycle children and
+        // descriptor flags for plain children. Pre-B-16 this used
+        // the `child_in_cycle` heuristic and silently downgraded
+        // descriptor-deferrable plain children.
+        let cycle_clause =
+            render_deferrable_clause(child.fk_deferrable, child.fk_initially_deferred);
         out.push(OperationSql {
             label: format!(
                 "PkFlipAddFk {tbl} {col}",
@@ -2181,22 +2183,41 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
         // group also runs and `id_desc` lands in partner segment 1.
         for pair in jt_shadow_pairs(jt, group) {
             let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            let target = if pair.col == jt.fk_to_parent_column.as_str() {
+            let is_parent_side = pair.col == jt.fk_to_parent_column.as_str();
+            let target = if is_parent_side {
                 parent.to_string()
             } else {
                 jt.fk_to_partner_table
                     .clone()
                     .unwrap_or_else(|| parent.to_string())
             };
+            // B-16: per-FK deferrability on segment-3b NOT VALID
+            // FK creation. The parent-side and partner-side carry
+            // their own flags (the differ populates them from the
+            // `ForeignKeySchema.deferrable` /
+            // `ForeignKeySchema.initially_deferred` fields).
+            let (def, init_def) = if is_parent_side {
+                (
+                    jt.fk_to_parent_deferrable,
+                    jt.fk_to_parent_initially_deferred,
+                )
+            } else {
+                (
+                    jt.fk_to_partner_deferrable,
+                    jt.fk_to_partner_initially_deferred,
+                )
+            };
+            let deferrable_clause = render_deferrable_clause(def, init_def);
             out.push(OperationSql {
                 label: format!("PkFlipAddFk {tbl} {col}", tbl = jt.table, col = pair.col),
                 up: format!(
                     "ALTER TABLE {tbl} ADD CONSTRAINT {tbl}_{dst}_fkey \
-                     FOREIGN KEY ({dst}) REFERENCES {target}(id{suffix}) NOT VALID",
+                     FOREIGN KEY ({dst}) REFERENCES {target}(id{suffix}){deferrable} NOT VALID",
                     tbl = jt.table,
                     dst = dst,
                     target = target,
                     suffix = SHADOW_SUFFIX,
+                    deferrable = deferrable_clause,
                 ),
                 down: format!(
                     "ALTER TABLE {tbl} DROP CONSTRAINT IF EXISTS {tbl}_{dst}_fkey",
@@ -2730,18 +2751,31 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
         }
         // Re-add self-FK constraints with original names pointing at
         // the now-renamed shadow column (which is now the live `id`).
-        for (col, cons) in self_fk
+        // B-16: each self-FK preserves its declared deferrability —
+        // cycle path forces `(true, true)`, plain self-FKs use
+        // descriptor-side flags (default `(false, false)`).
+        for (i, (col, cons)) in self_fk
             .fk_columns
             .iter()
             .zip(self_fk.fk_constraint_names.iter())
+            .enumerate()
         {
+            let deferrable_clause = render_deferrable_clause(
+                self_fk.fk_deferrable.get(i).copied().unwrap_or(false),
+                self_fk
+                    .fk_initially_deferred
+                    .get(i)
+                    .copied()
+                    .unwrap_or(false),
+            );
             let _ = writeln!(
                 up,
                 "ALTER TABLE {parent} ADD CONSTRAINT {cons} \
-                 FOREIGN KEY ({col}) REFERENCES {parent}(id);",
+                 FOREIGN KEY ({col}) REFERENCES {parent}(id){deferrable};",
                 parent = parent,
                 col = col,
                 cons = cons,
+                deferrable = deferrable_clause,
             );
         }
     }
@@ -2765,6 +2799,13 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
 /// confuses `\d` output, and breaks any test that counts FKs by
 /// table. Dropping the `_desc_fkey` here keeps the post-cutover
 /// schema clean.
+///
+/// **B-16 deferrability.** When the source FK was declared
+/// `DEFERRABLE [INITIALLY DEFERRED|IMMEDIATE]`, the recreated FK
+/// preserves the deferrable property by appending the matching
+/// clause. Cycle peers force `deferrable = true, initially_deferred
+/// = true` regardless of descriptor input — see `PkFlipChild`'s
+/// type-level doc.
 fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     for child in &group.children {
@@ -2805,16 +2846,42 @@ fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
             col = child.fk_column,
         );
         let cascade = render_on_delete(child.on_delete);
+        let deferrable_clause =
+            render_deferrable_clause(child.fk_deferrable, child.fk_initially_deferred);
         let _ = writeln!(
             up,
             "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
-             FOREIGN KEY ({col}) REFERENCES {parent}(id) {cascade};",
+             FOREIGN KEY ({col}) REFERENCES {parent}(id) {cascade}{deferrable};",
             tbl = child.table,
             cons = child.fk_constraint_name,
             col = child.fk_column,
             parent = parent,
             cascade = cascade,
+            deferrable = deferrable_clause,
         );
+    }
+}
+
+/// Render the trailing `DEFERRABLE [INITIALLY DEFERRED|IMMEDIATE]`
+/// clause for an FK ADD CONSTRAINT statement.
+///
+/// Returns the empty string when the FK is non-deferrable
+/// (Postgres' default), `" DEFERRABLE INITIALLY IMMEDIATE"` for
+/// `deferrable = true, initially_deferred = false`, or
+/// `" DEFERRABLE INITIALLY DEFERRED"` for `deferrable = true,
+/// initially_deferred = true`. The leading space lets callers
+/// concatenate the result onto a `... <cascade>{clause}`
+/// substring without a join helper.
+///
+/// **Codex round-4 B-16.** This is the single source of truth for
+/// the deferrability clause across cutover phase 3 (children),
+/// phase 2 (self-FK re-add), and phase 4 (join-table re-add).
+/// Centralising avoids drift across the three sites.
+fn render_deferrable_clause(deferrable: bool, initially_deferred: bool) -> &'static str {
+    match (deferrable, initially_deferred) {
+        (false, _) => "",
+        (true, true) => " DEFERRABLE INITIALLY DEFERRED",
+        (true, false) => " DEFERRABLE INITIALLY IMMEDIATE",
     }
 }
 
@@ -2877,22 +2944,37 @@ fn cutover_phase_finalise_join_tables(group: &PkTypeFlipGroup, up: &mut String) 
             // alongside the partner column. The multi-parent
             // emitter ensures this runs AFTER every member's
             // phase 2, so the partner's `id` column is already
-            // post-rename.
-            let target_parent = if pair.col == jt.fk_to_parent_column.as_str() {
+            // post-rename. B-16: per-FK deferrability — parent-
+            // side and partner-side carry their own flags.
+            let is_parent_side = pair.col == jt.fk_to_parent_column.as_str();
+            let target_parent = if is_parent_side {
                 parent.to_string()
             } else {
                 jt.fk_to_partner_table
                     .clone()
                     .unwrap_or_else(|| parent.to_string())
             };
+            let (def, init_def) = if is_parent_side {
+                (
+                    jt.fk_to_parent_deferrable,
+                    jt.fk_to_parent_initially_deferred,
+                )
+            } else {
+                (
+                    jt.fk_to_partner_deferrable,
+                    jt.fk_to_partner_initially_deferred,
+                )
+            };
+            let deferrable_clause = render_deferrable_clause(def, init_def);
             let _ = writeln!(
                 up,
                 "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
-                 FOREIGN KEY ({col}) REFERENCES {target}(id);",
+                 FOREIGN KEY ({col}) REFERENCES {target}(id){deferrable};",
                 tbl = jt.table,
                 cons = pair.constraint,
                 col = pair.col,
                 target = target_parent,
+                deferrable = deferrable_clause,
             );
         }
         // Determinism marker for join-table layout. Each cutover
@@ -3158,6 +3240,8 @@ mod tests {
             check: None,
             default_sql: None,
             foreign_key: Some(ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
                 on_delete: OnDeleteSchema::Restrict,
                 ref_column: "id".to_string(),
                 ref_table: target.to_string(),
@@ -3577,6 +3661,8 @@ mod tests {
             fk_column: "p_id".to_string(),
             fk_constraint_name: "c_p_id_fkey".to_string(),
             on_delete: OnDeleteSchema::Restrict,
+            fk_deferrable: false,
+            fk_initially_deferred: false,
             fk_nullable: false,
             fk_unique: false,
             family: PkFlipFamily::Heer,
@@ -3638,6 +3724,8 @@ mod tests {
         group.self_fk = Some(PkFlipSelfFk {
             fk_columns: vec!["parent_id".to_string()],
             fk_constraint_names: vec!["nodes_parent_id_fkey".to_string()],
+            fk_deferrable: vec![false],
+            fk_initially_deferred: vec![false],
         });
         let prep = emit_preparation(&group);
         let n = whitespace_normalize(&prep.up);
@@ -3691,9 +3779,13 @@ mod tests {
             table: "book_tags".to_string(),
             fk_to_parent_column: "tag_id".to_string(),
             fk_to_parent_constraint: "book_tags_tag_id_fkey".to_string(),
+            fk_to_parent_deferrable: false,
+            fk_to_parent_initially_deferred: false,
             fk_to_partner_column: None,
             fk_to_partner_constraint: None,
             fk_to_partner_table: None,
+            fk_to_partner_deferrable: false,
+            fk_to_partner_initially_deferred: false,
             family: PkFlipFamily::Heer,
         });
         let prep = emit_preparation(&group);
@@ -3722,6 +3814,11 @@ mod tests {
             fk_column: "a_id".to_string(),
             fk_constraint_name: "b_a_id_fkey".to_string(),
             on_delete: OnDeleteSchema::Restrict,
+            // Cycle peers force deferrable + initially_deferred; the
+            // differ does this in `promote_pk_flips_to_groups` and
+            // synth fixtures must match the production shape.
+            fk_deferrable: true,
+            fk_initially_deferred: true,
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,
@@ -4039,6 +4136,8 @@ mod tests {
             fk_column: "p_id".to_string(),
             fk_constraint_name: "c_p_id_fkey".to_string(),
             on_delete: OnDeleteSchema::Restrict,
+            fk_deferrable: false,
+            fk_initially_deferred: false,
             fk_nullable: false,
             fk_unique: false,
             family: PkFlipFamily::Heer,
@@ -4056,6 +4155,8 @@ mod tests {
         g6.self_fk = Some(PkFlipSelfFk {
             fk_columns: vec!["parent_id".to_string()],
             fk_constraint_names: vec!["nodes_parent_id_fkey".to_string()],
+            fk_deferrable: vec![false],
+            fk_initially_deferred: vec![false],
         });
         let plan_6 = super::lower_pk_flip_group(&g6, bucket());
         write(
@@ -4070,9 +4171,13 @@ mod tests {
             table: "book_tags".to_string(),
             fk_to_parent_column: "tag_id".to_string(),
             fk_to_parent_constraint: "book_tags_tag_id_fkey".to_string(),
+            fk_to_parent_deferrable: false,
+            fk_to_parent_initially_deferred: false,
             fk_to_partner_column: None,
             fk_to_partner_constraint: None,
             fk_to_partner_table: None,
+            fk_to_partner_deferrable: false,
+            fk_to_partner_initially_deferred: false,
             family: PkFlipFamily::Heer,
         });
         let plan_7 = super::lower_pk_flip_group(&g7, bucket());
@@ -4093,6 +4198,9 @@ mod tests {
             fk_column: "a_id".to_string(),
             fk_constraint_name: "b_a_id_fkey".to_string(),
             on_delete: OnDeleteSchema::Restrict,
+            // B-16: cycle peer carries deferrable + initially_deferred.
+            fk_deferrable: true,
+            fk_initially_deferred: true,
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,
@@ -4171,6 +4279,8 @@ mod tests {
             fk_column: "p_id".to_string(),
             fk_constraint_name: "c_p_id_fkey".to_string(),
             on_delete: OnDeleteSchema::Restrict,
+            fk_deferrable: false,
+            fk_initially_deferred: false,
             fk_nullable: false,
             fk_unique: false,
             family: PkFlipFamily::Heer,
@@ -4196,6 +4306,8 @@ mod tests {
         group.self_fk = Some(PkFlipSelfFk {
             fk_columns: vec!["parent_id".to_string()],
             fk_constraint_names: vec!["nodes_parent_id_fkey".to_string()],
+            fk_deferrable: vec![false],
+            fk_initially_deferred: vec![false],
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
@@ -4218,9 +4330,13 @@ mod tests {
             table: "book_tags".to_string(),
             fk_to_parent_column: "tag_id".to_string(),
             fk_to_parent_constraint: "book_tags_tag_id_fkey".to_string(),
+            fk_to_parent_deferrable: false,
+            fk_to_parent_initially_deferred: false,
             fk_to_partner_column: None,
             fk_to_partner_constraint: None,
             fk_to_partner_table: None,
+            fk_to_partner_deferrable: false,
+            fk_to_partner_initially_deferred: false,
             family: PkFlipFamily::Heer,
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
@@ -4245,6 +4361,11 @@ mod tests {
             fk_column: "a_id".to_string(),
             fk_constraint_name: "b_a_id_fkey".to_string(),
             on_delete: OnDeleteSchema::Restrict,
+            // Cycle peers force deferrable + initially_deferred; the
+            // differ does this in `promote_pk_flips_to_groups` and
+            // synth fixtures must match the production shape.
+            fk_deferrable: true,
+            fk_initially_deferred: true,
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,

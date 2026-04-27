@@ -1417,6 +1417,8 @@ mod tests {
     fn add_table_with_fk_column_inlines_references_clause() {
         let fk_col = ColumnSchema {
             foreign_key: Some(ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
                 on_delete: OnDeleteSchema::Cascade,
                 ref_column: "id".to_string(),
                 ref_table: "users".to_string(),
@@ -1458,6 +1460,8 @@ mod tests {
         ] {
             let fk_col = ColumnSchema {
                 foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: cascade,
                     ref_column: "id".to_string(),
                     ref_table: "users".to_string(),
@@ -1594,6 +1598,8 @@ mod tests {
             "posts",
             "author_id",
             &ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
                 on_delete: OnDeleteSchema::Restrict,
                 ref_column: "id".to_string(),
                 ref_table: "users".to_string(),
@@ -1624,6 +1630,8 @@ mod tests {
                 "posts",
                 "author_id",
                 &ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: cascade,
                     ref_column: "id".to_string(),
                     ref_table: "users".to_string(),
@@ -1646,6 +1654,8 @@ mod tests {
             "posts",
             "author_id",
             &ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
                 on_delete: OnDeleteSchema::Cascade,
                 ref_column: "id".to_string(),
                 ref_table: "users".to_string(),

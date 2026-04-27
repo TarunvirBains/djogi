@@ -364,6 +364,8 @@ async fn flip_parent_child_with_verification_enforced(mut ctx: djogi::DjogiConte
         fk_column: "parent_id".to_string(),
         fk_constraint_name: "pc_child_parent_id_fkey".to_string(),
         on_delete: djogi::migrate::schema::OnDeleteSchema::Restrict,
+        fk_deferrable: false,
+        fk_initially_deferred: false,
         fk_nullable: false,
         fk_unique: false,
         family: PkFlipFamily::Heer,
@@ -628,6 +630,8 @@ async fn flip_self_fk_multi_pair_trigger(mut ctx: djogi::DjogiContext) {
     group.self_fk = Some(PkFlipSelfFk {
         fk_columns: vec!["parent_id".to_string()],
         fk_constraint_names: vec!["nodes_parent_id_fkey".to_string()],
+        fk_deferrable: vec![false],
+        fk_initially_deferred: vec![false],
     });
     let plan = lower_pk_flip_group(&group, bucket());
     let runner_ctx = make_runner_ctx(&plan, "V20260425900009__flip_self_fk");
@@ -729,9 +733,13 @@ async fn flip_join_table_option_a_single_mega_tx(mut ctx: djogi::DjogiContext) {
         table: "book_tags_a".to_string(),
         fk_to_parent_column: "tag_id".to_string(),
         fk_to_parent_constraint: "book_tags_a_tag_id_fkey".to_string(),
+        fk_to_parent_deferrable: false,
+        fk_to_parent_initially_deferred: false,
         fk_to_partner_column: None,
         fk_to_partner_constraint: None,
         fk_to_partner_table: None,
+        fk_to_partner_deferrable: false,
+        fk_to_partner_initially_deferred: false,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     // Default group is OptionA. Verify the cutover segment SQL
@@ -815,9 +823,13 @@ async fn flip_join_table_option_b_sequential(mut ctx: djogi::DjogiContext) {
         table: "book_tags_b".to_string(),
         fk_to_parent_column: "tag_id".to_string(),
         fk_to_parent_constraint: "book_tags_b_tag_id_fkey".to_string(),
+        fk_to_parent_deferrable: false,
+        fk_to_parent_initially_deferred: false,
         fk_to_partner_column: None,
         fk_to_partner_constraint: None,
         fk_to_partner_table: None,
+        fk_to_partner_deferrable: false,
+        fk_to_partner_initially_deferred: false,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     g_tags.join_table_option = djogi::migrate::diff::PkFlipJoinTableOption::OptionB;
@@ -856,9 +868,13 @@ async fn flip_join_table_option_b_sequential(mut ctx: djogi::DjogiContext) {
         table: "book_tags_b".to_string(),
         fk_to_parent_column: "book_id".to_string(),
         fk_to_parent_constraint: "book_tags_b_book_id_fkey".to_string(),
+        fk_to_parent_deferrable: false,
+        fk_to_parent_initially_deferred: false,
         fk_to_partner_column: None,
         fk_to_partner_constraint: None,
         fk_to_partner_table: None,
+        fk_to_partner_deferrable: false,
+        fk_to_partner_initially_deferred: false,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     g_books.join_table_option = djogi::migrate::diff::PkFlipJoinTableOption::OptionB;
@@ -910,6 +926,12 @@ async fn flip_cycle_with_deferrable_fks(mut ctx: djogi::DjogiContext) {
     group.self_fk = Some(PkFlipSelfFk {
         fk_columns: vec!["manager_id".to_string()],
         fk_constraint_names: vec!["users_c_manager_id_fkey".to_string()],
+        // B-16: cycle path forces deferrable + initially_deferred so
+        // the recreated FK preserves the deferrable property post-
+        // cutover. The synthetic group exercises the cutover-emitter
+        // contract that lives in `emit_cutover` / phase helpers.
+        fk_deferrable: vec![true],
+        fk_initially_deferred: vec![true],
     });
     // Add a synthetic cycle entry so the emitter inserts SET
     // CONSTRAINTS ALL DEFERRED at the top of the cutover body.
@@ -1438,6 +1460,8 @@ async fn flip_complex_schema_authors_books_tags_book_tags_reviews(mut ctx: djogi
         fk_column: "author_id".to_string(),
         fk_constraint_name: "c_books_author_id_fkey".to_string(),
         on_delete: djogi::migrate::schema::OnDeleteSchema::Restrict,
+        fk_deferrable: false,
+        fk_initially_deferred: false,
         fk_nullable: false,
         fk_unique: false,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
@@ -1478,9 +1502,13 @@ async fn flip_complex_schema_authors_books_tags_book_tags_reviews(mut ctx: djogi
         table: "c_book_tags".to_string(),
         fk_to_parent_column: "tag_id".to_string(),
         fk_to_parent_constraint: "c_book_tags_tag_id_fkey".to_string(),
+        fk_to_parent_deferrable: false,
+        fk_to_parent_initially_deferred: false,
         fk_to_partner_column: None,
         fk_to_partner_constraint: None,
         fk_to_partner_table: None,
+        fk_to_partner_deferrable: false,
+        fk_to_partner_initially_deferred: false,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     let plan_t = lower_pk_flip_group(&g_tags, bucket());
@@ -1774,6 +1802,8 @@ fn cycle_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSchema {
                 check: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: OnDeleteSchema::Restrict,
                     ref_column: "id".to_string(),
                     ref_table: ref_table.to_string(),
@@ -2025,6 +2055,52 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
         n_linked, 50,
         "cyc_a.b_id linkage preserved (50 rows had NULL FK at seed time)",
     );
+
+    // ── B-16 (Codex round-4) — FK deferrability preservation ─────────
+    //
+    // The source FKs were created `DEFERRABLE INITIALLY DEFERRED`
+    // (cycle requirement). Post-cutover the recreated FKs MUST
+    // preserve those flags; otherwise the cycle is structurally
+    // unrecoverable on the post-flip schema (any operator-driven
+    // mid-tx FK violation would trip immediately even though the
+    // cycle was declared deferrable).
+    //
+    // Pre-B-16 the cutover emitter rendered plain `ADD CONSTRAINT
+    // ... FOREIGN KEY (...) REFERENCES ...(id);` and silently
+    // downgraded both FKs to non-deferrable. The fix carries the
+    // deferrability through `PkFlipChild::fk_deferrable` /
+    // `PkFlipChild::fk_initially_deferred` (forced to `(true,
+    // true)` for cycle peers in the differ) and renders
+    // `DEFERRABLE INITIALLY DEFERRED` on the recreated FK.
+    for (table, fk_name) in &[("cyc_a", "cyc_a_b_id_fkey"), ("cyc_b", "cyc_b_a_id_fkey")] {
+        let condeferrable: bool = ctx
+            .raw_scalar(
+                "SELECT condeferrable FROM pg_constraint c \
+                 JOIN pg_class t ON t.oid = c.conrelid \
+                 WHERE c.conname = $1 AND t.relname = $2",
+                &[fk_name, table],
+            )
+            .await
+            .expect("condeferrable lookup");
+        assert!(
+            condeferrable,
+            "B-16: post-cutover FK {fk_name} on {table} must remain DEFERRABLE",
+        );
+        let condeferred: bool = ctx
+            .raw_scalar(
+                "SELECT condeferred FROM pg_constraint c \
+                 JOIN pg_class t ON t.oid = c.conrelid \
+                 WHERE c.conname = $1 AND t.relname = $2",
+                &[fk_name, table],
+            )
+            .await
+            .expect("condeferred lookup");
+        assert!(
+            condeferred,
+            "B-16: post-cutover FK {fk_name} on {table} must remain INITIALLY DEFERRED",
+        );
+    }
+
 }
 
 // ── Test 22 — B-12 (Codex round-3): Option A vs B produce DIFFERENT SQL ──
@@ -2124,6 +2200,8 @@ fn cross_flipping_join_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSche
                 check: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: OnDeleteSchema::Restrict,
                     ref_column: "id".to_string(),
                     ref_table: "jt_books".to_string(),
@@ -2146,6 +2224,8 @@ fn cross_flipping_join_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSche
                 check: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: OnDeleteSchema::Restrict,
                     ref_column: "id".to_string(),
                     ref_table: "jt_tags".to_string(),
@@ -2537,6 +2617,8 @@ fn three_level_cascade_schema(pk_kind: PkKindSchema) -> AppliedSchema {
                 check: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: OnDeleteSchema::Restrict,
                     ref_column: "id".to_string(),
                     ref_table: ref_table.to_string(),
@@ -2615,6 +2697,8 @@ fn three_level_cascade_schema(pk_kind: PkKindSchema) -> AppliedSchema {
                 check: None,
                 default_sql: None,
                 foreign_key: Some(djogi::migrate::schema::ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: djogi::migrate::schema::OnDeleteSchema::Restrict,
                     ref_column: "id".to_string(),
                     ref_table: "c_mid".to_string(),

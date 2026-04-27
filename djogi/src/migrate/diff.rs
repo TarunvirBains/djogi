@@ -916,6 +916,16 @@ pub struct PkFlipChild {
     pub fk_constraint_name: String,
     /// Original FK cascade discipline, preserved through the cutover.
     pub on_delete: super::schema::OnDeleteSchema,
+    /// Original FK deferrability flags (Codex round-4 B-16).
+    /// Preserved through the cutover so a deferrable source FK
+    /// recreates as deferrable on the post-cutover column. Cycle
+    /// peers force `deferrable = true, initially_deferred = true`
+    /// regardless of descriptor input — see [`PkTypeFlipGroup`]
+    /// docs and playbook §8.
+    pub fk_deferrable: bool,
+    /// `true` iff the original FK was `INITIALLY DEFERRED`. Only
+    /// meaningful when `fk_deferrable = true`.
+    pub fk_initially_deferred: bool,
     /// Whether the child's FK column is nullable. Drives the
     /// playbook's §3.3 NULL-tracking invariant choice — nullable FKs
     /// allow NULL on the desc shadow.
@@ -953,6 +963,14 @@ pub struct PkFlipSelfFk {
     pub fk_columns: Vec<String>,
     /// FK constraint names matching `fk_columns` index-for-index.
     pub fk_constraint_names: Vec<String>,
+    /// Per-FK deferrability (Codex round-4 B-16). Index-for-index
+    /// with `fk_columns` / `fk_constraint_names`. Cycle path forces
+    /// `true / true`.
+    pub fk_deferrable: Vec<bool>,
+    /// Per-FK `INITIALLY DEFERRED` flag. Same indexing as
+    /// `fk_deferrable`. Only meaningful when the matching
+    /// `fk_deferrable` entry is `true`.
+    pub fk_initially_deferred: Vec<bool>,
 }
 
 /// Join-table metadata for a many-to-many junction whose two FK
@@ -967,6 +985,13 @@ pub struct PkFlipJoinTable {
     pub fk_to_parent_column: String,
     /// FK constraint name for `fk_to_parent_column`.
     pub fk_to_parent_constraint: String,
+    /// Original deferrability of the parent-side FK (Codex round-4
+    /// B-16). Preserved through the cutover; defaults to `false`
+    /// for non-deferrable FKs.
+    pub fk_to_parent_deferrable: bool,
+    /// `true` iff the parent-side FK was `INITIALLY DEFERRED`.
+    /// Only meaningful when `fk_to_parent_deferrable = true`.
+    pub fk_to_parent_initially_deferred: bool,
     /// The other FK column on this join table — either points at a
     /// second migrating parent (`Some(...)`) or at a non-migrating
     /// peer (`None`). When `Some`, the join table participates in
@@ -985,6 +1010,13 @@ pub struct PkFlipJoinTable {
     /// at the right partner table; `None` means single-parent join
     /// where this planner only ever emits the parent-side FK.
     pub fk_to_partner_table: Option<String>,
+    /// Original deferrability of the partner-side FK (Codex round-4
+    /// B-16). `false` for `None` partner. Preserved through the
+    /// cutover.
+    pub fk_to_partner_deferrable: bool,
+    /// `true` iff the partner-side FK was `INITIALLY DEFERRED`.
+    /// Only meaningful when `fk_to_partner_deferrable = true`.
+    pub fk_to_partner_initially_deferred: bool,
     /// Family of the migrating parent's PK.
     pub family: PkFlipFamily,
 }
@@ -1346,6 +1378,12 @@ fn promote_pk_flips_to_groups(
         let mut children: Vec<PkFlipChild> = Vec::new();
         let mut self_fk_cols: Vec<String> = Vec::new();
         let mut self_fk_constraints: Vec<String> = Vec::new();
+        // Codex round-4 B-16: per-self-FK deferrability flags
+        // populated index-for-index alongside `self_fk_cols` /
+        // `self_fk_constraints`. Cycle path forces both to `true`
+        // — see the conditional at the end of the population loop.
+        let mut self_fk_deferrable: Vec<bool> = Vec::new();
+        let mut self_fk_initially_deferred: Vec<bool> = Vec::new();
         let mut join_tables: Vec<PkFlipJoinTable> = Vec::new();
         let mut cycles: Vec<PkFlipCycle> = Vec::new();
 
@@ -1362,6 +1400,8 @@ fn promote_pk_flips_to_groups(
                     // Self-FK pair.
                     self_fk_cols.push(col.name.clone());
                     self_fk_constraints.push(constraint_name);
+                    self_fk_deferrable.push(fk.deferrable);
+                    self_fk_initially_deferred.push(fk.initially_deferred);
                     continue;
                 }
                 // Detect cycle: does the parent reference back at
@@ -1403,6 +1443,22 @@ fn promote_pk_flips_to_groups(
                         fk_column: col.name.clone(),
                         fk_constraint_name: constraint_name,
                         on_delete: fk.on_delete,
+                        // Codex round-4 B-16: cycle peers force
+                        // deferrable + initially_deferred regardless
+                        // of descriptor-side knobs. The cutover
+                        // emits `SET CONSTRAINTS ALL DEFERRED` once
+                        // at the top, but the recreated FK on the
+                        // post-cutover column must ALSO be marked
+                        // `DEFERRABLE INITIALLY DEFERRED` so future
+                        // operator-driven deferred-FK use still
+                        // works post-flip. Without this the cutover
+                        // silently downgrades the cycle to
+                        // non-deferrable; mid-tx FK violations on
+                        // post-flip workloads then trip
+                        // unconditionally even though the operator
+                        // declared the cycle as deferrable.
+                        fk_deferrable: true,
+                        fk_initially_deferred: true,
                         fk_nullable: col.nullable,
                         fk_unique: col.unique,
                         family,
@@ -1440,13 +1496,34 @@ fn promote_pk_flips_to_groups(
                         }
                         _ => (None, None, None),
                     };
+                    // Codex round-4 B-16: extract partner-side
+                    // FK deferrability from the partner column
+                    // (when present). Without this lookup the
+                    // cutover can't preserve a deferrable partner
+                    // FK across the recreate boundary.
+                    let (partner_def, partner_init_def) =
+                        if let Some(partner_col_name) = partner_col.as_deref() {
+                            other_table
+                                .columns
+                                .iter()
+                                .find(|c| c.name == partner_col_name)
+                                .and_then(|c| c.foreign_key.as_ref())
+                                .map(|fk| (fk.deferrable, fk.initially_deferred))
+                                .unwrap_or((false, false))
+                        } else {
+                            (false, false)
+                        };
                     join_tables.push(PkFlipJoinTable {
                         table: other_table_name.clone(),
                         fk_to_parent_column: col.name.clone(),
                         fk_to_parent_constraint: constraint_name,
+                        fk_to_parent_deferrable: fk.deferrable,
+                        fk_to_parent_initially_deferred: fk.initially_deferred,
                         fk_to_partner_column: partner_col,
                         fk_to_partner_constraint: partner_constraint,
                         fk_to_partner_table: partner_table,
+                        fk_to_partner_deferrable: partner_def,
+                        fk_to_partner_initially_deferred: partner_init_def,
                         family,
                     });
                     continue;
@@ -1457,6 +1534,10 @@ fn promote_pk_flips_to_groups(
                     fk_column: col.name.clone(),
                     fk_constraint_name: constraint_name,
                     on_delete: fk.on_delete,
+                    // Codex round-4 B-16: preserve descriptor-
+                    // declared deferrability through the cutover.
+                    fk_deferrable: fk.deferrable,
+                    fk_initially_deferred: fk.initially_deferred,
                     fk_nullable: col.nullable,
                     fk_unique: col.unique,
                     family,
@@ -1575,17 +1656,54 @@ fn promote_pk_flips_to_groups(
                 .then(a.fk_to_parent_column.cmp(&b.fk_to_parent_column))
         });
         cycles.sort_by(|a, b| a.peer_table.cmp(&b.peer_table));
-        // Self-FK: pair the cols/constraints in alphabetical order.
-        let mut self_fk_zipped: Vec<(String, String)> =
-            self_fk_cols.into_iter().zip(self_fk_constraints).collect();
+        // Self-FK: pair the cols/constraints/deferrability flags in
+        // alphabetical order. Codex round-4 B-16 widens the zipped
+        // tuple to carry the per-FK deferrability — `(col, cons,
+        // deferrable, initially_deferred)`. The cycle path forces
+        // both flags to `true` further down, after this sort, so we
+        // stay within the "data first, semantics second" ordering
+        // the rest of the differ uses.
+        let mut self_fk_zipped: Vec<(String, String, bool, bool)> = self_fk_cols
+            .into_iter()
+            .zip(self_fk_constraints)
+            .zip(self_fk_deferrable)
+            .zip(self_fk_initially_deferred)
+            .map(|(((c, n), d), id)| (c, n, d, id))
+            .collect();
         self_fk_zipped.sort_by(|a, b| a.0.cmp(&b.0));
         let self_fk = if self_fk_zipped.is_empty() {
             None
         } else {
-            let (cols, cons): (Vec<String>, Vec<String>) = self_fk_zipped.into_iter().unzip();
+            let mut cols: Vec<String> = Vec::with_capacity(self_fk_zipped.len());
+            let mut cons: Vec<String> = Vec::with_capacity(self_fk_zipped.len());
+            let mut deferr: Vec<bool> = Vec::with_capacity(self_fk_zipped.len());
+            let mut init_def: Vec<bool> = Vec::with_capacity(self_fk_zipped.len());
+            for (c, n, d, id) in self_fk_zipped {
+                cols.push(c);
+                cons.push(n);
+                deferr.push(d);
+                init_def.push(id);
+            }
+            // Cycle path forces deferrable + initially_deferred on
+            // every self-FK when the parent participates in any
+            // mutual-FK cycle. Same rationale as the cycle children
+            // above — the cutover's `SET CONSTRAINTS ALL DEFERRED`
+            // signals the runner-side discipline; the recreated FK
+            // must carry the deferrable property post-cutover so
+            // future operator-driven deferred-FK use still works.
+            if !cycles.is_empty() {
+                for d in deferr.iter_mut() {
+                    *d = true;
+                }
+                for d in init_def.iter_mut() {
+                    *d = true;
+                }
+            }
             Some(PkFlipSelfFk {
                 fk_columns: cols,
                 fk_constraint_names: cons,
+                fk_deferrable: deferr,
+                fk_initially_deferred: init_def,
             })
         };
 
@@ -3229,6 +3347,8 @@ mod tests {
                 check: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: OnDeleteSchema::Restrict,
                     ref_column: "id".to_string(),
                     ref_table: ref_table.to_string(),

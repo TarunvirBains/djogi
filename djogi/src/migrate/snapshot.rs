@@ -490,6 +490,8 @@ mod tests {
                 check: None,
                 default_sql: None,
                 foreign_key: Some(ForeignKeySchema {
+                    deferrable: false,
+                    initially_deferred: false,
                     on_delete: OnDeleteSchema::Restrict,
                     ref_column: "id".to_string(),
                     ref_table: "owners".to_string(),

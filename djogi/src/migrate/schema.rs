@@ -268,9 +268,48 @@ pub struct ColumnSchema {
 /// snapshot's source of truth for the cascade lives here — the
 /// projection populates both fields from the same descriptor input,
 /// and the differ / SQL emitter read this one when lowering FK ops.
+///
+/// **Deferrability (Codex round-4 B-16).** `deferrable` /
+/// `initially_deferred` reproduce Postgres' two-axis FK
+/// deferrability model: a constraint can be `DEFERRABLE` or `NOT
+/// DEFERRABLE`, and a `DEFERRABLE` constraint is either `INITIALLY
+/// DEFERRED` (checks postponed to COMMIT unless explicitly
+/// `SET CONSTRAINTS IMMEDIATE`) or `INITIALLY IMMEDIATE` (checks
+/// run at every statement until explicitly `SET CONSTRAINTS
+/// DEFERRED`). Both fields default to `false` for backward
+/// compatibility with existing snapshots that predate the field
+/// (the serde default keeps old snapshot files round-tripping
+/// without manual migration). The PK-flip cutover preserves
+/// these flags when re-creating FKs across the cutover boundary;
+/// previously the cutover always emitted plain `ADD CONSTRAINT
+/// FOREIGN KEY (...)`, silently downgrading deferrable FKs to
+/// non-deferrable. Cycle FKs are an exception — the cycle path
+/// FORCES `deferrable = true, initially_deferred = true`
+/// regardless of descriptor input, because cycles structurally
+/// require deferred-constraint semantics for the cutover
+/// transaction body to commit (the same `SET CONSTRAINTS ALL
+/// DEFERRED` discipline the playbook §8 calls out).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ForeignKeySchema {
+    /// `true` iff the FK was declared `DEFERRABLE` at creation
+    /// time. When `false`, `initially_deferred` MUST also be
+    /// `false` — Postgres rejects `INITIALLY DEFERRED` on a
+    /// non-deferrable constraint. The PK-flip cutover preserves
+    /// the live FK's deferrability across the recreate boundary;
+    /// see the type-level doc.
+    #[serde(default)]
+    pub deferrable: bool,
+
+    /// `true` iff the FK is `INITIALLY DEFERRED`. Only meaningful
+    /// when `deferrable = true` (Postgres rejects the combination
+    /// otherwise). When `deferrable = true && initially_deferred =
+    /// false` the FK is `DEFERRABLE INITIALLY IMMEDIATE` — checks
+    /// run at every statement, but operators can opt into
+    /// transaction-scoped deferral via `SET CONSTRAINTS x DEFERRED`.
+    #[serde(default)]
+    pub initially_deferred: bool,
+
     /// Cascade discipline on delete of the referenced row. Mirrors
     /// the column-level [`ColumnSchema::on_delete`] but lives here so
     /// the FK-only operations ([`crate::migrate::diff::SchemaOperation::AddForeignKey`]

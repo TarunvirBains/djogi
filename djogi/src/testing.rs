@@ -816,6 +816,8 @@ mod tests {
             table: "widgets".to_string(),
             column: "category_id".to_string(),
             fk: crate::migrate::schema::ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
                 on_delete: OnDeleteSchema::Restrict,
                 ref_column: "id".to_string(),
                 ref_table: "categories".to_string(),
@@ -849,6 +851,8 @@ mod tests {
             table: "widgets".to_string(),
             column: "category_id".to_string(),
             fk: crate::migrate::schema::ForeignKeySchema {
+                deferrable: false,
+                initially_deferred: false,
                 on_delete: OnDeleteSchema::Restrict,
                 ref_column: "id".to_string(),
                 ref_table: "categories".to_string(),

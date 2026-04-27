@@ -552,6 +552,18 @@ fn project_column(
                 on_delete: projected_on_delete.unwrap_or(OnDeleteSchema::Restrict),
                 ref_column: "id".to_string(),
                 ref_table,
+                // Codex round-4 B-16: descriptor-driven projection
+                // does not yet expose deferrability. Adopters who
+                // need deferrable FKs from the descriptor side will
+                // wire it through a future `#[field(deferrable)]` /
+                // `#[field(initially_deferred)]` knob; for now both
+                // default to `false` (matching Postgres' default
+                // for a plain `REFERENCES` clause). The PK-flip
+                // cycle path forces both to `true` regardless of
+                // descriptor input — see the `ForeignKeySchema`
+                // type-level doc.
+                deferrable: false,
+                initially_deferred: false,
             }
         })
     } else {
