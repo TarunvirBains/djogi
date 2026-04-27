@@ -80,7 +80,7 @@ pub mod verify;
 
 pub use attune::{
     AttuneDiagnostic, AttuneEntry, AttuneEntryKind, AttuneError, AttuneMode, AttuneRefusal,
-    AttuneReport, AttuneRequest, attune,
+    AttuneReport, AttuneRequest, RecordSource, attune,
 };
 pub use build_match::{
     DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket,
