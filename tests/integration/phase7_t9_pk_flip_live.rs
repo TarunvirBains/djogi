@@ -2404,3 +2404,314 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
          — that is the entire point of the knob",
     );
 }
+
+// ── Test 23 — B-14: transitive FK closure end-to-end via diff_bucket_maps ─
+//
+// The transitive FK closure landed in the round-2 fix
+// (`promote_pk_flips_to_groups`'s BFS over the FK graph), but the
+// 21-test live suite never exercised it through `diff_bucket_maps`
+// — every prior cascade test fabricated `PkTypeFlipGroup` with
+// hand-built `PkFlipChild` entries, bypassing the closure. This
+// test fills that gap: build a P → C → GC three-level cascade
+// schema, drive the differ, lower the resulting group, apply
+// against a live DB, and assert that:
+//
+//   1. The closure visits all three tables (no panic, no infinite
+//      loop, no spurious depth blow-out).
+//   2. Per the asc↔desc invariant only the DIRECT child (C) lands
+//      in `children` with shadow-column orchestration. The
+//      grandchild (GC) is recorded in the visited set for
+//      cycle-defence + future variant headroom but does NOT get a
+//      shadow column — its FK points at C's `id`, and C's `id`
+//      does not change in P's flip.
+//   3. The cutover applies cleanly and grandchild rows survive.
+
+fn three_level_cascade_schema(pk_kind: PkKindSchema) -> AppliedSchema {
+    use djogi::migrate::schema::{
+        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PrimaryKeySchema, TableSchema,
+    };
+
+    let make_table = |table: &str, fk_col: Option<(&str, &str)>| {
+        let mut columns = vec![ColumnSchema {
+            check: None,
+            default_sql: Some("generate_id()".to_string()),
+            foreign_key: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+        }];
+        if let Some((col, ref_table)) = fk_col {
+            columns.push(ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(ForeignKeySchema {
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: ref_table.to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: col.to_string(),
+                nullable: false,
+                on_delete: Some(OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            });
+        }
+        TableSchema {
+            app: None,
+            columns,
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: pk_kind.clone(),
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: table.to_string(),
+            tenant_key: None,
+        }
+    };
+
+    let mut models = BTreeMap::new();
+    // P (parent) flips; C (child) carries an FK to P; GC
+    // (grandchild) carries an FK to C. Only C's PK kind is
+    // mirrored to flip, but the differ only generates a
+    // `PkTypeFlip` op when the kind changes — for the closure
+    // test we keep C and GC at HeerId in BOTH before and after
+    // schemas so they don't generate their own flip ops; only P
+    // flips. The closure must walk through C to GC and not panic.
+    models.insert("p_root".to_string(), make_table("p_root", None));
+    models.insert(
+        "c_mid".to_string(),
+        make_table("c_mid", Some(("p_id", "p_root"))),
+    );
+    // GC always HeerId — it's not migrating, but its FK to C
+    // exercises the closure walk.
+    let gc = TableSchema {
+        app: None,
+        columns: vec![
+            ColumnSchema {
+                check: None,
+                default_sql: Some("generate_id()".to_string()),
+                foreign_key: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "id".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(djogi::migrate::schema::ForeignKeySchema {
+                    on_delete: djogi::migrate::schema::OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: "c_mid".to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "c_id".to_string(),
+                nullable: false,
+                on_delete: Some(djogi::migrate::schema::OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+        ],
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: None,
+        primary_key: djogi::migrate::schema::PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            // GC stays HeerId on both sides — it is NOT migrating.
+            kind: PkKindSchema::HeerId,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: "gc_leaf".to_string(),
+        tenant_key: None,
+    };
+    models.insert("gc_leaf".to_string(), gc);
+    AppliedSchema {
+        djogi_version: "0.1.0".to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: "2026-04-26T00:00:00Z".to_string(),
+        indexes: Vec::new(),
+        models,
+        registered_apps: vec!["".to_string()],
+    }
+}
+
+#[djogi::djogi_test]
+async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    // Live schema mirroring the synthesised one — only p_root and
+    // c_mid carry PK kinds the differ will compare; gc_leaf stays
+    // static. p_root's PK kind flips HeerId → HeerIdRecencyBiased.
+    ctx.raw_ddl(
+        "CREATE TABLE p_root (id BIGINT PRIMARY KEY DEFAULT generate_id(), \
+         label TEXT NOT NULL)",
+    )
+    .await
+    .expect("p_root");
+    ctx.raw_ddl(
+        "CREATE TABLE c_mid (id BIGINT PRIMARY KEY DEFAULT generate_id(), \
+         p_id BIGINT NOT NULL REFERENCES p_root(id))",
+    )
+    .await
+    .expect("c_mid");
+    ctx.raw_ddl(
+        "CREATE TABLE gc_leaf (id BIGINT PRIMARY KEY DEFAULT generate_id(), \
+         c_id BIGINT NOT NULL REFERENCES c_mid(id))",
+    )
+    .await
+    .expect("gc_leaf");
+    ctx.raw_ddl("INSERT INTO p_root (label) SELECT 'p' || g FROM generate_series(1, 20) g")
+        .await
+        .expect("seed p");
+    ctx.raw_ddl("INSERT INTO c_mid (p_id) SELECT id FROM p_root LIMIT 20")
+        .await
+        .expect("seed c");
+    ctx.raw_ddl("INSERT INTO gc_leaf (c_id) SELECT id FROM c_mid LIMIT 20")
+        .await
+        .expect("seed gc");
+
+    // Build before/after schemas. Only p_root flips; c_mid and
+    // gc_leaf stay HeerId on both sides. The closure must walk
+    // p_root → c_mid → gc_leaf and terminate cleanly without
+    // panicking on the depth contract.
+    use djogi::migrate::diff::{PkTypeFlipGroup, SchemaOperation, diff_bucket_maps};
+    let bucket_key = bucket();
+    let mut before_models = three_level_cascade_schema(PkKindSchema::HeerId);
+    let mut after_models = three_level_cascade_schema(PkKindSchema::HeerIdRecencyBiased);
+    // c_mid and gc_leaf must NOT flip — pin them to HeerId on both
+    // sides so the differ only emits one PkTypeFlip op (for p_root).
+    if let Some(t) = before_models.models.get_mut("c_mid") {
+        t.primary_key.kind = PkKindSchema::HeerId;
+    }
+    if let Some(t) = after_models.models.get_mut("c_mid") {
+        t.primary_key.kind = PkKindSchema::HeerId;
+    }
+    let before: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(bucket_key.clone(), before_models);
+        m
+    };
+    let after: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(bucket_key.clone(), after_models);
+        m
+    };
+
+    // Drive the differ — closure must not panic.
+    let deltas = diff_bucket_maps(&before, &after);
+    let delta = deltas
+        .iter()
+        .find(|d| d.bucket == bucket_key)
+        .expect("delta for cascade bucket");
+    let groups: Vec<&PkTypeFlipGroup> = delta
+        .operations
+        .iter()
+        .filter_map(|op| match op {
+            SchemaOperation::PkTypeFlipGroup(g) => Some(g),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(groups.len(), 1, "exactly one flip group (p_root)");
+    let group = groups[0];
+    assert_eq!(group.parent_table, "p_root");
+    // For asc↔desc only direct children become shadow targets.
+    let direct_children: Vec<&str> = group
+        .children
+        .iter()
+        .map(|c| c.table.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(
+        direct_children,
+        vec!["c_mid"],
+        "only the direct child (c_mid) gets shadow-column orchestration; \
+         the grandchild (gc_leaf) is in the closure's visited set but \
+         does NOT receive a shadow column under the asc↔desc invariant",
+    );
+
+    // Apply the lowered group end-to-end.
+    let plan = lower_pk_flip_group(group, bucket_key);
+    let runner_ctx = make_runner_ctx(&plan, "V20260425900022__cascade_three_level");
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply cascade");
+
+    // p_root flipped — DEFAULT now points at heerid_next_desc().
+    let default_sql: Option<String> = ctx
+        .raw_scalar(
+            "SELECT column_default FROM information_schema.columns \
+             WHERE table_name = 'p_root' AND column_name = 'id'",
+            &[],
+        )
+        .await
+        .expect("default lookup");
+    assert!(
+        default_sql
+            .as_deref()
+            .unwrap_or("")
+            .contains("heerid_next_desc"),
+        "p_root.id default must call heerid_next_desc(); got: {default_sql:?}",
+    );
+    // Grandchild rows survived; FK chain still valid.
+    let n_gc: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM gc_leaf", &[])
+        .await
+        .expect("count gc");
+    assert_eq!(n_gc, 20, "grandchild rows preserved across cascade flip");
+    let n_chain: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM gc_leaf gc \
+             JOIN c_mid c ON gc.c_id = c.id \
+             JOIN p_root p ON c.p_id = p.id",
+            &[],
+        )
+        .await
+        .expect("count chain");
+    assert_eq!(n_chain, 20, "FK chain p_root → c_mid → gc_leaf intact");
+}
