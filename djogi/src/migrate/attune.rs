@@ -251,6 +251,7 @@ pub struct AttuneReport {
 
 /// Structured operator-facing diagnostic surfaced by [`attune`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AttuneDiagnostic {
     /// The `djogi_schema_migrations` table does not exist in the
     /// connected database. Attune's read-only dry-run contract
@@ -294,6 +295,7 @@ pub enum AttuneDiagnostic {
 /// said "--record requested without --apply", which mis-described the
 /// `--squash` (implicit-record) case introduced by U-7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RecordSource {
     /// Operator passed `--record` explicitly.
     Explicit,
