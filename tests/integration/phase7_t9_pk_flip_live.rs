@@ -710,11 +710,16 @@ async fn flip_join_table_option_a_single_mega_tx(mut ctx: djogi::DjogiContext) {
         .await
         .expect("seed bt");
 
-    // Option A: flip both parents in ONE shared cutover. The differ
-    // composes `tags_a` as the migrating parent + `book_tags_a` as a
-    // join table (the partner FK at `book_id` references books_a,
-    // which is also flipping). For this synthetic setup we just flip
-    // tags_a with book_tags_a as a join-table member.
+    // Option A on a single-flipping parent: only `tags_a` is the
+    // migrating parent in this group; `books_a` is a static
+    // dependency. With one parent migrating the differ records
+    // `fk_to_partner_column = None` because the join table only
+    // participates in a single parent's migration — there's no
+    // partner to coordinate with. Option A vs B is a no-op in this
+    // shape (the divergence kicks in when BOTH parents migrate; see
+    // `pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps`
+    // for the cross-flipping live test that exercises the full §7
+    // mega-tx vs sequential divergence).
     let mut group = synth_single_group(
         "tags_a",
         PkKindSchema::HeerId,
@@ -724,8 +729,9 @@ async fn flip_join_table_option_a_single_mega_tx(mut ctx: djogi::DjogiContext) {
         table: "book_tags_a".to_string(),
         fk_to_parent_column: "tag_id".to_string(),
         fk_to_parent_constraint: "book_tags_a_tag_id_fkey".to_string(),
-        fk_to_partner_column: Some("book_id".to_string()),
-        fk_to_partner_constraint: Some("book_tags_a_book_id_fkey".to_string()),
+        fk_to_partner_column: None,
+        fk_to_partner_constraint: None,
+        fk_to_partner_table: None,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     // Default group is OptionA. Verify the cutover segment SQL
@@ -811,6 +817,7 @@ async fn flip_join_table_option_b_sequential(mut ctx: djogi::DjogiContext) {
         fk_to_parent_constraint: "book_tags_b_tag_id_fkey".to_string(),
         fk_to_partner_column: None,
         fk_to_partner_constraint: None,
+        fk_to_partner_table: None,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     g_tags.join_table_option = djogi::migrate::diff::PkFlipJoinTableOption::OptionB;
@@ -851,6 +858,7 @@ async fn flip_join_table_option_b_sequential(mut ctx: djogi::DjogiContext) {
         fk_to_parent_constraint: "book_tags_b_book_id_fkey".to_string(),
         fk_to_partner_column: None,
         fk_to_partner_constraint: None,
+        fk_to_partner_table: None,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     g_books.join_table_option = djogi::migrate::diff::PkFlipJoinTableOption::OptionB;
@@ -1472,6 +1480,7 @@ async fn flip_complex_schema_authors_books_tags_book_tags_reviews(mut ctx: djogi
         fk_to_parent_constraint: "c_book_tags_tag_id_fkey".to_string(),
         fk_to_partner_column: None,
         fk_to_partner_constraint: None,
+        fk_to_partner_table: None,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
     });
     let plan_t = lower_pk_flip_group(&g_tags, bucket());
@@ -2015,5 +2024,383 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
     assert_eq!(
         n_linked, 50,
         "cyc_a.b_id linkage preserved (50 rows had NULL FK at seed time)",
+    );
+}
+
+// ── Test 22 — B-12 (Codex round-3): Option A vs B produce DIFFERENT SQL ──
+//
+// The round-2 fix landed `pk_flip_join_table_option` in config /
+// compose / `apply_pk_flip_join_table_option` plumbing, but the
+// planner only read the field to print a comment marker. Same
+// `PkTypeFlipGroup` with different `join_table_option` produced
+// IDENTICAL SQL aside from one comment line. Codex round-3 found
+// the gap; this fixup wires the planner to emit the playbook §7
+// shapes — Option A: single mega-tx covering BOTH FK columns of
+// a cross-flipping join table; Option B: sequential per-parent
+// flips, each cutover only touches its own FK column.
+//
+// **What this test proves.** Drives the FULL config-pipeline
+// path: build before/after `AppliedSchema`s with two parents +
+// one cross-flipping join table, run `diff_bucket_maps` →
+// `apply_pk_flip_join_table_option` once with `OptionA` and once
+// with `OptionB`, lower each delta, and assert the rendered SQL
+// for the same logical input diverges in the §7-required ways.
+//
+//   * Option A: ONE group emits join-table SQL covering BOTH
+//     pairs (preparation installs both shadow columns, two
+//     backfill CALLs, two CONCURRENT INDEX builds, two ADD
+//     CONSTRAINT statements at segment 3b, two RENAMEs in the
+//     cutover, two final ADD CONSTRAINTs). The OTHER group
+//     emits no join-table work — it was transferred to the
+//     winner under Option A's "single mega-tx ownership" rule.
+//   * Option B: BOTH groups emit join-table SQL, but each only
+//     for ITS own FK column. Two smaller cutovers. Per playbook
+//     §7 this is the easier-to-abort layout; the trigger setup
+//     tolerates one shadow existing without the other between
+//     cutovers.
+
+fn cross_flipping_join_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSchema {
+    use djogi::migrate::schema::{
+        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PrimaryKeySchema, TableSchema,
+    };
+
+    let make_parent = |table: &str| TableSchema {
+        app: None,
+        columns: vec![ColumnSchema {
+            check: None,
+            default_sql: Some("generate_id()".to_string()),
+            foreign_key: None,
+            index_type: None,
+            indexed: false,
+            max_length: None,
+            name: "id".to_string(),
+            nullable: false,
+            on_delete: None,
+            outbox_exclude: false,
+            rationale: None,
+            relation_kind: None,
+            renamed_from: None,
+            sequence_within: None,
+            sql_type: "BIGINT".to_string(),
+            unique: false,
+        }],
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: pk_kind.clone(),
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: table.to_string(),
+        tenant_key: None,
+    };
+
+    let make_join_table = |table: &str, fk_a_col: &str, fk_b_col: &str| TableSchema {
+        app: None,
+        columns: vec![
+            ColumnSchema {
+                check: None,
+                default_sql: Some("generate_id()".to_string()),
+                foreign_key: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "id".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(ForeignKeySchema {
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: "jt_books".to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: fk_a_col.to_string(),
+                nullable: false,
+                on_delete: Some(OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(ForeignKeySchema {
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: "jt_tags".to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: fk_b_col.to_string(),
+                nullable: false,
+                on_delete: Some(OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+        ],
+        fts: None,
+        is_through: true,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            // Composite PK on (book_id, tag_id) — typical M:N junction shape.
+            columns: vec![fk_a_col.to_string(), fk_b_col.to_string()],
+            kind: PkKindSchema::Serial,
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: table.to_string(),
+        tenant_key: None,
+    };
+
+    let mut models = BTreeMap::new();
+    models.insert("jt_books".to_string(), make_parent("jt_books"));
+    models.insert("jt_tags".to_string(), make_parent("jt_tags"));
+    models.insert(
+        "jt_book_tags".to_string(),
+        make_join_table("jt_book_tags", "book_id", "tag_id"),
+    );
+    AppliedSchema {
+        djogi_version: "0.1.0".to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: "2026-04-26T00:00:00Z".to_string(),
+        indexes: Vec::new(),
+        models,
+        registered_apps: vec!["".to_string()],
+    }
+}
+
+#[test]
+fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
+    use djogi::migrate::diff::{
+        PkFlipJoinTableOption, PkTypeFlipGroup, SchemaOperation, apply_pk_flip_join_table_option,
+        diff_bucket_maps,
+    };
+
+    let bucket_key = bucket();
+    let before: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            cross_flipping_join_schema_with_pk_kind(PkKindSchema::HeerId),
+        );
+        m
+    };
+    let after: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            cross_flipping_join_schema_with_pk_kind(PkKindSchema::HeerIdRecencyBiased),
+        );
+        m
+    };
+
+    // Run the differ once and clone the result so we can apply
+    // each option independently. `apply_pk_flip_join_table_option`
+    // mutates in place.
+    let base_deltas = diff_bucket_maps(&before, &after);
+
+    let mut deltas_a = base_deltas.clone();
+    apply_pk_flip_join_table_option(&mut deltas_a, PkFlipJoinTableOption::OptionA);
+    let mut deltas_b = base_deltas.clone();
+    apply_pk_flip_join_table_option(&mut deltas_b, PkFlipJoinTableOption::OptionB);
+
+    let groups_for = |deltas: &[djogi::migrate::SchemaDelta]| -> Vec<PkTypeFlipGroup> {
+        let delta = deltas
+            .iter()
+            .find(|d| d.bucket == bucket_key)
+            .expect("delta for cross-flip bucket");
+        delta
+            .operations
+            .iter()
+            .filter_map(|op| match op {
+                SchemaOperation::PkTypeFlipGroup(g) => Some(g.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    let groups_a = groups_for(&deltas_a);
+    let groups_b = groups_for(&deltas_b);
+    assert_eq!(
+        groups_a.len(),
+        2,
+        "Option A still emits two groups (one per parent); ownership transfer only \
+         redistributes join_tables membership between them",
+    );
+    assert_eq!(
+        groups_b.len(),
+        2,
+        "Option B emits two groups, each retaining its own join-table entry",
+    );
+
+    // Option A — winner is alphabetically smaller `parent_table`
+    // (jt_books) and owns the join table fully; loser (jt_tags)
+    // has empty join_tables.
+    let winner_a = groups_a
+        .iter()
+        .find(|g| g.parent_table == "jt_books")
+        .expect("Option A winner");
+    let loser_a = groups_a
+        .iter()
+        .find(|g| g.parent_table == "jt_tags")
+        .expect("Option A loser");
+    assert_eq!(
+        winner_a.join_tables.len(),
+        1,
+        "Option A winner (jt_books) owns the join table",
+    );
+    assert!(
+        loser_a.join_tables.is_empty(),
+        "Option A loser (jt_tags) has no join-table work",
+    );
+
+    // Option B — both groups retain their join-table entry.
+    for g in &groups_b {
+        assert_eq!(
+            g.join_tables.len(),
+            1,
+            "Option B keeps each group's own join-table entry: {}",
+            g.parent_table,
+        );
+    }
+
+    // Lower both shapes and compare rendered SQL. The Option A
+    // winner's preparation emits ALTER TABLE ADD COLUMN for BOTH
+    // book_id_desc AND tag_id_desc; the Option B groups each emit
+    // ALTER TABLE ADD COLUMN for only ONE of them.
+    let plan_a_winner = lower_pk_flip_group(winner_a, bucket_key.clone());
+    let plan_a_loser = lower_pk_flip_group(loser_a, bucket_key.clone());
+    let prep_a_winner = &plan_a_winner.segments[0].statements[0].up;
+    let prep_a_loser = &plan_a_loser.segments[0].statements[0].up;
+    assert!(
+        prep_a_winner.contains("ALTER TABLE jt_book_tags ADD COLUMN book_id_desc bigint"),
+        "Option A winner preparation must add book_id_desc; got:\n{prep_a_winner}",
+    );
+    assert!(
+        prep_a_winner.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
+        "Option A winner preparation must ALSO add tag_id_desc (single mega-tx); \
+         got:\n{prep_a_winner}",
+    );
+    assert!(
+        !prep_a_loser.contains("ALTER TABLE jt_book_tags ADD COLUMN"),
+        "Option A loser must NOT touch the join table (transferred); got:\n{prep_a_loser}",
+    );
+
+    let group_b_books = groups_b
+        .iter()
+        .find(|g| g.parent_table == "jt_books")
+        .expect("Option B books");
+    let group_b_tags = groups_b
+        .iter()
+        .find(|g| g.parent_table == "jt_tags")
+        .expect("Option B tags");
+    let plan_b_books = lower_pk_flip_group(group_b_books, bucket_key.clone());
+    let plan_b_tags = lower_pk_flip_group(group_b_tags, bucket_key.clone());
+    let prep_b_books = &plan_b_books.segments[0].statements[0].up;
+    let prep_b_tags = &plan_b_tags.segments[0].statements[0].up;
+    assert!(
+        prep_b_books.contains("ALTER TABLE jt_book_tags ADD COLUMN book_id_desc bigint"),
+        "Option B books-group prep must add book_id_desc; got:\n{prep_b_books}",
+    );
+    assert!(
+        !prep_b_books.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
+        "Option B books-group prep must NOT add tag_id_desc \
+         (sequential — that's the tags-group's job); got:\n{prep_b_books}",
+    );
+    assert!(
+        prep_b_tags.contains("ALTER TABLE jt_book_tags ADD COLUMN tag_id_desc bigint"),
+        "Option B tags-group prep must add tag_id_desc; got:\n{prep_b_tags}",
+    );
+    assert!(
+        !prep_b_tags.contains("ALTER TABLE jt_book_tags ADD COLUMN book_id_desc bigint"),
+        "Option B tags-group prep must NOT add book_id_desc \
+         (sequential — that was already added by the books-group); got:\n{prep_b_tags}",
+    );
+
+    // Cutover divergence — Option A winner's cutover RENAMEs both
+    // shadows back; Option B's per-group cutover only renames its
+    // own. Same for the layout marker comment.
+    let cut_a_winner = &plan_a_winner.segments.last().unwrap().statements[0].up;
+    assert!(
+        cut_a_winner.contains("RENAME COLUMN book_id_desc TO book_id"),
+        "Option A winner cutover renames book_id_desc; got:\n{cut_a_winner}",
+    );
+    assert!(
+        cut_a_winner.contains("RENAME COLUMN tag_id_desc TO tag_id"),
+        "Option A winner cutover renames tag_id_desc; got:\n{cut_a_winner}",
+    );
+    assert!(
+        cut_a_winner.contains("Join-table layout: OptionA"),
+        "Option A cutover bears OptionA marker",
+    );
+
+    let cut_b_books = &plan_b_books.segments.last().unwrap().statements[0].up;
+    let cut_b_tags = &plan_b_tags.segments.last().unwrap().statements[0].up;
+    assert!(
+        cut_b_books.contains("RENAME COLUMN book_id_desc TO book_id")
+            && !cut_b_books.contains("RENAME COLUMN tag_id_desc TO tag_id"),
+        "Option B books-group cutover renames ONLY book_id_desc; got:\n{cut_b_books}",
+    );
+    assert!(
+        cut_b_tags.contains("RENAME COLUMN tag_id_desc TO tag_id")
+            && !cut_b_tags.contains("RENAME COLUMN book_id_desc TO book_id"),
+        "Option B tags-group cutover renames ONLY tag_id_desc; got:\n{cut_b_tags}",
+    );
+    assert!(
+        cut_b_tags.contains("Join-table layout: OptionB"),
+        "Option B cutover bears OptionB marker",
+    );
+
+    // Direct byte-inequality: the lowered SQL for the SAME logical
+    // group set must DIFFER between A and B. Render the full
+    // segment plans of all groups and compare.
+    let render_all = |plans: &[MigrationPlan]| -> String {
+        let mut out = String::new();
+        for p in plans {
+            for s in &p.segments {
+                for stmt in &s.statements {
+                    out.push_str(&stmt.up);
+                    out.push('\n');
+                }
+            }
+        }
+        out
+    };
+    let sql_a = render_all(&[plan_a_winner, plan_a_loser]);
+    let sql_b = render_all(&[plan_b_books, plan_b_tags]);
+    assert_ne!(
+        sql_a, sql_b,
+        "Option A and Option B must produce DIFFERENT SQL for the same input \
+         — that is the entire point of the knob",
     );
 }

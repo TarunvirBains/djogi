@@ -463,10 +463,133 @@ impl PkFlipJoinTableOption {
 ///
 /// **Idempotent.** Calling twice with the same option is a no-op.
 pub fn apply_pk_flip_join_table_option(deltas: &mut [SchemaDelta], option: PkFlipJoinTableOption) {
-    for delta in deltas {
+    // First pass: stamp the option onto every emitted group.
+    for delta in deltas.iter_mut() {
         for op in &mut delta.operations {
             if let SchemaOperation::PkTypeFlipGroup(group) = op {
                 group.join_table_option = option;
+            }
+        }
+    }
+    // Second pass: under Option A, hand cross-flipping join tables
+    // to the first group (alphabetically by parent_table) so its
+    // segment plan owns BOTH FK columns end-to-end (single mega-tx
+    // ownership per playbook §7). The other group drops the entry
+    // entirely so its segment plan does no join-table work — the
+    // join table is fully migrated in the first group's cutover
+    // window.
+    //
+    // **Why this is the correct shape for Option A.** Each side of
+    // a cross-flipping join table (`fk_to_partner_column =
+    // Some(_)`) needs the same shadow-column orchestration:
+    // preparation, backfill, concurrent index, NOT VALID FK at
+    // segment 3b, NOT NULL proof, cutover-time DROP +
+    // RENAME + ADD CONSTRAINT. Without the ownership transfer
+    // BOTH groups emit half-baked work on the join table (only
+    // their own FK column), splitting the join table's migration
+    // across two transactions — that's Option B by accident, not
+    // Option A. The transfer makes Option A a real "single
+    // mega-tx" per join table.
+    //
+    // **No-op under Option B.** Option B's whole point is the
+    // sequential-per-parent layout — each group flips its parent
+    // and re-points only its own FK column on the join table; the
+    // partner column waits for the partner group's cutover. Leave
+    // each group's join-table list alone.
+    //
+    // **Determinism.** The "first group" is selected by
+    // alphabetical `parent_table` order, the same key used in the
+    // differ's group ordering — two runs of compose against the
+    // same descriptor inventory produce byte-identical SQL.
+    if option != PkFlipJoinTableOption::OptionA {
+        return;
+    }
+    transfer_cross_flipping_join_tables_to_first_group(deltas);
+}
+
+/// `(join_table, fk_to_partner_column)` for one entry in a
+/// `PkTypeFlipGroup.join_tables` list — captured so the Option A
+/// transfer pass can read every group's join-table state without
+/// re-walking the operation list while mutating it.
+type GroupJoinTableSnapshot = (String, Option<String>);
+
+/// Helper for [`apply_pk_flip_join_table_option`] under Option A —
+/// hand the join table's full migration to the first group
+/// (alphabetical by parent_table) and remove it from the partner
+/// group. See the parent's doc comment for rationale.
+fn transfer_cross_flipping_join_tables_to_first_group(deltas: &mut [SchemaDelta]) {
+    for delta in deltas {
+        // Walk the delta's operations and gather every cross-flipping
+        // join table reference: (group's parent_table, join_table,
+        // partner_table_implied_by_fk_to_partner_column).
+        //
+        // We compute the transfers in two passes so we don't mutate
+        // the operation list while iterating — first scan, then
+        // mutate.
+        let mut planned_transfers: Vec<(String, String)> = Vec::new();
+        // (winner_parent, join_table) — the loser_parent computes
+        // implicitly from the partner's own group.
+        let mut groups_seen: Vec<(String, Vec<GroupJoinTableSnapshot>)> = Vec::new();
+        for op in delta.operations.iter() {
+            if let SchemaOperation::PkTypeFlipGroup(group) = op {
+                let entries: Vec<GroupJoinTableSnapshot> = group
+                    .join_tables
+                    .iter()
+                    .map(|jt| (jt.table.clone(), jt.fk_to_partner_column.clone()))
+                    .collect();
+                groups_seen.push((group.parent_table.clone(), entries));
+            }
+        }
+        // For each cross-flipping pair (`fk_to_partner_column = Some`),
+        // the winner is the lexicographically smaller `parent_table`.
+        for (parent_a, entries_a) in &groups_seen {
+            for (jt_a, partner_a) in entries_a {
+                if partner_a.is_none() {
+                    continue;
+                }
+                // Find a peer group whose join_tables also contain
+                // `jt_a` with a Some(partner_col) — that's the
+                // cross-flipping case.
+                let peer = groups_seen.iter().find(|(p, entries)| {
+                    p != parent_a
+                        && entries
+                            .iter()
+                            .any(|(jt, partner)| jt == jt_a && partner.is_some())
+                });
+                if peer.is_none() {
+                    continue;
+                }
+                let peer_parent = &peer.unwrap().0;
+                let winner = if parent_a <= peer_parent {
+                    parent_a.clone()
+                } else {
+                    peer_parent.clone()
+                };
+                let loser = if parent_a <= peer_parent {
+                    peer_parent.clone()
+                } else {
+                    parent_a.clone()
+                };
+                // Record (loser, join_table) — the loser's group
+                // drops this entry so the join table is fully owned
+                // by the winner.
+                if winner == *parent_a
+                    && !planned_transfers.contains(&(loser.clone(), jt_a.clone()))
+                {
+                    planned_transfers.push((loser, jt_a.clone()));
+                }
+            }
+        }
+        // Apply transfers: drop the join_table entries from the loser
+        // group's join_tables list. The winner keeps its existing
+        // entry (which already carries `fk_to_partner_column =
+        // Some(...)` — the planner reads that to emit BOTH columns'
+        // shadow orchestration in segments 1..5).
+        for op in delta.operations.iter_mut() {
+            if let SchemaOperation::PkTypeFlipGroup(group) = op {
+                group.join_tables.retain(|jt| {
+                    !planned_transfers.contains(&(group.parent_table.clone(), jt.table.clone()))
+                });
             }
         }
     }
@@ -580,6 +703,15 @@ pub struct PkFlipJoinTable {
     /// FK constraint name for `fk_to_partner_column`. `None` when
     /// `fk_to_partner_column` is `None`.
     pub fk_to_partner_constraint: Option<String>,
+    /// Postgres table name the partner FK column references.
+    /// `Some(_)` exactly when `fk_to_partner_column` is `Some(_)`
+    /// — the differ records both fields atomically so the planner
+    /// can re-emit the partner's FK constraint targeting the
+    /// correct parent table during the cutover. Required for B-12
+    /// Option A so the cutover's `ADD CONSTRAINT` statement points
+    /// at the right partner table; `None` means single-parent join
+    /// where this planner only ever emits the parent-side FK.
+    pub fk_to_partner_table: Option<String>,
     /// Family of the migrating parent's PK.
     pub family: PkFlipFamily,
 }
@@ -1016,7 +1148,7 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
                         }
                         Some((pc.name.clone(), pfk.ref_table.clone()))
                     });
-                    let (partner_col, partner_constraint) = match partner {
+                    let (partner_col, partner_constraint, partner_table) = match partner {
                         Some((pcol, partner_target))
                             if migrating_parents.contains(&partner_target) =>
                         {
@@ -1024,9 +1156,9 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
                             // join-table participates in both
                             // migrations. Recorded with `Some(...)`.
                             let pcons = format!("{}_{}_fkey", other_table_name, pcol);
-                            (Some(pcol), Some(pcons))
+                            (Some(pcol), Some(pcons), Some(partner_target))
                         }
-                        _ => (None, None),
+                        _ => (None, None, None),
                     };
                     join_tables.push(PkFlipJoinTable {
                         table: other_table_name.clone(),
@@ -1034,6 +1166,7 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
                         fk_to_parent_constraint: constraint_name,
                         fk_to_partner_column: partner_col,
                         fk_to_partner_constraint: partner_constraint,
+                        fk_to_partner_table: partner_table,
                         family,
                     });
                     continue;
