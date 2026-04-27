@@ -533,6 +533,19 @@ pub struct PkFlipChild {
     /// HeerId vs RanjId family — derived from the child's column
     /// SQL type. Mirrors the parent's family in practice.
     pub family: PkFlipFamily,
+    /// `true` when this child also participates in a mutual-FK cycle
+    /// with the migrating parent (the parent has its own FK pointing
+    /// back at this child). Cycle peers are regular children for
+    /// every segment (preparation / backfill / concurrent index /
+    /// NOT NULL proof / cutover) — the only delta is that their FK
+    /// constraint at segment 3b is `DEFERRABLE INITIALLY DEFERRED`,
+    /// and the cutover prefixes the body with `SET CONSTRAINTS ALL
+    /// DEFERRED` so mid-transaction states are tolerated until the
+    /// final `COMMIT`. See playbook §8 (asc-to-desc.md). The
+    /// [`PkTypeFlipGroup::cycles`] vec preserves the cycle structure
+    /// (peer column pairs) for diagnostics + cycle-detection in the
+    /// emitter; this flag drives per-child SQL shape.
+    pub cycle_flag: bool,
 }
 
 /// Self-FK metadata for a parent that references itself.
@@ -959,8 +972,30 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
                         peer_fk_column: col.name.clone(),
                         self_fk_column: self_fk_col,
                     });
-                    // Cycle peers are not added as ordinary children
-                    // — they take the deferred-FK path instead.
+                    // B-13 (Codex round-3): cycle peers are FIRST-CLASS
+                    // children. The peer's FK column needs the same
+                    // shadow-column orchestration as any other child
+                    // (preparation, backfill, concurrent index, NOT
+                    // NULL proof, cutover finalisation) — without it
+                    // the cutover SQL references a `_desc` column
+                    // that was never created. The `cycle_flag = true`
+                    // marker tells the segment-3b FK emitter to attach
+                    // `DEFERRABLE INITIALLY DEFERRED` to the
+                    // constraint, and the cutover-level
+                    // `SET CONSTRAINTS ALL DEFERRED` (gated on
+                    // `!cycles.is_empty()`) tolerates mid-transaction
+                    // FK states until COMMIT. Together these reproduce
+                    // the playbook §8 deferred-constraints pattern.
+                    children.push(PkFlipChild {
+                        table: other_table_name.clone(),
+                        fk_column: col.name.clone(),
+                        fk_constraint_name: constraint_name,
+                        on_delete: fk.on_delete,
+                        fk_nullable: col.nullable,
+                        fk_unique: col.unique,
+                        family,
+                        cycle_flag: true,
+                    });
                     continue;
                 }
                 // Detect join-table: through-table whose two FKs
@@ -1012,6 +1047,7 @@ fn promote_pk_flips_to_groups(after: &AppliedSchema, ops: &mut Vec<SchemaOperati
                     fk_nullable: col.nullable,
                     fk_unique: col.unique,
                     family,
+                    cycle_flag: false,
                 });
             }
         }
@@ -2881,8 +2917,15 @@ mod tests {
     }
 
     /// Cycle A ↔ B: A has FK to B, B has FK to A. Closure must
-    /// terminate (visited-set protection) and the cycle is recorded
-    /// as a `PkFlipCycle` peer rather than as an ordinary child.
+    /// terminate (visited-set protection) and the cycle peer is
+    /// recorded BOTH as a [`PkFlipCycle`] (drives cutover-level
+    /// `SET CONSTRAINTS ALL DEFERRED`) AND as a [`PkFlipChild`] with
+    /// `cycle_flag = true` (drives shadow-column orchestration plus
+    /// per-FK `DEFERRABLE INITIALLY DEFERRED`). B-13 (Codex round-3)
+    /// promoted cycle peers from cycle-only metadata to first-class
+    /// children so every segment emitter (preparation, backfill,
+    /// concurrent index, NOT NULL proof, cutover) iterates them
+    /// uniformly with the rest of the cascade.
     #[test]
     fn transitive_fk_closure_terminates_on_cycle() {
         use crate::migrate::schema::PkKindSchema;
@@ -2909,6 +2952,16 @@ mod tests {
             .expect("PkTypeFlipGroup emitted");
         assert_eq!(group.cycles.len(), 1, "cycle peer detected");
         assert_eq!(group.cycles[0].peer_table, "b");
+        // B-13: peer also lands in `children` with cycle_flag = true
+        // so segments 1 / 2 / 3 / 3b / 4 / 5 emit the b.a_id_desc
+        // shadow-column orchestration.
+        let cycle_children: Vec<_> = group
+            .children
+            .iter()
+            .filter(|c| c.cycle_flag)
+            .map(|c| (c.table.as_str(), c.fk_column.as_str()))
+            .collect();
+        assert_eq!(cycle_children, vec![("b", "a_id")]);
     }
 
     /// 3-level cascade with no cycles — sanity: closure walks

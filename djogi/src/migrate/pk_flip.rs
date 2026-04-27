@@ -436,21 +436,11 @@ fn emit_backfill_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<Operati
             lossy: None,
         });
     }
-    for cyc in &group.cycles {
-        let dst = format!("{}{}", cyc.peer_fk_column, SHADOW_SUFFIX);
-        out.push(OperationSql {
-            label: format!("PkFlipBackfill {tbl}", tbl = cyc.peer_table),
-            up: emit_backfill_body(
-                &cyc.peer_table,
-                &cyc.peer_fk_column,
-                &dst,
-                p_family,
-                direction,
-            ),
-            down: down_note.clone(),
-            lossy: None,
-        });
-    }
+    // B-13 (Codex round-3): cycle peers are now first-class children
+    // (`PkFlipChild::cycle_flag = true`). Their backfill ran in the
+    // children loop above; the dedicated cycle loop that lived here
+    // before was redundant work and produced duplicate
+    // `PkFlipBackfill <peer>` statements.
     out
 }
 
@@ -1176,7 +1166,18 @@ fn emit_preparation(group: &PkTypeFlipGroup) -> OperationSql {
 }
 
 fn child_in_cycle(group: &PkTypeFlipGroup, table: &str) -> bool {
-    group.cycles.iter().any(|c| c.peer_table == table)
+    // B-13 (Codex round-3): cycle peers are now first-class children
+    // (`PkFlipChild::cycle_flag = true`). Either the per-child marker
+    // or the legacy `group.cycles` vec is authoritative — both are
+    // populated by the differ for the same peer, so checking either
+    // is correct. We keep the `cycles` lookup as a defensive
+    // fallback for hand-built test groups that populate `cycles`
+    // without the matching child entry; production paths set both.
+    group
+        .children
+        .iter()
+        .any(|c| c.cycle_flag && c.table == table)
+        || group.cycles.iter().any(|c| c.peer_table == table)
 }
 
 // ── Segment 2 — backfill + verification ──────────────────────────────────
@@ -1321,32 +1322,11 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
         );
     }
 
-    // Cycle peers — backfill the peer's FK to this parent. The
-    // peer's own PK flip lives in its own PkTypeFlipGroup; here we
-    // only own the FK shadow on the peer side because the cycle
-    // requires both sides to be in sync before the cutover.
-    for cyc in &group.cycles {
-        let dst = format!("{}{}", cyc.peer_fk_column, SHADOW_SUFFIX);
-        let _ = writeln!(
-            up,
-            "CALL heeranjid_bulk_backfill('{tbl}', '{src}', '{dst}', {kind}, 10000);",
-            tbl = cyc.peer_table,
-            src = cyc.peer_fk_column,
-            dst = dst,
-            kind = p_kind,
-        );
-        let _ = writeln!(
-            up,
-            "SELECT count(*) FROM {tbl}\n  \
-             WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL)\n     \
-             OR ({src} IS NOT NULL AND {dst} <> {flip}({src}));",
-            tbl = cyc.peer_table,
-            src = cyc.peer_fk_column,
-            dst = dst,
-            flip = flip_fn_name(p_family, group.direction),
-        );
-        let _ = writeln!(up, "-- expect: 0");
-    }
+    // B-13 (Codex round-3): cycle peers are now first-class children
+    // (`PkFlipChild::cycle_flag = true`); their backfill emits via
+    // the children loop above. The standalone cycle loop that lived
+    // here previously was redundant work and would have produced
+    // duplicate CALL statements per peer.
 
     OperationSql {
         label: format!("PkFlipBackfill {parent}"),
@@ -1453,21 +1433,10 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
         let _ = dst;
     }
 
-    for cyc in &group.cycles {
-        let dst = format!("{}{}", cyc.peer_fk_column, SHADOW_SUFFIX);
-        out.push(OperationSql {
-            label: format!("PkFlipBackfill {tbl}", tbl = cyc.peer_table),
-            up: emit_backfill_body(
-                &cyc.peer_table,
-                &cyc.peer_fk_column,
-                &dst,
-                p_family,
-                direction,
-            ),
-            down: down_note.clone(),
-            lossy: None,
-        });
-    }
+    // B-13 (Codex round-3): cycle peers are first-class children with
+    // `cycle_flag = true`. The children loop above already emits the
+    // backfill statement per peer; the cycle-only loop that used to
+    // live here was redundant.
 
     out
 }
@@ -3028,6 +2997,7 @@ mod tests {
             fk_nullable: false,
             fk_unique: false,
             family: PkFlipFamily::Heer,
+            cycle_flag: false,
         });
         // The parent in §4 is named "parent"; we use "tbl" for the
         // single-table fixture. Per the v3 segment plan the child FK
@@ -3171,6 +3141,9 @@ mod tests {
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,
+            // B-13: real differ output marks cycle peers as
+            // first-class children with cycle_flag = true.
+            cycle_flag: true,
         });
         group.cycles.push(PkFlipCycle {
             peer_table: "b".to_string(),
@@ -3482,6 +3455,7 @@ mod tests {
             fk_nullable: false,
             fk_unique: false,
             family: PkFlipFamily::Heer,
+            cycle_flag: false,
         });
         let plan_4 = super::lower_pk_flip_group(&g4, bucket());
         write(
@@ -3519,7 +3493,11 @@ mod tests {
             whole_plan_normalised(&plan_7),
         );
 
-        // §8 cycle.
+        // §8 cycle. B-13: cycle peer must be a first-class child
+        // (`cycle_flag = true`) so the segment plan creates the
+        // shadow column / trigger / index / FK on `b.a_id_desc`.
+        // The fixture dumper now mirrors what the real differ
+        // produces.
         let mut g8 = synth_group_single_table();
         g8.parent_table = "a".to_string();
         g8.children.push(PkFlipChild {
@@ -3530,6 +3508,7 @@ mod tests {
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,
+            cycle_flag: true,
         });
         g8.cycles.push(PkFlipCycle {
             peer_table: "b".to_string(),
@@ -3607,6 +3586,7 @@ mod tests {
             fk_nullable: false,
             fk_unique: false,
             family: PkFlipFamily::Heer,
+            cycle_flag: false,
         });
         let plan = super::lower_pk_flip_group(&group, bucket());
         let actual = whole_plan_normalised(&plan);
@@ -3679,6 +3659,9 @@ mod tests {
             fk_nullable: true,
             fk_unique: false,
             family: PkFlipFamily::Heer,
+            // B-13: real differ output marks cycle peers as
+            // first-class children with cycle_flag = true.
+            cycle_flag: true,
         });
         group.cycles.push(PkFlipCycle {
             peer_table: "b".to_string(),

@@ -367,6 +367,7 @@ async fn flip_parent_child_with_verification_enforced(mut ctx: djogi::DjogiConte
         fk_nullable: false,
         fk_unique: false,
         family: PkFlipFamily::Heer,
+        cycle_flag: false,
     });
     let plan = lower_pk_flip_group(&group, bucket());
     let runner_ctx = make_runner_ctx(&plan, "V20260425900004__flip_parent_child");
@@ -1432,6 +1433,7 @@ async fn flip_complex_schema_authors_books_tags_book_tags_reviews(mut ctx: djogi
         fk_nullable: false,
         fk_unique: false,
         family: djogi::migrate::diff::PkFlipFamily::Heer,
+        cycle_flag: false,
     });
     let plan_a = lower_pk_flip_group(&g_authors, bucket());
     apply_plan(
@@ -1697,4 +1699,321 @@ async fn flip_partial_apply_resume_via_repair(mut ctx: djogi::DjogiContext) {
         .await
         .expect("ledger 2");
     assert_eq!(status2, "applied", "resume run must apply cleanly");
+}
+
+// ── Test 21 — B-13 (Codex round-3): real two-table A↔B cycle  ────────────
+//
+// This is the FIRST cycle live test that drives the planner via
+// `diff_bucket_maps` end-to-end against real per-bucket
+// `AppliedSchema`s. Every previous cycle test fabricated
+// `PkTypeFlipGroup` directly via `synth_single_group` and grafted
+// `PkFlipCycle` entries onto an otherwise child-less group — that
+// path missed the structural defect Codex round-3 found, which is
+// that cycle peers were recorded ONLY in `cycles` and never in
+// `children`, so the segment emitters (preparation / backfill /
+// concurrent index / NOT NULL proof / cutover) never created the
+// peer's shadow column. Cutover SQL then referenced
+// `b.a_id_desc` / `zzz_b_autofill_desc` even though those objects
+// were never created — a hard Postgres error in production.
+//
+// **What this test proves.**
+//
+// 1. `diff_bucket_maps` against a real two-table cycle schema
+//    (a.b_id → b, b.a_id → a, both HeerId flipping to
+//    HeerIdRecencyBiased) produces TWO `PkTypeFlipGroup`s, one per
+//    parent.
+// 2. Each group records the OTHER table as a `PkFlipCycle` AND as a
+//    `PkFlipChild` with `cycle_flag = true` — so every segment
+//    emitter iterates the peer uniformly.
+// 3. The cutover SQL for each group references columns that ACTUALLY
+//    exist post-segment-1 (no dangling `b.a_id_desc` /
+//    `zzz_b_autofill_desc` references when applying A's group).
+// 4. The deferred-FK clause `DEFERRABLE INITIALLY DEFERRED` lands on
+//    the cycle peer's segment-3b NOT VALID FK, and the cutover
+//    prefixes the body with `SET CONSTRAINTS ALL DEFERRED`.
+// 5. Sequential apply of the two groups round-trips the data — both
+//    PKs end up `bigint` with `heerid_next_desc()` defaults, the FK
+//    columns survive the rename, and `count(*)` is preserved.
+
+fn cycle_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSchema {
+    use djogi::migrate::schema::{
+        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PrimaryKeySchema, TableSchema,
+    };
+
+    let make_table = |table: &str, fk_col: &str, ref_table: &str| TableSchema {
+        app: None,
+        columns: vec![
+            ColumnSchema {
+                check: None,
+                default_sql: Some("generate_id()".to_string()),
+                foreign_key: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "id".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: Some(ForeignKeySchema {
+                    on_delete: OnDeleteSchema::Restrict,
+                    ref_column: "id".to_string(),
+                    ref_table: ref_table.to_string(),
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: fk_col.to_string(),
+                // Nullable so seed rows can land before the cycle is
+                // closed (avoids chicken-and-egg insertion order
+                // problems in the test-data setup).
+                nullable: true,
+                on_delete: Some(OnDeleteSchema::Restrict),
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+        ],
+        fts: None,
+        is_through: false,
+        moved_from_app: None,
+        partition: None,
+        primary_key: PrimaryKeySchema {
+            columns: vec!["id".to_string()],
+            kind: pk_kind.clone(),
+        },
+        rationale: None,
+        renamed_from: None,
+        rls_enabled: false,
+        table: table.to_string(),
+        tenant_key: None,
+    };
+
+    let mut models = BTreeMap::new();
+    models.insert("cyc_a".to_string(), make_table("cyc_a", "b_id", "cyc_b"));
+    models.insert("cyc_b".to_string(), make_table("cyc_b", "a_id", "cyc_a"));
+    AppliedSchema {
+        djogi_version: "0.1.0".to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: "2026-04-26T00:00:00Z".to_string(),
+        indexes: Vec::new(),
+        models,
+        registered_apps: vec!["".to_string()],
+    }
+}
+
+#[djogi::djogi_test]
+async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiContext) {
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    // 1. Provision the live schema (HeerId asc).
+    ctx.raw_ddl(
+        "CREATE TABLE cyc_a (id BIGINT PRIMARY KEY DEFAULT generate_id(), \
+         b_id BIGINT NULL)",
+    )
+    .await
+    .expect("create cyc_a");
+    ctx.raw_ddl(
+        "CREATE TABLE cyc_b (id BIGINT PRIMARY KEY DEFAULT generate_id(), \
+         a_id BIGINT NULL REFERENCES cyc_a(id) DEFERRABLE INITIALLY DEFERRED)",
+    )
+    .await
+    .expect("create cyc_b");
+    ctx.raw_ddl(
+        "ALTER TABLE cyc_a ADD CONSTRAINT cyc_a_b_id_fkey \
+         FOREIGN KEY (b_id) REFERENCES cyc_b(id) DEFERRABLE INITIALLY DEFERRED",
+    )
+    .await
+    .expect("close cycle FK");
+
+    // Seed 100 rows on each side. NULL FKs initially; then update so
+    // half carry a real cycle reference, half remain NULL.
+    ctx.raw_ddl("INSERT INTO cyc_a (b_id) SELECT NULL FROM generate_series(1, 100)")
+        .await
+        .expect("seed a");
+    ctx.raw_ddl("INSERT INTO cyc_b (a_id) SELECT NULL FROM generate_series(1, 100)")
+        .await
+        .expect("seed b");
+    ctx.raw_ddl(
+        "WITH a_ids AS (SELECT id FROM cyc_a LIMIT 50), \
+         b_ids AS (SELECT id, ROW_NUMBER() OVER () AS rn FROM cyc_b LIMIT 50), \
+         z AS (SELECT a.id AS aid, b.id AS bid \
+               FROM (SELECT id, ROW_NUMBER() OVER () AS rn FROM cyc_a LIMIT 50) a \
+               JOIN b_ids b ON a.rn = b.rn) \
+         UPDATE cyc_a SET b_id = z.bid FROM z WHERE cyc_a.id = z.aid",
+    )
+    .await
+    .expect("link a->b");
+    ctx.raw_ddl(
+        "WITH a_ids AS (SELECT id, ROW_NUMBER() OVER () AS rn FROM cyc_a LIMIT 50), \
+         b_ids AS (SELECT id, ROW_NUMBER() OVER () AS rn FROM cyc_b LIMIT 50) \
+         UPDATE cyc_b SET a_id = a.id FROM a_ids a, b_ids b \
+         WHERE a.rn = b.rn AND cyc_b.id = b.id",
+    )
+    .await
+    .expect("link b->a");
+
+    // 2. Build before/after snapshots and drive `diff_bucket_maps`.
+    use djogi::migrate::diff::{PkTypeFlipGroup, SchemaOperation};
+    let bucket_key = bucket();
+    let before: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            cycle_schema_with_pk_kind(PkKindSchema::HeerId),
+        );
+        m
+    };
+    let after: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            cycle_schema_with_pk_kind(PkKindSchema::HeerIdRecencyBiased),
+        );
+        m
+    };
+    let deltas = djogi::migrate::diff_bucket_maps(&before, &after);
+    let delta = deltas
+        .iter()
+        .find(|d| d.bucket == bucket_key)
+        .expect("delta for cycle bucket");
+
+    // 3. Two `PkTypeFlipGroup`s — one per parent. Both list the peer
+    //    as a `PkFlipChild` with `cycle_flag = true` AND as a
+    //    `PkFlipCycle`. THIS is the structural fix B-13 closed.
+    let groups: Vec<&PkTypeFlipGroup> = delta
+        .operations
+        .iter()
+        .filter_map(|op| match op {
+            SchemaOperation::PkTypeFlipGroup(g) => Some(g),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        groups.len(),
+        2,
+        "two PkTypeFlipGroups expected for a two-table cycle: {:?}",
+        groups.iter().map(|g| &g.parent_table).collect::<Vec<_>>(),
+    );
+    for g in &groups {
+        assert_eq!(
+            g.cycles.len(),
+            1,
+            "{} should record 1 cycle peer",
+            g.parent_table
+        );
+        let cycle_children: Vec<&str> = g
+            .children
+            .iter()
+            .filter(|c| c.cycle_flag)
+            .map(|c| c.table.as_str())
+            .collect();
+        assert_eq!(
+            cycle_children.len(),
+            1,
+            "{} should have exactly one cycle_flag child",
+            g.parent_table,
+        );
+    }
+
+    // 4. The cutover SQL for each group must reference its OWN
+    //    parent's `id_desc` AND the peer's `<fk>_desc` shadow.
+    //    Pre-fix the cutover would name `b.a_id_desc` /
+    //    `zzz_b_autofill_desc` even though those objects were never
+    //    created in segment 1. Post-fix every shadow object the
+    //    cutover names is created in segment 1.
+    let group_a = groups
+        .iter()
+        .find(|g| g.parent_table == "cyc_a")
+        .expect("group for cyc_a");
+    let plan_a = lower_pk_flip_group(group_a, bucket_key.clone());
+    let cutover_a = &plan_a.segments.last().expect("cutover").statements[0].up;
+    assert!(
+        cutover_a.contains("SET CONSTRAINTS ALL DEFERRED"),
+        "cyc_a cutover must defer all constraints; got:\n{cutover_a}",
+    );
+    // The peer's shadow column finalisation must appear (DROP /
+    // RENAME / ADD CONSTRAINT). Pre-fix none of these landed.
+    assert!(
+        cutover_a.contains("ALTER TABLE cyc_b DROP COLUMN a_id"),
+        "cyc_a cutover must finalise cyc_b's old FK column; got:\n{cutover_a}",
+    );
+    assert!(
+        cutover_a.contains("ALTER TABLE cyc_b RENAME COLUMN a_id_desc TO a_id"),
+        "cyc_a cutover must rename cyc_b's shadow back; got:\n{cutover_a}",
+    );
+
+    // 5. Apply both groups sequentially and assert data round-trips.
+    //    Order: cyc_a first (alphabetical, deterministic).
+    let runner_ctx_a = make_runner_ctx(&plan_a, "V20260425900020__cycle_real_a");
+    apply_plan(&mut ctx, &plan_a, &runner_ctx_a, &_guard)
+        .await
+        .expect("apply cyc_a flip");
+
+    let group_b = groups
+        .iter()
+        .find(|g| g.parent_table == "cyc_b")
+        .expect("group for cyc_b");
+    let plan_b = lower_pk_flip_group(group_b, bucket_key.clone());
+    let runner_ctx_b = make_runner_ctx(&plan_b, "V20260425900021__cycle_real_b");
+    apply_plan(&mut ctx, &plan_b, &runner_ctx_b, &_guard)
+        .await
+        .expect("apply cyc_b flip");
+
+    // Both PKs flipped — DEFAULT now calls heerid_next_desc().
+    for tbl in &["cyc_a", "cyc_b"] {
+        let default_sql: Option<String> = ctx
+            .raw_scalar(
+                "SELECT column_default FROM information_schema.columns \
+                 WHERE table_name = $1 AND column_name = 'id'",
+                &[tbl],
+            )
+            .await
+            .expect("default lookup");
+        assert!(
+            default_sql
+                .as_deref()
+                .unwrap_or("")
+                .contains("heerid_next_desc"),
+            "{tbl}.id default must call heerid_next_desc(); got: {default_sql:?}",
+        );
+    }
+
+    // Row counts preserved on both tables; FK columns retained.
+    let n_a: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM cyc_a", &[])
+        .await
+        .expect("count a");
+    assert_eq!(n_a, 100, "cyc_a row count preserved across cycle flip");
+    let n_b: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM cyc_b", &[])
+        .await
+        .expect("count b");
+    assert_eq!(n_b, 100, "cyc_b row count preserved across cycle flip");
+    let n_linked: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM cyc_a WHERE b_id IS NOT NULL",
+            &[],
+        )
+        .await
+        .expect("linked a");
+    assert_eq!(
+        n_linked, 50,
+        "cyc_a.b_id linkage preserved (50 rows had NULL FK at seed time)",
+    );
 }
