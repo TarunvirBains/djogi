@@ -2946,6 +2946,57 @@ async fn flip_three_level_cascade_via_diff_bucket_maps(mut ctx: djogi::DjogiCont
         .await
         .expect("count chain");
     assert_eq!(n_chain, 20, "FK chain p_root → c_mid → gc_leaf intact");
+
+    // ── B-14 partial (Codex round-4) — gc_leaf untouched at the catalog level ─
+    //
+    // The asc↔desc invariant says only DIRECT children of the
+    // migrating parent get shadow-column orchestration; transitive
+    // descendants (`gc_leaf` here) must NOT receive a `_desc`
+    // shadow column because their FK target's PK value-space does
+    // NOT re-key when the parent flips. Round-3's test asserted
+    // this at the GROUP level (`group.children` only contained
+    // `c_mid`) but never verified it at the live-DB level — a
+    // regression in segment 1 emission that mistakenly added
+    // `gc_leaf.c_id_desc` would have slipped through if the cutover
+    // somehow tolerated it.
+    //
+    // The catalog-level check makes the invariant explicit:
+    // post-cutover `gc_leaf` must have exactly the columns it had
+    // pre-flip, no `*_desc` column anywhere.
+    let gc_columns: String = ctx
+        .raw_scalar(
+            "SELECT string_agg(column_name::text, ',' ORDER BY ordinal_position) \
+             FROM information_schema.columns \
+             WHERE table_schema = 'public' AND table_name = 'gc_leaf'",
+            &[],
+        )
+        .await
+        .expect("gc_leaf columns");
+    assert_eq!(
+        gc_columns, "id,c_id",
+        "B-14: gc_leaf must have exactly its pre-flip columns post-cutover; \
+         the asc↔desc invariant forbids shadow-column orchestration on \
+         transitive descendants. Got: {gc_columns}",
+    );
+    // Negative-form check: no column on gc_leaf may end with the
+    // `_desc` suffix. The string-agg assertion above already
+    // covers the current 2-column shape exhaustively. We add a
+    // suffix-byte check (Rust-side, no regex per project rule) so
+    // a future schema extension that legitimately adds non-FK
+    // columns to `gc_leaf` retains the guard against shadow-column
+    // emission on transitive descendants.
+    for col in gc_columns.split(',') {
+        // `_desc` is the SHADOW_SUFFIX constant the emitter uses;
+        // hard-coded here because the test crate doesn't import
+        // crate-internal constants. Any column ending in this
+        // suffix on `gc_leaf` would indicate the emitter
+        // misclassified `gc_leaf` as a direct child.
+        assert!(
+            !col.as_bytes().ends_with(b"_desc"),
+            "B-14: gc_leaf column `{col}` carries the `_desc` suffix; the asc↔desc \
+             invariant forbids shadow-column orchestration on transitive descendants",
+        );
+    }
 }
 
 // ── Test 24 — Codex round-4 B-15: Option A multi-parent live apply ───────
@@ -3258,5 +3309,314 @@ async fn flip_option_a_multi_parent_via_diff_bucket_maps_end_to_end(mut ctx: djo
     assert_eq!(
         n_join, 100,
         "all 100 (book, tag) pairs round-trip through the new FK chain",
+    );
+}
+
+// ── Test 25 — Codex round-4 B-14 PARTIAL: partitioned-parent real path ───
+//
+// Round-3 added a real-path test for the transitive FK closure
+// (`flip_three_level_cascade_via_diff_bucket_maps`) but the
+// partitioned-parent variant of `promote_pk_flips_to_groups` was
+// only exercised through `synth_single_group` — the synthetic
+// path bypasses the differ entirely. Codex round-4 PARTIAL
+// flagged the gap; this test fills it.
+//
+// **Shape.** Build a parent + 3 leaf-partition `AppliedSchema`
+// (the leaves are present in the live DB but the descriptor
+// schema only carries the parent — Postgres-side leaves are
+// runtime state expanded by the runner from `pg_inherits`).
+// Drive `diff_bucket_maps` so the differ promotes the per-table
+// `PkTypeFlip` into a `PkTypeFlipGroup` carrying
+// `partitioned_parent = Some(...)`. Lower the delta via
+// `plan_delta` and apply against a real Postgres 18 instance
+// with all 3 leaves present.
+//
+// **Assertions.** The differ produces exactly one
+// `PkTypeFlipGroup` with `partitioned_parent.is_some()`. The
+// lowering routes through `build_segments_partitioned`. After
+// apply, every leaf carries the post-flip schema (column type,
+// PK shape) and all 3 leaves are still attached via
+// `pg_inherits`. The aggregate row count round-trips.
+
+fn partitioned_parent_schema(pk_kind: PkKindSchema) -> AppliedSchema {
+    use djogi::migrate::schema::{ColumnSchema, PartitionSchema, PrimaryKeySchema, TableSchema};
+
+    let mut models = BTreeMap::new();
+    models.insert(
+        "p_events".to_string(),
+        TableSchema {
+            app: None,
+            columns: vec![
+                ColumnSchema {
+                    check: None,
+                    default_sql: Some("generate_id()".to_string()),
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "id".to_string(),
+                    nullable: false,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "BIGINT".to_string(),
+                    unique: false,
+                },
+                ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "ts".to_string(),
+                    nullable: false,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "TIMESTAMPTZ".to_string(),
+                    unique: false,
+                },
+                ColumnSchema {
+                    check: None,
+                    default_sql: None,
+                    foreign_key: None,
+                    index_type: None,
+                    indexed: false,
+                    max_length: None,
+                    name: "payload".to_string(),
+                    nullable: true,
+                    on_delete: None,
+                    outbox_exclude: false,
+                    rationale: None,
+                    relation_kind: None,
+                    renamed_from: None,
+                    sequence_within: None,
+                    sql_type: "TEXT".to_string(),
+                    unique: false,
+                },
+            ],
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: Some(PartitionSchema::Range {
+                column: "ts".to_string(),
+            }),
+            primary_key: PrimaryKeySchema {
+                columns: vec!["ts".to_string(), "id".to_string()],
+                kind: pk_kind.clone(),
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "p_events".to_string(),
+            tenant_key: None,
+        },
+    );
+    AppliedSchema {
+        djogi_version: "0.1.0".to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: "2026-04-26T00:00:00Z".to_string(),
+        indexes: Vec::new(),
+        models,
+        registered_apps: vec!["".to_string()],
+    }
+}
+
+#[djogi::djogi_test]
+async fn flip_partitioned_parent_via_diff_bucket_maps(mut ctx: djogi::DjogiContext) {
+    use djogi::migrate::diff::{PkTypeFlipGroup, SchemaOperation, diff_bucket_maps};
+    use djogi::migrate::plan_delta;
+
+    let _guard = acquire_test_workspace_guard();
+    bootstrap_ledger(&mut ctx).await.expect("bootstrap");
+
+    // 1. Provision the live partitioned parent + 3 leaves.
+    ctx.raw_ddl(
+        "CREATE TABLE p_events (\
+         id BIGINT NOT NULL DEFAULT generate_id(), \
+         ts TIMESTAMPTZ NOT NULL, \
+         payload TEXT, \
+         PRIMARY KEY (ts, id)) \
+         PARTITION BY RANGE (ts)",
+    )
+    .await
+    .expect("partitioned parent");
+    ctx.raw_ddl(
+        "CREATE TABLE p_events_a PARTITION OF p_events \
+         FOR VALUES FROM ('2026-01-01') TO ('2026-04-01')",
+    )
+    .await
+    .expect("leaf a");
+    ctx.raw_ddl(
+        "CREATE TABLE p_events_b PARTITION OF p_events \
+         FOR VALUES FROM ('2026-04-01') TO ('2026-07-01')",
+    )
+    .await
+    .expect("leaf b");
+    ctx.raw_ddl(
+        "CREATE TABLE p_events_c PARTITION OF p_events \
+         FOR VALUES FROM ('2026-07-01') TO ('2027-01-01')",
+    )
+    .await
+    .expect("leaf c");
+
+    // Seed 30 rows per leaf (90 total). The non-uniform per-leaf
+    // counts catch any per-leaf code path that hard-codes a
+    // common count.
+    ctx.raw_ddl(
+        "INSERT INTO p_events (ts, payload) \
+         SELECT '2026-02-15'::timestamptz + (g * interval '1 day'), 'a' || g \
+         FROM generate_series(1, 30) g",
+    )
+    .await
+    .expect("seed a");
+    ctx.raw_ddl(
+        "INSERT INTO p_events (ts, payload) \
+         SELECT '2026-05-15'::timestamptz + (g * interval '1 day'), 'b' || g \
+         FROM generate_series(1, 30) g",
+    )
+    .await
+    .expect("seed b");
+    ctx.raw_ddl(
+        "INSERT INTO p_events (ts, payload) \
+         SELECT '2026-08-15'::timestamptz + (g * interval '1 day'), 'c' || g \
+         FROM generate_series(1, 30) g",
+    )
+    .await
+    .expect("seed c");
+
+    let n_pre: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM p_events", &[])
+        .await
+        .expect("count pre");
+    assert_eq!(n_pre, 90, "seed produces 90 rows across 3 leaves");
+
+    // 2. Build before/after schemas. Only the parent table is
+    //    described in the descriptor schema — the leaves are
+    //    Postgres-side runtime state the runner expands from
+    //    `pg_inherits` at apply time.
+    let bucket_key = bucket();
+    let before: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            partitioned_parent_schema(PkKindSchema::HeerId),
+        );
+        m
+    };
+    let after: BTreeMap<BucketKey, AppliedSchema> = {
+        let mut m = BTreeMap::new();
+        m.insert(
+            bucket_key.clone(),
+            partitioned_parent_schema(PkKindSchema::HeerIdRecencyBiased),
+        );
+        m
+    };
+
+    let deltas = diff_bucket_maps(&before, &after).expect("differ");
+    let delta = deltas
+        .iter()
+        .find(|d| d.bucket == bucket_key)
+        .expect("delta for partitioned bucket");
+
+    // 3. Exactly one `PkTypeFlipGroup` with `partitioned_parent`.
+    let groups: Vec<&PkTypeFlipGroup> = delta
+        .operations
+        .iter()
+        .filter_map(|op| match op {
+            SchemaOperation::PkTypeFlipGroup(g) => Some(g),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(groups.len(), 1, "exactly one flip group (p_events)");
+    let group = groups[0];
+    assert_eq!(group.parent_table, "p_events");
+    assert!(
+        group.partitioned_parent.is_some(),
+        "differ propagates partition metadata into the group payload",
+    );
+    // No children — the descriptor only describes the parent
+    // table itself; partition leaves are runtime state.
+    assert!(
+        group.children.is_empty(),
+        "partitioned parent test has no descriptor-level children",
+    );
+
+    // 4. Lower + apply the plan. The plan must route through
+    //    `build_segments_partitioned` (not the cascade path).
+    let plan = plan_delta(delta).expect("plan_delta");
+    // Per `build_segments_partitioned`: 6 segments minimum
+    // (prep, backfill, verify, index, not_null_proof, cutover).
+    // Optional 3b FK segment is absent here (no children/self-FK/
+    // join-table), so the segment count is exactly 6.
+    assert_eq!(
+        plan.segments.len(),
+        6,
+        "partitioned plan has the canonical 6-segment shape (no FK segment)",
+    );
+
+    let runner_ctx = make_runner_ctx(&plan, "V20260426900200__partitioned_real_path");
+    apply_plan(&mut ctx, &plan, &runner_ctx, &_guard)
+        .await
+        .expect("apply partitioned plan");
+
+    // 5. Post-cutover assertions.
+    // 5a. Aggregate row count preserved across all 3 leaves.
+    let n_post: i64 = ctx
+        .raw_scalar("SELECT count(*)::bigint FROM p_events", &[])
+        .await
+        .expect("count post");
+    assert_eq!(n_post, 90, "row count preserved across partitioned flip");
+
+    // 5b. Each leaf survives with its row count.
+    for (leaf, expected) in &[("p_events_a", 30), ("p_events_b", 30), ("p_events_c", 30)] {
+        let n: i64 = ctx
+            .raw_scalar(&format!("SELECT count(*)::bigint FROM {leaf}"), &[])
+            .await
+            .expect("leaf count");
+        assert_eq!(
+            n, *expected,
+            "leaf {leaf} preserves its row count post-cutover",
+        );
+    }
+
+    // 5c. All 3 leaves remain attached via pg_inherits.
+    let n_attached: i64 = ctx
+        .raw_scalar(
+            "SELECT count(*)::bigint FROM pg_inherits \
+             WHERE inhparent = 'p_events'::regclass",
+            &[],
+        )
+        .await
+        .expect("pg_inherits scan");
+    assert_eq!(
+        n_attached, 3,
+        "all 3 leaves remain attached to p_events after the flip",
+    );
+
+    // 5d. Parent's id column DEFAULT now calls the post-flip
+    //     generator. Leaves inherit this from the parent in PG13+.
+    let default_sql: Option<String> = ctx
+        .raw_scalar(
+            "SELECT column_default FROM information_schema.columns \
+             WHERE table_name = 'p_events' AND column_name = 'id'",
+            &[],
+        )
+        .await
+        .expect("default lookup");
+    assert!(
+        default_sql
+            .as_deref()
+            .unwrap_or("")
+            .contains("heerid_next_desc"),
+        "p_events.id default must call heerid_next_desc(); got: {default_sql:?}",
     );
 }
