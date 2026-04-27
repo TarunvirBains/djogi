@@ -66,15 +66,28 @@
 //! single-context architecture (the runner has a single pool today;
 //! `pool_for(database)` is a future seam).
 //!
-//! # Read-only DiffOnly contract (B-3)
+//! # Read-only dry-run contract (B-3 + Codex umbrella U-5)
 //!
-//! `AttuneMode::DiffOnly` does NOT bootstrap the ledger. On a fresh
-//! database where `djogi_schema_migrations` does not exist yet, the
-//! returned report carries an [`AttuneDiagnostic::LedgerTableMissing`]
-//! entry and the ledger table stays absent. The operator must run
-//! `apply` or `attune --record` (or `baseline`) to bootstrap before
-//! subsequent diffs become meaningful. Only `Record` and `Squash`
-//! modes call `ledger::bootstrap`.
+//! Attune's read-only contract extends to the ledger table itself.
+//! Three paths are read-only and MUST NOT bootstrap
+//! `djogi_schema_migrations`:
+//!
+//! - `AttuneMode::DiffOnly` (any value of `apply`)
+//! - `AttuneMode::Record { .. }` with `apply == false`
+//! - `AttuneMode::Squash { .. }` with `apply == false`
+//!
+//! On a fresh database where the ledger does not exist yet, every
+//! read-only path probes `pg_class` instead of calling
+//! [`super::ledger::bootstrap`]; the returned report carries an
+//! [`AttuneDiagnostic::LedgerTableMissing`] entry and the ledger
+//! stays absent. The operator must run `apply` or `attune --record
+//! --apply` (or `baseline`) to bootstrap. Only Record / Squash with
+//! `--apply` call `ledger::bootstrap`.
+//!
+//! Pre-U-5, Record / Squash bootstrapped the ledger up-front
+//! regardless of `--apply`, which silently created the table during
+//! a dry-run — an out-of-contract mutation that the umbrella round-2
+//! review caught. The fix gates the bootstrap behind `req.apply`.
 //!
 //! # No regex
 //!
@@ -222,12 +235,14 @@ pub struct AttuneReport {
     /// succeeded.
     pub parent_pointer_updated: bool,
     /// Structured diagnostics surfaced alongside the diff entries.
-    /// Today this carries [`AttuneDiagnostic::LedgerTableMissing`] (B-3)
-    /// when DiffOnly runs on a fresh database — the report is still
-    /// produced, but the operator sees an actionable note that they
-    /// must run `apply` or `attune --record` to bootstrap the ledger
-    /// before subsequent diffs are meaningful. Per Codex umbrella
-    /// U-1 the report also carries
+    /// Today this carries [`AttuneDiagnostic::LedgerTableMissing`]
+    /// (B-3 + Codex umbrella U-5) on every read-only path — DiffOnly
+    /// always, plus Record / Squash without `--apply` — when the
+    /// ledger has not been bootstrapped on the connected database.
+    /// The report is still produced, but the operator sees an
+    /// actionable note that they must run `apply` or
+    /// `attune --record --apply` to bootstrap before subsequent diffs
+    /// are meaningful. Per Codex umbrella U-1 the report also carries
     /// [`AttuneDiagnostic::DryRunMutationsSkipped`] when a Record /
     /// Squash mode was invoked WITHOUT `--apply`: the diff is reported
     /// but no DB / disk mutation happened.
@@ -238,9 +253,11 @@ pub struct AttuneReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttuneDiagnostic {
     /// The `djogi_schema_migrations` table does not exist in the
-    /// connected database. DiffOnly's read-only contract (B-3) means
-    /// attune does NOT bootstrap the ledger from a diff; the operator
-    /// must run `apply` or `attune --record` first.
+    /// connected database. Attune's read-only dry-run contract
+    /// (B-3 + Codex umbrella U-5) means every dry-run path — DiffOnly
+    /// always, plus Record / Squash WITHOUT `--apply` — does NOT
+    /// bootstrap the ledger. The operator must run `apply` or
+    /// `attune --record --apply` first.
     ///
     /// The `database` field is the active connection's
     /// `current_database()` so a multi-database workspace's diagnostic
@@ -728,16 +745,27 @@ pub async fn attune(
     // table when the operator only asked for a diff.
     let active_database = active_database_name(ctx).await?;
 
-    // Mode dispatch for ledger bootstrap (B-3): DiffOnly is read-only
-    // and must NEVER create `djogi_schema_migrations` on a fresh DB.
-    // Record + Squash both write to the ledger and bootstrap it
-    // up-front (idempotent CREATE TABLE IF NOT EXISTS). DiffOnly skips
-    // bootstrap; if the ledger table is missing it surfaces a
-    // structured diagnostic in the report instead of silently creating
-    // the table.
-    let ledger_exists = match &req.mode {
-        AttuneMode::DiffOnly => ledger_table_exists(ctx).await?,
-        AttuneMode::Record { .. } | AttuneMode::Squash { .. } => {
+    // Mode dispatch for ledger bootstrap (B-3 + Codex umbrella U-5):
+    // DiffOnly is read-only and must NEVER create
+    // `djogi_schema_migrations` on a fresh DB. Record + Squash bootstrap
+    // ledger state up-front via an idempotent CREATE TABLE IF NOT EXISTS
+    // — but ONLY when `--apply` is set. Without `--apply`, Record /
+    // Squash are dry-runs (Codex umbrella U-1) and the read-only
+    // contract extends to the ledger table itself: a dry-run on a
+    // fresh database must not create the ledger table as a side effect
+    // of the diff display. If we bootstrapped here unconditionally,
+    // `attune --record-ledger` (no --apply) on a fresh DB would still
+    // execute the CREATE TABLE — an out-of-contract mutation. So we
+    // probe `ledger_table_exists` for every dry-run path (DiffOnly,
+    // Record-without-apply, Squash-without-apply) and only bootstrap
+    // on the apply path.
+    let ledger_exists = match (&req.mode, req.apply) {
+        // Dry-run paths — probe only.
+        (AttuneMode::DiffOnly, _)
+        | (AttuneMode::Record { .. }, false)
+        | (AttuneMode::Squash { .. }, false) => ledger_table_exists(ctx).await?,
+        // Apply paths — Record / Squash bootstrap before any insert.
+        (AttuneMode::Record { .. }, true) | (AttuneMode::Squash { .. }, true) => {
             ledger::bootstrap(ctx)
                 .await
                 .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
@@ -787,7 +815,15 @@ pub async fn attune(
     }
 
     let mut diagnostics: Vec<AttuneDiagnostic> = Vec::new();
-    if matches!(req.mode, AttuneMode::DiffOnly) && !ledger_exists {
+    // Codex umbrella U-5: `LedgerTableMissing` surfaces on EVERY
+    // dry-run path that observed a missing ledger table — DiffOnly
+    // always, plus Record / Squash without `--apply`. Pre-fix only
+    // DiffOnly emitted the diagnostic; an operator running
+    // `attune --record-ledger` (no --apply) on a fresh DB had no
+    // operator-facing hint that the diff was vacuous because the
+    // ledger had never been bootstrapped. The flag is the
+    // observed-emptiness signal, not the mode itself.
+    if !ledger_exists {
         diagnostics.push(AttuneDiagnostic::LedgerTableMissing {
             database: active_database.clone(),
         });

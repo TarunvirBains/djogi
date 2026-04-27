@@ -2079,15 +2079,32 @@ async fn u1_attune_record_without_apply_is_dry_run(mut ctx: djogi::DjogiContext)
         "must surface DryRunMutationsSkipped: {:?}",
         report.diagnostics
     );
-    // CRITICAL: ledger has NO row for the unrecorded version.
-    let count: i64 = ctx
+    // CRITICAL: ledger has NO row for the unrecorded version. Under
+    // Codex umbrella U-5 the dry-run path also does not bootstrap the
+    // ledger table on a fresh per-test DB — so the absence-of-row
+    // assertion takes the form "either the table is missing entirely
+    // (no bootstrap on dry-run, the U-5 invariant) or the table is
+    // present but the version is absent". Both shapes prove no row
+    // was inserted on this run; the U-5 dedicated tests pin the
+    // table-existence side directly.
+    let table_exists: bool = ctx
         .raw_scalar(
-            "SELECT COUNT(*)::bigint FROM djogi_schema_migrations WHERE version = $1",
-            &[&"V20260101000003__dry_run".to_string()],
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
         )
         .await
-        .expect("count");
-    assert_eq!(count, 0, "dry-run must NOT insert a ledger row");
+        .expect("table-exists probe");
+    if table_exists {
+        let count: i64 = ctx
+            .raw_scalar(
+                "SELECT COUNT(*)::bigint FROM djogi_schema_migrations WHERE version = $1",
+                &[&"V20260101000003__dry_run".to_string()],
+            )
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "dry-run must NOT insert a ledger row");
+    }
     let _ = std::fs::remove_dir_all(&work);
 }
 
@@ -2293,6 +2310,232 @@ async fn u1_attune_record_without_apply_does_not_touch_parent(mut ctx: djogi::Dj
     assert_eq!(
         pre_stdout, post_stdout,
         "parent index entry for `migrations` must be unchanged after a dry-run"
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+// ── Codex umbrella U-5: dry-run must NOT bootstrap ledger table ───────────
+
+/// Codex umbrella U-5 BLOCK: `attune --record-ledger` (Record mode)
+/// without `--apply` MUST NOT create `djogi_schema_migrations` on a
+/// fresh database. Pre-fix the bootstrap call sat OUTSIDE the
+/// `--apply` gate, so the dry-run silently created the ledger table —
+/// an out-of-contract mutation that the umbrella round-2 review
+/// caught.
+///
+/// We exercise the load-bearing invariant by:
+///
+/// 1. Asserting the ledger table is absent on the fresh per-test DB
+///    (every `#[djogi_test]` gets a clean database).
+/// 2. Running attune in Record mode with `apply: false`.
+/// 3. Asserting `pg_class` STILL shows no `djogi_schema_migrations`.
+#[djogi::djogi_test]
+async fn u5_attune_record_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u5_record_no_bootstrap");
+    let db = current_database(&mut ctx).await;
+    // Lay one unrecorded SQL file so the diff has something to walk.
+    let bucket_dir = work.join(format!("migrations/{db}/_global_"));
+    std::fs::create_dir_all(&bucket_dir).unwrap();
+    std::fs::write(
+        bucket_dir.join("V20260501000000__u5_dry.sql"),
+        "CREATE TABLE u5_dry_table(id INT);",
+    )
+    .unwrap();
+
+    // Pre-condition: ledger does NOT exist yet on the fresh per-test DB.
+    let pre_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("pre-probe");
+    assert!(
+        !pre_exists,
+        "fresh per-test DB must not carry djogi_schema_migrations"
+    );
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: None,
+        apply: false, // the load-bearing flag
+        record: false,
+        dev_mode: true,
+        mode: AttuneMode::Record {
+            reason: "u5 dry-run".to_string(),
+        },
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert!(!report.mutated, "dry-run must report mutated=false");
+
+    // CRITICAL: ledger table must STILL be absent. Pre-U-5 the
+    // bootstrap ran during this attune call and the table existed by
+    // now — violating the read-only contract.
+    let post_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("post-probe");
+    assert!(
+        !post_exists,
+        "U-5: Record dry-run must NOT bootstrap djogi_schema_migrations"
+    );
+
+    // The LedgerTableMissing diagnostic must be present so the
+    // operator sees why the diff is vacuous.
+    assert!(
+        report.diagnostics.iter().any(|d| matches!(
+            d,
+            djogi::migrate::AttuneDiagnostic::LedgerTableMissing { database } if database == &db
+        )),
+        "must surface LedgerTableMissing on dry-run with no ledger: {:?}",
+        report.diagnostics
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella U-5: `attune --record-ledger --apply` on a fresh DB
+/// MUST bootstrap the ledger before inserting the recorded row. The
+/// flag flip recovers the pre-fix behavior on the apply path so we
+/// don't regress the legitimate side of the gate.
+#[djogi::djogi_test]
+async fn u5_attune_record_apply_does_bootstrap_ledger(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u5_record_with_apply");
+    let db = current_database(&mut ctx).await;
+    let bucket_dir = work.join(format!("migrations/{db}/_global_"));
+    std::fs::create_dir_all(&bucket_dir).unwrap();
+    std::fs::write(
+        bucket_dir.join("V20260501000001__u5_apply.sql"),
+        "CREATE TABLE u5_apply_table(id INT);",
+    )
+    .unwrap();
+
+    let pre_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("pre-probe");
+    assert!(!pre_exists, "fresh per-test DB must start empty");
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: None,
+        apply: true,
+        record: false,
+        dev_mode: true,
+        mode: AttuneMode::Record {
+            reason: "u5 apply".to_string(),
+        },
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert!(report.mutated, "--apply must mutate");
+
+    let post_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("post-probe");
+    assert!(
+        post_exists,
+        "U-5: Record --apply must bootstrap djogi_schema_migrations"
+    );
+    let _ = std::fs::remove_dir_all(&work);
+}
+
+/// Codex umbrella U-5: `attune --squash` without `--apply` MUST NOT
+/// create the ledger table. The squash dry-run path early-returns
+/// before any disk mutation, but the bootstrap call sat upstream of
+/// the dry-run gate — pre-fix it would still execute. We pin the
+/// post-fix invariant here.
+#[djogi::djogi_test]
+async fn u5_attune_squash_dry_run_does_not_bootstrap_ledger(mut ctx: djogi::DjogiContext) {
+    let work = temp_workspace("u5_squash_no_bootstrap");
+    let db = current_database(&mut ctx).await;
+    // A SQL file so the squash candidate-bucket scan has something
+    // to find. We pass the version as `from`; without a matching
+    // disk entry the squash would refuse with `SquashFromVersionNotFound`,
+    // but we want to exercise the bootstrap-gate path independently
+    // from the from-version gate.
+    let bucket_dir = work.join(format!("migrations/{db}/_global_"));
+    std::fs::create_dir_all(&bucket_dir).unwrap();
+    std::fs::write(
+        bucket_dir.join("V20260501000002__u5_squash_dry.sql"),
+        "CREATE TABLE u5_squash_dry(id INT);",
+    )
+    .unwrap();
+
+    let pre_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("pre-probe");
+    assert!(!pre_exists, "fresh per-test DB must start empty");
+
+    let lock_path = work.join(".djogi-migrate.lock");
+    let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(2)).expect("lock");
+    let req = AttuneRequest {
+        workspace_root: &work,
+        database_url: "postgres://localhost/main",
+        profile: "development",
+        target: None,
+        apply: false, // dry-run
+        record: false,
+        dev_mode: true,
+        mode: AttuneMode::Squash {
+            from: "V20260501000002__u5_squash_dry".to_string(),
+            publish: false,
+            app: None,
+        },
+        _guard: &guard,
+    };
+    let report = attune(&mut ctx, req).await.expect("attune ok");
+    assert!(!report.mutated, "Squash dry-run must report mutated=false");
+
+    let post_exists: bool = ctx
+        .raw_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .expect("post-probe");
+    assert!(
+        !post_exists,
+        "U-5: Squash dry-run must NOT bootstrap djogi_schema_migrations"
+    );
+
+    // DryRunMutationsSkipped surfaces with mode = "Squash" so the
+    // operator's CLI output names the requested mode.
+    assert!(
+        report.diagnostics.iter().any(|d| matches!(
+            d,
+            djogi::migrate::AttuneDiagnostic::DryRunMutationsSkipped { mode } if *mode == "Squash"
+        )),
+        "must surface DryRunMutationsSkipped(mode=\"Squash\"): {:?}",
+        report.diagnostics
     );
     let _ = std::fs::remove_dir_all(&work);
 }
