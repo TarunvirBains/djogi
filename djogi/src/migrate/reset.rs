@@ -36,8 +36,15 @@
 //!
 //! After recreation the runner re-points at the fresh database via
 //! [`crate::pg::pool::DjogiPool::connect`] and replays each migration
-//! file pair in lexical order — the `V<ts>__<slug>.sql` filename
-//! convention from [`super::naming`] guarantees lexical = chronological.
+//! file pair in HISTORICAL apply order (Codex umbrella U-4 per
+//! `docs/spec/configuration.md`). T7's out-of-order policy allows a
+//! hotfix migration to apply AFTER a later one, so lexical version
+//! sort is NOT a faithful replay of what the live DB experienced.
+//! `db reset` pre-flight reads `djogi_schema_migrations.applied_at`
+//! BEFORE the drop, then uses that order during replay; versions
+//! absent from the historical order (typically disk files added after
+//! the last apply) sort lexically afterwards. Fresh DBs with no
+//! ledger fall back to lexical sort safely.
 //!
 //! # No regex
 //!
@@ -342,13 +349,39 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     let _guard = super::guard::acquire(&lock_path, super::guard::DEFAULT_TIMEOUT)
         .map_err(|e| ResetError::WorkspaceLockFailed { source: e })?;
 
-    // 4. Drop + recreate the application database via the maintenance
+    // 4. Codex umbrella U-4: capture the HISTORICAL apply order from
+    //    the live ledger BEFORE the drop. T7's out-of-order policy
+    //    allows a hotfix migration to apply AFTER a later one, e.g.
+    //    `applied_at` of `0001 < 0003 < 0002`. Lexical version-string
+    //    sort would replay them as `0001, 0002, 0003`, which is NOT
+    //    the sequence the live database actually experienced. If
+    //    `0002` only succeeded historically because `0003` was
+    //    already in place, lexical replay would re-apply it
+    //    out-of-order on a fresh DB — different state from what we
+    //    just dropped.
+    //
+    //    Strategy: pre-flight a read-only connection to the live DB,
+    //    query `djogi_schema_migrations` ordered by `applied_at`, and
+    //    capture `(bucket, version) -> rank`. We then use that rank
+    //    as the replay sort key. Versions absent from the historical
+    //    order (e.g. files added on disk after the last apply) sort
+    //    AFTER any historical entry, lexically among themselves.
+    //
+    //    Failure to capture the historical order is non-fatal — the
+    //    most common case is a fresh DB where the ledger table does
+    //    not exist yet. We treat any error here as "no historical
+    //    order to honour" and fall back to lexical sort.
+    let historical_order = capture_historical_apply_order(req.database_url)
+        .await
+        .unwrap_or_default();
+
+    // 5. Drop + recreate the application database via the maintenance
     //    connection. A fresh tokio_postgres client is opened just for
     //    the two DDLs — the maintenance pool is intentionally NOT
     //    cached because db reset is interactive / one-shot.
     drop_and_create_database(&maintenance_url, &database).await?;
 
-    // 5. Connect to the freshly-created application DB and replay
+    // 6. Connect to the freshly-created application DB and replay
     //    every committed migration.
     let pool = DjogiPool::connect(req.database_url)
         .await
@@ -356,30 +389,153 @@ pub async fn reset_app_database(req: ResetRequest<'_>) -> Result<ResetReport, Re
     let mut ctx = DjogiContext::from_pool(pool);
 
     let buckets = scan_committed_migrations(req.workspace_root, &database)?;
+    // Codex umbrella U-4: replay order = historical apply order
+    // (`applied_at` ascending) for versions that have a historical
+    // entry; lexical-after-historical for versions that do not.
+    let replay_plan = build_replay_plan(&buckets, &historical_order);
     let mut replayed: Vec<ReplayedMigration> = Vec::new();
 
-    for (bucket, versions) in buckets {
-        for version in versions {
-            replay_one_migration(
-                &mut ctx,
-                req.workspace_root,
-                &bucket,
-                &version,
-                &req.migrate_config,
-                &_guard,
-            )
-            .await?;
-            replayed.push(ReplayedMigration {
-                bucket: bucket.clone(),
-                version,
-            });
-        }
+    for (bucket, version) in replay_plan {
+        replay_one_migration(
+            &mut ctx,
+            req.workspace_root,
+            &bucket,
+            &version,
+            &req.migrate_config,
+            &_guard,
+        )
+        .await?;
+        replayed.push(ReplayedMigration {
+            bucket: bucket.clone(),
+            version,
+        });
     }
 
     Ok(ResetReport {
         database,
         replayed_versions: replayed,
     })
+}
+
+/// Codex umbrella U-4 — capture the historical apply order from the
+/// live ledger before the drop.
+///
+/// Connects to the application DB at `database_url`, queries
+/// `djogi_schema_migrations` ordered by `applied_at ASC, id ASC`,
+/// and returns a `(bucket, version) -> rank` map where lower ranks
+/// applied first historically.
+///
+/// Returns an empty map (NOT an error) when the ledger table does
+/// not exist or the query fails. The caller treats absence of a
+/// historical order as "fall back to lexical" so a fresh DB still
+/// resets cleanly.
+///
+/// Only `Applied` / `Faked` / `Baseline` rows participate — `Pending`,
+/// `Failed`, `RolledBack` do not represent migrations whose effect
+/// the live DB carries forward.
+async fn capture_historical_apply_order(
+    database_url: &str,
+) -> Result<BTreeMap<(BucketKey, String), u64>, ()> {
+    let (client, conn) = tokio_postgres::connect(database_url, NoTls)
+        .await
+        .map_err(|_| ())?;
+    let driver = tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            tracing::debug!("[db reset] historical-order driver: {e}");
+        }
+    });
+
+    // Resolve the active database name so the captured map's bucket
+    // identity matches what `scan_committed_migrations` produces.
+    let db_row = client
+        .query_one("SELECT current_database()::text", &[])
+        .await
+        .map_err(|_| ())?;
+    let database: String = db_row.try_get(0).map_err(|_| ())?;
+
+    // Probe the ledger table — fresh DBs have no
+    // `djogi_schema_migrations` so the SELECT below would fail. The
+    // probe + early return keeps the error path silent.
+    let probe = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_class \
+             WHERE relname = 'djogi_schema_migrations' AND relkind = 'r')",
+            &[],
+        )
+        .await
+        .map_err(|_| ())?;
+    let exists: bool = probe.try_get(0).map_err(|_| ())?;
+    if !exists {
+        drop(client);
+        let _ = driver.await;
+        return Ok(BTreeMap::new());
+    }
+
+    let rows = client
+        .query(
+            "SELECT version, app_label, status \
+             FROM djogi_schema_migrations \
+             WHERE status IN ('applied', 'faked', 'baseline') \
+             ORDER BY applied_at ASC, id ASC",
+            &[],
+        )
+        .await
+        .map_err(|_| ())?;
+
+    let mut out: BTreeMap<(BucketKey, String), u64> = BTreeMap::new();
+    for (rank, row) in rows.iter().enumerate() {
+        let version: String = row.try_get("version").map_err(|_| ())?;
+        let app_label: String = row.try_get("app_label").map_err(|_| ())?;
+        let bucket = BucketKey {
+            database: database.clone(),
+            app: app_label,
+        };
+        out.insert((bucket, version), rank as u64);
+    }
+    drop(client);
+    let _ = driver.await;
+    Ok(out)
+}
+
+/// Codex umbrella U-4 — given the on-disk bucket map and the captured
+/// historical apply order, produce the deterministic replay plan as a
+/// flat `Vec<(BucketKey, String)>` in the order migrations should be
+/// re-applied.
+///
+/// **Sort key** (lower wins): `(historical_rank.unwrap_or(u64::MAX),
+/// bucket.database, bucket.app, version)`. Versions WITH a historical
+/// rank apply first (in apply-order); versions WITHOUT (typically
+/// disk files added after the last historical apply) apply last,
+/// sorted lexically among themselves so re-running the reset
+/// produces byte-identical output.
+///
+/// Pulled out as a free function so unit tests can pin every edge
+/// case without standing up a live connection.
+fn build_replay_plan(
+    buckets: &BTreeMap<BucketKey, Vec<String>>,
+    historical_order: &BTreeMap<(BucketKey, String), u64>,
+) -> Vec<(BucketKey, String)> {
+    let mut flat: Vec<(BucketKey, String)> = Vec::new();
+    for (bucket, versions) in buckets {
+        for v in versions {
+            flat.push((bucket.clone(), v.clone()));
+        }
+    }
+    flat.sort_by(|a, b| {
+        let ra = historical_order
+            .get(&(a.0.clone(), a.1.clone()))
+            .copied()
+            .unwrap_or(u64::MAX);
+        let rb = historical_order
+            .get(&(b.0.clone(), b.1.clone()))
+            .copied()
+            .unwrap_or(u64::MAX);
+        ra.cmp(&rb)
+            .then_with(|| a.0.database.cmp(&b.0.database))
+            .then_with(|| a.0.app.cmp(&b.0.app))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+    flat
 }
 
 // ── Internals ─────────────────────────────────────────────────────────────
@@ -1192,5 +1348,152 @@ mod tests {
         let scanned = scan_committed_migrations(&work, "main").unwrap();
         assert!(scanned.is_empty());
         let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── Codex umbrella U-4: historical-order replay plan ────────────────
+
+    fn bk(database: &str, app: &str) -> BucketKey {
+        BucketKey {
+            database: database.to_string(),
+            app: app.to_string(),
+        }
+    }
+
+    /// `build_replay_plan` honours the historical apply order: when
+    /// `0001 → applied_at_rank 0`, `0003 → rank 1`, `0002 → rank 2`,
+    /// the replay plan is `[0001, 0003, 0002]` — NOT lexical
+    /// `[0001, 0002, 0003]`. This is the load-bearing umbrella U-4
+    /// invariant.
+    #[test]
+    fn u4_replay_plan_honours_historical_apply_order_over_lexical() {
+        let bucket = bk("main", "");
+        let mut buckets = BTreeMap::new();
+        buckets.insert(
+            bucket.clone(),
+            vec![
+                "V20260101000000__a".to_string(),
+                "V20260201000000__b".to_string(),
+                "V20260301000000__c".to_string(),
+            ],
+        );
+        // Out-of-order historical apply: a (0), c (1), b (2). Lexical
+        // would be a, b, c — different order!
+        let mut historical = BTreeMap::new();
+        historical.insert((bucket.clone(), "V20260101000000__a".to_string()), 0u64);
+        historical.insert((bucket.clone(), "V20260301000000__c".to_string()), 1u64);
+        historical.insert((bucket.clone(), "V20260201000000__b".to_string()), 2u64);
+
+        let plan = build_replay_plan(&buckets, &historical);
+        let versions: Vec<&str> = plan.iter().map(|(_, v)| v.as_str()).collect();
+        assert_eq!(
+            versions,
+            vec![
+                "V20260101000000__a",
+                "V20260301000000__c",
+                "V20260201000000__b",
+            ],
+            "historical apply order MUST win over lexical version sort"
+        );
+    }
+
+    /// When NO historical order exists (fresh DB, ledger missing),
+    /// the plan falls back to lexical version-string sort. This is
+    /// the safe-by-default behaviour that pre-umbrella reset always
+    /// used.
+    #[test]
+    fn u4_replay_plan_falls_back_to_lexical_when_historical_empty() {
+        let bucket = bk("main", "");
+        let mut buckets = BTreeMap::new();
+        buckets.insert(
+            bucket.clone(),
+            vec![
+                "V20260201000000__b".to_string(),
+                "V20260101000000__a".to_string(),
+                "V20260301000000__c".to_string(),
+            ],
+        );
+        let historical: BTreeMap<(BucketKey, String), u64> = BTreeMap::new();
+        let plan = build_replay_plan(&buckets, &historical);
+        let versions: Vec<&str> = plan.iter().map(|(_, v)| v.as_str()).collect();
+        assert_eq!(
+            versions,
+            vec![
+                "V20260101000000__a",
+                "V20260201000000__b",
+                "V20260301000000__c",
+            ],
+            "empty historical map → lexical sort"
+        );
+    }
+
+    /// Mixed shape: some versions have historical entries, some
+    /// don't (typical when files were added on disk after the last
+    /// apply). The historical ones come first in apply-order; the
+    /// rest sort lexically afterwards.
+    #[test]
+    fn u4_replay_plan_mixes_historical_and_new_disk_files() {
+        let bucket = bk("main", "");
+        let mut buckets = BTreeMap::new();
+        buckets.insert(
+            bucket.clone(),
+            vec![
+                "V20260101000000__a".to_string(), // historical, rank 0
+                "V20260201000000__b".to_string(), // not historical
+                "V20260301000000__c".to_string(), // historical, rank 1
+                "V20260401000000__d".to_string(), // not historical
+            ],
+        );
+        let mut historical = BTreeMap::new();
+        historical.insert((bucket.clone(), "V20260101000000__a".to_string()), 0u64);
+        historical.insert((bucket.clone(), "V20260301000000__c".to_string()), 1u64);
+
+        let plan = build_replay_plan(&buckets, &historical);
+        let versions: Vec<&str> = plan.iter().map(|(_, v)| v.as_str()).collect();
+        assert_eq!(
+            versions,
+            vec![
+                "V20260101000000__a", // rank 0
+                "V20260301000000__c", // rank 1
+                "V20260201000000__b", // no rank, lexical first among non-historical
+                "V20260401000000__d", // no rank, lexical second
+            ],
+        );
+    }
+
+    /// Cross-bucket: historical apply ranks impose order across
+    /// different buckets too. Without that property, two buckets
+    /// applied historically as `bucketA/v1, bucketB/v1, bucketA/v2`
+    /// would lose the interleaved ordering.
+    #[test]
+    fn u4_replay_plan_orders_across_buckets_by_historical_rank() {
+        let a = bk("main", "users");
+        let b = bk("main", "billing");
+        let mut buckets = BTreeMap::new();
+        buckets.insert(
+            a.clone(),
+            vec!["V0001__a1".to_string(), "V0003__a2".to_string()],
+        );
+        buckets.insert(b.clone(), vec!["V0002__b1".to_string()]);
+
+        // Historical apply: a/V0001 (0), b/V0002 (1), a/V0003 (2).
+        let mut historical = BTreeMap::new();
+        historical.insert((a.clone(), "V0001__a1".to_string()), 0u64);
+        historical.insert((b.clone(), "V0002__b1".to_string()), 1u64);
+        historical.insert((a.clone(), "V0003__a2".to_string()), 2u64);
+
+        let plan = build_replay_plan(&buckets, &historical);
+        let render: Vec<String> = plan
+            .iter()
+            .map(|(bucket, v)| format!("{}/{}/{}", bucket.database, bucket.app, v))
+            .collect();
+        assert_eq!(
+            render,
+            vec![
+                "main/users/V0001__a1".to_string(),
+                "main/billing/V0002__b1".to_string(),
+                "main/users/V0003__a2".to_string(),
+            ],
+            "interleaved cross-bucket apply order must be preserved"
+        );
     }
 }
