@@ -1,4 +1,4 @@
-//! `djogi::apps! { … }` function-like proc macro — Phase 7-Zero v3 T7.
+//! `djogi::apps! { … }` function-like proc macro.
 //!
 //! Lowers a block of `#[app(...)] pub struct Foo;` declarations into:
 //!
@@ -10,8 +10,8 @@
 //!    `LABEL` / `DATABASE` / `DESCRIPTOR` associated constants fully
 //!    resolvable at const-eval time.
 //! 3. One `inventory::submit!` of the struct's
-//!    `::djogi::apps::AppDescriptor` per entry — Phase 7's differ
-//!    iterates these.
+//!    `::djogi::apps::AppDescriptor` per entry for migration and
+//!    ledger consumers to discover.
 //! 4. A single zero-sized invocation sentinel emitted exactly once
 //!    per `djogi::apps!` call. Two invocations in the same crate
 //!    collide on the sentinel's name and rustc raises `duplicate
@@ -19,7 +19,7 @@
 //!
 //! # Parser
 //!
-//! Hand-rolled, matching the T3 `indexes(...)` pattern. Darling's
+//! Hand-rolled, matching the model-index parser shape. Darling's
 //! derive grammar cannot express "a block of top-level item
 //! declarations, each with its own attribute" — this is closer to a
 //! mini-module-level parser than an attribute form. The parser walks
@@ -29,14 +29,11 @@
 //! preserved in the emitted struct; field form other than unit
 //! (tuple or named) is rejected with a precise span.
 //!
-//! # No regex
+//! # ASCII validation
 //!
-//! Per `feedback_no_regex_in_djogi.md`, every label shape check uses
-//! byte-level primitives (`u8::is_ascii_alphabetic` /
-//! `u8::is_ascii_alphanumeric` / explicit byte equality). Default
-//! label derivation calls `str::to_ascii_lowercase`; explicit
-//! overrides go through `validate_label_shape` before any token
-//! emission.
+//! Every label shape check uses byte-level primitives. Default label
+//! derivation calls `str::to_ascii_lowercase`; explicit overrides go
+//! through `validate_label_shape` before any token emission.
 //!
 //! # Path routing
 //!
@@ -44,10 +41,11 @@
 //! `feedback_macro_path_routing.md`. The macro never references
 //! `::heeranjid::*` / `::time::*` / `::inventory::*` directly.
 
+use crate::syn_util::require_string_lit;
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Token, Visibility,
+    Attribute, Ident, LitStr, Meta, Token, Visibility,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
@@ -77,14 +75,10 @@ struct AppDecl {
     /// label**, not a type — the old type may no longer exist in
     /// source. Mutually exclusive with `tombstone`.
     renamed_from: Option<LitStr>,
-    /// `true` when `#[app(tombstone)]` is set. Tombstoned apps surface
-    /// `AppDescriptor.tombstone = true`; Phase 7's migration differ
-    /// gates destructive migrations behind `--allow-destructive` when
-    /// this flag is set. `#[model(app = MyTombstonedApp)]` on an
-    /// active model is a compile error — the only legal reference is
-    /// `#[model(app = NewApp, moved_from_app = MyTombstonedApp)]`,
-    /// which is historical metadata.
-    tombstone: bool,
+    /// Span of `#[app(tombstone)]`, when present. Tombstoned apps
+    /// surface `AppDescriptor.tombstone = true`; active models must
+    /// not reference them except as historical move metadata.
+    tombstone: Option<Span>,
     /// Span of the struct identifier — used to pin derived-label
     /// validation errors back to the user-declared name when no
     /// explicit `label = "…"` override exists.
@@ -137,15 +131,15 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
         return Err(lookahead.error());
     }
 
-    let (label_override, database, renamed_from, tombstone) = parse_app_attribute(&attrs, &ident)?;
+    let parsed = parse_app_attribute(&attrs, &ident)?;
 
     Ok(AppDecl {
         vis,
         ident,
-        label_override,
-        database,
-        renamed_from,
-        tombstone,
+        label_override: parsed.label_override,
+        database: parsed.database,
+        renamed_from: parsed.renamed_from,
+        tombstone: parsed.tombstone,
         ident_span,
     })
 }
@@ -158,16 +152,20 @@ fn parse_app_decl(input: ParseStream<'_>) -> syn::Result<AppDecl> {
 /// entry, and extracts:
 /// - `label = "…"` (optional override),
 /// - `database = "…"` (required),
-/// - `renamed_from = "old_label"` (optional T8 lifecycle marker),
-/// - `tombstone` (optional T8 lifecycle flag).
+/// - `renamed_from = "old_label"` (optional lifecycle marker),
+/// - `tombstone` (optional lifecycle flag).
 ///
 /// Errors on duplicates, unknown keys, non-string values, or when
 /// `renamed_from` and `tombstone` both appear (mutually exclusive —
 /// a tombstoned app is being retired, not renamed).
-fn parse_app_attribute(
-    attrs: &[Attribute],
-    ident: &Ident,
-) -> syn::Result<(Option<LitStr>, String, Option<LitStr>, bool)> {
+struct ParsedAppAttr {
+    label_override: Option<LitStr>,
+    database: String,
+    renamed_from: Option<LitStr>,
+    tombstone: Option<Span>,
+}
+
+fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<ParsedAppAttr> {
     let mut app_attr: Option<&Attribute> = None;
     for attr in attrs {
         if attr.path().is_ident("app") {
@@ -213,20 +211,18 @@ fn parse_app_attribute(
     let mut label_override: Option<LitStr> = None;
     let mut database: Option<String> = None;
     let mut renamed_from: Option<LitStr> = None;
-    let mut tombstone = false;
-    let mut tombstone_span: Option<Span> = None;
+    let mut tombstone: Option<Span> = None;
 
     for meta in &metas {
         match meta {
             Meta::Path(path) if path.is_ident("tombstone") => {
-                if tombstone {
+                if tombstone.is_some() {
                     return Err(syn::Error::new_spanned(
                         path,
                         "duplicate `tombstone` flag inside the same `#[app(...)]`",
                     ));
                 }
-                tombstone = true;
-                tombstone_span = Some(path.span());
+                tombstone = Some(path.span());
                 continue;
             }
             Meta::NameValue(nv) => {
@@ -236,44 +232,38 @@ fn parse_app_attribute(
                         "entries inside `#[app(...)]` must be identifier keys",
                     )
                 })?;
-                let key_str = key.to_string();
-                match key_str.as_str() {
-                    "label" => {
-                        if label_override.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                key,
-                                "duplicate `label = \"…\"` inside the same `#[app(...)]`",
-                            ));
-                        }
-                        label_override = Some(require_string_lit(&nv.value, "label")?);
-                    }
-                    "database" => {
-                        if database.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                key,
-                                "duplicate `database = \"…\"` inside the same `#[app(...)]`",
-                            ));
-                        }
-                        database = Some(require_string_lit(&nv.value, "database")?.value());
-                    }
-                    "renamed_from" => {
-                        if renamed_from.is_some() {
-                            return Err(syn::Error::new_spanned(
-                                key,
-                                "duplicate `renamed_from = \"…\"` inside the same `#[app(...)]`",
-                            ));
-                        }
-                        renamed_from = Some(require_string_lit(&nv.value, "renamed_from")?);
-                    }
-                    other => {
+                if key == "label" {
+                    if label_override.is_some() {
                         return Err(syn::Error::new_spanned(
                             key,
-                            format!(
-                                "unknown key `{other}` inside `#[app(...)]`; \
-                                 expected one of: label, database, renamed_from, tombstone"
-                            ),
+                            "duplicate `label = \"…\"` inside the same `#[app(...)]`",
                         ));
                     }
+                    label_override = Some(require_string_lit(&nv.value, "label")?);
+                } else if key == "database" {
+                    if database.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            key,
+                            "duplicate `database = \"…\"` inside the same `#[app(...)]`",
+                        ));
+                    }
+                    database = Some(require_string_lit(&nv.value, "database")?.value());
+                } else if key == "renamed_from" {
+                    if renamed_from.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            key,
+                            "duplicate `renamed_from = \"…\"` inside the same `#[app(...)]`",
+                        ));
+                    }
+                    renamed_from = Some(require_string_lit(&nv.value, "renamed_from")?);
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        key,
+                        format!(
+                            "unknown key `{key}` inside `#[app(...)]`; \
+                                 expected one of: label, database, renamed_from, tombstone"
+                        ),
+                    ));
                 }
             }
             _ => {
@@ -296,34 +286,26 @@ fn parse_app_attribute(
         )
     })?;
 
-    if tombstone && renamed_from.is_some() {
+    if let (Some(tombstone_span), Some(_)) = (tombstone, &renamed_from) {
         return Err(syn::Error::new(
-            tombstone_span.expect("tombstone_span set when tombstone is true"),
+            tombstone_span,
             "`tombstone` and `renamed_from` are mutually exclusive — a \
              tombstoned app is being retired, not renamed",
         ));
     }
 
-    // Validate renamed_from label shape — it must be a valid Postgres
-    // identifier since it becomes an AppDescriptor.renamed_from value
-    // that Phase 7's differ matches against ledger rows.
+    // Validate renamed_from label shape because it becomes an
+    // AppDescriptor.renamed_from value matched against ledger rows.
     if let Some(rf) = &renamed_from {
         validate_label_shape(&rf.value(), rf.span(), true)?;
     }
 
-    Ok((label_override, database, renamed_from, tombstone))
-}
-
-fn require_string_lit(expr: &Expr, key: &str) -> syn::Result<LitStr> {
-    match expr {
-        Expr::Lit(ExprLit {
-            lit: Lit::Str(s), ..
-        }) => Ok(s.clone()),
-        other => Err(syn::Error::new_spanned(
-            other,
-            format!("`{key} = …` must be a string literal"),
-        )),
-    }
+    Ok(ParsedAppAttr {
+        label_override,
+        database,
+        renamed_from,
+        tombstone,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -350,9 +332,9 @@ fn derive_label(decl: &AppDecl) -> syn::Result<String> {
     Ok(label)
 }
 
-/// Byte-level §3 ASCII-shape check.
+/// Byte-level ASCII-shape check.
 ///
-/// Rules (plain-English per `feedback_no_regex_in_djogi.md`):
+/// Rules:
 ///
 /// 1. Non-empty.
 /// 2. First byte is `b'_'` or `u8::is_ascii_alphabetic`.
@@ -365,10 +347,7 @@ fn derive_label(decl: &AppDecl) -> syn::Result<String> {
 fn validate_label_shape(label: &str, span: Span, via_override: bool) -> syn::Result<()> {
     let bytes = label.as_bytes();
     if bytes.is_empty() {
-        return Err(syn::Error::new(
-            span,
-            "app label must be non-empty (Phase 7-Zero v3 §3)",
-        ));
+        return Err(syn::Error::new(span, "app label must be non-empty"));
     }
     if bytes.len() > 63 {
         return Err(syn::Error::new(
@@ -501,7 +480,7 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
     let ident_hidden = &ident;
     let label_lit = label;
     let database_lit = database.as_str();
-    let tombstone_lit = *tombstone;
+    let tombstone_lit = tombstone.is_some();
     let renamed_from_tokens = match renamed_from {
         Some(rf) => {
             let rf_value = rf.value();
@@ -515,7 +494,7 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
 
         impl ::djogi::apps::App for #ident_hidden {
             const __DJOGI_APP_SEAL: ::djogi::apps::SealToken =
-                ::djogi::apps::__DJOGI_APPS_SEAL_TOKEN;
+                ::djogi::__private::apps_seal::TOKEN;
             const LABEL: &'static str = #label_lit;
             const DATABASE: &'static str = #database_lit;
             const TOMBSTONE: bool = #tombstone_lit;
@@ -538,21 +517,10 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
     }
 }
 
-/// Same-scope duplicate-invocation sentinel.
+/// Emit a same-scope duplicate-invocation sentinel.
 ///
-/// `djogi::apps!` typically lives at the crate root and appears once.
-/// We emit a zero-sized module with a well-known name at the call
-/// site; two invocations in the *same* scope collide and rustc
-/// produces a clear E0428 ("the name `__djogi_apps_invocation_sentinel`
-/// is defined multiple times").
-///
-/// This is per-module, not per-crate — function-like macros expand at
-/// their call site, so two invocations in different modules would each
-/// emit the sentinel in its own scope and not collide. Crate-global
-/// compile-time enforcement is not achievable for a function-like
-/// proc macro without fragile link-time tricks, so cross-invocation
-/// duplicate *labels* are caught at runtime by
-/// [`crate::apps::AppRegistry::all`] — the real correctness invariant.
+/// Cross-scope duplicate app identities are validated by
+/// [`crate::apps::AppRegistry::all`].
 fn emit_invocation_sentinel() -> TokenStream {
     quote! {
         #[doc(hidden)]

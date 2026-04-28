@@ -71,7 +71,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
     // `impl Model` for `pk = None` models (the trait's `Pk: Encode` bound
     // can't be honestly satisfied without a real PK), so emitting accessor
     // methods here for those models would fail to compile with E0277 the
-    // moment the user's struct is parsed — which breaks Phase 1's contract
+    // moment the user's struct is parsed — which breaks the contract
     // that pk=none models still get struct injection, `FromRow`, and
     // descriptor registration.
     //
@@ -103,11 +103,6 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                 let raw = ident.to_string();
                 let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
                 let ty = &field.ty;
-                // Phase 7-Zero-2 T8: honour the optional `__djogi_path`
-                // SQL-alias prefix if set (traversal chains embed the
-                // full-peer `Fields` via `with_path(parent_fk_column)`).
-                // The `None` arm keeps byte-for-byte compatibility with
-                // the pre-T8 emission.
                 Some(quote! {
                     /// Typed handle for this column.
                     ///
@@ -121,20 +116,10 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                     /// [`Condition`]: ::djogi::query::Condition
                     #[inline]
                     pub fn #ident(&self) -> ::djogi::query::FieldRef<#name, #ty> {
-                        match self.__djogi_path {
-                            ::core::option::Option::Some(prefix) => {
-                                ::djogi::query::field::__macro_support::__make_field_ref_with_path::<
-                                    #name,
-                                    #ty,
-                                >(prefix, #column)
-                            }
-                            ::core::option::Option::None => {
-                                ::djogi::query::field::__macro_support::__make_field_ref::<
-                                    #name,
-                                    #ty,
-                                >(#column)
-                            }
-                        }
+                        ::djogi::query::field::__macro_support::__make_field_ref::<#name, #ty>(
+                            self.__djogi_path,
+                            #column,
+                        )
                     }
                 })
             })
@@ -144,12 +129,6 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
             impl #fields_name {
                 /// Construct a root-scope `Fields` handle with no SQL-alias
                 /// path. Equivalent to the `Default` impl.
-                ///
-                /// Phase 7-Zero-2 T8 introduced the optional path slot so
-                /// relation-traversal chains on visage-scoped `Fields`
-                /// could embed the full-peer model uniformly. The slot
-                /// defaults to `None` for the plain `{Model}Fields` used
-                /// directly by `QuerySet::filter`.
                 #[doc(hidden)]
                 #[inline]
                 pub const fn new() -> Self {
@@ -157,12 +136,11 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                 }
 
                 /// Construct a traversal-scope `Fields` handle threaded
-                /// with the given SQL-alias path. Reached from
-                /// macro-emitted visage traversal accessors when the
-                /// relation form names the full peer model (e.g.
-                /// `expose(public -> Department)`) — the peer's scalar
-                /// accessors then produce `FieldRef`s whose column path
-                /// is `"{prefix}.{col}"`.
+                /// with the given SQL-alias path. Used by visage traversal
+                /// accessors when the relation form names the full peer
+                /// model (e.g. `expose(public -> Department)`) — the
+                /// peer's scalar accessors then produce `FieldRef`s whose
+                /// column path is `"{prefix}.{col}"`.
                 #[doc(hidden)]
                 #[inline]
                 pub const fn with_path(path: &'static str) -> Self {
@@ -174,7 +152,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         }
     };
 
-    // Phase 5 Task 14 — emit `search()` accessor when the model has an FTS spec.
+    // Emit `search()` accessor when the model has an FTS spec.
     // The accessor returns `::djogi::fts_query::FtsFieldRef<#name>` with the
     // tsvector column name ("search") and dictionary baked in as `&'static str`s.
     let fts_accessor_impl: TokenStream = if let Some(fts) = &model_attrs.fts {
@@ -205,16 +183,14 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         TokenStream::new()
     };
 
-    // Phase 7-Zero-2 T8: the `{Model}Fields` struct carries an optional
-    // SQL-alias path prefix so visage-scoped traversal chains
-    // (`.department().name()`) compose into dot-qualified column names
-    // at emission time. Default (`None`) mirrors the pre-T8 zero-cost
-    // ZST surface — `QuerySet::filter(|f| …)` still gets a plain-column
-    // closure handle.
+    // The `{Model}Fields` struct carries an optional SQL-alias path prefix
+    // so visage-scoped traversal chains (`.department().name()`) compose
+    // into dot-qualified column names at emission time. Default (`None`)
+    // means the handle works as a plain-column accessor in
+    // `QuerySet::filter(|f| …)`.
     //
     // For `pk = None` models the struct is empty (no path slot); the
-    // trait surface is suppressed anyway by the gate above, so no
-    // accessor methods are emitted regardless.
+    // trait surface is suppressed anyway by the gate above.
     let struct_decl = if matches!(model_attrs.pk, PkStrategy::None) {
         quote! {
             #[derive(Debug, Clone, Copy, Default)]
@@ -227,8 +203,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                 /// SQL-alias path prefix threaded through traversal
                 /// chains. `None` for the root-scope handle used by
                 /// `QuerySet::filter(|f| …)`; `Some("parent_fk_col")` on
-                /// handles produced by visage-scoped traversal
-                /// accessors (Phase 7-Zero-2 T8).
+                /// handles produced by visage-scoped traversal accessors.
                 #[doc(hidden)]
                 pub __djogi_path: ::core::option::Option<&'static str>,
             }
@@ -247,9 +222,8 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         /// `QuerySet::filter(|f| …)` can construct the handle from
         /// inside the closure without the caller naming the type.
         ///
-        /// Phase 7-Zero-2 T8 extended the struct with an optional
-        /// `__djogi_path` slot so relation-traversal accessors can
-        /// embed this handle as a peer in a visage-scoped chain.
+        /// The optional `__djogi_path` slot lets relation-traversal
+        /// accessors embed this handle as a peer in a visage-scoped chain.
         #struct_decl
 
         #accessor_impl

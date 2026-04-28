@@ -2,15 +2,14 @@
 //!
 //! # What
 //!
-//! Phase 7-Zero-2 T10 introduces a queryset entry point on each emitted
-//! visage struct: `UserPublic::filter(|f| ...)`. Because visages are
-//! projections, not tables, they do not implement [`Model`] (the existing
-//! `QuerySet<T: Model>` carries a `T: Model` bound that visages cannot
-//! satisfy without misrepresenting the column shape). Instead, the
+//! Each emitted visage struct gets a queryset entry point: `UserPublic::filter(|f| ...)`.
+//! Because visages are projections, not tables, they do not implement [`Model`]
+//! (the existing `QuerySet<T: Model>` carries a `T: Model` bound that visages
+//! cannot satisfy without misrepresenting the column shape). Instead, the
 //! `#[model]` macro emits per-visage entry points that build a
-//! [`VisageQuerySet<V>`] — a sibling type that mirrors the read-only
-//! subset of [`QuerySet`]'s surface and emits a SELECT narrowed to the
-//! visage's exposed column list.
+//! [`VisageQuerySet<V>`] — a sibling type that mirrors the read-only subset of
+//! [`QuerySet`]'s surface and emits a SELECT narrowed to the visage's exposed
+//! column list.
 //!
 //! # Why a sibling type instead of relaxing `QuerySet<T>`'s bound
 //!
@@ -163,17 +162,7 @@ impl<V> VisageQuerySet<V> {
 
     /// AND another condition onto the accumulated filter tree.
     ///
-    /// Method-name parity with [`QuerySet::filter`] keeps adopters who
-    /// switch between model-side and visage-side querysets in muscle
-    /// memory; both `Model::filter(...)` and `Visage::filter(...)` enter
-    /// via a closure on the model's / visage's `Fields` handle, and the
-    /// chained form `qs.filter(cond)` extends the predicate identically
-    /// on either surface. The macro-emitted `V::filter(|f| …)` entry
-    /// constructs the initial `VisageQuerySet` and threads the closure's
-    /// `Condition` through this method; downstream chaining uses the
-    /// same name.
-    ///
-    /// [`QuerySet::filter`]: crate::query::QuerySet::filter
+    /// See also: [`QuerySet::filter`](crate::query::QuerySet::filter)
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter(mut self, cond: Condition) -> Self {
         self.condition = Condition::and(self.condition, cond);
@@ -237,6 +226,30 @@ impl<V> VisageQuerySet<V> {
         let (sql, _binds) = acc.into_parts();
         sql
     }
+}
+
+/// Convert a `SqlAccumulator` into `(sql, owned_binds)`.
+///
+/// Call `as_params(&owned_binds)` on the result to get the `&[&(dyn ToSql + Sync)]`
+/// that `DjogiContext::query_*` expects. The two-step dance is required because
+/// the param slice borrows from the owned vec.
+#[inline]
+fn into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
+    acc.into_parts()
+}
+
+/// Borrow a `Vec<Box<dyn ToSql + Sync + Send>>` as a `Vec<&(dyn ToSql + Sync)>`.
+#[inline]
+fn as_params(binds: &[Box<dyn ToSql + Sync + Send>]) -> Vec<&(dyn ToSql + Sync)> {
+    binds
+        .iter()
+        .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+        .collect()
+}
+
+/// Build the SELECT SQL + binds for `fetch_all`, `fetch_one`, and `first`.
+fn run_all_sql<V>(qs: &VisageQuerySet<V>) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
+    into_sql_and_binds(build_visage_select(qs))
 }
 
 /// Build `SELECT col1, col2, ... FROM <table> [WHERE ...] [ORDER BY ...]
@@ -352,12 +365,8 @@ where
         V: 'ctx,
     {
         async move {
-            let acc = build_visage_select(&self);
-            let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = run_all_sql(&self);
+            let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             rows.iter().map(|r| V::from_pg_row(r)).collect()
         }
@@ -368,7 +377,7 @@ where
     /// - Zero rows → [`DjogiError::NotFound`].
     /// - Two or more rows → [`DjogiError::MultipleObjects`].
     pub fn fetch_one<'ctx>(
-        self,
+        mut self,
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<V, DjogiError>> + Send + 'ctx
     where
@@ -378,14 +387,9 @@ where
             // Force LIMIT 2 so we can distinguish single-row success from
             // multi-row failure without a separate COUNT round trip.
             let table = self.table;
-            let mut qs = self;
-            qs.limit = Some(2);
-            let acc = build_visage_select(&qs);
-            let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            self.limit = Some(2);
+            let (sql, binds) = run_all_sql(&self);
+            let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             match rows.len() {
                 0 => Err(DjogiError::not_found(table)),
@@ -404,21 +408,16 @@ where
     /// Execute the query and return the first matching row, or `None` if
     /// no rows match.
     pub fn first<'ctx>(
-        self,
+        mut self,
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<Option<V>, DjogiError>> + Send + 'ctx
     where
         V: 'ctx,
     {
         async move {
-            let mut qs = self;
-            qs.limit = Some(1);
-            let acc = build_visage_select(&qs);
-            let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            self.limit = Some(1);
+            let (sql, binds) = run_all_sql(&self);
+            let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             match rows.into_iter().next() {
                 None => Ok(None),
@@ -440,12 +439,8 @@ impl<V> VisageQuerySet<V> {
         V: 'ctx,
     {
         async move {
-            let acc = build_visage_count(&self);
-            let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = into_sql_and_binds(build_visage_count(&self));
+            let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             try_get_scalar::<i64>(&row, 0)
         }
@@ -460,12 +455,8 @@ impl<V> VisageQuerySet<V> {
         V: 'ctx,
     {
         async move {
-            let acc = build_visage_exists(&self);
-            let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = into_sql_and_binds(build_visage_exists(&self));
+            let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             try_get_scalar::<bool>(&row, 0)
         }

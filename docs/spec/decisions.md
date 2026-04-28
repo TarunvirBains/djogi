@@ -41,11 +41,11 @@
 | Cross-database logging semantics | Djogi does not promise distributed atomic commit across app, CRUD-log, and event-log databases; stricter audit behavior is enforced by policy, not by pretending the databases commit atomically together |
 | CRUD log failure policy | `light` = best-effort, `balanced` = durable bounded retry with health warnings, `strict_audit` = fail-closed for required audit writes |
 | Event log failure policy | Best-effort by default under all built-in profiles; outages surface as warnings and metrics, not retroactive app-write failure |
-| Admin panel | Optional HTMX + Askama; `admin` feature flag; mounted at `/_admin/` |
+| Admin console | Maahi — Dioxus full-stack on Axum, shipped as the `djogi-maahi` workspace crate behind the `admin` feature flag, mounted at `/_admin/` (see [`docs/spec/maahi/`](./maahi/index.md); HTMX + Askama was an earlier draft direction superseded by Phase 10 design) |
 | Admin form generation | Auto-generated from `ModelDescriptor` — zero per-model UI code required |
 | Admin validation | Auto-generated from field annotations + optional `impl AdminClean` hook |
 | Admin M2M inlines | Auto-rendered from `impl ManyToMany<T>`; paginated, searchable, configurable |
-| Admin opt-out | Per-model `#[model(admin = false)]`; per-field `#[field(admin_hidden)]` |
+| Admin opt-out | Per-model `#[model(admin = false)]`; per-field `#[field(expose(none))]` for the absolute field-hiding floor (never UI-rendered, even for superuser, even with `view_full_struct` / `write_full_struct`) per [Maahi — Field Visibility](./maahi/field-visibility.md). `#[field(admin_readonly)]` is a separate widget-render axis (visible but not editable). |
 | `Jsonb<T>` in admin | Nested fieldset from schema; unknown fields shown read-only with raw JSON toggle |
 | Seed script transactions | Phase 7 ships SQL seeds (`seeds/<database>/*.sql`) routed through `raw_ddl` — operators wrap statements in explicit `BEGIN` / `COMMIT` blocks when they want transactional rollback. The `djogi_seed_runs` ledger records seeds only after the body succeeds; a partial-apply leaves the ledger un-mutated so a re-run picks up where it left off. Rhai-based seeds are deferred to the Rhai shell phase. |
 | Query builder — application code | Closure-based: `.filter(\|f\| f.field.gte(val))` — typed, composable, idiomatic |
@@ -100,7 +100,7 @@
 | `UnknownFieldError` | `FieldNotFound`, `TypeMismatch`, `NoImplicitCoercion` — all conversions return `Result` |
 | Nested `Jsonb<T>` | Fully supported — each nesting level has its own typed schema and unknown field boundary |
 | JSONB subfield queries | Typed filter accessors generated per known field using Postgres JSONB path operators |
-| CRUD logging | Optional per-model or global; stored in `_djogi_crud_log` table; off by default |
+| CRUD logging | Optional per-model or global; stored as per-model `{snake_case(model)}_logs` mirror tables in the separate `myapp_crud_logs` database (see [Logging](./logging.md) §9.1); off by default (a single shared `_djogi_crud_log` table was an earlier draft direction superseded by the per-model mirror layout) |
 | CRUD log JSON diffing | Dot-notation paths through full `Jsonb<T>` nesting depth including unknown field changes |
 | CRUD log actor | Optional `save_with_actor()` or request-context hook; null if not provided |
 | Project scaffolding | `djogi new` — scaffolds project and initializes migrations submodule |

@@ -133,6 +133,37 @@ pub trait FromJoinedPgRow: Sized {
     fn from_joined_pg_row(row: &Row, prefix: &str) -> Result<Self, DjogiError>;
 }
 
+/// Decode a column at a positional index, with a debug-build name
+/// guard and a column-name-tagged error.
+///
+/// Both the canonical `FromPgRow::from_pg_row` body emitted by
+/// `#[model]` and the visage `FromPgRow` body emitted per
+/// `#[model(visages = "...")]` route here. Centralises the
+/// column-order drift assertion (active only in debug builds) and the
+/// `tokio_postgres::Error → DjogiError::Decode` mapping that would
+/// otherwise duplicate at every macro-emitted column site.
+///
+/// `name` is the canonical SELECT-order column name baked in at macro
+/// time. In debug builds, a mismatch between `name` and
+/// `row.columns()[idx].name()` panics with the offending positions —
+/// surfacing column-order drift loudly in `cargo test`. Release builds
+/// drop the assert; ordinal decode stays a single `try_get(idx)` call.
+pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
+where
+    T: FromSql<'a>,
+{
+    debug_assert_eq!(
+        row.columns()[idx].name(),
+        name,
+        "FromPgRow column-order drift: position {} expected {:?}, got {:?}",
+        idx,
+        name,
+        row.columns()[idx].name(),
+    );
+    row.try_get::<_, T>(idx)
+        .map_err(|e| DjogiError::Decode(format!("column `{}`: {}", name, e)))
+}
+
 /// Decode one scalar value from a row by ordinal position.
 ///
 /// Centralises the `tokio_postgres::Error -> DjogiError` conversion for

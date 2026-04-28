@@ -1,4 +1,4 @@
-//! Sealed boundary marker trait (Phase 7-Zero-2 T7).
+//! Sealed boundary marker trait for visage projections.
 //!
 //! `impl DjogiVisageOf<M> for V` asserts that `V` is a visage (or the
 //! model itself) projecting fields from model `M`. The reflexive blanket
@@ -9,9 +9,9 @@
 //! # Why a seal?
 //!
 //! Emitted visages live in user crates and must be pairable with their
-//! source model at the type level — future traversal combinators (T8)
-//! and filter entry points (T10) take `V: DjogiVisageOf<M>` bounds so
-//! a visage of `User` cannot accidentally plug into a query over `Post`.
+//! source model at the type level — traversal combinators and filter entry
+//! points take `V: DjogiVisageOf<M>` bounds so a visage of `User` cannot
+//! accidentally plug into a query over `Post`.
 //! The seal prevents hostile downstream code from `impl`-ing
 //! `DjogiVisageOf<Post> for UserPublic` and smuggling a mismatched
 //! visage past the bound. The `private::Sealed<M>` supertrait is the
@@ -58,8 +58,9 @@ impl<M: crate::model::Model> DjogiVisageOf<M> for M {}
 /// (or `djogi::visage_boundary::private::Sealed`) for a type outside the
 /// `#[model]` macro's emission is breaking the contract; we reserve the
 /// right to break that code in any future release without notice. The
-/// existing `apps::__DJOGI_APPS_SEAL_TOKEN` and `model::__sealed::Sealed`
-/// surfaces follow the same convention.
+/// existing `__private::apps_seal` / `__private::pk_seal` token
+/// surfaces and the `model::__sealed::Sealed` boundary follow the
+/// same convention.
 #[doc(hidden)]
 pub mod private {
     /// Seal marker — only `#[model]`-emitted code and the reflexive

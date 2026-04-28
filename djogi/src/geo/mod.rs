@@ -118,6 +118,82 @@ pub enum GeoError {
     },
 }
 
+// ── postgres_types acceptance helper ──────────────────────────────────────────
+
+/// The Postgres type name every `GEOGRAPHY(*, 4326)` column reports.
+#[cfg(feature = "spatial")]
+pub(crate) const GEOGRAPHY_TYPE_NAME: &str = "geography";
+
+/// Shared `ToSql::accepts` / `FromSql::accepts` predicate for every geometry
+/// type. Centralising this keeps the `"geography"` literal in one place so a
+/// future PostGIS naming change touches a single line, not ten.
+#[cfg(feature = "spatial")]
+pub(crate) fn accepts_geography(ty: &postgres_types::Type) -> bool {
+    ty.name() == GEOGRAPHY_TYPE_NAME
+}
+
+// ── ToSql / FromSql codec macro ──────────────────────────────────────────────
+
+/// Emit `ToSql` and `FromSql` impls for a geometry type that round-trips
+/// through `GEOGRAPHY(*, 4326)`.
+///
+/// Every Djogi geometry uses the identical codec pattern: write EWKB into the
+/// outbound `BytesMut` for `to_sql`, read EWKB via `from_ewkb_bytes` for
+/// `from_sql`, accept any column whose Postgres type name is `"geography"`.
+/// Spelling each one out by hand was ~30 lines per type × 5 types = 150
+/// duplicated lines; this macro collapses them into single-line invocations.
+///
+/// `$encode_into` is the path to a `pub(crate) fn(&Self, &mut impl BufMut)`
+/// that writes the EWKB representation directly into the bind buffer — no
+/// intermediate `Vec<u8>` allocation.
+#[cfg(feature = "spatial")]
+macro_rules! impl_geography_codec {
+    ($t:ty, $encode_into:path) => {
+        impl ::postgres_types::ToSql for $t {
+            fn to_sql(
+                &self,
+                _ty: &::postgres_types::Type,
+                out: &mut ::bytes::BytesMut,
+            ) -> ::std::result::Result<
+                ::postgres_types::IsNull,
+                ::std::boxed::Box<
+                    dyn ::std::error::Error + ::std::marker::Sync + ::std::marker::Send,
+                >,
+            > {
+                $encode_into(self, out);
+                Ok(::postgres_types::IsNull::No)
+            }
+
+            fn accepts(ty: &::postgres_types::Type) -> bool {
+                $crate::geo::accepts_geography(ty)
+            }
+
+            ::postgres_types::to_sql_checked!();
+        }
+
+        impl<'a> ::postgres_types::FromSql<'a> for $t {
+            fn from_sql(
+                _ty: &::postgres_types::Type,
+                raw: &'a [u8],
+            ) -> ::std::result::Result<
+                Self,
+                ::std::boxed::Box<
+                    dyn ::std::error::Error + ::std::marker::Sync + ::std::marker::Send,
+                >,
+            > {
+                <$t>::from_ewkb_bytes(raw).map_err(|e| ::std::boxed::Box::new(e) as _)
+            }
+
+            fn accepts(ty: &::postgres_types::Type) -> bool {
+                $crate::geo::accepts_geography(ty)
+            }
+        }
+    };
+}
+
+#[cfg(feature = "spatial")]
+pub(crate) use impl_geography_codec;
+
 // ── Sealed GeographyValue trait ───────────────────────────────────────────────
 
 /// Private sealing module — its `Sealed` trait cannot be named outside this
@@ -205,7 +281,7 @@ impl GeographyValue for LineString {
         crate::descriptor::GeographySubtype::LineString;
 
     fn to_ewkb_bytes(&self) -> Vec<u8> {
-        ewkb::encode_linestring(self)
+        LineString::to_ewkb_bytes(self)
     }
 
     fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
@@ -225,7 +301,7 @@ impl GeographyValue for Polygon {
         crate::descriptor::GeographySubtype::Polygon;
 
     fn to_ewkb_bytes(&self) -> Vec<u8> {
-        ewkb::encode_polygon(self)
+        Polygon::to_ewkb_bytes(self)
     }
 
     fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
@@ -245,7 +321,7 @@ impl GeographyValue for MultiPoint {
         crate::descriptor::GeographySubtype::MultiPoint;
 
     fn to_ewkb_bytes(&self) -> Vec<u8> {
-        ewkb::encode_multipoint(self)
+        MultiPoint::to_ewkb_bytes(self)
     }
 
     fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
@@ -265,7 +341,7 @@ impl GeographyValue for MultiPolygon {
         crate::descriptor::GeographySubtype::MultiPolygon;
 
     fn to_ewkb_bytes(&self) -> Vec<u8> {
-        ewkb::encode_multipolygon(self)
+        MultiPolygon::to_ewkb_bytes(self)
     }
 
     fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {

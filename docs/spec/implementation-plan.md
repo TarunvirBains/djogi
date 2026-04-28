@@ -407,7 +407,7 @@ Phase 4.5 shipped visages as output-shape types only: `{Model}Public` / `SelfVie
 - [x] SELECT narrowing: visage-scoped QuerySets emit SELECT with only the visage's exposed columns, not the full model. This is the headline performance win — visages stop being only an output shape and start paying off at the query side
 - [x] Mutation scope: visage-scoped queries are read-only by default. `save` / `delete` / `update_or_create` on a visage emit a compile error pointing at the source model. Kept simple in v1; revisit only if a clear use case arrives
 - [ ] Prefetch composition: an API for declaring a prefetch into a specific peer visage so chained traversals inherit the same boundary. Exact shape deferred to v2/v3 spec; leading candidates include a dedicated `prefetch_as::<PeerProjection>(model::relation)` terminal on the QuerySet and a generated `model::relation::as_public()`-style relation-path variant surfaced under each visage scope *(deferred — visage querysets are read-only in v1; cross-visage prefetch composition revisits in a later phase)*
-- [ ] Interaction with §9c: Phase 9c's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`" *(belongs to Phase 9c; left unchecked here as forward-reference)*
+- [ ] Interaction with §9b: Phase 9b's Tier 1 over-fetching detector gains a concrete suggestable fix — "you hydrated `RegisteredOwner` but only read `.display_name` + `.email` — swap for `PublicRegisteredOwner`" *(belongs to Phase 9b; left unchecked here as forward-reference)*
 
 **Deliverable:** The pre-Phase-7 PK substrate is frozen, and visages become first-class query entities with compile-time FK / reverse-FK / M2M boundary enforcement and SELECT narrowing.
 
@@ -594,11 +594,11 @@ Protected-data support should extend the typed field story rather than replace i
 
 ---
 
-## Phase 9: Shell & Admin
+## Phase 9: Shell, Analyzer & djqry
 
-**Goal:** Interactive Rhai REPL and auto-generated admin panel.
+**Goal:** Interactive Rhai REPL, static query analyzer, and the djqry SQL override registry.
 
-These surfaces are intentionally downstream of the core ORM/runtime. They are useful operational tools, but they must remain feature-gated adapters over the model/query layer rather than redefining the core identity of the crate.
+These surfaces are intentionally downstream of the core ORM/runtime. They are useful operational tools, but they must remain feature-gated adapters over the model/query layer rather than redefining the core identity of the crate. (The admin console is its own phase — see Phase 10 / Maahi.)
 
 ### 9a: Shell (Rhai REPL)
 
@@ -608,24 +608,13 @@ These surfaces are intentionally downstream of the core ORM/runtime. They are us
 - [ ] Error handling: one-liner + full traceback to `.djogi_shell_errors/`
 - [ ] `.export` / `.import` / `.bookmark` for session scripts
 - [ ] `cargo djogi shell --run script.rhai` for headless execution
-- [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§9d). Workflow: *test → optimize → compile → deploy*. Shell commands:
+- [ ] **djqry authoring loop** — the shell is the primary surface for iterating on `djqry` overrides (§9c). Workflow: *test → optimize → compile → deploy*. Shell commands:
   - `djqry.export(<last_query>, "<name>")` — writes `djqry/<name>.sql` with frontmatter pre-populated from the last executed macro-query: `@name` set, `@on` inferred from the query's target models, `@replaces` captured verbatim, `@signature` computed, `@returns` inferred from the QuerySet's declared return type, `@binds` inferred from the filter closures, and the macro-generated SQL placed in the body as the starting point the author can optimize against
   - `djqry.import("<name>")` — loads an existing `djqry/<name>.sql`, parses its frontmatter + SQL, binds the override into the shell session as a callable, and runs it alongside the macro-query form for side-by-side comparison (row count, first-row diff, timing)
   - `djqry.diff("<name>")` — runs macro-query and override both, reports result-set diff + `EXPLAIN` cost comparison + timing. Acts as the local on-demand analog of CI's `cargo djogi djqry verify`
   - `djqry.sign("<name>")` — re-computes the fingerprint from the current `@replaces` and updates `@signature`, asserting the author has re-verified. Prompts for confirmation before overwriting
 
-### 9b: Admin Panel (HTMX + Askama)
-
-- [ ] Auto-generate list view from `ModelDescriptor` with pagination, sorting, search
-- [ ] Auto-generate CRUD forms from field metadata
-- [ ] HTMX-driven: partial page updates for pagination, filtering, inline editing
-- [ ] `admin` feature flag — opt-in dependency
-- [ ] Annotation-driven customization: `#[admin(list_display = [...])]`
-- [ ] Trait-based advanced customization: `impl AdminConfig for T`
-
-Admin integration may be Axum-oriented in practice, but that coupling should live in the feature-gated admin layer. Core model/query/runtime APIs should not require Axum types or assumptions.
-
-### 9c: Static Query Analyzer
+### 9b: Static Query Analyzer
 
 The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is mainline and intended for CI gating by default. Tier 2 is experimental and best-effort — surfaced as warnings, never as `--deny` targets unless explicitly requested.
 
@@ -642,7 +631,7 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 **Tier 2 — experimental, opt-in, best-effort graph-aware analysis:**
 
 - [ ] Graph-aware repeat-node detection: the descriptor registry's FK topology (from `target/djogi_models.json`) is a directed graph of tables-as-nodes and FKs-as-edges. Within a scope (function body, `async` block, `atomic()` closure), the analyzer attempts to track the set of `(model, filter_fingerprint)` pairs reached by terminals. Where receiver types resolve cleanly via `syn`, repeat visits to the same node — whether from independent call sites, through different FK traversals, or across prefetch chains that partially overlap — are flagged with a suggestion to hoist the fetch, fold the filters, or cover both accesses with a unified `select_related` / `prefetch_related` chain
-- [ ] Honest caveat: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection. When the analyzer cannot resolve a receiver, it silently skips rather than guessing. Coverage is documented as "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path — rustc/HIR or `rust-analyzer`-as-a-library — is named in the follow-up list but not a Phase 9c deliverable
+- [ ] Honest caveat: `syn` alone cannot fully resolve receiver types through generic wrappers, re-exports, or helper indirection. When the analyzer cannot resolve a receiver, it silently skips rather than guessing. Coverage is documented as "high-signal when receiver is unambiguous; silent otherwise". A future upgrade path — rustc/HIR or `rust-analyzer`-as-a-library — is named in the follow-up list but not a Phase 9b deliverable
 
 **Output + gating:**
 
@@ -650,22 +639,22 @@ The analyzer ships as two tiers with different fidelity guarantees. Tier 1 is ma
 - [ ] Severity gating: `--deny <lint>` turns a Tier 1 warning into a non-zero exit code for CI. Tier 2 lints default to warn-only; `--deny experimental` is an explicit opt-in for teams willing to accept Tier 2 false-positive risk
 - [ ] Scope: pure static analysis beyond what a `cargo build` already produces. No database connection, no query execution. The pre-existing `target/djogi_models.json` build artifact is the only runtime input
 
-### 9d: `djqry` SQL Override Registry
+### 9c: `djqry` SQL Override Registry
 
 When a multi-hop macro-query compiles to a plan that is significantly worse than a hand-written query, the escape hatch today is `ctx.raw_query::<T>(...)` — which fragments the codebase visually and decouples the site from descriptor-aware tooling (static analyzer, admin surface, observability labels). `djqry` keeps the hand-tuned SQL in its own file while surfacing it as a typed method on the relevant models, preserving the declarative call-site shape elsewhere and giving the override the same type-safety, tracing, and analyzer treatment as macro-generated queries.
 
 - [ ] `djqry/` directory at repo root holds `.sql` files; each file declares one override via frontmatter header comments
 - [ ] Frontmatter schema: `@name` (method name, snake_case), `@on` (comma-separated list of models and / or visages; `_global` for non-model-scoped overrides), `@returns` (Rust type implementing `FromPgRow`), `@binds` (positional bind types — `()` for none), `@replaces` (multi-line canonical macro-query the override optimizes — documentation plus drift-check source), `@signature` (fingerprint hash bumped on manual re-verification)
 - [ ] Build-time generation: a new stage in the existing `build.rs` pipeline (alongside `target/djogi_models.json` emission) parses every `.sql` file, validates frontmatter against descriptor metadata, and emits a generated `{Model}Djqry` zero-sized type per owner with one associated async function per override. Call site reads `VehicleDjqry::expired_registrations(&mut ctx).await?` — parallel to Phase 2's `{Model}Filter` and Phase 3's `{Model}Related` generated types, which is the established convention for per-model namespaced helpers. The `Djqry` suffix is distinctive, grep-able, and zero collision risk. For `@on: _global` overrides the parallel type is `GlobalDjqry`: `GlobalDjqry::fleet_stats(&mut ctx).await?`
-- [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9c uses the `@on:` list to reason about which node-visits the override covers
+- [ ] Multi-owner: when `@on:` lists several owners, delegating methods are generated on each. All delegates resolve to the same compiled SQL; the graph-aware Tier 2 of §9b uses the `@on:` list to reason about which node-visits the override covers
 - [ ] Drift detection — mandatory: the build pipeline re-computes the AST-shape fingerprint of `@replaces` (structure plus types plus FK topology from `target/djogi_models.json`, not filter literals) and fails the build when it diverges from the stored `@signature`. Failure message names the model graph before and after, asks the author to re-verify, and suggests a new signature value to copy
 - [ ] Drift detection — opt-in: `cargo djogi djqry verify <name>` runs the macro-query and the override against a live database, diffs result sets, reports. CI gates on this; local builds skip it for speed. Local devs may run it on-demand when bumping a signature
-- [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 10b / 10e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
+- [ ] Runtime dispatch: each generated method routes through `ctx.raw_query::<T>(...)` (Phase 5 substrate) and decodes via `FromPgRow`. An override-firing tracing event names the override so Phase 11b / 11e observability surfaces highlight hand-tuned queries distinctly from macro-generated ones
 - [ ] Error modes flagged at build time: missing required frontmatter field, unknown `@on` owner, `@returns` type missing `FromPgRow`, `@binds` arity mismatch with `$N` placeholder count in SQL, reserved-name collision with framework-generated methods, `@signature` mismatch
 - [ ] Scope limits: v1 is read-only (SELECT-shaped overrides). `UPDATE` / `DELETE` / `INSERT` overrides deferred until a concrete use case surfaces — raw `ctx.execute_raw` remains available in the interim
 - [ ] Authoring loop lives in the shell (§9a): `djqry.export`, `djqry.import`, `djqry.diff`, `djqry.sign` close the *test → optimize → compile → deploy* cycle inside the REPL. Authoring a new override never requires leaving the shell to hand-craft frontmatter — `export` captures the canonical macro-query, infers `@returns` / `@binds` from the QuerySet's declared types, computes the initial `@signature`, and seeds the SQL body with the macro-generated query as the baseline for optimization
 
-**Deliverable:** Working shell, admin panel, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop.
+**Deliverable:** Working shell, `cargo djogi analyze query` lint pass, and `djqry` SQL override registry surfaced as typed model methods with a shell-native authoring loop. (Admin console — Maahi — is Phase 10.)
 
 ---
 
@@ -683,11 +672,110 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 10: CRUD Logging & Observability
+## Phase 10: Maahi — Admin Console
+
+**Goal:** Auto-generated admin console (Maahi) with its own visage-grant RBAC layer (visages remain pure compile-time projections — Maahi is the runtime authorization system that consumes them), multi-tenancy-aware, with a first-class security floor (CSRF triple stack, session rotation, server-side write enforcement, visibility-aware `Label` trait, inline-bulk approval threshold).
+
+The full design is in [`docs/spec/maahi/`](./maahi/index.md). Maahi ships as the `djogi-maahi` workspace crate behind the existing `admin` feature flag; per the carve-out reasoning in `CLAUDE.md`, Maahi is the lone admin-tier exception to the one-djogi-crate rule.
+
+### 10a: Crate Substrate + Auth
+
+- [ ] `djogi-maahi` workspace crate scaffolded; `djogi`'s `admin` feature pulls it in as optional dep; `djogi::maahi::*` re-exports
+- [ ] `_admin_users` / `_admin_sessions` / `_admin_roles` / `_admin_role_visage_perms` / `_admin_role_model_perms` / `_admin_pending_actions` schemas in the audit DB (per `docs/spec/maahi/architecture.md`, `rbac.md`, `operations.md`); explicit `ON DELETE RESTRICT` on `_admin_users.role_id` and `_admin_roles.parent_role_id`; `ON DELETE CASCADE` on the two `_admin_role_*_perms` tables; `_admin_sessions.token_hash` is HMAC-SHA256 keyed by `session_secret_env` (UNIQUE INDEX); `_admin_pending_actions` ships with partial-unresolved + `expires_at` indexes
+- [ ] `cargo djogi admin set-password --superuser <email>` bootstrap CLI; `reset-password`, `build`, `info` companions
+
+### 10b: Permission Model + Feasibility Analysis
+
+- [ ] Six-action permission resolution (Create / Read / Update / Delete / BulkUpdate / BulkDelete) with per-`(role, app, model)` overrides via `_admin_role_model_perms` (keyed `(role_id, app_name, model_name)` to match the visage-grant qualification axis; v1 enforces workspace-wide model-name uniqueness per `apps-and-database-domains.md` "Cross-App FK Graph (T9)" so the lookup is unambiguous on `model_name` alone today, but the resolver always carries `app_name` to stay forward-compatible with the deferred descriptor-shape change that lets two apps share a short model name and resolve independently)
+- [ ] Visage-grant resolution: `_admin_role_visage_perms` rows per `(role_id, app_name, model_name, visage_name, can_view, can_edit)`; effective visible / editable field sets computed as the union across granted visages, optionally extended by `view_full_struct` / `write_full_struct`, always minus `expose(none)`
+- [ ] Single-parent role inheritance with cycle rejection on save and "this affects N child roles" save-time preview; role-deletion UX (reassign-first) for users and child roles
+- [ ] Compile-time / startup feasibility analysis: five checks per `(role, app, model)` triple (`can_actually_read` / `_delete` keyed on the effective **visible** field set; `can_actually_update` / `_create` keyed on the effective **editable** field set per `rbac.md` Effective Permission Resolution — `_create` requires the editable set to cover every NOT NULL no-database-default field; plus `fk_label_reachable` for FK fields, with FK targets resolved through the apps registry to the owning `(target_app, target_model)`) surfaced as `AppDiagnostic` entries; UI affordances hidden when feasibility fails
+- [ ] Visage-drift handling on deploy: missing compiled visages flagged as `AppDiagnostic`, dangling `_admin_role_visage_perms` rows treated as no-op until removed or the visage restored
+
+### 10c: Field-Visibility Substrate + Label Trait
+
+- [ ] `expose(none)` enforced as the absolute floor — never UI-rendered, never editable, even for superuser, even with `view_full_struct` / `write_full_struct`
+- [ ] `Label` trait + `VisibleFields` parameter live in `djogi` (not `djogi-maahi`); `#[model]` macro emits the impl per the four-rule resolution chain (`label_fn` > `#[field(label)]` > `String`-fallback > ID-only); concurrent `label_fn` and `#[field(label)]` is a compile error
+- [ ] FK widget tier resolution (preload / typeahead based on `[admin].fk_preload_threshold`); optional `AdminFkFilter` trait + `#[field(admin_fk_filter = "...")]` override; FK dropdowns render row labels via `Label::label(&visible)` with `visible` constructed from the requesting role's effective visibility on the FK target
+- [ ] List view default column and audit-log entry rendering route through `Label::label(&visible)` constructed from the *viewer's* visibility on the source model
+
+### 10d: Multi-Tenancy
+
+- [ ] Auto-detection of multi-tenant mode from registered RLS-enabled models; `[admin].multi_tenant` config override
+- [ ] `_admin_sessions.current_tenant_scope` records the per-session active tenant; middleware calls `set_tenant(session.current_tenant_scope)` on every server-fn dispatch
+- [ ] Cross-tenant login flow: short-lived signed one-time login ticket bridges credential check → tenant pick (no session row written until pick); hidden in single-tenant deployments
+
+### 10e: Dioxus Renderer
+
+- [ ] Dioxus full-stack components: list view, ModelForm, M2M inline, JSONB nested editor, `AdminClean` validation hook
+- [ ] Role-config UI: hierarchical app → model → visage view/edit checkbox grid, per-model action overrides, system-permission toggles, `Preview Effects` action that walks every model the role can see and shows the resolved field set + action bits
+- [ ] `cargo djogi admin build` WASM bundle pipeline (`dx bundle` integration)
+- [ ] CSRF triple stack (SameSite=Strict + `X-Maahi-CSRF` custom header + Origin/Referer check)
+- [ ] Session rotation on login / password change / role change / tenant switch
+- [ ] Server-side write enforcement that rejects out-of-editable-set fields explicitly (not silent filter)
+- [ ] Two parallel login rate limiters (per-IP and per-email, both must accept); `login_rate_limit_per_ip` and `login_rate_limit_per_email` config keys; multi-instance deployments require shared state
+
+### 10f: Approval Flow
+
+- [ ] `_admin_pending_actions` table with two v1 action kinds (`BulkDelete`, `InlineSave`) sharing queue + lifecycle + dual-control discipline
+- [ ] Magnitude-confirmation prompt on `BulkDelete` and `BulkUpdate` ("type the count to confirm")
+- [ ] Inline-bulk threshold (`[admin].inline_bulk_threshold`, default 25) routes mass-removal saves through the approval flow as `InlineSave`
+- [ ] Approver coverage rule: approver must hold every action permission the package execution requires (anti-piggyback)
+- [ ] Single-admin / bootstrap deployments cannot satisfy approver ≠ requester; bootstrap flow recommends provisioning a second admin with the full action set required for the approval-gated operations they must approve
+
+### 10g: System Permissions + Audit Access
+
+- [ ] Four v1 system permissions: `view_audit_log` (visibility-filtered read of `{snake_case(model)}_logs` tables per `logging.md` §9.1), `manage_users` (five-clause upper-bound rule covering `is_superuser`, `system_perms` subset, effective per-`(app, model, action)` subset, effective visage-grant subset, and tenant-reach — both subset axes app-qualified to match the apps subsystem), `view_full_struct` (read all non-`expose(none)` fields independent of visage view grants), `write_full_struct` (edit all non-`expose(none)`, non-`admin_readonly` fields independent of visage edit grants; requires `view_full_struct`)
+- [ ] `{snake_case(model)}_logs` read access through Maahi UI for `view_audit_log` holders, with field-level visibility computed from the viewer's effective visage grants plus any `view_full_struct`, scoped to their tenant
+
+**Deliverable:** Production-grade Maahi admin console with visage-grant-driven visibility, multi-tenancy with secure cross-tenant login handoff, descriptor-driven UI, dual-control approval gates on `BulkDelete` and `InlineSave` with approver-coverage discipline, and four v1 system permissions (`view_audit_log`, `manage_users`, `view_full_struct`, `write_full_struct`).
+
+---
+
+## Phase 10.5: Maahi Compliance & Delegation
+
+**Goal:** Layer compliance and delegation polish on Phase 10 v1 without breaking changes. Brings Maahi to enterprise-compliance grade and Django-parity feature breadth.
+
+Full deferral list at [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md).
+
+### 10.5a: Advanced Delegation
+
+- [ ] Multi-parent role inheritance with diamond resolution rules
+- [ ] `manage_roles` system permission with transitive upper-bound delegation (every grant ≤ granter's privileges, recursively through inheritance)
+- [ ] Frozen / locked roles for orgs sensitive to inheritance cascades
+
+### 10.5b: Broader Approval Workflows
+
+- [ ] Approval workflows beyond `BulkDelete` and `InlineSave` (configurable per action / per model)
+- [ ] Approval-queue UX polish: per-role notifications, bulk approval, queue search and triage
+
+### 10.5c: Audit Retention + Redaction
+
+- [ ] Scope-aware audit retention (different retention per source-model scope)
+- [ ] Scope-aware audit redaction (further restrict viewable fields in historical entries based on data-classification rules)
+
+### 10.5d: Django-Parity Features
+
+- [ ] `list_select_related` (FK eager-loading on list view; auto-detect from `admin_list_display`)
+- [ ] `raw_id_fields` equivalent (third FK widget tier above typeahead — no-widget-just-ID with popup search)
+- [ ] `fields` / `fieldsets` (explicit form-field ordering and grouped sections)
+- [ ] `AdminAction` extension trait for custom bulk actions (paralleling `AdminClean`, `AdminFkFilter`)
+- [ ] Per-row history view (audit-log drill-down for a single record)
+- [ ] `list_editable` (inline-edit columns from list view)
+- [ ] `prepopulated_fields` (auto-populate fields from other fields)
+- [ ] `date_hierarchy` (date drill-down on list views)
+- [ ] Inline polish: `extra`, `min_num`, `max_num`, per-relation `can_delete`
+- [ ] `view_on_site` (link from admin row to public URL — extension-trait or core)
+
+**Deliverable:** Maahi reaches Django-parity feature breadth and enterprise-compliance grade approval / delegation surface.
+
+---
+
+## Phase 11: CRUD Logging & Observability
 
 **Goal:** Automated audit trail plus concrete observability hooks (tracing, metrics, slow-query callbacks) that apps can integrate with standard Rust observability crates.
 
-### 10a: Audit Trail
+### 11a: Audit Trail
 
 - [ ] Three-database architecture: app, crud_logs, event_logs (pools already defined in Phase 0/1)
 - [ ] Profile-first logging config: `light`, `balanced`, `strict_audit`; advanced per-sink overrides only as escape hatches
@@ -698,42 +786,42 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Surface sink health and degraded mode clearly in metrics / CLI / tracing output
 - [ ] Document and enforce that strict audit means rejecting app writes when required CRUD audit cannot be satisfied, not cross-database atomic commit
 
-### 10b: Tracing Integration
+### 11b: Tracing Integration
 
 - [ ] Emit a `tracing::Span` per query with fields: `sql_text` (truncated, no bind values), `duration_ms`, `rows_affected`, `pool_wait_ms`, `model_name` (when derivable)
 - [ ] Span attachment to surrounding `atomic()` scope's span (so transactions appear as parent spans over their queries)
 - [ ] Opt-out per model via `#[model(trace = false)]` for hot-path tables
 
-### 10c: Slow-Query Callbacks
+### 11c: Slow-Query Callbacks
 
 - [ ] `djogi::observe::register_slow_query_handler(threshold: Duration, handler: impl Fn(&QueryTelemetry))`
 - [ ] `QueryTelemetry` carries: sql, duration, row count, backend pid, lock wait time, which connection pool
 - [ ] Guaranteed called after query completion (success or error); handler runs on the query task's executor
 
-### 10d: Metrics Emission
+### 11d: Metrics Emission
 
 - [ ] `metrics` crate integration: histograms for query duration, counters for rows affected, gauges for pool utilization + idle vs active connections
 - [ ] Per-model breakdown labels (opt-in via `#[model(metrics = true)]`)
 - [ ] Pool-level metrics per the three-pool architecture
 
-### 10e: Admin-UI Observability Views
+### 11e: Admin-UI Observability Views
 
-- [ ] Phase 9's admin layer surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 10b/10c/10d are wired
+- [ ] Phase 10's admin layer (Maahi) surfaces slow-query log, pool stats, long-running transactions, recent `crud_logs` entries for a given record — provided the observability hooks from 11b/11c/11d are wired
 - [ ] Zero additional cost when the admin feature isn't enabled; the hooks stand alone
 - [ ] Per-request debug drawer (gated on `dev_mode = true` + `admin` feature flag): bottom panel on every `/_admin/` page showing queries issued during the request, per-query duration, originating `tracing` span, rows returned, and a SQL-text preview with binds inlined for readability
 - [ ] Click-to-EXPLAIN: each drawer row exposes an "Explain" action that runs `EXPLAIN (FORMAT JSON)` by default — pure planner inspection, no execution, zero side effects regardless of statement kind. An explicit "Explain with Analyze" opt-in is available for SELECTs only; for INSERT/UPDATE/DELETE the `ANALYZE` variant is disabled in the UI with a visible note that `EXPLAIN ANALYZE` executes the statement and that non-transactional effects (`nextval` advancement, `LISTEN/NOTIFY`, deferred trigger side-channels) are not reclaimed by a wrapping savepoint. Plans render as a collapsible tree with per-node cost and row-count estimates
 - [ ] Semantic N+1 flag: because Djogi knows the FK topology at compile time, the drawer annotates any relation fetched more than K times within a single request span with the exact model + FK name and the `.prefetch()` call that would collapse it — no pattern-matching heuristics, the detection is driven by declared structure
-- [ ] Dev-only scope: the drawer is feature-flagged out of release builds and has no staging/canary mode. Non-dev environments rely on §10b/10c/10d (tracing spans, slow-query callbacks, metrics) for query visibility. If a team wants drawer-like introspection in staging, that is a separate future item, not a Phase 10e deliverable
+- [ ] Dev-only scope: the drawer is feature-flagged out of release builds and has no staging/canary mode. Non-dev environments rely on §11b/11c/11d (tracing spans, slow-query callbacks, metrics) for query visibility. If a team wants drawer-like introspection in staging, that is a separate future item, not a Phase 11e deliverable
 - [ ] Optional middleware hook (shipped under each web-framework sub-feature flag — `axum`, `warp`, etc.) that injects the drawer into any HTML response in dev mode, not just admin pages. API-only apps get per-request correlation via a stable request ID — the middleware generates an ID per request and the response carries it in a compact `X-Djogi-Queries` header of the form `id=<token>; count=12; slow=2; total_ms=47`. Full per-query detail is retrieved (dev-mode only) by calling `GET /_djogi/debug/request/<id>`, which looks up the trace in a bounded in-memory ring buffer keyed by ID. This is correlation-safe under HTTP/1.1 keep-alive, HTTP/2 multiplexing, client-side connection pooling, and multi-instance deployments where "most recent on this connection" would be ambiguous or racy. Ring buffer size is configurable with a sensible default (128 entries, oldest-evicted); entries carry the full query list, per-query durations, binds, and the originating tracing span ID
 
-### 10f: Event Logging
+### 11f: Event Logging
 
 - [ ] Event logging via `tracing` subscriber layer writing to the event log database
 - [ ] Schema for events: timestamp, level, target, fields, parent span id
 - [ ] Retention policy opt-in (delete events older than N days)
 - [ ] Keep event logging best-effort in built-in profiles; expose dropped-event counters and sink-failure warnings
 
-### 10g: Log-Database Operations
+### 11g: Log-Database Operations
 
 - [ ] Unified operator workflow for app / CRUD-log / event-log migrations with explicit per-database labeling
 - [ ] `db reset` remains app-first; touching logging databases requires explicit flags
@@ -743,11 +831,11 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 10.5: Operational Tooling
+## Phase 11.5: Operational Tooling
 
 **Goal:** Turnkey solution for the boring-but-critical operational work every Postgres app needs — backups, vacuums, maintenance schedules, disaster recovery drills. Without this, teams hand-roll it inconsistently and find out in production it was wrong.
 
-### 9.5a: Scheduled Backups
+### 11.5a: Scheduled Backups
 
 - [ ] `cargo djogi ops backup setup --daily [--weekly] [--retention 14d]` — generates a platform-appropriate scheduler config (cron fragment, systemd timer unit, or launchd plist) + a backup script that wraps `pg_dump --format=custom` with sane defaults (parallelism, compression)
 - [ ] `cargo djogi ops backup now` — one-shot manual backup
@@ -755,23 +843,23 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 - [ ] Storage targets: local path, S3-compatible (via env-var-configured endpoint + credentials), optional `rclone` passthrough
 - [ ] Retention policy enforcement (prune backups older than configured retention)
 
-### 9.5b: Point-In-Time Recovery (opt-in)
+### 11.5b: Point-In-Time Recovery (opt-in)
 
 - [ ] `cargo djogi ops pitr setup` — configures WAL archiving to a specified target, generates `restore.conf` template
 - [ ] `cargo djogi ops pitr restore --target-time '...'` — restore drill runbook that produces a new database at a specific wall-clock time
 
-### 9.5c: Vacuum / Maintenance Scheduling
+### 11.5c: Vacuum / Maintenance Scheduling
 
-- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 7's migration generation pipeline. Phase 10.5 provides the policy vocabulary + CLI/ops surface; Phase 7 owns the DDL emission and phased execution
+- [ ] Per-model autovacuum tuning: `#[model(autovacuum = VacuumPolicy::HighChurn)]` emits per-table `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor = ..., ...)` as DDL routed through Phase 7's migration generation pipeline. Phase 11.5 provides the policy vocabulary + CLI/ops surface; Phase 7 owns the DDL emission and phased execution
 - [ ] `cargo djogi ops vacuum --table <name> [--analyze] [--full]` — on-demand vacuum/analyze
 - [ ] `cargo djogi ops vacuum setup --weekly` — scheduled `VACUUM ANALYZE` across the schema, respecting autovacuum settings
 
-### 9.5d: Health Checks
+### 11.5d: Health Checks
 
 - [ ] `cargo djogi ops doctor` — checks pool utilization, long-running transactions (> N seconds), table bloat estimates, index bloat, replication lag if configured, `pg_stat_statements` top-N slow queries
 - [ ] Each check returns a pass/warn/fail with a suggested remediation
 
-### 9.5e: Operator Runbooks
+### 11.5e: Operator Runbooks
 
 - [ ] Generate opinionated Markdown runbooks under `docs/ops/` covering: "my backup failed", "restore from last night", "I accidentally dropped a table", "vacuum is blocked"
 - [ ] Runbooks reference the specific `cargo djogi ops` commands that resolve each scenario
@@ -780,7 +868,7 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 
 ---
 
-## Phase 11: Distributed Topology & Residency
+## Phase 12: Distributed Topology & Residency
 
 **Goal:** Add descriptor-aware support for replicas, residency constraints, and topology-sensitive migration safety.
 
@@ -812,10 +900,12 @@ When a multi-hop macro-query compiles to a plan that is significantly worse than
 | 7: Migrations | Large | Full migration system including online / zero-downtime patterns |
 | 7.5: Protected Data | Medium | Sensitive-field metadata and codecs |
 | 8: Hooks & Composition | Medium | Lifecycle hooks, abstract models, proxy, computed properties |
-| 9: Shell & Admin | Medium | Interactive tools |
+| 9: Shell, Analyzer & djqry | Medium | Interactive tools (admin console split out to Phase 10 / Maahi) |
 | 9.5: Lifecycle | Medium | Governance and lifecycle planning (depends on 7.5) |
-| 10: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
-| 10.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
-| 11: Topology | Large | Residency, replica semantics, distributed guardrails |
+| 10: Maahi (Admin Console) | Large | Visage-RBAC, Dioxus full-stack, multi-tenancy, security floor, M2M with bulk threshold |
+| 10.5: Maahi Compliance & Delegation | Medium | Multi-parent inheritance, manage_roles, broader approvals, Django parity |
+| 11: Logging & Observability | Medium | Audit trail, tracing, slow-query hooks, metrics, admin views |
+| 11.5: Ops Tooling | Medium | Turnkey backups, PITR, vacuum scheduling, health checks, runbooks |
+| 12: Topology | Large | Residency, replica semantics, distributed guardrails |
 
-**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–11 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.
+**The critical path to standing alongside popular Rust ORM alternatives is Phases 0–4.** Phase 4.5 improves contract hygiene and shared contract reuse without changing that write-path boundary. Phases 5–12 add the Postgres-native depth, governance, and scale-oriented capabilities needed for broader high-scale confidence.

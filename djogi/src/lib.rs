@@ -111,7 +111,7 @@ pub mod __private {
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
         pub use crate::pg::decode::{
-            FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple,
+            FromJoinedPgRow, FromPgRow, FromRowTuple, decode_at, try_get_scalar, try_get_tuple,
         };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
@@ -139,6 +139,33 @@ pub mod __private {
     /// `feedback_macro_path_routing.md`.
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
+
+    /// Hidden seal-token witnesses for [`crate::primary_key::PrimaryKey`]
+    /// and [`crate::apps::App`].
+    ///
+    /// The public `djogi::primary_key` and `djogi::apps` paths used to
+    /// re-export the token consts (`__DJOGI_PK_SEAL_TOKEN`,
+    /// `__DJOGI_APPS_SEAL_TOKEN`). That made the seals bypassable —
+    /// downstream code could grab the public consts and hand-roll a
+    /// trait impl. The consts now live only here, under the
+    /// `__private` namespace whose contract states "downstream code
+    /// reaching in is breaking the framework boundary; we reserve the
+    /// right to break that code in any future release without notice."
+    /// Same convention as `VisageSealed` above.
+    pub mod pk_seal {
+        pub use crate::primary_key::PkSealToken;
+
+        /// Sole [`PkSealToken`] value — reached from macro-emitted
+        /// code via `::djogi::__private::pk_seal::TOKEN`.
+        pub const TOKEN: PkSealToken = PkSealToken::__new();
+    }
+    pub mod apps_seal {
+        pub use crate::apps::SealToken;
+
+        /// Sole [`SealToken`] value — reached from macro-emitted code
+        /// via `::djogi::__private::apps_seal::TOKEN`.
+        pub const TOKEN: SealToken = SealToken::__new();
+    }
 
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     ///

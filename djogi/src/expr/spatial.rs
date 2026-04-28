@@ -6,18 +6,18 @@
 //! via the `ExprNode::Spatial(SpatialExpr)` variant. It carries variants for:
 //!
 //! - [`SpatialExpr::Within`] — emits `ST_DWithin(<col>, ST_Point($lon, $lat)::geography, $r)`
-//!   (radius-based predicate; Phase 6)
+//!   (radius-based predicate)
 //! - [`SpatialExpr::Distance`] — emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)`
-//! - [`SpatialExpr::Contains`] — emits `ST_Contains(<col>::geometry, $1::bytea::geometry)` (T9)
-//! - [`SpatialExpr::Intersects`] — emits `ST_Intersects(<col>, $1::bytea::geography)` (T9)
-//! - [`SpatialExpr::Touches`] — emits `ST_Touches(<col>::geometry, $1::bytea::geometry)` (T9)
-//! - [`SpatialExpr::WithinShape`] — emits `ST_Within(<col>::geometry, $1::bytea::geometry)` (T9)
-//! - [`SpatialExpr::BoundedBy`] — bbox prefilter using `ST_MakeEnvelope` + `&&` (T10)
+//! - [`SpatialExpr::Contains`] — emits `ST_Contains(<col>::geometry, $1::bytea::geometry)`
+//! - [`SpatialExpr::Intersects`] — emits `ST_Intersects(<col>, $1::bytea::geography)`
+//! - [`SpatialExpr::Touches`] — emits `ST_Touches(<col>::geometry, $1::bytea::geometry)`
+//! - [`SpatialExpr::WithinShape`] — emits `ST_Within(<col>::geometry, $1::bytea::geometry)`
+//! - [`SpatialExpr::BoundedBy`] — bbox prefilter using `ST_MakeEnvelope` + `&&`
 //!
 //! # Naming note for `WithinShape`
 //!
 //! The variant is named `WithinShape` internally to avoid a collision with the
-//! radius-based `Within` variant that Phase 6 shipped. The public method on
+//! radius-based `Within` variant. The public method on
 //! `FieldRef<M, G: GeographyValue>` is still called `.within(&geom)` — the two
 //! methods coexist on different receivers (`.within_km` is `FieldRef<M, GeoPoint>`
 //! only; `.within` is generic over any `GeographyValue`) so there is no ambiguity.
@@ -40,10 +40,10 @@
 //!
 //! - [`crate::query::field`] is the only non-spatial module that produces these
 //!   nodes — `FieldRef<M, GeoPoint>::within_km` builds `Within`;
-//!   `FieldRef<M, GeoPoint>::distance_to` builds `Distance` (T10);
-//!   the T9 methods on `FieldRef<M, G: GeographyValue>` build `Contains` /
-//!   `Intersects` / `Touches` / `WithinShape`;
-//!   `FieldRef<M, G: GeographyValue>::bounded_by` builds `BoundedBy` (T10);
+//!   `FieldRef<M, GeoPoint>::distance_to` builds `Distance`;
+//!   the shape-predicate methods on `FieldRef<M, G: GeographyValue>` build
+//!   `Contains` / `Intersects` / `Touches` / `WithinShape`;
+//!   `FieldRef<M, G: GeographyValue>::bounded_by` builds `BoundedBy`;
 //!   and `FieldRef<M, GeoPoint>::order_by_distance` captures `Distance`
 //!   indirectly via [`crate::query::order::OrderExpr::SpatialDistance`].
 //! - [`super::sql::emit_expr`] has one arm for `ExprNode::Spatial(s)` that
@@ -85,11 +85,11 @@ pub enum SpatialExpr {
     ///
     /// Returns a `float8` (Rust `f64`): the great-circle distance in meters
     /// between `<field>` and `center`. Exposed as a first-class composable
-    /// expression method via [`crate::query::field::FieldRef::distance_to`]
-    /// (T10), which enables `.filter`, `.annotate`, and `.order_by`
-    /// composition with the distance expression.
+    /// expression method via [`crate::query::field::FieldRef::distance_to`],
+    /// enabling `.filter`, `.annotate`, and `.order_by` composition with the
+    /// distance expression.
     ///
-    /// The T3 ordering path embeds `ST_Distance` SQL inline in
+    /// The ordering path embeds `ST_Distance` SQL inline in
     /// `OrderExpr::SpatialDistance::emit` for performance, but this variant
     /// powers the expression-IR path that lets callers compose:
     /// `filter_expr(|f| f.loc().distance_to(&center).lt(1000.0))`.
@@ -101,7 +101,7 @@ pub enum SpatialExpr {
         center: GeoPoint,
     },
 
-    // ── Shape-based predicates (T9) ───────────────────────────────────────────
+    // ── Shape-based predicates ────────────────────────────────────────────────
     /// `ST_Contains(<col>::geometry, $1::bytea::geometry)`
     ///
     /// Returns `true` when the geometry stored in `<col>` entirely contains
@@ -121,8 +121,8 @@ pub enum SpatialExpr {
     ///
     /// Returns `true` when the geometry stored in `<col>` and the bound
     /// geometry share at least one point. The bound geometry goes through
-    /// `push_bind` as its EWKB byte representation. This is the only T9
-    /// predicate with a native `geography` overload — see
+    /// `push_bind` as its EWKB byte representation. This is the only
+    /// shape predicate with a native `geography` overload — see
     /// [`emit_binary_predicate`].
     ///
     /// Constructed by [`crate::query::field::FieldRef::intersects`].
@@ -171,7 +171,7 @@ pub enum SpatialExpr {
     /// bounds. Uses the `&&` operator so Postgres can use a GiST index for
     /// fast pre-filtering before more expensive shape predicates.
     ///
-    /// Constructed by [`crate::query::field::FieldRef::bounded_by`] (T10).
+    /// Constructed by [`crate::query::field::FieldRef::bounded_by`].
     /// The Rust API accepts `(min_lat, min_lon, max_lat, max_lon)` to match
     /// the `GeoPoint` (lat, lon) convention; the emitter reorders to
     /// Postgres's (x, y) = (lon, lat) convention.
@@ -271,30 +271,30 @@ impl SpatialExpr {
                 acc.push_bind(center.lat);
                 acc.push_sql(")::geography)");
             }
-            // ── Shape predicates (T9) ─────────────────────────────────────────
+            // ── Shape predicates ──────────────────────────────────────────────
             SpatialExpr::Contains {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, "ST_Contains", field_column, other_ewkb);
+                emit_binary_predicate(acc, ShapePredicate::Contains, field_column, other_ewkb);
             }
             SpatialExpr::Intersects {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, "ST_Intersects", field_column, other_ewkb);
+                emit_binary_predicate(acc, ShapePredicate::Intersects, field_column, other_ewkb);
             }
             SpatialExpr::Touches {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, "ST_Touches", field_column, other_ewkb);
+                emit_binary_predicate(acc, ShapePredicate::Touches, field_column, other_ewkb);
             }
             SpatialExpr::WithinShape {
                 field_column,
                 other_ewkb,
             } => {
-                emit_binary_predicate(acc, "ST_Within", field_column, other_ewkb);
+                emit_binary_predicate(acc, ShapePredicate::Within, field_column, other_ewkb);
             }
             SpatialExpr::BoundedBy {
                 field_column,
@@ -318,6 +318,43 @@ impl SpatialExpr {
                 acc.push_sql(field_column);
             }
         }
+    }
+}
+
+/// Which PostGIS shape predicate `emit_binary_predicate` should emit.
+///
+/// Replaces the previous stringly-typed `func: &'static str` parameter so a
+/// typo (`"ST_intersects"`) cannot silently flip the geometry-cast logic.
+/// The variant set is closed at compile time; adding a new predicate is a
+/// single match-arm change rather than a fragile string comparison.
+#[cfg(feature = "spatial")]
+#[derive(Clone, Copy)]
+enum ShapePredicate {
+    Contains,
+    Intersects,
+    Touches,
+    Within,
+}
+
+#[cfg(feature = "spatial")]
+impl ShapePredicate {
+    /// PostGIS function name as it appears in the emitted SQL.
+    fn function_name(self) -> &'static str {
+        match self {
+            Self::Contains => "ST_Contains",
+            Self::Intersects => "ST_Intersects",
+            Self::Touches => "ST_Touches",
+            Self::Within => "ST_Within",
+        }
+    }
+
+    /// Whether this predicate needs a `::geometry` cast on both sides.
+    ///
+    /// Only `ST_Intersects` has a native `geography(geography, geography)`
+    /// overload in PostGIS 3.x; the other three are geometry-only and need
+    /// both arguments coerced before the call.
+    fn needs_geometry_cast(self) -> bool {
+        !matches!(self, Self::Intersects)
     }
 }
 
@@ -351,13 +388,11 @@ impl SpatialExpr {
 #[cfg(feature = "spatial")]
 fn emit_binary_predicate(
     acc: &mut SqlAccumulator,
-    func: &'static str,
+    predicate: ShapePredicate,
     field_column: &'static str,
     other_ewkb: &[u8],
 ) {
-    // Only ST_Intersects has a geography overload; the other three are
-    // geometry-only in PostGIS 3.x.
-    let use_geometry = !matches!(func, "ST_Intersects");
+    let use_geometry = predicate.needs_geometry_cast();
     let col_cast = if use_geometry { "::geometry" } else { "" };
     let bind_cast = if use_geometry {
         "::bytea::geometry"
@@ -365,7 +400,7 @@ fn emit_binary_predicate(
         "::bytea::geography"
     };
 
-    acc.push_sql(func);
+    acc.push_sql(predicate.function_name());
     acc.push_sql("(");
     acc.push_sql(field_column);
     acc.push_sql(col_cast);
@@ -512,7 +547,7 @@ mod tests {
         );
     }
 
-    // ── T9: Shape predicate tests ─────────────────────────────────────────────
+    // ── Shape predicate tests ─────────────────────────────────────────────────
 
     /// `Contains` must emit `ST_Contains(<col>::geometry, $1::bytea::geometry)`
     /// with the column name cast to `::geometry` (PostGIS 3.x has no

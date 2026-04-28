@@ -86,9 +86,9 @@ pub fn expand(
     // runtime.
     let column_list: String = col_names.join(", ");
 
-    // Per-column decode token: index-based `try_get(i)` preceded by
-    // the debug-build name guard. Framework field `id` is assigned
-    // from ordinal 0, `created_at` from 1, etc.
+    // Per-column decode token: delegates to `decode_at` which holds
+    // the debug-build column-name guard and the
+    // `tokio_postgres::Error → DjogiError::Decode` mapping.
     let field_assignments: Vec<TokenStream> = struct_item
         .fields
         .iter()
@@ -97,24 +97,7 @@ pub fn expand(
         .map(|(i, (field, col_name))| {
             let fname = field.ident.as_ref().expect("only named structs supported");
             quote! {
-                #fname: {
-                    // Debug-build drift guard — panics in `cargo test`
-                    // if the SELECT returned columns out of the expected
-                    // struct-field order. `debug_assert_eq!` compiles to
-                    // a no-op in release builds so decode stays lean.
-                    ::std::debug_assert_eq!(
-                        ::djogi::__private::tokio_postgres::Row::columns(row)[#i].name(),
-                        #col_name,
-                        "FromPgRow column-order drift: position {} expected {:?}, got {:?}",
-                        #i,
-                        #col_name,
-                        ::djogi::__private::tokio_postgres::Row::columns(row)[#i].name(),
-                    );
-                    ::djogi::__private::tokio_postgres::Row::try_get::<_, _>(row, #i)
-                        .map_err(|e| ::djogi::DjogiError::Decode(
-                            ::std::format!("column `{}`: {}", #col_name, e)
-                        ))?
-                }
+                #fname: ::djogi::__private::pg::decode_at::<_>(row, #i, #col_name)?
             }
         })
         .collect();

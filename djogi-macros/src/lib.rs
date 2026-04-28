@@ -23,6 +23,7 @@ mod many_to_many;
 mod model;
 mod primary_key_macro;
 mod reverse_relation;
+mod syn_util;
 mod testing;
 
 use proc_macro::TokenStream;

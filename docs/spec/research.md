@@ -83,13 +83,8 @@
 - `IN (...)` expansion for `in_list()` with variable-length parameter lists
 - JSONB path operator generation for `Jsonb<T>` subfield filters
 
-### Admin Panel (HTMX + Askama)
-- Askama template compilation and how `ModelDescriptor` drives template rendering at build time
-- HTMX partial rendering for pagination, filtering, inline editing without full page reload
-- `ForeignKey<T>` select dropdowns for large tables — HTMX search-as-you-type
-- Admin session auth — signed cookie, independent of application auth
-- `Jsonb<T>` unknown fields in admin — read-only display with raw JSON view toggle
-- Inline pagination and search for large M2M through-tables
+### Admin Console (Maahi — Dioxus full-stack)
+The earlier HTMX + Askama research questions in this section have been superseded by the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md), which uses Dioxus full-stack. Outstanding research / open questions for Maahi live in [`docs/spec/maahi/phase-map.md`](./maahi/phase-map.md) under "Open Questions" — bundle delivery, desktop component re-use via `dioxus-desktop`, list-view streaming, inline diff display, and the extension surface shape.
 
 ### Two-Database Logging Architecture
 - Three concurrent connection pool management at startup

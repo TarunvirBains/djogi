@@ -1,4 +1,4 @@
-//! Primary-key trait surface (Phase 7-Zero-2 T1).
+//! Primary-key trait surface.
 //!
 //! Three-trait split per `docs/spec/decisions.md`:
 //!
@@ -8,14 +8,14 @@
 //!   the macro-emitted `Default` impl.
 //! - [`PrimaryKeyDbGen`] (optional) — DB-sourced bulk allocation. Every
 //!   built-in variant except `Serial` implements it; its deliberate
-//!   absence on `i32` is load-bearing for `bulk_create` dispatch (Task 5).
+//!   absence on `i32` is load-bearing for `bulk_create` dispatch.
 //! - [`PrimaryKeyClientGen`] (optional, custom-only) — client-side single
 //!   and bulk generation. Built-in PKs never client-generate: HeeRanjId's
 //!   node/sequence/epoch model requires a database round-trip.
 //!
-//! Post-Phase-4-retrofit discipline: every generation helper takes
-//! `&mut DjogiContext`, never a raw pool. The context dispatches to the
-//! pool or the active transaction without the caller caring which.
+//! Every generation helper takes `&mut DjogiContext`, never a raw pool.
+//! The context dispatches to the pool or the active transaction without
+//! the caller caring which.
 //!
 //! # Const-position sentinels via heeranjid 0.3.5+
 //!
@@ -42,36 +42,105 @@
 //! (e.g. inside macro expansions or generic helpers); reach for the
 //! const directly otherwise.
 //!
-//! See [`sentinel`] for the bit-pattern note documenting why the
-//! 0.3.5 adoption changed the sentinel value (vs. the pre-0.3.5
-//! `T::new(0, 0, 0)` form) on three of the four PK types and why
-//! that change is safe.
+//! Heeranjid 0.3.5's `T::ZERO` consts replaced the older
+//! `T::new(0, 0, 0)` reconstruction and are now the canonical
+//! const-position sentinel values.
 //!
 //! # Historical note
 //!
-//! The Phase 7-Zero-2 plan originally called for a djogi-side `pub
-//! const SENTINEL: Self` associated item. Heeranjid 0.3.0–0.3.4
-//! exposed neither `pub const ZERO` nor a `const fn` constructor (the
-//! inner field is private), so a djogi-side const would have required
-//! either a foreign-type inherent const (forbidden by the orphan rule)
-//! or `mem::transmute` through the `#[repr(transparent)]` layout
-//! (brittle). The fallback was the non-const `sentinel()` factory.
-//! Heeranjid 0.3.5 (closing heeranjid#30) added the `pub const ZERO`
-//! upstream, which is now the canonical const-position sentinel.
+//! Earlier heeranjid releases did not expose a const sentinel; 0.3.5
+//! shipped `T::ZERO`, while `sentinel()` remains the polymorphic entry point.
 
 use crate::context::DjogiContext;
 use crate::descriptor::PkType;
-use crate::error::DjogiError;
+use crate::error::{DbError, DjogiError};
 
 pub mod builtins;
-pub mod sentinel;
+
+/// Hidden seal witness type for [`PrimaryKey`].
+///
+/// `#[doc(hidden)] pub` because the trait associated const
+/// `__DJOGI_PK_SEAL` has this type and the trait itself is public —
+/// macro emission in downstream crates needs to be able to name the
+/// type. The struct has no public constructor; the sole value lives
+/// in [`crate::__private::pk_seal::TOKEN`] which routes through the
+/// off-limits `__private` namespace. Nothing in the public
+/// `djogi::primary_key` path surfaces a constructor — the previous
+/// public `__DJOGI_PK_SEAL_TOKEN` re-export is gone.
+///
+/// Downstream code reaching the value through `djogi::__private` is
+/// explicitly violating the framework boundary; same convention as
+/// `VisageSealed` in [`crate::__private`].
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PkSealToken {
+    _private: (),
+}
+
+impl PkSealToken {
+    /// `pub(crate)` constructor so the [`crate::__private::pk_seal`]
+    /// module can mint the witness without exposing a public path on
+    /// the type itself. The empty private field still keeps
+    /// downstream code from naming `PkSealToken { ... }` directly.
+    pub(crate) const fn __new() -> Self {
+        Self { _private: () }
+    }
+}
+
+/// Convert a batch size to the Postgres `INTEGER` parameter used by
+/// bulk primary-key allocation helpers.
+pub fn checked_count(n: usize) -> Result<i32, DjogiError> {
+    i32::try_from(n).map_err(|_| bulk_count_overflow_err(n))
+}
+
+/// Error used when a bulk primary-key allocation request cannot fit in
+/// the database function's `INTEGER` count parameter.
+///
+/// Visibility note: this helper is consumed only by [`checked_count`]
+/// in this module. Macro-emitted code never calls it directly — it
+/// reaches the same error path via `checked_count(...)`. Kept
+/// `pub(crate)` to match the original `builtins.rs`-local helper that
+/// preceded the simplify pass.
+pub(crate) fn bulk_count_overflow_err(n: usize) -> DjogiError {
+    DjogiError::Db(DbError::other(format!(
+        "djogi::primary_key!: bulk generate rejected — count {n} exceeds i32::MAX"
+    )))
+}
+
+/// Error used when a bulk primary-key allocation query returns a
+/// different number of rows than requested.
+pub fn bulk_row_count_mismatch_err(got: usize, want: usize, label: &str) -> DjogiError {
+    DjogiError::Db(DbError::other(format!(
+        "djogi::primary_key!: {label} returned {got} rows for n={want}"
+    )))
+}
 
 /// Contract every primary-key type must satisfy.
 ///
 /// Implementations map the type to its [`PkType`] discriminant, the
 /// Postgres column type, the optional `DEFAULT` clause, and the zero
 /// value the macro-emitted `Default` impl uses for the `id` field.
+///
+/// # Sealing
+///
+/// Sealed via a hidden `PkSealToken` witness — the only paths to a
+/// valid impl are the built-in HeerId / RanjId / Serial impls in
+/// [`builtins`] and the [`djogi::primary_key!`] macro. Hand-rolled
+/// `impl PrimaryKey for …` in downstream crates fail at the
+/// [`__DJOGI_PK_SEAL`](Self::__DJOGI_PK_SEAL) const because the token
+/// type has no public constructor and the public `djogi::primary_key`
+/// path no longer re-exports either the type or its sole instance —
+/// macro-emitted code reaches them through
+/// [`crate::__private::pk_seal`] (a doc-hidden path under the
+/// off-limits `__private` namespace). Matches the
+/// [`crate::apps::App`] sealing convention and the `VisageSealed`
+/// convention in [`crate::__private`].
 pub trait PrimaryKey: Sized + 'static {
+    /// Hidden seal witness — only macro-emitted and built-in impls
+    /// can name the value (see [`crate::__private::pk_seal`]).
+    #[doc(hidden)]
+    const __DJOGI_PK_SEAL: PkSealToken;
+
     /// Runtime discriminant the [`ModelDescriptor`](crate::descriptor::ModelDescriptor) carries.
     const KIND: PkType;
 
@@ -93,7 +162,7 @@ pub trait PrimaryKey: Sized + 'static {
 ///
 /// Every built-in PK variant except `Serial` implements this. The
 /// absence on `i32` is intentional: `bulk_create` for `pk = Serial`
-/// models is a compile error today (Task 5 wires the dispatch), which
+/// models is a compile error today, which
 /// matches HeeRanjId's design — client-side bulk allocation requires
 /// coordinated node/sequence state that only the database owns.
 #[allow(async_fn_in_trait)]

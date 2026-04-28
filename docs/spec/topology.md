@@ -19,7 +19,7 @@ This spec defines the framework boundary for those needs.
 
 ## Minimal Public Surface
 
-Phase 10 should stabilize only these public contracts:
+Phase 12 should stabilize only these public contracts:
 
 Read-mode API:
 

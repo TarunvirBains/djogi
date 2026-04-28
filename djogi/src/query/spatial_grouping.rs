@@ -1,8 +1,8 @@
 //! Spatial grouping — typed group-key newtypes and helpers for spatial
 //! GROUP BY paths (region grouping, DBSCAN clustering, geohash bucketing).
 //!
-//! T11 ships [`RegionKey<R>`]. T12 adds
-//! `ClusterId`, `GeohashKey`, `ClusterRadius`, `GeohashPrecision`.
+//! Key types: [`RegionKey<R>`], [`ClusterId`], [`GeohashKey`].
+//! Builder helpers: [`ClusterRadius`], [`GeohashPrecision`].
 //!
 //! # Why this module exists
 //!
@@ -14,11 +14,11 @@
 //!
 //! # IntoGroupKeyTuple placement
 //!
-//! The sealed `IntoGroupKeyTuple` trait is defined in `grouped.rs` with a
-//! private `sealed::Sealed` super-trait. Because the seal cannot be named
-//! from outside `grouped.rs`, the `IntoGroupKeyTuple` impl for
-//! `RegionKey<R>` also lives in `grouped.rs`. This file owns the
-//! type definitions and the `SpatialJoinSpec` struct only.
+//! `IntoGroupKeyTuple` is defined in `grouped.rs` with a `pub(crate)`
+//! `sealed::Sealed` super-trait. The crate-level seal lets the spatial key
+//! impls for `RegionKey<R>`, `ClusterId`, and `GeohashKey` live alongside
+//! their type definitions in this file rather than in `grouped.rs` — the
+//! seal still bars downstream crates from implementing the trait.
 //!
 //! # Feature gate
 //!
@@ -27,6 +27,8 @@
 #![cfg(feature = "spatial")]
 
 use crate::model::Model;
+use crate::pg::accumulator::SqlAccumulator;
+use crate::query::grouped::{IntoGroupKeyTuple, sealed};
 use std::marker::PhantomData;
 
 // ── SpatialJoinSpec ─────────────────────────────────────────────────────────
@@ -322,6 +324,115 @@ pub(crate) struct GeohashSpec {
     pub(crate) t_geo_col: &'static str,
     /// Geohash precision level (1..=12).
     pub(crate) precision: i32,
+}
+
+// ── IntoGroupKeyTuple impls for the spatial key types ───────────────────────
+//
+// These were previously stranded in `grouped.rs` because the `sealed::Sealed`
+// trait was module-private. Now that the seal is `pub(crate)`, each spatial
+// key owns its impl alongside its type definition.
+
+// RegionKey: `r.<pk-col>` group / select column derived from the JOIN target.
+//
+// `r_pk_col` is `Some` on the sentinel value stored in `GroupedQuerySet::keys`
+// (set by `group_by_region`) and `None` on the decoded output produced by
+// `decode_tuple` — the user-facing value needs no column name.
+
+impl<R: Model> sealed::Sealed for RegionKey<R> {}
+
+impl<R: Model> IntoGroupKeyTuple for RegionKey<R>
+where
+    R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
+{
+    type Decoded = RegionKey<R>;
+
+    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        let col = self
+            .r_pk_col
+            .expect("RegionKey::push_group_by_columns called on a decoded key (r_pk_col is None)");
+        acc.push_sql("r.");
+        acc.push_sql(col);
+    }
+
+    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
+        let col = self
+            .r_pk_col
+            .expect("RegionKey::push_select_columns called on a decoded key (r_pk_col is None)");
+        acc.push_sql("r.");
+        acc.push_sql(col);
+        acc.push_sql(" AS rk0");
+    }
+
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        let region_pk: Option<R::Pk> = row.try_get::<_, Option<R::Pk>>(0)?;
+        Ok(RegionKey {
+            region_pk,
+            r_pk_col: None,
+            _phantom: PhantomData,
+        })
+    }
+}
+
+// ClusterId: column 0 of the grouped row is the `cluster_id` alias from the
+// `ST_ClusterDBSCAN` window call — `Option<i32>` because DBSCAN noise points
+// receive a NULL cluster id.
+
+impl sealed::Sealed for ClusterId {}
+
+impl IntoGroupKeyTuple for ClusterId {
+    type Decoded = ClusterId;
+
+    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql("cluster_id");
+    }
+
+    fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
+        // `cluster_by_proximity` always routes through
+        // `build_cluster_grouped_select`, which emits its own
+        // `ST_ClusterDBSCAN(...) OVER () AS cluster_id` expression and never
+        // calls this method. Panic loudly so a future refactor that
+        // accidentally routes ClusterId through the plain
+        // `build_grouped_annotated_select` path fails fast instead of
+        // producing an invalid SELECT list.
+        unreachable!(
+            "ClusterId::push_select_columns is never called — \
+             cluster_by_proximity emits its own SELECT via build_cluster_grouped_select"
+        );
+    }
+
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        let id: Option<i32> = row.try_get::<_, Option<i32>>(0)?;
+        Ok(ClusterId(id))
+    }
+}
+
+// GeohashKey: column 0 is the `geohash` alias emitted by `ST_GeoHash(...)`.
+// Decode as `Option<String>` because `ST_GeoHash(NULL::geometry, _)` returns
+// NULL — non-nullable geography columns never produce `None`; nullable
+// (`Option<G>`) ones bucket NULLs into `GeohashKey(None)`.
+
+impl sealed::Sealed for GeohashKey {}
+
+impl IntoGroupKeyTuple for GeohashKey {
+    type Decoded = GeohashKey;
+
+    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql("geohash");
+    }
+
+    fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
+        // Mirrors the `ClusterId` rationale: `bucket_by_cell` routes through
+        // `build_geohash_grouped_select`, never the plain grouped path.
+        unreachable!(
+            "GeohashKey::push_select_columns is never called — \
+             bucket_by_cell emits its own SELECT via build_geohash_grouped_select"
+        );
+    }
+
+    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+        let hash: Option<String> = row.try_get::<_, Option<String>>(0)?;
+        Ok(GeohashKey(hash))
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

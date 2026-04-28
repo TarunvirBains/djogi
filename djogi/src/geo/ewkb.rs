@@ -20,7 +20,12 @@
 //! `[endian(1), type_word 0x20000003 LE(4), srid(4), num_rings u32 LE(4), rings...]`
 //! Each ring: `[num_points u32 LE(4), points(16*n)]`.
 //!
-//! This module has NO dependency on `postgres_types`, `bytes`, or `serde`.
+//! This module depends only on `bytes::BufMut` (for the `*_into` encoders
+//! that write directly into the `tokio_postgres` bind buffer) and `std`.
+//! It does not pull in `postgres_types`, `serde`, or any higher-level
+//! database adapter.
+
+use bytes::BufMut;
 
 use crate::geo::GeoError;
 
@@ -46,14 +51,27 @@ const TYPE_BYTES: [u8; 4] = [0x01, 0x00, 0x00, 0x20];
 const TYPE_LINESTRING: [u8; 4] = [0x02, 0x00, 0x00, 0x20];
 /// Polygon | SRID_FLAG → `0x20000003` LE.
 const TYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x20];
+/// MultiPoint | SRID_FLAG → `0x20000004` LE.
+const TYPE_MULTIPOINT: [u8; 4] = [0x04, 0x00, 0x00, 0x20];
+/// MultiPolygon | SRID_FLAG → `0x20000006` LE.
+const TYPE_MULTIPOLYGON: [u8; 4] = [0x06, 0x00, 0x00, 0x20];
+
+// ── sub-geometry type words (no SRID flag — used inside Multi* envelopes) ────
+
+/// Point base type word (no SRID flag) → `0x00000001` LE. Used by every
+/// headerless sub-point inside a `MultiPoint` envelope.
+const SUBTYPE_POINT: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+/// Polygon base type word (no SRID flag) → `0x00000003` LE. Used by every
+/// headerless sub-polygon inside a `MultiPolygon` envelope.
+const SUBTYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
 
 // ── EWKB header helpers ───────────────────────────────────────────────────────
 
 /// Write the standard outer EWKB header: endian byte + type word + SRID bytes.
-fn push_outer_header(buf: &mut Vec<u8>, type_bytes: [u8; 4]) {
-    buf.push(ENDIAN_BYTE);
-    buf.extend_from_slice(&type_bytes);
-    buf.extend_from_slice(&SRID_BYTES);
+fn push_outer_header<B: BufMut + ?Sized>(buf: &mut B, type_bytes: [u8; 4]) {
+    buf.put_u8(ENDIAN_BYTE);
+    buf.put_slice(&type_bytes);
+    buf.put_slice(&SRID_BYTES);
 }
 
 /// Validate the outer EWKB header and return the byte offset just after the
@@ -119,9 +137,9 @@ fn read_f64(bytes: &[u8], pos: usize) -> Result<f64, GeoError> {
 }
 
 /// Write 16 bytes for a single coordinate pair `(lon, lat)`.
-fn push_coord_pair(buf: &mut Vec<u8>, lon: f64, lat: f64) {
-    buf.extend_from_slice(&lon.to_le_bytes());
-    buf.extend_from_slice(&lat.to_le_bytes());
+fn push_coord_pair<B: BufMut + ?Sized>(buf: &mut B, lon: f64, lat: f64) {
+    buf.put_slice(&lon.to_le_bytes());
+    buf.put_slice(&lat.to_le_bytes());
 }
 
 /// Read a coordinate pair at `pos`, returning `(lon, lat, next_pos)`.
@@ -133,16 +151,18 @@ fn read_coord_pair(bytes: &[u8], pos: usize) -> Result<(f64, f64, usize), GeoErr
 
 // ── GeoPoint codec ────────────────────────────────────────────────────────────
 
-/// Encode `(lon, lat)` as a 25-byte EWKB buffer.
+/// Encode a `GeoPoint` as a 25-byte EWKB representation directly into `buf`.
 ///
 /// The caller is responsible for supplying valid, finite coordinates.
 /// This function does not re-validate coordinate ranges — that is
 /// [`GeoPoint::new`](super::GeoPoint::new)'s responsibility.
-pub(crate) fn encode_point(lon: f64, lat: f64) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(EWKB_LEN);
-    push_outer_header(&mut buf, TYPE_BYTES);
-    push_coord_pair(&mut buf, lon, lat);
-    buf
+///
+/// Writes into any `BufMut` (e.g. `Vec<u8>` for the convenience wrapper,
+/// `BytesMut` for the `ToSql` codec path) to avoid the intermediate
+/// allocation a `Vec<u8>`-returning encoder would force.
+pub(crate) fn encode_point_into<B: BufMut + ?Sized>(p: &super::GeoPoint, buf: &mut B) {
+    push_outer_header(buf, TYPE_BYTES);
+    push_coord_pair(buf, p.lon, p.lat);
 }
 
 /// Decode a 25-byte EWKB buffer into `(lon, lat)`.
@@ -172,17 +192,20 @@ pub(crate) fn decode_point(bytes: &[u8]) -> Result<(f64, f64), GeoError> {
 
 // ── LineString codec ──────────────────────────────────────────────────────────
 
-/// Encode a `LineString` as an EWKB buffer for `GEOGRAPHY(LineString, 4326)`.
-pub(crate) fn encode_linestring(ls: &super::LineString) -> Vec<u8> {
+/// Encode a `LineString` as `GEOGRAPHY(LineString, 4326)` EWKB into `buf`.
+pub(crate) fn encode_linestring_into<B: BufMut + ?Sized>(ls: &super::LineString, buf: &mut B) {
     let n = ls.points.len();
-    let cap = 9 + 4 + 16 * n;
-    let mut buf = Vec::with_capacity(cap);
-    push_outer_header(&mut buf, TYPE_LINESTRING);
-    buf.extend_from_slice(&(n as u32).to_le_bytes());
+    push_outer_header(buf, TYPE_LINESTRING);
+    buf.put_slice(&(n as u32).to_le_bytes());
     for p in &ls.points {
-        push_coord_pair(&mut buf, p.lon, p.lat);
+        push_coord_pair(buf, p.lon, p.lat);
     }
-    buf
+}
+
+/// Compute the exact EWKB byte length for a `LineString` so wrappers can
+/// pre-size their backing buffer.
+pub(crate) fn linestring_byte_len(ls: &super::LineString) -> usize {
+    9 + 4 + 16 * ls.points.len()
 }
 
 /// Decode an EWKB buffer into a `LineString`.
@@ -205,26 +228,43 @@ pub(crate) fn decode_linestring(bytes: &[u8]) -> Result<super::LineString, GeoEr
 
 // ── Polygon codec ─────────────────────────────────────────────────────────────
 
-/// Encode a `Polygon` as an EWKB buffer for `GEOGRAPHY(Polygon, 4326)`.
-pub(crate) fn encode_polygon(poly: &super::Polygon) -> Vec<u8> {
-    let ring_count = poly.rings.len();
-    let point_count: usize = poly.rings.iter().map(|r| r.len()).sum();
-    let cap = 9 + 4 + ring_count * 4 + point_count * 16;
-    let mut buf = Vec::with_capacity(cap);
-    push_outer_header(&mut buf, TYPE_POLYGON);
-    buf.extend_from_slice(&(ring_count as u32).to_le_bytes());
+/// Encode a `Polygon` as `GEOGRAPHY(Polygon, 4326)` EWKB into `buf`.
+pub(crate) fn encode_polygon_into<B: BufMut + ?Sized>(poly: &super::Polygon, buf: &mut B) {
+    push_outer_header(buf, TYPE_POLYGON);
+    buf.put_slice(&(poly.rings.len() as u32).to_le_bytes());
     for ring in &poly.rings {
-        buf.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+        buf.put_slice(&(ring.len() as u32).to_le_bytes());
         for p in ring {
-            push_coord_pair(&mut buf, p.lon, p.lat);
+            push_coord_pair(buf, p.lon, p.lat);
         }
     }
-    buf
+}
+
+/// Compute the exact EWKB byte length for a `Polygon`.
+pub(crate) fn polygon_byte_len(poly: &super::Polygon) -> usize {
+    let point_count: usize = poly.rings.iter().map(|r| r.len()).sum();
+    9 + 4 + poly.rings.len() * 4 + point_count * 16
 }
 
 /// Decode an EWKB buffer into a `Polygon`.
 pub(crate) fn decode_polygon(bytes: &[u8]) -> Result<super::Polygon, GeoError> {
     let pos = read_outer_header(bytes, TYPE_POLYGON)?;
+    let (poly, _) = decode_polygon_body(bytes, pos, "Polygon EWKB")?;
+    Ok(poly)
+}
+
+/// Decode the `[ring_count, rings...]` body of a polygon, starting at `pos`
+/// (which points to the first byte of `ring_count`). Returns the decoded
+/// `Polygon` and the byte offset immediately after it.
+///
+/// `err_label` names the enclosing geometry for error messages so a malformed
+/// `MultiPolygon` sub-polygon and a malformed top-level `Polygon` produce
+/// distinguishable diagnostics.
+fn decode_polygon_body(
+    bytes: &[u8],
+    pos: usize,
+    err_label: &str,
+) -> Result<(super::Polygon, usize), GeoError> {
     let ring_count = read_u32(bytes, pos)? as usize;
     let mut pos = pos + 4;
     let mut rings: Vec<Vec<super::GeoPoint>> = Vec::with_capacity(ring_count);
@@ -235,23 +275,17 @@ pub(crate) fn decode_polygon(bytes: &[u8]) -> Result<super::Polygon, GeoError> {
         for _ in 0..n {
             let (lon, lat, next) = read_coord_pair(bytes, pos)?;
             let p = super::GeoPoint::new(lat, lon).map_err(|e| {
-                GeoError::MalformedEwkb(format!("invalid coordinate in Polygon EWKB: {e}"))
+                GeoError::MalformedEwkb(format!("invalid coordinate in {err_label}: {e}"))
             })?;
             ring.push(p);
             pos = next;
         }
         rings.push(ring);
     }
-    if rings.is_empty() {
-        return Err(GeoError::MalformedEwkb(
-            "Polygon EWKB contains zero rings".to_owned(),
-        ));
-    }
-    let mut iter = rings.into_iter();
-    let outer = iter.next().expect("checked non-empty");
-    let holes: Vec<Vec<super::GeoPoint>> = iter.collect();
-    super::Polygon::with_holes(outer, holes)
-        .map_err(|e| GeoError::MalformedEwkb(format!("decoded Polygon failed validation: {e}")))
+    let poly = super::Polygon::from_rings(rings).map_err(|e| {
+        GeoError::MalformedEwkb(format!("decoded {err_label} failed validation: {e}"))
+    })?;
+    Ok((poly, pos))
 }
 
 // ── MultiPoint codec ──────────────────────────────────────────────────────────
@@ -261,31 +295,25 @@ pub(crate) fn decode_polygon(bytes: &[u8]) -> Result<super::Polygon, GeoError> {
 /// Each sub-point is encoded as a headerless EWKB point:
 /// `[endian_byte(1), point_type_no_srid(4), lon_f64_LE(8), lat_f64_LE(8)]`
 /// — 21 bytes per sub-point. The SRID is carried only by the outer envelope.
-pub(crate) fn encode_multipoint(mp: &super::MultiPoint) -> Vec<u8> {
-    // Point base type word (no SRID flag) → `0x00000001` LE.
-    const SUBTYPE_POINT: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
-    // MultiPoint | SRID_FLAG → `0x20000004` LE.
-    const TYPE_MULTIPOINT: [u8; 4] = [0x04, 0x00, 0x00, 0x20];
-
-    let n = mp.points.len();
-    // outer header = 9 bytes; count = 4 bytes; each sub-point = 1+4+8+8 = 21 bytes.
-    let cap = 9 + 4 + 21 * n;
-    let mut buf = Vec::with_capacity(cap);
-    push_outer_header(&mut buf, TYPE_MULTIPOINT);
-    buf.extend_from_slice(&(n as u32).to_le_bytes());
+pub(crate) fn encode_multipoint_into<B: BufMut + ?Sized>(mp: &super::MultiPoint, buf: &mut B) {
+    push_outer_header(buf, TYPE_MULTIPOINT);
+    buf.put_slice(&(mp.points.len() as u32).to_le_bytes());
     for p in &mp.points {
-        buf.push(ENDIAN_BYTE);
-        buf.extend_from_slice(&SUBTYPE_POINT);
-        push_coord_pair(&mut buf, p.lon, p.lat);
+        buf.put_u8(ENDIAN_BYTE);
+        buf.put_slice(&SUBTYPE_POINT);
+        push_coord_pair(buf, p.lon, p.lat);
     }
-    buf
+}
+
+/// Compute the exact EWKB byte length for a `MultiPoint` (each sub-point is
+/// 21 bytes: endian(1) + type word(4) + lon(8) + lat(8); the SRID lives in
+/// the outer envelope only).
+pub(crate) fn multipoint_byte_len(mp: &super::MultiPoint) -> usize {
+    9 + 4 + 21 * mp.points.len()
 }
 
 /// Decode an EWKB buffer into a `MultiPoint`.
 pub(crate) fn decode_multipoint(bytes: &[u8]) -> Result<super::MultiPoint, GeoError> {
-    const SUBTYPE_POINT: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
-    const TYPE_MULTIPOINT: [u8; 4] = [0x04, 0x00, 0x00, 0x20];
-
     let pos = read_outer_header(bytes, TYPE_MULTIPOINT)?;
     let n = read_u32(bytes, pos)? as usize;
     let mut pos = pos + 4;
@@ -330,34 +358,37 @@ pub(crate) fn decode_multipoint(bytes: &[u8]) -> Result<super::MultiPoint, GeoEr
 /// Each sub-polygon is encoded as a headerless EWKB polygon:
 /// `[endian_byte(1), poly_type_no_srid(4), ring_count(4), rings...]`
 /// The SRID is carried only by the outer envelope.
-pub(crate) fn encode_multipolygon(mp: &super::MultiPolygon) -> Vec<u8> {
-    // MultiPolygon | SRID_FLAG → `0x20000006` LE.
-    const TYPE_MULTIPOLYGON: [u8; 4] = [0x06, 0x00, 0x00, 0x20];
-    // Polygon base type word (no SRID flag) → `0x00000003` LE.
-    const SUBTYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
-
-    let mut buf = Vec::new();
-    push_outer_header(&mut buf, TYPE_MULTIPOLYGON);
-    buf.extend_from_slice(&(mp.polygons.len() as u32).to_le_bytes());
+pub(crate) fn encode_multipolygon_into<B: BufMut + ?Sized>(mp: &super::MultiPolygon, buf: &mut B) {
+    push_outer_header(buf, TYPE_MULTIPOLYGON);
+    buf.put_slice(&(mp.polygons.len() as u32).to_le_bytes());
     for poly in &mp.polygons {
-        buf.push(ENDIAN_BYTE);
-        buf.extend_from_slice(&SUBTYPE_POLYGON);
-        buf.extend_from_slice(&(poly.rings.len() as u32).to_le_bytes());
+        buf.put_u8(ENDIAN_BYTE);
+        buf.put_slice(&SUBTYPE_POLYGON);
+        buf.put_slice(&(poly.rings.len() as u32).to_le_bytes());
         for ring in &poly.rings {
-            buf.extend_from_slice(&(ring.len() as u32).to_le_bytes());
+            buf.put_slice(&(ring.len() as u32).to_le_bytes());
             for p in ring {
-                push_coord_pair(&mut buf, p.lon, p.lat);
+                push_coord_pair(buf, p.lon, p.lat);
             }
         }
     }
-    buf
+}
+
+/// Compute the exact EWKB byte length for a `MultiPolygon`. Each sub-polygon
+/// header is 5 bytes (endian + type word, no SRID).
+pub(crate) fn multipolygon_byte_len(mp: &super::MultiPolygon) -> usize {
+    let mut len = 9 + 4;
+    for poly in &mp.polygons {
+        len += 5 + 4 + poly.rings.len() * 4;
+        for ring in &poly.rings {
+            len += ring.len() * 16;
+        }
+    }
+    len
 }
 
 /// Decode an EWKB buffer into a `MultiPolygon`.
 pub(crate) fn decode_multipolygon(bytes: &[u8]) -> Result<super::MultiPolygon, GeoError> {
-    const TYPE_MULTIPOLYGON: [u8; 4] = [0x06, 0x00, 0x00, 0x20];
-    const SUBTYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
-
     let pos = read_outer_header(bytes, TYPE_MULTIPOLYGON)?;
     let poly_count = read_u32(bytes, pos)? as usize;
     let mut pos = pos + 4;
@@ -382,39 +413,10 @@ pub(crate) fn decode_multipolygon(bytes: &[u8]) -> Result<super::MultiPolygon, G
             )));
         }
         pos += 5;
-        let ring_count = read_u32(bytes, pos)? as usize;
-        pos += 4;
-        let mut rings: Vec<Vec<super::GeoPoint>> = Vec::with_capacity(ring_count);
-        for _ in 0..ring_count {
-            let n = read_u32(bytes, pos)? as usize;
-            pos += 4;
-            let mut ring = Vec::with_capacity(n);
-            for _ in 0..n {
-                let (lon, lat, next) = read_coord_pair(bytes, pos)?;
-                let p = super::GeoPoint::new(lat, lon).map_err(|e| {
-                    GeoError::MalformedEwkb(format!(
-                        "invalid coordinate in MultiPolygon sub-polygon {pi}: {e}"
-                    ))
-                })?;
-                ring.push(p);
-                pos = next;
-            }
-            rings.push(ring);
-        }
-        if rings.is_empty() {
-            return Err(GeoError::MalformedEwkb(format!(
-                "MultiPolygon sub-polygon {pi} has zero rings"
-            )));
-        }
-        let mut iter = rings.into_iter();
-        let outer = iter.next().expect("checked non-empty");
-        let holes: Vec<Vec<super::GeoPoint>> = iter.collect();
-        let poly = super::Polygon::with_holes(outer, holes).map_err(|e| {
-            GeoError::MalformedEwkb(format!(
-                "decoded MultiPolygon sub-polygon {pi} failed validation: {e}"
-            ))
-        })?;
+        let label = format!("MultiPolygon sub-polygon {pi}");
+        let (poly, next_pos) = decode_polygon_body(bytes, pos, &label)?;
         polygons.push(poly);
+        pos = next_pos;
     }
     super::MultiPolygon::new(polygons).map_err(|e| {
         GeoError::MalformedEwkb(format!("decoded MultiPolygon failed validation: {e}"))

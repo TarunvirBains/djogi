@@ -178,7 +178,7 @@ Every `SchemaDelta` carries a `Classification` that determines runner behaviour:
 | `Unsupported { reason }` | Differ cannot lower the change safely | Operator must hand-edit the migration |
 | `PkTypeFlip { co_destructive, co_lossy }` | At least one PK-type flip | Routes through T9's expand/contract orchestration; `co_*` flags surface co-existing severity so destructive gating still applies even when the headline classification is the flip |
 
-Phase 7.5 layers a second classification dimension (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`) that captures lock-time and live-row impact orthogonally; see [`migrations-online-parity.md`](../spec/migrations-online-parity.md) for the parity reference.
+Phase 7.5 will layer a second classification dimension (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`) that captures lock-time and live-row impact orthogonally.
 
 ## PK-type flip migrations
 
@@ -299,4 +299,3 @@ Every `db` / `migrations` subcommand follows a uniform exit-code convention:
 
 - [Apps](./apps.md) — `(database, app)` bucketing, retirement flow with tombstones.
 - [Migrations spec](../spec/migrations.md) — full design rationale, T1–T10 task scope, decision log.
-- [Online-migration parity reference](../spec/migrations-online-parity.md) — Djogi vs Ruby's `online_migrations` gem, mapping shipped / planned / not-yet-anchored features.

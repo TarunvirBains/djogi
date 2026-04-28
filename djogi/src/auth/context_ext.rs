@@ -1,24 +1,21 @@
-//! `DjogiContext` extensions for Phase 5.5 auth integration.
+//! `DjogiContext` extensions for auth integration.
 //!
-//! Adds builder-style methods for attaching an [`AuthContext`] to a context
-//! and the internal [`DjogiContext::ensure_tenant_set`] helper that wires
-//! auto-tenant-scope onto Phase 5's existing `set_tenant`.
-//!
-//! Phase 4's `djogi/src/context.rs` carries the struct definition; this
-//! file owns every method Phase 5.5 adds to it (Task 1 + Task 11).
+//! Adds builder-style and mutating methods for attaching an [`AuthContext`] to a
+//! context, plus the internal [`DjogiContext::ensure_tenant_set`] helper that
+//! wires auto-tenant-scope onto the existing `set_tenant`.
 
 use super::AuthContext;
 use crate::{DjogiContext, DjogiError};
 
 impl DjogiContext {
-    /// Attach an [`AuthContext`] to this context.
+    /// Attach an [`AuthContext`] to this context (consuming builder).
     ///
-    /// Builder-style (consuming). When `auth.tenant_id.is_some()` AND the
-    /// next CRUD/QuerySet operation targets a tenant-keyed model (per
-    /// `ModelDescriptor::tenant_key`), the auto-`set_tenant` integration
-    /// (Phase 5.5 Task 10) calls [`Self::ensure_tenant_set`] transparently.
+    /// When `auth.tenant_id.is_some()` AND the next CRUD/QuerySet operation
+    /// targets a tenant-keyed model (per `ModelDescriptor::tenant_key`), the
+    /// auto-`set_tenant` integration calls [`Self::ensure_tenant_set`]
+    /// transparently.
     pub fn with_auth(mut self, auth: AuthContext) -> Self {
-        self.auth = Some(auth);
+        self.set_auth(auth);
         self
     }
 
@@ -28,13 +25,18 @@ impl DjogiContext {
     }
 
     /// Attach an `AuthContext` while emitting a `tracing::warn!` at the
-    /// call site. Bypass is searchable via the `_insecurely` suffix and the
-    /// log message text.
+    /// call site (consuming builder). Bypass is searchable via the
+    /// `_insecurely` suffix and the log message text.
     ///
     /// `_insecurely` variants are intended only for code with manually-
     /// established safety invariants (tests, migrations, admin tooling,
     /// service-account flows). Calling this inside a request handler is a
-    /// design smell — see Phase 5.5 plan amendment Q11.
+    /// design smell.
+    ///
+    /// Inlines the warn (rather than delegating to
+    /// [`Self::set_auth_insecurely`]) so the message names this method
+    /// specifically — log scrapers grepping for `with_auth_insecurely` see
+    /// the consuming-builder bypass site distinctly from the mutating one.
     #[track_caller]
     pub fn with_auth_insecurely(mut self, auth: AuthContext) -> Self {
         tracing::warn!(
@@ -76,9 +78,7 @@ impl DjogiContext {
     }
 
     /// Explicitly opt out of the "cross-tenant context" warn emitted when
-    /// `auth.tenant_id.is_none()` on a tenant-keyed model.
-    ///
-    /// Consuming builder form — use on a freshly-constructed `DjogiContext`:
+    /// `auth.tenant_id.is_none()` on a tenant-keyed model (consuming builder).
     ///
     /// ```ignore
     /// let ctx = DjogiContext::from_pool(pool).with_no_tenant_scope();
@@ -93,7 +93,7 @@ impl DjogiContext {
     /// this opt-out will emit a `tracing::warn!` on every CRUD / terminal
     /// call — that warn is by design: bypass is always searchable.
     pub fn with_no_tenant_scope(mut self) -> Self {
-        self.tenant_scope_suppressed = true;
+        self.set_no_tenant_scope();
         self
     }
 
@@ -106,10 +106,10 @@ impl DjogiContext {
     /// Internal helper: ensure the `app.tenant_id` GUC matches `tenant_id`
     /// for the current context. No-op when the currently-applied tenant id
     /// already equals `tenant_id`; otherwise delegates to
-    /// [`Self::set_tenant`] to re-issue `SET LOCAL` (Phase 5 Task 9).
+    /// [`Self::set_tenant`] to re-issue `SET LOCAL`.
     ///
-    /// Invoked by the auto-tenant integration (Phase 5.5 Task 10) before
-    /// every CRUD dispatch on a tenant-keyed model when
+    /// Invoked by the auto-tenant integration before every CRUD dispatch on
+    /// a tenant-keyed model when
     /// `ctx.auth().and_then(|a| a.tenant_id.as_ref())` is `Some`.
     ///
     /// **Why the per-tenant comparison, not a plain `tenant_set` bool:**
@@ -118,7 +118,7 @@ impl DjogiContext {
     /// `org_a` to `org_b`, a bool short-circuit would leave queries running
     /// under `org_a` — a silent cross-tenant read. Comparing against
     /// `applied_tenant_id` forces a re-issue of `SET LOCAL` whenever the
-    /// requested tid differs. (Task 10 fixup — Codex stop-gate of `f393a87`.)
+    /// requested tid differs.
     pub(crate) async fn ensure_tenant_set(&mut self, tenant_id: &str) -> Result<(), DjogiError> {
         if self.applied_tenant_id.as_deref() == Some(tenant_id) {
             return Ok(());
