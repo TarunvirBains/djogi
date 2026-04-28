@@ -1333,66 +1333,17 @@ async fn run_squash(
     report: &mut AttuneReport,
     diff_entries: Vec<AttuneEntry>,
 ) -> Result<(), AttuneError> {
-    // Surface any unmodified diff entries as part of the report — the
-    // operator wants to see "what was already drifting" alongside the
-    // squash.
     let mut entries = diff_entries;
 
-    // Identify candidate buckets — buckets containing `from`.
-    let mut matching_buckets: Vec<&BucketKey> = Vec::new();
-    for (bucket, versions) in disk {
-        if let Some(label) = app_filter
-            && bucket.app.as_str() != label
-        {
-            continue;
-        }
-        if versions.contains_key(from) {
-            matching_buckets.push(bucket);
-        }
-    }
-
-    let target_bucket: &BucketKey = match matching_buckets.len() {
-        0 => {
-            return Err(AttuneError::Refused(
-                AttuneRefusal::SquashFromVersionNotFound {
-                    version: from.to_string(),
-                },
-            ));
-        }
-        1 => matching_buckets[0],
-        _ => {
-            // Multiple buckets contain `from`. Refuse and tell the
-            // operator how to disambiguate.
-            let mut buckets_rendered: Vec<String> = matching_buckets
-                .iter()
-                .map(|b| {
-                    let app_render = if b.app.is_empty() { "_global_" } else { &b.app };
-                    format!("{}/{}", b.database, app_render)
-                })
-                .collect();
-            buckets_rendered.sort();
-            return Err(AttuneError::Refused(
-                AttuneRefusal::SquashFromVersionAmbiguous {
-                    version: from.to_string(),
-                    buckets: buckets_rendered,
-                },
-            ));
-        }
-    };
-
-    // From here on, work strictly within `target_bucket`.
-    let bucket = target_bucket.clone();
+    let bucket = locate_squash_target(disk, from, app_filter)?.clone();
     let versions = disk.get(&bucket).expect("target_bucket came from disk map");
 
-    // Collect versions >= `from` in ascending order. Lexical compare =
-    // chronological because version_prefix is `V<14 digits>`.
+    // Lexical compare = chronological because version_prefix is `V<14 digits>`.
     let to_squash: Vec<(&String, &PathBuf)> = versions
         .iter()
         .filter(|(v, _)| v.as_str() >= from)
         .collect();
     if to_squash.len() <= 1 {
-        // Nothing to squash — `from` is HEAD or the only version in
-        // the bucket. Surface a clean no-op report.
         entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
         report.entries = entries;
         return Ok(());
@@ -1400,10 +1351,122 @@ async fn run_squash(
 
     let dir = bucket_dir(workspace_root, &bucket);
 
-    // Concatenate up SQL.
+    let (combined_up, combined_down_segments) = build_combined_sql(&dir, &to_squash)?;
+
+    // Reverse-order concat so a rollback unwinds in the same order
+    // apply happened.
+    let mut combined_down = String::new();
+    for seg in combined_down_segments.iter().rev() {
+        combined_down.push_str(seg);
+        combined_down.push('\n');
+    }
+    let wrote_down = !combined_down.is_empty();
+
+    let new_up_path = dir.join(up_filename(from));
+    std::fs::write(&new_up_path, combined_up.as_bytes()).map_err(|e| {
+        AttuneError::SqlWriteFailed {
+            path: new_up_path.clone(),
+            source: e,
+        }
+    })?;
+    if wrote_down {
+        let new_down_path = dir.join(down_filename(from));
+        std::fs::write(&new_down_path, combined_down.as_bytes()).map_err(|e| {
+            AttuneError::SqlWriteFailed {
+                path: new_down_path.clone(),
+                source: e,
+            }
+        })?;
+    }
+
+    delete_subsumed(ctx, &dir, &to_squash, from, &bucket, &mut entries).await?;
+    refresh_retained_row(
+        ctx,
+        from,
+        &bucket,
+        &combined_up,
+        if wrote_down {
+            Some(combined_down.as_str())
+        } else {
+            None
+        },
+    )
+    .await?;
+
+    report.mutated = true;
+    report.squashed_to = Some(from.to_string());
+
+    // Round-2 A-1: when `publish` is set, the publisher commits every
+    // disk change made above and pushes to `origin` so a single
+    // `attune --publish` invocation lands the rewrite in the remote.
+    if publish && report.mutated {
+        run_git_commit_and_publish(workspace_root, from)?;
+        report.published = true;
+    }
+
+    entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+    report.entries = entries;
+    Ok(())
+}
+
+/// Resolve the unique bucket containing `from`. Errors with
+/// [`AttuneRefusal::SquashFromVersionNotFound`] when no bucket has
+/// `from`, and [`AttuneRefusal::SquashFromVersionAmbiguous`] when
+/// more than one bucket does (after applying `app_filter` if provided).
+fn locate_squash_target<'a>(
+    disk: &'a BTreeMap<BucketKey, BTreeMap<String, PathBuf>>,
+    from: &str,
+    app_filter: Option<&str>,
+) -> Result<&'a BucketKey, AttuneError> {
+    let mut matching: Vec<&BucketKey> = Vec::new();
+    for (bucket, versions) in disk {
+        if let Some(label) = app_filter
+            && bucket.app.as_str() != label
+        {
+            continue;
+        }
+        if versions.contains_key(from) {
+            matching.push(bucket);
+        }
+    }
+    match matching.len() {
+        0 => Err(AttuneError::Refused(
+            AttuneRefusal::SquashFromVersionNotFound {
+                version: from.to_string(),
+            },
+        )),
+        1 => Ok(matching[0]),
+        _ => {
+            let mut buckets_rendered: Vec<String> = matching
+                .iter()
+                .map(|b| {
+                    let app_render = if b.app.is_empty() { "_global_" } else { &b.app };
+                    format!("{}/{}", b.database, app_render)
+                })
+                .collect();
+            buckets_rendered.sort();
+            Err(AttuneError::Refused(
+                AttuneRefusal::SquashFromVersionAmbiguous {
+                    version: from.to_string(),
+                    buckets: buckets_rendered,
+                },
+            ))
+        }
+    }
+}
+
+/// Read every up file in `to_squash`, concatenate the bodies wrapped
+/// with `-- begin <version>` / `-- end <version>` markers, and collect
+/// the matching per-version down-side segments (best-effort: missing
+/// down files are silently skipped). The caller reverses the down
+/// segments before writing.
+fn build_combined_sql(
+    dir: &Path,
+    to_squash: &[(&String, &PathBuf)],
+) -> Result<(String, Vec<String>), AttuneError> {
     let mut combined_up = String::new();
     let mut combined_down_segments: Vec<String> = Vec::new();
-    for (version, path) in &to_squash {
+    for (version, path) in to_squash {
         let up_sql = std::fs::read_to_string(path).map_err(|e| AttuneError::SqlReadFailed {
             path: (*path).clone(),
             source: e,
@@ -1414,7 +1477,6 @@ async fn run_squash(
             combined_up.push('\n');
         }
         combined_up.push_str(&format!("-- end {version}\n\n"));
-        // Down side — best-effort.
         let down_path = dir.join(down_filename(version));
         if let Ok(down_sql) = std::fs::read_to_string(&down_path) {
             combined_down_segments.push(format!(
@@ -1422,36 +1484,21 @@ async fn run_squash(
             ));
         }
     }
+    Ok((combined_up, combined_down_segments))
+}
 
-    // The squash target keeps `from` as its version label.
-    let new_up_path = dir.join(up_filename(from));
-    let new_down_path = dir.join(down_filename(from));
-    std::fs::write(&new_up_path, combined_up.as_bytes()).map_err(|e| {
-        AttuneError::SqlWriteFailed {
-            path: new_up_path.clone(),
-            source: e,
-        }
-    })?;
-    // Down side: reverse-order concat of the per-version segments
-    // collected above so a rollback unwinds in the same order apply
-    // happened.
-    let mut combined_down = String::new();
-    for seg in combined_down_segments.iter().rev() {
-        combined_down.push_str(seg);
-        combined_down.push('\n');
-    }
-    let wrote_down = !combined_down.is_empty();
-    if wrote_down {
-        std::fs::write(&new_down_path, combined_down.as_bytes()).map_err(|e| {
-            AttuneError::SqlWriteFailed {
-                path: new_down_path.clone(),
-                source: e,
-            }
-        })?;
-    }
-
-    // Delete the originals (everything in `to_squash` except `from`).
-    for (version, path) in &to_squash {
+/// Delete every up/down file in `to_squash` except the retained `from`
+/// version, drop the matching ledger rows, and append a `Squashed`
+/// entry per deleted version.
+async fn delete_subsumed(
+    ctx: &mut DjogiContext,
+    dir: &Path,
+    to_squash: &[(&String, &PathBuf)],
+    from: &str,
+    bucket: &BucketKey,
+    entries: &mut Vec<AttuneEntry>,
+) -> Result<(), AttuneError> {
+    for (version, path) in to_squash {
         if version.as_str() == from {
             continue;
         }
@@ -1466,7 +1513,6 @@ async fn run_squash(
                 source: e,
             })?;
         }
-        // Drop the ledger row.
         ctx.execute(
             "DELETE FROM djogi_schema_migrations WHERE version = $1 AND app_label = $2",
             &[version, &bucket.app],
@@ -1479,17 +1525,25 @@ async fn run_squash(
             kind: AttuneEntryKind::Squashed,
         });
     }
+    Ok(())
+}
 
-    // B-4: refresh the retained `from` row's checksum + description so
-    // it describes the post-squash file content, not the pre-squash
-    // file content. Without this, every subsequent verify or apply
-    // path would surface drift authored by squash itself.
-    let new_checksum_up = compute_checksum([combined_up.as_str()]);
-    let new_checksum_down = if wrote_down {
-        Some(compute_checksum([combined_down.as_str()]))
-    } else {
-        None
-    };
+/// B-4: refresh the retained `from` ledger row's checksum + description
+/// so it describes the post-squash file content, not the pre-squash
+/// file content. Without this, every subsequent verify or apply path
+/// would surface drift authored by squash itself.
+///
+/// `combined_down` is `None` when no per-version down files existed;
+/// the row's `checksum_down` is set to `NULL` in that case.
+async fn refresh_retained_row(
+    ctx: &mut DjogiContext,
+    from: &str,
+    bucket: &BucketKey,
+    combined_up: &str,
+    combined_down: Option<&str>,
+) -> Result<(), AttuneError> {
+    let new_checksum_up = compute_checksum([combined_up]);
+    let new_checksum_down = combined_down.map(|s| compute_checksum([s]));
     let prior_description: Option<String> = ctx
         .query_one(
             "SELECT description FROM djogi_schema_migrations \
@@ -1502,10 +1556,9 @@ async fn run_squash(
     let new_description = match prior_description {
         Some(prev) => format!("squashed migration starting at {from} (was: {prev})"),
         // No retained ledger row yet — squash also runs on workspaces
-        // whose `from` was never recorded (the disk file is the
-        // canonical artifact). The UPDATE below is a no-op in that
-        // case; we still produce a description for parity with the
-        // recorded path.
+        // whose `from` was never recorded. The UPDATE below is a no-op
+        // in that case; we still produce a description for parity with
+        // the recorded path.
         None => format!("squashed migration starting at {from}"),
     };
     ctx.execute(
@@ -1522,22 +1575,6 @@ async fn run_squash(
     )
     .await
     .map_err(|e| AttuneError::LedgerQueryFailed { source: e })?;
-
-    report.mutated = true;
-    report.squashed_to = Some(from.to_string());
-
-    // Optional publish step. Round-2 A-1: when `publish` is set, the
-    // publisher commits the squash mutation (every disk change made by
-    // run_squash above) and then pushes to `origin`. The combined
-    // operation is atomic from the operator's perspective: a single
-    // `attune --publish` invocation lands the rewrite in the remote.
-    if publish && report.mutated {
-        run_git_commit_and_publish(workspace_root, from)?;
-        report.published = true;
-    }
-
-    entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
-    report.entries = entries;
     Ok(())
 }
 
