@@ -32,9 +32,19 @@ impl DjogiContext {
     /// established safety invariants (tests, migrations, admin tooling,
     /// service-account flows). Calling this inside a request handler is a
     /// design smell.
+    ///
+    /// Inlines the warn (rather than delegating to
+    /// [`Self::set_auth_insecurely`]) so the message names this method
+    /// specifically — log scrapers grepping for `with_auth_insecurely` see
+    /// the consuming-builder bypass site distinctly from the mutating one.
     #[track_caller]
     pub fn with_auth_insecurely(mut self, auth: AuthContext) -> Self {
-        self.set_auth_insecurely(auth);
+        tracing::warn!(
+            user_id = ?auth.user_id,
+            caller = %std::panic::Location::caller(),
+            "auth guard bypassed via with_auth_insecurely",
+        );
+        self.auth = Some(auth);
         self
     }
 
