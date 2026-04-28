@@ -126,6 +126,28 @@ pub enum RunnerError {
     /// A ledger row CRUD operation failed (INSERT, UPDATE).
     LedgerWriteFailed { version: String, source: DjogiError },
 
+    /// A read-only ledger query failed (SELECT against
+    /// `djogi_migrations` — out-of-order conflict probe, rollback
+    /// row-fetch, etc.). Distinct from [`RunnerError::LedgerWriteFailed`]
+    /// — no row was written; the failure is in a reading probe and
+    /// surfaces with a `query_label` so operators can correlate the
+    /// error to the specific ledger probe (sibling of
+    /// [`RunnerError::CatalogQueryFailed`] for the ledger surface).
+    LedgerQueryFailed {
+        /// A static label naming the ledger probe that failed (e.g.
+        /// `"out_of_order_check"`, `"load_row_for_version"`).
+        query_label: &'static str,
+        /// The underlying Postgres error.
+        source: DjogiError,
+    },
+
+    /// `SELECT heerid_next()` failed during runner startup, before
+    /// the migration could touch the ledger. The run_id is a
+    /// per-invocation HeerId stamped into every ledger row written
+    /// by this run; failure here means we cannot tag rows for crash
+    /// recovery and must abort the run before it begins.
+    RunIdGenerationFailed { source: DjogiError },
+
     /// Insertion of the pending ledger row collided with an existing
     /// row carrying the same `version`. Surfaces a typed error rather
     /// than a raw `LedgerWriteFailed { source: 23505 }` so operators
@@ -353,6 +375,18 @@ impl std::fmt::Display for RunnerError {
             RunnerError::LedgerWriteFailed { version, source } => {
                 write!(f, "ledger write failed for version `{version}`: {source}")
             }
+            RunnerError::LedgerQueryFailed {
+                query_label,
+                source,
+            } => write!(
+                f,
+                "ledger query `{query_label}` failed before the migration could proceed: {source}",
+            ),
+            RunnerError::RunIdGenerationFailed { source } => write!(
+                f,
+                "run_id generation via `SELECT heerid_next()` failed before any \
+                 migration ran: {source}",
+            ),
             RunnerError::VersionAlreadyApplied {
                 version,
                 applied_at,
@@ -525,6 +559,8 @@ impl std::error::Error for RunnerError {
             RunnerError::SnapshotPersistFailed { source, .. } => Some(source),
             RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
             RunnerError::CatalogQueryFailed { source, .. } => Some(source),
+            RunnerError::LedgerQueryFailed { source, .. } => Some(source),
+            RunnerError::RunIdGenerationFailed { source } => Some(source),
             _ => None,
         }
     }
@@ -723,8 +759,8 @@ async fn apply_plan_inner(
     // `Reject` policy leaves no database trace.
     let conflicting_peer = find_higher_applied_version(ctx, &plan.bucket, &runner_ctx.version)
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
+        .map_err(|e| RunnerError::LedgerQueryFailed {
+            query_label: "out_of_order_check",
             source: e,
         })?;
     let is_out_of_order = conflicting_peer.is_some();
@@ -1149,8 +1185,8 @@ pub async fn rollback_plan(
     let row = load_ledger_row_for_version(ctx, &runner_ctx.version)
         .await
         .map_err(|e| {
-            RollbackError::Runner(RunnerError::LedgerWriteFailed {
-                version: runner_ctx.version.clone(),
+            RollbackError::Runner(RunnerError::LedgerQueryFailed {
+                query_label: "load_row_for_version",
                 source: e,
             })
         })?;
@@ -2448,10 +2484,7 @@ async fn generate_run_id(ctx: &mut DjogiContext) -> Result<i64, RunnerError> {
     use crate::primary_key::PrimaryKeyDbGen;
     let id = HeerId::generate(ctx)
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: "<run_id>".to_string(),
-            source: e,
-        })?;
+        .map_err(|e| RunnerError::RunIdGenerationFailed { source: e })?;
     // HeerId exposes a direct `as_i64()` accessor (and an equivalent
     // `From<HeerId> for i64` impl). Use the typed conversion rather
     // than routing through `Display + parse + unwrap_or(0)` so a
