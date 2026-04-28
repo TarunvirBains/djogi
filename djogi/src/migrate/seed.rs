@@ -87,9 +87,7 @@ pub enum SeedError {
     /// A seed-ledger row decode failed — the column was present but
     /// the byte payload could not be deserialised into the expected
     /// type. Distinct from [`SeedError::LedgerWrite`] so the operator
-    /// message can name the specific column at fault. Codex round-1
-    /// A-2: previously decode failures collapsed to `LedgerWrite`,
-    /// losing specificity.
+    /// message can name the specific column at fault.
     LedgerDecode {
         column: String,
         source: tokio_postgres::Error,
@@ -117,10 +115,9 @@ pub enum SeedError {
     /// message.
     LocalhostGate { database_url: String },
     /// The operator-supplied application URL has no path component
-    /// the CLI can splice `--database <name>` into. Codex round-1
-    /// B-1: the splice is what routes seed SQL to the matching
-    /// per-database connection; refuse rather than fall back to the
-    /// wrong DB.
+    /// the CLI can splice `--database <name>` into. The splice is
+    /// what routes seed SQL to the matching per-database connection;
+    /// refuse rather than fall back to the wrong DB.
     MalformedApplicationUrl { application_url: String },
 }
 
@@ -220,13 +217,12 @@ pub enum SeedOutcome {
 /// application URL and the operator-supplied `--database <name>`.
 ///
 /// The CLI accepts `--database <name>` to pick which seed directory
-/// (`seeds/<name>/`) to walk. Codex round-1 B-1 surfaced that prior
-/// to T8 Round 2 the same flag did NOT route the SQL execution to a
-/// matching connection — every seed ran against `database.url`
-/// regardless of `--database`. The pragmatic fix (config has no
-/// per-database URL fields today) is to splice the operator's
-/// `<name>` into the URL's path component, producing a URL that
-/// targets the matching database on the same authority.
+/// (`seeds/<name>/`) to walk. The same flag must also route SQL
+/// execution to the matching connection — otherwise every seed runs
+/// against `database.url` regardless of `--database`. The pragmatic
+/// fix (config has no per-database URL fields today) is to splice
+/// the operator's `<name>` into the URL's path component, producing
+/// a URL that targets the matching database on the same authority.
 ///
 /// Returns `None` when the URL has no recognisable database
 /// component (the same condition `replace_db_in_url` flags). The
@@ -330,9 +326,9 @@ pub async fn bootstrap(ctx: &mut DjogiContext) -> Result<(), DjogiError> {
 ///   missing, network drop, …).
 /// - [`SeedError::LedgerDecode`] when the row exists but the
 ///   `checksum_up` column does not deserialise into a `String` (a
-///   row written by an older Djogi or hand-edited). Codex round-1
-///   A-2: previously the decode failure collapsed to `LedgerWrite`,
-///   losing specificity.
+///   row written by an older Djogi or hand-edited). Distinct from
+///   `LedgerWrite` so operators can tell decode failures from
+///   connection / relation errors.
 pub async fn fetch_recorded_checksum(
     ctx: &mut DjogiContext,
     seed_name: &str,

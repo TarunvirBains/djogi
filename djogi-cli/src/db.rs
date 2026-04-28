@@ -14,7 +14,7 @@
 //! `::config`) so integration tests can exercise the underlying logic
 //! without spawning subprocesses.
 //!
-//! # Exit codes (Codex round-1 A-1)
+//! # Exit codes
 //!
 //! Every subcommand in this module obeys a uniform three-value matrix
 //! so shell integrations can distinguish "operation refused" from
@@ -26,16 +26,16 @@
 //! | `1`  | Error — config load failure, network, SQL, or any other underlying runtime failure. |
 //! | `2`  | Refusal — either a policy gate (localhost, production profile, missing `--yes`, …) blocked execution before any side effect, OR clap-style argument validation rejected the invocation (missing flag, mutually exclusive flags). |
 //!
-//! Codex round-2 A-1: exit code `2` deliberately bundles policy
-//! refusals and argument-validation errors. Clap's default behaviour
-//! is to return `2` for unknown / malformed flags; manual `2` returns
-//! in `migrations attune` (missing `--from`, conflicting flags) and
-//! the `db reset` / `db seed` gates intentionally share that code so
-//! a CI script can treat any `2` as "operator must intervene; nothing
-//! happened" without distinguishing the two cases. `1` is reserved for
-//! "we tried; something broke" so a CI can retry. The matrix is also
-//! documented in `ReadMe.MD` and `docs/spec/configuration.md` so the
-//! operator-facing surface stays in sync.
+//! Exit code `2` deliberately bundles policy refusals and
+//! argument-validation errors. Clap's default behaviour is to return
+//! `2` for unknown / malformed flags; manual `2` returns in
+//! `migrations attune` (missing `--from`, conflicting flags) and the
+//! `db reset` / `db seed` gates intentionally share that code so a
+//! CI script can treat any `2` as "operator must intervene; nothing
+//! happened" without distinguishing the two cases. `1` is reserved
+//! for "we tried; something broke" so a CI can retry. The matrix is
+//! also documented in `ReadMe.MD` and `docs/spec/configuration.md`
+//! so the operator-facing surface stays in sync.
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -240,9 +240,9 @@ pub fn seed_cmd(
 
 /// Async body of [`seed_cmd`]. Returns the desired exit code.
 ///
-/// **Per-database routing (Codex round-1 B-1).** The `--database
-/// <name>` flag selects BOTH the `seeds/<name>/` directory the
-/// runner walks AND the connection URL the SQL fires against. The
+/// **Per-database routing.** The `--database <name>` flag selects
+/// BOTH the `seeds/<name>/` directory the runner walks AND the
+/// connection URL the SQL fires against. The
 /// CLI derives the per-database URL by splicing `<name>` into
 /// `database.url`'s path component (via
 /// [`djogi::migrate::derive_per_database_url`]) — without that

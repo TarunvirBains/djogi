@@ -290,9 +290,9 @@ pub enum ComposeError {
     /// after compose ran it the first time. Compose refuses to
     /// overwrite without an explicit `--force-overwrite` opt-in.
     ///
-    /// Per Codex B-3 the check protects BOTH up and down SQL — the
-    /// `side` field disambiguates which file diverged so the
-    /// diagnostic text names the offending file.
+    /// The check protects BOTH up and down SQL — the `side` field
+    /// disambiguates which file diverged so the diagnostic text
+    /// names the offending file.
     HandEditedMigrationWouldBeOverwritten {
         /// Affected bucket.
         bucket: BucketKey,
@@ -409,15 +409,14 @@ pub struct ComposeRequest<'a> {
     /// the prior compose. When `true`, compose discards the edits and
     /// rewrites the files with freshly-emitted SQL.
     ///
-    /// **Implementation detail (Codex round-2 A-2):** the divergence
-    /// check is a byte-equality compare between the existing file's
-    /// content and the freshly-emitted bytes — NOT a checksum read
-    /// from the pending JSON. Because the SQL emitter is
-    /// deterministic (same inputs always produce the same output
-    /// bytes), byte-equality is exactly equivalent to a checksum
-    /// match without re-deriving the checksum or parsing the pending
-    /// JSON. Per Codex B-3 / OQ-08; round-2 extended the check to
-    /// the down side and to both-sides edits.
+    /// **Implementation detail.** The divergence check is a
+    /// byte-equality compare between the existing file's content and
+    /// the freshly-emitted bytes — NOT a checksum read from the
+    /// pending JSON. Because the SQL emitter is deterministic (same
+    /// inputs always produce the same output bytes), byte-equality
+    /// is exactly equivalent to a checksum match without re-deriving
+    /// the checksum or parsing the pending JSON. The check covers
+    /// both the up side and the down side.
     pub force_overwrite: bool,
     /// Compose-time clock, used as the version-prefix instant.
     /// Production callers pass `OffsetDateTime::now_utc()`; tests

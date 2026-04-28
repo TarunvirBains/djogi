@@ -280,8 +280,8 @@ pub enum SchemaOperation {
     /// segment 3b emits `... FOREIGN KEY (tag_id_desc) REFERENCES
     /// jt_tags(id_desc) NOT VALID` against `jt_tags(id_desc)` that
     /// the loser's segment 1 has not yet created. Postgres rejects
-    /// the migration mid-apply. Codex round-4 B-15 documented the
-    /// failure mode; this multi-parent variant is the structural fix.
+    /// the migration mid-apply. This multi-parent variant is the
+    /// structural fix.
     ///
     /// **Construction.** [`apply_pk_flip_join_table_option`] under
     /// Option A merges every cross-flipping cluster of single-parent
@@ -506,7 +506,7 @@ impl PkFlipJoinTableOption {
 ///
 /// **Idempotent.** Calling twice with the same option is a no-op.
 ///
-/// **Codex round-4 B-15 — multi-parent merge.** Under
+/// **Multi-parent merge.** Under
 /// [`PkFlipJoinTableOption::OptionA`] the function does more than
 /// stamp the option — it MERGES every cluster of cross-flipping
 /// `PkTypeFlipGroup` ops in a delta into a single
@@ -989,12 +989,11 @@ pub struct PkFlipChild {
     pub fk_constraint_name: String,
     /// Original FK cascade discipline, preserved through the cutover.
     pub on_delete: super::schema::OnDeleteSchema,
-    /// Original FK deferrability flags (Codex round-4 B-16).
-    /// Preserved through the cutover so a deferrable source FK
-    /// recreates as deferrable on the post-cutover column. Cycle
-    /// peers force `deferrable = true, initially_deferred = true`
-    /// regardless of descriptor input — see [`PkTypeFlipGroup`]
-    /// docs and playbook §8.
+    /// Original FK deferrability flags. Preserved through the
+    /// cutover so a deferrable source FK recreates as deferrable on
+    /// the post-cutover column. Cycle peers force `deferrable = true,
+    /// initially_deferred = true` regardless of descriptor input —
+    /// see [`PkTypeFlipGroup`] docs and playbook §8.
     pub fk_deferrable: bool,
     /// `true` iff the original FK was `INITIALLY DEFERRED`. Only
     /// meaningful when `fk_deferrable = true`.
@@ -1036,9 +1035,8 @@ pub struct PkFlipSelfFk {
     pub fk_columns: Vec<String>,
     /// FK constraint names matching `fk_columns` index-for-index.
     pub fk_constraint_names: Vec<String>,
-    /// Per-FK deferrability (Codex round-4 B-16). Index-for-index
-    /// with `fk_columns` / `fk_constraint_names`. Cycle path forces
-    /// `true / true`.
+    /// Per-FK deferrability. Index-for-index with `fk_columns` /
+    /// `fk_constraint_names`. Cycle path forces `true / true`.
     pub fk_deferrable: Vec<bool>,
     /// Per-FK `INITIALLY DEFERRED` flag. Same indexing as
     /// `fk_deferrable`. Only meaningful when the matching
@@ -1058,9 +1056,9 @@ pub struct PkFlipJoinTable {
     pub fk_to_parent_column: String,
     /// FK constraint name for `fk_to_parent_column`.
     pub fk_to_parent_constraint: String,
-    /// Original deferrability of the parent-side FK (Codex round-4
-    /// B-16). Preserved through the cutover; defaults to `false`
-    /// for non-deferrable FKs.
+    /// Original deferrability of the parent-side FK. Preserved
+    /// through the cutover; defaults to `false` for non-deferrable
+    /// FKs.
     pub fk_to_parent_deferrable: bool,
     /// `true` iff the parent-side FK was `INITIALLY DEFERRED`.
     /// Only meaningful when `fk_to_parent_deferrable = true`.
@@ -1078,14 +1076,13 @@ pub struct PkFlipJoinTable {
     /// `Some(_)` exactly when `fk_to_partner_column` is `Some(_)`
     /// — the differ records both fields atomically so the planner
     /// can re-emit the partner's FK constraint targeting the
-    /// correct parent table during the cutover. Required for B-12
+    /// correct parent table during the cutover. Required under
     /// Option A so the cutover's `ADD CONSTRAINT` statement points
     /// at the right partner table; `None` means single-parent join
     /// where this planner only ever emits the parent-side FK.
     pub fk_to_partner_table: Option<String>,
-    /// Original deferrability of the partner-side FK (Codex round-4
-    /// B-16). `false` for `None` partner. Preserved through the
-    /// cutover.
+    /// Original deferrability of the partner-side FK. `false` for
+    /// `None` partner. Preserved through the cutover.
     pub fk_to_partner_deferrable: bool,
     /// `true` iff the partner-side FK was `INITIALLY DEFERRED`.
     /// Only meaningful when `fk_to_partner_deferrable = true`.

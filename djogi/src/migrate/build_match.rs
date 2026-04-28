@@ -114,17 +114,17 @@ pub enum DriftKind {
 }
 
 impl DriftKind {
-    /// Per Codex round-2 B-6: only Outcome 3 (model drift) is muted by
+    /// Only Outcome 3 (model drift) is muted by
     /// `Djogi.toml::build.suppress_drift_warning = true`. The other
     /// outcomes (D004 filesystem mismatches, Outcome 2
     /// composed-not-applied, Outcome 4 stale-pending) are
-    /// operator-actionable signals that always print regardless of the
-    /// suppression flag.
+    /// operator-actionable signals that always print regardless of
+    /// the suppression flag.
     ///
-    /// The build.rs script uses an `is_outcome3_drift: bool` field on
-    /// its internal diagnostic struct; this method gives library
-    /// callers (and the round-2 B-6 runtime test) the same predicate
-    /// without re-implementing the kind discriminant.
+    /// The build.rs script uses an `is_outcome3_drift: bool` field
+    /// on its internal diagnostic struct; this method gives library
+    /// callers the same predicate without re-implementing the kind
+    /// discriminant.
     pub fn is_outcome3_drift(self) -> bool {
         matches!(self, DriftKind::Outcome3Drift)
     }
@@ -140,14 +140,13 @@ impl DriftKind {
 /// supplies `None` for the pending-version argument. Outcome 2
 /// messages from this entry point use the `<unknown>` placeholder.
 ///
-/// Per Codex round-2 B-8 the two entry points share a single
-/// implementation: this function forwards directly to
-/// [`classify_bucket_with_pending`] so the four outcome categories
-/// and frozen-string contracts cannot drift between them. The
-/// `<unknown>` placeholder is the defensive fallback for callers
-/// (e.g. early-build paths, malformed pending JSON) that genuinely
-/// cannot supply a version; production paths thread the real
-/// version through [`classify_bucket_with_pending`].
+/// The two entry points share a single implementation: this
+/// function forwards directly to [`classify_bucket_with_pending`] so
+/// the four outcome categories and frozen-string contracts cannot
+/// drift between them. The `<unknown>` placeholder is the defensive
+/// fallback for callers (e.g. early-build paths, malformed pending
+/// JSON) that genuinely cannot supply a version; production paths
+/// thread the real version through [`classify_bucket_with_pending`].
 pub fn classify_bucket(
     bucket: &BucketKey,
     models: Option<&AppliedSchema>,
@@ -158,11 +157,10 @@ pub fn classify_bucket(
 }
 
 /// Same as [`classify_bucket`] but accepts the pending migration's
-/// version ID (e.g. `"V20260425010203__add_widgets"`) so the
-/// Outcome 2 warning includes the filename + version per Codex B-8 /
-/// v3 §6.
+/// version ID (e.g. `"V20260425010203__add_widgets"`) so the Outcome
+/// 2 warning includes the filename + version (per v3 §6).
 ///
-/// **Caller mapping** (per Codex round-2 B-8):
+/// **Caller mapping:**
 ///
 /// - `migrations status` (CLI): threads the real `version` from each
 ///   pending JSON it loads; the operator sees an actionable filename.
@@ -347,8 +345,8 @@ pub fn classify_filesystem_drift(
 // MIRROR: keep in lockstep with djogi/build.rs (the build-script re-implements these formatters)
 
 /// Outcome 2 — `composed migration not yet applied: <filename>
-/// (version <version>; bucket <database>/<app>)` (frozen, per Codex
-/// B-8 + v3 §6 amendment).
+/// (version <version>; bucket <database>/<app>)` (frozen wording,
+/// per v3 §6 amendment).
 ///
 /// `pending_version` carries the pending migration's version ID
 /// (e.g. `"V20260425010203__add_widgets"`); the `.sql` filename is

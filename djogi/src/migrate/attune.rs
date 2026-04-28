@@ -223,29 +223,27 @@ pub struct AttuneReport {
     /// `true` when the squashed history was pushed to the remote.
     /// Only set in `Squash { publish: true }` after a successful push.
     pub published: bool,
-    /// Resolved Git SHA of the operator-supplied target (Codex
-    /// umbrella U-1). `Some(sha)` when `target` was supplied AND
-    /// resolution succeeded; `None` otherwise. Operators consume this
-    /// to confirm the rev-parse landed on the SHA they expected.
+    /// Resolved Git SHA of the operator-supplied target. `Some(sha)`
+    /// when `target` was supplied AND resolution succeeded; `None`
+    /// otherwise. Operators consume this to confirm the rev-parse
+    /// landed on the SHA they expected.
     pub resolved_target: Option<String>,
     /// `true` when the parent repo's recorded submodule pointer was
-    /// updated to `resolved_target` (Codex umbrella U-1). Only set
-    /// when both `record` AND `apply` were `true` in the request, AND
-    /// the target resolved successfully, AND the parent index update
-    /// succeeded.
+    /// updated to `resolved_target`. Only set when both `record` AND
+    /// `apply` were `true` in the request, AND the target resolved
+    /// successfully, AND the parent index update succeeded.
     pub parent_pointer_updated: bool,
     /// Structured diagnostics surfaced alongside the diff entries.
-    /// Today this carries [`AttuneDiagnostic::LedgerTableMissing`]
-    /// (B-3 + Codex umbrella U-5) on every read-only path — DiffOnly
-    /// always, plus Record / Squash without `--apply` — when the
-    /// ledger has not been bootstrapped on the connected database.
-    /// The report is still produced, but the operator sees an
-    /// actionable note that they must run `apply` or
-    /// `attune --record --apply` to bootstrap before subsequent diffs
-    /// are meaningful. Per Codex umbrella U-1 the report also carries
+    /// Today this carries [`AttuneDiagnostic::LedgerTableMissing`] on
+    /// every read-only path — DiffOnly always, plus Record / Squash
+    /// without `--apply` — when the ledger has not been bootstrapped
+    /// on the connected database. The report is still produced, but
+    /// the operator sees an actionable note that they must run
+    /// `apply` or `attune --record --apply` to bootstrap before
+    /// subsequent diffs are meaningful. The report also carries
     /// [`AttuneDiagnostic::DryRunMutationsSkipped`] when a Record /
-    /// Squash mode was invoked WITHOUT `--apply`: the diff is reported
-    /// but no DB / disk mutation happened.
+    /// Squash mode was invoked WITHOUT `--apply`: the diff is
+    /// reported but no DB / disk mutation happened.
     pub diagnostics: Vec<AttuneDiagnostic>,
 }
 
@@ -253,24 +251,24 @@ pub struct AttuneReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttuneDiagnostic {
     /// The `djogi_schema_migrations` table does not exist in the
-    /// connected database. Attune's read-only dry-run contract
-    /// (B-3 + Codex umbrella U-5) means every dry-run path — DiffOnly
-    /// always, plus Record / Squash WITHOUT `--apply` — does NOT
-    /// bootstrap the ledger. The operator must run `apply` or
+    /// connected database. Attune's read-only dry-run contract means
+    /// every dry-run path — DiffOnly always, plus Record / Squash
+    /// WITHOUT `--apply` — does NOT bootstrap the ledger. The
+    /// operator must run `apply` or
     /// `attune --record --apply` first.
     ///
     /// The `database` field is the active connection's
     /// `current_database()` so a multi-database workspace's diagnostic
     /// is unambiguous.
     LedgerTableMissing { database: String },
-    /// A Record or Squash mode was invoked without `--apply` (Codex
-    /// umbrella U-1). The diff was computed and reported but no DB /
-    /// disk mutation happened. The operator re-runs with `--apply` to
-    /// commit. The `mode` field surfaces the mode the operator asked
-    /// for so the message is unambiguous in mixed-mode runs.
+    /// A Record or Squash mode was invoked without `--apply`. The
+    /// diff was computed and reported but no DB / disk mutation
+    /// happened. The operator re-runs with `--apply` to commit. The
+    /// `mode` field surfaces the mode the operator asked for so the
+    /// message is unambiguous in mixed-mode runs.
     DryRunMutationsSkipped { mode: &'static str },
     /// Recording was effective (via `--record` or auto-implied by
-    /// `--squash` per U-7) but `--apply` was absent. The would-be
+    /// `--squash`) but `--apply` was absent. The would-be
     /// parent submodule pointer update is described but not actually
     /// written. Distinct from `DryRunMutationsSkipped` so the operator
     /// sees both messages when they pass `--record` (or `--squash`)
@@ -383,10 +381,10 @@ pub enum AttuneError {
         stderr: String,
         status_code: Option<i32>,
     },
-    /// Target resolution failed (Codex umbrella U-1). Either the local
-    /// `git rev-parse <target>` failed AND the remote fetch + retry
-    /// also failed, or the migrations submodule has no remote configured
-    /// and the target is not locally available.
+    /// Target resolution failed. Either the local `git rev-parse
+    /// <target>` failed AND the remote fetch + retry also failed,
+    /// or the migrations submodule has no remote configured and the
+    /// target is not locally available.
     GitTargetResolveFailed {
         target: String,
         stderr: String,
@@ -400,11 +398,11 @@ pub enum AttuneError {
         stderr: String,
         status_code: Option<i32>,
     },
-    /// Updating the parent repo's recorded submodule pointer failed
-    /// (Codex umbrella U-1). The new SHA was resolved successfully
-    /// but `git update-index --cacheinfo` against the parent repo
-    /// returned non-zero. Most often: the parent has uncommitted
-    /// staged changes to the submodule path that conflict with the
+    /// Updating the parent repo's recorded submodule pointer
+    /// failed. The new SHA was resolved successfully but `git
+    /// update-index --cacheinfo` against the parent repo returned
+    /// non-zero. Most often: the parent has uncommitted staged
+    /// changes to the submodule path that conflict with the
     /// intended pointer write.
     GitUpdateSubmodulePointerFailed {
         new_sha: String,
@@ -629,13 +627,13 @@ pub struct AttuneRequest<'a> {
     pub profile: &'a str,
     /// `[database].dev_mode` flag from `Djogi.toml`. Squash mode
     /// refuses when this is `false` per `docs/spec/configuration.md`
-    /// §14 (Codex umbrella U-2 — the third gate documented in the
-    /// spec but not previously enforced). Read only for
-    /// [`AttuneMode::Squash`]; ignored by `DiffOnly` and `Record`.
+    /// §14 — the third squash gate alongside localhost and dev
+    /// profile. Read only for [`AttuneMode::Squash`]; ignored by
+    /// `DiffOnly` and `Record`.
     pub dev_mode: bool,
     /// Optional Git target to attune the local migration history to —
-    /// a local or remote commit / tag / branch (Codex umbrella U-1
-    /// per `docs/spec/configuration.md` §14). When `None`, attune
+    /// a local or remote commit / tag / branch (per
+    /// `docs/spec/configuration.md` §14). When `None`, attune
     /// reconciles against the current on-disk state.
     ///
     /// **Resolution order.** The target string is resolved first
@@ -652,29 +650,29 @@ pub struct AttuneRequest<'a> {
     /// `true` when the operator passed `--apply`. Without `--apply`,
     /// attune is read-only — it scans, prints the diff, and exits
     /// without inserting / deleting ledger rows or updating the
-    /// parent repo's submodule pointer (Codex umbrella U-1 per
-    /// `docs/spec/configuration.md` §14: "does not mutate the database
-    /// unless `--apply` is explicitly passed"). The dry-run path is
-    /// the operator-friendly default — review the proposed mutation
-    /// before committing to it.
+    /// parent repo's submodule pointer (per
+    /// `docs/spec/configuration.md` §14: "does not mutate the
+    /// database unless `--apply` is explicitly passed"). The dry-run
+    /// path is the operator-friendly default — review the proposed
+    /// mutation before committing to it.
     pub apply: bool,
     /// `true` when the operator passed `--record`. After a successful
     /// attunement, attune updates the parent repo's recorded
-    /// submodule pointer to the resolved target SHA (Codex umbrella
-    /// U-1 per `docs/spec/configuration.md` §14). `--record` is
-    /// orthogonal to `--apply`: `--record` without `--apply` is a
-    /// dry-run that prints the would-be parent pointer update without
-    /// touching the parent index. Without `--apply`, the parent
-    /// pointer is NEVER mutated regardless of `--record`.
+    /// submodule pointer to the resolved target SHA (per
+    /// `docs/spec/configuration.md` §14). `--record` is orthogonal to
+    /// `--apply`: `--record` without `--apply` is a dry-run that
+    /// prints the would-be parent pointer update without touching the
+    /// parent index. Without `--apply`, the parent pointer is NEVER
+    /// mutated regardless of `--record`.
     ///
-    /// Codex umbrella round-2 U-7: `--squash` clearly implies
-    /// recording per `docs/spec/configuration.md` §15 and
-    /// `docs/spec/migrations.md` §"migrations attune". The runtime
-    /// computes an `effective_record` boolean as
-    /// `req.record || matches!(req.mode, AttuneMode::Squash { .. })`,
-    /// so an operator running `attune --squash --apply --target <ref>`
-    /// gets the parent pointer write WITHOUT also typing `--record`.
-    /// The explicit `req.record` flag is still honoured (and required)
+    /// `--squash` implies recording per
+    /// `docs/spec/configuration.md` §15 and `docs/spec/migrations.md`
+    /// §"migrations attune". The runtime computes an
+    /// `effective_record` boolean as `req.record ||
+    /// matches!(req.mode, AttuneMode::Squash { .. })`, so an operator
+    /// running `attune --squash --apply --target <ref>` gets the
+    /// parent pointer write WITHOUT also typing `--record`. The
+    /// explicit `req.record` flag is still honoured (and required)
     /// for `Record` / `DiffOnly` modes.
     pub record: bool,
     /// Mode selector — see [`AttuneMode`].
@@ -691,9 +689,9 @@ pub struct AttuneRequest<'a> {
 /// Returns `Some(value)` when the `DJOGI_ENV` env var is set to a
 /// case-insensitive `"production"` byte sequence; `None` otherwise.
 ///
-/// **Why a separate helper.** The squash gate refuses in this case
-/// (umbrella U-2). Pulling the comparison into a free function keeps
-/// the gate's intent obvious at the call site and gives unit tests a
+/// **Why a separate helper.** The squash gate refuses in this
+/// case. Pulling the comparison into a free function keeps the
+/// gate's intent obvious at the call site and gives unit tests a
 /// stable surface to pin the case-insensitive ASCII compare without
 /// allocating a `to_lowercase` String.
 ///

@@ -28,12 +28,12 @@ fn resolve_workspace(workspace: Option<PathBuf>) -> PathBuf {
 /// Walk the on-disk `migrations/<database>/<app>/` tree and return the
 /// set of buckets that already have a `schema_snapshot.json` file.
 ///
-/// Per Codex B-1: compose's `snapshots` map must include the OLD
-/// bucket of any renamed app — and that bucket is guaranteed to be
-/// absent from the current `models` inventory because the
-/// `#[app(renamed_from = "old")]` annotation lives on the NEW app.
-/// Walking disk directly recovers those orphaned snapshots so the
-/// differ sees both sides of a rename.
+/// Compose's `snapshots` map must include the OLD bucket of any
+/// renamed app — and that bucket is guaranteed to be absent from the
+/// current `models` inventory because the `#[app(renamed_from =
+/// "old")]` annotation lives on the NEW app. Walking disk directly
+/// recovers those orphaned snapshots so the differ sees both sides of
+/// a rename.
 ///
 /// Each entry maps to a [`djogi::migrate::projection::BucketKey`]
 /// using the inverse of [`djogi::migrate::app_dirname`] (synthetic
@@ -349,7 +349,7 @@ async fn build_status_context(url: &str) -> Result<djogi::context::DjogiContext,
 /// | false | true  | [`AttuneMode::Squash { from, publish, app }`] |
 /// | true  | true  | rejected by clap (`conflicts_with`) |
 ///
-/// Per Codex umbrella U-1:
+/// Argument semantics:
 /// - `target` is an optional positional Git target (commit / tag /
 ///   branch). When supplied, attune resolves it (local first, fetch
 ///   on miss) before any DB / disk mutation.
@@ -532,8 +532,8 @@ async fn run_attune(
     }
 }
 
-/// Map an [`AttuneError`] variant onto the documented exit-code matrix
-/// (Codex umbrella U-1 / U-3 — `docs/spec/configuration.md` §14):
+/// Map an [`AttuneError`] variant onto the documented exit-code
+/// matrix (`docs/spec/configuration.md` §14):
 ///
 /// - Refusal variants → exit code `2` ("operator must intervene;
 ///   nothing happened"). Today every refusal flows through
@@ -545,10 +545,9 @@ async fn run_attune(
 ///   publish). CI may safely retry these.
 ///
 /// Pulled out as a free function so unit tests can pin every variant
-/// without spinning a Tokio runtime; the prior implementation
-/// flattened every error to `1`, which umbrella U-3 flagged as a
-/// blocker because operators could not distinguish "refused before
-/// any side effect" from "ran and failed mid-flight".
+/// without spinning a Tokio runtime. Operators rely on the 1-vs-2
+/// distinction to tell "refused before any side effect" from "ran and
+/// failed mid-flight".
 fn attune_error_exit_code(err: &AttuneError) -> i32 {
     match err {
         AttuneError::Refused(_) => 2,

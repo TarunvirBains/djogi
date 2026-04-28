@@ -132,15 +132,14 @@ enum MigrationsCommand {
         /// destructive deltas with a structural error.
         #[arg(long, default_value_t = false)]
         allow_destructive: bool,
-        /// Discard hand-edits to existing migration files (D013
-        /// override). Without this flag compose refuses to overwrite
-        /// any up or down migration file whose current bytes do NOT
-        /// match what the deterministic emitter would freshly produce
-        /// — the byte-equality check stands in for a checksum compare
+        /// Discard hand-edits to existing migration files. Without
+        /// this flag compose refuses to overwrite any up or down
+        /// migration file whose current bytes do NOT match what the
+        /// deterministic emitter would freshly produce — the
+        /// byte-equality check stands in for a checksum compare
         /// because the emitter is deterministic (same inputs always
-        /// produce the same bytes). Per Codex round-2 A-2 the check
-        /// is purely byte-level; it does not read the pending JSON's
-        /// `checksum_up` field.
+        /// produce the same bytes). The check is purely byte-level;
+        /// it does not read the pending JSON's `checksum_up` field.
         #[arg(long, default_value_t = false)]
         force_overwrite: bool,
         /// Workspace root override. Defaults to the current working
@@ -158,27 +157,27 @@ enum MigrationsCommand {
     },
     /// Reconcile local migration history with the ledger. Default
     /// mode is a read-only diff between the on-disk SQL files and
-    /// the ledger. Per Codex umbrella U-1, attune is read-only by
-    /// default — pass `--apply` to commit ledger inserts / squash /
-    /// parent-pointer writes. `--record` updates the parent repo's
-    /// recorded submodule pointer to the resolved Git target after
-    /// successful attunement. `--squash --from <ver>` collapses local
-    /// history into a single migration (localhost + dev_mode + dev
-    /// profile + DJOGI_ENV gates per umbrella U-2).
+    /// the ledger. Attune is read-only by default — pass `--apply`
+    /// to commit ledger inserts / squash / parent-pointer writes.
+    /// `--record` updates the parent repo's recorded submodule
+    /// pointer to the resolved Git target after successful
+    /// attunement. `--squash --from <ver>` collapses local history
+    /// into a single migration (localhost + dev_mode + dev profile +
+    /// DJOGI_ENV gates).
     ///
     /// Exit codes: 0 on success, 1 on runtime error (config / network
     /// / SQL / git), 2 on refusal (gate failure or arg validation).
     Attune {
         /// Optional Git target to attune the local migration history
-        /// to — a local or remote commit / tag / branch (Codex
-        /// umbrella U-1). When omitted, attune reconciles against the
-        /// current on-disk state. Resolution: tries local first, then
-        /// `git fetch --all` + retries on failure.
+        /// to — a local or remote commit / tag / branch. When
+        /// omitted, attune reconciles against the current on-disk
+        /// state. Resolution: tries local first, then `git fetch
+        /// --all` + retries on failure.
         target: Option<String>,
         /// Mutate the database / parent index. Without `--apply`,
         /// attune is a dry-run — it scans, prints the diff, and
         /// exits without inserting / deleting ledger rows or updating
-        /// the parent submodule pointer (Codex umbrella U-1 per
+        /// the parent submodule pointer (per
         /// `docs/spec/configuration.md` §14: "does not mutate the
         /// database unless `--apply` is explicitly passed").
         #[arg(long, default_value_t = false)]
@@ -187,7 +186,7 @@ enum MigrationsCommand {
         /// SQL files present on disk but absent from the ledger. With
         /// a resolved `<target>` argument AND `--apply`, also update
         /// the parent repo's recorded submodule pointer to the target
-        /// SHA (Codex umbrella U-1).
+        /// SHA.
         #[arg(long, default_value_t = false)]
         record: bool,
         /// Activate Record mode — insert ledger rows for SQL files
@@ -221,8 +220,8 @@ enum MigrationsCommand {
         publish: bool,
         /// Optional explicit app label to scope `--squash` to a
         /// single bucket. Required when `--from` matches a version in
-        /// multiple buckets (B-5); auto-detected when the version is
-        /// unique to one bucket.
+        /// multiple buckets; auto-detected when the version is unique
+        /// to one bucket.
         #[arg(long)]
         app: Option<String>,
         /// Workspace root override.

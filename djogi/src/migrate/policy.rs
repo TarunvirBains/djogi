@@ -177,11 +177,11 @@ const LOCALHOST_ALLOWLIST: &[&str] = &["", "127.0.0.1", "::1", "localhost"];
 /// helper that walks the four octets without parsing into a numeric
 /// type.
 ///
-/// **Used by `attune --squash`** (and, post-Codex umbrella PARTIAL,
-/// by `db reset` + `db seed`). The squash path refuses to run when
-/// this returns `false`, so a misconfigured DATABASE_URL pointing at
-/// a shared dev server cannot accidentally rewrite history that other
-/// developers also pull from.
+/// **Used by `attune --squash`, `db reset`, and `db seed`.** The
+/// squash path refuses to run when this returns `false`, so a
+/// misconfigured DATABASE_URL pointing at a shared dev server cannot
+/// accidentally rewrite history that other developers also pull
+/// from.
 pub fn is_localhost_connection(conn: &str) -> bool {
     let host = extract_host(conn);
     if LOCALHOST_ALLOWLIST.binary_search(&host).is_ok() {
