@@ -1638,59 +1638,85 @@ async fn run_squash(
 /// operator can correct without re-running.
 fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), AttuneError> {
     let migrations_root = super::target::migrations_root(workspace_root);
-
-    // Step 1: stage every mutation produced by run_squash above. We
-    // pass `-A` so deletions of subsumed SQL files are picked up
-    // alongside the squashed file's write.
-    let add_out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&migrations_root)
-        .arg("add")
-        .arg("-A")
-        .output()
-        .map_err(|e| AttuneError::GitPublishFailed {
-            stderr: format!("failed to spawn `git add`: {e}"),
-            status_code: None,
-        })?;
-    if !add_out.status.success() {
-        let stderr = String::from_utf8_lossy(&add_out.stderr).into_owned();
-        return Err(AttuneError::GitPublishFailed {
-            stderr: format!("`git add -A` failed: {stderr}"),
-            status_code: add_out.status.code(),
-        });
-    }
-
-    // Step 2: commit the staged squash. The message names the
-    // canonical `from` version so the audit trail in the migrations
-    // submodule's history points back to the operator's intent.
     let commit_msg = format!("djogi attune --squash from {from}");
-    let commit_out = std::process::Command::new("git")
+
+    // Idempotency-recovery probe: if a previous `--publish` attempt
+    // landed the commit but failed at the push step, the working tree
+    // is now clean (originals already deleted, squash file already
+    // committed) — a fresh `attune --squash` would silently no-op
+    // because no version >= `from` remains on disk. Detect that
+    // shape by looking at HEAD's commit subject; if it already
+    // matches our canonical squash message for the same `from`, skip
+    // straight to push so the recovery path is `attune --squash --publish`
+    // typed verbatim, not `cd migrations && git push origin HEAD`.
+    let head_subject_out = std::process::Command::new("git")
         .arg("-C")
         .arg(&migrations_root)
-        .arg("commit")
-        .arg("-m")
-        .arg(&commit_msg)
+        .arg("log")
+        .arg("-1")
+        .arg("--pretty=%s")
         .output()
         .map_err(|e| AttuneError::GitPublishFailed {
-            stderr: format!("failed to spawn `git commit`: {e}"),
+            stderr: format!("failed to spawn `git log`: {e}"),
             status_code: None,
         })?;
-    if !commit_out.status.success() {
-        let stderr = String::from_utf8_lossy(&commit_out.stderr).into_owned();
-        // A "nothing to commit" failure is unusual after a successful
-        // squash mutation, but if it happens we surface the captured
-        // stderr verbatim — it's almost always an operator-side issue
-        // (e.g. pre-commit hooks rejecting the change).
-        return Err(AttuneError::GitPublishFailed {
-            stderr: format!("`git commit` failed: {stderr}"),
-            status_code: commit_out.status.code(),
-        });
+    let head_subject = String::from_utf8_lossy(head_subject_out.stderr_or_stdout())
+        .trim()
+        .to_string();
+    let commit_already_landed = head_subject_out.status.success() && head_subject == commit_msg;
+
+    if !commit_already_landed {
+        // Step 1: stage every mutation produced by run_squash above. We
+        // pass `-A` so deletions of subsumed SQL files are picked up
+        // alongside the squashed file's write.
+        let add_out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&migrations_root)
+            .arg("add")
+            .arg("-A")
+            .output()
+            .map_err(|e| AttuneError::GitPublishFailed {
+                stderr: format!("failed to spawn `git add`: {e}"),
+                status_code: None,
+            })?;
+        if !add_out.status.success() {
+            let stderr = String::from_utf8_lossy(&add_out.stderr).into_owned();
+            return Err(AttuneError::GitPublishFailed {
+                stderr: format!("`git add -A` failed: {stderr}"),
+                status_code: add_out.status.code(),
+            });
+        }
+
+        // Step 2: commit the staged squash. The message names the
+        // canonical `from` version so the audit trail in the migrations
+        // submodule's history points back to the operator's intent.
+        let commit_out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&migrations_root)
+            .arg("commit")
+            .arg("-m")
+            .arg(&commit_msg)
+            .output()
+            .map_err(|e| AttuneError::GitPublishFailed {
+                stderr: format!("failed to spawn `git commit`: {e}"),
+                status_code: None,
+            })?;
+        if !commit_out.status.success() {
+            let stderr = String::from_utf8_lossy(&commit_out.stderr).into_owned();
+            return Err(AttuneError::GitPublishFailed {
+                stderr: format!("`git commit` failed: {stderr}"),
+                status_code: commit_out.status.code(),
+            });
+        }
     }
 
     // Step 3: push the current branch to `origin`. We rely on the
     // operator having a tracking branch already configured (squash is
     // dev-only and the migrations repo is expected to have its
-    // upstream wired up at clone time).
+    // upstream wired up at clone time). If push fails after the
+    // commit landed locally, re-running `attune --squash --publish`
+    // will skip the no-op stage/commit (via the head_subject probe
+    // above) and retry just the push.
     let push_out = std::process::Command::new("git")
         .arg("-C")
         .arg(&migrations_root)
@@ -1705,11 +1731,32 @@ fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), A
     if !push_out.status.success() {
         let stderr = String::from_utf8_lossy(&push_out.stderr).into_owned();
         return Err(AttuneError::GitPublishFailed {
-            stderr: format!("`git push origin HEAD` failed: {stderr}"),
+            stderr: format!(
+                "`git push origin HEAD` failed: {stderr}\n\
+                 Hint: the squash commit IS on the local migrations branch; \
+                 retry with `attune --squash --publish` once the push issue \
+                 is resolved (auth, network, etc.)."
+            ),
             status_code: push_out.status.code(),
         });
     }
     Ok(())
+}
+
+/// Helper trait to read either stdout (success path) or stderr (failure
+/// path) from a `std::process::Output` without an extra `match`.
+trait OutputReadStdoutOrStderr {
+    fn stderr_or_stdout(&self) -> &[u8];
+}
+
+impl OutputReadStdoutOrStderr for std::process::Output {
+    fn stderr_or_stdout(&self) -> &[u8] {
+        if self.status.success() {
+            &self.stdout
+        } else {
+            &self.stderr
+        }
+    }
 }
 
 // ── Codex umbrella U-1: target resolution + parent pointer write ─────────
