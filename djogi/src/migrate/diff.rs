@@ -2382,20 +2382,33 @@ fn classify(ops: &[SchemaOperation]) -> Classification {
                 | SchemaOperation::PkTypeFlipMultiGroup(_)
         )
     });
+
+    // PkTypeFlip is orthogonal — surface co-flags so the gate logic
+    // can still apply destructive / lossy semantics. Compute each
+    // flag independently: a list with only Lossy ops must not also
+    // claim co_destructive, and a list with only Destructive ops
+    // must not claim co_lossy.
+    if has_pk_flip {
+        let mut co_destructive = false;
+        let mut co_lossy = false;
+        for op in ops {
+            match severity_of(op) {
+                Severity::Destructive => co_destructive = true,
+                Severity::Lossy => co_lossy = true,
+                Severity::Additive | Severity::Reversible => {}
+            }
+        }
+        return Classification::PkTypeFlip {
+            co_destructive,
+            co_lossy,
+        };
+    }
+
     let max = ops
         .iter()
         .map(severity_of)
         .max()
         .unwrap_or(Severity::Additive);
-
-    // PkTypeFlip is orthogonal — surface co-flags so the gate logic
-    // can still apply destructive / lossy semantics.
-    if has_pk_flip {
-        return Classification::PkTypeFlip {
-            co_destructive: max >= Severity::Destructive,
-            co_lossy: max >= Severity::Lossy,
-        };
-    }
 
     match max {
         Severity::Additive => Classification::Additive,
@@ -2958,6 +2971,53 @@ mod tests {
                 assert!(!co_lossy);
             }
             other => panic!("expected PkTypeFlip with co_destructive, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pk_flip_with_lossy_only_op_does_not_claim_co_destructive() {
+        // Regression: classify() previously computed
+        //     co_destructive: max >= Severity::Destructive
+        // which is true whenever max == Lossy because Lossy > Destructive
+        // in the severity ordering. That conflated the two flags so a
+        // delta carrying ONLY a Lossy op (no Destructive op) wrongly
+        // surfaced co_destructive=true and tripped the
+        // --allow-destructive gate.
+        //
+        // The fix scans ops independently: co_destructive only when
+        // some op classifies as Destructive, co_lossy only when some op
+        // classifies as Lossy. This test pins both flags to their
+        // expected values for a PK-flip + AddColumn(NOT NULL, no
+        // default) delta.
+        const REQUIRED: FieldDescriptor = field_descriptor("required", FieldSqlType::Text, false);
+        static FIELDS: &[FieldDescriptor] = &[REQUIRED];
+        let asc = ModelDescriptor {
+            pk_type: PkType::HeerId,
+            ..synth_model("widgets", "Widget")
+        };
+        let desc_with_required = ModelDescriptor {
+            pk_type: PkType::HeerIdDesc,
+            fields: FIELDS,
+            ..synth_model("widgets", "Widget")
+        };
+        let before = project_one(&asc);
+        let after = project_one(&desc_with_required);
+        let delta = diff_schemas(&before, &after, empty_global());
+        match delta.classification {
+            Classification::PkTypeFlip {
+                co_destructive,
+                co_lossy,
+            } => {
+                assert!(
+                    !co_destructive,
+                    "Lossy-only op alongside PkTypeFlip must NOT set co_destructive"
+                );
+                assert!(
+                    co_lossy,
+                    "AddColumn(NOT NULL, no default) alongside PkTypeFlip must set co_lossy"
+                );
+            }
+            other => panic!("expected PkTypeFlip with co_lossy only, got {other:?}"),
         }
     }
 
