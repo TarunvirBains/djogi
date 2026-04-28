@@ -309,8 +309,10 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
 /// `teardown_test_db` can run (e.g. `cargo test` killed mid-run via Ctrl+C,
 /// CI timeout, OOM). This helper provides a sweep for that common case.
 ///
-/// **Scope.** Queries `pg_database` for `datname LIKE 'djogi_test_%'` and
-/// issues `DROP DATABASE … WITH (FORCE)` for each. The `WITH (FORCE)` clause
+/// **Scope.** Queries `pg_database` for `datname LIKE 'djogi\_test\_%' ESCAPE '\'`
+/// (the underscores are escaped because `_` is a single-character LIKE
+/// wildcard) and issues `DROP DATABASE … WITH (FORCE)` for each. The
+/// `WITH (FORCE)` clause
 /// (Postgres 13+; required by Djogi's ≥ Postgres 18 target) terminates any
 /// lingering connections before dropping.
 ///

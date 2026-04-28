@@ -2917,8 +2917,10 @@ fn emit_partitioned_indexes(
 /// the body carries the parent-level `CREATE INDEX <idx> ON ONLY
 /// <parent> (<col>_desc)` plus a comment marker describing the
 /// per-leaf expansion. The runner walks
-/// [`PkFlipPartitionedSelfFkIndex {parent} {col}`] labels at apply
-/// time and emits one `CREATE INDEX CONCURRENTLY <leaf>_<col>_desc_idx
+/// `PkFlipPartitionedSelfFkIndex <parent>` labels at apply time
+/// (one per self-FK column; the column itself is recovered from the
+/// statement body via [`super::runner::recover_self_fk_column`]) and
+/// emits one `CREATE INDEX CONCURRENTLY <leaf>_<col>_desc_idx
 /// ON <leaf> (<col>_desc)` plus matching `ATTACH PARTITION` per
 /// leaf.
 ///
