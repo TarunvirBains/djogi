@@ -226,7 +226,8 @@ async fn stream_drop_closes_cursor(mut ctx: djogi::DjogiContext) {
             // pg_cursors is a system view listing open cursors in this session.
             let open_cursors: i64 = ctx
                 .raw_scalar(
-                    "SELECT COUNT(*) FROM pg_cursors WHERE name LIKE 'djogi_cur_%'",
+                    "SELECT COUNT(*) FROM pg_cursors \
+                     WHERE name LIKE 'djogi\\_cur\\_%' ESCAPE '\\'",
                     &[],
                 )
                 .await
