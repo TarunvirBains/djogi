@@ -22,8 +22,6 @@
 
 use std::fmt;
 
-use bytes::BytesMut;
-use postgres_types::{FromSql, IsNull, ToSql, Type};
 use serde::{Deserialize, Serialize};
 
 use crate::geo::{GeoError, GeoPoint, ewkb};
@@ -116,16 +114,34 @@ impl Polygon {
     /// Returns `GeoError::InvalidPolygon` if the outer ring or any hole ring
     /// fails validation.
     pub fn with_holes(outer: Vec<GeoPoint>, holes: Vec<Vec<GeoPoint>>) -> Result<Self, GeoError> {
-        validate_ring(
-            &outer,
-            "outer ring needs at least 4 points and must be closed",
-        )?;
-        for hole in &holes {
-            validate_ring(hole, "hole ring needs at least 4 points and must be closed")?;
-        }
         let mut rings = Vec::with_capacity(1 + holes.len());
         rings.push(outer);
         rings.extend(holes);
+        Self::from_rings(rings)
+    }
+
+    /// Construct from a pre-built `Vec` of rings. `rings[0]` is the outer
+    /// boundary; `rings[1..]` are holes. Each ring must already be closed
+    /// (first point equals last) and have at least 4 points.
+    ///
+    /// Returns `GeoError::InvalidPolygon` if `rings` is empty or any ring
+    /// fails validation. Used by EWKB decoders and the `serde::Deserialize`
+    /// impl to avoid the split-then-rejoin pattern that `with_holes`
+    /// otherwise forces on callers that already have a `Vec<Vec<GeoPoint>>`
+    /// in hand.
+    pub fn from_rings(rings: Vec<Vec<GeoPoint>>) -> Result<Self, GeoError> {
+        if rings.is_empty() {
+            return Err(GeoError::InvalidPolygon {
+                reason: "Polygon needs at least one ring",
+            });
+        }
+        validate_ring(
+            &rings[0],
+            "outer ring needs at least 4 points and must be closed",
+        )?;
+        for hole in &rings[1..] {
+            validate_ring(hole, "hole ring needs at least 4 points and must be closed")?;
+        }
         Ok(Self { rings })
     }
 
@@ -146,7 +162,9 @@ impl Polygon {
 
     /// Encode this `Polygon` as an EWKB buffer for `GEOGRAPHY(Polygon, 4326)`.
     pub fn to_ewkb_bytes(&self) -> Vec<u8> {
-        ewkb::encode_polygon(self)
+        let mut buf = Vec::with_capacity(ewkb::polygon_byte_len(self));
+        ewkb::encode_polygon_into(self, &mut buf);
+        buf
     }
 
     /// Decode an EWKB buffer into a `Polygon`.
@@ -195,47 +213,13 @@ impl<'de> Deserialize<'de> for Polygon {
         D: serde::Deserializer<'de>,
     {
         let rings: Vec<Vec<GeoPoint>> = Vec::deserialize(deserializer)?;
-        if rings.is_empty() {
-            return Err(serde::de::Error::custom("Polygon needs at least one ring"));
-        }
-        let mut outer_and_holes = rings.into_iter();
-        let outer = outer_and_holes.next().expect("checked non-empty");
-        let holes: Vec<Vec<GeoPoint>> = outer_and_holes.collect();
-        Polygon::with_holes(outer, holes).map_err(serde::de::Error::custom)
+        Polygon::from_rings(rings).map_err(serde::de::Error::custom)
     }
 }
 
-// ── postgres_types codec ──────────────────────────────────────────────────────
+// ── postgres_types codec (macro-generated) ───────────────────────────────────
 
-impl ToSql for Polygon {
-    fn to_sql(
-        &self,
-        _ty: &Type,
-        out: &mut BytesMut,
-    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        out.extend_from_slice(&self.to_ewkb_bytes());
-        Ok(IsNull::No)
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        ty.name() == "geography"
-    }
-
-    postgres_types::to_sql_checked!();
-}
-
-impl<'a> FromSql<'a> for Polygon {
-    fn from_sql(
-        _ty: &Type,
-        raw: &'a [u8],
-    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        Polygon::from_ewkb_bytes(raw).map_err(|e| Box::new(e) as _)
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        ty.name() == "geography"
-    }
-}
+crate::geo::impl_geography_codec!(Polygon, ewkb::encode_polygon_into);
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
