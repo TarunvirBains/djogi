@@ -715,6 +715,35 @@ fn djogi_env_is_production() -> Option<String> {
     Some(raw)
 }
 
+/// Push the variant-correct `DryRun*RecordSkipped` diagnostic for a
+/// dry-run that would have updated the parent submodule pointer.
+///
+/// Centralises the routing rule the three dry-run paths (DiffOnly,
+/// Record, Squash) all need:
+/// - explicit `--record` → `DryRunRecordSkipped` (causal prose names
+///   the flag);
+/// - `--squash`-implied recording → `DryRunSquashRecordSkipped`
+///   (neutral prose);
+/// - any other mode without a resolved target → no-op.
+fn push_record_skipped(
+    diagnostics: &mut Vec<AttuneDiagnostic>,
+    req: &AttuneRequest<'_>,
+    resolved_target: &Option<String>,
+) {
+    if resolved_target.is_none() {
+        return;
+    }
+    if req.record {
+        diagnostics.push(AttuneDiagnostic::DryRunRecordSkipped {
+            resolved_target: resolved_target.clone(),
+        });
+    } else if matches!(req.mode, AttuneMode::Squash { .. }) {
+        diagnostics.push(AttuneDiagnostic::DryRunSquashRecordSkipped {
+            resolved_target: resolved_target.clone(),
+        });
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────
 
 /// Run `attune` against the workspace.
@@ -921,15 +950,11 @@ pub async fn attune(
             entries.sort_by(|a, b| sort_key(a).cmp(&sort_key(b)));
             report.entries = entries;
             // Codex umbrella U-1 (--record without --apply on
-            // DiffOnly): the parent submodule pointer would be a
-            // dry-run note. Surface it as a structured diagnostic so
-            // the operator knows nothing was written.
-            if req.record && !apply && resolved_target.is_some() {
-                report
-                    .diagnostics
-                    .push(AttuneDiagnostic::DryRunRecordSkipped {
-                        resolved_target: resolved_target.clone(),
-                    });
+            // DiffOnly): surface the would-be pointer update as a
+            // structured diagnostic so the operator knows nothing
+            // was written.
+            if !apply {
+                push_record_skipped(&mut report.diagnostics, &req, &resolved_target);
             }
             // When `--record` AND `--apply` are both set on a
             // DiffOnly run with a resolved target, write the parent
@@ -1002,13 +1027,7 @@ pub async fn attune(
                 report
                     .diagnostics
                     .push(AttuneDiagnostic::DryRunMutationsSkipped { mode: "Record" });
-                if req.record && resolved_target.is_some() {
-                    report
-                        .diagnostics
-                        .push(AttuneDiagnostic::DryRunRecordSkipped {
-                            resolved_target: resolved_target.clone(),
-                        });
-                }
+                push_record_skipped(&mut report.diagnostics, &req, &resolved_target);
             } else if req.record {
                 // `--apply --record` with a resolved target writes the
                 // parent submodule pointer AFTER the ledger inserts
@@ -1039,24 +1058,8 @@ pub async fn attune(
                 // `attune --squash --target <ref>` (no --apply)
                 // should see "would record SHA X" alongside the
                 // dry-run mutations notice.
-                if effective_record && resolved_target.is_some() {
-                    // Codex round-7 BLOCK 2: route by req.record so that
-                    // `--squash --record` (operator typed both) names
-                    // the causal flag, while squash-implied recording
-                    // (`--squash` alone) stays neutral.
-                    if req.record {
-                        report
-                            .diagnostics
-                            .push(AttuneDiagnostic::DryRunRecordSkipped {
-                                resolved_target: resolved_target.clone(),
-                            });
-                    } else {
-                        report
-                            .diagnostics
-                            .push(AttuneDiagnostic::DryRunSquashRecordSkipped {
-                                resolved_target: resolved_target.clone(),
-                            });
-                    }
+                if effective_record {
+                    push_record_skipped(&mut report.diagnostics, &req, &resolved_target);
                 }
                 return Ok(report);
             }

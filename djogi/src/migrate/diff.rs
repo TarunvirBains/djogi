@@ -761,7 +761,9 @@ impl std::fmt::Display for DiffError {
                  {parent_table}; table_chain={chain:?}; graph likely has a pathological \
                  cycle or unbounded fan-out — refusing to compose the migration",
             ),
-            DiffError::PkFlipMalformedSelfFkMetadata(err) => write!(f, "{err}"),
+            DiffError::PkFlipMalformedSelfFkMetadata(err) => {
+                write!(f, "diff lowering rejected a malformed PK-flip group: {err}")
+            }
             DiffError::PartitionedMultiParentClusterUnsupported {
                 partitioned_parents,
                 cross_flipping_partners,

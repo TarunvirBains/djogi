@@ -357,6 +357,8 @@ where
 
     // First pass — duplicate type_name detection across the entire
     // inventory (B-1). Reject before doing per-bucket work.
+    // Idempotent reinsert (same type_name → same table) is silently
+    // accepted; only disagreement raises.
     let mut type_to_table: BTreeMap<&str, &str> = BTreeMap::new();
     for m in &models {
         if let Some(prev_table) = type_to_table.insert(m.type_name, m.table_name)
@@ -367,14 +369,6 @@ where
                 first_table: prev_table.to_string(),
                 second_table: m.table_name.to_string(),
             });
-        } else if type_to_table.get(m.type_name) == Some(&m.table_name)
-            && type_to_table
-                .values()
-                .filter(|v| **v == m.table_name)
-                .count()
-                == 1
-        {
-            // Already inserted; idempotent reinsert is fine.
         }
     }
 
