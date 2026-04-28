@@ -150,6 +150,7 @@ The public API does NOT require user-defined field types to implement `Default`.
 - `<Name>Fields` / `<Name>Filter` — typed field accessors and programmatic filter builder (skeleton in Phase 1; Phase 2 fills them in)
 - `ModelDescriptor` via `inventory::submit!` — for app registration and migration differ
 - `<Name>::create_with_id(...)` — HeerId models only; pre-allocates the ID before INSERT (used in form pre-generation and bulk workflows)
+- `impl djogi::label::Label for <Name>` — visibility-aware row label, consumed by FK dropdowns, list-view default columns, audit-log entry rendering, and shell `pp()` defaults. The trait method takes a `VisibleFields` parameter; the emitted impl never returns values from fields outside that set. Resolution order: `#[model(label_fn = "...")]` > `#[field(label)]` > first non-id `String`-like field > ID-only fallback. Concurrent `label_fn` and `#[field(label)]` is a compile error. Phase 10 / Maahi consumes the trait but the trait itself lives in `djogi` so non-admin surfaces use it without depending on the admin crate. See [Maahi field-visibility](./maahi/field-visibility.md) for usage detail.
 
 ### 4.4 Field Types
 

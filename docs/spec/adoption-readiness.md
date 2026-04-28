@@ -41,10 +41,11 @@ This document maps common app patterns to the earliest Djogi phase at which they
 | Online-safe staged live migrations | 7.5 | Expand/contract classification + resumable backfill/cutover/finalize for supported rollout patterns |
 | Lifecycle hooks + computed properties + composition | 8 | `#[abstract_model]` + `SoftDeletable` / `Auditable` |
 | Partition-aware QuerySet | 8 | `#[model(partition_by)]` |
-| Shell + admin panel | 9 | Rhai REPL + auto-generated admin |
+| Shell + analyzer + djqry | 9 | Rhai REPL + static query analyzer + `djqry` SQL override registry |
 | Lifecycle governance + data purge / anonymize / archive | 9.5 | `djogi plan` → `show` → `apply` |
-| CRUD log + observability + optional Redis cache | 10 | Three-DB architecture + `#[model(cache_ttl)]` |
-| Distributed topology + read modes + residency | 11 | Topology metadata + migration guardrails |
+| Maahi (admin console) | 10 | Visage-RBAC, Dioxus full-stack, multi-tenancy, M2M with bulk threshold |
+| CRUD log + observability + optional Redis cache | 11 | Three-DB architecture + `#[model(cache_ttl)]` |
+| Distributed topology + read modes + residency | 12 | Topology metadata + migration guardrails |
 
 ---
 

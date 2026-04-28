@@ -28,7 +28,7 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 ## Tools
 
 - [Shell](./shell.md) — Rhai REPL, transactions, import/export, seed scripts
-- [Admin Panel](./admin.md) — HTMX + Askama ModelForms, list views, validation, M2M inlines
+- [Maahi (Admin Console)](./maahi/index.md) — Dioxus full-stack admin with visage-driven RBAC, multi-tenancy, six-action permissions, M2M inlines, and the inline-bulk approval threshold
 
 ## Reference
 

@@ -52,7 +52,7 @@ This document maps every functional capability in Django's ORM, identifies what 
 | **`iterator()` / chunked evaluation** | Memory-efficient streaming without caching | Add — use Postgres cursors via sqlx `fetch()` stream |
 | **`earliest()` / `latest()`** | Get by ordering field | Add — convenience over `.order_by(...).first()` |
 | **`contains(obj)`** | Check if instance is in QuerySet | Add |
-| **`using()`** | Select database | Answered by `QuerySet::with_read_mode(ReadMode::...)` in Phase 10 — see [Distributed Topology & Residency](./topology.md). Djogi declares the hint; the pool-selection strategy configured by the application honors it. |
+| **`using()`** | Select database | Answered by `QuerySet::with_read_mode(ReadMode::...)` in Phase 12 — see [Distributed Topology & Residency](./topology.md). Djogi declares the hint; the pool-selection strategy configured by the application honors it. |
 
 ### Where Djogi Can Do Better
 
@@ -265,59 +265,11 @@ This is the single biggest functional gap in the current Djogi spec. Real applic
 
 ---
 
-## 9. Admin Panel — HTMX over Dioxus
+## 9. Admin Renderer — Resolved at Maahi Phase 10
 
-### The Problem with Dioxus
+This section previously argued for replacing Dioxus with HTMX + Askama for the admin renderer. The decision was reversed during Phase 10 design: Maahi (Djogi's admin console) ships as a Dioxus full-stack application. Pure-Rust component tree, type-safe server functions, desktop-renderer reach (`dioxus-desktop`), and richer interactivity ergonomics outweighed the bundle-size advantages of HTMX + Askama for djogi's adopter profile. To keep Dioxus's dep weight off non-admin adopters' lock files, Maahi is carved into its own `djogi-maahi` workspace crate behind the `admin` feature flag — see `CLAUDE.md` for the carve-out reasoning.
 
-The current spec calls for Dioxus 0.7+ fullstack for the admin panel. This means:
-- Shipping a WASM bundle to the browser
-- Adding Dioxus + wasm-bindgen + trunk to the dependency tree
-- SSR + hydration complexity
-- Heavy compile times for admin changes
-
-### HTMX Alternative
-
-HTMX + server-rendered HTML (via Askama or Maud) is dramatically lighter and fits the Model-first philosophy better:
-
-- **No JS framework, no WASM bundle** — just `<script src="htmx.min.js">` (14KB gzipped)
-- **Server renders HTML fragments** — the host web framework's handlers (Axum under the `axum` feature, or whichever framework flag is enabled) return partial HTML, HTMX swaps them in
-- **ModelDescriptor → Askama templates** — auto-generate form/list HTML from model metadata
-- **Search-as-you-type** — `hx-trigger="keyup changed delay:300ms"` on FK selects
-- **Inline pagination** — `hx-get="/_admin/vehicles/?page=2" hx-target="#vehicle-list"`
-- **No new framework to learn** — just HTML attributes
-- **Stays in Djogi's scope** — the admin is still derived from the Model, just rendered lighter
-
-### What This Looks Like
-
-```rust
-// Under the `axum` feature, Djogi auto-generates these Axum handlers from
-// ModelDescriptor (other web-framework flags supply equivalent handlers):
-GET  /_admin/                         → full page: model index
-GET  /_admin/vehicles/                → full page: list view
-GET  /_admin/vehicles/?page=2         → HTML fragment: table rows (HTMX partial)
-GET  /_admin/vehicles/?search=toyota  → HTML fragment: filtered rows
-GET  /_admin/vehicles/add/            → full page: create form
-GET  /_admin/vehicles/{id}/           → full page: edit form
-POST /_admin/vehicles/{id}/           → validate + save, return form (with errors) or redirect
-GET  /_admin/vehicles/{id}/inline/groups/?page=2  → HTML fragment: M2M inline rows
-```
-
-### Dependencies
-
-| Dioxus approach | HTMX approach |
-|---|---|
-| `dioxus`, `dioxus-fullstack`, `wasm-bindgen`, `trunk` | `askama` (or `maud`), single `htmx.min.js` static file |
-| Compile WASM + SSR | Just compile Rust. Templates are compiled into binary. |
-
-### Recommendation
-
-Replace Dioxus with HTMX + Askama for the admin panel. This is:
-- Lighter (fewer deps, faster compile)
-- Simpler (no WASM, no hydration)
-- More aligned with Model-first philosophy (admin is just auto-generated HTML from ModelDescriptor)
-- Postgres-native (no client-side query logic)
-
-Keep the `admin` feature flag — it just pulls in `askama` and the HTMX static asset instead of the Dioxus stack.
+See [`docs/spec/maahi/`](./maahi/index.md) for the authoritative Maahi spec. A `djogi-light-admin` (HTMX + Askama only, no WASM toolchain) is parked in [`docs/roadmap/future-work.md`](../roadmap/future-work.md) if real demand surfaces.
 
 ---
 
@@ -410,7 +362,7 @@ Benefits:
 - [ ] `GeneratedField` — computed columns
 - [ ] `iterator()` / streaming — memory-efficient large result sets
 - [ ] Trait-based model hooks (replace Django signals)
-- [ ] Admin panel: HTMX + Askama (replace Dioxus)
+- [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see Phase 10
 
 ### Tier 3 — Nice to Have
 
@@ -509,23 +461,9 @@ for car in vehicles {
 
 ---
 
-## 13. HTMX + Askama Admin (Replacing Dioxus)
+## 13. Admin Renderer — Same Resolution as §9
 
-The current spec calls for Dioxus 0.7+ fullstack for the admin panel. After analysis, HTMX + Askama is a better fit:
-
-| Concern | Dioxus | HTMX + Askama |
-|---|---|---|
-| Bundle size | WASM bundle (~200KB+ gzipped) | htmx.min.js (14KB gzipped) |
-| Dependency weight | `dioxus`, `dioxus-fullstack`, `wasm-bindgen`, `trunk` | `askama` (compile-time templates) |
-| Compile time | WASM target adds significant compile time | No extra target, templates compile into Rust binary |
-| Server rendering | SSR + hydration (complex) | Server renders HTML fragments, HTMX swaps them |
-| Interactivity | Full SPA-like reactivity | HTMX attributes: `hx-get`, `hx-post`, `hx-swap`, `hx-trigger` |
-| Search-as-you-type | Dioxus reactive state | `hx-trigger="keyup changed delay:300ms"` |
-| Pagination | Client-side or server function | `hx-get="?page=2" hx-target="#table-body"` |
-| Form submission | Server function | Standard `<form>` with `hx-post` and `hx-swap="innerHTML"` |
-| Stays in Djogi's scope | Arguable — adds a full UI framework | Yes — just HTML templates derived from ModelDescriptor |
-
-**Recommendation:** Replace Dioxus with HTMX + Askama. Update the admin spec accordingly.
+Earlier draft analysis recommended HTMX + Askama over Dioxus for the admin renderer. The decision was reversed in favor of Dioxus full-stack during Phase 10 design — see §9 above and the Maahi spec at [`docs/spec/maahi/`](./maahi/index.md). The carve-out lives in `djogi-maahi`; per-adopter dep weight is bounded by the optional-dep behind the `admin` feature flag.
 
 ---
 
@@ -573,7 +511,7 @@ The current spec calls for Dioxus 0.7+ fullstack for the admin panel. After anal
 - [ ] `DecimalField` / `UUIDField` (non-PK)
 - [ ] `GeneratedField` — computed columns
 - [ ] `iterator()` / streaming — memory-efficient large result sets
-- [ ] Admin panel: HTMX + Askama (replace Dioxus)
+- [ ] Admin console: Maahi (Dioxus full-stack via `djogi-maahi`) — see Phase 10
 - [ ] Migration: `CREATE INDEX CONCURRENTLY` support
 - [ ] Migration: merge migration support
 - [ ] Migration: `cargo djogi migrate show` (display SQL)

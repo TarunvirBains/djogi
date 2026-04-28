@@ -42,7 +42,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 **Coming** — design-locked but not yet implemented:
 
-- Phase 7+ — `cargo djogi migrate` (schema differ + transactional DDL + `CREATE INDEX CONCURRENTLY` split), Rhai shell, admin panel.
+- Phase 7+ — `cargo djogi migrate` (schema differ + transactional DDL + `CREATE INDEX CONCURRENTLY` split), Rhai shell, Maahi admin console (Phase 10).
 
 ## What Djogi Owns
 
@@ -141,7 +141,7 @@ The full framework specification lives in [`docs/spec/`](./docs/spec/index.md):
 | [Logging](./docs/spec/logging.md) | Three-database architecture, CRUD audit trail, event tracing |
 | [Configuration & CLI](./docs/spec/configuration.md) | `Djogi.toml`, `cargo djogi`, app registration, and web framework integration (`axum` shown as the concrete example) |
 | [Shell](./docs/spec/shell.md) | Rhai REPL, transactions, import/export, seed scripts |
-| [Admin Panel](./docs/spec/admin.md) | Dioxus ModelForms, list views, validation, M2M inlines |
+| [Maahi (Admin Console)](./docs/spec/maahi/index.md) | Dioxus full-stack admin with visage-scope-driven RBAC, multi-tenancy, six-action permissions, M2M inlines, and the inline-bulk approval threshold |
 | [Scope & Boundaries](./docs/spec/scope.md) | What belongs in Djogi vs an app crate or companion crate |
 | [Research Areas](./docs/spec/research.md) | Open implementation questions by subsystem |
 | [Design Decisions](./docs/spec/decisions.md) | Full decision log |
