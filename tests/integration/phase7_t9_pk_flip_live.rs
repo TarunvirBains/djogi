@@ -39,10 +39,10 @@ use djogi::migrate::schema::PkKindSchema;
 use djogi::migrate::{
     AppliedSchema, BucketKey, Classification, ColumnSchema, ForeignKeySchema, MigrationPlan,
     OnDeleteSchema, OperationSql, PkFlipChild, PkFlipDirection, PkFlipFamily, PkTypeFlipGroup,
-    PrimaryKeySchema, RelationKindSchema, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment,
-    SegmentKind, TableSchema, WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger,
-    compute_checksum, diff_bucket_maps, lower_delta,
-    lower_pk_flip_group as lower_pk_flip_group_checked,
+    PrimaryKeySchema, RelationKindSchema, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION,
+    TableSchema, WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger,
+    compute_checksum, diff_bucket_maps, lower_pk_flip_group as lower_pk_flip_group_checked,
+    plan_delta,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -201,15 +201,14 @@ fn lowered_plan_from_bucket_schemas(before: AppliedSchema, after: AppliedSchema)
         .into_iter()
         .find(|d| d.bucket == bucket())
         .expect("main bucket delta");
-    let statements = lower_delta(&delta).expect("lower delta");
-    MigrationPlan {
-        bucket: bucket(),
-        classification: delta.classification,
-        segments: vec![Segment {
-            kind: SegmentKind::Transactional,
-            statements,
-        }],
-    }
+    // Use plan_delta so order_operations runs — without it, AddTable
+    // operations emit in the differ's BTreeMap alphabetical order,
+    // which breaks any test that introduces a child table whose name
+    // sorts before its parent (e.g. `phase7_t9_child` before
+    // `phase7_t9_parent`). Codex round-7 BLOCK 3 follow-up: the
+    // helper now respects the planner's toposort just like production
+    // code paths do.
+    plan_delta(&delta).expect("plan delta")
 }
 
 // ── Test 1 — single-table HeerId asc → desc on 10k rows ───────────────────
