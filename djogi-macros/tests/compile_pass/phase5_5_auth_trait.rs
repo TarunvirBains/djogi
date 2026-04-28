@@ -2,9 +2,9 @@
 //! public trait surface exposed from the `djogi` crate.
 //!
 //! This fixture exists to detect breakage of the pluggable-provider contract.
-//! If a future change to `DjogiAuth` accidentally adds a method with no
-//! default impl, removes object safety, or shifts a bound, this file stops
-//! compiling and the compile_pass harness fails.
+//! Both `authenticate` and `verify` are required (no defaults); if a future
+//! change removes object safety or shifts a bound, this file stops compiling
+//! and the compile_pass harness fails.
 
 use djogi::auth::{AuthContext, AuthError, DjogiAuth};
 use std::future::Future;
@@ -19,6 +19,15 @@ impl DjogiAuth for MyProvider {
     ) -> Pin<Box<dyn Future<Output = Result<AuthContext, AuthError>> + Send + 'a>> {
         let _ = token;
         Box::pin(async { Err(AuthError::InvalidToken) })
+    }
+
+    fn verify<'a>(
+        &'a self,
+        ctx: &'a AuthContext,
+        action: &'a dyn std::any::Any,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
+        let _ = (ctx, action);
+        Box::pin(async { Ok(()) })
     }
 }
 

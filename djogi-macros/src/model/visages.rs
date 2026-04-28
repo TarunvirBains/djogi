@@ -1,11 +1,11 @@
-//! Phase 4.5 — emit visage structs + conversion impls from `#[model]`.
+//! Emit visage structs + conversion impls from `#[model]`.
 //!
 //! For each `#[model]` struct, generate four visage structs:
 //! `{Model}Public`, `{Model}SelfView`, `{Model}Admin`, `{Model}Export`.
 //! Each struct carries (in source order):
 //!
 //! 1. Framework columns (`id`, `created_at`, `updated_at`) — always
-//!    included in every visage, regardless of user annotations (Q13).
+//!    included in every visage, regardless of user annotations.
 //! 2. User fields annotated with `expose(scope)` (scalar) or
 //!    `expose(scope -> Peer)` (relation — narrow visage or full peer
 //!    embed; see below). The deprecated `expose(scope = "Peer")`
@@ -13,7 +13,7 @@
 //!    lowers to the same `RelationExposure` shape.
 //!
 //! Each visage derives `Debug`, `Clone`, `serde::Serialize`,
-//! `serde::Deserialize` unconditionally (D3). Conversion impls:
+//! `serde::Deserialize` unconditionally. Conversion impls:
 //!
 //! - **Scalar-only** visage (no relation-form entries): `impl From<&Model>`
 //!   — infallible straight-line construction.
@@ -23,10 +23,9 @@
 //!   `Option<PeerVisage>` and route the resolved relation through
 //!   `<PeerVisage as TryFrom<&Target>>::try_from` only when `Some`.
 //!
-//! ## Phase 7-Zero-2 T6 grammar
+//! ## `expose(scope -> Peer)` grammar
 //!
-//! `expose(scope -> Peer)` selects one of two embed shapes based on the
-//! peer path's last segment:
+//! Selects one of two embed shapes based on the peer path's last segment:
 //!
 //! - **Narrow visage** — last segment is a `{Model}{Scope}` shape
 //!   (`DepartmentPublic`); peer constructed via fallible `TryFrom`.
@@ -34,15 +33,14 @@
 //!   ident (`Department`); peer cloned out of the resolved relation,
 //!   serde derives delegate to the target's own (de)serialise impls.
 //!
-//! Optional FKs emit `Option<PeerVisage>` honestly at the type level —
-//! the prior Phase 4.5 deferral that rejected `expose` on
-//! `Option<ForeignKey<T>>` was lifted in T6.
+//! Optional FKs emit `Option<PeerVisage>` honestly at the type level.
 //!
 //! Path routing: every type reference in emitted code goes through
-//! `::djogi::*` (`feedback_macro_path_routing.md`) so users never depend on
-//! `serde` / `time` / `heeranjid` directly.
+//! `::djogi::*` so users never depend on `serde` / `time` / `heeranjid`
+//! directly.
 
-use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, RelationExposure, detect_relation};
+use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
+use crate::model::visage_ctx::{ScopeMembership, classify_field_for_scope, is_full_peer_for};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Ident, ItemStruct};
@@ -63,8 +61,8 @@ pub fn expand(
     let source_name = &struct_item.ident;
 
     // Framework columns are prepended by `inject::expand`; n_framework
-    // matches the count pushed there (id gated on `pk != none` + the two
-    // timestamp columns).
+    // equals the count injected there (id gated on `pk != none`, plus the
+    // two timestamp columns).
     let n_framework = match &model_attrs.pk {
         PkStrategy::None => 2,
         _ => 3,
@@ -123,56 +121,43 @@ fn emit_projection_for_scope(
             .expect("named-field structs only — enforced in inject::expand");
         let fty = &field.ty;
 
-        if attrs.expose.suppressed {
-            continue;
-        }
+        match classify_field_for_scope(field, attrs, scope) {
+            ScopeMembership::Absent => continue,
 
-        let scalar_hit = attrs.expose.scalar_scopes.contains(scope);
-        let relation_hit = attrs.expose.relation_scopes.get(scope);
-        let relation_info = detect_relation(fty);
-        let is_relation = relation_info.is_some();
+            // Shape mismatch — emit a span-precise compile error. The
+            // `msg` field carries a human-readable description of what
+            // went wrong (scalar on relation or vice versa). We format
+            // the scope into it at the call site because `classify_*`
+            // does not have `scope` in context for the message string.
+            ScopeMembership::Reject { .. } => {
+                // Determine which direction the mismatch is, to give the
+                // best error message.
+                let msg = if detect_relation(fty).is_some() {
+                    format!(
+                        "relation fields require an explicit peer visage name; \
+                         write `expose({scope} = \"PeerProjection\")`"
+                    )
+                } else {
+                    format!(
+                        "the `expose({scope} = \"...\")` form is only valid on \
+                         relation fields (`ForeignKey<T>` / `OneToOneField<T>`)"
+                    )
+                };
+                return syn::Error::new_spanned(field, msg).to_compile_error();
+            }
 
-        match (scalar_hit, relation_hit, is_relation) {
-            // Field does not appear in this scope.
-            (false, None, _) => continue,
-
-            // Parser already rejects this within a single attribute; a
-            // cross-attribute duplicate also errors in FieldAttrs::parse.
-            (true, Some(_), _) => unreachable!(
-                "parser rejects mixed scalar+relation on same scope at ExposeSpec::parse_list / FieldAttrs::parse"
-            ),
-
-            // Scalar form on scalar field — Task 3 happy path.
-            (true, None, false) => {
+            // Scalar form on scalar field — happy path.
+            ScopeMembership::Scalar => {
                 user_fields.push(quote! { pub #fname: #fty, });
                 user_inits.push(quote! {
                     #fname: ::std::clone::Clone::clone(&src.#fname),
                 });
             }
 
-            // Scalar form on relation field — reject at codegen time.
-            (true, None, true) => {
-                let msg = format!(
-                    "relation fields require an explicit peer visage name; \
-                     write `expose({scope} = \"PeerProjection\")`"
-                );
-                return syn::Error::new_spanned(field, msg).to_compile_error();
-            }
-
-            // Relation form on scalar field — reject at codegen time.
-            (false, Some(_), false) => {
-                let msg = format!(
-                    "the `expose({scope} = \"...\")` form is only valid on \
-                     relation fields (`ForeignKey<T>` / `OneToOneField<T>`)"
-                );
-                return syn::Error::new_spanned(field, msg).to_compile_error();
-            }
-
-            // Relation form on relation field — Phase 7-Zero-2 T6 lifts
-            // the prior `Option<FK>` / `Option<O2O>` rejection. Optional
-            // relations now emit `pub field: Option<PeerVisage>`, with the
-            // init match-folding `src.field.resolved()` through the peer's
-            // fallible `TryFrom<&Target>` impl.
+            // Relation form on relation field — optional relations emit
+            // `pub field: Option<PeerVisage>`, with the init match-folding
+            // `src.field.resolved()` through the peer's fallible
+            // `TryFrom<&Target>` impl.
             //
             // Full-peer vs narrow embed:
             //
@@ -182,15 +167,13 @@ fn emit_projection_for_scope(
             // - Otherwise (path's last segment doesn't match the target
             //   ident), treat as a narrow visage and route through
             //   `<Peer as TryFrom<&Target>>::try_from(resolved)?`.
-            (false, Some(exposure), true) => {
+            ScopeMembership::RelationEmbed { exposure, nullable } => {
                 has_relation_entry = true;
-                let info = relation_info
-                    .as_ref()
-                    .expect("is_relation == true implies Some(relation_info)");
+                let relation_info = detect_relation(fty)
+                    .expect("RelationEmbed implies detect_relation returned Some");
                 let fname_str = fname.to_string();
-                let nullable = info.nullable;
                 let peer_path = &exposure.peer;
-                let is_full_peer = is_full_peer_path(exposure, info);
+                let is_full_peer = is_full_peer_for(exposure, &relation_info);
 
                 let peer_init_expr = if is_full_peer {
                     // Full-peer: clone the resolved target value.
@@ -301,10 +284,10 @@ fn emit_projection_for_scope(
         }
     };
 
-    // Phase 7-Zero-2 T7 — emit the visage's sibling `Fields` + `Filter`
-    // types plus the `DjogiVisageOf<Source>` seal. The emitter mirrors the
-    // same scope gate used above so the accessor set on `{Visage}Fields`
-    // matches the field set on the visage struct exactly.
+    // Emit the visage's sibling `Fields` + `Filter` types plus the
+    // `DjogiVisageOf<Source>` seal. The emitter mirrors the same scope gate
+    // used above so the accessor set on `{Visage}Fields` matches the field
+    // set on the visage struct exactly.
     let fields_filter_seal = crate::model::visage_fields::expand(
         source,
         &proj_name,
@@ -315,11 +298,11 @@ fn emit_projection_for_scope(
         n_framework,
     );
 
-    // Phase 7-Zero-2 T10 — emit the visage's `::filter(...)` queryset
-    // entry block + the visage's narrow `FromPgRow` impl. The emitter
-    // bails out for relation-embed visages (the SELECT projection
-    // can't represent an embedded peer as a single column) and for
-    // `pk = None` source models (no `Model::table_name()` to reach).
+    // Emit the visage's `::filter(...)` queryset entry block + the visage's
+    // narrow `FromPgRow` impl. The emitter bails out for relation-embed
+    // visages (the SELECT projection can't represent an embedded peer as a
+    // single column) and for `pk = None` source models (no
+    // `Model::table_name()` to reach).
     let queryset_entry = crate::model::visage_query::expand(
         source,
         &proj_name,
@@ -371,41 +354,6 @@ fn framework_field_decls(model_attrs: &ModelAttrs) -> Vec<TokenStream> {
     out.push(quote! { pub created_at: ::djogi::types::DateTime, });
     out.push(quote! { pub updated_at: ::djogi::types::DateTime, });
     out
-}
-
-/// Phase 7-Zero-2 T6 — decide whether the user's `expose(scope -> Peer)`
-/// path resolves to the relation's full target model (full-peer embed) or
-/// to a narrow `{Model}{Scope}` visage.
-///
-/// Heuristic: compare the *last* segment of the user-written peer path
-/// against the relation target's ident (e.g. `Department` for a
-/// `ForeignKey<Department>`). If they match exactly, the user is asking
-/// for a full-peer embed; otherwise it's a narrow visage and the emitter
-/// dispatches through `TryFrom<&Target>` for fallible peer construction.
-///
-/// The check inspects the path's last segment only, mirroring how
-/// [`detect_relation`] tolerates fully-qualified spellings (e.g.
-/// `crate::models::Department`). Disambiguation by full path is not
-/// attempted here — the conservative choice for T6 is to anchor on the
-/// last-segment ident, which is what the user-visible name binding does.
-///
-/// Edge cases:
-/// - `Peer` matches the target's bare ident → full-peer.
-/// - `module::Peer` where `Peer` matches the target ident → full-peer
-///   (the user is reaching for the same model through a re-export).
-/// - `DepartmentPublic` where target is `Department` → narrow.
-/// - Anything else (last segment differs from target ident) → narrow.
-///   If the resulting `{Peer}` doesn't exist as a type, the user gets a
-///   span-carrying compile error from the emitted `TryFrom<&Target>`
-///   call — Rust's name resolution surfaces it cleanly.
-fn is_full_peer_path(
-    exposure: &RelationExposure,
-    info: &crate::model::attrs::RelationInfo,
-) -> bool {
-    let Some(last) = exposure.peer.segments.last() else {
-        return false;
-    };
-    last.ident == info.target_name
 }
 
 fn framework_field_inits(model_attrs: &ModelAttrs) -> Vec<TokenStream> {

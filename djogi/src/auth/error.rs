@@ -5,8 +5,8 @@
 //! in later phases is not a breaking change.
 //!
 //! Database/driver failures surface as `DjogiError::Db(DbError)` from the
-//! Phase 5-Zero substrate, not through `AuthError`. Provider-internal
-//! failures that aren't driver errors wrap as `AuthError::Provider(...)`.
+//! Postgres substrate, not through `AuthError`. Provider-internal failures
+//! that aren't driver errors wrap as `AuthError::Provider(...)`.
 
 use thiserror::Error;
 
@@ -59,9 +59,9 @@ pub enum AuthError {
     /// An auth-required operation was attempted without an attached
     /// `AuthContext` on the `DjogiContext`.
     ///
-    /// Raised by framework guard helpers (Phase 5.5 Task 11) when a
-    /// route or model method that requires authentication is invoked
-    /// against a context that has no auth attached via
+    /// Raised by framework guard helpers when a route or model method
+    /// that requires authentication is invoked against a context that
+    /// has no auth attached via
     /// [`DjogiContext::with_auth`](crate::DjogiContext::with_auth).
     #[error("missing auth context")]
     MissingAuth,
