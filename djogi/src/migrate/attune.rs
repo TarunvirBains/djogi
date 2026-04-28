@@ -697,22 +697,16 @@ pub struct AttuneRequest<'a> {
 /// stable surface to pin the case-insensitive ASCII compare without
 /// allocating a `to_lowercase` String.
 ///
-/// **No regex.** Byte-level case-insensitive equality (mirrors the
-/// `ascii_eq_ignore_case` helper inside `policy.rs`). The env-var
-/// payload is read once, compared, and dropped.
+/// **No regex.** Delegates to [`super::policy::ascii_eq_ignore_case`] so the
+/// byte-level comparison lives in one place. The env-var payload is read once,
+/// compared, and dropped.
 fn djogi_env_is_production() -> Option<String> {
     let raw = std::env::var("DJOGI_ENV").ok()?;
-    let bytes = raw.as_bytes();
-    let target = b"production";
-    if bytes.len() != target.len() {
-        return None;
+    if super::policy::ascii_eq_ignore_case(raw.as_bytes(), b"production") {
+        Some(raw)
+    } else {
+        None
     }
-    for (i, b) in bytes.iter().enumerate() {
-        if !b.eq_ignore_ascii_case(&target[i]) {
-            return None;
-        }
-    }
-    Some(raw)
 }
 
 /// Push the variant-correct `DryRun*RecordSkipped` diagnostic for a
@@ -1710,7 +1704,31 @@ fn run_git_commit_and_publish(workspace_root: &Path, from: &str) -> Result<(), A
         }
     }
 
-    // Step 3: push the current branch to `origin`. We rely on the
+    // Step 3: pre-check that `origin` is configured so the operator
+    // gets a clear "no remote" error instead of the cryptic git-push
+    // "fatal: 'origin' does not appear to be a git repository".
+    let remote_check = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&migrations_root)
+        .arg("config")
+        .arg("--get")
+        .arg("remote.origin.url")
+        .output()
+        .map_err(|e| AttuneError::GitPublishFailed {
+            stderr: format!("failed to probe remote.origin.url: {e}"),
+            status_code: None,
+        })?;
+    if !remote_check.status.success() {
+        return Err(AttuneError::GitPublishFailed {
+            stderr: "remote `origin` is not configured on the migrations submodule; \
+                     set a remote with `git -C migrations remote add origin <url>` \
+                     before retrying `--publish`"
+                .to_string(),
+            status_code: remote_check.status.code(),
+        });
+    }
+
+    // Step 3b: push the current branch to `origin`. We rely on the
     // operator having a tracking branch already configured (squash is
     // dev-only and the migrations repo is expected to have its
     // upstream wired up at clone time). If push fails after the

@@ -136,7 +136,11 @@ fn ci_env_set() -> bool {
 
 /// Byte-level ASCII case-insensitive equality. Both inputs must be
 /// ASCII; non-ASCII bytes compare verbatim. No allocation.
-fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
+///
+/// Promoted to `pub(crate)` so sibling modules (e.g.
+/// `attune::djogi_env_is_production`) can reuse the primitive without
+/// duplicating the loop.
+pub(crate) fn ascii_eq_ignore_case(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

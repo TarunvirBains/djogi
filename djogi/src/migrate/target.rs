@@ -250,6 +250,13 @@ fn is_acceptable_dir_name(bytes: &[u8]) -> bool {
     if bytes.is_empty() || bytes.len() > 63 {
         return false;
     }
+    // Reject dot-prefixed names (e.g. `.git`, `.github`) explicitly before the
+    // general first-byte check so the rule is stated literally, not just as a
+    // side-effect of the alphabetic / underscore gate below. The doc comment
+    // mentions this rejection; the code now states it directly.
+    if bytes[0] == b'.' {
+        return false;
+    }
     let first = bytes[0];
     if first != b'_' && !first.is_ascii_alphabetic() {
         return false;

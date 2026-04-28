@@ -409,6 +409,16 @@ async fn apply_seed_body(ctx: &mut DjogiContext, body: &str) -> Result<(), Djogi
 /// a partial-apply leaves the ledger un-mutated, so re-running picks
 /// up where it left off.
 ///
+/// **No workspace lock.** `run_seeds` does NOT acquire the workspace
+/// file lock ([`super::guard::WorkspaceGuard`]). Seeds are
+/// per-database and idempotent (the `djogi_seed_runs` ledger's unique
+/// constraint on `seed_name` guarantees re-runs are safe). They do not
+/// touch the schema-migration ledger or the committed migration tree;
+/// there is therefore no write conflict with concurrent compose /
+/// apply / repair operations. The write isolation is entirely via the
+/// `UNIQUE` constraint on `djogi_seed_runs.seed_name`, not a
+/// filesystem lock.
+///
 /// **Localhost gate.** If `database_url` does NOT resolve to localhost
 /// AND `allow_non_localhost` is `false`, returns
 /// [`SeedError::LocalhostGate`] before opening any I/O.

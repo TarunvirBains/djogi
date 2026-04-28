@@ -344,6 +344,7 @@ pub fn classify_filesystem_drift(
 // rewording here breaks the stored stderr golden file; bump the
 // version IDs in that file in lockstep when intentionally changing
 // the messages.
+// MIRROR: keep in lockstep with djogi/build.rs (the build-script re-implements these formatters)
 
 /// Outcome 2 — `composed migration not yet applied: <filename>
 /// (version <version>; bucket <database>/<app>)` (frozen, per Codex

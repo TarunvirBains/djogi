@@ -57,8 +57,11 @@ impl StatusReport {
 /// Render the status report.
 ///
 /// `rows` is the result of [`super::ledger::select_all`]; the order
-/// is already `(app_label ASC, applied_at ASC, id ASC)` so `render`
-/// just walks the slice once.
+/// is already `(app_label ASC, applied_at ASC, id ASC)`. The render
+/// function groups into a `BTreeMap` defensively so it remains
+/// correct when a future caller passes unsorted data — the extra
+/// pass is cheap and keeps the function independent of the caller's
+/// sort guarantee.
 ///
 /// `registered_apps` is the union of every label currently present
 /// in [`crate::apps::AppRegistry::all`]. A row whose `app_label`
@@ -96,10 +99,7 @@ pub fn render(rows: &[LedgerSummaryRow], registered_apps: &[String]) -> StatusRe
         if !registered.contains(app.as_str()) {
             // D010 inline warning — the ledger references an app
             // that is no longer in the AppRegistry.
-            lines.push(format!(
-                "  D010: ledger references app \"{app}\" which is no longer in AppRegistry; \
-                 was the app removed without a #[app(tombstone)]?"
-            ));
+            lines.push(format_d010(&app));
             d010_warnings += 1;
         }
         for row in app_rows {
@@ -237,16 +237,46 @@ pub async fn render_invalid_index_warnings(
         let schema: String = r.try_get(0).unwrap_or_default();
         let index_name: String = r.try_get(1).unwrap_or_default();
         let table_name: String = r.try_get(2).unwrap_or_default();
-        out.push(format!(
-            "\u{26a0} INVALID index detected: {schema}.{index} on {table} \u{2014} likely \
-             an interrupted CREATE INDEX CONCURRENTLY. Run \
-             `REINDEX INDEX CONCURRENTLY {schema}.{index}` or DROP and recreate.",
-            schema = schema,
-            index = index_name,
-            table = table_name,
-        ));
+        out.push(format_invalid_index(&schema, &index_name, &table_name));
     }
     Ok(out)
+}
+
+/// Prefix of the D010 inline warning emitted when a ledger row
+/// references an `app_label` that is no longer in the `AppRegistry`.
+/// The full line is `format!("{D010_PREFIX}{app}…")`.
+///
+/// Pinned as a constant so byte-equality tests and operator runbooks
+/// can assert on the exact wording without parsing the formatted line.
+pub const D010_PREFIX: &str = "  D010: ledger references app \"";
+
+/// Produce the full D010 warning line for a given `app` label.
+///
+/// Format: `D010_PREFIX + app + suffix`. The suffix is frozen;
+/// change here only if the operator docs / runbooks are updated
+/// in lockstep.
+pub fn format_d010(app: &str) -> String {
+    format!(
+        "{D010_PREFIX}{app}\" which is no longer in AppRegistry; \
+         was the app removed without a #[app(tombstone)]?"
+    )
+}
+
+/// Prefix of the INVALID-index advisory line emitted by
+/// [`render_invalid_index_warnings`].
+///
+/// Pinned for the same reason as [`D010_PREFIX`] — operator dashboards
+/// may grep for this string.
+pub const INVALID_INDEX_PREFIX: &str = "\u{26a0} INVALID index detected: ";
+
+/// Produce one INVALID-index advisory line for the given schema, index,
+/// and table names.
+pub fn format_invalid_index(schema: &str, index: &str, table: &str) -> String {
+    format!(
+        "{INVALID_INDEX_PREFIX}{schema}.{index} on {table} \u{2014} likely \
+         an interrupted CREATE INDEX CONCURRENTLY. Run \
+         `REINDEX INDEX CONCURRENTLY {schema}.{index}` or DROP and recreate.",
+    )
 }
 
 /// Exact byte string of the POINT OF NO RETURN warning emitted ahead
@@ -260,23 +290,13 @@ pub async fn render_invalid_index_warnings(
 pub const POINT_OF_NO_RETURN_WARNING: &str =
     "⚠ POINT OF NO RETURN after this cutover commits — reverse requires an inverse migration";
 
-/// Truncate a run_id BIGINT to a stable short token (last 8 hex
-/// digits of the unsigned reinterpretation). Long-form available via
+/// Truncate a run_id BIGINT to a stable 8-character lowercase hex token
+/// (low 32 bits of the unsigned reinterpretation). Long-form available via
 /// the [`LedgerSummaryRow::run_id`] field for callers needing the
 /// exact value.
 fn format_run_id_short(run_id: i64) -> String {
-    let unsigned = run_id as u64;
-    let truncated = unsigned & 0xFFFF_FFFF;
-    let mut s = String::with_capacity(8);
-    for shift in (0..8).rev() {
-        let nibble = ((truncated >> (shift * 4)) & 0x0f) as u8;
-        s.push(if nibble < 10 {
-            (b'0' + nibble) as char
-        } else {
-            (b'a' + nibble - 10) as char
-        });
-    }
-    s
+    let truncated = (run_id as u64) & 0xFFFF_FFFF;
+    format!("{truncated:08x}")
 }
 
 #[cfg(test)]

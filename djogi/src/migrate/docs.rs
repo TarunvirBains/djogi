@@ -169,6 +169,42 @@ pub fn render_inventory(
     })?;
     written.push(readme_path);
 
+    // Remove any `.md` files that were present in `output_root` from a
+    // previous generation run but are no longer in the current inventory
+    // (e.g., a model was renamed or moved to a different app). Only
+    // `.md` files are touched — non-markdown artifacts in the output
+    // tree are preserved. A missing-file removal failure is ignored
+    // (best-effort cleanup): the primary contract is that the current
+    // inventory is accurately reflected.
+    let written_set: std::collections::BTreeSet<&std::path::Path> =
+        written.iter().map(PathBuf::as_path).collect();
+    if let Ok(walk) = fs::read_dir(output_root) {
+        for entry in walk.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            if !written_set.contains(path.as_path()) {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+    // Recurse into per-app subdirectories for stale model pages.
+    for app_dir_name in by_app.keys() {
+        let app_path = output_root.join(app_dir_name);
+        if let Ok(walk) = fs::read_dir(&app_path) {
+            for entry in walk.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                    continue;
+                }
+                if !written_set.contains(path.as_path()) {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
     Ok(DocsReport {
         models_rendered: total,
         output_root: output_root.to_path_buf(),
@@ -404,14 +440,9 @@ fn display_index_target(target: &IndexTarget) -> String {
 /// down into the projection layer instead so the snapshot stays the
 /// single source of truth for `default_sql`. The renderer mirrors
 /// that policy here: the `id` column's default is derived from the
-/// model's [`PkType`] just like
-/// [`super::projection::project_column`] does, and every other
-/// field renders as an em-dash (`—`) for "no descriptor-side
-/// default".
-///
-/// The two functions stay in lock-step by design — if a future
-/// phase adds per-field defaults to `FieldDescriptor`, both this
-/// renderer and the projection grow the new branch together.
+/// model's [`PkType`] via
+/// [`super::projection::pk_default_sql`], and every other field
+/// renders as an em-dash (`—`) for "no descriptor-side default".
 ///
 /// **Known limitation (round-2 A-3):** today's `FieldDescriptor`
 /// only carries the PK column's default expression (derived from
@@ -427,7 +458,7 @@ fn display_index_target(target: &IndexTarget) -> String {
 /// Codex round-1 A-3 / round-2 A-3.
 fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String {
     if f.name == "id" {
-        match pk_default_sql(&parent.pk_type) {
+        match super::projection::pk_default_sql(&parent.pk_type) {
             Some(sql) => format!("`{sql}`"),
             None => "—".to_string(),
         }
@@ -435,27 +466,6 @@ fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String
         // TODO(post-Phase-7): when FieldDescriptor.default_sql exists,
         // render it here. See module-level note above.
         "—".to_string()
-    }
-}
-
-/// PK-default-SQL helper, mirrored from
-/// [`super::projection::project_column`] (kept private there). The
-/// renderer needs a parallel enum dispatch for the `id` column so
-/// the doc page reflects the generated DDL default.
-///
-/// Behaviour mirror — change here only if
-/// `projection::pk_default_sql` changes too.
-fn pk_default_sql(pk: &PkType) -> Option<&'static str> {
-    match pk {
-        PkType::HeerId => Some("generate_id()"),
-        PkType::HeerIdDesc => Some("generate_id_desc()"),
-        PkType::RanjId => Some("generate_ranj_id()"),
-        PkType::RanjIdDesc => Some("generate_ranj_id_desc()"),
-        PkType::Serial => None,
-        PkType::None => None,
-        PkType::Composite(_) => None,
-        PkType::Custom(c) if c.default_sql.is_empty() => None,
-        PkType::Custom(c) => Some(c.default_sql),
     }
 }
 
@@ -499,8 +509,7 @@ fn render_index_notes(idx: &IndexSpec) -> String {
         bits.push(format!("WHERE `{p}`"));
     }
     if !idx.include.is_empty() {
-        let inc: Vec<&&str> = idx.include.iter().collect();
-        bits.push(format!("INCLUDE ({})", join_quoted(&inc)));
+        bits.push(format!("INCLUDE ({})", join_quoted(idx.include)));
     }
     if idx.nulls_not_distinct {
         bits.push("NULLS NOT DISTINCT".to_string());
@@ -518,8 +527,8 @@ fn render_index_notes(idx: &IndexSpec) -> String {
     }
 }
 
-/// Join a slice of `&&str` as backticked, comma-separated markdown.
-fn join_quoted(items: &[&&str]) -> String {
+/// Join a slice of `&str` as backticked, comma-separated markdown.
+fn join_quoted(items: &[&str]) -> String {
     let mut s = String::new();
     for (i, name) in items.iter().enumerate() {
         if i > 0 {

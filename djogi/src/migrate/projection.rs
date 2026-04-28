@@ -790,7 +790,7 @@ fn project_primary_key(pk: &PkType) -> PrimaryKeySchema {
     }
 }
 
-fn pk_default_sql(pk: &PkType) -> Option<String> {
+pub(crate) fn pk_default_sql(pk: &PkType) -> Option<String> {
     match pk {
         PkType::HeerId => Some("generate_id()".to_string()),
         PkType::HeerIdDesc => Some("generate_id_desc()".to_string()),

@@ -168,7 +168,7 @@ pub async fn setup_test_db_with_extensions(
 
     // CREATE DATABASE — double-quoted to handle any future non-alphanumeric
     // characters in the prefix (currently not possible, but defensive).
-    let create_sql = format!("CREATE DATABASE \"{db_name}\"");
+    let create_sql = format!("CREATE DATABASE {}", quoted(&db_name));
     admin_client
         .batch_execute(&create_sql)
         .await
@@ -232,7 +232,7 @@ pub async fn setup_test_db_with_extensions(
     // if the extension is already present (for example, if a previous step
     // pulled it in transitively).
     for name in extensions {
-        let sql = format!("CREATE EXTENSION IF NOT EXISTS \"{name}\"");
+        let sql = format!("CREATE EXTENSION IF NOT EXISTS {}", quoted(name));
         test_client.batch_execute(&sql).await.map_err(|e| {
             DjogiError::Db(DbError::other(format!(
                 "failed to create Postgres extension `{name}` \
@@ -246,7 +246,8 @@ pub async fn setup_test_db_with_extensions(
     // in the DjogiPool see node_id = 1 without needing per-connection SET calls.
     admin_client
         .batch_execute(&format!(
-            "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
+            "ALTER DATABASE {} SET heer.node_id = '1'",
+            quoted(&db_name)
         ))
         .await
         .map_err(|e| {
@@ -293,12 +294,107 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
                 }
             });
 
-            let sql = format!("DROP DATABASE IF EXISTS \"{db_name}\" WITH (FORCE)");
+            let sql = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", quoted(&db_name));
             if let Err(e) = admin_client.batch_execute(&sql).await {
                 eprintln!("[djogi_test] WARNING: failed to drop test database \"{db_name}\": {e}");
             }
         }
     }
+}
+
+/// Drop every database whose name matches the `djogi_test_*` prefix that is
+/// still present on the cluster connected to via `admin_url`.
+///
+/// Orphaned test databases accumulate when test processes are killed before
+/// `teardown_test_db` can run (e.g. `cargo test` killed mid-run via Ctrl+C,
+/// CI timeout, OOM). This helper provides a sweep for that common case.
+///
+/// **Scope.** Queries `pg_database` for `datname LIKE 'djogi_test_%'` and
+/// issues `DROP DATABASE … WITH (FORCE)` for each. The `WITH (FORCE)` clause
+/// (Postgres 13+; required by Djogi's ≥ Postgres 18 target) terminates any
+/// lingering connections before dropping.
+///
+/// **No filesystem scan.** The cleanup is driven entirely from `pg_database`
+/// — no directory listing, no regex.
+///
+/// Returns the count of databases successfully dropped. A failure to drop an
+/// individual database is logged via `eprintln!` and counted as zero for that
+/// entry (best-effort, non-fatal).
+///
+/// # Errors
+///
+/// Returns `DjogiError::Db` when the admin connection itself fails or the
+/// `pg_database` query fails. Per-database DROP failures are not propagated
+/// — the caller sees the success count and can retry if needed.
+///
+/// # Note — not tested at unit level
+///
+/// This function requires a live Postgres cluster. Unit-level testing would
+/// require a live connection; that coverage belongs in an integration test.
+/// Added but untested at unit level — a future integration-test pass should
+/// cover it.
+pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<usize, DjogiError> {
+    let (client, conn) = tokio_postgres::connect(admin_url, NoTls)
+        .await
+        .map_err(|e| DjogiError::Db(DbError::other(format!("admin connect failed: {e}"))))?;
+
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("[djogi_test] cleanup connection error: {e}");
+        }
+    });
+
+    // Query pg_database for every `djogi_test_*` database. We use a
+    // parameterised LIKE to avoid injecting the prefix literal into the
+    // query string.
+    let rows = client
+        .query(
+            "SELECT datname FROM pg_database \
+             WHERE datname LIKE 'djogi_test_%' ORDER BY datname",
+            &[],
+        )
+        .await
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "pg_database query failed during orphan cleanup: {e}"
+            )))
+        })?;
+
+    let mut dropped = 0usize;
+    for row in &rows {
+        let datname: String = match row.try_get(0) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "[djogi_test] WARNING: failed to decode datname during orphan cleanup: {e}"
+                );
+                continue;
+            }
+        };
+        let sql = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", quoted(&datname));
+        match client.batch_execute(&sql).await {
+            Ok(()) => dropped += 1,
+            Err(e) => {
+                eprintln!(
+                    "[djogi_test] WARNING: failed to drop orphaned test database \
+                     \"{datname}\": {e}"
+                );
+            }
+        }
+    }
+
+    Ok(dropped)
+}
+
+/// Double-quote a Postgres identifier for embedding in SQL.
+///
+/// Wraps `ident` in double quotes so it can be safely embedded in
+/// statements like `CREATE DATABASE "name"` without needing a prepared
+/// statement. The identifier MUST be pre-validated via
+/// [`validate_extension_name`] or an equivalent check before calling
+/// this helper — no additional validation is performed here.
+fn quoted(ident: &str) -> String {
+    format!("\"{ident}\"")
 }
 
 /// Validate that `name` is a plain Postgres identifier safe to interpolate
@@ -355,22 +451,16 @@ fn validate_extension_name(name: &str) -> Result<(), DjogiError> {
 
 /// Replace the database name component in a Postgres connection URL.
 ///
-/// Accepts URLs in the form `postgres://user:pass@host:port/dbname` or
-/// `postgresql://user:pass@host:port/dbname`. The function finds the last
-/// `/` in the URL (which precedes the database name) and replaces everything
-/// after it with `new_db`.
-///
-/// # Errors
-///
-/// Returns an error if the URL does not contain a `/` after the scheme.
+/// Delegates to [`crate::migrate::reset::replace_db_in_url`] (the canonical
+/// implementation) and wraps the `Option` return in a `DjogiError` so the
+/// caller can use `?`.
 fn replace_db_in_url(url: &str, new_db: &str) -> Result<String, DjogiError> {
-    let last_slash = url.rfind('/').ok_or_else(|| {
+    crate::migrate::reset::replace_db_in_url(url, new_db).ok_or_else(|| {
         DjogiError::Db(DbError::other(
-            "DATABASE_URL does not contain a database name component (no '/' found)",
+            "DATABASE_URL does not contain a database name component; \
+             cannot derive the per-test database URL",
         ))
-    })?;
-    let base = &url[..=last_slash]; // includes the trailing slash
-    Ok(format!("{base}{new_db}"))
+    })
 }
 
 /// Phase 7 T10 — auto-materialise the supplied descriptors on the
@@ -461,12 +551,19 @@ pub async fn sync_models(
             if f.relation_kind.is_none() {
                 continue;
             }
-            // Only check FK / O2O fields that point at a model
-            // tracked in `target_type_name`. Reverse-only relations
-            // and M2M-through join columns slot through differently
-            // and are caught by the projection / differ.
+            // A field with a relation_kind MUST carry a target_type_name —
+            // both ForeignKey and OneToOne point at a concrete model type.
+            // A None here signals a broken macro emission rather than a
+            // legitimate "no target" case; surface it explicitly so the
+            // operator sees a precise error instead of a silent skip.
             let Some(target) = f.target_type_name else {
-                continue;
+                return Err(DjogiError::Db(DbError::other(format!(
+                    "sync_models: model `{src}`.`{col}` has relation_kind \
+                     but no target_type_name — this is a macro emission bug; \
+                     please file an issue",
+                    src = d.type_name,
+                    col = f.name,
+                ))));
             };
             if !supplied_type_names.contains(target) {
                 return Err(DjogiError::Db(DbError::other(format!(

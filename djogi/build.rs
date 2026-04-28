@@ -456,6 +456,7 @@ fn json_equiv_inner(a: &JsonValue, b: &JsonValue) -> bool {
 // ── Frozen warning wording — must match
 // `crate::migrate::build_match` byte-for-byte. The integration test
 // asserts agreement.
+// MIRROR: keep in lockstep with djogi::migrate::build_match
 
 /// Codex B-8: Outcome 2 wording must include the pending migration's
 /// filename + version. We dig into the parsed pending JSON to recover
@@ -527,6 +528,11 @@ fn format_d004_missing(database: &str, app: &str) -> String {
 
 fn is_acceptable_dir_name(bytes: &[u8]) -> bool {
     if bytes.is_empty() || bytes.len() > 63 {
+        return false;
+    }
+    // Reject dot-prefixed names (e.g. `.git`, `.github`) explicitly —
+    // mirrors the same rule in `djogi::migrate::target::is_acceptable_dir_name`.
+    if bytes[0] == b'.' {
         return false;
     }
     let first = bytes[0];

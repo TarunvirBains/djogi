@@ -162,28 +162,25 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
     // and the user's test body so any extension-dependent column types
     // (e.g. PostGIS `geography(Point)`) resolve cleanly.
     //
-    // The `ctx` binding's `mut` is conditional — emitting `let mut
-    // ctx = ...` when no later code takes `&mut ctx` would trigger
-    // `unused_mut`. Since CI builds with `-D warnings`, we keep the
-    // pre-T10 immutable binding for the no-sync-models path.
-    let (ctx_mut_kw, sync_models_call) = match &args.sync_models {
+    // `ctx` is always bound as `mut` (with `#[allow(unused_mut)]` to
+    // suppress the lint when sync_models is absent). This avoids the
+    // complexity of AST-walking the user's test body to determine
+    // whether a mutable borrow of `ctx` is actually present.
+    let sync_models_call = match &args.sync_models {
         Some(paths) if !paths.is_empty() => {
             let descriptor_exprs = paths.iter().map(|p| {
                 quote! { <#p as ::djogi::model::Model>::descriptor() }
             });
-            (
-                quote! { mut },
-                quote! {
-                    ::djogi::testing::sync_models(
-                        &mut ctx,
-                        &[ #( #descriptor_exprs ),* ],
-                    )
-                        .await
-                        .expect("djogi_test: failed to sync_models on per-test database");
-                },
-            )
+            quote! {
+                ::djogi::testing::sync_models(
+                    &mut ctx,
+                    &[ #( #descriptor_exprs ),* ],
+                )
+                    .await
+                    .expect("djogi_test: failed to sync_models on per-test database");
+            }
         }
-        _ => (quote! {}, quote! {}),
+        _ => quote! {},
     };
 
     quote! {
@@ -210,7 +207,12 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
             //   2. sync_models runs (CREATE TABLE / indexes / FKs),
             //   3. user's test body runs.
             // Step 2 is omitted when `sync_models` is absent or `[]`.
-            let (cleanup, #ctx_mut_kw ctx) = ::djogi::testing::setup_test_db_with_extensions(
+            //
+            // `ctx` is always `mut` here; `#[allow(unused_mut)]` suppresses
+            // the lint when sync_models is absent and no `&mut ctx` is taken
+            // between setup and the inner fn call.
+            #[allow(unused_mut)]
+            let (cleanup, mut ctx) = ::djogi::testing::setup_test_db_with_extensions(
                 #extensions_slice,
             )
                 .await
@@ -718,17 +720,16 @@ mod tests {
 
     #[test]
     fn sync_models_uses_mut_ctx_binding() {
-        // When `sync_models` is non-empty, the wrapper must bind the
-        // setup return as `let (cleanup, mut ctx)` so the runtime
-        // helper can take `&mut ctx`. Without `sync_models`, the
-        // pre-T10 immutable `let (cleanup, ctx)` is preserved so
-        // `unused_mut` does not fire under `-D warnings`.
+        // Both the sync_models and the no-sync_models paths must now bind
+        // `(cleanup, mut ctx)` — the `mut` is always emitted so the
+        // test body (or the sync_models call) can take `&mut ctx` without
+        // requiring the macro to AST-walk the user's test body. An
+        // `#[allow(unused_mut)]` annotation on the binding suppresses the
+        // lint when no mutable borrow is actually taken.
         //
-        // Note that the inner async fn's parameter is always
-        // `mut ctx: DjogiContext` (forwarded verbatim from the
-        // user's test fn signature in our render fixture), so a
-        // global "contains mut ctx" check is too coarse. We assert
-        // on the specific destructure pattern instead.
+        // The inner async fn's parameter is always `mut ctx: DjogiContext`,
+        // so a global "contains mut ctx" check is still too coarse — we
+        // assert on the specific setup-destructure pattern.
         let with_sync = render_expansion("sync_models = [Widget]");
         let without_sync = render_expansion("");
         assert!(
@@ -736,13 +737,13 @@ mod tests {
             "sync_models path must bind ctx as mut in the setup destructure: {with_sync}"
         );
         assert!(
-            !without_sync.contains("(cleanup , mut ctx)"),
-            "no-sync_models path must keep the setup-destructure ctx immutable \
-             to avoid unused_mut: {without_sync}"
+            without_sync.contains("(cleanup , mut ctx)"),
+            "no-sync_models path must also bind ctx as mut (with #[allow(unused_mut)]): {without_sync}"
         );
+        // Confirm the allow attribute is emitted on the no-sync path.
         assert!(
-            without_sync.contains("(cleanup , ctx)"),
-            "no-sync_models path must still destructure (cleanup, ctx): {without_sync}"
+            without_sync.contains("allow (unused_mut)"),
+            "no-sync_models path must carry #[allow(unused_mut)] to suppress lint: {without_sync}"
         );
     }
 }
