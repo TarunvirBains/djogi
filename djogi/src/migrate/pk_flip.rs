@@ -1095,7 +1095,12 @@ fn emit_partitioned_cutover_with_cascade(
         suffix = SHADOW_SUFFIX,
     );
 
-    // 3. Self-FK column rename + constraint re-add.
+    // 3. Self-FK column rename + constraint re-add. Mirrors the
+    //    non-partitioned `cutover_phase_promote_parent` self-FK
+    //    cleanup block — DROP segment-3b shadow constraint BEFORE
+    //    rename (otherwise it survives under its `_desc_fkey` name
+    //    on the renamed column, doubling the FK count) and preserve
+    //    per-FK deferrability via `render_deferrable_clause`.
     if let Some(self_fk) = &group.self_fk {
         for col in &self_fk.fk_columns {
             let _ = writeln!(
@@ -1108,128 +1113,58 @@ fn emit_partitioned_cutover_with_cascade(
         for col in &self_fk.fk_columns {
             let _ = writeln!(
                 up,
+                "ALTER TABLE {parent} DROP CONSTRAINT {parent}_{col}{suffix}_fkey;",
+                parent = parent,
+                col = col,
+                suffix = SHADOW_SUFFIX,
+            );
+        }
+        for col in &self_fk.fk_columns {
+            let _ = writeln!(
+                up,
                 "ALTER TABLE {parent} RENAME COLUMN {col}{suffix} TO {col};",
                 parent = parent,
                 col = col,
                 suffix = SHADOW_SUFFIX,
             );
         }
-        for (col, cons) in self_fk
+        for (i, (col, cons)) in self_fk
             .fk_columns
             .iter()
             .zip(self_fk.fk_constraint_names.iter())
+            .enumerate()
         {
+            let deferrable_clause = render_deferrable_clause(
+                self_fk.fk_deferrable.get(i).copied().unwrap_or(false),
+                self_fk
+                    .fk_initially_deferred
+                    .get(i)
+                    .copied()
+                    .unwrap_or(false),
+            );
             let _ = writeln!(
                 up,
                 "ALTER TABLE {parent} ADD CONSTRAINT {cons} \
-                 FOREIGN KEY ({col}) REFERENCES {parent}(id);",
+                 FOREIGN KEY ({col}) REFERENCES {parent}(id){deferrable};",
                 parent = parent,
                 col = col,
                 cons = cons,
+                deferrable = deferrable_clause,
             );
         }
     }
 
-    // 4. Finalise every child.
-    for child in &group.children {
-        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        let _ = writeln!(
-            up,
-            "ALTER TABLE {tbl} DROP COLUMN {col};",
-            tbl = child.table,
-            col = child.fk_column,
-        );
-        let _ = writeln!(
-            up,
-            "DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
-            tbl = child.table,
-        );
-        let _ = writeln!(
-            up,
-            "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
-            tbl = child.table,
-        );
-        let _ = writeln!(
-            up,
-            "ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
-            tbl = child.table,
-            dst = dst,
-            col = child.fk_column,
-        );
-        let cascade = render_on_delete(child.on_delete);
-        let _ = writeln!(
-            up,
-            "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
-             FOREIGN KEY ({col}) REFERENCES {parent}(id) {cascade};",
-            tbl = child.table,
-            cons = child.fk_constraint_name,
-            col = child.fk_column,
-            parent = parent,
-            cascade = cascade,
-        );
-    }
+    // 4. Finalise every child. Mirrors `cutover_phase_finalise_children`:
+    //    DROP segment-3b shadow constraint BEFORE rename (else two FKs
+    //    end up on the renamed column under different names) and
+    //    preserve per-FK deferrability.
+    cutover_phase_finalise_children(group, &mut up);
 
-    // 5. Finalise every join table. Under Option A + cross-flipping
-    //    BOTH FK columns get DROP / RENAME / ADD CONSTRAINT inside
-    //    this group's cutover; under Option B (or when there's no
-    //    partner) only the parent's column. The trigger + function
-    //    drop fires once per join table regardless of pair count
-    //    because there's only ONE multi-pair trigger per join
-    //    table in segment 1.
-    for jt in &group.join_tables {
-        let pairs = jt_shadow_pairs(jt, group);
-        for pair in &pairs {
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {tbl} DROP COLUMN {col};",
-                tbl = jt.table,
-                col = pair.col,
-            );
-        }
-        let _ = writeln!(
-            up,
-            "DROP TRIGGER zzz_{tbl}_autofill_desc ON {tbl};",
-            tbl = jt.table,
-        );
-        let _ = writeln!(
-            up,
-            "DROP FUNCTION zzz_{tbl}_autofill_desc() CASCADE;",
-            tbl = jt.table,
-        );
-        for pair in &pairs {
-            let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
-                tbl = jt.table,
-                dst = dst,
-                col = pair.col,
-            );
-        }
-        for pair in &pairs {
-            // The first pair targets THIS group's parent; the
-            // second pair (Option A cross-flipping) targets the
-            // partner table — names are recorded on
-            // `fk_to_partner_table` so the cutover restores the
-            // correct FK target without re-walking the schema.
-            let target_parent = if pair.col == jt.fk_to_parent_column.as_str() {
-                parent.to_string()
-            } else {
-                jt.fk_to_partner_table
-                    .clone()
-                    .unwrap_or_else(|| parent.to_string())
-            };
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
-                 FOREIGN KEY ({col}) REFERENCES {target}(id);",
-                tbl = jt.table,
-                cons = pair.constraint,
-                col = pair.col,
-                target = target_parent,
-            );
-        }
-    }
+    // 5. Finalise every join table. Mirrors
+    //    `cutover_phase_finalise_join_tables`: DROP segment-3b shadow
+    //    constraint BEFORE rename and preserve per-pair deferrability
+    //    (Option A cross-flipping uses partner-side flags).
+    cutover_phase_finalise_join_tables(group, &mut up);
 
     OperationSql {
         label: format!("PkFlipPartitionedCutover {parent}"),
@@ -2253,9 +2188,12 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
             let target = if is_parent_side {
                 parent.to_string()
             } else {
-                jt.fk_to_partner_table
-                    .clone()
-                    .unwrap_or_else(|| parent.to_string())
+                jt.fk_to_partner_table.clone().expect(
+                    "PkFlipJoinTable invariant: fk_to_partner_table is Some \
+                     whenever fk_to_partner_column is Some; jt_shadow_pairs \
+                     only emits a partner-side pair when fk_to_partner_column \
+                     is Some",
+                )
             };
             // B-16: per-FK deferrability on segment-3b NOT VALID
             // FK creation. The parent-side and partner-side carry
@@ -3016,9 +2954,12 @@ fn cutover_phase_finalise_join_tables(group: &PkTypeFlipGroup, up: &mut String) 
             let target_parent = if is_parent_side {
                 parent.to_string()
             } else {
-                jt.fk_to_partner_table
-                    .clone()
-                    .unwrap_or_else(|| parent.to_string())
+                jt.fk_to_partner_table.clone().expect(
+                    "PkFlipJoinTable invariant: fk_to_partner_table is Some \
+                     whenever fk_to_partner_column is Some; jt_shadow_pairs \
+                     only emits a partner-side pair when fk_to_partner_column \
+                     is Some",
+                )
             };
             let (def, init_def) = if is_parent_side {
                 (
