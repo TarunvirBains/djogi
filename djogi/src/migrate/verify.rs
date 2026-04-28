@@ -117,7 +117,7 @@ use std::path::PathBuf;
 use crate::context::DjogiContext;
 use crate::error::DjogiError;
 
-use super::ledger::{LedgerRow, LedgerStatus};
+use super::ledger::{LEDGER_SELECT_COLS, LedgerRow, LedgerStatus};
 use super::projection::BucketKey;
 use super::schema::{
     AppliedSchema, ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
@@ -594,6 +594,14 @@ async fn read_tables(
             source: e,
         })?;
 
+    // Batch the per-table catalog reads: collapses N round-trips for
+    // columns + N round-trips for primary keys into two queries
+    // total (cluster-2 simplify Finding 4). The batched helpers scan
+    // the whole `public` schema; we look up each table by name in
+    // the loop below.
+    let mut columns_by_table = read_all_columns(ctx).await?;
+    let mut pk_by_table = read_all_primary_key_columns(ctx).await?;
+
     let mut out: Vec<TableSchema> = Vec::with_capacity(table_rows.len());
     for row in &table_rows {
         let table_name: String =
@@ -605,9 +613,9 @@ async fn read_tables(
         if is_heeranjid_artifact_table(&table_name) {
             continue;
         }
-        let mut columns = read_columns(ctx, &table_name).await?;
+        let mut columns = columns_by_table.remove(&table_name).unwrap_or_default();
         attach_foreign_keys(&table_name, &mut columns, foreign_keys);
-        let primary_key_columns = read_primary_key_columns(ctx, &table_name).await?;
+        let primary_key_columns = pk_by_table.remove(&table_name).unwrap_or_default();
 
         out.push(TableSchema {
             app: None,
@@ -635,20 +643,23 @@ async fn read_tables(
     Ok(out)
 }
 
-/// Read column metadata for one table. Returns columns in
-/// `pg_attribute.attnum` order (the table's declaration order).
-async fn read_columns(
+/// Read column metadata for every public-schema ordinary table in a
+/// single catalog query (cluster-2 simplify Finding 4). Returns a
+/// map keyed by table name, where each value is the columns in
+/// `pg_attribute.attnum` order. Replaces the previous per-table
+/// helper that ran one round-trip per table; verify now does one
+/// `pg_attribute` scan total regardless of table count.
+async fn read_all_columns(
     ctx: &mut DjogiContext,
-    table_name: &str,
-) -> Result<Vec<ColumnSchema>, VerifyRunError> {
-    // Pull column name + Postgres type rendering + nullability +
-    // default expression in one query. `pg_attrdef.adbin` is parsed
-    // server-side via `pg_get_expr`. `format_type(atttypid, atttypmod)`
-    // produces the canonical rendering ("character varying(255)",
-    // "bigint", "timestamp with time zone").
+) -> Result<BTreeMap<String, Vec<ColumnSchema>>, VerifyRunError> {
+    // Same projection as the per-table query, plus `c.relname` so we
+    // can group rows by table in Rust. `c.relkind = 'r'` keeps the
+    // scan to ordinary tables (matching the per-table caller's
+    // implicit shape).
     let rows = ctx
         .query_all(
-            "SELECT a.attname::text, \
+            "SELECT c.relname::text, \
+                    a.attname::text, \
                     format_type(a.atttypid, a.atttypmod)::text, \
                     a.attnotnull, \
                     pg_get_expr(d.adbin, d.adrelid) \
@@ -657,11 +668,11 @@ async fn read_columns(
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
              WHERE n.nspname = 'public' \
-               AND c.relname = $1 \
+               AND c.relkind = 'r' \
                AND a.attnum > 0 \
                AND NOT a.attisdropped \
-             ORDER BY a.attnum",
-            &[&table_name],
+             ORDER BY c.relname, a.attnum",
+            &[],
         )
         .await
         .map_err(|e| VerifyRunError::CatalogQueryFailed {
@@ -669,34 +680,40 @@ async fn read_columns(
             source: e,
         })?;
 
-    let mut out: Vec<ColumnSchema> = Vec::with_capacity(rows.len());
+    let mut out: BTreeMap<String, Vec<ColumnSchema>> = BTreeMap::new();
     for row in &rows {
+        let table_name: String =
+            row.try_get(0)
+                .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                    query_label: "columns.relname",
+                    source: DjogiError::from(e),
+                })?;
         let name: String = row
-            .try_get(0)
+            .try_get(1)
             .map_err(|e| VerifyRunError::CatalogQueryFailed {
                 query_label: "columns.attname",
                 source: DjogiError::from(e),
             })?;
         let sql_type: String = row
-            .try_get(1)
+            .try_get(2)
             .map_err(|e| VerifyRunError::CatalogQueryFailed {
                 query_label: "columns.type",
                 source: DjogiError::from(e),
             })?;
         let attnotnull: bool = row
-            .try_get(2)
+            .try_get(3)
             .map_err(|e| VerifyRunError::CatalogQueryFailed {
                 query_label: "columns.attnotnull",
                 source: DjogiError::from(e),
             })?;
         let default_sql: Option<String> =
-            row.try_get(3)
+            row.try_get(4)
                 .map_err(|e| VerifyRunError::CatalogQueryFailed {
                     query_label: "columns.default",
                     source: DjogiError::from(e),
                 })?;
 
-        out.push(ColumnSchema {
+        out.entry(table_name).or_default().push(ColumnSchema {
             check: None,
             default_sql,
             foreign_key: None,
@@ -742,24 +759,27 @@ fn attach_foreign_keys(
     }
 }
 
-/// Read the primary key column list for a table (in PK order).
-async fn read_primary_key_columns(
+/// Read the primary-key column list for every public-schema table
+/// in a single catalog query (cluster-2 simplify Finding 4). Returns
+/// a map keyed by table name; each value is the PK columns in
+/// declaration order. Replaces the per-table helper that ran one
+/// round-trip per table.
+async fn read_all_primary_key_columns(
     ctx: &mut DjogiContext,
-    table_name: &str,
-) -> Result<Vec<String>, VerifyRunError> {
+) -> Result<BTreeMap<String, Vec<String>>, VerifyRunError> {
     let rows = ctx
         .query_all(
-            "SELECT a.attname::text \
+            "SELECT c.relname::text, \
+                    a.attname::text \
              FROM pg_constraint con \
              JOIN pg_class c ON c.oid = con.conrelid \
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              JOIN pg_attribute a ON a.attrelid = con.conrelid \
                                  AND a.attnum = ANY(con.conkey) \
              WHERE n.nspname = 'public' \
-               AND c.relname = $1 \
                AND con.contype = 'p' \
-             ORDER BY array_position(con.conkey, a.attnum)",
-            &[&table_name],
+             ORDER BY c.relname, array_position(con.conkey, a.attnum)",
+            &[],
         )
         .await
         .map_err(|e| VerifyRunError::CatalogQueryFailed {
@@ -767,15 +787,21 @@ async fn read_primary_key_columns(
             source: e,
         })?;
 
-    let mut out: Vec<String> = Vec::with_capacity(rows.len());
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in &rows {
+        let table_name: String =
+            row.try_get(0)
+                .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                    query_label: "primary_key.relname",
+                    source: DjogiError::from(e),
+                })?;
         let col: String = row
-            .try_get(0)
+            .try_get(1)
             .map_err(|e| VerifyRunError::CatalogQueryFailed {
                 query_label: "primary_key.attname",
                 source: DjogiError::from(e),
             })?;
-        out.push(col);
+        out.entry(table_name).or_default().push(col);
     }
     Ok(out)
 }
@@ -795,9 +821,10 @@ async fn read_primary_key_columns(
 /// those at advisory `Info` level for now (D693). T8 will tighten.
 async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, VerifyRunError> {
     // Step 1 — one row per index with name + table + uniqueness +
-    // access method. The follow-up read_index_columns query produces
-    // the per-column list. Two queries (instead of one ORDER BY +
-    // array_agg) keeps the column type erasure off the result row.
+    // access method. Step 2 (read_all_index_columns, batched per
+    // cluster-2 simplify Finding 4) produces every index's per-
+    // column list in one query so the per-index loop below is a
+    // pure in-memory join.
     let rows = ctx
         .query_all(
             "SELECT i.relname::text, \
@@ -820,6 +847,10 @@ async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, Verify
             query_label: "indexes",
             source: e,
         })?;
+
+    // Batch the per-index column-list reads (cluster-2 simplify
+    // Finding 4): collapses N round-trips into one `pg_index` scan.
+    let mut columns_by_index = read_all_index_columns(ctx).await?;
 
     let mut out: Vec<IndexSchema> = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -851,7 +882,7 @@ async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, Verify
                 source: DjogiError::from(e),
             })?;
 
-        let index_columns = read_index_columns(ctx, &name).await?;
+        let index_columns = columns_by_index.remove(&name).unwrap_or_default();
 
         out.push(IndexSchema {
             extension_dependency: None,
@@ -873,44 +904,52 @@ async fn read_indexes(ctx: &mut DjogiContext) -> Result<Vec<IndexSchema>, Verify
     Ok(out)
 }
 
-/// Read the per-column list for one index, in `pg_index.indkey`
-/// order. Each entry is an [`IndexColumnSchema`] with default sort
-/// direction / nulls policy / opclass — the live catalog read
-/// stops short of opclass detection (T8 territory) so the snapshot's
-/// own knobs are the comparison ground truth.
-async fn read_index_columns(
+/// Read the per-column list for every public-schema index in a
+/// single catalog query (cluster-2 simplify Finding 4). Returns a
+/// map keyed by index name; each value is the columns in
+/// `pg_index.indkey` order. Each [`IndexColumnSchema`] carries the
+/// default sort direction / nulls policy / opclass — the live
+/// catalog read stops short of opclass detection (T8 territory) so
+/// the snapshot's own knobs are the comparison ground truth.
+/// Replaces the per-index helper that ran one round-trip per index.
+async fn read_all_index_columns(
     ctx: &mut DjogiContext,
-    index_name: &str,
-) -> Result<Vec<IndexColumnSchema>, VerifyRunError> {
+) -> Result<BTreeMap<String, Vec<IndexColumnSchema>>, VerifyRunError> {
     let rows = ctx
         .query_all(
-            "SELECT a.attname::text \
+            "SELECT i.relname::text, \
+                    a.attname::text \
              FROM pg_index ix \
              JOIN pg_class i ON i.oid = ix.indexrelid \
              JOIN pg_namespace n ON n.oid = i.relnamespace \
              JOIN unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE \
              JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = k.attnum \
              WHERE n.nspname = 'public' \
-               AND i.relname = $1 \
                AND a.attnum > 0 \
-             ORDER BY k.ord",
-            &[&index_name],
+             ORDER BY i.relname, k.ord",
+            &[],
         )
         .await
         .map_err(|e| VerifyRunError::CatalogQueryFailed {
             query_label: "index_columns",
             source: e,
         })?;
-    let mut out: Vec<IndexColumnSchema> = Vec::with_capacity(rows.len());
+    let mut out: BTreeMap<String, Vec<IndexColumnSchema>> = BTreeMap::new();
     for row in &rows {
-        let name: String = row
-            .try_get(0)
+        let index_name: String =
+            row.try_get(0)
+                .map_err(|e| VerifyRunError::CatalogQueryFailed {
+                    query_label: "index_columns.relname",
+                    source: DjogiError::from(e),
+                })?;
+        let col_name: String = row
+            .try_get(1)
             .map_err(|e| VerifyRunError::CatalogQueryFailed {
                 query_label: "index_columns.attname",
                 source: DjogiError::from(e),
             })?;
-        out.push(IndexColumnSchema {
-            name,
+        out.entry(index_name).or_default().push(IndexColumnSchema {
+            name: col_name,
             nulls: IndexNullsOrderSchema::Default,
             opclass: None,
             order: IndexOrderSchema::Asc,
@@ -943,113 +982,23 @@ fn pg_amname_to_index_type(amname: &str) -> IndexTypeSchema {
 /// running it without that check would surface a relation-not-found
 /// from the SELECT below. The verify entry point handles the missing
 /// ledger by emitting `D621` and skipping this read entirely.
+///
+/// Uses [`LedgerRow::try_from`] (cluster-2 simplify Finding 3) to
+/// centralize the 14-column try_get cascade in ledger.rs.
 async fn read_applied_ledger(ctx: &mut DjogiContext) -> Result<Vec<LedgerRow>, VerifyRunError> {
+    let sql = format!("{LEDGER_SELECT_COLS} ORDER BY applied_at, version");
     let rows = ctx
-        .query_all(
-            "SELECT version, description, checksum_up, checksum_down, execution_mode, \
-                    status, execution_time_ms, out_of_order_flag, applied_steps_count, \
-                    total_steps, partial_apply_note, run_id, snapshot_version, app_label \
-             FROM djogi_schema_migrations \
-             ORDER BY applied_at, version",
-            &[],
-        )
+        .query_all(&sql, &[])
         .await
         .map_err(|e| VerifyRunError::LedgerQueryFailed { source: e })?;
 
     let mut out: Vec<LedgerRow> = Vec::with_capacity(rows.len());
     for row in &rows {
-        let version: String = row
-            .try_get(0)
-            .map_err(|e| VerifyRunError::LedgerQueryFailed {
+        let ledger_row =
+            LedgerRow::try_from(row).map_err(|e| VerifyRunError::LedgerQueryFailed {
                 source: DjogiError::from(e),
             })?;
-        let description: String =
-            row.try_get(1)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let checksum_up: String =
-            row.try_get(2)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let checksum_down: Option<String> =
-            row.try_get(3)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let execution_mode: String =
-            row.try_get(4)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let status_str: String = row
-            .try_get(5)
-            .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                source: DjogiError::from(e),
-            })?;
-        let execution_time_ms: i64 =
-            row.try_get(6)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let out_of_order_flag: bool =
-            row.try_get(7)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let applied_steps_count: i32 =
-            row.try_get(8)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let total_steps: Option<i32> =
-            row.try_get(9)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let partial_apply_note: Option<String> =
-            row.try_get(10)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let run_id: i64 = row
-            .try_get(11)
-            .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                source: DjogiError::from(e),
-            })?;
-        let snapshot_version: String =
-            row.try_get(12)
-                .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                    source: DjogiError::from(e),
-                })?;
-        let app_label: String = row
-            .try_get(13)
-            .map_err(|e| VerifyRunError::LedgerQueryFailed {
-                source: DjogiError::from(e),
-            })?;
-
-        let status = LedgerStatus::from_db_str(&status_str).unwrap_or(LedgerStatus::Failed);
-        let execution_mode = match execution_mode.as_str() {
-            "transactional" => super::ledger::ExecutionMode::Transactional,
-            _ => super::ledger::ExecutionMode::NonTransactional,
-        };
-        out.push(LedgerRow {
-            version,
-            description,
-            checksum_up,
-            checksum_down,
-            execution_mode,
-            status,
-            execution_time_ms,
-            out_of_order_flag,
-            applied_steps_count,
-            total_steps,
-            partial_apply_note,
-            run_id,
-            snapshot_version,
-            app_label,
-        });
+        out.push(ledger_row);
     }
     Ok(out)
 }

@@ -70,7 +70,7 @@ use crate::error::DjogiError;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
     self, ChecksumFormatErrorKind, LedgerRow, LedgerStatus, compute_checksum,
-    validate_checksum_format,
+    load_full_row_by_version, validate_checksum_format,
 };
 use super::projection::BucketKey;
 use super::segment::{MigrationPlan, SegmentKind};
@@ -137,6 +137,20 @@ pub struct LedgerChange {
     pub before: String,
     /// New value (rendered for human consumption).
     pub after: String,
+}
+
+impl LedgerChange {
+    /// Construct a [`LedgerChange`]. Centralises the verbose
+    /// struct-literal form previously inlined at every call site
+    /// (cluster-2 simplify Finding 8).
+    pub(crate) fn new(version: &str, column: &'static str, before: String, after: String) -> Self {
+        Self {
+            version: version.to_string(),
+            column,
+            before,
+            after,
+        }
+    }
 }
 
 /// One snapshot-file mutation. Documents the path and the kind of
@@ -408,12 +422,12 @@ pub async fn repair_checksum_drift(
     let mut actions = vec![format!(
         "checksum_up of `{version}` updated from {before_up} to {new_checksum_up}"
     )];
-    let mut changes = vec![LedgerChange {
-        version: version.to_string(),
-        column: "checksum_up",
-        before: before_up,
-        after: new_checksum_up.to_string(),
-    }];
+    let mut changes = vec![LedgerChange::new(
+        version,
+        "checksum_up",
+        before_up,
+        new_checksum_up.to_string(),
+    )];
 
     // Always record the checksum_down change — even when both before
     // and after are None — so the audit trail captures the operator
@@ -425,12 +439,12 @@ pub async fn repair_checksum_drift(
     actions.push(format!(
         "checksum_down of `{version}` updated from {before_down_render} to {after_down_render}"
     ));
-    changes.push(LedgerChange {
-        version: version.to_string(),
-        column: "checksum_down",
-        before: before_down_render,
-        after: after_down_render,
-    });
+    changes.push(LedgerChange::new(
+        version,
+        "checksum_down",
+        before_down_render,
+        after_down_render,
+    ));
 
     Ok(RepairReport {
         actions_taken: actions,
@@ -525,24 +539,24 @@ pub async fn repair_partial_apply(
             new_steps = target_steps,
         )],
         ledger_changes: vec![
-            LedgerChange {
-                version: version.to_string(),
-                column: "status",
-                before: row.status.as_db_str().to_string(),
-                after: target_status.as_db_str().to_string(),
-            },
-            LedgerChange {
-                version: version.to_string(),
-                column: "applied_steps_count",
-                before: row.applied_steps_count.to_string(),
-                after: target_steps.to_string(),
-            },
-            LedgerChange {
-                version: version.to_string(),
-                column: "partial_apply_note",
-                before: row.partial_apply_note.clone().unwrap_or_default(),
-                after: note.to_string(),
-            },
+            LedgerChange::new(
+                version,
+                "status",
+                row.status.as_db_str().to_string(),
+                target_status.as_db_str().to_string(),
+            ),
+            LedgerChange::new(
+                version,
+                "applied_steps_count",
+                row.applied_steps_count.to_string(),
+                target_steps.to_string(),
+            ),
+            LedgerChange::new(
+                version,
+                "partial_apply_note",
+                row.partial_apply_note.clone().unwrap_or_default(),
+                note.to_string(),
+            ),
         ],
         snapshot_changes: Vec::new(),
     })
@@ -706,18 +720,18 @@ pub async fn repair_resume_partial_apply(
     .await
     .map_err(|e| RepairError::LedgerIo { source: e })?;
 
-    ledger_changes.push(LedgerChange {
-        version: version.to_string(),
-        column: "status",
-        before: row.status.as_db_str().to_string(),
-        after: LedgerStatus::Applied.as_db_str().to_string(),
-    });
-    ledger_changes.push(LedgerChange {
-        version: version.to_string(),
-        column: "applied_steps_count",
-        before: row.applied_steps_count.to_string(),
-        after: applied.to_string(),
-    });
+    ledger_changes.push(LedgerChange::new(
+        version,
+        "status",
+        row.status.as_db_str().to_string(),
+        LedgerStatus::Applied.as_db_str().to_string(),
+    ));
+    ledger_changes.push(LedgerChange::new(
+        version,
+        "applied_steps_count",
+        row.applied_steps_count.to_string(),
+        applied.to_string(),
+    ));
 
     Ok(RepairReport {
         actions_taken: actions,
@@ -869,59 +883,17 @@ pub async fn repair_snapshot_rebuild(
 /// [`RepairError::VersionNotFound`] when the row is absent so the
 /// caller can distinguish "no such version" from a generic database
 /// error.
+///
+/// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
+/// SELECT and try_get cascade live in ledger.rs to avoid triplication
+/// across runner / repair / verify (cluster-2 simplify Finding 3).
 async fn load_row(ctx: &mut DjogiContext, version: &str) -> Result<LedgerRow, RepairError> {
-    let row_opt = ctx
-        .query_opt(
-            "SELECT version, description, checksum_up, checksum_down, execution_mode, \
-                    status, execution_time_ms, out_of_order_flag, applied_steps_count, \
-                    total_steps, partial_apply_note, run_id, snapshot_version, app_label \
-             FROM djogi_schema_migrations WHERE version = $1",
-            &[&version],
-        )
+    load_full_row_by_version(ctx, version)
         .await
-        .map_err(|e| RepairError::LedgerIo { source: e })?;
-    let Some(row) = row_opt else {
-        return Err(RepairError::VersionNotFound {
+        .map_err(|e| RepairError::LedgerIo { source: e })?
+        .ok_or_else(|| RepairError::VersionNotFound {
             version: version.to_string(),
-        });
-    };
-
-    let description: String = row.try_get(1).map_err(io_err)?;
-    let checksum_up: String = row.try_get(2).map_err(io_err)?;
-    let checksum_down: Option<String> = row.try_get(3).map_err(io_err)?;
-    let execution_mode_s: String = row.try_get(4).map_err(io_err)?;
-    let status_s: String = row.try_get(5).map_err(io_err)?;
-    let execution_time_ms: i64 = row.try_get(6).map_err(io_err)?;
-    let out_of_order_flag: bool = row.try_get(7).map_err(io_err)?;
-    let applied_steps_count: i32 = row.try_get(8).map_err(io_err)?;
-    let total_steps: Option<i32> = row.try_get(9).map_err(io_err)?;
-    let partial_apply_note: Option<String> = row.try_get(10).map_err(io_err)?;
-    let run_id: i64 = row.try_get(11).map_err(io_err)?;
-    let snapshot_version: String = row.try_get(12).map_err(io_err)?;
-    let app_label: String = row.try_get(13).map_err(io_err)?;
-
-    let execution_mode = match execution_mode_s.as_str() {
-        "transactional" => ledger::ExecutionMode::Transactional,
-        _ => ledger::ExecutionMode::NonTransactional,
-    };
-    let status = LedgerStatus::from_db_str(&status_s).unwrap_or(LedgerStatus::Failed);
-
-    Ok(LedgerRow {
-        version: version.to_string(),
-        description,
-        checksum_up,
-        checksum_down,
-        execution_mode,
-        status,
-        execution_time_ms,
-        out_of_order_flag,
-        applied_steps_count,
-        total_steps,
-        partial_apply_note,
-        run_id,
-        snapshot_version,
-        app_label,
-    })
+        })
 }
 
 fn io_err(e: tokio_postgres::Error) -> RepairError {

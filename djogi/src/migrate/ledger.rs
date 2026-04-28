@@ -66,6 +66,87 @@ use sha2::{Digest, Sha256};
 use crate::context::DjogiContext;
 use crate::error::{DbError, DjogiError};
 
+// ── LedgerRow row conversion ──────────────────────────────────────────────
+
+/// Constant SQL for the 14-column ledger SELECT. Shared between
+/// [`load_full_row_by_version`] and callers that append their own
+/// WHERE / ORDER BY clauses, keeping the column list in one place.
+pub(crate) const LEDGER_SELECT_COLS: &str = "SELECT version, description, checksum_up, checksum_down, execution_mode, \
+     status, execution_time_ms, out_of_order_flag, applied_steps_count, \
+     total_steps, partial_apply_note, run_id, snapshot_version, app_label \
+     FROM djogi_schema_migrations";
+
+/// Convert a raw `tokio_postgres::Row` (returned by any of the 14-column
+/// ledger queries) into a [`LedgerRow`]. Column order matches
+/// [`LEDGER_SELECT_COLS`] exactly; callers that append a different
+/// SELECT list must NOT use this impl.
+///
+/// `version` is read from column 0, so both the by-version query
+/// (which supplies `$1` in the WHERE) and the all-rows query (which
+/// SELECTs `version` as column 0) produce a compatible row.
+impl TryFrom<&tokio_postgres::Row> for LedgerRow {
+    type Error = tokio_postgres::Error;
+
+    fn try_from(row: &tokio_postgres::Row) -> Result<Self, Self::Error> {
+        let version: String = row.try_get(0)?;
+        let description: String = row.try_get(1)?;
+        let checksum_up: String = row.try_get(2)?;
+        let checksum_down: Option<String> = row.try_get(3)?;
+        let execution_mode_s: String = row.try_get(4)?;
+        let status_s: String = row.try_get(5)?;
+        let execution_time_ms: i64 = row.try_get(6)?;
+        let out_of_order_flag: bool = row.try_get(7)?;
+        let applied_steps_count: i32 = row.try_get(8)?;
+        let total_steps: Option<i32> = row.try_get(9)?;
+        let partial_apply_note: Option<String> = row.try_get(10)?;
+        let run_id: i64 = row.try_get(11)?;
+        let snapshot_version: String = row.try_get(12)?;
+        let app_label: String = row.try_get(13)?;
+
+        let execution_mode = match execution_mode_s.as_str() {
+            "transactional" => ExecutionMode::Transactional,
+            _ => ExecutionMode::NonTransactional,
+        };
+        let status = LedgerStatus::from_db_str(&status_s).unwrap_or(LedgerStatus::Failed);
+
+        Ok(LedgerRow {
+            version,
+            description,
+            checksum_up,
+            checksum_down,
+            execution_mode,
+            status,
+            execution_time_ms,
+            out_of_order_flag,
+            applied_steps_count,
+            total_steps,
+            partial_apply_note,
+            run_id,
+            snapshot_version,
+            app_label,
+        })
+    }
+}
+
+/// Load the full ledger row for a given `version`. Returns `None` when
+/// the row is absent (not a hard error — callers that distinguish
+/// "missing" from "DB error" handle both arms). Surfaced as a
+/// `pub(crate)` helper so runner, repair, and verify can share the
+/// 14-column SELECT without duplicating the column list or the
+/// try_get cascade.
+pub(crate) async fn load_full_row_by_version(
+    ctx: &mut DjogiContext,
+    version: &str,
+) -> Result<Option<LedgerRow>, DjogiError> {
+    let sql = format!("{LEDGER_SELECT_COLS} WHERE version = $1");
+    let row_opt = ctx.query_opt(&sql, &[&version]).await?;
+    let Some(row) = row_opt else {
+        return Ok(None);
+    };
+    let ledger_row = LedgerRow::try_from(&row)?;
+    Ok(Some(ledger_row))
+}
+
 /// Constant emitting the `djogi_schema_migrations` DDL. Public so
 /// integration tests and the T6 `init` command can replay it
 /// without reaching into the runner.

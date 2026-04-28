@@ -64,7 +64,7 @@ use crate::types::HeerId;
 use super::guard::WorkspaceGuard;
 use super::ledger::{
     self, ChecksumFormatError, ChecksumMismatch, ExecutionMode, LedgerRow, LedgerStatus,
-    VerifyError, compute_checksum,
+    VerifyError, compute_checksum, load_full_row_by_version,
 };
 use super::projection::BucketKey;
 use super::schema::SNAPSHOT_FORMAT_VERSION;
@@ -284,6 +284,21 @@ pub enum RunnerError {
         /// Number of violating rows the verification query returned.
         count_violating: i64,
     },
+
+    /// A Postgres system-catalog query (pg_class, pg_constraint,
+    /// pg_subscription, etc.) failed before the migration could
+    /// proceed. Distinct from [`RunnerError::LedgerWriteFailed`] —
+    /// the ledger was not touched; the failure is in a read-only
+    /// catalog probe. The `query_label` field names the probe so
+    /// operators can correlate the error to the specific catalog
+    /// object being queried (cluster-2 simplify Finding 6).
+    CatalogQueryFailed {
+        /// A static label naming the catalog object or query that
+        /// failed (e.g. `"pg_stat_replication"`, `"pg_class relpages"`).
+        query_label: &'static str,
+        /// The underlying Postgres error.
+        source: DjogiError,
+    },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -470,6 +485,10 @@ impl std::fmt::Display for RunnerError {
                      the active OutOfOrderPolicy is Reject."
                 ),
             },
+            RunnerError::CatalogQueryFailed {
+                query_label,
+                source,
+            } => write!(f, "Postgres catalog query '{query_label}' failed: {source}",),
         }
     }
 }
@@ -486,6 +505,7 @@ impl std::error::Error for RunnerError {
             RunnerError::ConfigLoadFailed { source } => Some(source),
             RunnerError::SnapshotPersistFailed { source, .. } => Some(source),
             RunnerError::BaselineProjectionFailed { source } => Some(source.as_ref()),
+            RunnerError::CatalogQueryFailed { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -718,31 +738,11 @@ async fn apply_plan_inner(
     // the out_of_order_flag. This is the audit-trail half of the
     // "tracing::warn! plus partial_apply_note" contract called out in
     // the T7 brief.
-    let initial_note = match (
+    let initial_note = compose_initial_note(
         is_out_of_order,
         runner_ctx.out_of_order_policy.override_reason(),
-    ) {
-        (true, Some(reason)) if !reason.is_empty() => {
-            let header = match conflicting_peer.as_ref() {
-                Some((peer, Some(ts))) => {
-                    format!("out-of-order apply (peer {peer} applied at {ts}) override: {reason}")
-                }
-                Some((peer, None)) => {
-                    format!("out-of-order apply (peer {peer}) override: {reason}")
-                }
-                None => format!("out-of-order apply override: {reason}"),
-            };
-            Some(header)
-        }
-        (true, None) => match conflicting_peer.as_ref() {
-            Some((peer, Some(ts))) => Some(format!(
-                "out-of-order apply: peer {peer} was already applied at {ts}"
-            )),
-            Some((peer, None)) => Some(format!("out-of-order apply: peer {peer}")),
-            None => None,
-        },
-        _ => None,
-    };
+        conflicting_peer.as_ref(),
+    );
 
     // 5. Insert pending ledger row. Generate a fresh run_id.
     let run_id = generate_run_id(ctx).await?;
@@ -822,7 +822,8 @@ async fn apply_plan_inner(
         match segment.kind {
             SegmentKind::Transactional => {
                 if let Err(e) =
-                    run_transactional_segment(ctx, segment, runner_ctx, &add_table_set).await
+                    run_transactional_segment(ctx, segment, seg_idx, runner_ctx, &add_table_set)
+                        .await
                 {
                     // N-1: the relpages probe runs BEFORE BEGIN, so
                     // a probe failure must NOT be reported as a
@@ -831,44 +832,9 @@ async fn apply_plan_inner(
                     // failures from in-tx statement failures so the
                     // operator-facing note matches the actual phase
                     // that failed.
-                    let note = match &e {
-                        RunnerError::RelpagesThresholdExceeded {
-                            index_name,
-                            target_table,
-                            relpages,
-                            threshold,
-                            ..
-                        } => format!(
-                            "relpages-probe failed at AddIndex {index_name} on table \
-                             {target_table} (relpages={relpages} > threshold={threshold})",
-                        ),
-                        RunnerError::TargetTableNotFound {
-                            index_name,
-                            target_table,
-                            ..
-                        } => format!(
-                            "relpages-probe failed at AddIndex {index_name}: target table \
-                             `{target_table}` not found and not in plan's AddTable set",
-                        ),
-                        RunnerError::TransactionalSegmentFailed {
-                            statement_label,
-                            source,
-                            ..
-                        } => format!(
-                            "transactional segment {seg_idx} failed at `{statement_label}`: \
-                             {source}",
-                        ),
-                        RunnerError::PkFlipVerificationFailed {
-                            table,
-                            count_violating,
-                        } => format!(
-                            "PK-flip verification halt at segment {seg_idx}: table `{table}` \
-                             has {count_violating} row(s) with NULL or stale shadow values",
-                        ),
-                        other => format!("transactional segment {seg_idx} failed: {other}",),
-                    };
+                    let note = note_for_failed_transactional_segment(seg_idx, &e);
                     let _ = ledger::mark_failed(ctx, ledger_id, &note).await;
-                    return Err(map_segment_error(e, seg_idx));
+                    return Err(e);
                 }
                 transactional_segments += 1;
             }
@@ -1465,22 +1431,12 @@ async fn fake_apply_inner(
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
     let note = format!("faked at {timestamp}; reason: {reason}");
     let run_id = generate_run_id(ctx).await?;
-    // B-4 (Codex round-2): the previous arrangement issued
-    // `insert_pending` and the `UPDATE ... SET status='faked'` as two
-    // separate statements with no enclosing transaction. A crash —
-    // process kill, network blip, signal — between them left the row
-    // stranded at `pending` forever, with no Djogi-side machinery
-    // distinguishing "still in flight" from "operator faked it,
-    // status-flip lost". Wrap both writes in one Postgres tx so the
-    // ledger row is either present-and-faked or absent. On any error,
-    // ROLLBACK explicitly (best-effort; the typed error propagates
-    // regardless) and surface the typed RunnerError variant.
-    //
-    // `insert_pending` writes status='pending' regardless of the
-    // value carried on the LedgerRow struct (the typed CRUD helper is
-    // intentionally narrow — see ledger::insert_pending). The fake-
-    // apply path therefore has to flip the row to 'faked' explicitly
-    // after insertion; both writes now sit inside one tx.
+    // `insert_pending` binds `row.status.as_db_str()` directly, so
+    // constructing the row with `LedgerStatus::Faked` writes the
+    // correct terminal status in a single INSERT — no post-insert
+    // UPDATE needed (cluster-2 simplify Finding 1). The B-4 concern
+    // (crash between INSERT and UPDATE leaving a stranded `pending`
+    // row) is eliminated because there is now only one DB operation.
     let row = LedgerRow {
         version: runner_ctx.version.clone(),
         description: runner_ctx.description.clone(),
@@ -1498,19 +1454,9 @@ async fn fake_apply_inner(
         app_label: plan.bucket.app.clone(),
     };
 
-    ctx.raw_ddl("BEGIN")
-        .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })?;
-
     let ledger_id = match ledger::insert_pending(ctx, &row).await {
         Ok(id) => id,
         Err(e) => {
-            // Best-effort rollback — surface the original error
-            // regardless of whether the rollback succeeds.
-            let _ = ctx.raw_ddl("ROLLBACK").await;
             if is_unique_violation(&e) {
                 let applied_at = load_applied_at(ctx, &runner_ctx.version).await;
                 return Err(RunnerError::VersionAlreadyApplied {
@@ -1524,31 +1470,6 @@ async fn fake_apply_inner(
             });
         }
     };
-
-    // Flip status pending -> faked. partial_apply_note already carries
-    // the operator's reason from the insert above; this UPDATE is
-    // status-only so we do not double-write the note. Inside the same
-    // tx as `insert_pending` so both writes commit atomically (B-4).
-    if let Err(e) = ctx
-        .execute(
-            "UPDATE djogi_schema_migrations SET status = 'faked' WHERE id = $1",
-            &[&ledger_id],
-        )
-        .await
-    {
-        let _ = ctx.raw_ddl("ROLLBACK").await;
-        return Err(RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        });
-    }
-
-    ctx.raw_ddl("COMMIT")
-        .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })?;
 
     // Snapshot moves forward, when supplied.
     if let (Some(snapshot), Some(path)) = (&runner_ctx.snapshot, &runner_ctx.snapshot_path) {
@@ -1684,6 +1605,10 @@ async fn baseline_inner(
         snapshot_version: SNAPSHOT_FORMAT_VERSION.to_string(),
         app_label: bucket.app.clone(),
     };
+    // `insert_pending` binds `row.status.as_db_str()` directly, so
+    // constructing the row with `LedgerStatus::Baseline` writes the
+    // correct terminal status in a single INSERT — no post-insert
+    // UPDATE needed (cluster-2 simplify Finding 1).
     let ledger_id = match ledger::insert_pending(ctx, &row).await {
         Ok(id) => id,
         Err(e) => {
@@ -1700,19 +1625,6 @@ async fn baseline_inner(
             });
         }
     };
-
-    // Update the row to `baseline` (insert_pending writes 'pending';
-    // we flip the status here to keep the typed ledger CRUD
-    // helpers narrow).
-    ctx.execute(
-        "UPDATE djogi_schema_migrations SET status = 'baseline' WHERE id = $1",
-        &[&ledger_id],
-    )
-    .await
-    .map_err(|e| RunnerError::LedgerWriteFailed {
-        version: runner_ctx.version.clone(),
-        source: e,
-    })?;
 
     // Persist the projected schema as the canonical baseline snapshot
     // when a path was supplied. (Tests that only care about ledger
@@ -1753,56 +1665,15 @@ pub(crate) fn checksum_for_baseline_snapshot(schema: &super::schema::AppliedSche
 
 /// Read a ledger row for a given version. Used by the rollback path
 /// to confirm the row is in a state that admits rollback.
+///
+/// Delegates to [`ledger::load_full_row_by_version`] — the 14-column
+/// SELECT and try_get cascade live in ledger.rs to avoid triplication
+/// across runner / repair / verify (cluster-2 simplify Finding 3).
 async fn load_ledger_row_for_version(
     ctx: &mut DjogiContext,
     version: &str,
 ) -> Result<Option<LedgerRow>, DjogiError> {
-    let row_opt = ctx
-        .query_opt(
-            "SELECT version, description, checksum_up, checksum_down, execution_mode, \
-                    status, execution_time_ms, out_of_order_flag, applied_steps_count, \
-                    total_steps, partial_apply_note, run_id, snapshot_version, app_label \
-             FROM djogi_schema_migrations WHERE version = $1",
-            &[&version],
-        )
-        .await?;
-    let Some(row) = row_opt else { return Ok(None) };
-
-    let description: String = row.try_get(1)?;
-    let checksum_up: String = row.try_get(2)?;
-    let checksum_down: Option<String> = row.try_get(3)?;
-    let execution_mode_s: String = row.try_get(4)?;
-    let status_s: String = row.try_get(5)?;
-    let execution_time_ms: i64 = row.try_get(6)?;
-    let out_of_order_flag: bool = row.try_get(7)?;
-    let applied_steps_count: i32 = row.try_get(8)?;
-    let total_steps: Option<i32> = row.try_get(9)?;
-    let partial_apply_note: Option<String> = row.try_get(10)?;
-    let run_id: i64 = row.try_get(11)?;
-    let snapshot_version: String = row.try_get(12)?;
-    let app_label: String = row.try_get(13)?;
-
-    let execution_mode = match execution_mode_s.as_str() {
-        "transactional" => ExecutionMode::Transactional,
-        _ => ExecutionMode::NonTransactional,
-    };
-    let status = LedgerStatus::from_db_str(&status_s).unwrap_or(LedgerStatus::Failed);
-    Ok(Some(LedgerRow {
-        version: version.to_string(),
-        description,
-        checksum_up,
-        checksum_down,
-        execution_mode,
-        status,
-        execution_time_ms,
-        out_of_order_flag,
-        applied_steps_count,
-        total_steps,
-        partial_apply_note,
-        run_id,
-        snapshot_version,
-        app_label,
-    }))
+    load_full_row_by_version(ctx, version).await
 }
 
 // ── Segment dispatch helpers ──────────────────────────────────────────────
@@ -1810,9 +1681,14 @@ async fn load_ledger_row_for_version(
 /// Run every statement inside a transactional segment within a
 /// single Postgres transaction. On any error, ROLLBACK and surface
 /// the failing statement label.
+///
+/// `segment_index` is the caller's loop index — threaded in so the
+/// error variant carries the correct position rather than always
+/// reporting `0` (cluster-2 simplify Finding 2).
 async fn run_transactional_segment(
     ctx: &mut DjogiContext,
     segment: &Segment,
+    segment_index: usize,
     runner_ctx: &RunnerCtx,
     add_table_set: &BTreeSet<String>,
 ) -> Result<(), RunnerError> {
@@ -1839,7 +1715,7 @@ async fn run_transactional_segment(
                 .to_string();
             let row = ctx.query_one(&stmt.up, &[]).await.map_err(|e| {
                 RunnerError::TransactionalSegmentFailed {
-                    segment_index: 0,
+                    segment_index,
                     statement_label: stmt.label.clone(),
                     source: e,
                 }
@@ -1868,7 +1744,7 @@ async fn run_transactional_segment(
     ctx.raw_ddl("BEGIN")
         .await
         .map_err(|e| RunnerError::TransactionalSegmentFailed {
-            segment_index: 0,
+            segment_index,
             statement_label: "<BEGIN>".to_string(),
             source: e,
         })?;
@@ -1879,7 +1755,7 @@ async fn run_transactional_segment(
             // regardless of whether the rollback succeeds.
             let _ = ctx.raw_ddl("ROLLBACK").await;
             return Err(RunnerError::TransactionalSegmentFailed {
-                segment_index: 0,
+                segment_index,
                 statement_label: stmt.label.clone(),
                 source: e,
             });
@@ -1889,7 +1765,7 @@ async fn run_transactional_segment(
     ctx.raw_ddl("COMMIT")
         .await
         .map_err(|e| RunnerError::TransactionalSegmentFailed {
-            segment_index: 0,
+            segment_index,
             statement_label: "<COMMIT>".to_string(),
             source: e,
         })?;
@@ -2071,15 +1947,15 @@ async fn relpages_probe(
             &[&target_table],
         )
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: index_name.to_string(),
+        .map_err(|e| RunnerError::CatalogQueryFailed {
+            query_label: "pg_class relpages",
             source: e,
         })?;
     let relpages: i32 = match row_opt {
         Some(r) => r
             .try_get::<_, i32>(0)
-            .map_err(|e| RunnerError::LedgerWriteFailed {
-                version: index_name.to_string(),
+            .map_err(|e| RunnerError::CatalogQueryFailed {
+                query_label: "pg_class relpages",
                 source: DjogiError::from(e),
             })?,
         // Table not found in pg_class — distinguish the two legitimate
@@ -2205,8 +2081,8 @@ async fn pk_flip_preflight(
             &[],
         )
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
+        .map_err(|e| RunnerError::CatalogQueryFailed {
+            query_label: "pg_stat_replication",
             source: e,
         })?;
     let mut walsenders: Vec<(String, String)> = Vec::with_capacity(walsender_rows.len());
@@ -2224,8 +2100,8 @@ async fn pk_flip_preflight(
             &[],
         )
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
+        .map_err(|e| RunnerError::CatalogQueryFailed {
+            query_label: "pg_subscription",
             source: e,
         })?;
     let mut subscriptions: Vec<String> = Vec::with_capacity(sub_rows.len());
@@ -2255,8 +2131,8 @@ async fn pk_flip_preflight(
                 &[table],
             )
             .await
-            .map_err(|e| RunnerError::LedgerWriteFailed {
-                version: runner_ctx.version.clone(),
+            .map_err(|e| RunnerError::CatalogQueryFailed {
+                query_label: "pg_trigger zzz scan",
                 source: e,
             })?;
         if !zzz_rows.is_empty() {
@@ -2278,8 +2154,8 @@ async fn pk_flip_preflight(
                 &[table],
             )
             .await
-            .map_err(|e| RunnerError::LedgerWriteFailed {
-                version: runner_ctx.version.clone(),
+            .map_err(|e| RunnerError::CatalogQueryFailed {
+                query_label: "pg_trigger disabled scan",
                 source: e,
             })?;
         if !disabled_rows.is_empty() {
@@ -2315,8 +2191,8 @@ async fn pk_flip_preflight(
                 &[&(threshold as i32)],
             )
             .await
-            .map_err(|e| RunnerError::LedgerWriteFailed {
-                version: runner_ctx.version.clone(),
+            .map_err(|e| RunnerError::CatalogQueryFailed {
+                query_label: "pg_stat_activity long tx scan",
                 source: e,
             })?;
         if !long_rows.is_empty() {
@@ -2466,20 +2342,80 @@ fn parse_create_index_statement(stmt: &OperationSql) -> Option<(String, String)>
     None
 }
 
-/// Translate the inner segment-failure error into the public
-/// runner-error variant, threading the segment index forward.
-fn map_segment_error(e: RunnerError, segment_index: usize) -> RunnerError {
+/// Build the initial `partial_apply_note` for a run, when the apply
+/// is out-of-order and either the policy carries an override reason
+/// or there's a known conflicting peer. Returns `None` for the
+/// in-order common case. Pure function — no DB access (cluster-2
+/// simplify Finding 7 — note-composition extraction).
+fn compose_initial_note(
+    is_out_of_order: bool,
+    override_reason: Option<&str>,
+    conflicting_peer: Option<&(String, Option<String>)>,
+) -> Option<String> {
+    match (is_out_of_order, override_reason) {
+        (true, Some(reason)) if !reason.is_empty() => {
+            let header = match conflicting_peer {
+                Some((peer, Some(ts))) => {
+                    format!("out-of-order apply (peer {peer} applied at {ts}) override: {reason}")
+                }
+                Some((peer, None)) => {
+                    format!("out-of-order apply (peer {peer}) override: {reason}")
+                }
+                None => format!("out-of-order apply override: {reason}"),
+            };
+            Some(header)
+        }
+        (true, None) => match conflicting_peer {
+            Some((peer, Some(ts))) => Some(format!(
+                "out-of-order apply: peer {peer} was already applied at {ts}"
+            )),
+            Some((peer, None)) => Some(format!("out-of-order apply: peer {peer}")),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
+/// Build the `partial_apply_note` string for a failed transactional
+/// segment. Centralizes the inline format strings that previously
+/// lived in `apply_plan_inner`'s match arm (cluster-2 simplify
+/// Finding 7 — note-formatting extraction).
+fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> String {
     match e {
+        RunnerError::RelpagesThresholdExceeded {
+            index_name,
+            target_table,
+            relpages,
+            threshold,
+            ..
+        } => format!(
+            "relpages-probe failed at AddIndex {index_name} on table \
+             {target_table} (relpages={relpages} > threshold={threshold})",
+        ),
+        RunnerError::TargetTableNotFound {
+            index_name,
+            target_table,
+            ..
+        } => format!(
+            "relpages-probe failed at AddIndex {index_name}: target table \
+             `{target_table}` not found and not in plan's AddTable set",
+        ),
         RunnerError::TransactionalSegmentFailed {
             statement_label,
             source,
             ..
-        } => RunnerError::TransactionalSegmentFailed {
-            segment_index,
-            statement_label,
-            source,
-        },
-        other => other,
+        } => format!(
+            "transactional segment {seg_idx} failed at `{statement_label}`: \
+             {source}",
+        ),
+        RunnerError::PkFlipVerificationFailed {
+            table,
+            count_violating,
+        } => format!(
+            "PK-flip verification halt at segment {seg_idx}: table `{table}` \
+             has {count_violating} row(s) with NULL or stale shadow values",
+        ),
+        other => format!("transactional segment {seg_idx} failed: {other}"),
     }
 }
 
