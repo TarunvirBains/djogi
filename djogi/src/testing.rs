@@ -344,13 +344,16 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<usize, D
         }
     });
 
-    // Query pg_database for every `djogi_test_*` database. We use a
-    // parameterised LIKE to avoid injecting the prefix literal into the
-    // query string.
+    // Query pg_database for every `djogi_test_*` database. The `_`
+    // byte is a single-character wildcard in `LIKE`, so the prefix
+    // matcher must escape the literal underscores via `ESCAPE '\'`
+    // — otherwise a database named e.g. `djogiXtestY<anything>`
+    // would match the pattern and be considered an orphaned test DB.
     let rows = client
         .query(
             "SELECT datname FROM pg_database \
-             WHERE datname LIKE 'djogi_test_%' ORDER BY datname",
+             WHERE datname LIKE 'djogi\\_test\\_%' ESCAPE '\\' \
+             ORDER BY datname",
             &[],
         )
         .await
@@ -388,13 +391,28 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<usize, D
 
 /// Double-quote a Postgres identifier for embedding in SQL.
 ///
-/// Wraps `ident` in double quotes so it can be safely embedded in
-/// statements like `CREATE DATABASE "name"` without needing a prepared
-/// statement. The identifier MUST be pre-validated via
-/// [`validate_extension_name`] or an equivalent check before calling
-/// this helper — no additional validation is performed here.
+/// Wraps `ident` in double quotes and escapes any embedded `"` byte
+/// by doubling it, matching Postgres's identifier-quoting rules.
+/// Defense-in-depth: while most call sites pass identifiers that are
+/// pre-validated by [`validate_extension_name`] (extensions) or
+/// composed locally from controlled inputs (test database names),
+/// the orphan-cleanup path reads `datname` values straight from
+/// `pg_database`, which can include any quoted identifier the cluster
+/// has accepted. Doubling `"` here keeps every embedding site safe
+/// regardless of upstream validation strength.
 fn quoted(ident: &str) -> String {
-    format!("\"{ident}\"")
+    let mut out = String::with_capacity(ident.len() + 2);
+    out.push('"');
+    for b in ident.bytes() {
+        if b == b'"' {
+            out.push('"');
+            out.push('"');
+        } else {
+            out.push(b as char);
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Validate that `name` is a plain Postgres identifier safe to interpolate

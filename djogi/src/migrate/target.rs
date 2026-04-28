@@ -189,6 +189,19 @@ pub struct FilesystemBucket {
 /// identifier validation to the projection layer that owns the
 /// canonical grammar.
 pub fn scan_filesystem(workspace_root: &Path) -> Result<BTreeSet<FilesystemBucket>, io::Error> {
+    scan_filesystem_filtered(workspace_root, None)
+}
+
+/// Like [`scan_filesystem`] but skips every database whose name does
+/// not match `database_filter` *before* opening the per-database
+/// directory. This is what consumers that only care about one
+/// database (e.g. `db reset`) want — no point read_dir-ing dozens of
+/// peer-database app directories just to discard them at the next
+/// layer.
+fn scan_filesystem_filtered(
+    workspace_root: &Path,
+    database_filter: Option<&str>,
+) -> Result<BTreeSet<FilesystemBucket>, io::Error> {
     let mut out = BTreeSet::new();
     let migrations = migrations_root(workspace_root);
     let entries = match fs::read_dir(&migrations) {
@@ -205,6 +218,11 @@ pub fn scan_filesystem(workspace_root: &Path) -> Result<BTreeSet<FilesystemBucke
             continue;
         };
         if !is_acceptable_dir_name(database.as_bytes()) {
+            continue;
+        }
+        if let Some(want) = database_filter
+            && database != want
+        {
             continue;
         }
         let database_path = entry.path();
@@ -259,13 +277,12 @@ pub fn scan_filesystem_with_files(
     database_filter: Option<&str>,
 ) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, io::Error> {
     let mut out: BTreeMap<BucketKey, BTreeMap<String, PathBuf>> = BTreeMap::new();
-    let buckets = scan_filesystem(workspace_root)?;
+    // Push the database filter into the first-level walk so we never
+    // open peer-database app directories the caller doesn't care
+    // about. The per-database short-circuit also keeps `db reset`
+    // from triggering filesystem audits on unrelated databases.
+    let buckets = scan_filesystem_filtered(workspace_root, database_filter)?;
     for fb in buckets {
-        if let Some(want) = database_filter
-            && fb.database != want
-        {
-            continue;
-        }
         let bucket = BucketKey {
             database: fb.database,
             app: fb.app,
