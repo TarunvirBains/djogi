@@ -169,7 +169,36 @@ fn basic_column(name: &str, sql_type: &str, nullable: bool) -> ColumnSchema {
     }
 }
 
+fn basic_generated_id_column() -> ColumnSchema {
+    ColumnSchema {
+        default_sql: Some("generate_id()".to_string()),
+        ..basic_column("id", "BIGINT", false)
+    }
+}
+
+fn basic_fk_column(name: &str, ref_table: &str, nullable: bool) -> ColumnSchema {
+    ColumnSchema {
+        foreign_key: Some(ForeignKeySchema {
+            deferrable: false,
+            initially_deferred: false,
+            on_delete: OnDeleteSchema::Restrict,
+            ref_column: "id".to_string(),
+            ref_table: ref_table.to_string(),
+        }),
+        on_delete: Some(OnDeleteSchema::Restrict),
+        ..basic_column(name, "BIGINT", nullable)
+    }
+}
+
 fn basic_table(name: &str, columns: Vec<ColumnSchema>) -> TableSchema {
+    basic_table_with_pk_kind(name, columns, PkKindSchema::HeerId)
+}
+
+fn basic_table_with_pk_kind(
+    name: &str,
+    columns: Vec<ColumnSchema>,
+    kind: PkKindSchema,
+) -> TableSchema {
     TableSchema {
         app: None,
         columns,
@@ -179,7 +208,7 @@ fn basic_table(name: &str, columns: Vec<ColumnSchema>) -> TableSchema {
         partition: None,
         primary_key: PrimaryKeySchema {
             columns: vec!["id".to_string()],
-            kind: PkKindSchema::HeerId,
+            kind,
         },
         rationale: None,
         renamed_from: None,
@@ -1908,72 +1937,16 @@ async fn flip_partial_apply_resume_via_repair(mut ctx: djogi::DjogiContext) {
 //    columns survive the rename, and `count(*)` is preserved.
 
 fn cycle_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSchema {
-    use djogi::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PrimaryKeySchema, TableSchema,
-    };
-
-    let make_table = |table: &str, fk_col: &str, ref_table: &str| TableSchema {
-        app: None,
-        columns: vec![
-            ColumnSchema {
-                check: None,
-                default_sql: Some("generate_id()".to_string()),
-                foreign_key: None,
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "id".to_string(),
-                nullable: false,
-                on_delete: None,
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-            ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: Some(ForeignKeySchema {
-                    deferrable: false,
-                    initially_deferred: false,
-                    on_delete: OnDeleteSchema::Restrict,
-                    ref_column: "id".to_string(),
-                    ref_table: ref_table.to_string(),
-                }),
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: fk_col.to_string(),
-                // Nullable so seed rows can land before the cycle is
-                // closed (avoids chicken-and-egg insertion order
-                // problems in the test-data setup).
-                nullable: true,
-                on_delete: Some(OnDeleteSchema::Restrict),
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-        ],
-        fts: None,
-        is_through: false,
-        moved_from_app: None,
-        partition: None,
-        primary_key: PrimaryKeySchema {
-            columns: vec!["id".to_string()],
-            kind: pk_kind.clone(),
-        },
-        rationale: None,
-        renamed_from: None,
-        rls_enabled: false,
-        table: table.to_string(),
-        tenant_key: None,
+    let make_table = |table: &str, fk_col: &str, ref_table: &str| {
+        // Nullable so seed rows can land before the cycle is closed.
+        basic_table_with_pk_kind(
+            table,
+            vec![
+                basic_generated_id_column(),
+                basic_fk_column(fk_col, ref_table, true),
+            ],
+            pk_kind.clone(),
+        )
     };
 
     let mut models = BTreeMap::new();
@@ -2337,114 +2310,16 @@ async fn flip_real_two_table_cycle_via_diff_bucket_maps(mut ctx: djogi::DjogiCon
 //     cutovers.
 
 fn cross_flipping_join_schema_with_pk_kind(pk_kind: PkKindSchema) -> AppliedSchema {
-    use djogi::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PrimaryKeySchema, TableSchema,
-    };
-
-    let make_parent = |table: &str| TableSchema {
-        app: None,
-        columns: vec![ColumnSchema {
-            check: None,
-            default_sql: Some("generate_id()".to_string()),
-            foreign_key: None,
-            index_type: None,
-            indexed: false,
-            max_length: None,
-            name: "id".to_string(),
-            nullable: false,
-            on_delete: None,
-            outbox_exclude: false,
-            rationale: None,
-            relation_kind: None,
-            renamed_from: None,
-            sequence_within: None,
-            sql_type: "BIGINT".to_string(),
-            unique: false,
-        }],
-        fts: None,
-        is_through: false,
-        moved_from_app: None,
-        partition: None,
-        primary_key: PrimaryKeySchema {
-            columns: vec!["id".to_string()],
-            kind: pk_kind.clone(),
-        },
-        rationale: None,
-        renamed_from: None,
-        rls_enabled: false,
-        table: table.to_string(),
-        tenant_key: None,
+    let make_parent = |table: &str| {
+        basic_table_with_pk_kind(table, vec![basic_generated_id_column()], pk_kind.clone())
     };
 
     let make_join_table = |table: &str, fk_a_col: &str, fk_b_col: &str| TableSchema {
         app: None,
         columns: vec![
-            ColumnSchema {
-                check: None,
-                default_sql: Some("generate_id()".to_string()),
-                foreign_key: None,
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "id".to_string(),
-                nullable: false,
-                on_delete: None,
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-            ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: Some(ForeignKeySchema {
-                    deferrable: false,
-                    initially_deferred: false,
-                    on_delete: OnDeleteSchema::Restrict,
-                    ref_column: "id".to_string(),
-                    ref_table: "jt_books".to_string(),
-                }),
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: fk_a_col.to_string(),
-                nullable: false,
-                on_delete: Some(OnDeleteSchema::Restrict),
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-            ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: Some(ForeignKeySchema {
-                    deferrable: false,
-                    initially_deferred: false,
-                    on_delete: OnDeleteSchema::Restrict,
-                    ref_column: "id".to_string(),
-                    ref_table: "jt_tags".to_string(),
-                }),
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: fk_b_col.to_string(),
-                nullable: false,
-                on_delete: Some(OnDeleteSchema::Restrict),
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
+            basic_generated_id_column(),
+            basic_fk_column(fk_a_col, "jt_books", false),
+            basic_fk_column(fk_b_col, "jt_tags", false),
         ],
         fts: None,
         is_through: true,
@@ -2790,72 +2665,12 @@ fn pk_flip_option_a_vs_option_b_produce_different_sql_via_diff_bucket_maps() {
 //   3. The cutover applies cleanly and grandchild rows survive.
 
 fn three_level_cascade_schema(pk_kind: PkKindSchema) -> AppliedSchema {
-    use djogi::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PrimaryKeySchema, TableSchema,
-    };
-
     let make_table = |table: &str, fk_col: Option<(&str, &str)>| {
-        let mut columns = vec![ColumnSchema {
-            check: None,
-            default_sql: Some("generate_id()".to_string()),
-            foreign_key: None,
-            index_type: None,
-            indexed: false,
-            max_length: None,
-            name: "id".to_string(),
-            nullable: false,
-            on_delete: None,
-            outbox_exclude: false,
-            rationale: None,
-            relation_kind: None,
-            renamed_from: None,
-            sequence_within: None,
-            sql_type: "BIGINT".to_string(),
-            unique: false,
-        }];
+        let mut columns = vec![basic_generated_id_column()];
         if let Some((col, ref_table)) = fk_col {
-            columns.push(ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: Some(ForeignKeySchema {
-                    deferrable: false,
-                    initially_deferred: false,
-                    on_delete: OnDeleteSchema::Restrict,
-                    ref_column: "id".to_string(),
-                    ref_table: ref_table.to_string(),
-                }),
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: col.to_string(),
-                nullable: false,
-                on_delete: Some(OnDeleteSchema::Restrict),
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            });
+            columns.push(basic_fk_column(col, ref_table, false));
         }
-        TableSchema {
-            app: None,
-            columns,
-            fts: None,
-            is_through: false,
-            moved_from_app: None,
-            partition: None,
-            primary_key: PrimaryKeySchema {
-                columns: vec!["id".to_string()],
-                kind: pk_kind.clone(),
-            },
-            rationale: None,
-            renamed_from: None,
-            rls_enabled: false,
-            table: table.to_string(),
-            tenant_key: None,
-        }
+        basic_table_with_pk_kind(table, columns, pk_kind.clone())
     };
 
     let mut models = BTreeMap::new();
@@ -2873,67 +2688,14 @@ fn three_level_cascade_schema(pk_kind: PkKindSchema) -> AppliedSchema {
     );
     // GC always HeerId — it's not migrating, but its FK to C
     // exercises the closure walk.
-    let gc = TableSchema {
-        app: None,
-        columns: vec![
-            ColumnSchema {
-                check: None,
-                default_sql: Some("generate_id()".to_string()),
-                foreign_key: None,
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "id".to_string(),
-                nullable: false,
-                on_delete: None,
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-            ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: Some(djogi::migrate::schema::ForeignKeySchema {
-                    deferrable: false,
-                    initially_deferred: false,
-                    on_delete: djogi::migrate::schema::OnDeleteSchema::Restrict,
-                    ref_column: "id".to_string(),
-                    ref_table: "c_mid".to_string(),
-                }),
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "c_id".to_string(),
-                nullable: false,
-                on_delete: Some(djogi::migrate::schema::OnDeleteSchema::Restrict),
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
+    // GC stays HeerId on both sides — it is NOT migrating.
+    let gc = basic_table(
+        "gc_leaf",
+        vec![
+            basic_generated_id_column(),
+            basic_fk_column("c_id", "c_mid", false),
         ],
-        fts: None,
-        is_through: false,
-        moved_from_app: None,
-        partition: None,
-        primary_key: djogi::migrate::schema::PrimaryKeySchema {
-            columns: vec!["id".to_string()],
-            // GC stays HeerId on both sides — it is NOT migrating.
-            kind: PkKindSchema::HeerId,
-        },
-        rationale: None,
-        renamed_from: None,
-        rls_enabled: false,
-        table: "gc_leaf".to_string(),
-        tenant_key: None,
-    };
+    );
     models.insert("gc_leaf".to_string(), gc);
     AppliedSchema {
         djogi_version: "0.1.0".to_string(),
@@ -3474,7 +3236,7 @@ async fn flip_option_a_multi_parent_via_diff_bucket_maps_end_to_end(mut ctx: djo
 // `pg_inherits`. The aggregate row count round-trips.
 
 fn partitioned_parent_schema(pk_kind: PkKindSchema) -> AppliedSchema {
-    use djogi::migrate::schema::{ColumnSchema, PartitionSchema, PrimaryKeySchema, TableSchema};
+    use djogi::migrate::schema::PartitionSchema;
 
     let mut models = BTreeMap::new();
     models.insert(
@@ -3482,60 +3244,9 @@ fn partitioned_parent_schema(pk_kind: PkKindSchema) -> AppliedSchema {
         TableSchema {
             app: None,
             columns: vec![
-                ColumnSchema {
-                    check: None,
-                    default_sql: Some("generate_id()".to_string()),
-                    foreign_key: None,
-                    index_type: None,
-                    indexed: false,
-                    max_length: None,
-                    name: "id".to_string(),
-                    nullable: false,
-                    on_delete: None,
-                    outbox_exclude: false,
-                    rationale: None,
-                    relation_kind: None,
-                    renamed_from: None,
-                    sequence_within: None,
-                    sql_type: "BIGINT".to_string(),
-                    unique: false,
-                },
-                ColumnSchema {
-                    check: None,
-                    default_sql: None,
-                    foreign_key: None,
-                    index_type: None,
-                    indexed: false,
-                    max_length: None,
-                    name: "ts".to_string(),
-                    nullable: false,
-                    on_delete: None,
-                    outbox_exclude: false,
-                    rationale: None,
-                    relation_kind: None,
-                    renamed_from: None,
-                    sequence_within: None,
-                    sql_type: "TIMESTAMPTZ".to_string(),
-                    unique: false,
-                },
-                ColumnSchema {
-                    check: None,
-                    default_sql: None,
-                    foreign_key: None,
-                    index_type: None,
-                    indexed: false,
-                    max_length: None,
-                    name: "payload".to_string(),
-                    nullable: true,
-                    on_delete: None,
-                    outbox_exclude: false,
-                    rationale: None,
-                    relation_kind: None,
-                    renamed_from: None,
-                    sequence_within: None,
-                    sql_type: "TEXT".to_string(),
-                    unique: false,
-                },
+                basic_generated_id_column(),
+                basic_column("ts", "TIMESTAMPTZ", false),
+                basic_column("payload", "TEXT", true),
             ],
             fts: None,
             is_through: false,
@@ -3569,50 +3280,13 @@ fn partitioned_cross_flipping_schema_with_pk_kind(
     left_pk: PkKindSchema,
     right_pk: PkKindSchema,
 ) -> AppliedSchema {
-    use djogi::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, OnDeleteSchema, PartitionSchema, PrimaryKeySchema,
-        TableSchema,
-    };
+    use djogi::migrate::schema::PartitionSchema;
 
     let left = TableSchema {
         app: None,
         columns: vec![
-            ColumnSchema {
-                check: None,
-                default_sql: Some("generate_id()".to_string()),
-                foreign_key: None,
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "id".to_string(),
-                nullable: false,
-                on_delete: None,
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-            ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: None,
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "ts".to_string(),
-                nullable: false,
-                on_delete: None,
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "TIMESTAMPTZ".to_string(),
-                unique: false,
-            },
+            basic_generated_id_column(),
+            basic_column("ts", "TIMESTAMPTZ", false),
         ],
         fts: None,
         is_through: false,
@@ -3631,110 +3305,14 @@ fn partitioned_cross_flipping_schema_with_pk_kind(
         tenant_key: None,
     };
 
-    let right = TableSchema {
-        app: None,
-        columns: vec![ColumnSchema {
-            check: None,
-            default_sql: Some("generate_id()".to_string()),
-            foreign_key: None,
-            index_type: None,
-            indexed: false,
-            max_length: None,
-            name: "id".to_string(),
-            nullable: false,
-            on_delete: None,
-            outbox_exclude: false,
-            rationale: None,
-            relation_kind: None,
-            renamed_from: None,
-            sequence_within: None,
-            sql_type: "BIGINT".to_string(),
-            unique: false,
-        }],
-        fts: None,
-        is_through: false,
-        moved_from_app: None,
-        partition: None,
-        primary_key: PrimaryKeySchema {
-            columns: vec!["id".to_string()],
-            kind: right_pk,
-        },
-        rationale: None,
-        renamed_from: None,
-        rls_enabled: false,
-        table: "right_tags".to_string(),
-        tenant_key: None,
-    };
+    let right = basic_table_with_pk_kind("right_tags", vec![basic_generated_id_column()], right_pk);
 
     let join = TableSchema {
         app: None,
         columns: vec![
-            ColumnSchema {
-                check: None,
-                default_sql: Some("generate_id()".to_string()),
-                foreign_key: None,
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "id".to_string(),
-                nullable: false,
-                on_delete: None,
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-            ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: Some(ForeignKeySchema {
-                    deferrable: false,
-                    initially_deferred: false,
-                    on_delete: OnDeleteSchema::Restrict,
-                    ref_column: "id".to_string(),
-                    ref_table: "left_events".to_string(),
-                }),
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "left_event_id".to_string(),
-                nullable: false,
-                on_delete: Some(OnDeleteSchema::Restrict),
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
-            ColumnSchema {
-                check: None,
-                default_sql: None,
-                foreign_key: Some(ForeignKeySchema {
-                    deferrable: false,
-                    initially_deferred: false,
-                    on_delete: OnDeleteSchema::Restrict,
-                    ref_column: "id".to_string(),
-                    ref_table: "right_tags".to_string(),
-                }),
-                index_type: None,
-                indexed: false,
-                max_length: None,
-                name: "right_tag_id".to_string(),
-                nullable: false,
-                on_delete: Some(OnDeleteSchema::Restrict),
-                outbox_exclude: false,
-                rationale: None,
-                relation_kind: None,
-                renamed_from: None,
-                sequence_within: None,
-                sql_type: "BIGINT".to_string(),
-                unique: false,
-            },
+            basic_generated_id_column(),
+            basic_fk_column("left_event_id", "left_events", false),
+            basic_fk_column("right_tag_id", "right_tags", false),
         ],
         fts: None,
         is_through: true,

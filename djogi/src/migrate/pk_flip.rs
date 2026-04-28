@@ -656,258 +656,26 @@ fn build_segments_partitioned(
     segments
 }
 
-/// Cascade-only preparation: children + self-FK + join-table shadow
-/// columns and triggers, omitting the parent's parent-level work
-/// (which the partitioned emitter owns). Returns an empty
-/// [`OperationSql`] when the group has no cascade members.
+/// Cascade-only preparation: child and join-table shadow columns and
+/// triggers, omitting parent-table work (which the partitioned emitter
+/// owns). Returns an empty [`OperationSql`] when the group has no
+/// cascade members.
 fn emit_preparation_children_only(group: &PkTypeFlipGroup) -> OperationSql {
-    let parent = group.parent_table.as_str();
-    let direction = group.direction;
-    let p_family = parent_family(group);
-    let _ = p_family; // currently used only by full emitter; future-proofing
-    let mut up = String::new();
-    let mut down = String::new();
-
-    for child in &group.children {
-        let cf = child_family(child, group);
-        let cty = pg_id_type(cf);
-        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        let _ = writeln!(
-            up,
-            "ALTER TABLE {child_t} ADD COLUMN {dst} {ty};",
-            child_t = child.table,
-            dst = dst,
-            ty = cty,
-        );
-        up.push_str(&render_autofill_trigger(
-            &child.table,
-            &[(child.fk_column.as_str(), dst.as_str())],
-            cf,
-            direction,
-        ));
-        let _ = writeln!(
-            down,
-            "DROP TRIGGER IF EXISTS zzz_{child_t}_autofill_desc ON {child_t};",
-            child_t = child.table,
-        );
-        let _ = writeln!(
-            down,
-            "DROP FUNCTION IF EXISTS zzz_{child_t}_autofill_desc() CASCADE;",
-            child_t = child.table,
-        );
-        let _ = writeln!(
-            down,
-            "ALTER TABLE {child_t} DROP COLUMN IF EXISTS {dst};",
-            child_t = child.table,
-            dst = dst,
-        );
-    }
-    for jt in &group.join_tables {
-        // B-12 (Codex round-3): under Option A + cross-flipping
-        // (fk_to_partner_column.is_some()) the planner installs
-        // shadow columns + a single multi-pair autofill trigger
-        // covering BOTH FK columns of the join table. Under Option B
-        // only the parent's FK column lands here; the partner waits
-        // for the partner parent's flip group. See `jt_shadow_pairs`
-        // for the gating rule.
-        let pairs = jt_shadow_pairs(jt, group);
-        let id_type = pg_id_type(jt.family);
-        for pair in &pairs {
-            let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {tbl} ADD COLUMN {dst} {ty};",
-                tbl = jt.table,
-                dst = dst,
-                ty = id_type,
-            );
-        }
-        // One trigger per join table — install with every pair so
-        // one BEFORE INSERT/UPDATE row trigger keeps every shadow
-        // in sync. The render helper handles the multi-pair body
-        // shape (one IF / ELSIF branch per pair).
-        let owned_pairs: Vec<(String, String)> = pairs
-            .iter()
-            .map(|p| (p.col.to_string(), format!("{}{}", p.col, SHADOW_SUFFIX)))
-            .collect();
-        let pair_refs: Vec<(&str, &str)> = owned_pairs
-            .iter()
-            .map(|(c, d)| (c.as_str(), d.as_str()))
-            .collect();
-        up.push_str(&render_autofill_trigger(
-            &jt.table, &pair_refs, jt.family, direction,
-        ));
-        let _ = writeln!(
-            down,
-            "DROP TRIGGER IF EXISTS zzz_{tbl}_autofill_desc ON {tbl};",
-            tbl = jt.table,
-        );
-        let _ = writeln!(
-            down,
-            "DROP FUNCTION IF EXISTS zzz_{tbl}_autofill_desc() CASCADE;",
-            tbl = jt.table,
-        );
-        for pair in &pairs {
-            let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            let _ = writeln!(
-                down,
-                "ALTER TABLE {tbl} DROP COLUMN IF EXISTS {dst};",
-                tbl = jt.table,
-                dst = dst,
-            );
-        }
-    }
-    OperationSql {
-        label: format!("PkFlipPrepCascade {parent}"),
-        up,
-        down,
-        lossy: None,
-    }
+    emit_preparation_with_mode(group, EmitMode::CascadeOnly)
 }
 
 /// Cascade-only backfill: children, self-FK, join tables, cycle
 /// peers. Omits the parent table (handled by the partitioned
 /// per-leaf emitter).
 fn emit_backfill_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
-    let parent = group.parent_table.as_str();
-    let p_family = parent_family(group);
-    let direction = group.direction;
-    let mut out: Vec<OperationSql> = Vec::new();
-    let down_note = "-- Backfill is idempotent under `WHERE dst IS NULL`; the\n\
-                     -- down side has no inverse beyond dropping the shadow\n\
-                     -- column itself, which segment 1's down already covers."
-        .to_string();
-    if let Some(self_fk) = &group.self_fk {
-        for col in &self_fk.fk_columns {
-            let dst = format!("{}{}", col, SHADOW_SUFFIX);
-            out.push(OperationSql {
-                label: format!("PkFlipBackfill {parent} {col}"),
-                up: emit_backfill_body(parent, col, &dst, p_family, direction),
-                down: down_note.clone(),
-                lossy: None,
-            });
-        }
-    }
-    for child in &group.children {
-        let cf = child_family(child, group);
-        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        out.push(OperationSql {
-            label: format!("PkFlipBackfill {tbl}", tbl = child.table),
-            up: emit_backfill_body(&child.table, &child.fk_column, &dst, cf, direction),
-            down: down_note.clone(),
-            lossy: None,
-        });
-    }
-    for jt in &group.join_tables {
-        // B-12: under Option A + cross-flipping, both columns get
-        // backfilled in this group's segment-2 window; under
-        // Option B only the parent's column lands here.
-        for pair in jt_shadow_pairs(jt, group) {
-            let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            out.push(OperationSql {
-                label: format!("PkFlipBackfill {tbl} {col}", tbl = jt.table, col = pair.col,),
-                up: emit_backfill_body(&jt.table, pair.col, &dst, jt.family, direction),
-                down: down_note.clone(),
-                lossy: None,
-            });
-        }
-    }
-    // B-13 (Codex round-3): cycle peers are now first-class children
-    // (`PkFlipChild::cycle_flag = true`). Their backfill ran in the
-    // children loop above; the dedicated cycle loop that lived here
-    // before was redundant work and produced duplicate
-    // `PkFlipBackfill <peer>` statements.
-    out
+    emit_backfill_statements_with_mode(group, EmitMode::CascadeOnly)
 }
 
 /// Cascade-only verification: same shapes as
 /// [`emit_verification_statements`] but excluding the parent PK
 /// non-null check (the partitioned emitter owns that).
 fn emit_verification_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
-    let parent = group.parent_table.as_str();
-    let p_family = parent_family(group);
-    let mut out: Vec<OperationSql> = Vec::new();
-    if let Some(self_fk) = &group.self_fk {
-        for col in &self_fk.fk_columns {
-            let dst = format!("{}{}", col, SHADOW_SUFFIX);
-            out.push(OperationSql {
-                label: format!("PkFlipVerify {parent} {col}"),
-                up: format!(
-                    "SELECT count(*) FROM {parent} \
-                     WHERE ({col} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
-                        OR ({col} IS NOT NULL AND {dst} <> {flip}({col}))",
-                    parent = parent,
-                    col = col,
-                    dst = dst,
-                    flip = flip_fn_name(p_family, group.direction),
-                ),
-                down: String::new(),
-                lossy: None,
-            });
-        }
-    }
-    for child in &group.children {
-        let cf = child_family(child, group);
-        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        if child.fk_nullable {
-            out.push(OperationSql {
-                label: format!(
-                    "PkFlipVerify {tbl} {col}",
-                    tbl = child.table,
-                    col = child.fk_column
-                ),
-                up: format!(
-                    "SELECT count(*) FROM {tbl} \
-                     WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
-                        OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
-                    tbl = child.table,
-                    src = child.fk_column,
-                    dst = dst,
-                    flip = flip_fn_name(cf, group.direction),
-                ),
-                down: String::new(),
-                lossy: None,
-            });
-        } else {
-            out.push(OperationSql {
-                label: format!(
-                    "PkFlipVerify {tbl} {col}",
-                    tbl = child.table,
-                    col = child.fk_column
-                ),
-                up: format!(
-                    "SELECT count(*) FROM {tbl} WHERE {dst} IS NULL",
-                    tbl = child.table,
-                    dst = dst,
-                ),
-                down: String::new(),
-                lossy: None,
-            });
-        }
-    }
-    for jt in &group.join_tables {
-        // B-12: walk every shadow pair the planner is responsible
-        // for under the current option (Option A + cross-flipping
-        // → both pairs; otherwise → parent only).
-        for pair in jt_shadow_pairs(jt, group) {
-            let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            out.push(OperationSql {
-                label: format!("PkFlipVerify {tbl} {col}", tbl = jt.table, col = pair.col),
-                up: format!(
-                    "SELECT count(*) FROM {tbl} \
-                     WHERE ({src} IS NULL) IS DISTINCT FROM ({dst} IS NULL) \
-                        OR ({src} IS NOT NULL AND {dst} <> {flip}({src}))",
-                    tbl = jt.table,
-                    src = pair.col,
-                    dst = dst,
-                    flip = flip_fn_name(jt.family, group.direction),
-                ),
-                down: String::new(),
-                lossy: None,
-            });
-        }
-    }
-    out
+    emit_verification_statements_with_mode(group, EmitMode::CascadeOnly)
 }
 
 /// Cascade-only concurrent indexes: same shapes as
@@ -916,78 +684,7 @@ fn emit_verification_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<Ope
 /// parent-level UNIQUE-on-ONLY placeholder + per-leaf
 /// CONCURRENTLY + ATTACH PARTITION lines).
 fn emit_concurrent_index_statements_cascade_only(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
-    let parent = group.parent_table.as_str();
-    let mut out: Vec<OperationSql> = Vec::new();
-    if let Some(self_fk) = &group.self_fk {
-        for col in &self_fk.fk_columns {
-            out.push(OperationSql {
-                label: format!("PkFlipConcurrentIndex {parent} {col}"),
-                up: format!(
-                    "CREATE INDEX CONCURRENTLY idx_{parent}_{col}{suffix} ON {parent} ({col}{suffix})",
-                    parent = parent,
-                    col = col,
-                    suffix = SHADOW_SUFFIX,
-                ),
-                down: format!(
-                    "DROP INDEX IF EXISTS idx_{parent}_{col}{suffix}",
-                    parent = parent,
-                    col = col,
-                    suffix = SHADOW_SUFFIX,
-                ),
-                lossy: None,
-            });
-        }
-    }
-    for child in &group.children {
-        let dst = format!("{}{}", child.fk_column, SHADOW_SUFFIX);
-        let unique_kw = if child.fk_unique { "UNIQUE " } else { "" };
-        out.push(OperationSql {
-            label: format!(
-                "PkFlipConcurrentIndex {tbl} {col}",
-                tbl = child.table,
-                col = child.fk_column
-            ),
-            up: format!(
-                "CREATE {uniq}INDEX CONCURRENTLY idx_{tbl}_{dst} ON {tbl} ({dst})",
-                uniq = unique_kw,
-                tbl = child.table,
-                dst = dst,
-            ),
-            down: format!(
-                "DROP INDEX IF EXISTS idx_{tbl}_{dst}",
-                tbl = child.table,
-                dst = dst,
-            ),
-            lossy: None,
-        });
-    }
-    for jt in &group.join_tables {
-        // B-12: per-pair indexes; under Option A + cross-flipping
-        // both columns get CONCURRENT indexes here, under Option B
-        // only the parent's column.
-        for pair in jt_shadow_pairs(jt, group) {
-            let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            out.push(OperationSql {
-                label: format!(
-                    "PkFlipConcurrentIndex {tbl} {col}",
-                    tbl = jt.table,
-                    col = pair.col,
-                ),
-                up: format!(
-                    "CREATE INDEX CONCURRENTLY idx_{tbl}_{dst} ON {tbl} ({dst})",
-                    tbl = jt.table,
-                    dst = dst,
-                ),
-                down: format!(
-                    "DROP INDEX IF EXISTS idx_{tbl}_{dst}",
-                    tbl = jt.table,
-                    dst = dst,
-                ),
-                lossy: None,
-            });
-        }
-    }
-    out
+    emit_concurrent_index_statements_with_mode(group, EmitMode::CascadeOnly)
 }
 
 /// Partitioned cutover that ALSO finalises every cascade member.
@@ -1017,39 +714,8 @@ fn emit_partitioned_cutover_with_cascade(
         up.push_str("SET CONSTRAINTS ALL DEFERRED;\n");
     }
 
-    // 1. Drop every child's old FK.
-    for child in &group.children {
-        let _ = writeln!(
-            up,
-            "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
-            tbl = child.table,
-            cons = child.fk_constraint_name,
-        );
-    }
-    for jt in &group.join_tables {
-        // B-12: drop every join-table FK this group is responsible
-        // for. Option A + cross-flipping = both partner FKs;
-        // Option B = parent FK only. The partner FK on Option B
-        // remains in place until the partner parent's group runs.
-        for pair in jt_shadow_pairs(jt, group) {
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
-                tbl = jt.table,
-                cons = pair.constraint,
-            );
-        }
-    }
-    if let Some(self_fk) = &group.self_fk {
-        for cons in &self_fk.fk_constraint_names {
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {parent} DROP CONSTRAINT {cons};",
-                parent = parent,
-                cons = cons,
-            );
-        }
-    }
+    // 1. Drop every old FK.
+    cutover_phase_drop_old_fks(group, &mut up);
 
     // 2. Promote the partitioned parent. ADD PRIMARY KEY (...) form
     //    because USING INDEX is illegal on a partitioned parent.
@@ -1111,13 +777,8 @@ fn emit_partitioned_cutover_with_cascade(
             );
         }
         for col in &self_fk.fk_columns {
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {parent} DROP CONSTRAINT {parent}_{col}{suffix}_fkey;",
-                parent = parent,
-                col = col,
-                suffix = SHADOW_SUFFIX,
-            );
+            let constraint = format!("{parent}_{col}{suffix}_fkey", suffix = SHADOW_SUFFIX);
+            cutover_drop_constraint(&mut up, parent, &constraint);
         }
         for col in &self_fk.fk_columns {
             let _ = writeln!(
@@ -1142,15 +803,7 @@ fn emit_partitioned_cutover_with_cascade(
                     .copied()
                     .unwrap_or(false),
             );
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {parent} ADD CONSTRAINT {cons} \
-                 FOREIGN KEY ({col}) REFERENCES {parent}(id){deferrable};",
-                parent = parent,
-                col = col,
-                cons = cons,
-                deferrable = deferrable_clause,
-            );
+            cutover_add_fk_constraint(&mut up, parent, cons, col, parent, "id", deferrable_clause);
         }
     }
 
@@ -1198,6 +851,18 @@ const PARENT_PK_COLUMN: &str = "id";
 /// `nodes_parent_id_desc_fkey`, `zzz_<table>_autofill_desc`) survive
 /// unchanged.
 const SHADOW_SUFFIX: &str = "_desc";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EmitMode {
+    Standard,
+    CascadeOnly,
+}
+
+impl EmitMode {
+    fn includes_parent(self) -> bool {
+        matches!(self, EmitMode::Standard)
+    }
+}
 
 /// SQL type for a HeerId / RanjId column at the wire level.
 fn pg_id_type(family: PkFlipFamily) -> &'static str {
@@ -1353,6 +1018,10 @@ fn render_autofill_trigger(
 // ── Segment 1 — preparation ──────────────────────────────────────────────
 
 fn emit_preparation(group: &PkTypeFlipGroup) -> OperationSql {
+    emit_preparation_with_mode(group, EmitMode::Standard)
+}
+
+fn emit_preparation_with_mode(group: &PkTypeFlipGroup, mode: EmitMode) -> OperationSql {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
     let direction = group.direction;
@@ -1360,73 +1029,75 @@ fn emit_preparation(group: &PkTypeFlipGroup) -> OperationSql {
     let mut up = String::new();
     let mut down = String::new();
 
-    // Parent shadow column.
-    let _ = writeln!(
-        up,
-        "ALTER TABLE {parent} ADD COLUMN id{suffix} {ty};",
-        parent = parent,
-        suffix = SHADOW_SUFFIX,
-        ty = id_type,
-    );
-    let _ = writeln!(
-        down,
-        "ALTER TABLE {parent} DROP COLUMN IF EXISTS id{suffix};",
-        parent = parent,
-        suffix = SHADOW_SUFFIX,
-    );
+    if mode.includes_parent() {
+        // Parent shadow column.
+        let _ = writeln!(
+            up,
+            "ALTER TABLE {parent} ADD COLUMN id{suffix} {ty};",
+            parent = parent,
+            suffix = SHADOW_SUFFIX,
+            ty = id_type,
+        );
+        let _ = writeln!(
+            down,
+            "ALTER TABLE {parent} DROP COLUMN IF EXISTS id{suffix};",
+            parent = parent,
+            suffix = SHADOW_SUFFIX,
+        );
 
-    // Self-FK pairs add their own shadow columns. The NOT-VALID FK
-    // pointing at the parent's `id_desc` lands in segment 3b after
-    // the parent's CONCURRENT UNIQUE INDEX. Carrying both columns in
-    // the same multi-pair trigger requires the columns themselves
-    // here.
-    let mut self_pairs: Vec<(String, String)> = Vec::new();
-    self_pairs.push((PARENT_PK_COLUMN.to_string(), format!("id{}", SHADOW_SUFFIX)));
-    if let Some(self_fk) = &group.self_fk {
-        for (col, _cons) in self_fk
-            .fk_columns
-            .iter()
-            .zip(self_fk.fk_constraint_names.iter())
-        {
-            let dst = format!("{col}{suffix}", col = col, suffix = SHADOW_SUFFIX);
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {parent} ADD COLUMN {dst} {ty};",
-                parent = parent,
-                dst = dst,
-                ty = id_type,
-            );
-            let _ = writeln!(
-                down,
-                "ALTER TABLE {parent} DROP COLUMN IF EXISTS {dst};",
-                parent = parent,
-                dst = dst,
-            );
-            self_pairs.push((col.clone(), dst));
+        // Self-FK pairs add their own shadow columns. The NOT-VALID FK
+        // pointing at the parent's `id_desc` lands in segment 3b after
+        // the parent's CONCURRENT UNIQUE INDEX. Carrying both columns in
+        // the same multi-pair trigger requires the columns themselves
+        // here.
+        let mut self_pairs: Vec<(String, String)> = Vec::new();
+        self_pairs.push((PARENT_PK_COLUMN.to_string(), format!("id{}", SHADOW_SUFFIX)));
+        if let Some(self_fk) = &group.self_fk {
+            for (col, _cons) in self_fk
+                .fk_columns
+                .iter()
+                .zip(self_fk.fk_constraint_names.iter())
+            {
+                let dst = format!("{col}{suffix}", col = col, suffix = SHADOW_SUFFIX);
+                let _ = writeln!(
+                    up,
+                    "ALTER TABLE {parent} ADD COLUMN {dst} {ty};",
+                    parent = parent,
+                    dst = dst,
+                    ty = id_type,
+                );
+                let _ = writeln!(
+                    down,
+                    "ALTER TABLE {parent} DROP COLUMN IF EXISTS {dst};",
+                    parent = parent,
+                    dst = dst,
+                );
+                self_pairs.push((col.clone(), dst));
+            }
         }
-    }
 
-    // Parent autofill trigger — multi-pair when self-FKs exist.
-    let parent_pairs: Vec<(&str, &str)> = self_pairs
-        .iter()
-        .map(|(s, d)| (s.as_str(), d.as_str()))
-        .collect();
-    up.push_str(&render_autofill_trigger(
-        parent,
-        &parent_pairs,
-        p_family,
-        direction,
-    ));
-    let _ = writeln!(
-        down,
-        "DROP TRIGGER IF EXISTS zzz_{parent}_autofill_desc ON {parent};",
-        parent = parent,
-    );
-    let _ = writeln!(
-        down,
-        "DROP FUNCTION IF EXISTS zzz_{parent}_autofill_desc() CASCADE;",
-        parent = parent,
-    );
+        // Parent autofill trigger — multi-pair when self-FKs exist.
+        let parent_pairs: Vec<(&str, &str)> = self_pairs
+            .iter()
+            .map(|(s, d)| (s.as_str(), d.as_str()))
+            .collect();
+        up.push_str(&render_autofill_trigger(
+            parent,
+            &parent_pairs,
+            p_family,
+            direction,
+        ));
+        let _ = writeln!(
+            down,
+            "DROP TRIGGER IF EXISTS zzz_{parent}_autofill_desc ON {parent};",
+            parent = parent,
+        );
+        let _ = writeln!(
+            down,
+            "DROP FUNCTION IF EXISTS zzz_{parent}_autofill_desc() CASCADE;",
+            parent = parent,
+        );
+    }
 
     // Children — shadow column + autofill trigger. The NOT-VALID FK
     // pointing at `parent(id_desc)` is NOT emitted here because
@@ -1519,8 +1190,12 @@ fn emit_preparation(group: &PkTypeFlipGroup) -> OperationSql {
         }
     }
 
+    let label = match mode {
+        EmitMode::Standard => format!("PkFlipPrep {parent}"),
+        EmitMode::CascadeOnly => format!("PkFlipPrepCascade {parent}"),
+    };
     OperationSql {
-        label: format!("PkFlipPrep {parent}"),
+        label,
         up,
         down,
         lossy: None,
@@ -1780,6 +1455,13 @@ fn emit_backfill_and_verification(group: &PkTypeFlipGroup) -> OperationSql {
 /// `SET LOCAL lock_timeout = '30s'` per batch (transaction-scoped).
 /// This keeps the reverse path self-contained and reviewable.
 fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
+    emit_backfill_statements_with_mode(group, EmitMode::Standard)
+}
+
+fn emit_backfill_statements_with_mode(
+    group: &PkTypeFlipGroup,
+    mode: EmitMode,
+) -> Vec<OperationSql> {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
     let direction = group.direction;
@@ -1790,18 +1472,20 @@ fn emit_backfill_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
                      -- column itself, which segment 1's down already covers."
         .to_string();
 
-    out.push(OperationSql {
-        label: format!("PkFlipBackfill {parent}"),
-        up: emit_backfill_body(
-            parent,
-            "id",
-            &format!("id{}", SHADOW_SUFFIX),
-            p_family,
-            direction,
-        ),
-        down: down_note.clone(),
-        lossy: None,
-    });
+    if mode.includes_parent() {
+        out.push(OperationSql {
+            label: format!("PkFlipBackfill {parent}"),
+            up: emit_backfill_body(
+                parent,
+                "id",
+                &format!("id{}", SHADOW_SUFFIX),
+                p_family,
+                direction,
+            ),
+            down: down_note.clone(),
+            lossy: None,
+        });
+    }
 
     if let Some(self_fk) = &group.self_fk {
         for col in &self_fk.fk_columns {
@@ -1959,21 +1643,30 @@ fn emit_reverse_backfill(
 /// non-zero count. The `up` body is the verification SQL verbatim.
 /// The `down` body is empty — verification has no inverse.
 fn emit_verification_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
+    emit_verification_statements_with_mode(group, EmitMode::Standard)
+}
+
+fn emit_verification_statements_with_mode(
+    group: &PkTypeFlipGroup,
+    mode: EmitMode,
+) -> Vec<OperationSql> {
     let parent = group.parent_table.as_str();
     let p_family = parent_family(group);
     let mut out: Vec<OperationSql> = Vec::new();
 
-    // Parent — non-nullable PK invariant from §3.3.
-    out.push(OperationSql {
-        label: format!("PkFlipVerify {parent} pk-non-null"),
-        up: format!(
-            "SELECT count(*) FROM {parent} WHERE id{suffix} IS NULL",
-            parent = parent,
-            suffix = SHADOW_SUFFIX,
-        ),
-        down: String::new(),
-        lossy: None,
-    });
+    if mode.includes_parent() {
+        // Parent — non-nullable PK invariant from §3.3.
+        out.push(OperationSql {
+            label: format!("PkFlipVerify {parent} pk-non-null"),
+            up: format!(
+                "SELECT count(*) FROM {parent} WHERE id{suffix} IS NULL",
+                parent = parent,
+                suffix = SHADOW_SUFFIX,
+            ),
+            down: String::new(),
+            lossy: None,
+        });
+    }
 
     // Self-FK pairs — §3.3 NULL-tracking invariant.
     if let Some(self_fk) = &group.self_fk {
@@ -2255,23 +1948,32 @@ fn emit_child_fk_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
 /// any transaction, including the implicit simple-query batch tx
 /// that fires when multiple statements share one `batch_execute`.
 fn emit_concurrent_index_statements(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
+    emit_concurrent_index_statements_with_mode(group, EmitMode::Standard)
+}
+
+fn emit_concurrent_index_statements_with_mode(
+    group: &PkTypeFlipGroup,
+    mode: EmitMode,
+) -> Vec<OperationSql> {
     let parent = group.parent_table.as_str();
     let mut out: Vec<OperationSql> = Vec::new();
 
-    out.push(OperationSql {
-        label: format!("PkFlipConcurrentIndex {parent}"),
-        up: format!(
-            "CREATE UNIQUE INDEX CONCURRENTLY idx_{parent}_id{suffix} ON {parent} (id{suffix})",
-            parent = parent,
-            suffix = SHADOW_SUFFIX,
-        ),
-        down: format!(
-            "DROP INDEX IF EXISTS idx_{parent}_id{suffix}",
-            parent = parent,
-            suffix = SHADOW_SUFFIX,
-        ),
-        lossy: None,
-    });
+    if mode.includes_parent() {
+        out.push(OperationSql {
+            label: format!("PkFlipConcurrentIndex {parent}"),
+            up: format!(
+                "CREATE UNIQUE INDEX CONCURRENTLY idx_{parent}_id{suffix} ON {parent} (id{suffix})",
+                parent = parent,
+                suffix = SHADOW_SUFFIX,
+            ),
+            down: format!(
+                "DROP INDEX IF EXISTS idx_{parent}_id{suffix}",
+                parent = parent,
+                suffix = SHADOW_SUFFIX,
+            ),
+            lossy: None,
+        });
+    }
 
     if let Some(self_fk) = &group.self_fk {
         for col in &self_fk.fk_columns {
@@ -2632,16 +2334,31 @@ fn emit_cutover(group: &PkTypeFlipGroup) -> OperationSql {
 // would point at jt_tags's still-old `id` values; the FK check
 // fires and Postgres rejects the cutover.
 
+fn cutover_drop_constraint(up: &mut String, table: &str, constraint: &str) {
+    let _ = writeln!(up, "ALTER TABLE {table} DROP CONSTRAINT {constraint};");
+}
+
+fn cutover_add_fk_constraint(
+    up: &mut String,
+    table: &str,
+    constraint: &str,
+    column: &str,
+    target: &str,
+    target_column: &str,
+    trailing_clause: &str,
+) {
+    let _ = writeln!(
+        up,
+        "ALTER TABLE {table} ADD CONSTRAINT {constraint} \
+         FOREIGN KEY ({column}) REFERENCES {target}({target_column}){trailing_clause};",
+    );
+}
+
 /// Phase 1: drop every old FK pointing at the parent.
 fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
     let parent = group.parent_table.as_str();
     for child in &group.children {
-        let _ = writeln!(
-            up,
-            "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
-            tbl = child.table,
-            cons = child.fk_constraint_name,
-        );
+        cutover_drop_constraint(up, &child.table, &child.fk_constraint_name);
     }
     for jt in &group.join_tables {
         // B-12: drop EVERY FK on the join table this group owns.
@@ -2652,22 +2369,12 @@ fn cutover_phase_drop_old_fks(group: &PkTypeFlipGroup, up: &mut String) {
         // cutover and gets dropped in the partner's group cutover
         // later.
         for pair in jt_shadow_pairs(jt, group) {
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {tbl} DROP CONSTRAINT {cons};",
-                tbl = jt.table,
-                cons = pair.constraint,
-            );
+            cutover_drop_constraint(up, &jt.table, pair.constraint);
         }
     }
     if let Some(self_fk) = &group.self_fk {
         for cons in &self_fk.fk_constraint_names {
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {parent} DROP CONSTRAINT {cons};",
-                parent = parent,
-                cons = cons,
-            );
+            cutover_drop_constraint(up, parent, cons);
         }
     }
 }
@@ -2736,13 +2443,8 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
         // logic — see the rationale on
         // `cutover_phase_finalise_children`.
         for col in &self_fk.fk_columns {
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {parent} DROP CONSTRAINT {parent}_{col}{suffix}_fkey;",
-                parent = parent,
-                col = col,
-                suffix = SHADOW_SUFFIX,
-            );
+            let constraint = format!("{parent}_{col}{suffix}_fkey", suffix = SHADOW_SUFFIX);
+            cutover_drop_constraint(up, parent, &constraint);
         }
         for col in &self_fk.fk_columns {
             let _ = writeln!(
@@ -2772,15 +2474,7 @@ fn cutover_phase_promote_parent(group: &PkTypeFlipGroup, up: &mut String) {
                     .copied()
                     .unwrap_or(false),
             );
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {parent} ADD CONSTRAINT {cons} \
-                 FOREIGN KEY ({col}) REFERENCES {parent}(id){deferrable};",
-                parent = parent,
-                col = col,
-                cons = cons,
-                deferrable = deferrable_clause,
-            );
+            cutover_add_fk_constraint(up, parent, cons, col, parent, "id", deferrable_clause);
         }
     }
 }
@@ -2836,12 +2530,8 @@ fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
         // would otherwise leave it under its original name on the
         // newly-renamed column, doubling the FK count. The
         // matching segment 3b name is `<tbl>_<col>_desc_fkey`.
-        let _ = writeln!(
-            up,
-            "ALTER TABLE {tbl} DROP CONSTRAINT {tbl}_{dst}_fkey;",
-            tbl = child.table,
-            dst = dst,
-        );
+        let shadow_constraint = format!("{tbl}_{dst}_fkey", tbl = child.table);
+        cutover_drop_constraint(up, &child.table, &shadow_constraint);
         let _ = writeln!(
             up,
             "ALTER TABLE {tbl} RENAME COLUMN {dst} TO {col};",
@@ -2852,16 +2542,15 @@ fn cutover_phase_finalise_children(group: &PkTypeFlipGroup, up: &mut String) {
         let cascade = render_on_delete(child.on_delete);
         let deferrable_clause =
             render_deferrable_clause(child.fk_deferrable, child.fk_initially_deferred);
-        let _ = writeln!(
+        let trailing_clause = format!(" {cascade}{deferrable_clause}");
+        cutover_add_fk_constraint(
             up,
-            "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
-             FOREIGN KEY ({col}) REFERENCES {parent}(id) {cascade}{deferrable};",
-            tbl = child.table,
-            cons = child.fk_constraint_name,
-            col = child.fk_column,
-            parent = parent,
-            cascade = cascade,
-            deferrable = deferrable_clause,
+            &child.table,
+            &child.fk_constraint_name,
+            &child.fk_column,
+            parent,
+            "id",
+            &trailing_clause,
         );
     }
 }
@@ -2924,12 +2613,8 @@ fn cutover_phase_finalise_join_tables(group: &PkTypeFlipGroup, up: &mut String) 
         // `<jt>_<pair_col>_desc_fkey` (the shadow column).
         for pair in &pairs {
             let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
-            let _ = writeln!(
-                up,
-                "ALTER TABLE {tbl} DROP CONSTRAINT {tbl}_{dst}_fkey;",
-                tbl = jt.table,
-                dst = dst,
-            );
+            let shadow_constraint = format!("{tbl}_{dst}_fkey", tbl = jt.table);
+            cutover_drop_constraint(up, &jt.table, &shadow_constraint);
         }
         for pair in &pairs {
             let dst = format!("{}{}", pair.col, SHADOW_SUFFIX);
@@ -2973,15 +2658,14 @@ fn cutover_phase_finalise_join_tables(group: &PkTypeFlipGroup, up: &mut String) 
                 )
             };
             let deferrable_clause = render_deferrable_clause(def, init_def);
-            let _ = writeln!(
+            cutover_add_fk_constraint(
                 up,
-                "ALTER TABLE {tbl} ADD CONSTRAINT {cons} \
-                 FOREIGN KEY ({col}) REFERENCES {target}(id){deferrable};",
-                tbl = jt.table,
-                cons = pair.constraint,
-                col = pair.col,
-                target = target_parent,
-                deferrable = deferrable_clause,
+                &jt.table,
+                pair.constraint,
+                pair.col,
+                &target_parent,
+                "id",
+                deferrable_clause,
             );
         }
         // Determinism marker for join-table layout. Each cutover
