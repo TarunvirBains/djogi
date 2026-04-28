@@ -2707,6 +2707,9 @@ fn emit_partitioned_preparation(
     let mut up = String::new();
     let mut down = String::new();
 
+    // Parent shadow column. Postgres propagates the column to every
+    // existing leaf via the shared parent storage layout; new
+    // partitions created later inherit it as well.
     let _ = writeln!(
         up,
         "ALTER TABLE {parent} ADD COLUMN id{suffix} {ty};",
@@ -2714,9 +2717,49 @@ fn emit_partitioned_preparation(
         suffix = SHADOW_SUFFIX,
         ty = id_type,
     );
+    let _ = writeln!(
+        down,
+        "ALTER TABLE {parent} DROP COLUMN IF EXISTS id{suffix};",
+        parent = parent,
+        suffix = SHADOW_SUFFIX,
+    );
+
+    // Self-FK shadow columns + multi-pair trigger (mirrors the
+    // non-partitioned `emit_preparation_with_mode` parent block).
+    // When a partitioned parent has a self-FK, the autofill trigger
+    // must populate BOTH the PK shadow column and every self-FK
+    // shadow column from a single row insert; otherwise the cutover
+    // phase tries to RENAME shadow columns that prep never created
+    // and the segment fails to apply.
+    let mut self_pairs: Vec<(String, String)> = Vec::new();
+    self_pairs.push((PARENT_PK_COLUMN.to_string(), format!("id{}", SHADOW_SUFFIX)));
+    if let Some(self_fk) = &group.self_fk {
+        for col in &self_fk.fk_columns {
+            let dst = format!("{col}{suffix}", col = col, suffix = SHADOW_SUFFIX);
+            let _ = writeln!(
+                up,
+                "ALTER TABLE {parent} ADD COLUMN {dst} {ty};",
+                parent = parent,
+                dst = dst,
+                ty = id_type,
+            );
+            let _ = writeln!(
+                down,
+                "ALTER TABLE {parent} DROP COLUMN IF EXISTS {dst};",
+                parent = parent,
+                dst = dst,
+            );
+            self_pairs.push((col.clone(), dst));
+        }
+    }
+
+    let parent_pairs: Vec<(&str, &str)> = self_pairs
+        .iter()
+        .map(|(s, d)| (s.as_str(), d.as_str()))
+        .collect();
     up.push_str(&render_autofill_trigger(
         parent,
-        &[(PARENT_PK_COLUMN, &format!("id{}", SHADOW_SUFFIX))],
+        &parent_pairs,
         p_family,
         direction,
     ));
@@ -2730,12 +2773,7 @@ fn emit_partitioned_preparation(
         "DROP FUNCTION IF EXISTS zzz_{parent}_autofill_desc() CASCADE;",
         parent = parent,
     );
-    let _ = writeln!(
-        down,
-        "ALTER TABLE {parent} DROP COLUMN IF EXISTS id{suffix};",
-        parent = parent,
-        suffix = SHADOW_SUFFIX,
-    );
+
     OperationSql {
         label: format!("PkFlipPartitionedPrep {parent}"),
         up,
@@ -3574,6 +3612,66 @@ mod tests {
                 "CREATE UNIQUE INDEX events_ts_id_desc_idx ON ONLY events (ts, id_desc);"
             ),
             "partitioned index segment must emit ON ONLY parent placeholder; got: {nidx}"
+        );
+    }
+
+    #[test]
+    fn partitioned_prep_emits_self_fk_shadow_columns_and_multi_pair_trigger() {
+        // Cluster-4 review BLOCK DEDUP-1: the partitioned prep
+        // emitter previously emitted ONLY the parent's `id_desc`
+        // shadow column and a single-pair `(id, id_desc)` autofill
+        // trigger, even when the partitioned parent had a self-FK.
+        // Result: cutover later tried to RENAME a `<col>_desc`
+        // shadow column that prep never created, and the autofill
+        // trigger never populated the self-FK shadow value, so the
+        // cutover RENAME produced NULLs in the renamed column.
+        //
+        // The fix mirrors the non-partitioned `emit_preparation_with_mode`
+        // parent block: build a `self_pairs` vec containing
+        // `(id, id_desc)` plus one entry per self-FK column, emit
+        // ADD COLUMN for each self-FK shadow, and render ONE
+        // multi-pair trigger covering every (src, dst) pair.
+        let mut group = synth_group_single_table();
+        group.parent_table = "nodes".to_string();
+        group.self_fk = Some(PkFlipSelfFk {
+            fk_columns: vec!["parent_id".to_string()],
+            fk_constraint_names: vec!["nodes_parent_id_fkey".to_string()],
+            fk_deferrable: vec![false],
+            fk_initially_deferred: vec![false],
+        });
+        group.partitioned_parent = Some(super::super::diff::PkFlipPartitionedMeta {
+            partition: PartitionSchema::Range {
+                column: "ts".to_string(),
+            },
+        });
+        let part = group.partitioned_parent.as_ref().expect("part meta");
+        let prep = emit_partitioned_preparation(&group, part);
+        let n = whitespace_normalize(&prep.up);
+        assert!(
+            n.contains("ALTER TABLE nodes ADD COLUMN id_desc bigint;"),
+            "expected parent PK shadow ADD COLUMN; got: {n}"
+        );
+        assert!(
+            n.contains("ALTER TABLE nodes ADD COLUMN parent_id_desc bigint;"),
+            "expected self-FK shadow ADD COLUMN; got: {n}"
+        );
+        // Multi-pair trigger body must populate BOTH shadows.
+        assert!(
+            n.contains("heerid_to_desc(NEW.id)"),
+            "expected multi-pair trigger arm for id; got: {n}"
+        );
+        assert!(
+            n.contains("heerid_to_desc(NEW.parent_id)"),
+            "expected multi-pair trigger arm for parent_id; got: {n}"
+        );
+        let nd = whitespace_normalize(&prep.down);
+        assert!(
+            nd.contains("ALTER TABLE nodes DROP COLUMN IF EXISTS id_desc;"),
+            "down side missing parent shadow drop; got: {nd}"
+        );
+        assert!(
+            nd.contains("ALTER TABLE nodes DROP COLUMN IF EXISTS parent_id_desc;"),
+            "down side missing self-FK shadow drop; got: {nd}"
         );
     }
 
