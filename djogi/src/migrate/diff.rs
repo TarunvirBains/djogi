@@ -734,6 +734,18 @@ pub enum DiffError {
         /// Every parent participating in the cross-flipping cluster.
         cross_flipping_partners: Vec<String>,
     },
+    /// A `PkTypeFlipGroup` reached the lowering path with malformed
+    /// self-FK metadata (sidecar vector lengths out of sync). Codex
+    /// round-7 BLOCK 3: surface the underlying [`PkFlipError`] so the
+    /// segment planner and `build_segments_multi` single-member
+    /// fallback never bypass `validate_group`.
+    PkFlipMalformedSelfFkMetadata(super::pk_flip::PkFlipError),
+}
+
+impl From<super::pk_flip::PkFlipError> for DiffError {
+    fn from(err: super::pk_flip::PkFlipError) -> Self {
+        DiffError::PkFlipMalformedSelfFkMetadata(err)
+    }
 }
 
 impl std::fmt::Display for DiffError {
@@ -749,6 +761,7 @@ impl std::fmt::Display for DiffError {
                  {parent_table}; table_chain={chain:?}; graph likely has a pathological \
                  cycle or unbounded fan-out — refusing to compose the migration",
             ),
+            DiffError::PkFlipMalformedSelfFkMetadata(err) => write!(f, "{err}"),
             DiffError::PartitionedMultiParentClusterUnsupported {
                 partitioned_parents,
                 cross_flipping_partners,

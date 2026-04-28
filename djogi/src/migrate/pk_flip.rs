@@ -155,8 +155,7 @@ pub fn lower_pk_flip_group(
     group: &PkTypeFlipGroup,
     bucket: BucketKey,
 ) -> Result<MigrationPlan, PkFlipError> {
-    validate_group(group)?;
-    let segments = build_segments(group);
+    let segments = build_segments(group)?;
     Ok(MigrationPlan {
         bucket,
         classification: super::diff::Classification::PkTypeFlip {
@@ -195,9 +194,10 @@ fn validate_group(group: &PkTypeFlipGroup) -> Result<(), PkFlipError> {
 /// that mixes a flip with non-flip ops in OTHER buckets (the same
 /// bucket cannot mix both — the differ enforces that invariant via
 /// the per-bucket op list).
-pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Vec<Segment> {
+pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Result<Vec<Segment>, PkFlipError> {
+    validate_group(group)?;
     if let Some(part) = &group.partitioned_parent {
-        return build_segments_partitioned(group, part);
+        return Ok(build_segments_partitioned(group, part));
     }
     let mut segments: Vec<Segment> = Vec::new();
 
@@ -273,7 +273,7 @@ pub(crate) fn build_segments(group: &PkTypeFlipGroup) -> Vec<Segment> {
         statements: vec![emit_cutover(group)],
     });
 
-    segments
+    Ok(segments)
 }
 
 /// Build the segment list for a Codex round-4 B-15
@@ -322,12 +322,23 @@ pub(crate) fn build_segments_multi(
     if groups.is_empty() {
         return Ok(Vec::new());
     }
+    // Codex round-7 BLOCK 3: validate every group's self-FK metadata
+    // before any lowering work. Without this gate, malformed metadata
+    // would be silently truncated by the inner emitters' `.get(i)`
+    // fallbacks. Single-member fallback uses the same checked path
+    // via `build_segments`, but multi-member clusters need explicit
+    // validation here too because no member is dispatched through
+    // `build_segments` (the multi lowerer composes statements
+    // directly).
+    for g in groups {
+        validate_group(g)?;
+    }
     if groups.len() == 1 {
         // A single-member cluster shouldn't reach here (the merger
         // only creates MultiGroup for 2+ members), but if it does,
         // fall back to the single-parent path so we don't waste a
         // segment on no-op interleaving.
-        return Ok(build_segments(&groups[0]));
+        return Ok(build_segments(&groups[0])?);
     }
     if let Some(err) = super::diff::partitioned_multi_parent_cluster_error(groups) {
         return Err(err);
@@ -3905,7 +3916,7 @@ mod tests {
                 column: "ts".to_string(),
             },
         });
-        let segments = build_segments(&group);
+        let segments = build_segments(&group).expect("build_segments");
         // B-7 split: segments are [prep, backfill, verify, index,
         // not_null_proof, cutover]. The verification SELECT is its
         // own `PkFlipVerify` segment so the runner's transactional

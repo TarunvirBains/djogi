@@ -1040,11 +1040,23 @@ pub async fn attune(
                 // should see "would record SHA X" alongside the
                 // dry-run mutations notice.
                 if effective_record && resolved_target.is_some() {
-                    report
-                        .diagnostics
-                        .push(AttuneDiagnostic::DryRunSquashRecordSkipped {
-                            resolved_target: resolved_target.clone(),
-                        });
+                    // Codex round-7 BLOCK 2: route by req.record so that
+                    // `--squash --record` (operator typed both) names
+                    // the causal flag, while squash-implied recording
+                    // (`--squash` alone) stays neutral.
+                    if req.record {
+                        report
+                            .diagnostics
+                            .push(AttuneDiagnostic::DryRunRecordSkipped {
+                                resolved_target: resolved_target.clone(),
+                            });
+                    } else {
+                        report
+                            .diagnostics
+                            .push(AttuneDiagnostic::DryRunSquashRecordSkipped {
+                                resolved_target: resolved_target.clone(),
+                            });
+                    }
                 }
                 return Ok(report);
             }
@@ -2080,6 +2092,27 @@ mod tests {
         assert!(
             s_none.contains("`--record` was requested without `--apply`"),
             "explicit record case must still name the causal flag when unresolved: {s_none}"
+        );
+    }
+
+    /// Codex round-7 WARN 6: lock the unresolved-target prose for
+    /// `DryRunSquashRecordSkipped` too, so the squash-implied None
+    /// path is held to the same coverage bar as the explicit path.
+    #[test]
+    fn dry_run_squash_record_skipped_none_wording_is_neutral() {
+        let s = AttuneDiagnostic::DryRunSquashRecordSkipped {
+            resolved_target: None,
+        }
+        .to_string();
+        assert!(
+            s.contains("no parent submodule pointer would be updated"),
+            "must describe the unresolved-target outcome accurately: {s}"
+        );
+        assert!(s.contains("--target <ref>"));
+        assert!(s.contains("--apply"));
+        assert!(
+            !s.contains("`--record`"),
+            "squash-implied wording must NOT name --record: {s}"
         );
     }
 

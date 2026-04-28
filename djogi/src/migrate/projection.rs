@@ -160,6 +160,23 @@ pub enum ProjectionError {
         /// The target model's table.
         target_table: String,
     },
+    /// Codex round-7 WARN 6: two [`DeferrabilitySpec`] entries share
+    /// the same `(model_type_name, field_name)` key but disagree on
+    /// the deferrability values. Without this gate, `BTreeMap::collect`
+    /// silently picks last-writer-wins from inventory iteration order,
+    /// which is not deterministic across builds. Duplicate keys with
+    /// matching values are accepted (idempotent re-emission); only
+    /// disagreement is rejected.
+    ConflictingDeferrabilitySpec {
+        /// The Rust type name carrying the field.
+        model_type_name: String,
+        /// The field name.
+        field_name: String,
+        /// `(deferrable, initially_deferred)` from the first spec.
+        first: (bool, bool),
+        /// `(deferrable, initially_deferred)` from the second spec.
+        second: (bool, bool),
+    },
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -220,6 +237,20 @@ impl std::fmt::Display for ProjectionError {
                  Postgres FK constraints cannot span databases. Use an application-\
                  level join or the outbox pattern instead.",
                 source_bucket.app, source_bucket.database, target_bucket.database
+            ),
+            ProjectionError::ConflictingDeferrabilitySpec {
+                model_type_name,
+                field_name,
+                first,
+                second,
+            } => write!(
+                f,
+                "two `DeferrabilitySpec` entries for `{model_type_name}::{field_name}` \
+                 disagree: first=(deferrable={}, initially_deferred={}), \
+                 second=(deferrable={}, initially_deferred={}). Inventory iteration \
+                 order is not deterministic — the macro must emit at most one spec \
+                 per `(model_type_name, field_name)`.",
+                first.0, first.1, second.0, second.1
             ),
         }
     }
@@ -294,15 +325,27 @@ where
 {
     let models: Vec<&ModelDescriptor> = models.into_iter().collect();
     let apps: Vec<&AppDescriptor> = apps.into_iter().collect();
-    let deferrability_by_field: BTreeMap<(&str, &str), (bool, bool)> = deferrability_specs
-        .into_iter()
-        .map(|spec| {
-            (
-                (spec.model_type_name, spec.field_name),
-                (spec.deferrable, spec.initially_deferred),
-            )
-        })
-        .collect();
+    // Codex round-7 WARN 6: replace `.collect()` with explicit
+    // duplicate detection. Inventory iteration order is not
+    // deterministic across builds, so silent last-writer-wins on a
+    // disagreeing duplicate would produce non-byte-stable migrations.
+    // Idempotent re-emission (same key, same values) is accepted.
+    let mut deferrability_by_field: BTreeMap<(&str, &str), (bool, bool)> = BTreeMap::new();
+    for spec in deferrability_specs {
+        let key = (spec.model_type_name, spec.field_name);
+        let value = (spec.deferrable, spec.initially_deferred);
+        if let Some(prev) = deferrability_by_field.get(&key)
+            && *prev != value
+        {
+            return Err(ProjectionError::ConflictingDeferrabilitySpec {
+                model_type_name: spec.model_type_name.to_string(),
+                field_name: spec.field_name.to_string(),
+                first: *prev,
+                second: value,
+            });
+        }
+        deferrability_by_field.insert(key, value);
+    }
 
     // Build label → AppDescriptor map. Always includes the synthetic
     // global bucket per AppRegistry contract.

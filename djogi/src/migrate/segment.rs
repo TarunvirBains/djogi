@@ -179,7 +179,9 @@ pub fn plan_delta(delta: &SchemaDelta) -> Result<MigrationPlan, SqlEmitError> {
     for op in &delta.operations {
         match op {
             SchemaOperation::PkTypeFlipGroup(g) => {
-                group_segments.extend(super::pk_flip::build_segments(g));
+                group_segments.extend(
+                    super::pk_flip::build_segments(g).map_err(|e| SqlEmitError::Diff(e.into()))?,
+                );
             }
             SchemaOperation::PkTypeFlipMultiGroup(groups) => {
                 group_segments.extend(
