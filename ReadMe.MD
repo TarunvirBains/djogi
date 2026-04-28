@@ -44,7 +44,7 @@ Djogi is therefore not a full application framework. It is a Postgres-native dat
 
 **Coming** — design-locked but not yet implemented:
 
-- Phase 7.5 — Online-safety migration classification (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`); two-phase rename + type-widening; lock-timeout DDL; backfill orchestration. Rhai shell + admin panel.
+- Phase 7.5 — Online-safety migration classification (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`); two-phase rename + type-widening; lock-timeout DDL; backfill orchestration. Rhai shell + admin panel. Parity benchmark for the migration-side work is Ruby's [`online_migrations`](https://github.com/fatkodima/online_migrations) gem; see [migrations-online-parity.md](./docs/spec/migrations-online-parity.md) for the feature mapping (shipped / planned / deferred).
 
 ## What Djogi Owns
 
