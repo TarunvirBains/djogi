@@ -127,8 +127,9 @@ pub enum RunnerError {
     LedgerWriteFailed { version: String, source: DjogiError },
 
     /// A read-only ledger query failed (SELECT against
-    /// `djogi_migrations` — out-of-order conflict probe, rollback
-    /// row-fetch, etc.). Distinct from [`RunnerError::LedgerWriteFailed`]
+    /// `djogi_schema_migrations` — out-of-order conflict probe,
+    /// rollback row-fetch, etc.). Distinct from
+    /// [`RunnerError::LedgerWriteFailed`]
     /// — no row was written; the failure is in a reading probe and
     /// surfaces with a `query_label` so operators can correlate the
     /// error to the specific ledger probe (sibling of
@@ -397,7 +398,7 @@ impl std::fmt::Display for RunnerError {
             ),
             RunnerError::LedgerBootstrapFailed { source } => write!(
                 f,
-                "ledger bootstrap (CREATE TABLE IF NOT EXISTS djogi_migrations) \
+                "ledger bootstrap (CREATE TABLE IF NOT EXISTS djogi_schema_migrations) \
                  failed: {source}",
             ),
             RunnerError::VersionAlreadyApplied {
