@@ -110,7 +110,7 @@ use super::ledger::{
 use super::naming::{down_filename, up_filename};
 use super::projection::BucketKey;
 use super::schema::SNAPSHOT_FORMAT_VERSION;
-use super::target::{bucket_dir, scan_filesystem};
+use super::target::bucket_dir;
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -1104,86 +1104,8 @@ fn scan_disk_filtered(
     workspace_root: &Path,
     database_filter: Option<&str>,
 ) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, AttuneError> {
-    let mut out: BTreeMap<BucketKey, BTreeMap<String, PathBuf>> = BTreeMap::new();
-    let buckets = scan_filesystem(workspace_root)
-        .map_err(|e| AttuneError::FilesystemScanFailed { source: e })?;
-    for fb in buckets {
-        if let Some(want) = database_filter
-            && fb.database != want
-        {
-            continue;
-        }
-        let bucket = BucketKey {
-            database: fb.database,
-            app: fb.app,
-        };
-        let dir = bucket_dir(workspace_root, &bucket);
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(AttuneError::FilesystemScanFailed { source: err }),
-        };
-        for entry in entries {
-            let entry = entry.map_err(|e| AttuneError::FilesystemScanFailed { source: e })?;
-            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            // Up files: `V<...>__<slug>.sql` and DO NOT contain
-            // `.down.` (which is the down-file marker).
-            if !name.starts_with('V') || !name.ends_with(".sql") {
-                continue;
-            }
-            if name.contains(".down.") {
-                continue;
-            }
-            // Strip the trailing `.sql` and recover the version
-            // prefix. The version is the leading `V<digits>` portion.
-            let stem = &name[..name.len() - 4];
-            let Some(version) = recover_version_from_stem(stem) else {
-                continue;
-            };
-            out.entry(bucket.clone())
-                .or_default()
-                .insert(version, entry.path());
-        }
-    }
-    Ok(out)
-}
-
-/// Recover the canonical version ID from a filename stem (the part
-/// before `.sql`). The stem looks like `V20260425010203__add_users`;
-/// the version is `V20260425010203__add_users` itself when the slug
-/// is canonical, but for tests / edge cases we accept the bare prefix
-/// `V20260425010203` too.
-///
-/// Implementation: walk a `V` followed by ASCII digits, then optional
-/// `__<slug>`. The leading prefix produced by [`version_prefix`] is
-/// `V<14 ASCII digits>` so the deterministic case is straightforward.
-fn recover_version_from_stem(stem: &str) -> Option<String> {
-    let bytes = stem.as_bytes();
-    if bytes.is_empty() || bytes[0] != b'V' {
-        return None;
-    }
-    // Walk the digit body.
-    let mut i = 1usize;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == 1 {
-        return None;
-    }
-    // Either we hit end-of-stem (bare-prefix form) or we hit `__` and
-    // then the slug.
-    if i == bytes.len() {
-        return Some(stem.to_string());
-    }
-    if i + 1 < bytes.len() && bytes[i] == b'_' && bytes[i + 1] == b'_' {
-        // The full version is `<prefix>__<slug>`. Return the whole
-        // stem because the slug is part of the canonical version
-        // identity.
-        return Some(stem.to_string());
-    }
-    None
+    super::target::scan_filesystem_with_files(workspace_root, database_filter)
+        .map_err(|source| AttuneError::FilesystemScanFailed { source })
 }
 
 /// Wrapper around [`scan_disk_filtered`] that includes every bucket
@@ -1936,33 +1858,6 @@ mod tests {
         let p = std::env::temp_dir().join(format!("djogi-attune-{tag}-{nanos}-{n}"));
         fs::create_dir_all(&p).unwrap();
         p
-    }
-
-    #[test]
-    fn recover_version_from_canonical_stem() {
-        let v = recover_version_from_stem("V20260425010203__add_users").expect("canonical form");
-        assert_eq!(v, "V20260425010203__add_users");
-    }
-
-    #[test]
-    fn recover_version_from_bare_prefix() {
-        let v = recover_version_from_stem("V20260425010203").expect("bare prefix");
-        assert_eq!(v, "V20260425010203");
-    }
-
-    #[test]
-    fn recover_version_rejects_no_v_prefix() {
-        assert!(recover_version_from_stem("20260425010203__init").is_none());
-    }
-
-    #[test]
-    fn recover_version_rejects_v_alone() {
-        assert!(recover_version_from_stem("V").is_none());
-    }
-
-    #[test]
-    fn recover_version_rejects_v_then_letters() {
-        assert!(recover_version_from_stem("Vinit").is_none());
     }
 
     #[test]

@@ -54,7 +54,7 @@
 //! underscore, followed by ASCII alphanumerics or underscores, up to
 //! 63 bytes — implemented byte-by-byte without any regex engine.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -234,6 +234,101 @@ pub fn scan_filesystem(workspace_root: &Path) -> Result<BTreeSet<FilesystemBucke
     Ok(out)
 }
 
+/// Walk every up-side `.sql` file under `migrations/<database>/<app>/`
+/// and return per-bucket `version → path` maps.
+///
+/// `database_filter`:
+/// - `Some(name)` — only buckets whose `database` matches are included.
+/// - `None` — every bucket discovered by [`scan_filesystem`] is included.
+///
+/// Filtering rules (shared by every consumer of this helper):
+/// - Down-side files (suffix `.down.sql`) are skipped — the up-side
+///   filename is the canonical version identifier.
+/// - Files whose stem does not match the `V<14-digit>__<slug>` /
+///   `V<14-digit>` grammar (per [`recover_version_from_stem`]) are
+///   silently skipped.
+/// - Buckets containing zero up-side migrations are absent from the
+///   returned map (the per-bucket inner map is only created on first
+///   insert).
+///
+/// Returns `io::Error` directly so each caller can wrap it in a
+/// crate-local error variant (`AttuneError::FilesystemScanFailed`,
+/// `ResetError::MigrationScanFailed`, etc.).
+pub fn scan_filesystem_with_files(
+    workspace_root: &Path,
+    database_filter: Option<&str>,
+) -> Result<BTreeMap<BucketKey, BTreeMap<String, PathBuf>>, io::Error> {
+    let mut out: BTreeMap<BucketKey, BTreeMap<String, PathBuf>> = BTreeMap::new();
+    let buckets = scan_filesystem(workspace_root)?;
+    for fb in buckets {
+        if let Some(want) = database_filter
+            && fb.database != want
+        {
+            continue;
+        }
+        let bucket = BucketKey {
+            database: fb.database,
+            app: fb.app,
+        };
+        let dir = bucket_dir(workspace_root, &bucket);
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if !name.starts_with('V') || !name.ends_with(".sql") {
+                continue;
+            }
+            if name.contains(".down.") {
+                continue;
+            }
+            let stem = &name[..name.len() - 4];
+            let Some(version) = recover_version_from_stem(stem) else {
+                continue;
+            };
+            out.entry(bucket.clone())
+                .or_default()
+                .insert(version, entry.path());
+        }
+    }
+    Ok(out)
+}
+
+/// Recover the canonical version ID from a filename stem (the part
+/// before `.sql`). The stem looks like `V20260425010203__add_users`;
+/// the version is `V20260425010203__add_users` itself when the slug
+/// is canonical, but for tests / edge cases we accept the bare prefix
+/// `V20260425010203` too.
+///
+/// Implementation: walk a `V` followed by ASCII digits, then optional
+/// `__<slug>`. The leading prefix produced by [`super::naming::version_prefix`]
+/// is `V<14 ASCII digits>` so the deterministic case is straightforward.
+pub(super) fn recover_version_from_stem(stem: &str) -> Option<String> {
+    let bytes = stem.as_bytes();
+    if bytes.is_empty() || bytes[0] != b'V' {
+        return None;
+    }
+    let mut i = 1usize;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 1 {
+        return None;
+    }
+    if i == bytes.len() {
+        return Some(stem.to_string());
+    }
+    if i + 1 < bytes.len() && bytes[i] == b'_' && bytes[i + 1] == b'_' {
+        return Some(stem.to_string());
+    }
+    None
+}
+
 /// Byte-level check: a directory name is acceptable iff it is
 /// non-empty, the first byte is `b'_'` or
 /// [`u8::is_ascii_alphabetic`], every subsequent byte is `b'_'` or
@@ -411,5 +506,32 @@ mod tests {
         assert!(is_acceptable_dir_name(&ok63));
         let bad64: Vec<u8> = std::iter::repeat_n(b'a', 64).collect();
         assert!(!is_acceptable_dir_name(&bad64));
+    }
+
+    #[test]
+    fn recover_version_from_canonical_stem() {
+        let v = recover_version_from_stem("V20260425010203__add_users").expect("canonical form");
+        assert_eq!(v, "V20260425010203__add_users");
+    }
+
+    #[test]
+    fn recover_version_from_bare_prefix() {
+        let v = recover_version_from_stem("V20260425010203").expect("bare prefix");
+        assert_eq!(v, "V20260425010203");
+    }
+
+    #[test]
+    fn recover_version_rejects_no_v_prefix() {
+        assert!(recover_version_from_stem("20260425010203__init").is_none());
+    }
+
+    #[test]
+    fn recover_version_rejects_v_alone() {
+        assert!(recover_version_from_stem("V").is_none());
+    }
+
+    #[test]
+    fn recover_version_rejects_v_then_letters() {
+        assert!(recover_version_from_stem("Vinit").is_none());
     }
 }

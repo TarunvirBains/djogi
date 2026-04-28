@@ -101,7 +101,7 @@ use super::projection::BucketKey;
 use super::runner::{RunnerCtx, apply_plan};
 use super::segment::{MigrationPlan, Segment, SegmentKind};
 use super::sql::OperationSql;
-use super::target::{app_label_from_dirname, migrations_root};
+use super::target::migrations_root;
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -737,87 +737,15 @@ fn scan_committed_migrations(
     workspace_root: &Path,
     database: &str,
 ) -> Result<BTreeMap<BucketKey, Vec<String>>, ResetError> {
-    let mut out: BTreeMap<BucketKey, Vec<String>> = BTreeMap::new();
-    let database_dir = migrations_root(workspace_root).join(database);
-    let app_entries = match fs::read_dir(&database_dir) {
-        Ok(e) => e,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
-        Err(err) => {
-            return Err(ResetError::MigrationScanFailed {
-                path: database_dir,
-                source: err,
-            });
-        }
-    };
-    for app_entry in app_entries {
-        let app_entry = app_entry.map_err(|err| ResetError::MigrationScanFailed {
-            path: database_dir.clone(),
+    let with_paths = super::target::scan_filesystem_with_files(workspace_root, Some(database))
+        .map_err(|err| ResetError::MigrationScanFailed {
+            path: migrations_root(workspace_root).join(database),
             source: err,
         })?;
-        let ft = app_entry
-            .file_type()
-            .map_err(|err| ResetError::MigrationScanFailed {
-                path: app_entry.path(),
-                source: err,
-            })?;
-        if !ft.is_dir() {
-            continue;
-        }
-        let Some(dirname) = app_entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        let app_label = app_label_from_dirname(&dirname).to_string();
-        let bucket = BucketKey {
-            database: database.to_string(),
-            app: app_label,
-        };
-        let mut versions: Vec<String> = Vec::new();
-        let bucket_dir = app_entry.path();
-        let sql_entries = match fs::read_dir(&bucket_dir) {
-            Ok(e) => e,
-            Err(err) => {
-                return Err(ResetError::MigrationScanFailed {
-                    path: bucket_dir,
-                    source: err,
-                });
-            }
-        };
-        for sql_entry in sql_entries {
-            let sql_entry = sql_entry.map_err(|err| ResetError::MigrationScanFailed {
-                path: bucket_dir.clone(),
-                source: err,
-            })?;
-            let Some(name) = sql_entry.file_name().to_str().map(str::to_string) else {
-                continue;
-            };
-            // Skip the snapshot file and any non-`.sql` artifact.
-            if !name.ends_with(".sql") {
-                continue;
-            }
-            // Skip down-side files — the version is identified by the
-            // up-side filename.
-            if name.ends_with(".down.sql") {
-                continue;
-            }
-            // Strip the trailing `.sql` to recover the version id.
-            let version = match name.strip_suffix(".sql") {
-                Some(v) if !v.is_empty() => v.to_string(),
-                _ => continue,
-            };
-            // Reject anything that isn't a `V`-prefixed version. This
-            // filters out hand-written `seed.sql`-style files an
-            // operator may have left in the bucket directory.
-            if !version.starts_with('V') {
-                continue;
-            }
-            versions.push(version);
-        }
-        versions.sort();
-        if !versions.is_empty() {
-            out.insert(bucket, versions);
-        }
-    }
-    Ok(out)
+    Ok(with_paths
+        .into_iter()
+        .map(|(bucket, vers)| (bucket, vers.into_keys().collect()))
+        .collect())
 }
 
 /// Read one migration's up SQL, build a single-statement
