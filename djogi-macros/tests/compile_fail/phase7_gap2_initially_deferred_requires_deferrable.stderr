@@ -1,5 +1,5 @@
 error: `#[field(initially_deferred)]` requires `#[field(deferrable)]` on the same field
-  --> tests/compile_fail/phase7_gap2_initially_deferred_requires_deferrable.rs:13:13
+  --> tests/compile_fail/phase7_gap2_initially_deferred_requires_deferrable.rs:12:13
    |
-13 |     #[field(initially_deferred)]
+12 |     #[field(initially_deferred)]
    |             ^^^^^^^^^^^^^^^^^^
