@@ -132,7 +132,7 @@ Per-row:  Create, Read, Update, Delete
 Bulk:     BulkUpdate, BulkDelete
 ```
 
-Bulk actions default to per-row capability — if you can update, you can bulk-update — but each is gated by a separate boolean so the dangerous-at-scale bulk paths can be denied independently.
+Bulk actions are **explicit opt-ins**, not derived from per-row capability — granting `update` does not grant `bulk_update`, and granting `delete` does not grant `bulk_delete`. The two bulk booleans on `_admin_roles` and the per-`(app, model)` rows in `_admin_role_model_perms` are independent of their per-row counterparts and default false, so a role with `can_update = TRUE` and `can_bulk_update = FALSE` (the default) can edit rows one at a time but cannot run a changelist `BulkUpdate`. Explicit opt-in for bulk matches Maahi's overall explicit-grants philosophy (visages, the `manage_users` five-clause upper-bound) and keeps mass-mutation gated behind a deliberate role decision rather than riding in on the per-row grant.
 
 The bulk vs per-row distinction is primarily **operation-origin**: `BulkUpdate` and `BulkDelete` cover changelist-initiated operations against a selected or filtered row set; per-row `Update` and `Delete` cover per-row form operations and small inline-edit saves. M2M inline removals at or above `[admin].inline_bulk_threshold` (default 25 total across all M2M relations on the parent save) route through the dual-control approval flow as a distinct sibling action kind, `InlineSave` (not as `BulkDelete` itself) — `BulkDelete` and `InlineSave` are the two v1 approval action kinds, sharing the same `_admin_pending_actions` queue and lifecycle but distinct in payload shape. Below the threshold, inline removals stay per-row. See `ui.md` for the threshold semantics and `operations.md` for the shared approval mechanics.
 
@@ -199,12 +199,12 @@ The role-config UI surfaces this resolution as a hierarchical checkbox grid: per
 
 Permission intent and visage grants don't always agree. A role with `can_create = TRUE` on `(core, Vehicle)` whose granted visages cover only `vin` cannot actually create a `Vehicle` — `make` is `NOT NULL` without a database default and not in the role's editable field set. Maahi computes this at startup, not at form-submit, and surfaces the result as a diagnostic.
 
-For each `(role, app, model)` triple — feasibility resolution mirrors the `(app, model)` keying used by `_admin_role_visage_perms` and `_admin_role_model_perms` for forward-compat with the deferred descriptor-shape change in [Apps and Database Domains](../apps-and-database-domains.md#cross-app-fk-graph-t9); v1 still enforces workspace-wide model-name uniqueness so `app_name` is over-keying today, but the resolver treats it as authoritative — Maahi resolves five feasibilities:
+For each `(role, app, model)` triple — feasibility resolution mirrors the `(app, model)` keying used by `_admin_role_visage_perms` and `_admin_role_model_perms` for forward-compat with the deferred descriptor-shape change in [Apps and Database Domains](../apps-and-database-domains.md#cross-app-fk-graph-t9); v1 still enforces workspace-wide model-name uniqueness so `app_name` is over-keying today, but the resolver treats it as authoritative — Maahi resolves five feasibilities. Read and delete predicates key on the role's effective **visible** field set; update and create predicates key on the role's effective **editable** field set (granted-edit visages ∪ `write_full_struct`, minus `admin_readonly` and `expose(none)`) per the resolution rules above, since write actions never succeed against fields the role cannot edit:
 
 ```text
 can_actually_read(role, app, model)   = role.read    AND ≥1 visible field on (app, model)
-can_actually_update(role, app, model) = role.update  AND ≥1 visible field is not admin_readonly
-can_actually_create(role, app, model) = role.create  AND visible field set covers all NOT NULL,
+can_actually_update(role, app, model) = role.update  AND ≥1 editable field on (app, model)
+can_actually_create(role, app, model) = role.create  AND editable field set covers all NOT NULL,
                                                           no-database-default fields
 can_actually_delete(role, app, model) = role.delete  AND ≥1 visible field on (app, model)
                                         (delete is row-scope, but the model must be visible at all)
@@ -214,7 +214,7 @@ fk_label_reachable(role, app, model, fk_field) =
                                         (per the Label rule in field-visibility.md)
 ```
 
-FK targets resolve through the apps subsystem: `target_(app, model)_of(fk_field)` walks the registry-recorded relation, so a FK from `(core, Vehicle).fuel_type_id` resolves against whichever `(target_app, FuelType)` actually owns the target model. Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. The fifth feasibility runs once per FK field on each visible `(app, model)`.
+Anchoring update on the editable set (not the visible set) prevents a view-only role from passing the feasibility check and surfacing a "Save" affordance whose submit the server-side write enforcement would later reject; anchoring create on the editable set ensures every required NOT NULL no-default column has a writable widget on the create form rather than just a visible one. FK targets resolve through the apps subsystem: `target_(app, model)_of(fk_field)` walks the registry-recorded relation, so a FK from `(core, Vehicle).fuel_type_id` resolves against whichever `(target_app, FuelType)` actually owns the target model. Bulk actions inherit their per-row counterpart's feasibility plus the bulk bit. The fifth feasibility runs once per FK field on each visible `(app, model)`.
 
 Failures surface at startup as `AppDiagnostic` entries (the diagnostic registry shipped in Phase 7-Zero):
 

@@ -77,7 +77,7 @@ Maahi consumes `Label` in three places in v1, each constructing `VisibleFields` 
 
 - **FK dropdown rendering** — both preload and typeahead tiers display rows by `row.label(&visible)`. Labels are computed per request, so the same row may render different labels for different viewers.
 - **List view default column** — when `admin_list_display` is not set on a model, the list view renders the row's `label(&visible)` (with `visible` derived from the requesting role) plus its ID. Custom `admin_list_display` lists honor field-level visibility separately, so the default column path is the only one that touches `Label`.
-- **Audit log entries** — `_logs.{model}` rows store JSONB snapshots of the changed source row. When rendering an audit entry to a viewer, Maahi reconstructs the model from the snapshot, computes the *viewer's* effective visibility on the source model (not the actor's at change time — visibility is a property of the reader), and renders the label via `Label`.
+- **Audit log entries** — `{snake_case(model)}_logs` rows (per [Logging](../logging.md) §9.1) store JSONB snapshots of the changed source row. When rendering an audit entry to a viewer, Maahi reconstructs the model from the snapshot, computes the *viewer's* effective visibility on the source model (not the actor's at change time — visibility is a property of the reader), and renders the label via `Label`.
 
 Outside Maahi, the Phase 9 shell uses `Label` for `pp()` default rendering — the shell typically constructs `VisibleFields::unrestricted()` since shell users are operator-tier by default, but this is an explicit choice at the call site, not an implicit bypass.
 
