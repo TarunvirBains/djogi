@@ -4,4 +4,4 @@ error[E0046]: not all trait items implemented, missing: `__DJOGI_APP_SEAL`
 7 | impl App for Foo {
   | ^^^^^^^^^^^^^^^^ missing `__DJOGI_APP_SEAL` in implementation
   |
-  = help: implement the missing item: `const __DJOGI_APP_SEAL: SealToken = /* value */;`
+  = help: implement the missing item: `const __DJOGI_APP_SEAL: djogi::apps::SealToken = /* value */;`

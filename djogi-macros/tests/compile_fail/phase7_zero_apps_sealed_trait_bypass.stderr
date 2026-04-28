@@ -1,17 +1,5 @@
-error[E0405]: cannot find trait `Sealed` in `djogi::apps::sealed`
- --> tests/compile_fail/phase7_zero_apps_sealed_trait_bypass.rs:6:27
-  |
-6 | impl djogi::apps::sealed::Sealed for FakeApp {}
-  |                           ^^^^^^ not found in `djogi::apps::sealed`
-
-error[E0603]: module `sealed` is private
+error[E0433]: cannot find `sealed` in `apps`
  --> tests/compile_fail/phase7_zero_apps_sealed_trait_bypass.rs:6:19
   |
 6 | impl djogi::apps::sealed::Sealed for FakeApp {}
-  |                   ^^^^^^ private module
-  |
-note: the module `sealed` is defined here
- --> $WORKSPACE/djogi/src/apps.rs
-  |
-  | mod sealed {
-  | ^^^^^^^^^^
+  |                   ^^^^^^ could not find `sealed` in `apps`

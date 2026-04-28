@@ -494,7 +494,7 @@ fn emit_one(decl: &AppDecl, label: &str) -> TokenStream {
 
         impl ::djogi::apps::App for #ident_hidden {
             const __DJOGI_APP_SEAL: ::djogi::apps::SealToken =
-                ::djogi::apps::__DJOGI_APPS_SEAL_TOKEN;
+                ::djogi::__private::apps_seal::TOKEN;
             const LABEL: &'static str = #label_lit;
             const DATABASE: &'static str = #database_lit;
             const TOMBSTONE: bool = #tombstone_lit;
