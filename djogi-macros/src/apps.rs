@@ -41,10 +41,11 @@
 //! `feedback_macro_path_routing.md`. The macro never references
 //! `::heeranjid::*` / `::time::*` / `::inventory::*` directly.
 
+use crate::syn_util::require_string_lit;
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    Attribute, Expr, ExprLit, Ident, Lit, LitStr, Meta, Token, Visibility,
+    Attribute, Ident, LitStr, Meta, Token, Visibility,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
@@ -305,18 +306,6 @@ fn parse_app_attribute(attrs: &[Attribute], ident: &Ident) -> syn::Result<Parsed
         renamed_from,
         tombstone,
     })
-}
-
-fn require_string_lit(expr: &Expr, key: &str) -> syn::Result<LitStr> {
-    match expr {
-        Expr::Lit(ExprLit {
-            lit: Lit::Str(s), ..
-        }) => Ok(s.clone()),
-        other => Err(syn::Error::new_spanned(
-            other,
-            format!("`{key} = …` must be a string literal"),
-        )),
-    }
 }
 
 // ---------------------------------------------------------------------------

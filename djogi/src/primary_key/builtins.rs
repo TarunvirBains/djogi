@@ -42,6 +42,8 @@ macro_rules! impl_heeranjid_pk {
     };
     (@impl $ty:ty, $kind_tag:ident, $sql_type:literal, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
         impl PrimaryKey for $ty {
+            const __DJOGI_PK_SEAL: crate::primary_key::PkSealToken =
+                crate::primary_key::__DJOGI_PK_SEAL_TOKEN;
             const KIND: PkType = PkType::$kind_tag;
             const SQL_TYPE: &'static str = $sql_type;
             const DEFAULT_SQL: Option<&'static str> = Some($default_sql);
@@ -121,6 +123,8 @@ impl_heeranjid_pk!(
 // row at a time via `RETURNING id`.
 
 impl PrimaryKey for i32 {
+    const __DJOGI_PK_SEAL: crate::primary_key::PkSealToken =
+        crate::primary_key::__DJOGI_PK_SEAL_TOKEN;
     const KIND: PkType = PkType::Serial;
     const SQL_TYPE: &'static str = "INTEGER";
     const DEFAULT_SQL: Option<&'static str> = None;

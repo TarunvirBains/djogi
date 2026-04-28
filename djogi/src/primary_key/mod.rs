@@ -57,6 +57,34 @@ use crate::error::{DbError, DjogiError};
 
 pub mod builtins;
 
+mod sealed {
+    /// Hidden witness carried by every [`crate::primary_key::PrimaryKey`]
+    /// impl. The field stays private so handwritten code cannot
+    /// construct the token accidentally — the seal forces every PK type
+    /// to go through the [`djogi::primary_key!`] macro (or through the
+    /// built-in HeerId / RanjId / Serial impls in this crate). Matches
+    /// the [`crate::apps::App`] sealing convention.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PkSealToken {
+        _private: (),
+    }
+
+    pub const TOKEN: PkSealToken = PkSealToken { _private: () };
+}
+
+/// Hidden seal witness type for [`PrimaryKey`].
+///
+/// Public only so the [`djogi::primary_key!`] macro can name the type
+/// from downstream crates. The sole value lives in
+/// [`__DJOGI_PK_SEAL_TOKEN`]; the struct has no public constructor.
+#[doc(hidden)]
+pub use sealed::PkSealToken;
+
+/// Hidden witness value that only macro-generated [`PrimaryKey`] impls
+/// (and the built-in impls in [`builtins`]) are expected to use.
+#[doc(hidden)]
+pub const __DJOGI_PK_SEAL_TOKEN: PkSealToken = sealed::TOKEN;
+
 /// Convert a batch size to the Postgres `INTEGER` parameter used by
 /// bulk primary-key allocation helpers.
 pub fn checked_count(n: usize) -> Result<i32, DjogiError> {
@@ -84,7 +112,22 @@ pub fn bulk_row_count_mismatch_err(got: usize, want: usize, label: &str) -> Djog
 /// Implementations map the type to its [`PkType`] discriminant, the
 /// Postgres column type, the optional `DEFAULT` clause, and the zero
 /// value the macro-emitted `Default` impl uses for the `id` field.
+///
+/// # Sealing
+///
+/// Sealed via [`PkSealToken`] — the only paths to a valid impl are the
+/// built-in HeerId / RanjId / Serial impls in [`builtins`] and the
+/// [`djogi::primary_key!`] macro. Hand-rolled `impl PrimaryKey for …`
+/// in downstream crates fail at the
+/// [`__DJOGI_PK_SEAL`](Self::__DJOGI_PK_SEAL) const because
+/// [`PkSealToken`] has no public constructor. Matches the
+/// [`crate::apps::App`] sealing convention.
 pub trait PrimaryKey: Sized + 'static {
+    /// Hidden seal witness — only macro-emitted and built-in impls
+    /// can name the value (see [`__DJOGI_PK_SEAL_TOKEN`]).
+    #[doc(hidden)]
+    const __DJOGI_PK_SEAL: PkSealToken;
+
     /// Runtime discriminant the [`ModelDescriptor`](crate::descriptor::ModelDescriptor) carries.
     const KIND: PkType;
 

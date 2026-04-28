@@ -285,37 +285,53 @@ impl AppRegistry {
         CACHE.get_or_init(|| {
             use crate::descriptor::ModelDescriptor;
             use crate::descriptor::RelationKind;
+            use std::collections::HashMap;
 
-            // Resolve a model's database by looking up its app label
-            // in the registry. The synthetic global bucket answers
-            // for unapp'd models (`app == None` lowered to `""`).
-            fn database_for_label(label: &'static str) -> &'static str {
-                AppRegistry::all()
-                    .iter()
-                    .find(|d| d.label == label)
-                    .map(|d| d.database)
+            // Resolve label → database once via a HashMap built from
+            // the registry. The synthetic global bucket is in
+            // `AppRegistry::all()` so unapp'd models ("") resolve
+            // through the same map without a special case.
+            let label_to_database: HashMap<&'static str, &'static str> = AppRegistry::all()
+                .iter()
+                .map(|d| (d.label, d.database))
+                .collect();
+            let database_for_label = |label: &'static str| -> &'static str {
+                label_to_database
+                    .get(label)
+                    .copied()
                     .unwrap_or(AppDescriptor::GLOBAL_DATABASE)
-            }
+            };
 
             // Build type-name -> (app_label, database) lookup once.
             // Keyed by short `type_name` for now; the workspace
             // convention is that model type names are unique across
             // linked crates. A future extension will key by
             // `(module_path, type_name)` once that pair is part of
-            // the descriptor shape.
-            let mut type_to_identity: std::collections::HashMap<
-                &'static str,
-                (&'static str, &'static str),
-            > = std::collections::HashMap::new();
+            // the descriptor shape. Until then, panic loudly on
+            // collision so silent shadowing surfaces at startup
+            // instead of as a wrong cross-app FK edge later.
+            let mut type_to_identity: HashMap<&'static str, (&'static str, &'static str)> =
+                HashMap::new();
             for m in inventory::iter::<ModelDescriptor> {
                 let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
-                type_to_identity.insert(m.type_name, (label, database_for_label(label)));
+                let database = database_for_label(label);
+                if let Some(prior) = type_to_identity.insert(m.type_name, (label, database)) {
+                    panic!(
+                        "djogi::apps: model type name `{}` is registered by two distinct \
+                         apps — first `{}`/`{}`, now `{}`/`{}`. Type-name collisions break \
+                         cross-app FK edge resolution; rename one of the models, or wait for \
+                         (module_path, type_name) keying to land in the descriptor shape.",
+                        m.type_name, prior.0, prior.1, label, database,
+                    );
+                }
             }
 
             let mut edges: Vec<CrossAppEdge> = Vec::new();
             for source in inventory::iter::<ModelDescriptor> {
-                let source_app = source.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
-                let source_database = database_for_label(source_app);
+                let (source_app, source_database) = type_to_identity
+                    .get(source.type_name)
+                    .copied()
+                    .expect("source model registered above");
                 for field in source.fields {
                     if !matches!(
                         field.relation_kind,

@@ -315,6 +315,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
         #vis struct #name(pub #inner);
 
         impl ::djogi::primary_key::PrimaryKey for #name {
+            const __DJOGI_PK_SEAL: ::djogi::primary_key::PkSealToken =
+                ::djogi::primary_key::__DJOGI_PK_SEAL_TOKEN;
             const KIND: ::djogi::PkType = ::djogi::PkType::Custom(
                 ::djogi::descriptor::CustomPrimaryKeyKind {
                     type_name: #name_str,
