@@ -153,6 +153,7 @@ async fn read_pg_shape(ctx: &mut DjogiContext) -> PgShape {
              JOIN pg_attribute a ON a.attrelid = con.conrelid \
                                  AND a.attnum = ANY(con.conkey) \
              WHERE n.nspname = 'public' AND con.contype = 'p' \
+               AND c.relname <> 'djogi_schema_migrations' \
              ORDER BY c.relname, array_position(con.conkey, a.attnum)",
             &[],
         )
@@ -178,6 +179,7 @@ async fn read_pg_shape(ctx: &mut DjogiContext) -> PgShape {
              JOIN pg_attribute ta ON ta.attrelid = con.confrelid \
                                   AND ta.attnum = con.confkey[1] \
              WHERE n.nspname = 'public' AND con.contype = 'f' \
+               AND c.relname <> 'djogi_schema_migrations' \
              ORDER BY c.relname, sa.attname",
             &[],
         )
