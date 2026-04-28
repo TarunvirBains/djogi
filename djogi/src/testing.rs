@@ -61,7 +61,7 @@ use crate::descriptor::{EnumDescriptor, ModelDescriptor};
 use crate::migrate::diff::{Classification, SchemaOperation};
 use crate::migrate::projection::{BucketKey, project_from_iters, rfc3339_now_seconds};
 use crate::migrate::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
-use crate::migrate::{SegmentKind, diff_bucket_maps, plan_delta};
+use crate::migrate::{MigrationPlan, SegmentKind, diff_bucket_maps, plan_delta};
 use crate::pg::pool::DjogiPool;
 use crate::{DbError, DjogiContext, DjogiError};
 use tokio_postgres::NoTls;
@@ -532,12 +532,33 @@ pub async fn sync_models(
     ctx: &mut DjogiContext,
     descriptors: &[&'static ModelDescriptor],
 ) -> Result<(), DjogiError> {
-    // Empty input is a zero-DDL no-op. The macro suppresses the call
-    // entirely for `sync_models = []`, but the runtime helper
-    // accepts it for direct (hand-written) callers — keeps the
-    // surface honest about the contract.
+    let plans = build_sync_plans(descriptors)?;
+    for plan in &plans {
+        execute_plan(ctx, plan).await?;
+    }
+    Ok(())
+}
+
+/// Build the additive [`MigrationPlan`]s [`sync_models`] would execute
+/// for `descriptors`, without touching any database.
+///
+/// Steps 1–5 of [`sync_models`]: pre-flight FK check, projection,
+/// empty-source diff, additive-only invariant check, and per-bucket
+/// `plan_delta` lowering. Returns one plan per non-`NoOp` bucket in
+/// [`BucketKey`] order. An empty `descriptors` slice returns an empty
+/// vec (matching `sync_models`'s zero-DDL no-op contract).
+///
+/// Used by [`sync_models`] itself and by parity tests that need to
+/// compare the additive sync plan against the production migration
+/// runner — surfacing the plans as data is what lets a test feed
+/// the same `MigrationPlan` to both `sync_models`'s `execute_plan`
+/// and `migrate::apply_plan`, proving the two execution wrappers
+/// produce identical schema state.
+pub fn build_sync_plans(
+    descriptors: &[&'static ModelDescriptor],
+) -> Result<Vec<MigrationPlan>, DjogiError> {
     if descriptors.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // ── Step 1 — pre-flight: every FK target named on a descriptor
@@ -646,10 +667,11 @@ pub async fn sync_models(
         }
     }
 
-    // ── Step 5 — plan + execute, bucket by bucket. Bucket order is
-    //              the natural BTreeMap order (alphabetic by
+    // ── Step 5 — lower each non-NoOp delta to a plan. Bucket order
+    //              is the natural BTreeMap order (alphabetic by
     //              `(database, app)`), so multi-bucket runs are
     //              deterministic.
+    let mut plans = Vec::new();
     for delta in &deltas {
         if matches!(delta.classification, Classification::NoOp) {
             continue;
@@ -661,10 +683,9 @@ pub async fn sync_models(
                 app = delta.bucket.app,
             )))
         })?;
-        execute_plan(ctx, &plan).await?;
+        plans.push(plan);
     }
-
-    Ok(())
+    Ok(plans)
 }
 
 /// Build a fresh, empty [`AppliedSchema`] suitable as the "before"
