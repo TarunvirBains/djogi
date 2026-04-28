@@ -45,30 +45,36 @@
 
 use std::sync::OnceLock;
 
-mod sealed {
-    /// Hidden witness carried by macro-generated [`crate::apps::App`]
-    /// impls. The field stays private so handwritten code cannot
-    /// construct the token accidentally.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct SealToken {
-        _private: (),
-    }
-
-    pub const TOKEN: SealToken = SealToken { _private: () };
-}
-
 /// Hidden seal witness type for [`App`].
 ///
-/// This is public only so the proc-macro expansion in downstream
-/// crates can name the type. The sole value lives in
-/// [`__DJOGI_APPS_SEAL_TOKEN`]; the struct has no public constructor.
+/// `#[doc(hidden)] pub` because the trait associated const
+/// `__DJOGI_APP_SEAL` has this type and the trait itself is public —
+/// macro emission in downstream crates needs to be able to name the
+/// type. The struct has no public constructor; the sole value lives
+/// in [`crate::__private::apps_seal::TOKEN`] which routes through
+/// the off-limits `__private` namespace. The previous public
+/// `__DJOGI_APPS_SEAL_TOKEN` re-export at this module's top level
+/// has been removed because it made the seal bypassable —
+/// downstream code could grab the const and hand-roll an `App` impl.
+///
+/// Downstream code reaching the value through `djogi::__private` is
+/// explicitly violating the framework boundary; same convention as
+/// `VisageSealed` in [`crate::__private`].
 #[doc(hidden)]
-pub use sealed::SealToken;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealToken {
+    _private: (),
+}
 
-/// Hidden witness value that only macro-generated [`App`] impls are
-/// expected to use.
-#[doc(hidden)]
-pub const __DJOGI_APPS_SEAL_TOKEN: SealToken = sealed::TOKEN;
+impl SealToken {
+    /// `pub(crate)` constructor so the [`crate::__private::apps_seal`]
+    /// module can mint the witness without exposing a public path on
+    /// the type itself. The empty private field still keeps
+    /// downstream code from naming `SealToken { ... }` directly.
+    pub(crate) const fn __new() -> Self {
+        Self { _private: () }
+    }
+}
 
 /// Compile-time schema ownership domain for a set of models.
 ///
@@ -170,6 +176,62 @@ impl AppDescriptor {
 
 inventory::collect!(AppDescriptor);
 
+/// Enforce app-identity uniqueness on a slice already sorted by
+/// `(label, database)`.
+///
+/// Two flavours of collision exist in the registry; both panic loudly
+/// at startup so the wrong app cannot land in a migration directory:
+///
+/// 1. **Same `(database, label)` declared twice.** The migration
+///    contract's literal identity collision — typically the result of
+///    declaring the same app in two `djogi::apps!` invocations across
+///    linked crates.
+/// 2. **Same `label`, different `database`.** Legitimate under the
+///    full `(database, label)` identity contract but rejected in v1
+///    because [`crate::ModelDescriptor`] carries only `label`. The
+///    cross-app FK edge generator looks up a model's database via a
+///    `label → database` map; without workspace-wide label
+///    uniqueness, that map silently collapses one entry and a model
+///    routes to the wrong database. The descriptor-shape upgrade that
+///    would unlock the looser identity is deferred to
+///    `docs/spec/apps-and-database-domains.md`.
+///
+/// Mirrors the `type_to_identity` collision panic in
+/// [`AppRegistry::cross_app_edges`].
+///
+/// Lifted to a free function so unit tests can drive synthetic
+/// descriptor lists past the panic guard without going through the
+/// link-time `inventory` collection.
+fn validate_app_identity_uniqueness(sorted: &[AppDescriptor]) {
+    for pair in sorted.windows(2) {
+        if pair[0].label.is_empty() || pair[0].label != pair[1].label {
+            continue;
+        }
+        if pair[0].database == pair[1].database {
+            panic!(
+                "djogi::apps: duplicate app identity \
+                 (database = {:?}, label = {:?}) declared across \
+                 multiple `djogi::apps!` invocations — \
+                 (database, label) pairs must be unique per crate \
+                 (and across linked djogi-using crates)",
+                pair[0].database, pair[0].label,
+            );
+        }
+        panic!(
+            "djogi::apps: app label {:?} is declared in two \
+             distinct database targets ({:?} and {:?}) — v1 \
+             requires workspace-wide label uniqueness across \
+             all databases. ModelDescriptor carries only the \
+             label, so cross-app FK resolution cannot \
+             disambiguate same-label / different-database \
+             pairs today. Rename one of the apps, or wait for \
+             the (label, database) descriptor-shape upgrade \
+             deferred in docs/spec/apps-and-database-domains.md.",
+            pair[0].label, pair[0].database, pair[1].database,
+        );
+    }
+}
+
 /// Runtime lookup facade over the apps registered in this crate
 /// graph.
 ///
@@ -200,20 +262,38 @@ impl AppRegistry {
     ///
     /// App identity per the migration contract is the pair
     /// `(database, label)` — migrations group by
-    /// `<database_target>/<app_label>/` on disk, and two apps with the
-    /// same label but different database targets are legitimate (e.g.
-    /// `main/audit/` and `crud_log/audit/`). Within a single
-    /// `djogi::apps!` invocation, duplicate labels are a compile
-    /// error. Across multiple invocations — different modules of the
-    /// same crate, or apps pulled in from multiple djogi-using
-    /// library crates — this function panics on first call if two
-    /// descriptors share the same `(database, label)` pair. Catching
-    /// the collision here rather than at compile time is a deliberate
-    /// trade: the macro is function-like and expands at its call
-    /// site, so crate-global compile-time enforcement would require
-    /// fragile link-time symbol tricks or impossible orphan-rule
-    /// dances. Runtime panic at startup (`AppRegistry::all()` runs
-    /// before any migration work) is loud, early, and informative.
+    /// `<database_target>/<app_label>/` on disk. The full contract
+    /// permits two apps with the same label in different database
+    /// targets (`main/audit/` vs `crud_log/audit/`), but **v1 lifts
+    /// that to a workspace-wide label-uniqueness invariant**: every
+    /// app label must be unique across all databases in the registry.
+    /// Within a single `djogi::apps!` invocation, duplicate labels
+    /// are a compile error. Across multiple invocations — different
+    /// modules of the same crate, or apps pulled in from multiple
+    /// djogi-using library crates — this function panics on first
+    /// call if two descriptors share a `label` (regardless of
+    /// `database`).
+    ///
+    /// Catching the collision here rather than at compile time is a
+    /// deliberate trade: the macro is function-like and expands at
+    /// its call site, so crate-global compile-time enforcement would
+    /// require fragile link-time symbol tricks or impossible
+    /// orphan-rule dances. Runtime panic at startup
+    /// (`AppRegistry::all()` runs before any migration work) is
+    /// loud, early, and informative.
+    ///
+    /// ## Why label uniqueness, not the looser `(database, label)`?
+    ///
+    /// `ModelDescriptor` carries only the app **label**, not its
+    /// database. The cross-app FK edge generator looks up a model's
+    /// database via the registry's `label → database` map; if two
+    /// apps share a label across different databases, that map
+    /// silently collapses one entry and the FK edge routes a model
+    /// to the wrong database. Until the descriptor shape changes to
+    /// `(label, database)` — see `docs/spec/apps-and-database-domains.md`
+    /// for the deferred upgrade — v1 forbids the same-label /
+    /// different-database case entirely so the registry stays
+    /// unambiguous.
     ///
     /// The result is computed lazily on first call and memoised in a
     /// `OnceLock`. Inventory is fixed at link time so caching the
@@ -227,24 +307,11 @@ impl AppRegistry {
                 out.push(*desc);
             }
             // Sort by label first (user-facing alphabetic ordering)
-            // then by database as tiebreaker so same-label/different-
-            // database pairs land adjacent for duplicate-pair scanning.
+            // then by database as tiebreaker so same-label entries
+            // land adjacent for the duplicate-label scan in
+            // `validate_app_identity_uniqueness`.
             out.sort_by(|a, b| (a.label, a.database).cmp(&(b.label, b.database)));
-            for pair in out.windows(2) {
-                if !pair[0].label.is_empty()
-                    && pair[0].label == pair[1].label
-                    && pair[0].database == pair[1].database
-                {
-                    panic!(
-                        "djogi::apps: duplicate app identity \
-                         (database = {:?}, label = {:?}) declared across \
-                         multiple `djogi::apps!` invocations — \
-                         (database, label) pairs must be unique per crate \
-                         (and across linked djogi-using crates)",
-                        pair[0].database, pair[0].label,
-                    );
-                }
-            }
+            validate_app_identity_uniqueness(&out);
             out
         })
     }
@@ -291,6 +358,13 @@ impl AppRegistry {
             // the registry. The synthetic global bucket is in
             // `AppRegistry::all()` so unapp'd models ("") resolve
             // through the same map without a special case.
+            //
+            // Same-label / different-database collisions would
+            // silently collapse this `.collect()` and route a model
+            // to the wrong database — `validate_app_identity_uniqueness`
+            // (called by `AppRegistry::all()` itself) panics on that
+            // case before we get here, so the resulting map is
+            // unambiguous.
             let label_to_database: HashMap<&'static str, &'static str> = AppRegistry::all()
                 .iter()
                 .map(|d| (d.label, d.database))
@@ -677,5 +751,56 @@ mod tests {
         ids.sort();
         // crud_log < main; within main, billing < users.
         assert_eq!(ids, vec![crud_audit, main_billing, main_users]);
+    }
+
+    fn descriptor_for(label: &'static str, database: &'static str) -> AppDescriptor {
+        AppDescriptor {
+            label,
+            database,
+            renamed_from: None,
+            tombstone: false,
+        }
+    }
+
+    #[test]
+    fn validate_uniqueness_accepts_distinct_labels() {
+        // Sorted by (label, database) so the windows scan sees them
+        // adjacent in a representative order.
+        let mut descs = vec![
+            AppDescriptor::GLOBAL,
+            descriptor_for("billing", "main"),
+            descriptor_for("users", "main"),
+        ];
+        descs.sort_by(|a, b| (a.label, a.database).cmp(&(b.label, b.database)));
+        validate_app_identity_uniqueness(&descs);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate app identity")]
+    fn validate_uniqueness_panics_on_duplicate_pair() {
+        let mut descs = vec![
+            AppDescriptor::GLOBAL,
+            descriptor_for("audit", "main"),
+            descriptor_for("audit", "main"),
+        ];
+        descs.sort_by(|a, b| (a.label, a.database).cmp(&(b.label, b.database)));
+        validate_app_identity_uniqueness(&descs);
+    }
+
+    #[test]
+    #[should_panic(expected = "workspace-wide label uniqueness")]
+    fn validate_uniqueness_panics_on_same_label_different_database() {
+        // The bug F2 fixed: `main/audit/` and `crud_log/audit/` look
+        // legitimate under the full `(database, label)` identity, but
+        // `ModelDescriptor` carries only `label`, so cross-app FK
+        // resolution cannot disambiguate. Rejected at registration
+        // time until the descriptor-shape upgrade lands.
+        let mut descs = vec![
+            AppDescriptor::GLOBAL,
+            descriptor_for("audit", "crud_log"),
+            descriptor_for("audit", "main"),
+        ];
+        descs.sort_by(|a, b| (a.label, a.database).cmp(&(b.label, b.database)));
+        validate_app_identity_uniqueness(&descs);
     }
 }

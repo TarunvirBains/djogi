@@ -22,7 +22,7 @@ pub(crate) fn require_string_lit(value: &Expr, key: &str) -> syn::Result<LitStr>
     } else {
         Err(syn::Error::new_spanned(
             value,
-            format!("`{key}` expects a string literal"),
+            format!("`{key} = …` must be a string literal"),
         ))
     }
 }

@@ -57,33 +57,35 @@ use crate::error::{DbError, DjogiError};
 
 pub mod builtins;
 
-mod sealed {
-    /// Hidden witness carried by every [`crate::primary_key::PrimaryKey`]
-    /// impl. The field stays private so handwritten code cannot
-    /// construct the token accidentally — the seal forces every PK type
-    /// to go through the [`djogi::primary_key!`] macro (or through the
-    /// built-in HeerId / RanjId / Serial impls in this crate). Matches
-    /// the [`crate::apps::App`] sealing convention.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct PkSealToken {
-        _private: (),
-    }
-
-    pub const TOKEN: PkSealToken = PkSealToken { _private: () };
-}
-
 /// Hidden seal witness type for [`PrimaryKey`].
 ///
-/// Public only so the [`djogi::primary_key!`] macro can name the type
-/// from downstream crates. The sole value lives in
-/// [`__DJOGI_PK_SEAL_TOKEN`]; the struct has no public constructor.
+/// `#[doc(hidden)] pub` because the trait associated const
+/// `__DJOGI_PK_SEAL` has this type and the trait itself is public —
+/// macro emission in downstream crates needs to be able to name the
+/// type. The struct has no public constructor; the sole value lives
+/// in [`crate::__private::pk_seal::TOKEN`] which routes through the
+/// off-limits `__private` namespace. Nothing in the public
+/// `djogi::primary_key` path surfaces a constructor — the previous
+/// public `__DJOGI_PK_SEAL_TOKEN` re-export is gone.
+///
+/// Downstream code reaching the value through `djogi::__private` is
+/// explicitly violating the framework boundary; same convention as
+/// `VisageSealed` in [`crate::__private`].
 #[doc(hidden)]
-pub use sealed::PkSealToken;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PkSealToken {
+    _private: (),
+}
 
-/// Hidden witness value that only macro-generated [`PrimaryKey`] impls
-/// (and the built-in impls in [`builtins`]) are expected to use.
-#[doc(hidden)]
-pub const __DJOGI_PK_SEAL_TOKEN: PkSealToken = sealed::TOKEN;
+impl PkSealToken {
+    /// `pub(crate)` constructor so the [`crate::__private::pk_seal`]
+    /// module can mint the witness without exposing a public path on
+    /// the type itself. The empty private field still keeps
+    /// downstream code from naming `PkSealToken { ... }` directly.
+    pub(crate) const fn __new() -> Self {
+        Self { _private: () }
+    }
+}
 
 /// Convert a batch size to the Postgres `INTEGER` parameter used by
 /// bulk primary-key allocation helpers.
@@ -93,7 +95,13 @@ pub fn checked_count(n: usize) -> Result<i32, DjogiError> {
 
 /// Error used when a bulk primary-key allocation request cannot fit in
 /// the database function's `INTEGER` count parameter.
-pub fn bulk_count_overflow_err(n: usize) -> DjogiError {
+///
+/// Visibility note: this helper is consumed only by [`checked_count`]
+/// in this module. Macro-emitted code never calls it directly — it
+/// reaches the same error path via `checked_count(...)`. Kept
+/// `pub(crate)` to match the original `builtins.rs`-local helper that
+/// preceded the simplify pass.
+pub(crate) fn bulk_count_overflow_err(n: usize) -> DjogiError {
     DjogiError::Db(DbError::other(format!(
         "djogi::primary_key!: bulk generate rejected — count {n} exceeds i32::MAX"
     )))
@@ -115,16 +123,21 @@ pub fn bulk_row_count_mismatch_err(got: usize, want: usize, label: &str) -> Djog
 ///
 /// # Sealing
 ///
-/// Sealed via [`PkSealToken`] — the only paths to a valid impl are the
-/// built-in HeerId / RanjId / Serial impls in [`builtins`] and the
-/// [`djogi::primary_key!`] macro. Hand-rolled `impl PrimaryKey for …`
-/// in downstream crates fail at the
-/// [`__DJOGI_PK_SEAL`](Self::__DJOGI_PK_SEAL) const because
-/// [`PkSealToken`] has no public constructor. Matches the
-/// [`crate::apps::App`] sealing convention.
+/// Sealed via a hidden `PkSealToken` witness — the only paths to a
+/// valid impl are the built-in HeerId / RanjId / Serial impls in
+/// [`builtins`] and the [`djogi::primary_key!`] macro. Hand-rolled
+/// `impl PrimaryKey for …` in downstream crates fail at the
+/// [`__DJOGI_PK_SEAL`](Self::__DJOGI_PK_SEAL) const because the token
+/// type has no public constructor and the public `djogi::primary_key`
+/// path no longer re-exports either the type or its sole instance —
+/// macro-emitted code reaches them through
+/// [`crate::__private::pk_seal`] (a doc-hidden path under the
+/// off-limits `__private` namespace). Matches the
+/// [`crate::apps::App`] sealing convention and the `VisageSealed`
+/// convention in [`crate::__private`].
 pub trait PrimaryKey: Sized + 'static {
     /// Hidden seal witness — only macro-emitted and built-in impls
-    /// can name the value (see [`__DJOGI_PK_SEAL_TOKEN`]).
+    /// can name the value (see [`crate::__private::pk_seal`]).
     #[doc(hidden)]
     const __DJOGI_PK_SEAL: PkSealToken;
 

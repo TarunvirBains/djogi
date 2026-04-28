@@ -139,6 +139,33 @@ pub mod __private {
     pub use crate::visage_boundary::DjogiVisageOf;
     pub use crate::visage_boundary::private::Sealed as VisageSealed;
 
+    /// Hidden seal-token witnesses for [`crate::primary_key::PrimaryKey`]
+    /// and [`crate::apps::App`].
+    ///
+    /// The public `djogi::primary_key` and `djogi::apps` paths used to
+    /// re-export the token consts (`__DJOGI_PK_SEAL_TOKEN`,
+    /// `__DJOGI_APPS_SEAL_TOKEN`). That made the seals bypassable —
+    /// downstream code could grab the public consts and hand-roll a
+    /// trait impl. The consts now live only here, under the
+    /// `__private` namespace whose contract states "downstream code
+    /// reaching in is breaking the framework boundary; we reserve the
+    /// right to break that code in any future release without notice."
+    /// Same convention as `VisageSealed` above.
+    pub mod pk_seal {
+        pub use crate::primary_key::PkSealToken;
+
+        /// Sole [`PkSealToken`] value — reached from macro-emitted
+        /// code via `::djogi::__private::pk_seal::TOKEN`.
+        pub const TOKEN: PkSealToken = PkSealToken::__new();
+    }
+    pub mod apps_seal {
+        pub use crate::apps::SealToken;
+
+        /// Sole [`SealToken`] value — reached from macro-emitted code
+        /// via `::djogi::__private::apps_seal::TOKEN`.
+        pub const TOKEN: SealToken = SealToken::__new();
+    }
+
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     ///
     /// Routing through `::djogi::__private::tracing` keeps user crates from

@@ -1,0 +1,5 @@
+error[E0425]: cannot find value `__DJOGI_APPS_SEAL_TOKEN` in module `djogi::apps`
+  --> tests/compile_fail/simplify_followup_apps_seal_token_not_public.rs:16:54
+   |
+16 |     const __DJOGI_APP_SEAL: SealToken = djogi::apps::__DJOGI_APPS_SEAL_TOKEN;
+   |                                                      ^^^^^^^^^^^^^^^^^^^^^^^ not found in `djogi::apps`

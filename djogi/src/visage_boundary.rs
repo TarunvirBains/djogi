@@ -58,8 +58,9 @@ impl<M: crate::model::Model> DjogiVisageOf<M> for M {}
 /// (or `djogi::visage_boundary::private::Sealed`) for a type outside the
 /// `#[model]` macro's emission is breaking the contract; we reserve the
 /// right to break that code in any future release without notice. The
-/// existing `apps::__DJOGI_APPS_SEAL_TOKEN` and `model::__sealed::Sealed`
-/// surfaces follow the same convention.
+/// existing `__private::apps_seal` / `__private::pk_seal` token
+/// surfaces and the `model::__sealed::Sealed` boundary follow the
+/// same convention.
 #[doc(hidden)]
 pub mod private {
     /// Seal marker — only `#[model]`-emitted code and the reflexive

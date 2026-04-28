@@ -1,0 +1,5 @@
+error[E0425]: cannot find value `__DJOGI_PK_SEAL_TOKEN` in module `djogi::primary_key`
+  --> tests/compile_fail/simplify_followup_pk_seal_token_not_public.rs:16:62
+   |
+16 |     const __DJOGI_PK_SEAL: PkSealToken = djogi::primary_key::__DJOGI_PK_SEAL_TOKEN;
+   |                                                              ^^^^^^^^^^^^^^^^^^^^^ not found in `djogi::primary_key`
