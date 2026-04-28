@@ -98,6 +98,20 @@ pub enum RunnerError {
         attempts: u32,
     },
 
+    /// The `pg_try_advisory_lock` probe itself failed (the query
+    /// errored, or its boolean result could not be extracted).
+    /// Distinct from [`RunnerError::AdvisoryLockFailed`] (which
+    /// fires after the probe succeeded but returned `false` for
+    /// every retry) and from [`RunnerError::LedgerWriteFailed`]
+    /// (which is reserved for actual ledger writes — see
+    /// cluster-2 Finding 6).
+    AdvisoryLockQueryFailed {
+        /// `app_label` of the bucket whose lock was being acquired.
+        app_label: String,
+        /// The underlying Postgres error.
+        source: DjogiError,
+    },
+
     /// Stored checksum does not match a freshly-computed one. The
     /// runner refuses to apply when a migration's SQL has been
     /// edited after it was committed.
@@ -330,6 +344,10 @@ impl std::fmt::Display for RunnerError {
                 db = bucket.database,
                 app = bucket.app,
             ),
+            RunnerError::AdvisoryLockQueryFailed { app_label, source } => write!(
+                f,
+                "pg_try_advisory_lock query failed for app `{app_label}`: {source}",
+            ),
             RunnerError::ChecksumMismatch(m) => write!(f, "{m}"),
             RunnerError::ChecksumFormat(e) => write!(f, "{e}"),
             RunnerError::LedgerWriteFailed { version, source } => {
@@ -500,6 +518,7 @@ impl std::error::Error for RunnerError {
             RunnerError::ChecksumFormat(e) => Some(e),
             RunnerError::GuardError(e) => Some(e),
             RunnerError::LedgerWriteFailed { source, .. } => Some(source),
+            RunnerError::AdvisoryLockQueryFailed { source, .. } => Some(source),
             RunnerError::TransactionalSegmentFailed { source, .. } => Some(source),
             RunnerError::NonTransactionalSegmentFailed { source, .. } => Some(source),
             RunnerError::ConfigLoadFailed { source } => Some(source),
@@ -1870,14 +1889,16 @@ async fn acquire_advisory_lock(
         let row = ctx
             .query_one("SELECT pg_try_advisory_lock($1)", &[&key])
             .await
-            .map_err(|e| RunnerError::LedgerWriteFailed {
-                version: bucket.app.clone(),
+            .map_err(|e| RunnerError::AdvisoryLockQueryFailed {
+                app_label: bucket.app.clone(),
                 source: e,
             })?;
-        let acquired: bool = row.try_get(0).map_err(|e| RunnerError::LedgerWriteFailed {
-            version: bucket.app.clone(),
-            source: DjogiError::from(e),
-        })?;
+        let acquired: bool = row
+            .try_get(0)
+            .map_err(|e| RunnerError::AdvisoryLockQueryFailed {
+                app_label: bucket.app.clone(),
+                source: DjogiError::from(e),
+            })?;
         if acquired {
             return Ok(());
         }
