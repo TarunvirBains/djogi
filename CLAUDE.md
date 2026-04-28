@@ -56,10 +56,14 @@ cargo clippy --all-targets --all-features
 # Format
 cargo fmt --all
 
-# CLI (once djogi-cli is implemented)
-djogi migrate
-djogi shell
-djogi db reset --seed
+# CLI (Phase 7 + later phases)
+djogi migrations compose             # generate up/down SQL pair from descriptor drift
+djogi migrations status              # show ledger / snapshot / live-DB state
+djogi migrations attune              # reconcile disk / ledger / live DB
+djogi db reset --yes                 # drop, recreate, replay (triple-gated)
+djogi db seed                        # run seeds/<database>/*.sql via djogi_seed_runs ledger
+djogi docs                           # render Markdown reference pages from descriptor inventory
+djogi shell                          # Rhai shell (Phase 8+)
 ```
 
 After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets --all-features` before handoff when feasible, not just targeted tests.
@@ -110,7 +114,7 @@ For queries beyond `QuerySet`, raw `sqlx::QueryBuilder` is always available as a
 - Diffs against `migrations/schema_snapshot.json`
 - Generates migration SQL pairs if drift detected; emits compiler warning (not error)
 
-`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful `djogi migrate`.
+`migrations/` is a git submodule — managed by CI, not by the developer directly. `schema_snapshot.json` is updated only on successful `djogi migrations apply` (the runner persists the snapshot atomically after every transactional segment commits and the ledger row reaches `applied`).
 
 ### Three-Database Architecture
 

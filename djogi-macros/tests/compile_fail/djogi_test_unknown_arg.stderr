@@ -1,4 +1,4 @@
-error: #[djogi_test] unknown argument `foo`; supported arguments: `extensions = [...]`
+error: #[djogi_test] unknown argument `foo`; supported arguments: `extensions = [...]`, `sync_models = [...]`
  --> tests/compile_fail/djogi_test_unknown_arg.rs:4:21
   |
 4 | #[djogi::djogi_test(foo = "bar")]

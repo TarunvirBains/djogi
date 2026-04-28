@@ -367,7 +367,6 @@ pub fn expand(
             // column's name; relation scopes map to the peer visage
             // type name. Empty / suppressed specs emit `&[]`.
             let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
-
             // Relation metadata — `None`/`&[]` for scalar columns.
             //
             // Descriptor lookup keys off the short target name (last path
@@ -425,6 +424,31 @@ pub fn expand(
                     target_type_name: #target_type_name_tokens,
                     visage_map: #projection_map_tokens,
                 }
+            }
+        })
+        .collect();
+    let deferrability_submits: Vec<TokenStream> = user_fields
+        .iter()
+        .filter_map(|(field, fa)| {
+            let raw_name = field.ident.as_ref().unwrap().to_string();
+            let name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            let relation = detect_relation(&field.ty);
+            match relation {
+                Some(_) => {
+                    let deferrable = fa.deferrable;
+                    let initially_deferred = fa.initially_deferred;
+                    Some(quote! {
+                        ::djogi::__private::inventory::submit! {
+                            ::djogi::DeferrabilitySpec {
+                                model_type_name: #type_name,
+                                field_name: #name,
+                                deferrable: #deferrable,
+                                initially_deferred: #initially_deferred,
+                            }
+                        }
+                    })
+                }
+                None => None,
             }
         })
         .collect();
@@ -612,6 +636,12 @@ pub fn expand(
         },
         None => quote! { ::core::option::Option::None },
     };
+    // Phase 7 T2 — `#[model(renamed_from = "old_table")]` carries the
+    // prior table name as a string literal. None for unrenamed models.
+    let renamed_from_tokens = match &model_attrs.renamed_from {
+        Some(s) => quote! { ::core::option::Option::Some(#s) },
+        None => quote! { ::core::option::Option::None },
+    };
 
     quote! {
         #tombstone_guard_tokens
@@ -646,8 +676,11 @@ pub fn expand(
                 // Phase 7-Zero v3 T8 — apps subsystem linkage.
                 app: #app_tokens,
                 moved_from_app: #moved_from_app_tokens,
+                // Phase 7 T2 — table-rename hint.
+                renamed_from: #renamed_from_tokens,
             }
         }
+        #(#deferrability_submits)*
     }
 }
 

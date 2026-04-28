@@ -1,0 +1,5 @@
+error: #[djogi_test] `sync_models` expects an array literal of type paths, e.g. `sync_models = [Widget, Category]`
+ --> tests/compile_fail/djogi_test_sync_models_scalar_value.rs:5:35
+  |
+5 | #[djogi::djogi_test(sync_models = Widget)]
+  |                                   ^^^^^^

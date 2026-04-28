@@ -536,6 +536,7 @@ mod tests {
         fts: None,
         app: None,
         moved_from_app: None,
+        renamed_from: None,
     };
 
     static FUEL_TYPES_DESC: ModelDescriptor = ModelDescriptor {
@@ -570,6 +571,7 @@ mod tests {
         fts: None,
         app: None,
         moved_from_app: None,
+        renamed_from: None,
     };
 
     fn owners_descriptor() -> &'static ModelDescriptor {

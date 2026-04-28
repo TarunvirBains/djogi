@@ -610,6 +610,24 @@ impl DjogiContext {
         rows.iter().map(T::from_pg_row).collect()
     }
 
+    /// Execute ad-hoc SQL and return the raw `tokio_postgres::Row`s.
+    ///
+    /// This is the escape hatch for multi-column SELECTs that don't fit
+    /// the typed [`raw_query`](Self::raw_query) shape — e.g. catalog
+    /// inspection (`pg_class`, `pg_attribute`, `information_schema.*`),
+    /// admin tooling, parity tests. Callers decode columns positionally
+    /// via `row.try_get::<_, T>(i)`.
+    ///
+    /// Inside [`atomic()`](crate::transaction::atomic), the rows come
+    /// from the active transaction / savepoint connection.
+    pub async fn raw_rows(
+        &mut self,
+        sql: &str,
+        binds: &[&(dyn ToSql + Sync)],
+    ) -> Result<Vec<Row>, DjogiError> {
+        self.query_all(sql, binds).await
+    }
+
     /// Execute ad-hoc SQL expected to return exactly one row decoded as `T`.
     ///
     /// This is the single-row sibling of [`raw_query`](Self::raw_query):

@@ -169,6 +169,18 @@ pub struct ModelAttrs {
     /// that's the intended lifecycle shape for retirements. Resolved
     /// via `<Path as ::djogi::App>::LABEL` same as `app`.
     pub moved_from_app: Option<syn::Path>,
+
+    /// Prior table name when the model has been renamed via
+    /// `#[model(table = "...", renamed_from = "old_table")]` —
+    /// Phase 7 T2.
+    ///
+    /// String literal value. The differ uses this to emit
+    /// `ALTER TABLE old_table RENAME TO new_table` rather than the
+    /// destructive DROP+CREATE pair. The macro validates the string
+    /// against the same Postgres identifier grammar that `table = "..."`
+    /// uses (ASCII letter/underscore start, ASCII alphanumerics/
+    /// underscores after, ≤63 bytes).
+    pub renamed_from: Option<String>,
 }
 
 /// Parsed `pk = X` value.
@@ -248,6 +260,7 @@ impl ModelAttrs {
         let mut seen_indexes = false;
         let mut app: Option<syn::Path> = Option::None;
         let mut moved_from_app: Option<syn::Path> = Option::None;
+        let mut renamed_from: Option<String> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -401,12 +414,25 @@ impl ModelAttrs {
                             ));
                         }
                         tenant_key = Some(key_val);
+                    } else if path.is_ident("renamed_from") {
+                        // Phase 7 T2 — `#[model(renamed_from = "old_table")]`
+                        // table-rename hint. Same Postgres identifier
+                        // grammar that `table = "..."` enforces.
+                        if renamed_from.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `renamed_from` key in #[model(...)]",
+                            ));
+                        }
+                        crate::ident::check_table_name(&s.value(), s.span())?;
+                        renamed_from = Some(s.value());
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
-                                 `idempotency_key`, `tenant_key`, `fts`, `no_default`, `through`, or `events`",
+                                 `idempotency_key`, `tenant_key`, `renamed_from`, `fts`, \
+                                 `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -525,6 +551,7 @@ impl ModelAttrs {
             indexes,
             app,
             moved_from_app,
+            renamed_from,
         })
     }
 }
@@ -786,6 +813,13 @@ pub struct FieldAttrs {
     /// set (darling's derive alone cannot constrain a `String` domain).
     #[darling(default)]
     pub on_delete: Option<String>,
+    /// `#[field(deferrable)]` — mark a relation FK as DEFERRABLE.
+    #[darling(default)]
+    pub deferrable: bool,
+    /// `#[field(initially_deferred)]` — only valid together with
+    /// `deferrable`; emits INITIALLY DEFERRED instead of INITIALLY IMMEDIATE.
+    #[darling(default)]
+    pub initially_deferred: bool,
     /// `#[field(outbox = "ignore")]` — strip this column from the
     /// transactional outbox payload emitted by models with
     /// `#[model(events)]`.
@@ -1341,6 +1375,8 @@ impl FieldAttrs {
             "max_length",
             "renamed_from",
             "on_delete",
+            "deferrable",
+            "initially_deferred",
             "outbox",
             "sequence_within",
             "expose",
@@ -1475,6 +1511,15 @@ impl FieldAttrs {
                     ),
                 ));
             }
+        }
+
+        if attrs.initially_deferred && !attrs.deferrable {
+            let span = find_path_only_attr_span(field, "initially_deferred")
+                .unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(initially_deferred)]` requires `#[field(deferrable)]` on the same field",
+            ));
         }
 
         if let Some(outbox) = &attrs.outbox {
@@ -1645,6 +1690,25 @@ fn find_on_delete_lit_span(field: &syn::Field) -> Option<proc_macro2::Span> {
     find_named_str_lit_span(field, "on_delete")
 }
 
+fn find_path_only_attr_span(field: &syn::Field, key: &str) -> Option<proc_macro2::Span> {
+    for attr in &field.attrs {
+        if !attr.path().is_ident("field") {
+            continue;
+        }
+        let metas = attr
+            .parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+            .ok()?;
+        for meta in &metas {
+            if let Meta::Path(path) = meta
+                && path.is_ident(key)
+            {
+                return Some(path.span());
+            }
+        }
+    }
+    None
+}
+
 /// Walk the raw `#[field(...)]` attrs on `field` and return the `Span` of
 /// the string literal bound to `key`, if present.
 ///
@@ -1690,6 +1754,28 @@ fn find_named_str_lit_span(field: &syn::Field, key: &str) -> Option<proc_macro2:
 /// Called by `descriptor::expand` and `inject::expand` starting in Tasks 4–6.
 #[allow(dead_code)]
 pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
+    // Structural recognition for `Jsonb<T>` wrappers — runs BEFORE the
+    // string-based match so any path-form `Jsonb<…>` resolves to JSONB
+    // regardless of how it was spelled. Catches `Jsonb<T>`,
+    // `djogi::Jsonb<T>`, `djogi::jsonb::Jsonb<T>`, `crate::Jsonb<T>`,
+    // `super::Jsonb<T>`, `::djogi::Jsonb<T>`, etc. — anywhere the path's
+    // last segment is `Jsonb` AND it carries angle-bracket generic
+    // arguments.
+    //
+    // Codex T10 round-2 N-1: the previous string-prefix matcher only
+    // recognized three exact prefixes (`Jsonb<`, `djogi::Jsonb<`,
+    // `djogi::jsonb::Jsonb<`), silently mapping `crate::Jsonb<T>` /
+    // `super::Jsonb<T>` to TEXT and producing INSERT failures on the
+    // typed Jsonb round-trip. Switching to last-segment ident check
+    // closes the family.
+    if let syn::Type::Path(syn::TypePath { qself: None, path }) = ty
+        && let Some(last) = path.segments.last()
+        && last.ident == "Jsonb"
+        && matches!(last.arguments, syn::PathArguments::AngleBracketed(_))
+    {
+        return Some("JSONB");
+    }
+
     // Normalise whitespace and strip an optional leading `::` so absolute
     // paths (`::djogi::types::HeerId`) match the same arms as their
     // relative counterparts (`djogi::types::HeerId`).
@@ -1767,6 +1853,9 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         | "djogi::MultiPolygon" => Some("GEOGRAPHY(MultiPolygon, 4326)"),
         // Option<T> is handled at call site — strip and recurse via unwrap_option
         _ if s.starts_with("Option<") => None,
+        // (Jsonb<T> recognition lives at the top of this fn — structural
+        // last-segment match handles bare / djogi:: / djogi::jsonb:: /
+        // crate:: / super:: / ::djogi:: forms uniformly.)
         _ => None,
     }
 }
@@ -2048,5 +2137,106 @@ pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
             Some(other) => FieldSqlTypeCategory::Unsupported(other.to_owned()),
             None => FieldSqlTypeCategory::Unsupported(s),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rust_type_to_sql;
+    use syn::parse_quote;
+
+    /// Phase 7 T10 — `Jsonb<T>` for any `T: JsonbSchema` must lower to
+    /// `JSONB`. Codex round-1 Concern 1 PARTIAL flagged that the three
+    /// substrate fixes T10 made (this one + framework-col defaults +
+    /// FK type substitution) only had indirect coverage through the
+    /// live integration suite. Direct lock-in here so a regression
+    /// surfaces without needing Postgres.
+    ///
+    /// All three accepted path forms are covered: bare ident, the
+    /// `djogi::Jsonb<T>` re-export, and the canonical
+    /// `djogi::jsonb::Jsonb<T>` path. The leading `::` form rides on
+    /// the function's strip-prefix normalization (line ~1724) so it
+    /// shares a code path with the relative form and one assertion
+    /// across the three is sufficient.
+    #[test]
+    fn jsonb_wrapper_lowers_to_jsonb_across_path_forms() {
+        let bare: syn::Type = parse_quote!(Jsonb<MyPayload>);
+        let djogi: syn::Type = parse_quote!(djogi::Jsonb<MyPayload>);
+        let djogi_jsonb: syn::Type = parse_quote!(djogi::jsonb::Jsonb<MyPayload>);
+        assert_eq!(rust_type_to_sql(&bare), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&djogi_jsonb), Some("JSONB"));
+    }
+
+    /// Phase 7 T10 — leading `::` absolute path forms must match the
+    /// same arm as their relative counterparts. Locks in the structural
+    /// last-segment matcher's path-walking semantics (the leading `::`
+    /// only changes `path.leading_colon`, not the segment list, so the
+    /// last-segment ident check fires identically).
+    #[test]
+    fn jsonb_wrapper_absolute_paths_match() {
+        let abs_djogi: syn::Type = parse_quote!(::djogi::Jsonb<P>);
+        let abs_jsonb: syn::Type = parse_quote!(::djogi::jsonb::Jsonb<P>);
+        assert_eq!(rust_type_to_sql(&abs_djogi), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&abs_jsonb), Some("JSONB"));
+    }
+
+    /// Phase 7 T10 round-2 N-1 — `crate::Jsonb<T>` and `super::Jsonb<T>`
+    /// path forms must also resolve to `JSONB`. The previous
+    /// string-prefix matcher only recognized `Jsonb<` / `djogi::Jsonb<`
+    /// / `djogi::jsonb::Jsonb<` and silently mapped these crate-relative
+    /// shapes to TEXT, producing INSERT failures at runtime. The
+    /// structural last-segment matcher closes that gap because both
+    /// `crate` and `super` keywords are valid path-segment idents in
+    /// `syn::Type::Path` and the last segment is still `Jsonb`.
+    #[test]
+    fn jsonb_wrapper_crate_relative_path_forms_match() {
+        let crate_path: syn::Type = parse_quote!(crate::Jsonb<P>);
+        let super_path: syn::Type = parse_quote!(super::Jsonb<P>);
+        let nested_crate: syn::Type = parse_quote!(crate::jsonb::Jsonb<P>);
+        let deep_module: syn::Type = parse_quote!(crate::models::common::Jsonb<P>);
+        assert_eq!(rust_type_to_sql(&crate_path), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&super_path), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&nested_crate), Some("JSONB"));
+        assert_eq!(rust_type_to_sql(&deep_module), Some("JSONB"));
+    }
+
+    /// Negative case — types that just *contain* `Jsonb` somewhere but
+    /// aren't the wrapper must NOT fall into the JSONB arm. The
+    /// structural matcher checks `path.segments.last().ident == "Jsonb"`
+    /// AND that the last segment carries angle-bracket generics, so:
+    ///
+    /// - `MyJsonb<T>` — last segment ident is `MyJsonb`, not `Jsonb` →
+    ///   no match.
+    /// - `Vec<Jsonb<T>>` — last segment ident is `Vec` (the inner
+    ///   `Jsonb<T>` lives inside `Vec`'s generic args, not on the
+    ///   outer path) → no match.
+    /// - `Jsonb` (no generics) — fails the `AngleBracketed` arm guard
+    ///   so a hypothetical non-generic `Jsonb` type is not coerced to
+    ///   JSONB just because the ident matches.
+    #[test]
+    fn jsonb_lookalikes_do_not_match() {
+        let lookalike: syn::Type = parse_quote!(MyJsonb<P>);
+        let in_generic: syn::Type = parse_quote!(Vec<Jsonb<P>>);
+        let no_generics: syn::Type = parse_quote!(Jsonb);
+        assert_eq!(rust_type_to_sql(&lookalike), None);
+        assert_eq!(rust_type_to_sql(&in_generic), None);
+        assert_eq!(rust_type_to_sql(&no_generics), None);
+    }
+
+    /// Phase 7 T10 round-2 N-1 — `Option<Jsonb<T>>` returns `None`
+    /// directly because callers strip the `Option<…>` wrapper via
+    /// `unwrap_option` before calling `rust_type_to_sql`. This locks
+    /// in the convention so a refactor that bypasses `unwrap_option`
+    /// surfaces here. (The structural Jsonb check at the top of the
+    /// fn does NOT recurse through `Option`'s generic args — last
+    /// segment of `Option<Jsonb<T>>` is `Option`, not `Jsonb`.)
+    #[test]
+    fn jsonb_inside_option_is_unwrap_responsibility() {
+        let optioned: syn::Type = parse_quote!(Option<Jsonb<P>>);
+        // `rust_type_to_sql` itself returns None — Option-stripping is
+        // a caller concern. The string-based fallback then matches the
+        // `_ if s.starts_with("Option<") => None` arm.
+        assert_eq!(rust_type_to_sql(&optioned), None);
     }
 }

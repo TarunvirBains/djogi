@@ -104,16 +104,21 @@ Failure marker protocol:
 
 Migration files are plain SQL and always generated as a pair:
 
-- `NNNN_description_up.sql`
-- `NNNN_description_down.sql`
+- up file: `V<YYYYMMDDHHMMSS>__<slug>.sql`
+- down file: `V<YYYYMMDDHHMMSS>__<slug>.down.sql`
+
+The leading `V` plus 14-digit UTC timestamp gives lexical = chronological ordering across versions; the slug is operator-supplied (sanitised through the byte-level rules documented in `djogi::migrate::naming::sanitize_slug`). Example pair:
+
+- `V20260425010203__add_vehicle_horsepower.sql`
+- `V20260425010203__add_vehicle_horsepower.down.sql`
 
 Example UP file:
 
 ```sql
--- Migration: 0005_add_vehicle_horsepower
+-- Migration: V20260425010203__add_vehicle_horsepower
 -- Direction: UP
 -- Execution-Mode: transactional
--- Generated: 2026-04-22T10:00:00Z
+-- Generated: 2026-04-25T01:02:03Z
 
 ALTER TABLE vehicles ADD COLUMN horsepower INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX vehicles_horsepower_idx ON vehicles (horsepower);
@@ -122,7 +127,7 @@ CREATE INDEX vehicles_horsepower_idx ON vehicles (horsepower);
 Example DOWN file:
 
 ```sql
--- Migration: 0005_add_vehicle_horsepower
+-- Migration: V20260425010203__add_vehicle_horsepower
 -- Direction: DOWN
 -- Execution-Mode: transactional
 -- WARNING: dropping a column is irreversible — schema shape can be restored, data cannot
@@ -270,20 +275,34 @@ Advisory lock contract:
 Canonical CLI surface:
 
 ```bash
+# Registered in djogi-cli today (Phase 7 T6 / T7 / T8)
 djogi migrations compose
-djogi migrations apply
-djogi migrations apply --fake 0005_add_vehicle_horsepower
-djogi migrations rollback
 djogi migrations status
-djogi migrations verify
-djogi migrations repair
-djogi migrations repair --rebuild-snapshot
-djogi migrations baseline 0001_initial
 djogi migrations attune
 djogi migrations attune <target>
-djogi migrations attune <target> --record
-djogi migrations attune <target> --verify
-djogi migrations attune --squash
+djogi migrations attune <target> --apply
+djogi migrations attune <target> --apply --record
+djogi migrations attune --record-ledger --apply
+djogi migrations attune --squash --from V<ts> --apply
+djogi db reset --yes
+djogi db seed
+djogi db seed --database crud_log
+djogi docs
+
+# Phase-7-deferred — library APIs ship today; CLI dispatch lands in a follow-up
+# task (see Codex round-1 A-4 / A-5 closeout in T8). The runtime entry points
+# (`apply_plan`, `rollback_plan`, `verify`, `repair_*`, `baseline_plan`) are
+# all public and exercised by the integration test suite; the gap is the
+# config / snapshot / plan / ledger plumbing the CLI dispatch needs around
+# them. Adopters who need these flows ahead of the CLI registration can wire
+# the library APIs directly today.
+# djogi migrations apply
+# djogi migrations apply --fake 0005_add_vehicle_horsepower
+# djogi migrations rollback
+# djogi migrations verify
+# djogi migrations repair
+# djogi migrations repair --rebuild-snapshot
+# djogi migrations baseline 0001_initial
 ```
 
 `migrations attune` is the migration-history state-management command.
@@ -295,9 +314,11 @@ Contract:
 - it does not mutate the database unless `--apply` is explicitly passed
 - it does not update the parent repo's recorded submodule pointer unless `--record` is explicitly passed or a command mode clearly implies recording, such as `--squash`
 - `--squash` is a dev-history operation for creating a new squashed migration set
-- `--squash` is hard-gated behind the same environment safety contract as `db reset`: `dev_mode = true`, localhost database URL resolution, and `DJOGI_ENV != production`
+- `--squash` is hard-gated behind a four-condition safety contract: localhost database URL resolution, `Djogi.toml::profile != "production"`, `Djogi.toml::[database].dev_mode = true`, and `DJOGI_ENV` env var NOT case-insensitive `"production"`. All four gates are enforced before any I/O so a refusal produces zero side effects on disk or in the ledger
 - `--squash` must refuse when the migration history is already treated as shared staging/production history
-- publishing a squashed history requires explicit push behavior and a configured remote
+- publishing a squashed history requires the explicit `--publish` flag and a configured remote (the CLI verb is `--publish`, not `--push`, per the OQ-04 ruling in `docs/spec/decisions.md`)
+
+`attune` does not reconcile seed runs. Seeds live at a separate ledger (`djogi_seed_runs`) and follow a separate lifecycle: `djogi db seed --database <name>` discovers `seeds/<name>/*.sql`, applies each one once, and records the result keyed by file name + checksum. The two ledgers do not share any data flow — schema migrations are reproducible, idempotent operations on shape; seeds are operator-authored data that may not survive `db reset` and intentionally lives outside the schema-snapshot contract. Per Codex umbrella (PARTIAL): `attune` is scoped to `djogi_schema_migrations` reconciliation; an operator who wants to inspect or re-run seeds runs `djogi db seed` directly. The asymmetry is by design — conflating the two ledgers would muddle the snapshot invariants the migration runner owes T5 / T7.
 
 Apply semantics:
 
@@ -334,9 +355,15 @@ Adoption flows:
 
 ### 10.9 Verification and Out-of-Order Policy
 
-`migrations verify` is a first-class command.
+Verification is a first-class concern of the engine; the
+`migrations verify` CLI subcommand is **deferred post-Phase-7** (per
+§7.4 of this spec). The library entry point is available today as
+[`djogi::migrate::verify`](../../djogi/src/migrate/verify.rs), and
+adopters can drive it directly or via the `djogi::migrate::repair_*`
+helpers until the CLI dispatch lands.
 
-It compares snapshot/ledger expectations against the live database catalog and is used for:
+The verification path compares snapshot/ledger expectations against
+the live database catalog and is used for:
 
 - baseline validation
 - out-of-band DDL discovery

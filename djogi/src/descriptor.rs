@@ -931,6 +931,7 @@ mod tests {
                 fts: None,
                 app: None,
                 moved_from_app: None,
+                renamed_from: None,
             };
             assert_eq!(desc.pk_column(), Some("id"));
         }
@@ -1007,6 +1008,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
 
         let shape = MigrationShape::from_descriptor(&desc);
@@ -1136,6 +1138,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             desc.has_gist_on_geography(),
@@ -1162,6 +1165,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1189,6 +1193,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1215,6 +1220,7 @@ mod tests {
             fts: None,
             app: None,
             moved_from_app: None,
+            renamed_from: None,
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1303,6 +1309,17 @@ pub struct FieldDescriptor {
     pub visage_map: &'static [(&'static str, &'static str)],
 }
 
+/// Sidecar FK-deferrability metadata emitted separately from
+/// [`FieldDescriptor`] so hand-written descriptor literals remain
+/// source-compatible when new deferrability knobs are added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferrabilitySpec {
+    pub model_type_name: &'static str,
+    pub field_name: &'static str,
+    pub deferrable: bool,
+    pub initially_deferred: bool,
+}
+
 /// Describes an adopter-declared custom PK type.
 ///
 /// Named struct (not bare enum-variant fields) so future fields can be
@@ -1375,7 +1392,14 @@ pub enum PkType {
 /// `fields` contains the **complete** column set: framework-injected columns
 /// (`id`, `created_at`, `updated_at`) appear before user-declared fields in
 /// injection order. See [`FieldDescriptor`] for the exact ordering contract.
-#[derive(Debug)]
+///
+/// `Clone` was added in Phase 7 T2 because the migrate module's
+/// differ-test fixtures need to construct multiple variants of a
+/// descriptor via struct-update syntax (`..base.clone()`); the
+/// derived implementation does a deep copy of the `Option<PartitionSpec>`
+/// and `Option<FtsDescriptor>` fields and a shallow copy of the
+/// `&'static` references.
+#[derive(Debug, Clone)]
 pub struct ModelDescriptor {
     pub type_name: &'static str,
     pub table_name: &'static str,
@@ -1477,6 +1501,20 @@ pub struct ModelDescriptor {
     /// app may be tombstoned — that's the expected retirement flow
     /// (see `docs/guide/apps.md`).
     pub moved_from_app: Option<&'static str>,
+
+    /// Prior table name when the model has been renamed via
+    /// `#[model(table = "...", renamed_from = "old_table")]`. Phase
+    /// 7's migration differ uses this to emit
+    /// `ALTER TABLE old_table RENAME TO new_table` rather than a
+    /// destructive DROP+CREATE pair.
+    ///
+    /// Carries the old **string** table name, not a type — old
+    /// model types may no longer exist in source after a sweep that
+    /// renamed many tables in one pass.
+    ///
+    /// `None` for every model that has not been renamed (the common
+    /// case).
+    pub renamed_from: Option<&'static str>,
 }
 
 impl ModelDescriptor {
@@ -1581,6 +1619,7 @@ impl ModelDescriptor {
 }
 
 inventory::collect!(ModelDescriptor);
+inventory::collect!(DeferrabilitySpec);
 
 /// Contract-validation helper that maps a [`ModelDescriptor`] to the DDL
 /// intent it implies.

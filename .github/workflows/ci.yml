@@ -114,3 +114,98 @@ jobs:
 
       - name: Test
         run: cargo test --workspace -- --test-threads=1
+
+  # Spatial / PostGIS coverage — runs the Phase 7 T10 sync_models
+  # spatial scenario against a PostGIS-enabled Postgres image. The
+  # default `check` job above runs only with default features against
+  # `postgres:18`, so any test that calls into `CREATE EXTENSION
+  # postgis` is silently skipped there (Codex T10 round-1 B-1: the
+  # `extensions`-before-`sync_models` ordering proof for
+  # `geography(Point, 4326)` columns lives only in the `spatial`
+  # feature, and without this dedicated job the proof never runs in
+  # CI).
+  #
+  # Currently runs only `phase7_t10_sync_models_live --all-features`.
+  # Future spatial-feature tests that are not part of that target will
+  # need to be added explicitly to the test step.
+  #
+  # Kept as a separate job rather than a feature toggle inside `check`
+  # so the spatial dependency footprint (PostGIS image pull, GEOS
+  # libraries) doesn't slow down the common default-features run.
+  spatial:
+    name: Spatial (PostGIS)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # `postgis/postgis` provides Postgres + PostGIS preinstalled.
+        # The `:18-3.6` tag pins to Postgres 18 (Djogi's supported
+        # version) with PostGIS 3.6. The image is officially maintained
+        # by the PostGIS team and is the standard choice for CI.
+        # (Codex T10 round-2 B-1: `:18-3.5` is not a published tag;
+        # the upstream image registry only ships PostGIS 3.5 against
+        # Postgres 17, and PostGIS 3.6 against Postgres 18.)
+        image: postgis/postgis:18-3.6
+        env:
+          POSTGRES_USER: djogi
+          POSTGRES_PASSWORD: djogi
+          POSTGRES_DB: djogi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U djogi"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://djogi:djogi@localhost:5432/djogi_test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Free disk space on GHA runner
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/boost
+          df -h /
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, rust-src
+
+      # Two-cache layout: registry/git share with the `check` job
+      # (same Cargo.lock → same .crate downloads), but `target/` is
+      # isolated per feature set because `check` builds with default
+      # features and `spatial` builds with `--all-features`. Sharing a
+      # `target/` would force one job's incremental artifacts to evict
+      # the other's, doubling cache misses. Splitting only the build
+      # output keeps the 10 GB repo cache budget healthy. (Codex T10
+      # round-2 N-2.)
+      - name: Cache cargo registry/git (shared with check job)
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Cache cargo target (spatial feature set)
+        uses: actions/cache@v5
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-target-spatial-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-target-spatial-
+
+      # Run the T10 live sync_models suite with `--all-features` so the
+      # `#[cfg(feature = "spatial")]` scenarios compile and execute.
+      # Single-threaded because each `#[djogi_test]` provisions its own
+      # per-test database; concurrent provisioning races on
+      # CREATE/DROP DATABASE.
+      - name: T10 spatial sync_models live test
+        run: cargo test -p djogi --test phase7_t10_sync_models_live --all-features -- --test-threads=1

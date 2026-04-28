@@ -15,3 +15,8 @@ path = "src/main.rs"
 clap.workspace = true
 tokio.workspace = true
 djogi.workspace = true
+# Used by the `migrations compose` glue to take the compose-time
+# clock that lands in the version slug. The djogi crate already
+# carries `time` via the workspace dep; the CLI binary picks it up
+# directly so the compose path stays a thin wrapper.
+time.workspace = true
