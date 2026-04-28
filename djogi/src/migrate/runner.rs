@@ -2666,9 +2666,17 @@ fn partitioned_parent_from_label(label: &str) -> Option<String> {
     // with the `<EACH_LEAF_TABLE>` placeholder. Prep and cutover
     // operate on the partitioned parent directly via Postgres'
     // partition-aware DDL and do not need expansion.
-    for prefix in ["PkFlipPartitionedBackfill ", "PkFlipPartitionedIndex "] {
+    for prefix in [
+        "PkFlipPartitionedBackfill ",
+        "PkFlipPartitionedIndex ",
+        "PkFlipPartitionedSelfFkIndex ",
+    ] {
         if let Some(rest) = label.strip_prefix(prefix) {
-            return Some(rest.to_string());
+            // Take the first whitespace-separated token — the parent
+            // table name. Defensive: future labels may carry trailing
+            // qualifiers (e.g. `(parent-level)` after expansion).
+            let parent = rest.split_whitespace().next().unwrap_or(rest);
+            return Some(parent.to_string());
         }
     }
     None
@@ -2848,6 +2856,58 @@ fn expand_partition_statement(
         return out;
     }
 
+    if stmt.label.starts_with("PkFlipPartitionedSelfFkIndex ") {
+        // Single-column self-FK index on a partitioned parent. Body
+        // form: `CREATE INDEX <idx> ON ONLY <parent> (<col>_desc);`
+        // plus a comment header. Mirror the PkFlipPartitionedIndex
+        // expansion: keep the parent-level statement as the FIRST
+        // OperationSql, then per-leaf CONCURRENTLY + ATTACH PARTITION.
+        let parent_stmt = extract_first_statement_starting_with(&stmt.up, "CREATE INDEX ");
+        let parent_index_name = recover_parent_index_name(&parent_stmt);
+        let (col, suffix) = recover_self_fk_column(&parent_stmt);
+
+        out.push(OperationSql {
+            label: format!("PkFlipPartitionedSelfFkIndex {parent} (parent-level)"),
+            up: parent_stmt.clone(),
+            down: stmt.down.clone(),
+            lossy: stmt.lossy.clone(),
+        });
+
+        for leaf in leaves {
+            let leaf_idx = format!(
+                "{leaf}_{col}{suffix}_idx",
+                leaf = strip_schema_prefix(leaf),
+                col = col,
+                suffix = suffix,
+            );
+            let create_concurrent = format!(
+                "CREATE INDEX CONCURRENTLY {leaf_idx} ON {leaf} ({col}{suffix})",
+                leaf_idx = leaf_idx,
+                leaf = leaf,
+                col = col,
+                suffix = suffix,
+            );
+            out.push(OperationSql {
+                label: format!("PkFlipPartitionedSelfFkIndex {parent} leaf={leaf} (concurrent)"),
+                up: create_concurrent,
+                down: format!("DROP INDEX IF EXISTS {leaf_idx}"),
+                lossy: None,
+            });
+            let attach = format!(
+                "ALTER INDEX {parent_index_name} ATTACH PARTITION {leaf_idx}",
+                parent_index_name = parent_index_name,
+                leaf_idx = leaf_idx,
+            );
+            out.push(OperationSql {
+                label: format!("PkFlipPartitionedSelfFkIndex {parent} leaf={leaf} (attach)"),
+                up: attach,
+                down: String::new(),
+                lossy: None,
+            });
+        }
+        return out;
+    }
+
     // Unknown partitioned label — pass through unchanged. Defensive:
     // future emitters that add new `PkFlipPartitioned…` labels keep
     // working without forcing this fn to learn about them.
@@ -2910,30 +2970,33 @@ fn extract_first_statement_starting_with(body: &str, start_marker: &str) -> Stri
     String::new()
 }
 
-/// Recover the parent index name from the `CREATE UNIQUE INDEX
-/// <name> ON ONLY ...` body. Falls back to `parent_pkey_idx` if the
-/// scan fails.
+/// Recover the parent index name from a `CREATE [UNIQUE] INDEX
+/// <name> ON ONLY ...` body. Tries the UNIQUE form first
+/// (PkFlipPartitionedIndex composite PK indexes use it), then the
+/// non-unique form (PkFlipPartitionedSelfFkIndex single-column
+/// indexes use it). Falls back to an empty string if neither
+/// matches.
 fn recover_parent_index_name(parent_stmt: &str) -> String {
     let bytes = parent_stmt.as_bytes();
-    const MARKER: &[u8] = b"CREATE UNIQUE INDEX ";
-    if bytes.len() < MARKER.len() {
-        return String::new();
-    }
-    // Find the marker, then read the identifier after it.
-    let mut i = 0usize;
-    while i + MARKER.len() <= bytes.len() {
-        if &bytes[i..i + MARKER.len()] == MARKER {
-            let start = i + MARKER.len();
-            let mut j = start;
-            while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
-                j += 1;
-            }
-            if j > start {
-                return String::from_utf8_lossy(&bytes[start..j]).into_owned();
-            }
-            break;
+    for marker in [b"CREATE UNIQUE INDEX " as &[u8], b"CREATE INDEX " as &[u8]] {
+        if bytes.len() < marker.len() {
+            continue;
         }
-        i += 1;
+        let mut i = 0usize;
+        while i + marker.len() <= bytes.len() {
+            if &bytes[i..i + marker.len()] == marker {
+                let start = i + marker.len();
+                let mut j = start;
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+                if j > start {
+                    return String::from_utf8_lossy(&bytes[start..j]).into_owned();
+                }
+                break;
+            }
+            i += 1;
+        }
     }
     String::new()
 }
@@ -2972,6 +3035,39 @@ fn recover_partition_columns(parent_stmt: &str) -> (String, String) {
         return ("partition_key".to_string(), "_desc".to_string());
     }
     (pkey, suffix)
+}
+
+/// Recover the self-FK column name + shadow suffix from the parent
+/// self-FK index statement. The expected form is
+/// `CREATE INDEX <idx> ON ONLY <parent> (<col>_desc)`. Returns
+/// `(col, suffix)`; falls back to `("col", "_desc")` when the body
+/// cannot be parsed.
+fn recover_self_fk_column(parent_stmt: &str) -> (String, String) {
+    let bytes = parent_stmt.as_bytes();
+    let mut open = None;
+    let mut close = None;
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'(' && open.is_none() {
+            open = Some(i + 1);
+        } else if *b == b')' {
+            close = Some(i);
+            break;
+        }
+    }
+    let (Some(o), Some(c)) = (open, close) else {
+        return ("col".to_string(), "_desc".to_string());
+    };
+    if o >= c {
+        return ("col".to_string(), "_desc".to_string());
+    }
+    let inside = parent_stmt[o..c].trim();
+    // Single column form `<col>_desc`. Strip the `_desc` suffix.
+    if let Some(col) = inside.strip_suffix("_desc")
+        && !col.is_empty()
+    {
+        return (col.to_string(), "_desc".to_string());
+    }
+    ("col".to_string(), "_desc".to_string())
 }
 
 /// Strip a `schema.` prefix from a regclass-rendered name. Postgres

@@ -602,9 +602,13 @@ fn build_segments_partitioned(
     verify_stmts.extend(cascade_verify);
 
     // 4. Concurrent indexes — parent UNIQUE placeholder (per-leaf
-    //    expansion at apply time) + cascade member indexes.
+    //    expansion at apply time) + cascade member indexes. Self-FK
+    //    columns on the partitioned parent take their own
+    //    partitioned-aware path because `CREATE INDEX CONCURRENTLY`
+    //    is rejected directly on partitioned parents.
     let mut index_stmts: Vec<OperationSql> = Vec::new();
     index_stmts.push(emit_partitioned_indexes(group, part));
+    index_stmts.extend(emit_partitioned_self_fk_indexes(group));
     let cascade_idx = emit_concurrent_index_statements_cascade_only(group);
     index_stmts.extend(cascade_idx);
 
@@ -1975,7 +1979,17 @@ fn emit_concurrent_index_statements_with_mode(
         });
     }
 
-    if let Some(self_fk) = &group.self_fk {
+    // Self-FK indexes on the parent. When the parent is partitioned,
+    // `CREATE INDEX CONCURRENTLY` directly on the partitioned parent
+    // is rejected by Postgres — partitioned parents require the
+    // `ON ONLY <parent>` + per-leaf `CONCURRENTLY` + `ATTACH PARTITION`
+    // path. The partitioned flow handles those self-FK indexes via a
+    // dedicated emitter (`emit_partitioned_self_fk_indexes`) routed
+    // through the `PkFlipPartitionedSelfFkIndex` runner label, so we
+    // skip them here when the parent is partitioned.
+    if group.partitioned_parent.is_none()
+        && let Some(self_fk) = &group.self_fk
+    {
         for col in &self_fk.fk_columns {
             out.push(OperationSql {
                 label: format!("PkFlipConcurrentIndex {parent} {col}"),
@@ -2897,6 +2911,67 @@ fn emit_partitioned_indexes(
     }
 }
 
+/// Emit one [`OperationSql`] per self-FK shadow column on a
+/// **partitioned** parent. Postgres rejects
+/// `CREATE INDEX CONCURRENTLY` directly on a partitioned parent, so
+/// the body carries the parent-level `CREATE INDEX <idx> ON ONLY
+/// <parent> (<col>_desc)` plus a comment marker describing the
+/// per-leaf expansion. The runner walks
+/// [`PkFlipPartitionedSelfFkIndex {parent} {col}`] labels at apply
+/// time and emits one `CREATE INDEX CONCURRENTLY <leaf>_<col>_desc_idx
+/// ON <leaf> (<col>_desc)` plus matching `ATTACH PARTITION` per
+/// leaf.
+///
+/// Returns an empty vec when the group has no self-FK or when the
+/// parent is not partitioned (caller should not call us in those
+/// cases, but the guard is defensive).
+fn emit_partitioned_self_fk_indexes(group: &PkTypeFlipGroup) -> Vec<OperationSql> {
+    let mut out: Vec<OperationSql> = Vec::new();
+    if group.partitioned_parent.is_none() {
+        return out;
+    }
+    let Some(self_fk) = &group.self_fk else {
+        return out;
+    };
+    let parent = group.parent_table.as_str();
+    for col in &self_fk.fk_columns {
+        let mut up = String::new();
+        let _ = writeln!(
+            up,
+            "CREATE INDEX idx_{parent}_{col}{suffix}\n  \
+             ON ONLY {parent} ({col}{suffix});",
+            parent = parent,
+            col = col,
+            suffix = SHADOW_SUFFIX,
+        );
+        let _ = writeln!(
+            up,
+            "-- Per leaf: CREATE INDEX CONCURRENTLY <leaf>_{col}{suffix}_idx\n\
+             --             ON <leaf> ({col}{suffix});\n\
+             -- Then ALTER INDEX idx_{parent}_{col}{suffix} ATTACH PARTITION\n\
+             --             <leaf>_{col}{suffix}_idx;\n\
+             -- The runner enumerates leaves from pg_inherits and emits these\n\
+             -- per-leaf statements at apply time.",
+            parent = parent,
+            col = col,
+            suffix = SHADOW_SUFFIX,
+        );
+        let down = format!(
+            "DROP INDEX IF EXISTS idx_{parent}_{col}{suffix};",
+            parent = parent,
+            col = col,
+            suffix = SHADOW_SUFFIX,
+        );
+        out.push(OperationSql {
+            label: format!("PkFlipPartitionedSelfFkIndex {parent}"),
+            up,
+            down,
+            lossy: None,
+        });
+    }
+    out
+}
+
 // `emit_partitioned_cutover` (the parent-only cutover for a
 // partitioned flip without cascade members) was folded into
 // [`emit_partitioned_cutover_with_cascade`] as part of B-4. The
@@ -3672,6 +3747,68 @@ mod tests {
         assert!(
             nd.contains("ALTER TABLE nodes DROP COLUMN IF EXISTS parent_id_desc;"),
             "down side missing self-FK shadow drop; got: {nd}"
+        );
+    }
+
+    #[test]
+    fn partitioned_self_fk_index_uses_on_only_not_concurrently_on_parent() {
+        // Cluster-4 round-2 review BLOCK DEDUP-2: when the parent is
+        // partitioned and has a self-FK, the self-FK shadow column
+        // index must use the partitioned-parent path
+        // (`CREATE INDEX <idx> ON ONLY <parent> (<col>_desc)` plus
+        // per-leaf `CONCURRENTLY` + `ATTACH PARTITION` at apply
+        // time). Prior round emitted
+        // `CREATE INDEX CONCURRENTLY idx_<parent>_<col>_desc
+        //  ON <parent> (<col>_desc)` directly against the partitioned
+        // parent, which Postgres rejects with
+        // "cannot create index on partitioned table … concurrently".
+        let mut group = synth_group_single_table();
+        group.parent_table = "events".to_string();
+        group.self_fk = Some(PkFlipSelfFk {
+            fk_columns: vec!["origin_event_id".to_string()],
+            fk_constraint_names: vec!["events_origin_event_id_fkey".to_string()],
+            fk_deferrable: vec![false],
+            fk_initially_deferred: vec![false],
+        });
+        group.partitioned_parent = Some(super::super::diff::PkFlipPartitionedMeta {
+            partition: PartitionSchema::Range {
+                column: "ts".to_string(),
+            },
+        });
+        let segments = build_segments(&group).expect("build_segments");
+        // Index segment is at position 3 ([prep, backfill, verify, index, ...]).
+        let index_segment = &segments[3];
+        let index_bodies: Vec<&str> = index_segment
+            .statements
+            .iter()
+            .map(|s| s.up.as_str())
+            .collect();
+        let joined = index_bodies.join("\n");
+        let n = whitespace_normalize(&joined);
+        // Must NOT directly target the partitioned parent with CONCURRENTLY.
+        assert!(
+            !n.contains("CREATE INDEX CONCURRENTLY idx_events_origin_event_id_desc ON events"),
+            "self-FK index must not run CONCURRENTLY on partitioned parent; got: {n}"
+        );
+        // Must use the ON ONLY partitioned-parent form.
+        assert!(
+            n.contains(
+                "CREATE INDEX idx_events_origin_event_id_desc ON ONLY events (origin_event_id_desc);"
+            ),
+            "self-FK index must use ON ONLY parent form; got: {n}"
+        );
+        // Must carry the partitioned self-FK label so the runner
+        // expands to per-leaf CONCURRENTLY + ATTACH at apply time.
+        let labels: Vec<&str> = index_segment
+            .statements
+            .iter()
+            .map(|s| s.label.as_str())
+            .collect();
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("PkFlipPartitionedSelfFkIndex events")),
+            "expected PkFlipPartitionedSelfFkIndex label; got labels: {labels:?}"
         );
     }
 
