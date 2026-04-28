@@ -258,6 +258,21 @@ impl std::fmt::Display for ProjectionError {
 
 impl std::error::Error for ProjectionError {}
 
+fn insert_unique<K: Ord, V, E>(
+    map: &mut BTreeMap<K, V>,
+    key: K,
+    value: V,
+    on_conflict: impl FnOnce(&V, &V) -> Result<(), E>,
+) -> Result<(), E> {
+    match map.entry(key) {
+        Entry::Vacant(v) => {
+            v.insert(value);
+            Ok(())
+        }
+        Entry::Occupied(occ) => on_conflict(occ.get(), &value),
+    }
+}
+
 /// Project the global descriptor inventory into per-bucket
 /// [`AppliedSchema`]s.
 ///
@@ -361,15 +376,22 @@ where
     // accepted; only disagreement raises.
     let mut type_to_table: BTreeMap<&str, &str> = BTreeMap::new();
     for m in &models {
-        if let Some(prev_table) = type_to_table.insert(m.type_name, m.table_name)
-            && prev_table != m.table_name
-        {
-            return Err(ProjectionError::DuplicateModelTypeName {
-                type_name: m.type_name.to_string(),
-                first_table: prev_table.to_string(),
-                second_table: m.table_name.to_string(),
-            });
-        }
+        insert_unique(
+            &mut type_to_table,
+            m.type_name,
+            m.table_name,
+            |prev_table, new_table| {
+                if prev_table == new_table {
+                    Ok(())
+                } else {
+                    Err(ProjectionError::DuplicateModelTypeName {
+                        type_name: m.type_name.to_string(),
+                        first_table: (*prev_table).to_string(),
+                        second_table: (*new_table).to_string(),
+                    })
+                }
+            },
+        )?;
     }
 
     // Second pass — group models by bucket. Validate the model's
@@ -454,13 +476,18 @@ where
     let mut enum_map: BTreeMap<&str, EnumSchema> = BTreeMap::new();
     let mut enum_rust_type_for_pg: BTreeMap<&str, &str> = BTreeMap::new();
     for e in enums {
-        if let Some(prev_rust) = enum_rust_type_for_pg.insert(e.postgres_type, e.type_name) {
-            return Err(ProjectionError::DuplicateEnumPostgresType {
-                postgres_type: e.postgres_type.to_string(),
-                first_rust_type: prev_rust.to_string(),
-                second_rust_type: e.type_name.to_string(),
-            });
-        }
+        insert_unique(
+            &mut enum_rust_type_for_pg,
+            e.postgres_type,
+            e.type_name,
+            |prev_rust, new_rust| {
+                Err(ProjectionError::DuplicateEnumPostgresType {
+                    postgres_type: e.postgres_type.to_string(),
+                    first_rust_type: (*prev_rust).to_string(),
+                    second_rust_type: (*new_rust).to_string(),
+                })
+            },
+        )?;
         enum_map.insert(
             e.postgres_type,
             EnumSchema {
@@ -505,21 +532,21 @@ where
         for m in &ms {
             let projected =
                 project_model(m, &type_to_table, &type_to_pk_sql, &deferrability_by_field);
-            match tables.entry(projected.table.clone()) {
-                Entry::Vacant(v) => {
-                    for idx in m.indexes {
-                        indexes.push(project_index(idx, m.table_name));
-                    }
-                    v.insert(projected);
-                }
-                Entry::Occupied(occ) => {
-                    return Err(ProjectionError::DuplicateTableInBucket {
+            insert_unique(
+                &mut tables,
+                projected.table.clone(),
+                projected,
+                |existing, duplicate| {
+                    Err(ProjectionError::DuplicateTableInBucket {
                         bucket: bucket.clone(),
-                        table: projected.table,
-                        first_type: occ.get().table.clone(),
+                        table: duplicate.table.clone(),
+                        first_type: existing.table.clone(),
                         second_type: m.type_name.to_string(),
-                    });
-                }
+                    })
+                },
+            )?;
+            for idx in m.indexes {
+                indexes.push(project_index(idx, m.table_name));
             }
         }
         indexes.sort_by(|a, b| {

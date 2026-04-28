@@ -595,42 +595,33 @@ pub(crate) fn partitioned_multi_parent_cluster_error(
     })
 }
 
-fn reject_partitioned_multi_parent_clusters(ops: &[SchemaOperation]) -> Result<(), DiffError> {
-    use std::collections::{BTreeMap as Map, BTreeSet};
-
-    let groups: Vec<PkTypeFlipGroup> = ops
+fn cluster_pk_flip_groups(ops: &[SchemaOperation]) -> BTreeMap<String, Vec<&PkTypeFlipGroup>> {
+    let groups: Vec<&PkTypeFlipGroup> = ops
         .iter()
         .filter_map(|op| match op {
-            SchemaOperation::PkTypeFlipGroup(group) => Some(group.clone()),
+            SchemaOperation::PkTypeFlipGroup(group) => Some(group),
             _ => None,
         })
         .collect();
-    if groups.len() < 2 {
-        return Ok(());
-    }
 
-    let mut peer_edges: Vec<(String, String)> = Vec::new();
+    let mut peer_edges: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut rep: BTreeMap<String, String> = BTreeMap::new();
     for group in &groups {
+        rep.insert(group.parent_table.clone(), group.parent_table.clone());
         for jt in &group.join_tables {
             if let Some(partner) = jt.fk_to_partner_table.as_deref() {
                 let a = group.parent_table.clone();
                 let b = partner.to_string();
                 let edge = if a <= b { (a, b) } else { (b, a) };
-                if !peer_edges.contains(&edge) {
-                    peer_edges.push(edge);
-                }
+                peer_edges.insert(edge);
             }
         }
     }
     if peer_edges.is_empty() {
-        return Ok(());
+        return BTreeMap::new();
     }
 
-    let mut rep: Map<String, String> = Map::new();
-    for group in &groups {
-        rep.insert(group.parent_table.clone(), group.parent_table.clone());
-    }
-    fn find(rep: &mut Map<String, String>, x: &str) -> String {
+    fn find(rep: &mut BTreeMap<String, String>, x: &str) -> String {
         let mut cur = x.to_string();
         loop {
             let parent = rep.get(&cur).cloned().unwrap_or_else(|| cur.clone());
@@ -642,6 +633,7 @@ fn reject_partitioned_multi_parent_clusters(ops: &[SchemaOperation]) -> Result<(
             cur = grand;
         }
     }
+
     for (a, b) in &peer_edges {
         let ra = find(&mut rep, a);
         let rb = find(&mut rep, b);
@@ -651,11 +643,17 @@ fn reject_partitioned_multi_parent_clusters(ops: &[SchemaOperation]) -> Result<(
         }
     }
 
-    let mut clusters: Map<String, Vec<PkTypeFlipGroup>> = Map::new();
+    let mut clusters: BTreeMap<String, Vec<&PkTypeFlipGroup>> = BTreeMap::new();
     for group in groups {
         let root = find(&mut rep, &group.parent_table);
         clusters.entry(root).or_default().push(group);
     }
+    clusters
+}
+
+fn reject_partitioned_multi_parent_clusters(ops: &[SchemaOperation]) -> Result<(), DiffError> {
+    let clusters = cluster_pk_flip_groups(ops);
+
     for (_root, mut cluster) in clusters {
         if cluster.len() < 2 {
             continue;
@@ -672,19 +670,14 @@ fn reject_partitioned_multi_parent_clusters(ops: &[SchemaOperation]) -> Result<(
         if !has_internal_cross_flip {
             continue;
         }
-        if let Some(err) = partitioned_multi_parent_cluster_error(&cluster) {
+        let cluster_groups: Vec<PkTypeFlipGroup> = cluster.into_iter().cloned().collect();
+        if let Some(err) = partitioned_multi_parent_cluster_error(&cluster_groups) {
             return Err(err);
         }
     }
 
     Ok(())
 }
-
-/// `(join_table, fk_to_partner_column)` for one entry in a
-/// `PkTypeFlipGroup.join_tables` list — captured so the Option A
-/// transfer pass can read every group's join-table state without
-/// re-walking the operation list while mutating it.
-type GroupJoinTableSnapshot = (String, Option<String>);
 
 /// Errors the differ surfaces.
 ///
@@ -822,86 +815,18 @@ impl std::error::Error for DiffError {}
 /// produces the same `PkTypeFlipMultiGroup` shape across runs,
 /// preserving the byte-stable SQL guarantee.
 fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) -> Result<(), DiffError> {
-    // Walk the delta's `PkTypeFlipGroup` ops and collect the
-    // (parent_table, peer-set-via-cross-flipping) graph. Index by
-    // parent_table for the Union-Find.
-    let mut groups_by_parent: Vec<(String, Vec<GroupJoinTableSnapshot>)> = Vec::new();
-    let mut peer_edges: Vec<(String, String)> = Vec::new();
-    for op in delta.operations.iter() {
-        if let SchemaOperation::PkTypeFlipGroup(group) = op {
-            let entries: Vec<GroupJoinTableSnapshot> = group
-                .join_tables
-                .iter()
-                .map(|jt| (jt.table.clone(), jt.fk_to_partner_column.clone()))
-                .collect();
-            groups_by_parent.push((group.parent_table.clone(), entries));
-            // Edges: every cross-flipping `PkFlipJoinTable` records
-            // the partner table via `fk_to_partner_table` —
-            // canonicalise the edge as (smaller, larger) so the
-            // Union-Find reads each pair once.
-            for jt in &group.join_tables {
-                if let Some(partner) = jt.fk_to_partner_table.as_deref() {
-                    let a = group.parent_table.clone();
-                    let b = partner.to_string();
-                    let edge = if a <= b { (a, b) } else { (b, a) };
-                    if !peer_edges.contains(&edge) {
-                        peer_edges.push(edge);
-                    }
-                }
-            }
-        }
-    }
-    if peer_edges.is_empty() {
-        // No cross-flipping anywhere in this delta. Leave the
-        // per-parent ops alone.
-        return Ok(());
-    }
-
-    // Union-Find on parent_table — every parent in `groups_by_parent`
-    // gets a representative. Edges merge representatives. Final
-    // cluster = set of parents sharing a representative.
-    use std::collections::BTreeMap as Map;
-    let mut rep: Map<String, String> = Map::new();
-    for (p, _) in &groups_by_parent {
-        rep.insert(p.clone(), p.clone());
-    }
-    fn find(rep: &mut Map<String, String>, x: &str) -> String {
-        // Iterative path halving — Union-Find root resolution
-        // without recursion. Two-step compression each iteration
-        // keeps amortised cost near-constant; the BTreeMap lookups
-        // dominate. The loop terminates because every step climbs
-        // toward the cluster representative; the representative is
-        // its own parent.
-        let mut cur = x.to_string();
-        loop {
-            let parent = rep.get(&cur).cloned().unwrap_or_else(|| cur.clone());
-            if parent == cur {
-                return cur;
-            }
-            // Path halving: point cur at its grandparent.
-            let grand = rep.get(&parent).cloned().unwrap_or_else(|| parent.clone());
-            rep.insert(cur.clone(), grand.clone());
-            cur = grand;
-        }
-    }
-    for (a, b) in &peer_edges {
-        let ra = find(&mut rep, a);
-        let rb = find(&mut rep, b);
-        if ra != rb {
-            // Union — point the larger rep at the smaller.
-            let (winner, loser) = if ra <= rb { (ra, rb) } else { (rb, ra) };
-            rep.insert(loser, winner);
-        }
-    }
-
-    // Group parents by their final representative. Each cluster of
-    // size 2+ becomes a `PkTypeFlipMultiGroup`.
-    let mut clusters: Map<String, Vec<String>> = Map::new();
-    let parents_in_groups: Vec<String> = groups_by_parent.iter().map(|(p, _)| p.clone()).collect();
-    for p in &parents_in_groups {
-        let r = find(&mut rep, p);
-        clusters.entry(r).or_default().push(p.clone());
-    }
+    let clusters: BTreeMap<String, Vec<String>> = cluster_pk_flip_groups(&delta.operations)
+        .into_iter()
+        .map(|(root, members)| {
+            (
+                root,
+                members
+                    .into_iter()
+                    .map(|group| group.parent_table.clone())
+                    .collect(),
+            )
+        })
+        .collect();
 
     // For each cluster of 2+ parents, drain those `PkTypeFlipGroup`
     // ops out of the operation list, apply the winner-takes-all
@@ -915,24 +840,19 @@ fn merge_cross_flipping_groups_into_multi(delta: &mut SchemaDelta) -> Result<(),
         }
         // Stable membership lookup for the retain pass below.
         let mem_set: std::collections::BTreeSet<String> = members.iter().cloned().collect();
-        // Drain the cluster's groups out of `delta.operations` in
-        // input order. We drain rather than collect-and-erase so
-        // `Vec` shifting is paid once per cluster.
-        let mut cluster_groups: Vec<PkTypeFlipGroup> = Vec::new();
-        let mut i = 0;
-        while i < delta.operations.len() {
-            let take = matches!(
-                &delta.operations[i],
-                SchemaOperation::PkTypeFlipGroup(g) if mem_set.contains(&g.parent_table),
-            );
-            if take {
-                if let SchemaOperation::PkTypeFlipGroup(g) = delta.operations.remove(i) {
-                    cluster_groups.push(g);
-                }
-            } else {
-                i += 1;
-            }
-        }
+        let mut cluster_groups: Vec<PkTypeFlipGroup> = delta
+            .operations
+            .extract_if(.., |op| {
+                matches!(
+                    op,
+                    SchemaOperation::PkTypeFlipGroup(g) if mem_set.contains(&g.parent_table)
+                )
+            })
+            .filter_map(|op| match op {
+                SchemaOperation::PkTypeFlipGroup(g) => Some(g),
+                _ => None,
+            })
+            .collect();
         // Sort the cluster's groups alphabetically by parent_table —
         // the lowering depends on this for deterministic stage-N
         // emission order.
@@ -1961,11 +1881,7 @@ fn diff_tables(
             to: (*to).to_string(),
         });
         let column_renames = diff_columns_in_table(before_table, after_table, ops);
-        let column_renames_ref: BTreeMap<&str, &str> = column_renames
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        diff_pk_in_table(before_table, after_table, &column_renames_ref, ops);
+        diff_pk_in_table(before_table, after_table, &column_renames, ops);
     }
 
     // Common tables (same name in both schemas) — column diff.
@@ -1977,20 +1893,16 @@ fn diff_tables(
             continue;
         }
         let column_renames = diff_columns_in_table(before_table, after_table, ops);
-        let column_renames_ref: BTreeMap<&str, &str> = column_renames
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        diff_pk_in_table(before_table, after_table, &column_renames_ref, ops);
+        diff_pk_in_table(before_table, after_table, &column_renames, ops);
         diff_app_move_in_table(before_table, after_table, ops);
     }
 }
 
-fn diff_columns_in_table(
+fn diff_columns_in_table<'a>(
     before: &TableSchema,
-    after: &TableSchema,
+    after: &'a TableSchema,
     ops: &mut Vec<SchemaOperation>,
-) -> BTreeMap<String, String> {
+) -> BTreeMap<&'a str, &'a str> {
     let before_cols: BTreeMap<&str, &ColumnSchema> = before
         .columns
         .iter()
@@ -2062,14 +1974,10 @@ fn diff_columns_in_table(
         emit_alter_column(after, bc, ac, ops);
     }
 
-    // Return the rename map (owned so callers don't need to thread
-    // borrows through their own scope) so the PK differ can normalise
-    // column names before flip-pair detection — addresses Codex
-    // review's "PK column rename + flip" edge case.
+    // Return the rename map so the PK differ can normalise column
+    // names before flip-pair detection — addresses Codex review's
+    // "PK column rename + flip" edge case.
     column_rename_targets
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
 }
 
 fn emit_alter_column(
@@ -2079,50 +1987,35 @@ fn emit_alter_column(
     ops: &mut Vec<SchemaOperation>,
 ) {
     let table = parent.table.clone();
-    if before.sql_type != after.sql_type {
-        ops.push(SchemaOperation::AlterColumn {
-            table: table.clone(),
-            column: after.name.clone(),
-            change: ColumnChange::ChangeType {
+    {
+        let mut push = |change: ColumnChange| {
+            ops.push(SchemaOperation::AlterColumn {
+                table: table.clone(),
+                column: after.name.clone(),
+                change,
+            });
+        };
+        if before.sql_type != after.sql_type {
+            push(ColumnChange::ChangeType {
                 from: before.sql_type.clone(),
                 to: after.sql_type.clone(),
-            },
-        });
-    }
-    if before.nullable != after.nullable {
-        ops.push(SchemaOperation::AlterColumn {
-            table: table.clone(),
-            column: after.name.clone(),
-            change: ColumnChange::SetNullable(after.nullable),
-        });
-    }
-    if before.default_sql != after.default_sql {
-        ops.push(SchemaOperation::AlterColumn {
-            table: table.clone(),
-            column: after.name.clone(),
-            change: ColumnChange::SetDefault(after.default_sql.clone()),
-        });
-    }
-    if before.check != after.check {
-        ops.push(SchemaOperation::AlterColumn {
-            table: table.clone(),
-            column: after.name.clone(),
-            change: ColumnChange::SetCheck(after.check.clone()),
-        });
-    }
-    if before.unique != after.unique {
-        ops.push(SchemaOperation::AlterColumn {
-            table: table.clone(),
-            column: after.name.clone(),
-            change: ColumnChange::SetUnique(after.unique),
-        });
-    }
-    if before.indexed != after.indexed {
-        ops.push(SchemaOperation::AlterColumn {
-            table: table.clone(),
-            column: after.name.clone(),
-            change: ColumnChange::SetIndexed(after.indexed),
-        });
+            });
+        }
+        if before.nullable != after.nullable {
+            push(ColumnChange::SetNullable(after.nullable));
+        }
+        if before.default_sql != after.default_sql {
+            push(ColumnChange::SetDefault(after.default_sql.clone()));
+        }
+        if before.check != after.check {
+            push(ColumnChange::SetCheck(after.check.clone()));
+        }
+        if before.unique != after.unique {
+            push(ColumnChange::SetUnique(after.unique));
+        }
+        if before.indexed != after.indexed {
+            push(ColumnChange::SetIndexed(after.indexed));
+        }
     }
     // FK transitions.
     match (&before.foreign_key, &after.foreign_key) {
@@ -2423,92 +2316,93 @@ fn pick_enum_variant_anchor(
 /// - nullable, OR has a default → Additive
 /// - non-nullable + no default → Lossy (existing rows would violate
 ///   the constraint immediately on apply)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Severity {
+    Additive = 0,
+    Reversible = 1,
+    Destructive = 2,
+    Lossy = 3,
+}
+
+fn severity_of(op: &SchemaOperation) -> Severity {
+    match op {
+        SchemaOperation::RenameTable { .. }
+        | SchemaOperation::RenameColumn { .. }
+        | SchemaOperation::RenameApp { .. }
+        | SchemaOperation::MoveModelBetweenApps { .. } => Severity::Reversible,
+        SchemaOperation::DropTable(_)
+        | SchemaOperation::DropColumn { .. }
+        | SchemaOperation::DropEnum(_)
+        | SchemaOperation::DropIndex(_)
+        | SchemaOperation::DropForeignKey { .. } => Severity::Destructive,
+        SchemaOperation::AlterColumn { change, .. } => {
+            if matches!(change, ColumnChange::SetNullable(false)) {
+                Severity::Lossy
+            } else {
+                Severity::Additive
+            }
+        }
+        SchemaOperation::AddColumn { column, .. } => {
+            if !column.nullable && column.default_sql.is_none() {
+                Severity::Lossy
+            } else {
+                Severity::Additive
+            }
+        }
+        SchemaOperation::AddTable(_)
+        | SchemaOperation::AddIndex(_)
+        | SchemaOperation::AddEnum(_)
+        | SchemaOperation::AddEnumVariant { .. }
+        | SchemaOperation::AddForeignKey { .. }
+        | SchemaOperation::PkTypeFlip { .. }
+        | SchemaOperation::PkTypeFlipGroup(_)
+        | SchemaOperation::PkTypeFlipMultiGroup(_)
+        | SchemaOperation::Unsupported { .. } => Severity::Additive,
+    }
+}
+
 fn classify(ops: &[SchemaOperation]) -> Classification {
     if ops.is_empty() {
         return Classification::NoOp;
     }
 
-    let mut has_pk_flip = false;
-    let mut has_destructive = false;
-    let mut has_rename = false;
-    let mut has_lossy = false;
-    let mut unsupported_reason: Option<String> = None;
-
-    for op in ops {
-        match op {
-            SchemaOperation::PkTypeFlip { .. }
-            | SchemaOperation::PkTypeFlipGroup(_)
-            | SchemaOperation::PkTypeFlipMultiGroup(_) => {
-                has_pk_flip = true;
-            }
-            SchemaOperation::DropTable(_) => has_destructive = true,
-            SchemaOperation::DropColumn { .. } => {
-                // A DropColumn is at minimum Destructive. We don't
-                // currently have the dropped column's full shape
-                // here to decide Lossy vs Destructive (the variant
-                // carries only `column: String`). If T9's hazard
-                // pre-flight needs that distinction, the variant
-                // grows then.
-                has_destructive = true;
-            }
-            SchemaOperation::DropEnum(_)
-            | SchemaOperation::DropIndex(_)
-            | SchemaOperation::DropForeignKey { .. } => {
-                has_destructive = true;
-            }
-            SchemaOperation::Unsupported { reason } => {
-                unsupported_reason.get_or_insert_with(|| reason.clone());
-            }
-            SchemaOperation::RenameTable { .. }
-            | SchemaOperation::RenameColumn { .. }
-            | SchemaOperation::RenameApp { .. }
-            | SchemaOperation::MoveModelBetweenApps { .. } => has_rename = true,
-            SchemaOperation::AlterColumn { change, .. } => {
-                if matches!(change, ColumnChange::SetNullable(false)) {
-                    has_lossy = true;
-                }
-            }
-            SchemaOperation::AddColumn { column, .. } => {
-                if !column.nullable && column.default_sql.is_none() {
-                    // NOT NULL added on a populated table without a
-                    // default → existing rows would immediately
-                    // violate the constraint. Lossy classification
-                    // forces the operator to either supply a default
-                    // or split the migration into add-nullable +
-                    // backfill + tighten-not-null.
-                    has_lossy = true;
-                }
-            }
-            SchemaOperation::AddTable(_)
-            | SchemaOperation::AddIndex(_)
-            | SchemaOperation::AddEnum(_)
-            | SchemaOperation::AddEnumVariant { .. }
-            | SchemaOperation::AddForeignKey { .. } => {}
-        }
-    }
-
     // Unsupported wins over everything: there's no apply plan.
-    if let Some(reason) = unsupported_reason {
+    if let Some(reason) = ops.iter().find_map(|op| match op {
+        SchemaOperation::Unsupported { reason } => Some(reason.clone()),
+        _ => None,
+    }) {
         return Classification::Unsupported { reason };
     }
+
+    let has_pk_flip = ops.iter().any(|op| {
+        matches!(
+            op,
+            SchemaOperation::PkTypeFlip { .. }
+                | SchemaOperation::PkTypeFlipGroup(_)
+                | SchemaOperation::PkTypeFlipMultiGroup(_)
+        )
+    });
+    let max = ops
+        .iter()
+        .map(severity_of)
+        .max()
+        .unwrap_or(Severity::Additive);
+
     // PkTypeFlip is orthogonal — surface co-flags so the gate logic
     // can still apply destructive / lossy semantics.
     if has_pk_flip {
         return Classification::PkTypeFlip {
-            co_destructive: has_destructive,
-            co_lossy: has_lossy,
+            co_destructive: max >= Severity::Destructive,
+            co_lossy: max >= Severity::Lossy,
         };
     }
-    if has_lossy {
-        return Classification::Lossy;
+
+    match max {
+        Severity::Additive => Classification::Additive,
+        Severity::Reversible => Classification::Reversible,
+        Severity::Destructive => Classification::Destructive,
+        Severity::Lossy => Classification::Lossy,
     }
-    if has_destructive {
-        return Classification::Destructive;
-    }
-    if has_rename {
-        return Classification::Reversible;
-    }
-    Classification::Additive
 }
 
 #[cfg(test)]
