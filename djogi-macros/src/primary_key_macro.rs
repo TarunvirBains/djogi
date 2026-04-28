@@ -1,4 +1,4 @@
-//! `djogi::primary_key!` declarative-style macro (Phase 7-Zero-2 T3).
+//! `djogi::primary_key!` declarative-style macro.
 //!
 //! Adopters declare a custom PK type in ~4 lines. The macro emits:
 //!
@@ -74,52 +74,46 @@ impl Parse for PrimaryKeyDecl {
         while !input.is_empty() {
             let key: Ident = input.parse()?;
             input.parse::<Token![=]>()?;
-            match key.to_string().as_str() {
-                "sql_type" => {
-                    if sql_type.is_some() {
-                        return Err(syn::Error::new_spanned(
-                            &key,
-                            "duplicate `sql_type` in djogi::primary_key!",
-                        ));
-                    }
-                    sql_type = Some(input.parse()?);
-                }
-                "default_sql" => {
-                    if default_sql.is_some() {
-                        return Err(syn::Error::new_spanned(
-                            &key,
-                            "duplicate `default_sql` in djogi::primary_key!",
-                        ));
-                    }
-                    default_sql = Some(input.parse()?);
-                }
-                "bulk_sql" => {
-                    if bulk_sql.is_some() {
-                        return Err(syn::Error::new_spanned(
-                            &key,
-                            "duplicate `bulk_sql` in djogi::primary_key!",
-                        ));
-                    }
-                    bulk_sql = Some(input.parse()?);
-                }
-                "generate" => {
-                    if generate.is_some() {
-                        return Err(syn::Error::new_spanned(
-                            &key,
-                            "duplicate `generate` in djogi::primary_key!",
-                        ));
-                    }
-                    generate = Some(input.parse()?);
-                }
-                other => {
+            if key == "sql_type" {
+                if sql_type.is_some() {
                     return Err(syn::Error::new_spanned(
                         &key,
-                        format!(
-                            "unknown djogi::primary_key! key `{other}`; \
-                             expected one of sql_type / default_sql / bulk_sql / generate"
-                        ),
+                        "duplicate `sql_type` in djogi::primary_key!",
                     ));
                 }
+                sql_type = Some(input.parse()?);
+            } else if key == "default_sql" {
+                if default_sql.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &key,
+                        "duplicate `default_sql` in djogi::primary_key!",
+                    ));
+                }
+                default_sql = Some(input.parse()?);
+            } else if key == "bulk_sql" {
+                if bulk_sql.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &key,
+                        "duplicate `bulk_sql` in djogi::primary_key!",
+                    ));
+                }
+                bulk_sql = Some(input.parse()?);
+            } else if key == "generate" {
+                if generate.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &key,
+                        "duplicate `generate` in djogi::primary_key!",
+                    ));
+                }
+                generate = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new_spanned(
+                    &key,
+                    format!(
+                        "unknown djogi::primary_key! key `{key}`; \
+                             expected one of sql_type / default_sql / bulk_sql / generate"
+                    ),
+                ));
             }
             // Separator after every attribute. Trailing semicolon is
             // tolerated by the while-loop exit condition.
@@ -170,11 +164,10 @@ pub fn expand(input: TokenStream) -> TokenStream {
     } = decl;
     let name_str = name.to_string();
 
-    // `#[model]`'s post-T5 `bulk_create` binds every non-Serial custom PK
-    // on `PrimaryKeyDbGen`, so every flavor of `primary_key!` (DB-bulk,
-    // client-gen, or default-SQL-only) must produce that impl. The body
-    // picks a per-batch allocation strategy from the attrs that were
-    // actually supplied:
+    // `bulk_create` binds every non-Serial custom PK on
+    // `PrimaryKeyDbGen`, so every flavor of `primary_key!` must produce
+    // that impl. The body picks a per-batch allocation strategy from the
+    // attrs that were actually supplied:
     //
     //   * `bulk_sql` present  → run the user's SQL, bind `$1 = count::i32`,
     //                           length-check the result.
@@ -196,14 +189,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
             if n == 0 {
                 return ::std::result::Result::Ok(::std::vec::Vec::new());
             }
-            let count: i32 = ::std::convert::TryFrom::try_from(n).map_err(|_| {
-                ::djogi::DjogiError::Db(::djogi::DbError::other(
-                    ::std::format!(
-                        "djogi::primary_key!: bulk generate rejected — count {} exceeds i32::MAX",
-                        n
-                    ),
-                ))
-            })?;
+            let count = ::djogi::primary_key::checked_count(n)?;
             let rows = ctx
                 .__query_all_for_macros(#sql, &[&count])
                 .await?;
@@ -215,24 +201,17 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 .collect();
             let out = out?;
             if out.len() != n {
-                return ::std::result::Result::Err(::djogi::DjogiError::Db(
-                    ::djogi::DbError::other(::std::format!(
-                        "djogi::primary_key!: bulk_sql returned {} rows for n={}",
-                        out.len(),
-                        n
-                    )),
-                ));
+                return ::std::result::Result::Err(
+                    ::djogi::primary_key::bulk_row_count_mismatch_err(out.len(), n, "bulk_sql"),
+                );
             }
             ::std::result::Result::Ok(out)
         }
     } else if generate.is_some() {
         quote! {
             // Client-gen loop: `generate_client()` wraps the `generate = |...|`
-            // expression (anchored by the `PrimaryKeyClientGen` impl below,
-            // so there is exactly one type-checking site for the closure /
-            // fn item) and produces a single value per call. No DB traffic
+            // expression and produces a single value per call. No DB traffic
             // from the helper macro's side.
-            let _ = ctx; // ctx unused on the client path; suppress the lint.
             let mut out: ::std::vec::Vec<Self> = ::std::vec::Vec::with_capacity(n);
             for _ in 0..n {
                 out.push(<Self as ::djogi::primary_key::PrimaryKeyClientGen>::generate_client());
@@ -252,14 +231,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
             if n == 0 {
                 return ::std::result::Result::Ok(::std::vec::Vec::new());
             }
-            let count: i32 = ::std::convert::TryFrom::try_from(n).map_err(|_| {
-                ::djogi::DjogiError::Db(::djogi::DbError::other(
-                    ::std::format!(
-                        "djogi::primary_key!: bulk generate rejected — count {} exceeds i32::MAX",
-                        n
-                    ),
-                ))
-            })?;
+            let count = ::djogi::primary_key::checked_count(n)?;
             let rows = ctx
                 .__query_all_for_macros(#synthesised_sql, &[&count])
                 .await?;
@@ -271,16 +243,21 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 .collect();
             let out = out?;
             if out.len() != n {
-                return ::std::result::Result::Err(::djogi::DjogiError::Db(
-                    ::djogi::DbError::other(::std::format!(
-                        "djogi::primary_key!: synthesised default_sql batch returned {} rows for n={}",
+                return ::std::result::Result::Err(
+                    ::djogi::primary_key::bulk_row_count_mismatch_err(
                         out.len(),
-                        n
-                    )),
-                ));
+                        n,
+                        "synthesised default_sql batch",
+                    ),
+                );
             }
             ::std::result::Result::Ok(out)
         }
+    };
+    let generate_many_ctx = if bulk_sql.is_none() && generate.is_some() {
+        quote! { _ctx }
+    } else {
+        quote! { ctx }
     };
     let db_gen_impl = quote! {
         impl ::djogi::primary_key::PrimaryKeyDbGen for #name {
@@ -298,14 +275,13 @@ pub fn expand(input: TokenStream) -> TokenStream {
             }
 
             async fn generate_many(
-                ctx: &mut ::djogi::DjogiContext,
+                #generate_many_ctx: &mut ::djogi::DjogiContext,
                 n: usize,
             ) -> ::std::result::Result<::std::vec::Vec<Self>, ::djogi::DjogiError> {
                 #bulk_sql_body
             }
         }
     };
-    let db_gen_impl = Some(db_gen_impl);
 
     // Client-backed generator. The `generate = |…| expr` attribute carries
     // a callable expression — typically a closure or a fn item. We call it
@@ -358,11 +334,10 @@ pub fn expand(input: TokenStream) -> TokenStream {
             }
         }
 
-        // Phase 7-Zero-2 T4 — `impl Default` so adopter code can use the
-        // custom PK type as an ambient (non-PK-slot) field on a `#[model]`
-        // struct. The macro-emitted model `Default` impl assigns
-        // `Default::default()` to every user field; custom PKs must honour
-        // that contract. `Self::sentinel()` is the canonical zero value.
+        // `impl Default` lets adopter code use the custom PK type as an
+        // ambient field on a `#[model]` struct. The macro-emitted model
+        // `Default` impl assigns `Default::default()` to every user field;
+        // custom PKs must honour that contract.
         impl ::std::default::Default for #name {
             fn default() -> Self {
                 <Self as ::djogi::primary_key::PrimaryKey>::sentinel()

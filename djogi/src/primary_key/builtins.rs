@@ -4,9 +4,8 @@
 //! `RanjIdDesc`) plus `Serial` (`i32`). Each variant implements
 //! [`PrimaryKey`], four of the five also implement [`PrimaryKeyDbGen`];
 //! `Serial` deliberately does not. Absence of [`PrimaryKeyDbGen`] on
-//! `i32` is load-bearing — Task 5's `bulk_create` dispatches on the
-//! bound, so `pk = Serial` models get a clean compile error at
-//! `bulk_create` call sites instead of a runtime failure.
+//! `i32` is load-bearing: `pk = Serial` models get a clean compile
+//! error at `bulk_create` call sites instead of a runtime failure.
 //!
 //! # Single round-trip contract
 //!
@@ -25,69 +24,60 @@
 use crate::context::DjogiContext;
 use crate::descriptor::PkType;
 use crate::error::DjogiError;
-use crate::primary_key::{PrimaryKey, PrimaryKeyDbGen};
+use crate::primary_key::{PrimaryKey, PrimaryKeyDbGen, checked_count};
 use crate::types::{HeerId, HeerIdDesc, RanjId, RanjIdDesc};
 
-/// Clamp `usize` to `i32` for the Postgres `INTEGER` parameter on the
-/// `generate_ids` / `generate_ranjids` functions.
-///
-/// Returns `Ok(0)` for `n == 0` so an empty batch is a no-op instead of
-/// a round-trip. Any other failure (`n > i32::MAX as usize`) surfaces as
-/// `DjogiError::Db` — mirrors the error channel the raw_query path uses.
-fn checked_count(n: usize) -> Result<i32, DjogiError> {
-    i32::try_from(n).map_err(|_| {
-        DjogiError::Db(crate::error::DbError::other(format!(
-            "bulk id allocation rejected: count {n} exceeds i32::MAX"
-        )))
-    })
-}
+macro_rules! impl_heeranjid_pk {
+    ($ty:ty, HeerId, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
+        impl_heeranjid_pk!(@impl $ty, HeerId, "BIGINT", $default_sql, $single_sql, $batch_sql);
+    };
+    ($ty:ty, HeerIdDesc, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
+        impl_heeranjid_pk!(@impl $ty, HeerIdDesc, "BIGINT", $default_sql, $single_sql, $batch_sql);
+    };
+    ($ty:ty, RanjId, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
+        impl_heeranjid_pk!(@impl $ty, RanjId, "UUID", $default_sql, $single_sql, $batch_sql);
+    };
+    ($ty:ty, RanjIdDesc, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
+        impl_heeranjid_pk!(@impl $ty, RanjIdDesc, "UUID", $default_sql, $single_sql, $batch_sql);
+    };
+    (@impl $ty:ty, $kind_tag:ident, $sql_type:literal, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
+        impl PrimaryKey for $ty {
+            const KIND: PkType = PkType::$kind_tag;
+            const SQL_TYPE: &'static str = $sql_type;
+            const DEFAULT_SQL: Option<&'static str> = Some($default_sql);
 
-// ── HeerId ─────────────────────────────────────────────────────────────
-
-impl PrimaryKey for HeerId {
-    const KIND: PkType = PkType::HeerId;
-    const SQL_TYPE: &'static str = "BIGINT";
-    const DEFAULT_SQL: Option<&'static str> = Some("heerid_next()");
-
-    fn sentinel() -> Self {
-        // Phase 7-Zero-2 polish: heeranjid 0.3.5 added `pub const ZERO`
-        // on each ID type. Delegate to the upstream constant rather
-        // than reconstructing the all-zero pattern via `HeerId::new(0,
-        // 0, 0)` — they produce the same wire bytes, but the constant
-        // form is shorter, infallible (no `.expect`), and lets adopter
-        // code written against the trait `sentinel()` interoperate
-        // freely with code that uses `HeerId::ZERO` directly. Closes
-        // djogi#24 by anchoring on the upstream stdlib-idiomatic
-        // `Type::ZERO` pattern.
-        HeerId::ZERO
-    }
-}
-
-impl PrimaryKeyDbGen for HeerId {
-    async fn generate(ctx: &mut DjogiContext) -> Result<Self, DjogiError> {
-        let row = ctx.query_one("SELECT heerid_next()", &[]).await?;
-        Ok(row.try_get::<_, HeerId>(0)?)
-    }
-
-    async fn generate_many(ctx: &mut DjogiContext, n: usize) -> Result<Vec<Self>, DjogiError> {
-        let count = checked_count(n)?;
-        if count == 0 {
-            return Ok(Vec::new());
+            fn sentinel() -> Self {
+                <$ty>::ZERO
+            }
         }
-        // Explicit 3-arg overload so the parameter-type inference
-        // unambiguously picks `generate_ids(integer, integer, boolean)`
-        // rather than the 2-arg `(integer, boolean)` variant.
-        let rows = ctx
-            .query_all(
-                "SELECT id FROM generate_ids(current_heer_node_id(), $1::integer, true)",
-                &[&count],
-            )
-            .await?;
-        rows.into_iter()
-            .map(|row| row.try_get::<_, HeerId>(0).map_err(DjogiError::from))
-            .collect()
-    }
+
+        impl PrimaryKeyDbGen for $ty {
+            async fn generate(ctx: &mut DjogiContext) -> Result<Self, DjogiError> {
+                let row = ctx.query_one($single_sql, &[]).await?;
+                Ok(row.try_get::<_, $ty>(0)?)
+            }
+
+            async fn generate_many(ctx: &mut DjogiContext, n: usize) -> Result<Vec<Self>, DjogiError> {
+                let count = checked_count(n)?;
+                if count == 0 {
+                    return Ok(Vec::new());
+                }
+                let rows = ctx.query_all($batch_sql, &[&count]).await?;
+                rows.into_iter()
+                    .map(|row| row.try_get::<_, $ty>(0).map_err(DjogiError::from))
+                    .collect()
+            }
+        }
+    };
 }
+
+impl_heeranjid_pk!(
+    HeerId,
+    HeerId,
+    "heerid_next()",
+    "SELECT heerid_next()",
+    "SELECT id FROM generate_ids(current_heer_node_id(), $1::integer, true)"
+);
 
 // NOTE: no inherent `impl HeerId { fn generate(...) }` block.
 // Rust's orphan rule forbids inherent items on foreign types; the
@@ -95,133 +85,40 @@ impl PrimaryKeyDbGen for HeerId {
 // `HeerId::generate(&mut ctx)` resolve directly, so the wrapper would
 // be redundant even if the rule allowed it.
 
-// ── HeerIdDesc ─────────────────────────────────────────────────────────
+impl_heeranjid_pk!(
+    HeerIdDesc,
+    HeerIdDesc,
+    "heerid_next_desc()",
+    "SELECT heerid_next_desc()",
+    "SELECT heerid_to_desc(id) \
+     FROM generate_ids(current_heer_node_id(), $1::integer, true)"
+);
 
-impl PrimaryKey for HeerIdDesc {
-    const KIND: PkType = PkType::HeerIdDesc;
-    const SQL_TYPE: &'static str = "BIGINT";
-    const DEFAULT_SQL: Option<&'static str> = Some("heerid_next_desc()");
+impl_heeranjid_pk!(
+    RanjId,
+    RanjId,
+    "ranjid_next()",
+    "SELECT ranjid_next()",
+    "SELECT id FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)"
+);
 
-    fn sentinel() -> Self {
-        // Delegates to heeranjid 0.3.5's `pub const ZERO`. See HeerId
-        // above for the rationale.
-        HeerIdDesc::ZERO
-    }
-}
-
-impl PrimaryKeyDbGen for HeerIdDesc {
-    async fn generate(ctx: &mut DjogiContext) -> Result<Self, DjogiError> {
-        let row = ctx.query_one("SELECT heerid_next_desc()", &[]).await?;
-        Ok(row.try_get::<_, HeerIdDesc>(0)?)
-    }
-
-    async fn generate_many(ctx: &mut DjogiContext, n: usize) -> Result<Vec<Self>, DjogiError> {
-        let count = checked_count(n)?;
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        // `heerid_to_desc(bigint)` is `IMMUTABLE PARALLEL SAFE`, so
-        // Postgres evaluates it per-row inside the batch with no extra
-        // round-trip. Same ascending call the Rust helper
-        // `generate_heerids` uses; only the projection changes.
-        let rows = ctx
-            .query_all(
-                "SELECT heerid_to_desc(id) \
-                 FROM generate_ids(current_heer_node_id(), $1::integer, true)",
-                &[&count],
-            )
-            .await?;
-        rows.into_iter()
-            .map(|row| row.try_get::<_, HeerIdDesc>(0).map_err(DjogiError::from))
-            .collect()
-    }
-}
-
-// ── RanjId ─────────────────────────────────────────────────────────────
-
-impl PrimaryKey for RanjId {
-    const KIND: PkType = PkType::RanjId;
-    const SQL_TYPE: &'static str = "UUID";
-    const DEFAULT_SQL: Option<&'static str> = Some("ranjid_next()");
-
-    fn sentinel() -> Self {
-        // Delegates to heeranjid 0.3.5's `pub const ZERO`. The all-
-        // zero UUID pattern is the RFC 4122 §4.1.7 nil UUID — never
-        // produced by `generate_ranj_id()` (UUIDv8 generators reject
-        // the nil pattern), so it's a safe sentinel.
-        RanjId::ZERO
-    }
-}
-
-impl PrimaryKeyDbGen for RanjId {
-    async fn generate(ctx: &mut DjogiContext) -> Result<Self, DjogiError> {
-        let row = ctx.query_one("SELECT ranjid_next()", &[]).await?;
-        Ok(row.try_get::<_, RanjId>(0)?)
-    }
-
-    async fn generate_many(ctx: &mut DjogiContext, n: usize) -> Result<Vec<Self>, DjogiError> {
-        let count = checked_count(n)?;
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        let rows = ctx
-            .query_all(
-                "SELECT id FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)",
-                &[&count],
-            )
-            .await?;
-        rows.into_iter()
-            .map(|row| row.try_get::<_, RanjId>(0).map_err(DjogiError::from))
-            .collect()
-    }
-}
-
-// ── RanjIdDesc ─────────────────────────────────────────────────────────
-
-impl PrimaryKey for RanjIdDesc {
-    const KIND: PkType = PkType::RanjIdDesc;
-    const SQL_TYPE: &'static str = "UUID";
-    const DEFAULT_SQL: Option<&'static str> = Some("ranjid_next_desc()");
-
-    fn sentinel() -> Self {
-        // Delegates to heeranjid 0.3.5's `pub const ZERO`. See RanjId
-        // above for the rationale.
-        RanjIdDesc::ZERO
-    }
-}
-
-impl PrimaryKeyDbGen for RanjIdDesc {
-    async fn generate(ctx: &mut DjogiContext) -> Result<Self, DjogiError> {
-        let row = ctx.query_one("SELECT ranjid_next_desc()", &[]).await?;
-        Ok(row.try_get::<_, RanjIdDesc>(0)?)
-    }
-
-    async fn generate_many(ctx: &mut DjogiContext, n: usize) -> Result<Vec<Self>, DjogiError> {
-        let count = checked_count(n)?;
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        let rows = ctx
-            .query_all(
-                "SELECT ranjid_to_desc(id) \
-                 FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)",
-                &[&count],
-            )
-            .await?;
-        rows.into_iter()
-            .map(|row| row.try_get::<_, RanjIdDesc>(0).map_err(DjogiError::from))
-            .collect()
-    }
-}
+impl_heeranjid_pk!(
+    RanjIdDesc,
+    RanjIdDesc,
+    "ranjid_next_desc()",
+    "SELECT ranjid_next_desc()",
+    "SELECT ranjid_to_desc(id) \
+     FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)"
+);
 
 // ── Serial (i32) ───────────────────────────────────────────────────────
 //
-// `Serial` deliberately does not implement `PrimaryKeyDbGen`. Task 5's
-// `bulk_create` signature will bound on that trait, so `pk = Serial`
-// models get a clean compile error at the call site instead of a runtime
-// failure. The semantic: lookup / reference tables declared `pk = Serial`
-// are insert-by-row, not bulk, on purpose — Postgres' `SERIAL` sequence
-// returns one row at a time via `RETURNING id`.
+// `Serial` deliberately does not implement `PrimaryKeyDbGen`. The
+// `bulk_create` signature bounds on that trait, so `pk = Serial`
+// models get a clean compile error at the call site instead of a
+// runtime failure. Lookup / reference tables declared `pk = Serial`
+// are insert-by-row on purpose: Postgres' `SERIAL` sequence returns one
+// row at a time via `RETURNING id`.
 
 impl PrimaryKey for i32 {
     const KIND: PkType = PkType::Serial;
@@ -233,9 +130,8 @@ impl PrimaryKey for i32 {
     }
 }
 
-// Live-database coverage for `PrimaryKeyDbGen::generate_many` lives in
-// `tests/integration/phase7_zero2_primary_key_generate.rs` so it follows
-// the existing project convention — every test that calls
+// Live-database coverage for `PrimaryKeyDbGen::generate_many` follows
+// the existing project convention: every test that calls
 // `setup_test_db()` is a named integration target in `djogi/Cargo.toml`
 // rather than a `cfg(test)` unit test inside the library source.
 //
