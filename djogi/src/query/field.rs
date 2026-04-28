@@ -160,72 +160,46 @@ pub mod __macro_support {
     use crate::ident::assert_plain_ident;
     use crate::model::Model;
 
-    /// Construct a [`FieldRef<M, V>`] from a macro-emitted column
-    /// name. The only supported caller is the `{Model}Fields::field()`
-    /// accessor that `#[derive(Model)]` emits in the user's crate.
+    /// Construct a [`FieldRef<M, V>`] from a macro-emitted column name,
+    /// with an optional SQL alias path prefix.
     ///
-    /// Panics if `column` violates any rule in
+    /// - `prefix = None` — plain column reference, e.g. `"name"`.
+    /// - `prefix = Some("department")` + `column = "name"` → produces a
+    ///   `FieldRef` whose column string is `"department.name"`.
+    ///
+    /// The only supported caller is the `{Model}Fields` / `{Visage}Fields`
+    /// accessor emitted by `#[derive(Model)]` in the user's crate.
+    ///
+    /// Panics if `column` (or `prefix`, when `Some`) violates any rule in
     /// [`crate::ident::assert_plain_ident`]: empty, over 63 bytes,
     /// leading digit, a non-identifier byte, or a reserved Postgres
-    /// keyword. The check is the runtime half of the seal; the
-    /// compile-time half is [`FieldRef::new`] being `pub(crate)`.
-    #[doc(hidden)]
-    pub fn __make_field_ref<M: Model, V>(column: &'static str) -> FieldRef<M, V> {
-        assert_plain_ident(column, "field_column");
-        FieldRef::new(column)
-    }
-
-    /// Construct a [`FieldRef<M, V>`] with a SQL alias path prefix —
-    /// e.g. `prefix = "department"` + `column = "name"` produces a
-    /// `FieldRef` whose column string is `"department.name"`.
-    ///
-    /// # Why a single owned `&'static str`?
-    ///
-    /// The Phase 2 `Leaf::column` slot is `&'static str`; every SQL
-    /// emission site downstream pushes that string verbatim into the
-    /// `SqlAccumulator`. Keeping the composed path as one string means
-    /// every existing emitter (`query::sql::emit_leaf`, `DISTINCT ON`,
-    /// `ORDER BY`, `UPDATE … SET`) handles traversal paths with zero
-    /// changes — the dot-qualified column name is just another plain
-    /// column from its POV.
-    ///
-    /// # Identifier validation
-    ///
-    /// Both `prefix` and `column` are routed through
-    /// [`crate::ident::assert_plain_ident`] before the composed
-    /// `"prefix.column"` is built. This keeps the
-    /// identifier-smuggling seal the same strength as
-    /// [`__make_field_ref`] — a hostile path that carried SQL
-    /// metacharacters in either segment is rejected before the string
-    /// ever reaches the accumulator.
+    /// keyword.
     ///
     /// # Composed-path interning
     ///
-    /// Runtime path composition produces a `String`; Djogi's emission
-    /// contract demands `&'static str`. The original T8 shape
-    /// `Box::leak`ed per call, which leaked memory proportional to
-    /// `QuerySet::filter` traffic — a steady-state production leak,
-    /// not the schema-bounded one the doc claimed. The T8 Codex
-    /// review flagged that as a P0.
-    ///
-    /// T8 fixup intern-caches each distinct composed path through
-    /// [`intern_composed_path`] below: the first `(prefix, column)`
-    /// pair triggers one `Box::leak`; every subsequent call for the
-    /// same pair returns the already-leaked `&'static str`. Bound is
-    /// now `O(distinct (prefix, column) in the adopter's schema)` — a
-    /// few dozen entries for a real app, regardless of request load.
-    /// The intern map is `OnceLock<Mutex<HashSet<&'static str>>>`;
-    /// lookups are O(1) and the lock is uncontended in the steady
-    /// state.
+    /// When `prefix` is `Some`, runtime path composition produces a
+    /// `String`; Djogi's emission contract demands `&'static str`. The
+    /// first `(prefix, column)` pair `Box::leak`s the composite; every
+    /// subsequent call for the same pair returns the already-leaked
+    /// `&'static str`. Bound is `O(distinct (prefix, column) pairs in
+    /// the adopter's schema)` — a few dozen entries for a real app,
+    /// regardless of request load. The intern map is
+    /// `OnceLock<Mutex<HashSet<&'static str>>>`; lookups are O(1) and
+    /// the lock is uncontended in the steady state.
     #[doc(hidden)]
-    pub fn __make_field_ref_with_path<M: Model, V>(
-        prefix: &'static str,
+    pub fn __make_field_ref<M: Model, V>(
+        prefix: Option<&'static str>,
         column: &'static str,
     ) -> FieldRef<M, V> {
-        assert_plain_ident(prefix, "field_path_prefix");
         assert_plain_ident(column, "field_column");
-        let composed = intern_composed_path(prefix, column);
-        FieldRef::new(composed)
+        let resolved = match prefix {
+            Some(p) => {
+                assert_plain_ident(p, "field_path_prefix");
+                intern_composed_path(p, column)
+            }
+            None => column,
+        };
+        FieldRef::new(resolved)
     }
 
     /// Intern a freshly-composed `"{prefix}.{column}"` path and return
@@ -318,7 +292,14 @@ pub mod __macro_support {
         }
 
         fn try_make(column: &'static str) -> std::thread::Result<FieldRef<M, String>> {
-            std::panic::catch_unwind(|| __make_field_ref::<M, String>(column))
+            std::panic::catch_unwind(|| __make_field_ref::<M, String>(None, column))
+        }
+
+        fn try_make_with_prefix(
+            prefix: &'static str,
+            column: &'static str,
+        ) -> std::thread::Result<FieldRef<M, String>> {
+            std::panic::catch_unwind(|| __make_field_ref::<M, String>(Some(prefix), column))
         }
 
         #[test]
@@ -344,6 +325,19 @@ pub mod __macro_support {
         fn rejects_sql_metacharacter_payload() {
             // The same shape that motivated the seal on RelationPath.
             assert!(try_make("col) OR 1=1 --").is_err());
+        }
+
+        #[test]
+        fn prefix_composes_dot_qualified_path() {
+            let r = try_make_with_prefix("department", "name");
+            assert!(r.is_ok());
+            assert_eq!(r.unwrap().column(), "department.name");
+        }
+
+        #[test]
+        fn prefix_validates_prefix_segment() {
+            // A bad prefix (reserved keyword) must still be rejected.
+            assert!(try_make_with_prefix("select", "name").is_err());
         }
     }
 }

@@ -43,7 +43,7 @@
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::{
-    Expr, ExprLit, Ident, Lit, Meta, MetaList, Token,
+    Expr, Ident, Meta, MetaList, Token,
     ext::IdentExt,
     parse::{Parse, ParseStream, Parser},
     punctuated::Punctuated,
@@ -222,19 +222,19 @@ fn parse_index_body(list: &MetaList) -> syn::Result<IndexDeclBody> {
                 if expr.is_some() {
                     return Err(syn::Error::new_spanned(key, "duplicate `expr = \"..\"`"));
                 }
-                expr = Some(require_string_lit(value, "expr")?);
+                expr = Some(require_string_lit(value, "expr")?.value());
             }
             "using" => {
                 if using.is_some() {
                     return Err(syn::Error::new_spanned(key, "duplicate `using = \"..\"`"));
                 }
-                using = Some(require_string_lit(value, "using")?);
+                using = Some(require_string_lit(value, "using")?.value());
             }
             "opclass" => {
                 if opclass.is_some() {
                     return Err(syn::Error::new_spanned(key, "duplicate `opclass = \"..\"`"));
                 }
-                opclass = Some(require_string_lit(value, "opclass")?);
+                opclass = Some(require_string_lit(value, "opclass")?.value());
             }
             "include" => {
                 if include_seen {
@@ -247,7 +247,7 @@ fn parse_index_body(list: &MetaList) -> syn::Result<IndexDeclBody> {
                 if predicate.is_some() {
                     return Err(syn::Error::new_spanned(key, "duplicate `where = \"..\"`"));
                 }
-                predicate = Some(require_string_lit(value, "where")?);
+                predicate = Some(require_string_lit(value, "where")?.value());
             }
             "nulls_not_distinct" => {
                 if seen_nulls_not_distinct {
@@ -273,7 +273,7 @@ fn parse_index_body(list: &MetaList) -> syn::Result<IndexDeclBody> {
                 if name.is_some() {
                     return Err(syn::Error::new_spanned(key, "duplicate `name = \"..\"`"));
                 }
-                name = Some(require_string_lit(value, "name")?);
+                name = Some(require_string_lit(value, "name")?.value());
             }
             other => {
                 return Err(syn::Error::new_spanned(
@@ -435,7 +435,7 @@ fn parse_field_col_record(
                 if opclass.is_some() {
                     return Err(syn::Error::new_spanned(&assign.left, "duplicate `opclass`"));
                 }
-                opclass = Some(require_string_lit(&assign.right, "opclass")?);
+                opclass = Some(require_string_lit(&assign.right, "opclass")?.value());
             }
             "order" => {
                 if order.is_some() {
@@ -536,33 +536,7 @@ fn parse_ident_array(value: &Expr, key: &str) -> syn::Result<Vec<String>> {
         .collect()
 }
 
-fn require_string_lit(value: &Expr, key: &str) -> syn::Result<String> {
-    if let Expr::Lit(ExprLit {
-        lit: Lit::Str(s), ..
-    }) = value
-    {
-        Ok(s.value())
-    } else {
-        Err(syn::Error::new_spanned(
-            value,
-            format!("`{key}` expects a string literal"),
-        ))
-    }
-}
-
-fn require_bool_lit(value: &Expr, key: &str) -> syn::Result<bool> {
-    if let Expr::Lit(ExprLit {
-        lit: Lit::Bool(b), ..
-    }) = value
-    {
-        Ok(b.value)
-    } else {
-        Err(syn::Error::new_spanned(
-            value,
-            format!("`{key}` expects a boolean literal (`true` or `false`)"),
-        ))
-    }
-}
+use crate::syn_util::{require_bool_lit, require_string_lit};
 
 // ---------------------------------------------------------------------------
 // Lowering — validation + IndexSpec token emission

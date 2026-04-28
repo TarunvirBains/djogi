@@ -19,17 +19,16 @@
 //!
 //! # Postgres integration
 //!
-//! `ToSql` and `FromSql` use the EWKB codec implemented in
-//! [`crate::geo::ewkb`]. The `accepts` check matches the Postgres type name
-//! `"geography"`. In unit tests where no live Postgres connection is present,
-//! `Type::BYTEA` is used as a stand-in type to exercise the byte-writing path;
-//! the production acceptance check against `"geography"` is verified
-//! empirically in the Phase 6 Task 4 integration tests.
+//! `ToSql` and `FromSql` route through the codec macro
+//! [`crate::geo::impl_geography_codec`]: write EWKB directly into the bind
+//! buffer for `to_sql`, decode via [`GeoPoint::from_ewkb_bytes`] for
+//! `from_sql`, accept any column whose Postgres type name is `"geography"`.
+//! Unit tests pass `Type::BYTEA` as a stand-in because no live Postgres
+//! connection is present; live `geography`-column round-trips are exercised
+//! by the spatial integration test suite.
 
 use std::fmt;
 
-use bytes::BytesMut;
-use postgres_types::{FromSql, IsNull, ToSql, Type};
 use serde::{Deserialize, Serialize};
 
 use crate::geo::GeoError;
@@ -62,10 +61,8 @@ pub struct GeoPoint {
 
 impl GeoPoint {
     /// Latitude lower bound (south pole) in decimal degrees per WGS 84 /
-    /// ISO 6709. Exposed so adopters can validate inputs against the
-    /// same range `GeoPoint::new` enforces without re-typing the magic
-    /// number. Mirrors the bounds-as-const idiom upstream `HeerId` uses
-    /// (`HeerId::MAX_TIMESTAMP_MS`, `MAX_NODE_ID`, `MAX_SEQUENCE`).
+    /// ISO 6709. Exposed so adopters can validate inputs against the same
+    /// range `GeoPoint::new` enforces without re-typing the magic number.
     pub const MIN_LAT: f64 = -90.0;
 
     /// Latitude upper bound (north pole) in decimal degrees per WGS 84 /
@@ -98,15 +95,17 @@ impl GeoPoint {
 
     /// Encode this point as a 25-byte EWKB buffer for `GEOGRAPHY(Point, 4326)`.
     pub fn to_ewkb_bytes(self) -> Vec<u8> {
-        ewkb::encode_point(self.lon, self.lat)
+        let mut buf = Vec::with_capacity(ewkb::EWKB_LEN);
+        ewkb::encode_point_into(&self, &mut buf);
+        buf
     }
 
     /// Decode a 25-byte EWKB buffer into a `GeoPoint`.
     pub fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
         let (lon, lat) = ewkb::decode_point(bytes)?;
-        // The EWKB buffer comes from Postgres and is expected to already carry
-        // a valid coordinate pair, but we validate anyway so that a corrupt
-        // or hand-crafted buffer does not create an invalid GeoPoint.
+        // Re-validate even though Postgres should only hand back well-formed
+        // coordinate pairs, so a corrupt or hand-crafted buffer cannot create
+        // an invalid `GeoPoint` in memory.
         Self::new(lat, lon)
     }
 
@@ -155,44 +154,9 @@ impl<'de> Deserialize<'de> for GeoPoint {
     }
 }
 
-// ── postgres_types codec ──────────────────────────────────────────────────────
+// ── postgres_types codec (macro-generated) ───────────────────────────────────
 
-impl ToSql for GeoPoint {
-    fn to_sql(
-        &self,
-        _ty: &Type,
-        out: &mut BytesMut,
-    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        out.extend_from_slice(&self.to_ewkb_bytes());
-        Ok(IsNull::No)
-    }
-
-    /// Accept the Postgres `geography` type.
-    ///
-    /// Note: `ty.name()` returns `"geography"` for PostGIS geography columns.
-    /// In unit tests a stand-in type (`BYTEA`) is used because no live Postgres
-    /// connection is present; the production acceptance check is verified
-    /// empirically in the Phase 6 Task 4 integration tests.
-    fn accepts(ty: &Type) -> bool {
-        ty.name() == "geography"
-    }
-
-    postgres_types::to_sql_checked!();
-}
-
-impl<'a> FromSql<'a> for GeoPoint {
-    fn from_sql(
-        _ty: &Type,
-        raw: &'a [u8],
-    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        GeoPoint::from_ewkb_bytes(raw).map_err(|e| Box::new(e) as _)
-    }
-
-    /// Accept the Postgres `geography` type.
-    fn accepts(ty: &Type) -> bool {
-        ty.name() == "geography"
-    }
-}
+crate::geo::impl_geography_codec!(GeoPoint, ewkb::encode_point_into);
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -356,15 +320,16 @@ mod tests {
 
     #[test]
     fn to_sql_writes_ewkb_bytes() {
-        use postgres_types::Type;
+        use bytes::BytesMut;
+        use postgres_types::{ToSql, Type};
 
         let p = GeoPoint::new(51.5074, -0.1278).unwrap();
         let expected = p.to_ewkb_bytes();
         assert_eq!(expected.len(), 25);
 
-        // Use BYTEA as the stand-in type for a unit test without a live Postgres
-        // connection. Production code uses the `geography` type; the acceptance
-        // check for `geography` is verified in Phase 6 Task 4 integration tests.
+        // Use BYTEA as the stand-in type for a unit test without a live
+        // Postgres connection. Live `geography`-column acceptance is exercised
+        // in the spatial integration test suite.
         let mut out = BytesMut::new();
         p.to_sql(&Type::BYTEA, &mut out).unwrap();
         assert_eq!(out.as_ref(), expected.as_slice());

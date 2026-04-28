@@ -20,7 +20,13 @@ use crate::query::field::FieldRef;
 use crate::query::queryset::QuerySet;
 use std::marker::PhantomData;
 
-mod sealed {
+/// Crate-private seal for `IntoGroupKeyTuple`.
+///
+/// The `pub(crate)` visibility lets sibling modules (notably
+/// `spatial_grouping.rs`) implement `IntoGroupKeyTuple` for their key types
+/// without weakening the seal against downstream crates — the trait is still
+/// un-namable outside `djogi`.
+pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
@@ -117,161 +123,35 @@ impl_into_group_key_tuple!(
 
 // ── Spatial group source ─────────────────────────────────────────────────────
 //
-// T11 introduced `Option<SpatialJoinSpec>` on the grouped-query states.
-// T12 adds two more emission shapes (DBSCAN window, geohash scalar), so we
-// generalise the optional field into `Option<SpatialGroupSource>` — an enum
-// with one variant per emission strategy.
-//
-// This keeps `GroupedQuerySet` / `GroupedAnnotatedQuerySet` at one optional
-// field and lets the SQL builder dispatch on a single match arm rather than
+// `SpatialGroupSource` consolidates the three spatial emission strategies
+// (region-join, DBSCAN window, geohash scalar) into a single enum so
+// `GroupedQuerySet` / `GroupedAnnotatedQuerySet` carries one optional field
+// and the SQL builder dispatches on a single match arm rather than
 // cascading through three separate Option fields.
 
 /// Discriminated union of the three spatial group-source strategies.
 ///
-/// - `Join` — T11 region path: LEFT JOIN + `ST_Contains` + GROUP BY region PK.
-/// - `Cluster` — T12 DBSCAN path: `ST_ClusterDBSCAN(...) OVER ()` window aggregate.
-/// - `Geohash` — T12 geohash path: `ST_GeoHash(..., precision)` scalar function.
+/// - `Join` — region path: LEFT JOIN + `ST_Contains` + GROUP BY region PK.
+/// - `Cluster` — DBSCAN path: `ST_ClusterDBSCAN(...) OVER ()` window aggregate.
+/// - `Geohash` — geohash path: `ST_GeoHash(..., precision)` scalar function.
 ///
 /// Stored as `Option<SpatialGroupSource>` on `GroupedQuerySet` and
 /// `GroupedAnnotatedQuerySet`; `None` means a plain non-spatial GROUP BY.
 #[cfg(feature = "spatial")]
 #[derive(Debug, Clone)]
 pub(crate) enum SpatialGroupSource {
-    /// T11 region-join path.
+    /// Region-join path.
     Join(crate::query::spatial_grouping::SpatialJoinSpec),
-    /// T12 DBSCAN clustering path.
+    /// DBSCAN clustering path.
     Cluster(crate::query::spatial_grouping::ClusterSpec),
-    /// T12 geohash-bucket path.
+    /// Geohash-bucket path.
     Geohash(crate::query::spatial_grouping::GeohashSpec),
 }
 
-// ── Spatial region key: RegionKey<R> ─────────────────────────────────────
-//
-// `RegionKey<R>` is the public key type for the `group_by_region` path.
-// It carries a `pub(crate)` `r_pk_col: Option<&'static str>` field that
-// the SQL builder reads to emit `r.<pk-col>`.  The field is `Some` on the
-// sentinel value stored in `GroupedQuerySet::keys` (set by
-// `group_by_region`) and `None` on the decoded output produced by
-// `decode_tuple` (the user-facing value, which needs no column name).
-//
-// Both the `sealed::Sealed` impl AND the `IntoGroupKeyTuple` impl live here
-// (in `grouped.rs`) because the seal is defined in this module's private
-// `mod sealed` and cannot be named from `spatial_grouping.rs`.
-
-#[cfg(feature = "spatial")]
-impl<R: crate::model::Model> sealed::Sealed for crate::query::spatial_grouping::RegionKey<R> {}
-
-#[cfg(feature = "spatial")]
-impl<R: crate::model::Model> IntoGroupKeyTuple for crate::query::spatial_grouping::RegionKey<R>
-where
-    R::Pk: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
-{
-    type Decoded = crate::query::spatial_grouping::RegionKey<R>;
-
-    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
-        let col = self
-            .r_pk_col
-            .expect("RegionKey::push_group_by_columns called on a decoded key (r_pk_col is None)");
-        acc.push_sql("r.");
-        acc.push_sql(col);
-    }
-
-    fn push_select_columns(&self, acc: &mut SqlAccumulator) {
-        let col = self
-            .r_pk_col
-            .expect("RegionKey::push_select_columns called on a decoded key (r_pk_col is None)");
-        acc.push_sql("r.");
-        acc.push_sql(col);
-        acc.push_sql(" AS rk0");
-    }
-
-    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-        use std::marker::PhantomData;
-        let region_pk: Option<R::Pk> = row.try_get::<_, Option<R::Pk>>(0)?;
-        Ok(crate::query::spatial_grouping::RegionKey {
-            region_pk,
-            r_pk_col: None, // decoded output — column name not needed
-            _phantom: PhantomData,
-        })
-    }
-}
-
-// ── T12: ClusterId IntoGroupKeyTuple ─────────────────────────────────────────
-//
-// `ClusterId` is the key type for `cluster_by_proximity`. Column 0 of the
-// grouped row is the `cluster_id` alias from the `ST_ClusterDBSCAN` window
-// call — an `Option<i32>` where `None` encodes DBSCAN noise points.
-
-#[cfg(feature = "spatial")]
-impl sealed::Sealed for crate::query::spatial_grouping::ClusterId {}
-
-#[cfg(feature = "spatial")]
-impl IntoGroupKeyTuple for crate::query::spatial_grouping::ClusterId {
-    type Decoded = crate::query::spatial_grouping::ClusterId;
-
-    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
-        // GROUP BY references the window-aggregate alias emitted in SELECT.
-        acc.push_sql("cluster_id");
-    }
-
-    fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
-        // Unreachable: `cluster_by_proximity` always routes through
-        // `build_cluster_grouped_select`, which emits its own
-        // `ST_ClusterDBSCAN(...) OVER () AS cluster_id` expression directly
-        // and never invokes this trait method. Panic rather than emit a bare
-        // alias so a future refactor that accidentally routes ClusterId
-        // through the plain `build_grouped_annotated_select` path fails
-        // loudly instead of producing an invalid SELECT list.
-        unreachable!(
-            "ClusterId::push_select_columns is never called — \
-             cluster_by_proximity emits its own SELECT via build_cluster_grouped_select"
-        );
-    }
-
-    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-        let id: Option<i32> = row.try_get::<_, Option<i32>>(0)?;
-        Ok(crate::query::spatial_grouping::ClusterId(id))
-    }
-}
-
-// ── T12: GeohashKey IntoGroupKeyTuple ────────────────────────────────────────
-//
-// `GeohashKey` is the key type for `bucket_by_cell`. Column 0 is the
-// `geohash` alias emitted by `ST_GeoHash(...)`.
-
-#[cfg(feature = "spatial")]
-impl sealed::Sealed for crate::query::spatial_grouping::GeohashKey {}
-
-#[cfg(feature = "spatial")]
-impl IntoGroupKeyTuple for crate::query::spatial_grouping::GeohashKey {
-    type Decoded = crate::query::spatial_grouping::GeohashKey;
-
-    fn push_group_by_columns(&self, acc: &mut SqlAccumulator) {
-        acc.push_sql("geohash");
-    }
-
-    fn push_select_columns(&self, _acc: &mut SqlAccumulator) {
-        // Unreachable: `bucket_by_cell` always routes through
-        // `build_geohash_grouped_select`, which emits its own
-        // `ST_GeoHash(...) AS geohash` expression directly and never invokes
-        // this trait method. Panic rather than emit a bare alias so a future
-        // refactor that accidentally routes GeohashKey through the plain
-        // grouped path fails loudly instead of producing an invalid SELECT.
-        unreachable!(
-            "GeohashKey::push_select_columns is never called — \
-             bucket_by_cell emits its own SELECT via build_geohash_grouped_select"
-        );
-    }
-
-    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-        // `ST_GeoHash(NULL::geometry, _)` returns NULL, so we decode as
-        // Option<String>. Non-nullable geography columns never produce
-        // `None`; nullable (`Option<G>`) ones bucket NULLs into
-        // `GeohashKey(None)`.
-        let hash: Option<String> = row.try_get::<_, Option<String>>(0)?;
-        Ok(crate::query::spatial_grouping::GeohashKey(hash))
-    }
-}
+// `IntoGroupKeyTuple` impls for the spatial key types (`RegionKey<R>`,
+// `ClusterId`, `GeohashKey`) live alongside their definitions in
+// `spatial_grouping.rs`. The seal module above is `pub(crate)` so spatial
+// impls can name `sealed::Sealed` directly without weakening the public seal.
 
 // ── Arity 0: unit key () — used exclusively by group_by_sets ─────────────
 //

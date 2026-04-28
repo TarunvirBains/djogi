@@ -1,9 +1,4 @@
-//! Authentication substrate for Djogi (Phase 5.5).
-//!
-//! This module is introduced in Phase 5.5 Task 1 with a minimal `AuthContext`
-//! stub sufficient to attach auth state to a [`DjogiContext`]. Task 2 extends
-//! this module with the `DjogiAuth` trait and `AuthError` enum; Task 4 adds
-//! the `PasswordHash` typed field.
+//! Authentication substrate for Djogi.
 //!
 //! # Module layout
 //!
@@ -20,10 +15,8 @@ use std::pin::Pin;
 /// Value-typed auth context attached to a [`crate::DjogiContext`] via
 /// [`crate::DjogiContext::with_auth`].
 ///
-/// The full shape (with `ext: HashMap<String, String>` and additional
-/// builders) is documented in Critical Design Decision #2 of the Phase 5.5
-/// plan. Task 1 ships the fields and builders the Task 1 integration test
-/// exercises; Task 2 fills out the rest.
+/// Carries `user_id`, an optional `tenant_id`, a `scopes` list, and an
+/// `ext` map for arbitrary provider metadata.
 #[derive(Debug, Clone)]
 pub struct AuthContext {
     pub user_id: HeerId,
@@ -77,9 +70,12 @@ mod context_ext;
 /// Core authentication trait for Djogi.
 ///
 /// `authenticate` resolves an opaque bearer token into an [`AuthContext`].
-/// `verify` authorizes a specific action against a resolved context — the
-/// default impl is authenticate-only semantics; override for real
-/// authorization.
+/// `verify` authorizes a specific action against a resolved context. Both
+/// methods are required — `verify` has no default because a default would
+/// either be fail-open (silent prod risk: a provider that forgets `verify`
+/// permits everything) or fail-closed (every real provider would have to
+/// override it anyway). Forcing the choice at the trait level surfaces the
+/// decision at compile time.
 ///
 /// # Pluggability
 ///
@@ -111,6 +107,17 @@ mod context_ext;
 ///         let _ = token;
 ///         Box::pin(async { Err(djogi::auth::AuthError::InvalidToken) })
 ///     }
+///
+///     fn verify<'a>(
+///         &'a self,
+///         ctx: &'a djogi::auth::AuthContext,
+///         action: &'a dyn std::any::Any,
+///     ) -> std::pin::Pin<Box<dyn std::future::Future<
+///         Output = Result<(), djogi::auth::AuthError>,
+///     > + Send + 'a>> {
+///         let _ = (ctx, action);
+///         Box::pin(async { Ok(()) })
+///     }
 /// }
 ///
 /// // Object-safe: usable as a trait object.
@@ -139,8 +146,9 @@ pub trait DjogiAuth: Send + Sync + 'static {
 
     /// Authorize a specific action against a resolved [`AuthContext`].
     ///
-    /// The default implementation returns `Ok(())` — authenticate-only
-    /// semantics. Override this method to add real authorization logic.
+    /// Required — there is no default. A provider that wants
+    /// authenticate-only semantics must explicitly return `Ok(())` from this
+    /// method, making the choice visible at the implementation site.
     ///
     /// `action: &dyn Any` accepts typed `Action` enums from the app. The
     /// implementation downcasts via `action.downcast_ref::<MyAction>()` to
@@ -156,8 +164,5 @@ pub trait DjogiAuth: Send + Sync + 'static {
         &'a self,
         ctx: &'a AuthContext,
         action: &'a dyn std::any::Any,
-    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
-        let _ = (ctx, action);
-        Box::pin(async { Ok(()) })
-    }
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>>;
 }

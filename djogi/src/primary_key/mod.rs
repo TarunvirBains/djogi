@@ -1,4 +1,4 @@
-//! Primary-key trait surface (Phase 7-Zero-2 T1).
+//! Primary-key trait surface.
 //!
 //! Three-trait split per `docs/spec/decisions.md`:
 //!
@@ -8,14 +8,14 @@
 //!   the macro-emitted `Default` impl.
 //! - [`PrimaryKeyDbGen`] (optional) — DB-sourced bulk allocation. Every
 //!   built-in variant except `Serial` implements it; its deliberate
-//!   absence on `i32` is load-bearing for `bulk_create` dispatch (Task 5).
+//!   absence on `i32` is load-bearing for `bulk_create` dispatch.
 //! - [`PrimaryKeyClientGen`] (optional, custom-only) — client-side single
 //!   and bulk generation. Built-in PKs never client-generate: HeeRanjId's
 //!   node/sequence/epoch model requires a database round-trip.
 //!
-//! Post-Phase-4-retrofit discipline: every generation helper takes
-//! `&mut DjogiContext`, never a raw pool. The context dispatches to the
-//! pool or the active transaction without the caller caring which.
+//! Every generation helper takes `&mut DjogiContext`, never a raw pool.
+//! The context dispatches to the pool or the active transaction without
+//! the caller caring which.
 //!
 //! # Const-position sentinels via heeranjid 0.3.5+
 //!
@@ -42,36 +42,92 @@
 //! (e.g. inside macro expansions or generic helpers); reach for the
 //! const directly otherwise.
 //!
-//! See [`sentinel`] for the bit-pattern note documenting why the
-//! 0.3.5 adoption changed the sentinel value (vs. the pre-0.3.5
-//! `T::new(0, 0, 0)` form) on three of the four PK types and why
-//! that change is safe.
+//! Heeranjid 0.3.5's `T::ZERO` consts replaced the older
+//! `T::new(0, 0, 0)` reconstruction and are now the canonical
+//! const-position sentinel values.
 //!
 //! # Historical note
 //!
-//! The Phase 7-Zero-2 plan originally called for a djogi-side `pub
-//! const SENTINEL: Self` associated item. Heeranjid 0.3.0–0.3.4
-//! exposed neither `pub const ZERO` nor a `const fn` constructor (the
-//! inner field is private), so a djogi-side const would have required
-//! either a foreign-type inherent const (forbidden by the orphan rule)
-//! or `mem::transmute` through the `#[repr(transparent)]` layout
-//! (brittle). The fallback was the non-const `sentinel()` factory.
-//! Heeranjid 0.3.5 (closing heeranjid#30) added the `pub const ZERO`
-//! upstream, which is now the canonical const-position sentinel.
+//! Earlier heeranjid releases did not expose a const sentinel; 0.3.5
+//! shipped `T::ZERO`, while `sentinel()` remains the polymorphic entry point.
 
 use crate::context::DjogiContext;
 use crate::descriptor::PkType;
-use crate::error::DjogiError;
+use crate::error::{DbError, DjogiError};
 
 pub mod builtins;
-pub mod sentinel;
+
+mod sealed {
+    /// Hidden witness carried by every [`crate::primary_key::PrimaryKey`]
+    /// impl. The field stays private so handwritten code cannot
+    /// construct the token accidentally — the seal forces every PK type
+    /// to go through the [`djogi::primary_key!`] macro (or through the
+    /// built-in HeerId / RanjId / Serial impls in this crate). Matches
+    /// the [`crate::apps::App`] sealing convention.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PkSealToken {
+        _private: (),
+    }
+
+    pub const TOKEN: PkSealToken = PkSealToken { _private: () };
+}
+
+/// Hidden seal witness type for [`PrimaryKey`].
+///
+/// Public only so the [`djogi::primary_key!`] macro can name the type
+/// from downstream crates. The sole value lives in
+/// [`__DJOGI_PK_SEAL_TOKEN`]; the struct has no public constructor.
+#[doc(hidden)]
+pub use sealed::PkSealToken;
+
+/// Hidden witness value that only macro-generated [`PrimaryKey`] impls
+/// (and the built-in impls in [`builtins`]) are expected to use.
+#[doc(hidden)]
+pub const __DJOGI_PK_SEAL_TOKEN: PkSealToken = sealed::TOKEN;
+
+/// Convert a batch size to the Postgres `INTEGER` parameter used by
+/// bulk primary-key allocation helpers.
+pub fn checked_count(n: usize) -> Result<i32, DjogiError> {
+    i32::try_from(n).map_err(|_| bulk_count_overflow_err(n))
+}
+
+/// Error used when a bulk primary-key allocation request cannot fit in
+/// the database function's `INTEGER` count parameter.
+pub fn bulk_count_overflow_err(n: usize) -> DjogiError {
+    DjogiError::Db(DbError::other(format!(
+        "djogi::primary_key!: bulk generate rejected — count {n} exceeds i32::MAX"
+    )))
+}
+
+/// Error used when a bulk primary-key allocation query returns a
+/// different number of rows than requested.
+pub fn bulk_row_count_mismatch_err(got: usize, want: usize, label: &str) -> DjogiError {
+    DjogiError::Db(DbError::other(format!(
+        "djogi::primary_key!: {label} returned {got} rows for n={want}"
+    )))
+}
 
 /// Contract every primary-key type must satisfy.
 ///
 /// Implementations map the type to its [`PkType`] discriminant, the
 /// Postgres column type, the optional `DEFAULT` clause, and the zero
 /// value the macro-emitted `Default` impl uses for the `id` field.
+///
+/// # Sealing
+///
+/// Sealed via [`PkSealToken`] — the only paths to a valid impl are the
+/// built-in HeerId / RanjId / Serial impls in [`builtins`] and the
+/// [`djogi::primary_key!`] macro. Hand-rolled `impl PrimaryKey for …`
+/// in downstream crates fail at the
+/// [`__DJOGI_PK_SEAL`](Self::__DJOGI_PK_SEAL) const because
+/// [`PkSealToken`] has no public constructor. Matches the
+/// [`crate::apps::App`] sealing convention.
 pub trait PrimaryKey: Sized + 'static {
+    /// Hidden seal witness — only macro-emitted and built-in impls
+    /// can name the value (see [`__DJOGI_PK_SEAL_TOKEN`]).
+    #[doc(hidden)]
+    const __DJOGI_PK_SEAL: PkSealToken;
+
     /// Runtime discriminant the [`ModelDescriptor`](crate::descriptor::ModelDescriptor) carries.
     const KIND: PkType;
 
@@ -93,7 +149,7 @@ pub trait PrimaryKey: Sized + 'static {
 ///
 /// Every built-in PK variant except `Serial` implements this. The
 /// absence on `i32` is intentional: `bulk_create` for `pk = Serial`
-/// models is a compile error today (Task 5 wires the dispatch), which
+/// models is a compile error today, which
 /// matches HeeRanjId's design — client-side bulk allocation requires
 /// coordinated node/sequence state that only the database owns.
 #[allow(async_fn_in_trait)]

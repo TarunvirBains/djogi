@@ -1,4 +1,4 @@
-//! Phase 7-Zero-2 T10 — emit a per-visage queryset entry point.
+//! Emit a per-visage queryset entry point and narrow `FromPgRow` impl.
 //!
 //! For each visage `V` produced by [`super::visages::expand`], this
 //! emitter generates:
@@ -28,25 +28,22 @@
 //! `delete` on `V`, and `VisageQuerySet<V>` only exposes read terminals
 //! (`fetch_all`, `fetch_one`, `first`, `count`, `exists`).
 //!
-//! # Relation-embed visages are skipped today
+//! # Relation-embed visages are skipped
 //!
 //! A visage that embeds a peer projection (`expose(scope -> Peer)` on a
 //! relation field) does not map to a flat column list on the source
-//! table — the SELECT would need a JOIN (full-peer or narrow visage) or
-//! a follow-up query (prefetch). Routing that lift through the queryset
-//! emitter is significantly larger work than this task and the user-
-//! visible test surface (`UserPublic::filter(...)`) is a scalar-only
-//! visage. The emitter therefore falls back to a no-op for any visage
-//! whose field set contains a relation entry; the visage struct still
-//! exists, the conversion impls still work, but `V::filter(...)` is not
-//! emitted. A future task can lift this restriction.
+//! table — the SELECT would need a JOIN or a follow-up query. The
+//! emitter falls back to a no-op for any visage whose field set contains
+//! a relation entry; the visage struct still exists and the conversion
+//! impls still work, but `V::filter(...)` is not emitted.
 //!
 //! [`VisageQuerySet<V>`]: ::djogi::query::VisageQuerySet
 
-use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
+use crate::model::attrs::PkStrategy;
+use crate::model::visage_ctx::{ScopeMembership, VisageEmitContext, classify_field_for_scope};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Ident, ItemStruct};
+use syn::Ident;
 
 /// Emit the per-visage queryset entry block + the visage's narrow
 /// `FromPgRow` impl.
@@ -56,15 +53,15 @@ use syn::{Ident, ItemStruct};
 /// attribute list. This emitter mirrors the same scope gate the visage
 /// struct emitter uses so the column list it bakes matches the visage
 /// struct's field order exactly.
-pub fn expand(
-    source: &Ident,
-    visage_ident: &Ident,
-    scope: &str,
-    struct_item: &ItemStruct,
-    field_attrs: &[FieldAttrs],
-    model_attrs: &ModelAttrs,
-    n_framework: usize,
-) -> TokenStream {
+pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
+    let source = ctx.source;
+    let visage_ident = &ctx.visage_ident;
+    let scope = ctx.scope;
+    let struct_item = ctx.struct_item;
+    let field_attrs = ctx.field_attrs;
+    let model_attrs = ctx.model_attrs;
+    let n_framework = ctx.n_framework;
+
     // `pk = None` models do not impl `Model`; their visages have no
     // queryset entry to wire because `Model::table_name()` is the
     // source of truth for the SQL table and is not available. The
@@ -96,20 +93,11 @@ pub fn expand(
             continue;
         };
 
-        if attrs.expose.suppressed {
-            continue;
-        }
-
-        let scalar_hit = attrs.expose.scalar_scopes.contains(scope);
-        let relation_hit = attrs.expose.relation_scopes.get(scope);
-        let rel_info = detect_relation(&field.ty);
-        let is_relation = rel_info.is_some();
-
-        match (scalar_hit, relation_hit, is_relation) {
-            (false, None, _) => continue,
+        match classify_field_for_scope(field, attrs, scope) {
+            ScopeMembership::Absent => continue,
 
             // Scalar form on scalar field — flatten into the column list.
-            (true, None, false) => {
+            ScopeMembership::Scalar => {
                 let raw = fname.to_string();
                 let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
                 columns.push(column);
@@ -119,15 +107,14 @@ pub fn expand(
             // handle peer-embedding projections. Bail out for the whole
             // visage; the struct + conversion impls (emitted elsewhere)
             // still work, the visage just lacks a `::filter` entry.
-            (false, Some(_), true) => {
+            ScopeMembership::RelationEmbed { .. } => {
                 return TokenStream::new();
             }
 
-            // Other shape-mismatched cases (scalar on relation, relation
-            // on scalar, mixed) are rejected with a span-precise error
+            // Shape-mismatched cases are rejected with a span-precise error
             // by `visages.rs::emit_projection_for_scope` before we run.
             // Treat as no-op here so we don't double-emit a diagnostic.
-            _ => return TokenStream::new(),
+            ScopeMembership::Reject { .. } => return TokenStream::new(),
         }
     }
 
@@ -147,58 +134,60 @@ pub fn expand(
     let mut idx: usize = 0;
 
     // Framework decode — `id` / `created_at` / `updated_at`.
-    decode_assignments.push(framework_decode("id", idx));
+    decode_assignments.push(emit_decode_assignment(&format_ident!("id"), "id", idx));
     idx += 1;
-    decode_assignments.push(framework_decode("created_at", idx));
+    decode_assignments.push(emit_decode_assignment(
+        &format_ident!("created_at"),
+        "created_at",
+        idx,
+    ));
     idx += 1;
-    decode_assignments.push(framework_decode("updated_at", idx));
+    decode_assignments.push(emit_decode_assignment(
+        &format_ident!("updated_at"),
+        "updated_at",
+        idx,
+    ));
     idx += 1;
 
     for (field, attrs) in &user_field_pairs {
         let Some(fname) = field.ident.as_ref() else {
             continue;
         };
-        if attrs.expose.suppressed {
+        // Only scalar hits reach here — relation/mismatched cases were
+        // filtered above in the column-building pass.
+        if !matches!(
+            classify_field_for_scope(field, attrs, scope),
+            ScopeMembership::Scalar
+        ) {
             continue;
         }
-        let scalar_hit = attrs.expose.scalar_scopes.contains(scope);
-        if !scalar_hit {
-            continue;
-        }
-        // Relation/scalar mismatches were filtered above; only scalar
-        // hits on scalar fields reach here.
         let raw = fname.to_string();
         let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
-        decode_assignments.push(scalar_decode(fname, &column, idx));
+        decode_assignments.push(emit_decode_assignment(fname, &column, idx));
         idx += 1;
     }
 
-    let _ = source;
-
-    // Stash one column-list slice expression and reuse it across every
-    // emitted entry method via interpolation. Re-using `columns_lit`
-    // directly inside multiple `#(...)*` blocks would consume the
-    // iterator on the first use — bake the slice into a single
-    // expression and clone the wrapping `TokenStream` instead.
-    let columns_slice = quote! { &[ #(#columns_lit),* ] };
-    let cs_filter = columns_slice.clone();
-    let cs_order = columns_slice.clone();
-    let cs_limit = columns_slice.clone();
-    let cs_offset = columns_slice.clone();
-    let cs_initial = columns_slice.clone();
-    let cs_const = columns_slice.clone();
-
     quote! {
         impl #visage_ident {
+            // Internal ctor — builds a fresh `VisageQuerySet` with the
+            // visage's baked column list and a vacuous root condition.
+            // All public entry methods delegate here so the construction
+            // path is written exactly once.
+            #[inline]
+            fn __new() -> ::djogi::query::VisageQuerySet<#visage_ident> {
+                const COLS: &[&'static str] = &[ #(#columns_lit),* ];
+                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
+                    <#source as ::djogi::prelude::Model>::table_name(),
+                    COLS,
+                    ::djogi::Condition::True,
+                )
+            }
+
             /// Build a [`VisageQuerySet`] over the source model's table
             /// with this visage's narrowed column projection, AND-ing
-            /// the closure's returned condition onto the queryset's
-            /// (vacuously-true) root.
+            /// the closure's returned condition onto the queryset's root.
             ///
-            /// The closure receives the visage's path-aware
-            /// `Fields` handle (a stateless ZST at the root) so column
-            /// references compose with the visage's exposed-only
-            /// surface.
+            /// See also: [`QuerySet::filter`](::djogi::query::QuerySet::filter)
             ///
             /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
@@ -209,19 +198,12 @@ pub fn expand(
                 __DjogiF: ::core::ops::FnOnce(#fields_ident) -> ::djogi::Condition,
             {
                 let __cond = predicate(<#fields_ident as ::core::default::Default>::default());
-                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
-                    <#source as ::djogi::prelude::Model>::table_name(),
-                    #cs_filter,
-                    __cond,
-                )
+                Self::__new().filter(__cond)
             }
 
             /// Append an ordering expression to a fresh visage queryset.
             ///
-            /// Equivalent to `V::filter(|_| Condition::True).order_by(...)`,
-            /// shaped as a top-level entry so visage call sites that
-            /// only care about ordering (e.g. listing pages) can skip
-            /// the dummy filter closure.
+            /// Equivalent to `V::filter(|_| Condition::True).order_by(...)`.
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
             pub fn order_by<__DjogiF, __DjogiO>(
                 f: __DjogiF,
@@ -231,71 +213,45 @@ pub fn expand(
                 __DjogiO: ::core::convert::Into<::std::vec::Vec<::djogi::OrderExpr>>,
             {
                 let __exprs = f(<#fields_ident as ::core::default::Default>::default()).into();
-                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
-                    <#source as ::djogi::prelude::Model>::table_name(),
-                    #cs_order,
-                    ::djogi::Condition::True,
-                )
-                .order_by(__exprs)
+                Self::__new().order_by(__exprs)
             }
 
             /// Apply `LIMIT n` to a fresh visage queryset.
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
             pub fn limit(n: u64) -> ::djogi::query::VisageQuerySet<#visage_ident> {
-                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
-                    <#source as ::djogi::prelude::Model>::table_name(),
-                    #cs_limit,
-                    ::djogi::Condition::True,
-                )
-                .limit(n)
+                Self::__new().limit(n)
             }
 
             /// Apply `OFFSET n` to a fresh visage queryset.
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
             pub fn offset(n: u64) -> ::djogi::query::VisageQuerySet<#visage_ident> {
-                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
-                    <#source as ::djogi::prelude::Model>::table_name(),
-                    #cs_offset,
-                    ::djogi::Condition::True,
-                )
-                .offset(n)
+                Self::__new().offset(n)
             }
 
             /// Internal seam — build a [`VisageQuerySet`] over the source
             /// model's table with this visage's narrowed column projection
             /// and the supplied `Condition` as the queryset's root.
             ///
-            /// Used by macro-emitted reverse-FK and M2M visage accessors
-            /// (Phase 7-Zero-2 T13). The accessors construct the
-            /// FK / EXISTS predicate via the source model's typed
-            /// [`Model::Fields`] / [`Exists`] surface and hand the
-            /// resulting [`Condition`] to this constructor; the visage's
-            /// baked-in `columns` slice ensures the emitted SELECT stays
-            /// narrowed to the visage's exposed columns.
+            /// Used by macro-emitted reverse-FK and M2M visage accessors.
+            /// The visage's baked-in `columns` slice ensures the emitted
+            /// SELECT stays narrowed to the visage's exposed columns.
             ///
             /// `#[doc(hidden)]` — adopter code should reach the visage
             /// query surface through [`Self::filter`], [`Self::order_by`],
-            /// [`Self::limit`], and [`Self::offset`]. This entry point
-            /// exists for macro-emission cross-crate paths only and may
-            /// be reshaped without notice.
+            /// [`Self::limit`], and [`Self::offset`].
             ///
             /// [`VisageQuerySet`]: ::djogi::query::VisageQuerySet
-            /// [`Condition`]: ::djogi::Condition
             #[doc(hidden)]
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
             pub fn __filter_with_initial_condition(
                 cond: ::djogi::Condition,
             ) -> ::djogi::query::VisageQuerySet<#visage_ident> {
-                ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
-                    <#source as ::djogi::prelude::Model>::table_name(),
-                    #cs_initial,
-                    cond,
-                )
+                Self::__new().filter(cond)
             }
         }
 
         impl ::djogi::__private::pg::FromPgRow for #visage_ident {
-            const COLUMNS: &'static [&'static str] = #cs_const;
+            const COLUMNS: &'static [&'static str] = &[ #(#columns_lit),* ];
 
             const COLUMN_LIST: &'static str = #column_list_str;
 
@@ -316,48 +272,13 @@ pub fn expand(
     }
 }
 
-/// Emit the decode token for a framework field at ordinal `idx`. The
-/// `field_name` is the Rust field name on the visage struct (matches
-/// the SQL column name 1:1 — `id` / `created_at` / `updated_at`).
-fn framework_decode(field_name: &'static str, idx: usize) -> TokenStream {
-    let fname = format_ident!("{}", field_name);
+/// Emit the struct-init decode token for one column at ordinal `idx`.
+/// The `fname` is the Rust field ident (may be a raw identifier
+/// `r#foo`); `column_name` is the SQL column literal (raw-prefix stripped).
+/// Delegates to the shared `decode_at` runtime helper that holds the
+/// debug-build name guard and the error mapping.
+fn emit_decode_assignment(fname: &Ident, column_name: &str, idx: usize) -> TokenStream {
     quote! {
-        #fname: {
-            ::std::debug_assert_eq!(
-                ::djogi::__private::tokio_postgres::Row::columns(row)[#idx].name(),
-                #field_name,
-                "FromPgRow column-order drift on visage: position {} expected {:?}, got {:?}",
-                #idx,
-                #field_name,
-                ::djogi::__private::tokio_postgres::Row::columns(row)[#idx].name(),
-            );
-            ::djogi::__private::tokio_postgres::Row::try_get::<_, _>(row, #idx)
-                .map_err(|e| ::djogi::DjogiError::Decode(
-                    ::std::format!("column `{}`: {}", #field_name, e)
-                ))?
-        }
-    }
-}
-
-/// Emit the decode token for a scalar user field. `fname` is the Rust
-/// ident (may be a raw identifier `r#type`); `column_name` is the SQL
-/// column literal (raw-prefix stripped) that the debug guard checks
-/// against the wire column header.
-fn scalar_decode(fname: &Ident, column_name: &str, idx: usize) -> TokenStream {
-    quote! {
-        #fname: {
-            ::std::debug_assert_eq!(
-                ::djogi::__private::tokio_postgres::Row::columns(row)[#idx].name(),
-                #column_name,
-                "FromPgRow column-order drift on visage: position {} expected {:?}, got {:?}",
-                #idx,
-                #column_name,
-                ::djogi::__private::tokio_postgres::Row::columns(row)[#idx].name(),
-            );
-            ::djogi::__private::tokio_postgres::Row::try_get::<_, _>(row, #idx)
-                .map_err(|e| ::djogi::DjogiError::Decode(
-                    ::std::format!("column `{}`: {}", #column_name, e)
-                ))?
-        }
+        #fname: ::djogi::__private::pg::decode_at::<_>(row, #idx, #column_name)?
     }
 }

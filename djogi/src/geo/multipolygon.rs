@@ -22,8 +22,6 @@
 
 use std::fmt;
 
-use bytes::BytesMut;
-use postgres_types::{FromSql, IsNull, ToSql, Type};
 use serde::{Deserialize, Serialize};
 
 use crate::geo::{GeoError, Polygon, ewkb};
@@ -67,7 +65,9 @@ impl MultiPolygon {
 
     /// Encode this `MultiPolygon` as an EWKB buffer for `GEOGRAPHY(MultiPolygon, 4326)`.
     pub fn to_ewkb_bytes(&self) -> Vec<u8> {
-        ewkb::encode_multipolygon(self)
+        let mut buf = Vec::with_capacity(ewkb::multipolygon_byte_len(self));
+        ewkb::encode_multipolygon_into(self, &mut buf);
+        buf
     }
 
     /// Decode an EWKB buffer into a `MultiPolygon`.
@@ -127,37 +127,9 @@ impl<'de> Deserialize<'de> for MultiPolygon {
     }
 }
 
-// ── postgres_types codec ──────────────────────────────────────────────────────
+// ── postgres_types codec (macro-generated) ───────────────────────────────────
 
-impl ToSql for MultiPolygon {
-    fn to_sql(
-        &self,
-        _ty: &Type,
-        out: &mut BytesMut,
-    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>> {
-        out.extend_from_slice(&self.to_ewkb_bytes());
-        Ok(IsNull::No)
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        ty.name() == "geography"
-    }
-
-    postgres_types::to_sql_checked!();
-}
-
-impl<'a> FromSql<'a> for MultiPolygon {
-    fn from_sql(
-        _ty: &Type,
-        raw: &'a [u8],
-    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
-        MultiPolygon::from_ewkb_bytes(raw).map_err(|e| Box::new(e) as _)
-    }
-
-    fn accepts(ty: &Type) -> bool {
-        ty.name() == "geography"
-    }
-}
+crate::geo::impl_geography_codec!(MultiPolygon, ewkb::encode_multipolygon_into);
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

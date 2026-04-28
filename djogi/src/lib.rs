@@ -110,7 +110,7 @@ pub mod __private {
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
         pub use crate::pg::decode::{
-            FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple,
+            FromJoinedPgRow, FromPgRow, FromRowTuple, decode_at, try_get_scalar, try_get_tuple,
         };
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
