@@ -148,6 +148,14 @@ pub enum RunnerError {
     /// recovery and must abort the run before it begins.
     RunIdGenerationFailed { source: DjogiError },
 
+    /// `ledger::bootstrap` failed — the ledger table's
+    /// `CREATE TABLE IF NOT EXISTS` DDL could not run. Distinct from
+    /// [`RunnerError::LedgerWriteFailed`] (row CRUD: INSERT/UPDATE)
+    /// — bootstrap is DDL, not row-level work, and almost always
+    /// signals a permissions or connection problem rather than a
+    /// data conflict.
+    LedgerBootstrapFailed { source: DjogiError },
+
     /// Insertion of the pending ledger row collided with an existing
     /// row carrying the same `version`. Surfaces a typed error rather
     /// than a raw `LedgerWriteFailed { source: 23505 }` so operators
@@ -387,6 +395,11 @@ impl std::fmt::Display for RunnerError {
                 "run_id generation via `SELECT heerid_next()` failed before any \
                  migration ran: {source}",
             ),
+            RunnerError::LedgerBootstrapFailed { source } => write!(
+                f,
+                "ledger bootstrap (CREATE TABLE IF NOT EXISTS djogi_migrations) \
+                 failed: {source}",
+            ),
             RunnerError::VersionAlreadyApplied {
                 version,
                 applied_at,
@@ -561,6 +574,7 @@ impl std::error::Error for RunnerError {
             RunnerError::CatalogQueryFailed { source, .. } => Some(source),
             RunnerError::LedgerQueryFailed { source, .. } => Some(source),
             RunnerError::RunIdGenerationFailed { source } => Some(source),
+            RunnerError::LedgerBootstrapFailed { source } => Some(source),
             _ => None,
         }
     }
@@ -672,10 +686,7 @@ pub async fn apply_plan(
     // 1. Bootstrap the ledger table.
     ledger::bootstrap(ctx)
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })?;
+        .map_err(|e| RunnerError::LedgerBootstrapFailed { source: e })?;
 
     // 2. Acquire pg advisory lock for this bucket.
     let lock_key = advisory_lock_key(&plan.bucket);
@@ -1174,12 +1185,9 @@ pub async fn rollback_plan(
 
     // 1. Bootstrap the ledger so the SELECT below cannot fail with
     //    relation-not-found.
-    ledger::bootstrap(ctx).await.map_err(|e| {
-        RollbackError::Runner(RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })
-    })?;
+    ledger::bootstrap(ctx)
+        .await
+        .map_err(|e| RollbackError::Runner(RunnerError::LedgerBootstrapFailed { source: e }))?;
 
     // 2. Confirm the row exists and is in a rollbackable status.
     let row = load_ledger_row_for_version(ctx, &runner_ctx.version)
@@ -1447,10 +1455,7 @@ pub async fn fake_apply_plan(
     // exclusive access to the ledger row insertion.
     ledger::bootstrap(ctx)
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })?;
+        .map_err(|e| RunnerError::LedgerBootstrapFailed { source: e })?;
 
     let lock_key = advisory_lock_key(&plan.bucket);
     acquire_advisory_lock(ctx, &plan.bucket, lock_key).await?;
@@ -1592,10 +1597,7 @@ pub async fn baseline_plan(
 
     ledger::bootstrap(ctx)
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: runner_ctx.version.clone(),
-            source: e,
-        })?;
+        .map_err(|e| RunnerError::LedgerBootstrapFailed { source: e })?;
 
     let lock_key = advisory_lock_key(bucket);
     acquire_advisory_lock(ctx, bucket, lock_key).await?;
