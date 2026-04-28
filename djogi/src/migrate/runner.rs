@@ -2662,8 +2662,8 @@ async fn lookup_partition_leaves(
     let oid_row = ctx
         .query_one("SELECT to_regclass($1)::oid", &[&parent])
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: parent.to_string(),
+        .map_err(|e| RunnerError::CatalogQueryFailed {
+            query_label: "to_regclass",
             source: e,
         })?;
     let oid_opt: Option<u32> = oid_row.try_get(0).ok();
@@ -2684,8 +2684,8 @@ async fn lookup_partition_leaves(
             &[&oid],
         )
         .await
-        .map_err(|e| RunnerError::LedgerWriteFailed {
-            version: parent.to_string(),
+        .map_err(|e| RunnerError::CatalogQueryFailed {
+            query_label: "pg_inherits",
             source: e,
         })?;
     let mut out: Vec<String> = Vec::with_capacity(rows.len());
