@@ -40,10 +40,12 @@
 //! directly.
 
 use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
-use crate::model::visage_ctx::{ScopeMembership, classify_field_for_scope, is_full_peer_for};
+use crate::model::visage_ctx::{
+    ScopeMembership, VisageEmitContext, classify_field_for_scope, is_full_peer_for,
+};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Ident, ItemStruct};
+use syn::ItemStruct;
 
 /// Every scope emits one generated visage struct, in this fixed order.
 const SCOPES: &[(&str, &str)] = &[
@@ -71,15 +73,16 @@ pub fn expand(
     let visages: Vec<TokenStream> = SCOPES
         .iter()
         .map(|(scope, suffix)| {
-            emit_projection_for_scope(
-                source_name,
-                suffix,
+            let ctx = VisageEmitContext {
+                source: source_name,
+                visage_ident: format_ident!("{source_name}{suffix}"),
                 scope,
                 struct_item,
                 field_attrs,
                 model_attrs,
                 n_framework,
-            )
+            };
+            emit_projection_for_scope(&ctx)
         })
         .collect();
 
@@ -88,16 +91,14 @@ pub fn expand(
     }
 }
 
-fn emit_projection_for_scope(
-    source: &Ident,
-    suffix: &str,
-    scope: &str,
-    struct_item: &ItemStruct,
-    field_attrs: &[FieldAttrs],
-    model_attrs: &ModelAttrs,
-    n_framework: usize,
-) -> TokenStream {
-    let proj_name = format_ident!("{source}{suffix}");
+fn emit_projection_for_scope(ctx: &VisageEmitContext<'_>) -> TokenStream {
+    let source = ctx.source;
+    let proj_name = &ctx.visage_ident;
+    let scope = ctx.scope;
+    let struct_item = ctx.struct_item;
+    let field_attrs = ctx.field_attrs;
+    let model_attrs = ctx.model_attrs;
+    let n_framework = ctx.n_framework;
     let source_name_str = source.to_string();
 
     let fw_fields = framework_field_decls(model_attrs);
@@ -288,30 +289,14 @@ fn emit_projection_for_scope(
     // `DjogiVisageOf<Source>` seal. The emitter mirrors the same scope gate
     // used above so the accessor set on `{Visage}Fields` matches the field
     // set on the visage struct exactly.
-    let fields_filter_seal = crate::model::visage_fields::expand(
-        source,
-        &proj_name,
-        scope,
-        struct_item,
-        field_attrs,
-        model_attrs,
-        n_framework,
-    );
+    let fields_filter_seal = crate::model::visage_fields::expand(ctx);
 
     // Emit the visage's `::filter(...)` queryset entry block + the visage's
     // narrow `FromPgRow` impl. The emitter bails out for relation-embed
     // visages (the SELECT projection can't represent an embedded peer as a
     // single column) and for `pk = None` source models (no
     // `Model::table_name()` to reach).
-    let queryset_entry = crate::model::visage_query::expand(
-        source,
-        &proj_name,
-        scope,
-        struct_item,
-        field_attrs,
-        model_attrs,
-        n_framework,
-    );
+    let queryset_entry = crate::model::visage_query::expand(ctx);
 
     quote! {
         #derive_path

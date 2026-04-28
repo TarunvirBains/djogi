@@ -5,8 +5,40 @@
 //! module centralises that logic so the classification is computed once per
 //! `(field, scope)` pair and re-used across all three emit phases.
 
-use crate::model::attrs::{FieldAttrs, RelationExposure, detect_relation};
+use crate::model::attrs::{FieldAttrs, ModelAttrs, RelationExposure, detect_relation};
 use quote::format_ident;
+use syn::{Ident, ItemStruct};
+
+/// Shared parameters threaded through the three visage emit passes.
+///
+/// `visages::expand` builds one `VisageEmitContext` per scope (the four
+/// `("public", "Public") | ("self_view", "SelfView") | ...` pairs) and hands
+/// the same `&VisageEmitContext` to `visages::emit_projection_for_scope`,
+/// `visage_fields::expand`, and `visage_query::expand`. Replaces the
+/// 7-positional-parameter signature each used to carry — same fields, one
+/// borrow, no swap-bug exposure.
+pub(crate) struct VisageEmitContext<'a> {
+    /// Source model ident (the `#[model]`-annotated struct).
+    pub source: &'a Ident,
+    /// Visage type ident — `{Source}{Suffix}` (e.g. `UserPublic`). Owned
+    /// because it is freshly formatted per scope iteration.
+    pub visage_ident: Ident,
+    /// Lowercase scope key (`"public"`, `"self_view"`, `"admin"`,
+    /// `"export"`). Used for `expose(scope)` lookups.
+    pub scope: &'a str,
+    /// The post-injection model struct (framework fields prepended).
+    pub struct_item: &'a ItemStruct,
+    /// Per-field attributes parsed from `#[field(...)]` annotations.
+    /// Indexes line up with `struct_item.fields` after the `n_framework`
+    /// prefix (so `field_attrs[0]` describes the first user field).
+    pub field_attrs: &'a [FieldAttrs],
+    /// Model-level attributes (`#[model(pk = "...", visages = "...", ...)]`).
+    pub model_attrs: &'a ModelAttrs,
+    /// Count of framework columns the inject pass prepended (3 for normal
+    /// PK strategies, 2 for `pk = "none"`). Used to skip past the framework
+    /// prefix when iterating user fields.
+    pub n_framework: usize,
+}
 
 /// Whether and how a field participates in a given visage scope.
 pub(crate) enum ScopeMembership<'a> {

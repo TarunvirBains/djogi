@@ -39,11 +39,11 @@
 //!
 //! [`VisageQuerySet<V>`]: ::djogi::query::VisageQuerySet
 
-use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
-use crate::model::visage_ctx::{ScopeMembership, classify_field_for_scope};
+use crate::model::attrs::PkStrategy;
+use crate::model::visage_ctx::{ScopeMembership, VisageEmitContext, classify_field_for_scope};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Ident, ItemStruct};
+use syn::Ident;
 
 /// Emit the per-visage queryset entry block + the visage's narrow
 /// `FromPgRow` impl.
@@ -53,15 +53,15 @@ use syn::{Ident, ItemStruct};
 /// attribute list. This emitter mirrors the same scope gate the visage
 /// struct emitter uses so the column list it bakes matches the visage
 /// struct's field order exactly.
-pub fn expand(
-    source: &Ident,
-    visage_ident: &Ident,
-    scope: &str,
-    struct_item: &ItemStruct,
-    field_attrs: &[FieldAttrs],
-    model_attrs: &ModelAttrs,
-    n_framework: usize,
-) -> TokenStream {
+pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
+    let source = ctx.source;
+    let visage_ident = &ctx.visage_ident;
+    let scope = ctx.scope;
+    let struct_item = ctx.struct_item;
+    let field_attrs = ctx.field_attrs;
+    let model_attrs = ctx.model_attrs;
+    let n_framework = ctx.n_framework;
+
     // `pk = None` models do not impl `Model`; their visages have no
     // queryset entry to wire because `Model::table_name()` is the
     // source of truth for the SQL table and is not available. The

@@ -51,23 +51,24 @@
 //!
 //! [`OptionalRelationRef<PeerFields>`]: ::djogi::query::OptionalRelationRef
 
-use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
-use crate::model::visage_ctx::{ScopeMembership, classify_field_for_scope, peer_fields_path};
+use crate::model::attrs::PkStrategy;
+use crate::model::visage_ctx::{
+    ScopeMembership, VisageEmitContext, classify_field_for_scope, peer_fields_path,
+};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Ident, ItemStruct};
+use syn::Ident;
 
 /// Emit `{Visage}Fields`, `{Visage}Filter`, and the sealed
 /// `DjogiVisageOf<SourceModel>` impl for a single visage.
-pub fn expand(
-    source: &Ident,
-    visage_ident: &Ident,
-    scope: &str,
-    struct_item: &ItemStruct,
-    field_attrs: &[FieldAttrs],
-    model_attrs: &ModelAttrs,
-    n_framework: usize,
-) -> TokenStream {
+pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
+    let source = ctx.source;
+    let visage_ident = &ctx.visage_ident;
+    let scope = ctx.scope;
+    let struct_item = ctx.struct_item;
+    let field_attrs = ctx.field_attrs;
+    let model_attrs = ctx.model_attrs;
+    let n_framework = ctx.n_framework;
     let fields_ident = format_ident!("{visage_ident}Fields");
     let filter_ident = format_ident!("{visage_ident}Filter");
     let filter_doc = format!(
