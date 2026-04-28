@@ -908,8 +908,6 @@ mod tests {
             index_type: None,
             relation_kind: None,
             on_delete: None,
-            deferrable: false,
-            initially_deferred: false,
             target_type_name: None,
             visage_map: &[],
         }];
@@ -966,8 +964,6 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -985,8 +981,6 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1063,8 +1057,6 @@ mod tests {
         index_type: None,
         relation_kind: None,
         on_delete: None,
-        deferrable: false,
-        initially_deferred: false,
         target_type_name: None,
         visage_map: &[],
     };
@@ -1083,8 +1075,6 @@ mod tests {
         index_type: None,
         relation_kind: None,
         on_delete: None,
-        deferrable: false,
-        initially_deferred: false,
         target_type_name: None,
         visage_map: &[],
     };
@@ -1300,11 +1290,6 @@ pub struct FieldDescriptor {
     /// descriptor stores the parsed value (not the raw string) so every
     /// downstream consumer works from the same enum.
     pub on_delete: Option<OnDelete>,
-    /// `#[field(deferrable)]` — only meaningful for relation fields.
-    pub deferrable: bool,
-    /// `#[field(initially_deferred)]` — only meaningful when
-    /// `deferrable` is true.
-    pub initially_deferred: bool,
 
     /// Fully-qualified target type name (e.g. `"Owner"` for
     /// `ForeignKey<Owner>`). `None` for scalar columns. Used by the Phase 6
@@ -1322,6 +1307,17 @@ pub struct FieldDescriptor {
     /// visage emitter projects the column under the aliased name
     /// when the given scope is active.
     pub visage_map: &'static [(&'static str, &'static str)],
+}
+
+/// Sidecar FK-deferrability metadata emitted separately from
+/// [`FieldDescriptor`] so hand-written descriptor literals remain
+/// source-compatible when new deferrability knobs are added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferrabilitySpec {
+    pub model_type_name: &'static str,
+    pub field_name: &'static str,
+    pub deferrable: bool,
+    pub initially_deferred: bool,
 }
 
 /// Describes an adopter-declared custom PK type.
@@ -1623,6 +1619,7 @@ impl ModelDescriptor {
 }
 
 inventory::collect!(ModelDescriptor);
+inventory::collect!(DeferrabilitySpec);
 
 /// Contract-validation helper that maps a [`ModelDescriptor`] to the DDL
 /// intent it implies.

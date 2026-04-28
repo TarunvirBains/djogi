@@ -91,8 +91,6 @@ pub fn expand(
                 // per-user-field only.
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -117,8 +115,6 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -147,8 +143,6 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -173,8 +167,6 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -199,8 +191,6 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -233,8 +223,6 @@ pub fn expand(
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[
                     ("admin", "id"),
@@ -261,8 +249,6 @@ pub fn expand(
             index_type: None,
             relation_kind: None,
             on_delete: None,
-            deferrable: false,
-            initially_deferred: false,
             target_type_name: None,
             visage_map: &[
                 ("admin", "created_at"),
@@ -287,8 +273,6 @@ pub fn expand(
             index_type: None,
             relation_kind: None,
             on_delete: None,
-            deferrable: false,
-            initially_deferred: false,
             target_type_name: None,
             visage_map: &[
                 ("admin", "updated_at"),
@@ -383,9 +367,6 @@ pub fn expand(
             // column's name; relation scopes map to the peer visage
             // type name. Empty / suppressed specs emit `&[]`.
             let projection_map_tokens = build_projection_map_tokens(&fa.expose, &name);
-            let deferrable = fa.deferrable;
-            let initially_deferred = fa.initially_deferred;
-
             // Relation metadata — `None`/`&[]` for scalar columns.
             //
             // Descriptor lookup keys off the short target name (last path
@@ -440,11 +421,34 @@ pub fn expand(
                     // columns. Non-relation columns keep `None`/`&[]`.
                     relation_kind: #relation_kind_tokens,
                     on_delete: #on_delete_tokens,
-                    deferrable: #deferrable,
-                    initially_deferred: #initially_deferred,
                     target_type_name: #target_type_name_tokens,
                     visage_map: #projection_map_tokens,
                 }
+            }
+        })
+        .collect();
+    let deferrability_submits: Vec<TokenStream> = user_fields
+        .iter()
+        .filter_map(|(field, fa)| {
+            let raw_name = field.ident.as_ref().unwrap().to_string();
+            let name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            let relation = detect_relation(&field.ty);
+            match relation {
+                Some(_) => {
+                    let deferrable = fa.deferrable;
+                    let initially_deferred = fa.initially_deferred;
+                    Some(quote! {
+                        ::djogi::__private::inventory::submit! {
+                            ::djogi::DeferrabilitySpec {
+                                model_type_name: #type_name,
+                                field_name: #name,
+                                deferrable: #deferrable,
+                                initially_deferred: #initially_deferred,
+                            }
+                        }
+                    })
+                }
+                None => None,
             }
         })
         .collect();
@@ -676,6 +680,7 @@ pub fn expand(
                 renamed_from: #renamed_from_tokens,
             }
         }
+        #(#deferrability_submits)*
     }
 }
 

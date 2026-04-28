@@ -276,6 +276,10 @@ pub enum AttuneDiagnostic {
     /// sees both messages when they pass `--record` (or `--squash`)
     /// without `--apply`.
     DryRunRecordSkipped { resolved_target: Option<String> },
+    /// Squash-implied recording was effective but `--apply` was absent.
+    /// Separate variant so squash wording can stay neutral while the
+    /// explicit `--record` path can name the causal flag.
+    DryRunSquashRecordSkipped { resolved_target: Option<String> },
 }
 
 impl AttuneDiagnostic {
@@ -285,7 +289,8 @@ impl AttuneDiagnostic {
         match self {
             AttuneDiagnostic::LedgerTableMissing { .. } => "ATTUNE-001",
             AttuneDiagnostic::DryRunMutationsSkipped { .. } => "ATTUNE-002",
-            AttuneDiagnostic::DryRunRecordSkipped { .. } => "ATTUNE-003",
+            AttuneDiagnostic::DryRunRecordSkipped { .. }
+            | AttuneDiagnostic::DryRunSquashRecordSkipped { .. } => "ATTUNE-003",
         }
     }
 }
@@ -311,19 +316,37 @@ impl std::fmt::Display for AttuneDiagnostic {
             AttuneDiagnostic::DryRunRecordSkipped { resolved_target } => match resolved_target {
                 Some(sha) => write!(
                     f,
-                    "[{}] would update parent submodule pointer to `{sha}` but `--apply` \
-                     was not provided; no parent index mutation happened — re-run with \
-                     `--apply` to commit",
+                    "[{}] `--record` was requested without `--apply`; parent submodule \
+                     pointer would be updated to `{sha}` but no parent index mutation \
+                     happened — re-run with `--apply` to commit",
                     self.code(),
                 ),
                 None => write!(
                     f,
-                    "[{}] would update parent submodule pointer but `--apply` was not \
-                     provided; no parent index mutation happened — re-run with `--apply` \
-                     to commit",
+                    "[{}] `--record` was requested without `--apply`; no parent submodule \
+                     pointer would be updated because no target was resolved — pass \
+                     `--target <ref>` to populate, then re-run with `--apply` to commit",
                     self.code(),
                 ),
             },
+            AttuneDiagnostic::DryRunSquashRecordSkipped { resolved_target } => {
+                match resolved_target {
+                    Some(sha) => write!(
+                        f,
+                        "[{}] would update parent submodule pointer to `{sha}` but `--apply` \
+                     was not provided; no parent index mutation happened — re-run with \
+                     `--apply` to commit",
+                        self.code(),
+                    ),
+                    None => write!(
+                        f,
+                        "[{}] no parent submodule pointer would be updated because no target \
+                     was resolved; pass `--target <ref>` to populate, then re-run with \
+                     `--apply` to commit",
+                        self.code(),
+                    ),
+                }
+            }
         }
     }
 }
@@ -1019,7 +1042,7 @@ pub async fn attune(
                 if effective_record && resolved_target.is_some() {
                     report
                         .diagnostics
-                        .push(AttuneDiagnostic::DryRunRecordSkipped {
+                        .push(AttuneDiagnostic::DryRunSquashRecordSkipped {
                             resolved_target: resolved_target.clone(),
                         });
                 }
@@ -1991,7 +2014,7 @@ mod tests {
 
     // ── Codex umbrella U-1: dry-run diagnostics + git target shape ──────
 
-    /// `DryRunMutationsSkipped` and `DryRunRecordSkipped` carry codes
+    /// `DryRunMutationsSkipped` and the dry-run record diagnostics carry codes
     /// that are stable across runs so operator-facing tooling can
     /// branch on them without parsing the message body.
     #[test]
@@ -2007,11 +2030,19 @@ mod tests {
             .code(),
             "ATTUNE-003"
         );
+        assert_eq!(
+            AttuneDiagnostic::DryRunSquashRecordSkipped {
+                resolved_target: None,
+            }
+            .code(),
+            "ATTUNE-003"
+        );
     }
 
     /// `DryRunMutationsSkipped` mentions the mode + the `--apply`
-    /// remediation; `DryRunRecordSkipped` mentions the resolved SHA
-    /// when present and falls back to a sensible message when absent.
+    /// remediation; the dry-run record diagnostics mention the
+    /// resolved SHA when present and fall back to accurate guidance
+    /// when absent.
     #[test]
     fn u1_dry_run_diagnostic_messages_are_actionable() {
         let d = AttuneDiagnostic::DryRunMutationsSkipped { mode: "Squash" };
@@ -2029,12 +2060,12 @@ mod tests {
         );
         assert!(s_with.contains("--apply"));
         assert!(
-            s_with.contains("would update parent submodule pointer"),
+            s_with.contains("parent submodule pointer would be updated to"),
             "must describe skipped parent-pointer update: {s_with}"
         );
         assert!(
-            !s_with.contains("--record requested"),
-            "must stay neutral across record sources: {s_with}"
+            s_with.contains("`--record` was requested without `--apply`"),
+            "explicit record case must name the causal flag: {s_with}"
         );
 
         let d_none = AttuneDiagnostic::DryRunRecordSkipped {
@@ -2042,35 +2073,34 @@ mod tests {
         };
         let s_none = d_none.to_string();
         assert!(
-            s_none.contains("would update parent submodule pointer"),
-            "must still describe skipped parent-pointer update: {s_none}"
+            s_none.contains("no parent submodule pointer would be updated"),
+            "must describe the unresolved-target outcome accurately: {s_none}"
         );
-        assert!(s_none.contains("--apply"));
+        assert!(s_none.contains("--target <ref>"));
         assert!(
-            !s_none.contains("--record requested"),
-            "must stay neutral when no SHA resolved: {s_none}"
+            s_none.contains("`--record` was requested without `--apply`"),
+            "explicit record case must still name the causal flag when unresolved: {s_none}"
         );
     }
 
-    /// Codex umbrella round-5 U-9: both the direct `--record` path
-    /// and the squash-implied path render the same neutral prose, and
-    /// neither may mention "`--record` requested".
+    /// The direct `--record` path names the causal flag, while the
+    /// squash-implied path stays neutral.
     #[test]
     fn u9_record_source_drives_diagnostic_wording() {
         let explicit = AttuneDiagnostic::DryRunRecordSkipped {
             resolved_target: Some("abcd".to_string()),
         }
         .to_string();
-        let squash = AttuneDiagnostic::DryRunRecordSkipped {
+        let squash = AttuneDiagnostic::DryRunSquashRecordSkipped {
             resolved_target: Some("abcd".to_string()),
         }
         .to_string();
         assert!(
             explicit.contains(
-                "would update parent submodule pointer to `abcd` but `--apply` was not \
-                 provided; no parent index mutation happened"
+                "`--record` was requested without `--apply`; parent submodule pointer \
+                 would be updated to `abcd`"
             ),
-            "direct --record wording must be neutral: {explicit}"
+            "direct --record wording must name the explicit flag: {explicit}"
         );
         assert!(
             squash.contains(
@@ -2080,8 +2110,8 @@ mod tests {
             "squash-implied wording must match neutral prose: {squash}"
         );
         assert!(
-            !explicit.contains("--record requested"),
-            "direct --record wording must NOT say --record requested: {explicit}"
+            explicit.contains("--record"),
+            "direct --record wording must mention the explicit flag: {explicit}"
         );
         assert!(
             !squash.contains("--record requested"),
@@ -2097,16 +2127,17 @@ mod tests {
         let resolved_target = match diagnostic.clone() {
             AttuneDiagnostic::DryRunRecordSkipped { resolved_target } => resolved_target,
             AttuneDiagnostic::LedgerTableMissing { .. }
-            | AttuneDiagnostic::DryRunMutationsSkipped { .. } => {
+            | AttuneDiagnostic::DryRunMutationsSkipped { .. }
+            | AttuneDiagnostic::DryRunSquashRecordSkipped { .. } => {
                 panic!("expected DryRunRecordSkipped")
             }
         };
         assert_eq!(resolved_target.as_deref(), Some("abc123"));
         assert_eq!(
             diagnostic.to_string(),
-            "[ATTUNE-003] would update parent submodule pointer to `abc123` but `--apply` \
-             was not provided; no parent index mutation happened — re-run with `--apply` \
-             to commit"
+            "[ATTUNE-003] `--record` was requested without `--apply`; parent submodule \
+             pointer would be updated to `abc123` but no parent index mutation happened \
+             — re-run with `--apply` to commit"
         );
     }
 

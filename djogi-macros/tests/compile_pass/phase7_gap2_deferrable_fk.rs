@@ -14,5 +14,7 @@ pub struct Pet {
 }
 
 fn _accepts_deferrable_fk_attrs() {
-    let _ = PetFields::owner_id();
+    let _ = PetFields::default().owner_id();
 }
+
+fn main() {}

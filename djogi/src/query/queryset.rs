@@ -1369,8 +1369,6 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
-                deferrable: false,
-                initially_deferred: false,
             }];
             static DESC: ModelDescriptor = ModelDescriptor {
                 type_name: "FakeUnindexedRegion",
@@ -1538,8 +1536,6 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
-                deferrable: false,
-                initially_deferred: false,
             }];
             static BOUNDARY_COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("boundary")];
             static INDEXES: &[IndexSpec] = &[IndexSpec {

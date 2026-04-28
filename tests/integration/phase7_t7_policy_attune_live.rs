@@ -2711,7 +2711,7 @@ async fn u7_attune_squash_dry_run_surfaces_record_skipped_without_explicit_flag(
     let squash_implied_diagnostic = report.diagnostics.iter().find(|d| {
         matches!(
             d,
-            djogi::migrate::AttuneDiagnostic::DryRunRecordSkipped { resolved_target }
+            djogi::migrate::AttuneDiagnostic::DryRunSquashRecordSkipped { resolved_target }
                 if resolved_target.as_deref() == Some(initial_sha.as_str())
         )
     });

@@ -98,6 +98,43 @@ use super::sql::{LossyRollbackKind, LossyRollbackWarning, OperationSql};
 
 // ── Public façade ────────────────────────────────────────────────────────
 
+/// Public-input validation failures for [`lower_pk_flip_group`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PkFlipError {
+    /// The self-FK sidecar vectors must stay index-aligned. A mismatch
+    /// means the caller handed `lower_pk_flip_group` a malformed group
+    /// that cannot preserve per-FK deferrability deterministically.
+    MalformedSelfFkMetadata {
+        parent_table: String,
+        fk_columns: usize,
+        fk_constraint_names: usize,
+        fk_deferrable: usize,
+        fk_initially_deferred: usize,
+    },
+}
+
+impl std::fmt::Display for PkFlipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PkFlipError::MalformedSelfFkMetadata {
+                parent_table,
+                fk_columns,
+                fk_constraint_names,
+                fk_deferrable,
+                fk_initially_deferred,
+            } => write!(
+                f,
+                "PK-flip group for `{parent_table}` has mismatched self-FK metadata lengths: \
+                 fk_columns={fk_columns}, fk_constraint_names={fk_constraint_names}, \
+                 fk_deferrable={fk_deferrable}, \
+                 fk_initially_deferred={fk_initially_deferred}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PkFlipError {}
+
 /// Lower a [`PkTypeFlipGroup`] into the multi-segment migration plan
 /// per the HeeRanjID playbook.
 ///
@@ -114,16 +151,41 @@ use super::sql::{LossyRollbackKind, LossyRollbackWarning, OperationSql};
 ///
 /// **Determinism** — the SQL is byte-stable across runs. See the
 /// module doc for sub-collection ordering rules.
-pub fn lower_pk_flip_group(group: &PkTypeFlipGroup, bucket: BucketKey) -> MigrationPlan {
+pub fn lower_pk_flip_group(
+    group: &PkTypeFlipGroup,
+    bucket: BucketKey,
+) -> Result<MigrationPlan, PkFlipError> {
+    validate_group(group)?;
     let segments = build_segments(group);
-    MigrationPlan {
+    Ok(MigrationPlan {
         bucket,
         classification: super::diff::Classification::PkTypeFlip {
             co_destructive: group.co_destructive,
             co_lossy: group.co_lossy,
         },
         segments,
+    })
+}
+
+fn validate_group(group: &PkTypeFlipGroup) -> Result<(), PkFlipError> {
+    if let Some(self_fk) = &group.self_fk {
+        let expected = self_fk.fk_columns.len();
+        let actuals = [
+            self_fk.fk_constraint_names.len(),
+            self_fk.fk_deferrable.len(),
+            self_fk.fk_initially_deferred.len(),
+        ];
+        if actuals.iter().any(|actual| *actual != expected) {
+            return Err(PkFlipError::MalformedSelfFkMetadata {
+                parent_table: group.parent_table.clone(),
+                fk_columns: expected,
+                fk_constraint_names: self_fk.fk_constraint_names.len(),
+                fk_deferrable: self_fk.fk_deferrable.len(),
+                fk_initially_deferred: self_fk.fk_initially_deferred.len(),
+            });
+        }
     }
+    Ok(())
 }
 
 /// Build the segment list for a single [`PkTypeFlipGroup`].
@@ -3911,8 +3973,8 @@ mod tests {
     #[test]
     fn lower_pk_flip_group_is_byte_stable() {
         let group = synth_group_single_table();
-        let plan_a = lower_pk_flip_group(&group, bucket());
-        let plan_b = lower_pk_flip_group(&group, bucket());
+        let plan_a = lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
+        let plan_b = lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
         assert_eq!(plan_a, plan_b);
     }
 
@@ -3949,7 +4011,7 @@ mod tests {
                 _ => None,
             })
             .expect("group present");
-        let plan = lower_pk_flip_group(group, bucket());
+        let plan = lower_pk_flip_group(group, bucket()).expect("lower pk flip group");
         assert_eq!(
             plan.segments.len(),
             6,
@@ -4029,7 +4091,7 @@ mod tests {
     /// base case for §4–§7 fixtures.
     fn lowered_plan_section_3() -> MigrationPlan {
         let group = synth_group_single_table();
-        super::lower_pk_flip_group(&group, bucket())
+        super::lower_pk_flip_group(&group, bucket()).expect("lower pk flip group")
     }
 
     /// Forward-direction §3 fixture — **emitter-output drift
@@ -4115,7 +4177,7 @@ mod tests {
         g3r.parent_from = PkKindSchema::HeerIdRecencyBiased;
         g3r.parent_to = PkKindSchema::HeerId;
         g3r.direction = PkFlipDirection::DescToAsc;
-        let plan_3r = super::lower_pk_flip_group(&g3r, bucket());
+        let plan_3r = super::lower_pk_flip_group(&g3r, bucket()).expect("lower pk flip group");
         write(
             "pk_flip_emitter_output_section_3_reverse.sql",
             whole_plan_normalised(&plan_3r),
@@ -4136,7 +4198,7 @@ mod tests {
             family: PkFlipFamily::Heer,
             cycle_flag: false,
         });
-        let plan_4 = super::lower_pk_flip_group(&g4, bucket());
+        let plan_4 = super::lower_pk_flip_group(&g4, bucket()).expect("lower pk flip group");
         write(
             "pk_flip_emitter_output_section_4.sql",
             whole_plan_normalised(&plan_4),
@@ -4151,7 +4213,7 @@ mod tests {
             fk_deferrable: vec![false],
             fk_initially_deferred: vec![false],
         });
-        let plan_6 = super::lower_pk_flip_group(&g6, bucket());
+        let plan_6 = super::lower_pk_flip_group(&g6, bucket()).expect("lower pk flip group");
         write(
             "pk_flip_emitter_output_section_6.sql",
             whole_plan_normalised(&plan_6),
@@ -4173,7 +4235,7 @@ mod tests {
             fk_to_partner_initially_deferred: false,
             family: PkFlipFamily::Heer,
         });
-        let plan_7 = super::lower_pk_flip_group(&g7, bucket());
+        let plan_7 = super::lower_pk_flip_group(&g7, bucket()).expect("lower pk flip group");
         write(
             "pk_flip_emitter_output_section_7.sql",
             whole_plan_normalised(&plan_7),
@@ -4204,7 +4266,7 @@ mod tests {
             peer_fk_column: "a_id".to_string(),
             self_fk_column: "b_id".to_string(),
         });
-        let plan_8 = super::lower_pk_flip_group(&g8, bucket());
+        let plan_8 = super::lower_pk_flip_group(&g8, bucket()).expect("lower pk flip group");
         write(
             "pk_flip_emitter_output_section_8.sql",
             whole_plan_normalised(&plan_8),
@@ -4218,7 +4280,7 @@ mod tests {
                 column: "ts".to_string(),
             },
         });
-        let plan_9 = super::lower_pk_flip_group(&g9, bucket());
+        let plan_9 = super::lower_pk_flip_group(&g9, bucket()).expect("lower pk flip group");
         write(
             "pk_flip_emitter_output_section_9.sql",
             whole_plan_normalised(&plan_9),
@@ -4249,7 +4311,7 @@ mod tests {
         group.parent_from = PkKindSchema::HeerIdRecencyBiased;
         group.parent_to = PkKindSchema::HeerId;
         group.direction = PkFlipDirection::DescToAsc;
-        let plan = super::lower_pk_flip_group(&group, bucket());
+        let plan = super::lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
         let actual = whole_plan_normalised(&plan);
         let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_3_REVERSE_NORMALIZED);
         assert_eq!(
@@ -4279,7 +4341,7 @@ mod tests {
             family: PkFlipFamily::Heer,
             cycle_flag: false,
         });
-        let plan = super::lower_pk_flip_group(&group, bucket());
+        let plan = super::lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
         let actual = whole_plan_normalised(&plan);
         let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_4_NORMALIZED);
         assert_eq!(
@@ -4302,7 +4364,7 @@ mod tests {
             fk_deferrable: vec![false],
             fk_initially_deferred: vec![false],
         });
-        let plan = super::lower_pk_flip_group(&group, bucket());
+        let plan = super::lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
         let actual = whole_plan_normalised(&plan);
         let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_6_NORMALIZED);
         assert_eq!(
@@ -4332,7 +4394,7 @@ mod tests {
             fk_to_partner_initially_deferred: false,
             family: PkFlipFamily::Heer,
         });
-        let plan = super::lower_pk_flip_group(&group, bucket());
+        let plan = super::lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
         let actual = whole_plan_normalised(&plan);
         let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_7_NORMALIZED);
         assert_eq!(
@@ -4371,7 +4433,7 @@ mod tests {
             peer_fk_column: "a_id".to_string(),
             self_fk_column: "b_id".to_string(),
         });
-        let plan = super::lower_pk_flip_group(&group, bucket());
+        let plan = super::lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
         let actual = whole_plan_normalised(&plan);
         let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_8_NORMALIZED);
         assert_eq!(
@@ -4396,7 +4458,7 @@ mod tests {
                 column: "ts".to_string(),
             },
         });
-        let plan = super::lower_pk_flip_group(&group, bucket());
+        let plan = super::lower_pk_flip_group(&group, bucket()).expect("lower pk flip group");
         let actual = whole_plan_normalised(&plan);
         let expected = whitespace_normalize(EMITTER_OUTPUT_SECTION_9_NORMALIZED);
         assert_eq!(

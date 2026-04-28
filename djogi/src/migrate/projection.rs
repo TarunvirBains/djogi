@@ -67,8 +67,8 @@ use std::collections::btree_map::Entry;
 
 use crate::apps::{AppDescriptor, AppRegistry};
 use crate::descriptor::{
-    EnumDescriptor, FieldDescriptor, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec,
-    IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    DeferrabilitySpec, EnumDescriptor, FieldDescriptor, IndexKind, IndexNullsOrder, IndexOrder,
+    IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
 };
 use crate::fts::FtsDescriptor;
 use crate::relation::{OnDelete, RelationKind};
@@ -269,8 +269,40 @@ where
     E: IntoIterator<Item = &'a EnumDescriptor>,
     A: IntoIterator<Item = &'a AppDescriptor>,
 {
+    project_from_iters_with_deferrability(
+        models,
+        enums,
+        apps,
+        inventory::iter::<DeferrabilitySpec>(),
+        generated_at,
+    )
+}
+
+#[allow(clippy::result_large_err)]
+fn project_from_iters_with_deferrability<'a, M, E, A, D>(
+    models: M,
+    enums: E,
+    apps: A,
+    deferrability_specs: D,
+    generated_at: String,
+) -> Result<BTreeMap<BucketKey, AppliedSchema>, ProjectionError>
+where
+    M: IntoIterator<Item = &'a ModelDescriptor>,
+    E: IntoIterator<Item = &'a EnumDescriptor>,
+    A: IntoIterator<Item = &'a AppDescriptor>,
+    D: IntoIterator<Item = &'static DeferrabilitySpec>,
+{
     let models: Vec<&ModelDescriptor> = models.into_iter().collect();
     let apps: Vec<&AppDescriptor> = apps.into_iter().collect();
+    let deferrability_by_field: BTreeMap<(&str, &str), (bool, bool)> = deferrability_specs
+        .into_iter()
+        .map(|spec| {
+            (
+                (spec.model_type_name, spec.field_name),
+                (spec.deferrable, spec.initially_deferred),
+            )
+        })
+        .collect();
 
     // Build label → AppDescriptor map. Always includes the synthetic
     // global bucket per AppRegistry contract.
@@ -434,7 +466,8 @@ where
         let mut tables: BTreeMap<String, TableSchema> = BTreeMap::new();
         let mut indexes: Vec<IndexSchema> = Vec::new();
         for m in &ms {
-            let projected = project_model(m, &type_to_table, &type_to_pk_sql);
+            let projected =
+                project_model(m, &type_to_table, &type_to_pk_sql, &deferrability_by_field);
             match tables.entry(projected.table.clone()) {
                 Entry::Vacant(v) => {
                     for idx in m.indexes {
@@ -499,11 +532,12 @@ fn project_model(
     m: &ModelDescriptor,
     type_to_table: &BTreeMap<&str, &str>,
     type_to_pk_sql: &BTreeMap<&str, String>,
+    deferrability_by_field: &BTreeMap<(&str, &str), (bool, bool)>,
 ) -> TableSchema {
     let columns: Vec<ColumnSchema> = m
         .fields
         .iter()
-        .map(|f| project_column(f, m, type_to_table, type_to_pk_sql))
+        .map(|f| project_column(f, m, type_to_table, type_to_pk_sql, deferrability_by_field))
         .collect();
 
     let primary_key = project_primary_key(&m.pk_type);
@@ -529,6 +563,7 @@ fn project_column(
     parent: &ModelDescriptor,
     type_to_table: &BTreeMap<&str, &str>,
     type_to_pk_sql: &BTreeMap<&str, String>,
+    deferrability_by_field: &BTreeMap<(&str, &str), (bool, bool)>,
 ) -> ColumnSchema {
     let projected_on_delete = if f.relation_kind.is_some() {
         Some(project_on_delete(f.on_delete.unwrap_or(OnDelete::Restrict)))
@@ -538,6 +573,10 @@ fn project_column(
 
     let foreign_key = if f.relation_kind.is_some() {
         f.target_type_name.map(|target| {
+            let (deferrable, initially_deferred) = deferrability_by_field
+                .get(&(parent.type_name, f.name))
+                .copied()
+                .unwrap_or((false, false));
             let ref_table = type_to_table
                 .get(target)
                 .copied()
@@ -552,8 +591,8 @@ fn project_column(
                 on_delete: projected_on_delete.unwrap_or(OnDeleteSchema::Restrict),
                 ref_column: "id".to_string(),
                 ref_table,
-                deferrable: f.deferrable,
-                initially_deferred: f.initially_deferred,
+                deferrable,
+                initially_deferred,
             }
         })
     } else {
@@ -1067,8 +1106,6 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: Some("Owner"),
                 visage_map: &[],
             }],
@@ -1105,8 +1142,6 @@ mod tests {
             index_type: None,
             relation_kind: Some(RelationKind::ForeignKey),
             on_delete: Some(on_delete),
-            deferrable: false,
-            initially_deferred: false,
             target_type_name: Some("Owner"),
             visage_map: &[],
         }
@@ -1180,17 +1215,22 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
-                deferrable: true,
-                initially_deferred: true,
                 target_type_name: Some("Owner"),
                 visage_map: &[],
             }],
             ..synth_model("vehicles", "Vehicle")
         };
-        let buckets = project_from_iters(
+        static DEFERRABILITY: &[DeferrabilitySpec] = &[DeferrabilitySpec {
+            model_type_name: "Vehicle",
+            field_name: "owner_id",
+            deferrable: true,
+            initially_deferred: true,
+        }];
+        let buckets = project_from_iters_with_deferrability(
             [&owner, &vehicle],
             [],
             [],
+            DEFERRABILITY,
             "2026-04-25T00:00:00Z".to_string(),
         )
         .expect("ok");
@@ -1226,8 +1266,6 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: Some("User"),
                 visage_map: &[],
             }],
@@ -1268,8 +1306,6 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             }],
@@ -1396,8 +1432,6 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: Some("AuditRow"),
                 visage_map: &[],
             }],
@@ -1459,8 +1493,6 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1478,8 +1510,6 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1531,8 +1561,6 @@ mod tests {
             index_type: None,
             relation_kind: None,
             on_delete: None,
-            deferrable: false,
-            initially_deferred: false,
             target_type_name: None,
             visage_map: &[],
         }];
@@ -1581,8 +1609,6 @@ mod tests {
             index_type: None,
             relation_kind: Some(RelationKind::ForeignKey),
             on_delete: Some(OnDelete::Restrict),
-            deferrable: false,
-            initially_deferred: false,
             target_type_name: Some("Owner"),
             visage_map: &[],
         }];
@@ -1663,8 +1689,6 @@ mod tests {
                 index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: Some("Owner"),
                 visage_map: &[],
             },
@@ -1686,8 +1710,6 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },
@@ -1706,8 +1728,6 @@ mod tests {
                 index_type: None,
                 relation_kind: None,
                 on_delete: None,
-                deferrable: false,
-                initially_deferred: false,
                 target_type_name: None,
                 visage_map: &[],
             },

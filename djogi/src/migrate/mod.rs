@@ -115,7 +115,7 @@ pub use naming::{
     MAX_SLUG_LEN, down_filename, pending_json_filename, sanitize_slug, up_filename, version_id,
     version_prefix,
 };
-pub use pk_flip::lower_pk_flip_group;
+pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};
 pub use repair::{

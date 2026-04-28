@@ -41,7 +41,8 @@ use djogi::migrate::{
     OnDeleteSchema, OperationSql, PkFlipChild, PkFlipDirection, PkFlipFamily, PkTypeFlipGroup,
     PrimaryKeySchema, RelationKindSchema, RunnerCtx, RunnerError, SNAPSHOT_FORMAT_VERSION, Segment,
     SegmentKind, TableSchema, WorkspaceGuard, acquire_workspace_lock, apply_plan, bootstrap_ledger,
-    compute_checksum, diff_bucket_maps, lower_delta, lower_pk_flip_group,
+    compute_checksum, diff_bucket_maps, lower_delta,
+    lower_pk_flip_group as lower_pk_flip_group_checked,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -96,6 +97,10 @@ fn bucket() -> BucketKey {
         database: "main".to_string(),
         app: "".to_string(),
     }
+}
+
+fn lower_pk_flip_group(group: &PkTypeFlipGroup, bucket: BucketKey) -> MigrationPlan {
+    lower_pk_flip_group_checked(group, bucket).expect("lower pk flip group")
 }
 
 /// Verify a column exists on a table with the given Postgres type.

@@ -2261,8 +2261,6 @@ mod tests {
             index_type: None,
             relation_kind: None,
             on_delete: None,
-            deferrable: false,
-            initially_deferred: false,
             target_type_name: None,
             visage_map: &[],
         }],
