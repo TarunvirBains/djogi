@@ -574,22 +574,23 @@ pub struct EnumSchema {
 ///
 /// # Boundary contract (§6.5)
 ///
-/// `Classification` and the `SchemaOperation::PkTypeFlipGroup` /
+/// `OnlineSafetyClassification` and the
+/// `SchemaOperation::PkTypeFlipGroup` /
 /// `SchemaOperation::PkTypeFlipMultiGroup` cascade routes are
 /// **mutually exclusive**. A primary-key type flip is orchestrated
 /// natively by Phase 7's `migrate::pk_flip` emitter family — when a
 /// delta carries a PK-flip group, the classifier short-circuits
 /// because that operation is already routed through its dedicated
-/// path. `Classification::ExpandContract` therefore never overlaps
-/// with PK-flip work; PK flips sit architecturally below the
+/// path. `OnlineSafetyClassification::ExpandContract` therefore never
+/// overlaps with PK-flip work; PK flips sit architecturally below the
 /// live-plan layer.
 ///
 /// # Consumption boundary
 ///
 /// Phase 7.5's `live_migrate` module consumes **only**
-/// `Classification::ExpandContract` — the variant whose handoff
-/// marker is the spec term `RequiresLivePlan`. The other three
-/// variants stay inside Phase 7:
+/// `OnlineSafetyClassification::ExpandContract` — the variant whose
+/// handoff marker is the spec term `RequiresLivePlan`. The other
+/// three variants stay inside Phase 7:
 ///
 /// - `OnlineSafe` is applied directly by the runner.
 /// - `FastLockDestructiveGuarded` is gated on `--allow-destructive`
@@ -602,17 +603,17 @@ pub struct EnumSchema {
 ///
 /// # Naming
 ///
-/// This enum classifies a single segment by *online-safety*. The
-/// per-delta severity classifier with the same simple name lives
-/// in [`crate::migrate::diff`]; that one is what carries the
-/// `PkTypeFlip` variant. The two coexist on `SchemaDelta` at
-/// different granularities and are referred to by their fully
-/// qualified paths to avoid collision — `migrate/mod.rs` re-exports
-/// the severity enum at `migrate::Classification` and leaves this
-/// online-safety enum reachable as
-/// `migrate::schema::Classification`.
+/// This enum answers a different question than
+/// [`crate::migrate::diff::Classification`]:
+/// `OnlineSafetyClassification` tags a single migration *operation*
+/// with its online-safety verdict (the four variants below), while
+/// `diff::Classification` tags a whole *delta* with its severity /
+/// routing (`NoOp` / `Additive` / `Reversible` / `Destructive` /
+/// `Lossy` / `Unsupported{reason}` / `PkTypeFlip{...}`). The two live
+/// at different granularities on `SchemaDelta` and the rename
+/// guarantees that `use` lines and match arms cannot mix them up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Classification {
+pub enum OnlineSafetyClassification {
     /// Pure additive change — no lock held longer than the Postgres
     /// fast-path window, no data loss, no replication-lag hazard.
     /// The runner applies it directly with no operator gate.
@@ -635,16 +636,16 @@ pub enum Classification {
 }
 
 #[cfg(test)]
-mod classification_tests {
-    use super::Classification;
+mod online_safety_classification_tests {
+    use super::OnlineSafetyClassification;
 
     #[test]
-    fn classification_has_four_distinct_variants() {
+    fn online_safety_classification_has_four_distinct_variants() {
         let all = [
-            Classification::OnlineSafe,
-            Classification::FastLockDestructiveGuarded,
-            Classification::ExpandContract,
-            Classification::OfflineOnly,
+            OnlineSafetyClassification::OnlineSafe,
+            OnlineSafetyClassification::FastLockDestructiveGuarded,
+            OnlineSafetyClassification::ExpandContract,
+            OnlineSafetyClassification::OfflineOnly,
         ];
         for (i, lhs) in all.iter().enumerate() {
             for (j, rhs) in all.iter().enumerate() {
@@ -663,13 +664,18 @@ mod classification_tests {
     /// Phase 7 — the live-plan layer must never accept them.
     #[test]
     fn only_expand_contract_routes_to_live_plan() {
-        let routes_to_live_plan =
-            |c: Classification| -> bool { matches!(c, Classification::ExpandContract) };
-        assert!(routes_to_live_plan(Classification::ExpandContract));
-        assert!(!routes_to_live_plan(Classification::OnlineSafe));
-        assert!(!routes_to_live_plan(
-            Classification::FastLockDestructiveGuarded
+        let routes_to_live_plan = |c: OnlineSafetyClassification| -> bool {
+            matches!(c, OnlineSafetyClassification::ExpandContract)
+        };
+        assert!(routes_to_live_plan(
+            OnlineSafetyClassification::ExpandContract
         ));
-        assert!(!routes_to_live_plan(Classification::OfflineOnly));
+        assert!(!routes_to_live_plan(OnlineSafetyClassification::OnlineSafe));
+        assert!(!routes_to_live_plan(
+            OnlineSafetyClassification::FastLockDestructiveGuarded
+        ));
+        assert!(!routes_to_live_plan(
+            OnlineSafetyClassification::OfflineOnly
+        ));
     }
 }
