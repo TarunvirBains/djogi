@@ -222,9 +222,23 @@ pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
         // monomorphisation — but defensive against hand-written
         // strings) are also accepted.
         "heeranjid::heer::HeerId" | "djogi::types::HeerId" | "heeranjid::HeerId" => Some("::int8"),
+        // HeerIdDesc — descending-order variant; `IntoFilterValue`
+        // exists at `djogi/src/query/field.rs:461`. Real `type_name`
+        // is `heeranjid::heer_desc::HeerIdDesc`. Codex round-2 BLOCK
+        // (Cluster F finding 1) caught this gap — JSONB comparisons
+        // against a `HeerIdDesc`-typed value were silently falling
+        // back to text. The `HeerIdRecencyBiased` re-export alias
+        // resolves to the same type; one arm covers both.
+        "heeranjid::heer_desc::HeerIdDesc"
+        | "djogi::types::HeerIdDesc"
+        | "heeranjid::HeerIdDesc" => Some("::int8"),
         // RanjId — same shape as HeerId. Real `type_name` is
         // `heeranjid::ranj::RanjId`; aliases preserved for parity.
         "heeranjid::ranj::RanjId" | "djogi::types::RanjId" | "heeranjid::RanjId" => Some("::uuid"),
+        // RanjIdDesc — same coverage gap as HeerIdDesc.
+        "heeranjid::ranj_desc::RanjIdDesc"
+        | "djogi::types::RanjIdDesc"
+        | "heeranjid::RanjIdDesc" => Some("::uuid"),
         // rust_decimal::Decimal — stored as NUMERIC in Postgres.
         // Real `type_name` is `rust_decimal::decimal::Decimal`.
         "rust_decimal::decimal::Decimal" | "rust_decimal::Decimal" | "Decimal" => Some("::numeric"),
@@ -683,6 +697,34 @@ mod tests {
             sql_cast_for_type(name),
             None,
             "type_name<String>() = {name:?} should require no cast"
+        );
+    }
+
+    // Codex round-2 BLOCK (Cluster F finding 1) — `HeerIdDesc` / `RanjIdDesc`
+    // (the descending-order variants of the PK types) implement
+    // `IntoFilterValue` and can be used as `JsonbPathRef<M, V>` value
+    // generics. They were missing from the cast table — every JSONB
+    // comparison against a `HeerIdDesc`-typed payload was silently
+    // falling back to text comparison. Lock them in here against the
+    // real `type_name<>()` output so a future change surfaces here
+    // first.
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_heer_id_desc() {
+        let name = std::any::type_name::<crate::HeerIdDesc>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::int8"),
+            "type_name<HeerIdDesc>() = {name:?} did not map to ::int8"
+        );
+    }
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_ranj_id_desc() {
+        let name = std::any::type_name::<crate::RanjIdDesc>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::uuid"),
+            "type_name<RanjIdDesc>() = {name:?} did not map to ::uuid"
         );
     }
 }

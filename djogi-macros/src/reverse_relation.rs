@@ -18,12 +18,14 @@
 //!
 //! A reverse accessor lives on the **opposite** side of the relation
 //! from where the FK column is declared. A `#[derive(Model)]` on
-//! `Vehicle` (the FK source) has no way to emit `impl Owner { fn
-//! cars() }`: attribute macros can only generate items adjacent to
-//! their input, not items attached to a foreign type. A function-like
-//! macro at the module level reads both type names and emits the
-//! `impl Target { ... }` block directly, regardless of which crate
-//! defined `Target`.
+//! `Vehicle` (the FK source) has no way to emit a method on `Owner`:
+//! attribute macros can only generate items adjacent to their input,
+//! not items attached to a foreign type. A function-like macro at the
+//! module level reads both type names and emits a per-relation trait
+//! plus its impl, which Rust's coherence rule allows in either the
+//! type-defining crate OR the trait-defining crate — letting
+//! downstream FK-using crates declare reverse accessors against
+//! upstream parent types.
 //!
 //! Invocation form is declarative — one line per reverse direction:
 //!
@@ -37,8 +39,15 @@
 //! For `reverse_one_to_many!(Target, method -> Source by via_column)`:
 //!
 //! ```ignore
-//! impl Target {
-//!     pub fn method<'ctx>(
+//! pub trait TargetMethodReverseRelation {
+//!     fn method<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!     ) -> impl Future<Output = Result<Vec<Source>, DjogiError>> + Send + 'ctx;
+//! }
+//!
+//! impl TargetMethodReverseRelation for Target {
+//!     fn method<'ctx>(
 //!         &'ctx self,
 //!         ctx: &'ctx mut DjogiContext,
 //!     ) -> impl Future<Output = Result<Vec<Source>, DjogiError>> + Send + 'ctx
@@ -66,6 +75,26 @@
 //! `reverse_one_to_one!` emits an almost-identical shape with two
 //! differences: return type is `Result<Option<Source>, DjogiError>` and
 //! the terminal is `.first(ctx)` instead of `.fetch_all(ctx)`.
+//!
+//! # Trait-based emission (GH issue #39)
+//!
+//! Phase 7.5 PR 5 switched the emission shape from `impl Target { ... }`
+//! (inherent impl, subject to Rust's E0116 coherence rule) to
+//! `pub trait TargetMethodReverseRelation { ... }` plus
+//! `impl TargetMethodReverseRelation for Target { ... }`. The trait
+//! impl is allowed in the trait-defining crate even when `Target` lives
+//! upstream, lifting the cross-crate constraint that pre-#39 emission
+//! carried.
+//!
+//! The naming convention is `{Receiver}{Method-pascal}ReverseRelation`
+//! for the model-scoped accessor, and
+//! `{Receiver}{Scope-pascal}{Method-pascal}VisageReverseRelation` for
+//! each `expose(scope -> Peer)` clause. Trait-method dispatch requires
+//! the trait to be in scope at the call site — when the macro is
+//! invoked at module scope (the canonical form), the trait is visible
+//! to call sites in the same module without an explicit `use`. Cross-
+//! module / cross-crate consumers add `use ...::TargetMethodReverseRelation;`
+//! at the top of files that call `.method()` on the receiver.
 //!
 //! # Terminology note (source vs target)
 //!

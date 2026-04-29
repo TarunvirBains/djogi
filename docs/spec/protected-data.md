@@ -25,58 +25,89 @@ This spec defines the descriptor-level primitives for protected data. It does **
 ## Minimal Public Surface
 
 Phase 7.5 stabilizes the descriptor-facing primitives via a single
-grouped attribute. Five named keys live inside `protected(...)`:
+grouped attribute. Five named keys live inside `protected(...)`, and
+`sensitivity` is **mandatory**:
 
 ```rust
 #[field(protected(
-    sensitivity = "pii",
-    rationale   = "contains personal contact data",
-    redaction   = "hash_id",
-    codec       = "encrypted",
-    retention   = "anonymize",
+    sensitivity = "pii",                   // REQUIRED — see vocabulary below
+    rationale   = "GDPR Art. 6(1)(b)",     // REQUIRED when sensitivity > "none"
+    redaction   = "mask",                  // optional; default "none"
+    codec       = "<see codec section>",   // optional; default unset
+    retention   = "extended",              // optional; default "standard"
 ))]
 pub email: String,
 ```
 
-All five keys are optional. Adopters typically declare only the
-applicable subset — a field that just needs an audit-log redaction
-rule writes `protected(redaction = "mask")` with no sensitivity, codec,
-or retention. The grammar is order-insensitive and rejects duplicate
-keys with a span-precise error.
+`rationale`, `redaction`, `codec`, and `retention` are optional keys
+within `protected(...)`. The grammar is order-insensitive and rejects
+duplicate keys with a span-precise error.
 
-For ergonomics the rationale string is also accepted as a flat
-attribute outside `protected(...)`:
+### Validation rules (compile-time)
 
-```rust
-#[field(rationale = "captured at signup; read by export jobs only")]
-```
+The macro enforces five rules at expansion time. Violations produce
+span-precise compile errors at the offending key, not at the model
+struct.
 
-The two forms are equivalent — the macro lowers both into the same
-`ProtectedFieldMetadata::rationale` slot. Flat `rationale` is the
-quality-of-life affordance for fields that carry no other protection
-metadata; the grouped form is canonical when any other key is set.
+- **(a) `sensitivity` is mandatory.** Omitting it errors with
+  `protected(...) requires sensitivity = "..."`.
+- **(b) `sensitivity = "none"` is incompatible with any other key.**
+  If `none` is paired with `rationale` / `redaction` / `codec` /
+  `retention`, the macro errors at the first extra key with a "drop
+  this key or raise sensitivity" pointer. The intent: the neutral-
+  default form has no metadata to carry, so writing `protected(...)`
+  at all is meaningless when sensitivity is `none`.
+- **(c) Sensitivity above `none` requires non-empty `rationale`.**
+  An empty string also fails. The rationale is the audit trail's
+  primary signal — without it the annotation is hostile to compliance
+  review.
+- **(d) `redaction = "hash_id"` is only valid on PK-shaped types.**
+  Specifically `HeerId`, `RanjId`, and `Option<...>` of the same
+  (plus the `HeerIdRecencyBiased` / `HeerIdDesc` aliases). Adopter
+  custom-PK newtypes from `djogi::primary_key!` are NOT recognised
+  by this rule today — the macro cannot prove a user-named ident
+  implements `PrimaryKey` at parse time, and a wrong accept ships
+  an unsafe redaction policy at runtime, so the recogniser is
+  conservative.
+- **(e) `codec = "..."` must name a value in the framework's
+  compile-time codec registry.** Phase 7.5 ships an empty registry —
+  every codec string is rejected at expansion time with
+  `unregistered codec ID 'X'. Valid codec IDs in this build of
+  Djogi: (none).` The registry will be populated in future phases;
+  **codecs ship with the framework, not adopter code.**
 
-### Field annotations recognised
+### Field annotation vocabulary
 
-- `protected(sensitivity = "...")` — five-level enum:
-  `none`, `internal`, `pii`, `sensitive`, `secret`. The default is
-  `none`; declaring it explicitly is allowed but redundant.
-- `protected(rationale = "...")` (or flat `rationale = "..."`) — free
-  text. Required when sensitivity is above `none` so audit
-  surfaces always carry the "why" alongside the classification.
-- `protected(redaction = "...")` — named redaction policy. Phase 7.5
-  ships `none`, `mask`, `hash_id`, `truncate`, plus an `enclave` slot
-  reserved for sensitive enclaves the runtime activates in later
-  phases. `hash_id` is constrained to PK-shaped types
-  (HeerId / RanjId / Serial); the macro hard-errors when it sees
-  `redaction = "hash_id"` on a string or numeric column.
-- `protected(codec = "...")` — codec identifier. Resolved against the
-  compile-time codec registry (`djogi::field_codec`). Adopters declare
-  custom codecs via `#[djogi::field_codec]`-marked types; the
-  macro rejects unknown codec strings at expansion time.
-- `protected(retention = "...")` — retention/lifecycle label. Phase
-  7.5 ships `standard`, `transient`, `legal_hold`, `anonymize`. The
-  set is closed; future labels go through a spec amendment.
+- **`sensitivity = "..."`** — five-level enum:
+  - `"none"` — default, no sensitivity; cannot be combined with other
+    `protected(...)` keys.
+  - `"internal"` — internal-only data (logs, internal admin, etc.).
+  - `"pii"` — personally identifying information.
+  - `"sensitive"` — sensitive but not regulated as PII.
+  - `"secret"` — credentials, encryption keys, etc.
+
+- **`rationale = "..."`** — free text. Required when sensitivity is
+  above `"none"` (see rule (c)).
+
+- **`redaction = "..."`** — named redaction policy. Phase 7.5 ships:
+  - `"none"` — default.
+  - `"hash_id"` — hash to opaque identifier; PK-shaped types only
+    (rule (d)).
+  - `"mask"` — replace with a fixed mask string.
+  - `"drop"` — omit the field entirely from redacted renderings.
+
+- **`codec = "..."`** — codec identifier; resolved against the
+  compile-time registry. Phase 7.5 registry is empty (rule (e)).
+
+- **`retention = "..."`** — closed enum of retention/lifecycle labels.
+  Phase 7.5 ships:
+  - `"transient"` — short-lived data.
+  - `"standard"` — default retention.
+  - `"extended"` — longer-than-default retention.
+  - `"archival"` — long-term archival storage.
+
+  Future labels (e.g. `legal_hold`, `anonymize`) are spec amendments,
+  not adopter extensions.
 
 ### Visage-scope axis
 
@@ -105,6 +136,21 @@ generate. A future amendment can add per-scope redaction overrides if
 adopters surface the need; today the design favours the smaller
 grammar.
 
+### Flat `rationale` attribute
+
+The parser ALSO accepts `#[field(rationale = "...")]` outside the
+`protected(...)` list — it lives in the macro's `VALID_FIELD_KEYS`
+allowlist alongside the other field-level keys. **Phase 7.5 does not
+propagate the flat-key value into the descriptor**: the descriptor
+emitter hard-codes `FieldDescriptor.rationale: None` for every field.
+Treat the flat key as parser-accepted-but-not-lowered today; a future
+phase that adds a non-protected rationale slot to the descriptor will
+wire it through.
+
+For now, every adopter-visible rationale comes from
+`ProtectedFieldMetadata::rationale`, populated only via the grouped
+`protected(rationale = "...")` form.
+
 ### Runtime expectations
 
 - CRUD writes apply the codec on persistence (Phase 8+).
@@ -129,7 +175,7 @@ the parsed annotation. `None` means no `protected(...)` was declared
 ```rust
 pub struct ProtectedFieldMetadata {
     pub sensitivity: Sensitivity,        // 5-level enum
-    pub rationale: Option<&'static str>, // free text
+    pub rationale: Option<&'static str>, // free text; only set via protected(...)
     pub redaction: RedactionPolicy,      // named policy enum
     pub codec: Option<&'static str>,     // codec id; runtime-resolved
     pub retention: RetentionLabel,       // closed enum
@@ -169,10 +215,12 @@ Field codecs are a data-layer concern, not an HTTP or UI concern.
 The compile-time registry (Phase 7.5 T4) provides the lookup the macro
 uses at expansion time to validate `protected(codec = "<id>")`. The
 registry is keyed by the codec identifier string and resolved through
-the `FieldCodec` trait that adopter code implements. The macro hard-
-errors when a `protected(codec = "...")` declaration names an
-unregistered identifier — runtime "codec not found" failures are
-caught at build time.
+the `FieldCodec` trait. **The registry is closed: codecs ship with
+the framework, not adopter code.** Phase 7.5 ships the registry empty
+(rule (e) above) — every `codec = "..."` declaration is rejected at
+expansion time. Future framework phases will populate the registry
+with the canonical codec set; adopters who need a custom transform in
+the meantime work around it at the application layer.
 
 ---
 

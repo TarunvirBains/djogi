@@ -597,11 +597,21 @@ pub fn expand(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Named-accessor inherent method. Delegates straight to the trait
-    // method — the ergonomic `person.groups(&mut ctx).await` shape the
-    // user sees at the call site, but the query logic stays in the
-    // trait body where the hand-impl fixture and the macro can share
-    // the single source of truth.
+    // Named-accessor — delegates to the `ManyToMany::related` trait
+    // method. The ergonomic `person.groups(&mut ctx).await` shape lives
+    // here; the query logic stays in the `ManyToMany` trait body where
+    // the hand-impl fixture and the macro share a single source of
+    // truth.
+    //
+    // GH issue #39 (Cluster E#1) — emission shape switched from
+    // inherent `impl Source { fn relation(...) }` to per-relation trait
+    // + trait-impl, mirroring the reverse_one_to_many!/_one! conversion.
+    // Inherent impls are subject to E0116 (coherence rule) which
+    // requires them to live in the source-type-defining crate; trait
+    // impls only need ONE of (type-defining crate, trait-defining crate)
+    // to host them, so a downstream crate that owns the through model
+    // and the m2m macro invocation can declare the accessor against
+    // an upstream source type.
     //
     // The return-type annotation is `impl Future + Send + 'ctx` — mirrors
     // `reverse_one_to_many!`'s shape. The `+ Send` is load-bearing
@@ -610,12 +620,39 @@ pub fn expand(input: TokenStream) -> TokenStream {
     // future on a multi-threaded executor still require the explicit
     // annotation. Dropping it would regress ergonomics for tokio
     // multi-thread and axum handler sites.
+    let m2m_trait_ident = format_ident!(
+        "{}{}ManyToManyRelation",
+        source_type,
+        crate::case::snake_to_pascal(&relation_lit)
+    );
+    let m2m_trait_doc = format!(
+        "Per-relation trait emitted by `djogi::many_to_many!` for the \
+         `{}::{}` accessor. Trait-based emission (vs an inherent impl on \
+         `{}`) lifts Rust's E0116 coherence-rule constraint so downstream \
+         crates can declare the accessor against an upstream source type. \
+         Adopters bring the method into scope with `use ...::{}`.",
+        source_type, relation_lit, source_type, m2m_trait_ident,
+    );
     let accessor_impl = quote! {
+        #[doc = #m2m_trait_doc]
         #[automatically_derived]
-        impl #source_type {
+        pub trait #m2m_trait_ident {
             #[doc = #accessor_doc]
+            fn #relation_ident<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
+            ) -> impl ::std::future::Future<
+                Output = ::std::result::Result<
+                    ::std::vec::Vec<#target_type>,
+                    ::djogi::DjogiError,
+                >,
+            > + ::std::marker::Send + 'ctx;
+        }
+
+        #[automatically_derived]
+        impl #m2m_trait_ident for #source_type {
             #[inline]
-            pub fn #relation_ident<'ctx>(
+            fn #relation_ident<'ctx>(
                 &'ctx self,
                 ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
@@ -736,13 +773,37 @@ pub fn expand(input: TokenStream) -> TokenStream {
                 scope_lit = scope_lit,
             );
 
+            // GH issue #39 (Cluster E#1) — visage-scoped m2m accessors
+            // carry the same coherence-rule constraint as the model-
+            // scoped one. `{Source}{Suffix}` lives in the source's
+            // crate; an inherent impl in a downstream crate fails
+            // E0116. Trait-based emission lifts the constraint.
+            // Naming: `{Source}{Scope-pascal}{Method-pascal}ManyToManyVisageRelation`.
+            let m2m_visage_trait_ident = format_ident!(
+                "{}{}{}ManyToManyVisageRelation",
+                source_type,
+                suffix,
+                crate::case::snake_to_pascal(&relation_lit)
+            );
+            let m2m_visage_trait_doc = format!(
+                "Per-relation visage trait emitted by `djogi::many_to_many!` \
+                 for the `{}::{}` accessor at the `{}` visage scope. \
+                 Adopters bring the method into scope with `use ...::{}`.",
+                source_type, relation_lit, scope_lit, m2m_visage_trait_ident,
+            );
             quote! {
+                #[doc = #m2m_visage_trait_doc]
                 #[automatically_derived]
-                impl #source_visage {
+                pub trait #m2m_visage_trait_ident {
                     #[doc = #visage_doc]
-                    #[inline]
                     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-                    pub fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer> {
+                    fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer>;
+                }
+
+                #[automatically_derived]
+                impl #m2m_visage_trait_ident for #source_visage {
+                    #[inline]
+                    fn #relation_ident(&self) -> ::djogi::query::VisageQuerySet<#peer> {
                         // Through-row exposure gate — the plan's
                         // "both endpoints + through-row" rule enforces
                         // itself through this zero-runtime probe: if
