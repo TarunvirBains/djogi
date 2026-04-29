@@ -229,6 +229,41 @@ where
 // (and by the `Clone` impl on the wrapper itself), so this impl adds no
 // new capability constraints on concrete `T`.
 
+// ---------------------------------------------------------------------------
+// serde integration for `ForeignKey<T>` — round-trip as `T::Pk`. (#38)
+// ---------------------------------------------------------------------------
+//
+// Without this, `#[model(events)]` cannot be enabled on entities with FK
+// columns: the outbox emit path requires `T: Model + Serialize`, and the
+// derived `Serialize` on a struct containing `ForeignKey<U>` fails because
+// the wrapper itself does not satisfy the bound. Conceptually a
+// `ForeignKey<U>` is just a typed handle around `U::Pk`, so serializing it
+// as the wrapped `U::Pk` is the natural representation. The shape mirrors
+// `Tracked<T>` (`djogi/src/tracked.rs`).
+impl<T: Model> serde::Serialize for ForeignKey<T>
+where
+    T::Pk: serde::Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.key.serialize(serializer)
+    }
+}
+
+impl<'de, T: Model> serde::Deserialize<'de> for ForeignKey<T>
+where
+    T::Pk: serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <T::Pk as serde::Deserialize<'de>>::deserialize(deserializer).map(ForeignKey::new)
+    }
+}
+
 impl<T: Model> crate::query::field::IntoFilterValue for ForeignKey<T>
 where
     T::Pk: crate::query::field::IntoFilterValue + Clone,
@@ -461,5 +496,26 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &expr.node);
         assert_eq!(acc.sql().trim(), "ledger_id", "got: {}", acc.sql());
+    }
+
+    // GH issue #38 — `ForeignKey<T>` serializes as the wrapped `T::Pk` so
+    // that `#[model(events)]` outbox emission compiles for entities with
+    // FK columns. `HeerId` itself serializes as a JSON string (the i64
+    // value rendered as decimal text) to preserve precision in JS clients,
+    // so the round-trip below threads that contract end-to-end.
+    #[test]
+    fn foreign_key_serializes_as_wrapped_pk() {
+        let fk: ForeignKey<Dummy> = ForeignKey::new(HeerId::from_i64(42).unwrap());
+        let json = serde_json::to_string(&fk).expect("serialize");
+        let pk_json = serde_json::to_string(&HeerId::from_i64(42).unwrap()).expect("pk serialize");
+        assert_eq!(json, pk_json, "FK must serialize identically to its PK");
+    }
+
+    #[test]
+    fn foreign_key_round_trips_through_json() {
+        let fk: ForeignKey<Dummy> = ForeignKey::new(HeerId::from_i64(7).unwrap());
+        let json = serde_json::to_string(&fk).expect("serialize");
+        let restored: ForeignKey<Dummy> = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, fk);
     }
 }

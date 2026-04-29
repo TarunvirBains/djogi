@@ -18,12 +18,14 @@
 //!
 //! A reverse accessor lives on the **opposite** side of the relation
 //! from where the FK column is declared. A `#[derive(Model)]` on
-//! `Vehicle` (the FK source) has no way to emit `impl Owner { fn
-//! cars() }`: attribute macros can only generate items adjacent to
-//! their input, not items attached to a foreign type. A function-like
-//! macro at the module level reads both type names and emits the
-//! `impl Target { ... }` block directly, regardless of which crate
-//! defined `Target`.
+//! `Vehicle` (the FK source) has no way to emit a method on `Owner`:
+//! attribute macros can only generate items adjacent to their input,
+//! not items attached to a foreign type. A function-like macro at the
+//! module level reads both type names and emits a per-relation trait
+//! plus its impl, which Rust's coherence rule allows in either the
+//! type-defining crate OR the trait-defining crate — letting
+//! downstream FK-using crates declare reverse accessors against
+//! upstream parent types.
 //!
 //! Invocation form is declarative — one line per reverse direction:
 //!
@@ -37,8 +39,15 @@
 //! For `reverse_one_to_many!(Target, method -> Source by via_column)`:
 //!
 //! ```ignore
-//! impl Target {
-//!     pub fn method<'ctx>(
+//! pub trait TargetMethodReverseRelation {
+//!     fn method<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!     ) -> impl Future<Output = Result<Vec<Source>, DjogiError>> + Send + 'ctx;
+//! }
+//!
+//! impl TargetMethodReverseRelation for Target {
+//!     fn method<'ctx>(
 //!         &'ctx self,
 //!         ctx: &'ctx mut DjogiContext,
 //!     ) -> impl Future<Output = Result<Vec<Source>, DjogiError>> + Send + 'ctx
@@ -66,6 +75,26 @@
 //! `reverse_one_to_one!` emits an almost-identical shape with two
 //! differences: return type is `Result<Option<Source>, DjogiError>` and
 //! the terminal is `.first(ctx)` instead of `.fetch_all(ctx)`.
+//!
+//! # Trait-based emission (GH issue #39)
+//!
+//! Phase 7.5 PR 5 switched the emission shape from `impl Target { ... }`
+//! (inherent impl, subject to Rust's E0116 coherence rule) to
+//! `pub trait TargetMethodReverseRelation { ... }` plus
+//! `impl TargetMethodReverseRelation for Target { ... }`. The trait
+//! impl is allowed in the trait-defining crate even when `Target` lives
+//! upstream, lifting the cross-crate constraint that pre-#39 emission
+//! carried.
+//!
+//! The naming convention is `{Receiver}{Method-pascal}ReverseRelation`
+//! for the model-scoped accessor, and
+//! `{Receiver}{Scope-pascal}{Method-pascal}VisageReverseRelation` for
+//! each `expose(scope -> Peer)` clause. Trait-method dispatch requires
+//! the trait to be in scope at the call site — when the macro is
+//! invoked at module scope (the canonical form), the trait is visible
+//! to call sites in the same module without an explicit `use`. Cross-
+//! module / cross-crate consumers add `use ...::TargetMethodReverseRelation;`
+//! at the top of files that call `.method()` on the receiver.
 //!
 //! # Terminology note (source vs target)
 //!
@@ -347,7 +376,7 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
         ),
     };
 
-    // The generated impl:
+    // The generated trait + impl:
     //
     // * `'ctx` scopes both the `&self` receiver borrow and the
     //   `&mut DjogiContext` parameter's borrow, and ties both into the
@@ -367,12 +396,62 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
     //   from the inner `async move` block, so callers that need to
     //   `.await` the future on a multi-threaded executor still require
     //   the explicit annotation.
+    //
+    // GH issue #39 — emission shape switched from inherent `impl
+    // Receiver { ... }` to a per-relation trait + trait-impl. Inherent
+    // impls are subject to Rust's coherence rule (E0116) and must live
+    // in the crate that defines the receiver type, which blocks every
+    // multi-crate setup where the parent model lives in one crate and
+    // the FK-carrying child entity lives in another. Trait impls only
+    // need EITHER the type-defining crate OR the trait-defining crate
+    // to host them, so the FK-using crate can declare the reverse
+    // accessor next to its own model.
+    //
+    // Naming: `{Receiver}{Method-pascal}ReverseRelation`. The trait is
+    // public so adopters can `use {crate}::{Trait}` to bring the method
+    // into scope at the call site. Method-name → PascalCase via the
+    // shared `crate::case::snake_to_pascal` helper.
+    let trait_ident = format_ident!(
+        "{}{}ReverseRelation",
+        receiver_type,
+        crate::case::snake_to_pascal(&method_lit)
+    );
+    let trait_doc = format!(
+        "Per-relation trait emitted by `djogi::reverse_one_to_{}!` for the `{}::{}` \
+         reverse accessor. Trait-based emission (vs an inherent impl on `{}`) \
+         is what allows the macro to be invoked in a downstream crate when the \
+         receiver type lives upstream — see GH issue #39 for the coherence-rule \
+         rationale.\n\n\
+         Adopters bring the method into scope with `use ...::{}`. \
+         The method delegates to the same query body the pre-#39 inherent-impl \
+         form did, so semantics are unchanged.",
+        match kind {
+            AccessorKind::OneToMany => "many",
+            AccessorKind::OneToOne => "one",
+        },
+        receiver_lit,
+        method_lit,
+        receiver_lit,
+        trait_ident,
+    );
+
     let expanded = quote! {
+        #[doc = #trait_doc]
         #[automatically_derived]
-        impl #receiver_type {
+        pub trait #trait_ident {
             #[doc = #method_doc]
+            fn #method<'ctx>(
+                &'ctx self,
+                ctx: &'ctx mut ::djogi::context::DjogiContext,
+            ) -> impl ::std::future::Future<
+                Output = ::std::result::Result<#return_inner_ty, ::djogi::DjogiError>,
+            > + ::std::marker::Send + 'ctx;
+        }
+
+        #[automatically_derived]
+        impl #trait_ident for #receiver_type {
             #[inline]
-            pub fn #method<'ctx>(
+            fn #method<'ctx>(
                 &'ctx self,
                 ctx: &'ctx mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
@@ -525,13 +604,48 @@ fn expand_parsed(parsed: ReverseRelationInput, kind: AccessorKind) -> TokenStrea
                 ),
             };
 
+            // GH issue #39 — visage-scoped reverse accessors carry the
+            // same coherence-rule constraint as the model-scoped ones:
+            // `{Receiver}{Suffix}` (the visage type) is defined in the
+            // receiver's crate, so a downstream FK-using crate can't
+            // declare an inherent impl on it. Trait-based emission lifts
+            // the constraint. Trait name embeds the scope so per-scope
+            // traits don't collide:
+            // `{Receiver}{Scope-pascal}{Method-pascal}VisageReverseRelation`.
+            let visage_trait_ident = format_ident!(
+                "{}{}{}VisageReverseRelation",
+                receiver_type,
+                suffix,
+                crate::case::snake_to_pascal(&method_lit)
+            );
+            let visage_trait_doc = format!(
+                "Per-relation visage trait emitted by `djogi::reverse_one_to_{}!` \
+                 for the `{}::{}` reverse accessor at the `{}` visage scope. \
+                 Adopters bring the method into scope with `use ...::{}`. \
+                 See GH issue #39 for the coherence-rule rationale behind the \
+                 trait-based emission shape.",
+                match kind {
+                    AccessorKind::OneToMany => "many",
+                    AccessorKind::OneToOne => "one",
+                },
+                receiver_lit,
+                method_lit,
+                scope_lit,
+                visage_trait_ident,
+            );
             quote! {
+                #[doc = #visage_trait_doc]
                 #[automatically_derived]
-                impl #receiver_visage {
+                pub trait #visage_trait_ident {
                     #[doc = #visage_doc]
-                    #[inline]
                     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-                    pub fn #method(&self) -> ::djogi::query::VisageQuerySet<#peer> {
+                    fn #method(&self) -> ::djogi::query::VisageQuerySet<#peer>;
+                }
+
+                #[automatically_derived]
+                impl #visage_trait_ident for #receiver_visage {
+                    #[inline]
+                    fn #method(&self) -> ::djogi::query::VisageQuerySet<#peer> {
                         // Every scope-emitted visage carries an `id`
                         // framework column whose type mirrors the source
                         // model's PK (see `visages::framework_field_decls`).

@@ -175,6 +175,33 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// serde integration — forward through the wrapped `ForeignKey<T>`. (#38)
+// ---------------------------------------------------------------------------
+impl<T: Model> serde::Serialize for OneToOneField<T>
+where
+    T::Pk: serde::Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: Model> serde::Deserialize<'de> for OneToOneField<T>
+where
+    T::Pk: serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <ForeignKey<T> as serde::Deserialize<'de>>::deserialize(deserializer).map(OneToOneField)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Post-fetch / post-prefetch resolved wrapper — mirrors `ForeignKeyResolved`.
 // ---------------------------------------------------------------------------
 
@@ -372,5 +399,24 @@ mod tests {
         let pk = HeerId::from_i64(123).unwrap();
         let r: OneToOneFieldResolved<Dummy> = OneToOneFieldResolved::new(pk, None);
         assert_eq!(r.key(), &pk);
+    }
+
+    // GH issue #38 — `OneToOneField<T>` round-trips through serde the same
+    // way `ForeignKey<T>` does, so reverse-O2O entities can also opt into
+    // `#[model(events)]`.
+    #[test]
+    fn one_to_one_field_serializes_as_wrapped_pk() {
+        let o: OneToOneField<Dummy> = OneToOneField::new(HeerId::from_i64(42).unwrap());
+        let json = serde_json::to_string(&o).expect("serialize");
+        let pk_json = serde_json::to_string(&HeerId::from_i64(42).unwrap()).expect("pk serialize");
+        assert_eq!(json, pk_json);
+    }
+
+    #[test]
+    fn one_to_one_field_round_trips_through_json() {
+        let o: OneToOneField<Dummy> = OneToOneField::new(HeerId::from_i64(7).unwrap());
+        let json = serde_json::to_string(&o).expect("serialize");
+        let restored: OneToOneField<Dummy> = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored, o);
     }
 }

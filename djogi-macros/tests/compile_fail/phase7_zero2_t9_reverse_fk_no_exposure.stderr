@@ -3,3 +3,11 @@ error[E0599]: no method named `employees` found for reference `&'a DeptPublic` i
    |
 34 |     dept_public.employees(ctx)
    |                 ^^^^^^^^^ method not found in `&'a DeptPublic`
+   |
+   = help: items from traits can only be used if the trait is implemented and in scope
+note: `DeptEmployeesReverseRelation` defines an item `employees`, perhaps you need to implement it
+  --> tests/compile_fail/phase7_zero2_t9_reverse_fk_no_exposure.rs:26:1
+   |
+26 | djogi::reverse_one_to_many!(Dept, employees -> Emp by department);
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the macro `djogi::reverse_one_to_many` (in Nightly builds, run with -Z macro-backtrace for more info)
