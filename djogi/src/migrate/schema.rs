@@ -613,6 +613,7 @@ pub struct EnumSchema {
 /// at different granularities on `SchemaDelta` and the rename
 /// guarantees that `use` lines and match arms cannot mix them up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OnlineSafetyClassification {
     /// Pure additive change — no lock held longer than the Postgres
     /// fast-path window, no data loss, no replication-lag hazard.
