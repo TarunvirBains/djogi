@@ -242,8 +242,9 @@ mod tests {
 
     #[test]
     fn registry_does_not_contain_unshipped_codec_id() {
-        // Real codecs (e.g. the AEAD pair the spec gestures at) land
-        // in later Phase 7.5 tasks; V1 ships with no codecs.
+        // Real codecs (the AEAD pair the spec gestures at) are
+        // framework-shipped, not adopter-declared; the registry is
+        // currently empty.
         assert!(!is_registered("aes256_gcm_v1"));
     }
 

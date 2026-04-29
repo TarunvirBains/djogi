@@ -524,9 +524,9 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
         }
     }
 
-    // Rule (c): codec ID must be in the compile-time registry.
-    // Phase 7.5 V1 ships an empty registry; the message states
-    // "(none)" so adopters know support has not yet shipped.
+    // Rule (c): codec ID must be in the compile-time registry. The
+    // registry is currently empty; the diagnostic states "(none)" so
+    // adopters know codec support has not yet shipped.
     if let Some(id) = spec.codec.as_deref()
         && !is_known_codec(id)
     {
@@ -660,8 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn v1_registry_rejects_every_codec_id() {
-        // V1 ships empty; every codec ID is unregistered.
+    fn empty_registry_rejects_every_codec_id() {
         assert!(!is_known_codec("aes256_gcm_v1"));
         assert!(!is_known_codec(""));
     }
