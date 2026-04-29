@@ -554,17 +554,38 @@ fn is_narrowing_or_truncating(from: &str, to: &str) -> bool {
         return true;
     }
 
-    // NUMERIC narrowing — precision or scale loss. An unbounded source
-    // (`numeric` / `decimal`) classed against a bounded destination is
-    // narrowing too: the destination imposes a precision/scale ceiling
-    // that may reject existing rows.
-    if let Some((from_p, from_s)) = parse_numeric_params(&f)
-        && let Some((to_p, to_s)) = parse_numeric_params(&t)
+    // NUMERIC narrowing — precision, scale, or integer-digit room
+    // loss. Postgres normalises `numeric(p)` to `numeric(p, 0)` so the
+    // parser returns `(Some(p), Some(0))` for that form; bare
+    // `numeric` returns `(None, None)`. An unbounded source classed
+    // against a bounded destination is narrowing: the destination
+    // imposes a ceiling that may reject existing rows. Bounded → bounded
+    // narrowing compares precision, scale, and integer-digit room
+    // (precision - scale) independently — `numeric(10) -> numeric(12,2)`
+    // preserves all 10 integer digits and is widening, but
+    // `numeric(10) -> numeric(10,2)` shrinks integer room to 8 and is
+    // narrowing.
+    if let Some(from) = parse_numeric_params(&f)
+        && let Some(to) = parse_numeric_params(&t)
     {
-        match (from_p, to_p, from_s, to_s) {
-            (Some(fp), Some(tp), _, _) if tp < fp => return true,
-            (_, _, Some(fs), Some(ts)) if ts < fs => return true,
-            (None, Some(_), _, _) | (_, _, None, Some(_)) => return true,
+        match (from, to) {
+            (
+                NumericTypmod::Bounded {
+                    precision: fp,
+                    scale: fs,
+                },
+                NumericTypmod::Bounded {
+                    precision: tp,
+                    scale: ts,
+                },
+            ) => {
+                let from_int_digits = fp.saturating_sub(fs);
+                let to_int_digits = tp.saturating_sub(ts);
+                if tp < fp || ts < fs || to_int_digits < from_int_digits {
+                    return true;
+                }
+            }
+            (NumericTypmod::Unbounded, NumericTypmod::Bounded { .. }) => return true,
             _ => {}
         }
     }
@@ -584,20 +605,27 @@ fn canonical_int_width(name: &str) -> Option<u8> {
     }
 }
 
-/// Parse `numeric(p)` / `numeric(p, s)` / bare `numeric` into
-/// `(precision, scale)`. Returns `None` for non-numeric types. Each
-/// component is `None` when not specified in the source string.
+/// Postgres NUMERIC type modifier.
 ///
-/// `decimal` is a Postgres alias for `numeric` and is handled the
-/// same way.
-fn parse_numeric_params(t: &str) -> Option<(Option<u32>, Option<u32>)> {
+/// `numeric(p)` is normalised to `Bounded { precision: p, scale: 0 }`
+/// per Postgres semantics — an omitted scale means scale-zero, not
+/// "scale unknown". Bare `numeric` is `Unbounded`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumericTypmod {
+    Unbounded,
+    Bounded { precision: u32, scale: u32 },
+}
+
+/// Parse `numeric(p)` / `numeric(p, s)` / bare `numeric` (and the
+/// `decimal` alias). Returns `None` for non-numeric types.
+fn parse_numeric_params(t: &str) -> Option<NumericTypmod> {
     let normalized = t.trim();
     let rest = normalized
         .strip_prefix("numeric")
         .or_else(|| normalized.strip_prefix("decimal"))?
         .trim_start();
     if rest.is_empty() {
-        return Some((None, None));
+        return Some(NumericTypmod::Unbounded);
     }
     let bytes = rest.as_bytes();
     if bytes.first() != Some(&b'(') || bytes.last() != Some(&b')') {
@@ -605,19 +633,20 @@ fn parse_numeric_params(t: &str) -> Option<(Option<u32>, Option<u32>)> {
     }
     let inner = rest[1..rest.len() - 1].trim();
     if inner.is_empty() {
-        return Some((None, None));
+        return Some(NumericTypmod::Unbounded);
     }
     let mut parts = inner.split(',');
     let p_str = parts.next()?.trim();
-    let p: u32 = p_str.parse().ok()?;
-    let s = match parts.next() {
-        Some(s_str) => Some(s_str.trim().parse().ok()?),
-        None => None,
+    let precision: u32 = p_str.parse().ok()?;
+    // Postgres semantics: `numeric(p)` ≡ `numeric(p, 0)`.
+    let scale: u32 = match parts.next() {
+        Some(s_str) => s_str.trim().parse().ok()?,
+        None => 0,
     };
     if parts.next().is_some() {
         return None;
     }
-    Some((Some(p), s))
+    Some(NumericTypmod::Bounded { precision, scale })
 }
 
 /// `true` when `from → to` is a Pg18 binary-coercible widening — no
@@ -1314,6 +1343,50 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(20, 4)".to_string(),
                 to: "numeric(20, 2)".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn numeric_scale_addition_preserving_integer_digits_is_widening() {
+        // Postgres: `numeric(10)` ≡ `numeric(10, 0)` (10 integer
+        // digits, 0 fractional). `numeric(10, 0) -> numeric(12, 2)`
+        // keeps the same 10 integer digits and adds 2 fractional —
+        // strictly widening, must NOT classify as narrowing.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "ledger".to_string(),
+            column: "amount".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "numeric(10)".to_string(),
+                to: "numeric(12, 2)".to_string(),
+            },
+        };
+        // The unknown-type-change fallback returns ExpandContract; what
+        // matters is that we do NOT misclassify as OfflineOnly.
+        assert_ne!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn numeric_integer_digit_room_loss_is_offline_only() {
+        // `numeric(10, 0) -> numeric(10, 2)` keeps the same 10 total
+        // digits but redirects 2 to fractional, shrinking integer room
+        // from 10 to 8. Existing rows with 10-digit integers no longer
+        // fit — narrowing.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "ledger".to_string(),
+            column: "amount".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "numeric(10)".to_string(),
+                to: "numeric(10, 2)".to_string(),
             },
         };
         assert_eq!(
