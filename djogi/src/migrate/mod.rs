@@ -136,6 +136,15 @@ pub use schema::{
     IndexTargetSchema, IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema,
     PrimaryKeySchema, RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
 };
+// `schema::Classification` (the four-variant online-safety enum
+// frozen for the Phase 7 ↔ 7.5 boundary) is *not* re-exported at
+// `migrate::Classification` because that name is already taken by
+// the per-delta severity classifier in `diff`. Phase 7.5 callers
+// reach the online-safety enum via the fully qualified
+// [`crate::migrate::schema::Classification`]. The two concepts are
+// orthogonal: severity classifies a whole delta, online-safety
+// classifies a single segment, and they coexist on `SchemaDelta`
+// at different granularities.
 pub use seed::{
     DiscoveredSeed, SEED_LEDGER_TABLE_DDL, SEEDS_DIRNAME, SeedError, SeedOutcome, SeedReport,
     SeedReportEntry, bootstrap as bootstrap_seed_ledger, compute_seed_checksum,

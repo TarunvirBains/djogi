@@ -54,6 +54,7 @@ pub mod fts_query;
 pub mod geo;
 pub(crate) mod ident;
 pub mod jsonb;
+pub mod live_migrate;
 pub mod migrate;
 pub mod model;
 pub mod outbox;

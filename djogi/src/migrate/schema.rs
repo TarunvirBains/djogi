@@ -567,23 +567,109 @@ pub struct EnumSchema {
     pub variants: Vec<String>,
 }
 
-/// Forward-reference for Phase 7.5 — the migration runner will tag
-/// segments with this enum so the live-plan layer can ladder its
-/// orchestration on top of Phase 7's planner without restructuring
-/// `migrate/`. Phase 7 itself does not switch on this; T3's segment
-/// planner sets every segment to `Safe` for now.
+/// Online-safety classification for a migration segment — the
+/// frozen Phase 7 ↔ Phase 7.5 boundary contract. Every column-level
+/// or constraint-level migration operation that reaches the segment
+/// planner is tagged with exactly one of the four variants below.
 ///
-/// Declaring the seam in this crate (rather than waiting for Phase
-/// 7.5) prevents a later refactor from churning the `migrate/`
-/// internals.
-#[allow(dead_code)]
+/// # Boundary contract (§6.5)
+///
+/// `Classification` and the `SchemaOperation::PkTypeFlipGroup` /
+/// `SchemaOperation::PkTypeFlipMultiGroup` cascade routes are
+/// **mutually exclusive**. A primary-key type flip is orchestrated
+/// natively by Phase 7's `migrate::pk_flip` emitter family — when a
+/// delta carries a PK-flip group, the classifier short-circuits
+/// because that operation is already routed through its dedicated
+/// path. `Classification::ExpandContract` therefore never overlaps
+/// with PK-flip work; PK flips sit architecturally below the
+/// live-plan layer.
+///
+/// # Consumption boundary
+///
+/// Phase 7.5's `live_migrate` module consumes **only**
+/// `Classification::ExpandContract` — the variant whose handoff
+/// marker is the spec term `RequiresLivePlan`. The other three
+/// variants stay inside Phase 7:
+///
+/// - `OnlineSafe` is applied directly by the runner.
+/// - `FastLockDestructiveGuarded` is gated on `--allow-destructive`
+///   and applied directly; no live plan is generated.
+/// - `OfflineOnly` is refused outright; the operator must
+///   acknowledge downtime or perform manual handling.
+///
+/// `OfflineOnly` and `FastLockDestructiveGuarded` are
+/// operator-acknowledgement branches, **not** live-plan branches.
+///
+/// # Naming
+///
+/// This enum classifies a single segment by *online-safety*. The
+/// per-delta severity classifier with the same simple name lives
+/// in [`crate::migrate::diff`]; that one is what carries the
+/// `PkTypeFlip` variant. The two coexist on `SchemaDelta` at
+/// different granularities and are referred to by their fully
+/// qualified paths to avoid collision — `migrate/mod.rs` re-exports
+/// the severity enum at `migrate::Classification` and leaves this
+/// online-safety enum reachable as
+/// `migrate::schema::Classification`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OnlineSafety {
-    /// Every operation in this segment is safe to run while the
-    /// application is serving traffic. The default for Phase 7.
-    Safe,
-    /// At least one operation in this segment requires operator
-    /// orchestration (compatibility window, staged backfill, etc.)
-    /// — Phase 7.5's territory.
-    RequiresLivePlan,
+pub enum Classification {
+    /// Pure additive change — no lock held longer than the Postgres
+    /// fast-path window, no data loss, no replication-lag hazard.
+    /// The runner applies it directly with no operator gate.
+    OnlineSafe,
+    /// Completes inside the Pg18 fast-path lock window but destroys
+    /// data or invalidates dependents (DROP COLUMN, DROP INDEX of a
+    /// referenced index, etc.). Phase 7 gates application behind
+    /// `--allow-destructive`; no live plan is generated.
+    FastLockDestructiveGuarded,
+    /// Cannot complete safely in a single segment — Phase 7.5
+    /// generates a live plan and the operator drives the
+    /// expand → backfill → flip → contract sequence. The handoff
+    /// marker for this variant is the spec term `RequiresLivePlan`,
+    /// and `live_migrate` consumes only this variant.
+    ExpandContract,
+    /// Djogi refuses to emit SQL. The operator must explicitly
+    /// acknowledge downtime or perform the change by hand — there is
+    /// no online path for this delta.
+    OfflineOnly,
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::Classification;
+
+    #[test]
+    fn classification_has_four_distinct_variants() {
+        let all = [
+            Classification::OnlineSafe,
+            Classification::FastLockDestructiveGuarded,
+            Classification::ExpandContract,
+            Classification::OfflineOnly,
+        ];
+        for (i, lhs) in all.iter().enumerate() {
+            for (j, rhs) in all.iter().enumerate() {
+                if i == j {
+                    assert_eq!(lhs, rhs);
+                } else {
+                    assert_ne!(lhs, rhs, "variants at {i} and {j} must differ");
+                }
+            }
+        }
+    }
+
+    /// Boundary contract (§6.5): only `ExpandContract` is the
+    /// live-plan handoff variant. The other three are
+    /// operator-acknowledgement / direct-apply branches that stay in
+    /// Phase 7 — the live-plan layer must never accept them.
+    #[test]
+    fn only_expand_contract_routes_to_live_plan() {
+        let routes_to_live_plan =
+            |c: Classification| -> bool { matches!(c, Classification::ExpandContract) };
+        assert!(routes_to_live_plan(Classification::ExpandContract));
+        assert!(!routes_to_live_plan(Classification::OnlineSafe));
+        assert!(!routes_to_live_plan(
+            Classification::FastLockDestructiveGuarded
+        ));
+        assert!(!routes_to_live_plan(Classification::OfflineOnly));
+    }
 }
