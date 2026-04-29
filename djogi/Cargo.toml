@@ -262,3 +262,8 @@ harness = true
 name = "phase7_t10_sync_models_parity"
 path = "../tests/integration/phase7_t10_sync_models_parity.rs"
 harness = true
+
+[[test]]
+name = "phase7_5_backfill_live"
+path = "../tests/integration/phase7_5_backfill_live.rs"
+harness = true
