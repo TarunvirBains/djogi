@@ -2421,7 +2421,7 @@ mod tests {
     use crate::apps::AppDescriptor;
     use crate::descriptor::{
         EnumDescriptor, FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexSpec,
-        IndexTarget, IndexType, ModelDescriptor, PkType,
+        IndexTarget, IndexType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
     };
     use crate::migrate::projection::project_from_iters;
     use crate::migrate::schema::{IndexTypeSchema, PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION};
@@ -2437,22 +2437,7 @@ mod tests {
 
     fn synth_model(table: &'static str, type_name: &'static str) -> ModelDescriptor {
         ModelDescriptor {
-            type_name,
-            table_name: table,
-            pk_type: PkType::HeerIdDesc,
-            fields: &[],
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
-            indexes: &[],
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor(type_name, table, PkType::HeerIdDesc, &[])
         }
     }
 
@@ -2560,37 +2545,6 @@ mod tests {
             .collect();
         assert!(kinds.contains(&"drop"));
         assert!(kinds.contains(&"add"));
-    }
-
-    /// Build a `FieldDescriptor` literal that can satisfy `&'static`
-    /// slice borrows when referenced via a `static` slot. Helper fn
-    /// is `const` so callers can declare fixtures as `const FOO:
-    /// FieldDescriptor = field_descriptor(...)` and embed them in
-    /// `static SLICE: &[FieldDescriptor] = &[FOO];`.
-    const fn field_descriptor(
-        name: &'static str,
-        sql_type: FieldSqlType,
-        nullable: bool,
-    ) -> FieldDescriptor {
-        FieldDescriptor {
-            name,
-            sql_type,
-            nullable,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
-        }
     }
 
     #[test]
@@ -2799,23 +2753,8 @@ mod tests {
         const OLD_NAME: FieldDescriptor = field_descriptor("old_name", FieldSqlType::Text, true);
         static OLD_SLICE: &[FieldDescriptor] = &[OLD_NAME];
         const NEW_NAME: FieldDescriptor = FieldDescriptor {
-            name: "new_name",
-            sql_type: FieldSqlType::Text,
-            nullable: true,
-            unique: false,
-            indexed: false,
-            max_length: None,
             renamed_from: Some("old_name"),
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("new_name", FieldSqlType::Text, true)
         };
         static NEW_SLICE: &[FieldDescriptor] = &[NEW_NAME];
         let bare = ModelDescriptor {

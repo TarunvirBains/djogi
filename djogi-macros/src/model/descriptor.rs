@@ -66,6 +66,7 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             ],
             protected: ::std::option::Option::None,
             default_volatility_override: ::std::option::Option::None,
+            generated: ::std::option::Option::None,
         }
     }
 }
@@ -330,6 +331,11 @@ pub fn expand(
                     visage_map: #projection_map_tokens,
                     protected: #protected_tokens,
                     default_volatility_override: #default_volatility_tokens,
+                    // Phase 7.5 PR 7 — stored generated column metadata.
+                    // Macro parsing for `#[field(generated = ..., stored
+                    // = ...)]` lands in PR 7 task 2; today every field
+                    // emits `None`.
+                    generated: ::std::option::Option::None,
                 }
             }
         })
@@ -585,6 +591,10 @@ pub fn expand(
                 moved_from_app: #moved_from_app_tokens,
                 // Phase 7 T2 — table-rename hint.
                 renamed_from: #renamed_from_tokens,
+                // Phase 7.5 PR 7 — `EXCLUDE` constraint declarations.
+                // Macro parsing for `#[model(exclusion(...))]` lands in
+                // PR 7 task 2; today every model emits an empty slice.
+                exclusion_constraints: &[],
             }
         }
         #(#deferrability_submits)*

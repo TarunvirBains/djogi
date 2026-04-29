@@ -2236,7 +2236,9 @@ mod tests {
     // Postgres integration tests stay readable — a shape regression
     // surfaces here, not in a one-line 42702 failure down the stack.
 
-    use crate::descriptor::{FieldDescriptor, FieldSqlType, PkType};
+    use crate::descriptor::{
+        FieldDescriptor, FieldSqlType, PkType, field_descriptor, model_descriptor,
+    };
     use crate::relation::select_related::ErasedSelectRelated;
 
     // Minimal static descriptor for a joined child. Column layout is a
@@ -2244,40 +2246,16 @@ mod tests {
     // framework column that triggers the ambiguity bug when both sides
     // of the join contribute it bare.
     static OWNERS_JOIN_DESC: ModelDescriptor = ModelDescriptor {
-        type_name: "Owner",
-        table_name: "owners_p3",
-        pk_type: PkType::HeerId,
-        fields: &[FieldDescriptor {
-            name: "id",
-            sql_type: FieldSqlType::BigInt,
-            nullable: false,
-            unique: true,
-            indexed: true,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
-        }],
-        partition_by: None,
-        has_outbox: false,
-        idempotency_key: None,
-        tenant_key: None,
-        cache_ttl: None,
-        rationale: None,
-        indexes: &[],
-        is_through: false,
-        fts: None,
-        app: None,
-        moved_from_app: None,
-        renamed_from: None,
+        ..model_descriptor(
+            "Owner",
+            "owners_p3",
+            PkType::HeerId,
+            &[FieldDescriptor {
+                unique: true,
+                indexed: true,
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            }],
+        )
     };
 
     fn owners_join_descriptor() -> &'static ModelDescriptor {
