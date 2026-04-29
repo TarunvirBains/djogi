@@ -255,6 +255,8 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
+                default_volatility_override: None,
             },
             FieldDescriptor {
                 name: "secret",
@@ -272,6 +274,8 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
+                default_volatility_override: None,
             },
         ];
 
@@ -298,6 +302,8 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
+                default_volatility_override: None,
             },
             FieldDescriptor {
                 name: "secret",
@@ -315,6 +321,8 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
+                default_volatility_override: None,
             },
         ];
 

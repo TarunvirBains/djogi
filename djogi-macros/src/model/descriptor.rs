@@ -26,6 +26,50 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ItemStruct;
 
+/// Emits a `FieldDescriptor { ... }` literal for a framework-injected
+/// column (`id`, `created_at`, `updated_at`).
+///
+/// Framework fields share every descriptor knob except `name`,
+/// `sql_type`, and the unique/indexed bits: PKs are unique+indexed,
+/// timestamp columns are neither. The visage map always projects the
+/// column under its own name across the four built-in scopes.
+///
+/// Relation metadata is unconditionally `None` — `id` is a primary
+/// key, not a foreign key, and `created_at` / `updated_at` are
+/// scalars; the visage hookup attaches per-user-field only.
+///
+/// Centralising the emission means future descriptor field additions
+/// land in one place rather than rippling through every PK-strategy
+/// arm.
+fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool) -> TokenStream {
+    quote! {
+        ::djogi::FieldDescriptor {
+            name: #name,
+            sql_type: #sql_type_tokens,
+            nullable: false,
+            unique: #pk,
+            indexed: #pk,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            visage_map: &[
+                ("admin", #name),
+                ("export", #name),
+                ("public", #name),
+                ("self_view", #name),
+            ],
+            protected: ::std::option::Option::None,
+            default_volatility_override: ::std::option::Option::None,
+        }
+    }
+}
+
 pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -72,216 +116,53 @@ pub fn expand(
     // For `pk = None`, skip `id` entirely — the user's own PK appears as a
     // regular user field in declared order.
 
+    // HeerIdDesc / RanjIdDesc share the same stored column type as their
+    // ascending siblings (BIGINT / UUID). The PK-type flip lives on
+    // `ModelDescriptor::pk_type` and is consumed by Phase 7's migration
+    // differ, not here.
+    //
+    // Custom PK types delegate the column type through the user type's
+    // `PrimaryKey::SQL_TYPE` associated const; `FieldSqlType::Custom`
+    // stores it verbatim so the migration differ can compare by string
+    // equality.
     let id_framework_desc: Option<TokenStream> = match &model_attrs.pk {
-        PkStrategy::HeerId => Some(quote! {
-            ::djogi::FieldDescriptor {
-                name: "id",
-                sql_type: ::djogi::FieldSqlType::BigInt,
-                nullable: false,
-                unique: true,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                // Framework columns carry no relation metadata — `id` is a
-                // PK, not an FK, and Phase 4.5's visage hookup lands
-                // per-user-field only.
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[
-                    ("admin", "id"),
-                    ("export", "id"),
-                    ("public", "id"),
-                    ("self_view", "id"),
-                ],
-            }
-        }),
-        PkStrategy::RanjId => Some(quote! {
-            ::djogi::FieldDescriptor {
-                name: "id",
-                sql_type: ::djogi::FieldSqlType::Uuid,
-                nullable: false,
-                unique: true,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[
-                    ("admin", "id"),
-                    ("export", "id"),
-                    ("public", "id"),
-                    ("self_view", "id"),
-                ],
-            }
-        }),
-        // HeerIdDesc / RanjIdDesc share the same descriptor shape as their
-        // ascending siblings — the stored column type (BIGINT / UUID) does
-        // not change. The PK-type flip lives on `ModelDescriptor::pk_type`
-        // and is consumed by Phase 7's migration differ.
-        PkStrategy::HeerIdDesc => Some(quote! {
-            ::djogi::FieldDescriptor {
-                name: "id",
-                sql_type: ::djogi::FieldSqlType::BigInt,
-                nullable: false,
-                unique: true,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[
-                    ("admin", "id"),
-                    ("export", "id"),
-                    ("public", "id"),
-                    ("self_view", "id"),
-                ],
-            }
-        }),
-        PkStrategy::RanjIdDesc => Some(quote! {
-            ::djogi::FieldDescriptor {
-                name: "id",
-                sql_type: ::djogi::FieldSqlType::Uuid,
-                nullable: false,
-                unique: true,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[
-                    ("admin", "id"),
-                    ("export", "id"),
-                    ("public", "id"),
-                    ("self_view", "id"),
-                ],
-            }
-        }),
-        PkStrategy::Serial => Some(quote! {
-            ::djogi::FieldDescriptor {
-                name: "id",
-                sql_type: ::djogi::FieldSqlType::Integer,
-                nullable: false,
-                unique: true,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[
-                    ("admin", "id"),
-                    ("export", "id"),
-                    ("public", "id"),
-                    ("self_view", "id"),
-                ],
-            }
-        }),
+        PkStrategy::HeerId | PkStrategy::HeerIdDesc => Some(framework_field_descriptor(
+            "id",
+            quote! { ::djogi::FieldSqlType::BigInt },
+            true,
+        )),
+        PkStrategy::RanjId | PkStrategy::RanjIdDesc => Some(framework_field_descriptor(
+            "id",
+            quote! { ::djogi::FieldSqlType::Uuid },
+            true,
+        )),
+        PkStrategy::Serial => Some(framework_field_descriptor(
+            "id",
+            quote! { ::djogi::FieldSqlType::Integer },
+            true,
+        )),
         PkStrategy::None => None,
-        // Custom PK types delegate every schema-level string through the
-        // user type's `PrimaryKey` associated consts. `FieldSqlType::Custom`
-        // stores the column type verbatim — the migration differ compares
-        // by string equality, which matches how custom types flow through
-        // the rest of the pipeline.
-        PkStrategy::Custom(path) => Some(quote! {
-            ::djogi::FieldDescriptor {
-                name: "id",
-                sql_type: ::djogi::FieldSqlType::Custom(
+        PkStrategy::Custom(path) => Some(framework_field_descriptor(
+            "id",
+            quote! {
+                ::djogi::FieldSqlType::Custom(
                     <#path as ::djogi::primary_key::PrimaryKey>::SQL_TYPE,
-                ),
-                nullable: false,
-                unique: true,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[
-                    ("admin", "id"),
-                    ("export", "id"),
-                    ("public", "id"),
-                    ("self_view", "id"),
-                ],
-            }
-        }),
+                )
+            },
+            true,
+        )),
     };
 
-    let created_at_desc = quote! {
-        ::djogi::FieldDescriptor {
-            name: "created_at",
-            sql_type: ::djogi::FieldSqlType::Timestamptz,
-            nullable: false,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[
-                ("admin", "created_at"),
-                ("export", "created_at"),
-                ("public", "created_at"),
-                ("self_view", "created_at"),
-            ],
-        }
-    };
-    let updated_at_desc = quote! {
-        ::djogi::FieldDescriptor {
-            name: "updated_at",
-            sql_type: ::djogi::FieldSqlType::Timestamptz,
-            nullable: false,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[
-                ("admin", "updated_at"),
-                ("export", "updated_at"),
-                ("public", "updated_at"),
-                ("self_view", "updated_at"),
-            ],
-        }
-    };
+    let created_at_desc = framework_field_descriptor(
+        "created_at",
+        quote! { ::djogi::FieldSqlType::Timestamptz },
+        false,
+    );
+    let updated_at_desc = framework_field_descriptor(
+        "updated_at",
+        quote! { ::djogi::FieldSqlType::Timestamptz },
+        false,
+    );
 
     // ── User-field FieldDescriptors ───────────────────────────────────────────
 
@@ -400,6 +281,30 @@ pub fn expand(
                 None => (quote! { None }, quote! { None }, quote! { None }),
             };
 
+            // `#[field(protected(...))]` lowers to
+            // `Some(::djogi::ProtectedFieldMetadata { ... })`; absent
+            // attribute keeps the explicit `None` (distinct from
+            // `Sensitivity::None` per the descriptor's contract).
+            let protected_tokens = match &fa.protected {
+                Some(spec) => spec.to_tokens(),
+                None => quote! { ::std::option::Option::None },
+            };
+            // `#[field(default_volatility = "...")]` override. Already
+            // validated in `FieldAttrs::parse`, so a non-`None` value
+            // is guaranteed to parse cleanly here.
+            let default_volatility_tokens = match fa.default_volatility.as_deref() {
+                Some(value) => {
+                    let lit = crate::model::protected::DefaultVolatilityLit::parse(
+                        value,
+                        ::proc_macro2::Span::call_site(),
+                    )
+                    .expect("invariant: default_volatility validated in FieldAttrs::parse");
+                    let path = lit.to_tokens();
+                    quote! { ::std::option::Option::Some(#path) }
+                }
+                None => quote! { ::std::option::Option::None },
+            };
+
             quote! {
                 ::djogi::FieldDescriptor {
                     name: #name,
@@ -423,6 +328,8 @@ pub fn expand(
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
                     visage_map: #projection_map_tokens,
+                    protected: #protected_tokens,
+                    default_volatility_override: #default_volatility_tokens,
                 }
             }
         })

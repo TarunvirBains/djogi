@@ -133,9 +133,20 @@ pub use runner::{
 pub use schema::{
     AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
     IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema,
-    IndexTargetSchema, IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema,
-    PrimaryKeySchema, RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+    IndexTargetSchema, IndexTypeSchema, OnDeleteSchema, OnlineSafetyClassification,
+    PartitionSchema, PkKindSchema, PrimaryKeySchema, RelationKindSchema, SNAPSHOT_FORMAT_VERSION,
+    TableSchema,
 };
+// Two distinct classifiers coexist in this module by design and
+// answer different questions: `diff::Classification` tags whole
+// `SchemaDelta`s by severity / routing (`NoOp`, `Additive`,
+// `Reversible`, `Destructive`, `Lossy`, `Unsupported`, `PkTypeFlip`),
+// while `OnlineSafetyClassification` tags a single migration
+// operation by online-safety verdict (`OnlineSafe`,
+// `FastLockDestructiveGuarded`, `ExpandContract`, `OfflineOnly`).
+// They live at different granularities on `SchemaDelta`; the
+// unambiguous names ensure `use` lines and match arms cannot mix
+// them up.
 pub use seed::{
     DiscoveredSeed, SEED_LEDGER_TABLE_DDL, SEEDS_DIRNAME, SeedError, SeedOutcome, SeedReport,
     SeedReportEntry, bootstrap as bootstrap_seed_ledger, compute_seed_checksum,

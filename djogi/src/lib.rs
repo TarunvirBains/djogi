@@ -48,12 +48,14 @@ pub mod descriptor;
 pub mod enum_;
 pub mod error;
 pub mod expr;
+pub mod field_codec;
 pub mod fts;
 pub mod fts_query;
 #[cfg(feature = "spatial")]
 pub mod geo;
 pub(crate) mod ident;
 pub mod jsonb;
+pub mod live_migrate;
 pub mod migrate;
 pub mod model;
 pub mod outbox;
@@ -178,9 +180,10 @@ pub mod __private {
 pub use apps::{App, AppDescriptor, AppDiagnostic, AppIdentity, AppRegistry, CrossAppEdge};
 pub use context::DjogiContext;
 pub use descriptor::{
-    DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype,
-    IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget, IndexNullsOrder, IndexOrder,
-    IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType, index_name,
+    DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
+    GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget, IndexNullsOrder,
+    IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
 };
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
 // the symbol does not appear in default-feature builds or `cargo doc` output
@@ -202,6 +205,13 @@ pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
 pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+// Field-level codec public surface. `FieldCodec` is the trait
+// adopters implement for at-rest column transformations;
+// `is_codec_registered` answers "is this `&str` the ID of a codec
+// shipped with this build of Djogi?". The registry itself stays
+// module-private so the underlying representation can change without
+// breaking downstream call sites.
+pub use field_codec::{FieldCodec, is_registered as is_codec_registered};
 pub use fts::{FtsDescriptor, TsQuery, TsVector};
 pub use fts_query::FtsFieldRef;
 pub use query::{
@@ -226,12 +236,19 @@ pub mod prelude {
     };
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
-        DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype,
-        IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
-        ModelDescriptor, PartitionSpec, PkType,
+        DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
+        GeographySubtype, IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec,
+        IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata,
+        RedactionPolicy, RetentionLabel, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+    // `FieldCodec` is the trait adopters implement when declaring a
+    // codec; `is_codec_registered` is the lookup the macro layer uses
+    // to validate `#[field(protected(codec = "<id>"))]`. Both belong
+    // in the prelude because protected-field declarations live in
+    // adopter model files.
+    pub use crate::field_codec::{FieldCodec, is_registered as is_codec_registered};
     pub use crate::fts::{FtsDescriptor, TsQuery, TsVector};
     pub use crate::fts_query::FtsFieldRef;
     pub use crate::jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};

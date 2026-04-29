@@ -611,6 +611,8 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
+                default_volatility_override: None,
             },
             FieldDescriptor {
                 name: "email",
@@ -628,6 +630,8 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
+                default_volatility_override: None,
             },
         ];
         static INDEXES: &[IndexSpec] = &[IndexSpec {
@@ -683,6 +687,8 @@ mod tests {
             on_delete: None,
             target_type_name: None,
             visage_map: &[],
+            protected: None,
+            default_volatility_override: None,
         }];
         ModelDescriptor {
             type_name: "Post",
