@@ -67,17 +67,19 @@ use std::collections::btree_map::Entry;
 
 use crate::apps::{AppDescriptor, AppRegistry};
 use crate::descriptor::{
-    DeferrabilitySpec, EnumDescriptor, FieldDescriptor, IndexKind, IndexNullsOrder, IndexOrder,
-    IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    DeferrabilitySpec, EnumDescriptor, ExclusionConstraintSpec, ExclusionElement, FieldDescriptor,
+    GeneratedColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
+    ModelDescriptor, PartitionSpec, PkType,
 };
 use crate::fts::FtsDescriptor;
 use crate::relation::{OnDelete, RelationKind};
 
 use super::schema::{
-    AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
-    IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema,
-    IndexTargetSchema, IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema,
-    PrimaryKeySchema, RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+    AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ExclusionConstraintSchema,
+    ExclusionElementSchema, ForeignKeySchema, FtsSchema, GeneratedColumnSchema, IndexColumnSchema,
+    IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema,
+    IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema, PrimaryKeySchema,
+    RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
 };
 
 /// Identity of a snapshot bucket — `(database_target, app_label)`.
@@ -606,9 +608,17 @@ fn project_model(
 
     let primary_key = project_primary_key(&m.pk_type);
 
+    let mut exclusion_constraints: Vec<ExclusionConstraintSchema> = m
+        .exclusion_constraints
+        .iter()
+        .map(project_exclusion_constraint)
+        .collect();
+    exclusion_constraints.sort_by(|a, b| a.name.cmp(&b.name));
+
     TableSchema {
         app: m.app.map(|s| s.to_string()),
         columns,
+        exclusion_constraints,
         fts: m.fts.as_ref().map(project_fts),
         is_through: m.is_through,
         moved_from_app: m.moved_from_app.map(|s| s.to_string()),
@@ -619,6 +629,31 @@ fn project_model(
         rls_enabled: m.tenant_key.is_some(),
         table: m.table_name.to_string(),
         tenant_key: m.tenant_key.map(|s| s.to_string()),
+    }
+}
+
+fn project_exclusion_constraint(spec: &ExclusionConstraintSpec) -> ExclusionConstraintSchema {
+    ExclusionConstraintSchema {
+        name: spec.name.to_string(),
+        using: spec.using.to_string(),
+        elements: spec.elements.iter().map(project_exclusion_element).collect(),
+        where_clause: spec.where_clause.map(|s| s.to_string()),
+        deferrable: spec.deferrable,
+        initially_deferred: spec.initially_deferred,
+    }
+}
+
+fn project_exclusion_element(elem: &ExclusionElement) -> ExclusionElementSchema {
+    ExclusionElementSchema {
+        expr: elem.expr.to_string(),
+        with_operator: elem.with_operator.to_string(),
+    }
+}
+
+fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema {
+    GeneratedColumnSchema {
+        expression: spec.expression.to_string(),
+        stored: spec.stored,
     }
 }
 
@@ -707,6 +742,7 @@ fn project_column(
         check: None,
         default_sql,
         foreign_key,
+        generated: f.generated.as_ref().map(project_generated_column),
         index_type: f.index_type.map(project_index_type),
         indexed: f.indexed,
         max_length: f.max_length,

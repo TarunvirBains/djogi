@@ -216,6 +216,22 @@ pub fn classify_operation(
         // (catalog-only; no data loss in the FK column itself).
         SchemaOperation::DropForeignKey { .. } => OnlineSafetyClassification::OnlineSafe,
 
+        // §7 (PR 7): "Add EXCLUDE constraint to populated table" →
+        // OfflineOnly. Postgres 18 has no `NOT VALID` for `EXCLUDE`, so
+        // two-phase staging is structurally impossible — the constraint
+        // check runs under AccessExclusiveLock against every existing
+        // row. Empty-table additions still classify here; compose's
+        // empty-table fast-path emits the constraint inline before any
+        // rows exist (PR 7 task 4).
+        SchemaOperation::AddExclusionConstraint { .. } => {
+            OnlineSafetyClassification::OfflineOnly
+        }
+
+        // Dropping an exclusion constraint is catalog-only — Postgres
+        // releases the underlying GiST/B-tree index without scanning
+        // rows. OnlineSafe.
+        SchemaOperation::DropExclusionConstraint { .. } => OnlineSafetyClassification::OnlineSafe,
+
         // §7: "Add index" — concurrently=true → OnlineSafe; otherwise
         // ExpandContract. The `requires_out_of_transaction` flag on
         // IndexSchema mirrors the `concurrently = true` model knob.
@@ -384,6 +400,16 @@ fn classify_add_column(
     column: &ColumnSchema,
     ctx: &ClassifyContext<'_>,
 ) -> OnlineSafetyClassification {
+    // §7 (PR 7): "Add stored generated column to populated table" →
+    // OfflineOnly. Postgres rewrites every row under
+    // AccessExclusiveLock to materialise the stored expression. The
+    // empty-table case still routes here; compose's empty-table fast-
+    // path emits the column inline before any rows exist (PR 7 task 4).
+    // No `Pattern` exists for this — see
+    // [`crate::live_migrate::patterns::generated_column_refusal`].
+    if column.generated.is_some() {
+        return OnlineSafetyClassification::OfflineOnly;
+    }
     let Some(default) = column.default_sql.as_deref() else {
         // No default at all. Nullable → catalog-only fast-path.
         // Non-nullable without a default → backfill required because
@@ -476,6 +502,19 @@ fn classify_column_change(
                 OnlineSafetyClassification::OnlineSafe
             }
         }
+
+        // §7 (PR 7): "Change stored generated column expression on
+        // populated table" → OfflineOnly. Postgres re-evaluates the
+        // generation expression for every row under
+        // AccessExclusiveLock, which is structurally the same lock
+        // window that ExpandContract is meant to avoid — a shadow-
+        // column pattern offers no relief because the row rewrite
+        // still happens. See
+        // [`crate::live_migrate::patterns::generated_column_refusal`]
+        // for the no-`Pattern` rationale. Dropping the generation
+        // (to = None) routes the same way; the catalog-only path is
+        // not reachable for a generated column on a populated table.
+        ColumnChange::SetGenerated { .. } => OnlineSafetyClassification::OfflineOnly,
     }
 }
 

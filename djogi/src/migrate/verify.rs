@@ -638,6 +638,12 @@ async fn read_tables(
             rls_enabled: false,
             table: table_name,
             tenant_key: None,
+            // Verify reads the live catalog only — exclusion constraint
+            // discovery via `pg_constraint.contype = 'x'` is a future
+            // verify pass (mirrors how indexes/FKs are read). Empty here
+            // means "verify did not assert anything about the table's
+            // exclusion constraints," not "the table has none."
+            exclusion_constraints: Vec::new(),
         });
     }
     Ok(out)
@@ -717,6 +723,10 @@ async fn read_all_columns(
             check: None,
             default_sql,
             foreign_key: None,
+            // Verify does not yet read `pg_attrdef` to discover stored
+            // generated expressions; advisory mode treats every live
+            // column as non-generated. T8/future verify pass tightens.
+            generated: None,
             index_type: None,
             indexed: false,
             max_length: None,

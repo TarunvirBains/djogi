@@ -79,9 +79,9 @@ use super::diff::{
 };
 use super::projection::BucketKey;
 use super::schema::{
-    ColumnSchema, EnumSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
-    IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
-    OnDeleteSchema, PartitionSchema, PkKindSchema, TableSchema,
+    ColumnSchema, EnumSchema, ExclusionConstraintSchema, ForeignKeySchema, IndexColumnSchema,
+    IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema,
+    IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema, TableSchema,
 };
 
 // ── Public output shapes ──────────────────────────────────────────────────
@@ -292,6 +292,14 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
         }
         SchemaOperation::AddIndex(idx) => Ok(emit_add_index(idx)),
         SchemaOperation::DropIndex(idx) => Ok(emit_drop_index(idx)),
+        SchemaOperation::AddExclusionConstraint { table, exclusion } => {
+            Ok(emit_add_exclusion_constraint(table, exclusion))
+        }
+        SchemaOperation::DropExclusionConstraint {
+            table,
+            name,
+            exclusion,
+        } => Ok(emit_drop_exclusion_constraint(table, name, exclusion)),
         SchemaOperation::AddEnum(e) => Ok(emit_add_enum(e)),
         SchemaOperation::DropEnum(name) => Ok(emit_drop_enum(name)),
         SchemaOperation::AddEnumVariant {
@@ -694,6 +702,33 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             let down = format!("CREATE INDEX {qname} ON {qt} ({qc});");
             (up, down, "drop indexed", None)
         }
+        // Stored generated column transitions classify as
+        // OfflineOnly per the v3 plan — Postgres has no
+        // `ALTER COLUMN ADD GENERATED` for stored expressions, so the
+        // operator must hand-edit a DROP COLUMN + ADD COLUMN sequence.
+        // We emit a comment placeholder so the migration file
+        // documents the intent without producing executable SQL the
+        // runner would refuse anyway. The classifier (PR 7 task 3)
+        // ensures the live runner never reaches this path.
+        ColumnChange::SetGenerated { from: _, to } => {
+            let kind = if to.is_some() {
+                "set GENERATED"
+            } else {
+                "drop GENERATED"
+            };
+            let up = format!(
+                "-- OfflineOnly: stored generated column change for `{table}.{column}`\n\
+                 -- has no online ALTER form. Hand-edit the migration to DROP COLUMN +\n\
+                 -- ADD COLUMN with the new generation expression. See\n\
+                 -- `docs/spec/decisions.md` and the `generated_column_refusal` pattern."
+            );
+            let down = format!(
+                "-- OfflineOnly: revert requires reconstructing the original\n\
+                 -- generation state on `{table}.{column}` (DROP + ADD COLUMN).\n\
+                 -- Hand-edit before applying."
+            );
+            (up, down, kind, None)
+        }
     };
     OperationSql {
         label: format!("AlterColumn {table}.{column} ({label_suffix})"),
@@ -855,6 +890,71 @@ fn emit_drop_index(idx: &IndexSchema) -> OperationSql {
                 idx.name
             ),
         }),
+    }
+}
+
+/// Render the body of an `EXCLUDE` constraint clause — the part after
+/// `EXCLUDE` up to (but not including) the trailing semicolon.
+///
+/// Used by both [`emit_add_exclusion_constraint`] and the inline form
+/// inside `emit_add_table` (PR 7 task 4). Produces `USING <method>
+/// (<expr1> WITH <op1>, <expr2> WITH <op2>) [WHERE (<predicate>)]
+/// [DEFERRABLE [INITIALLY DEFERRED]]`. No leading whitespace and no
+/// trailing semicolon.
+fn render_exclusion_body(exclusion: &ExclusionConstraintSchema) -> String {
+    let mut body = String::with_capacity(64);
+    let _ = write!(body, "EXCLUDE USING {} (", exclusion.using);
+    for (idx, elem) in exclusion.elements.iter().enumerate() {
+        if idx > 0 {
+            body.push_str(", ");
+        }
+        let _ = write!(body, "{} WITH {}", elem.expr, elem.with_operator);
+    }
+    body.push(')');
+    if let Some(where_clause) = &exclusion.where_clause {
+        let _ = write!(body, " WHERE ({where_clause})");
+    }
+    if exclusion.deferrable {
+        body.push_str(" DEFERRABLE");
+        if exclusion.initially_deferred {
+            body.push_str(" INITIALLY DEFERRED");
+        }
+    }
+    body
+}
+
+fn emit_add_exclusion_constraint(
+    table: &str,
+    exclusion: &ExclusionConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&exclusion.name);
+    let body = render_exclusion_body(exclusion);
+    let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    OperationSql {
+        label: format!("AddExclusionConstraint {table}.{}", exclusion.name),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+fn emit_drop_exclusion_constraint(
+    table: &str,
+    name: &str,
+    exclusion: &ExclusionConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(name);
+    let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    let body = render_exclusion_body(exclusion);
+    let down = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    OperationSql {
+        label: format!("DropExclusionConstraint {table}.{name}"),
+        up,
+        down,
+        lossy: None,
     }
 }
 

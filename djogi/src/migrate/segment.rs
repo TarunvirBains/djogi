@@ -555,7 +555,16 @@ fn operation_phase(op: &SchemaOperation) -> usize {
         | SchemaOperation::AddForeignKey { .. } => 3,
         SchemaOperation::AddEnumVariant { .. } => 4,
         SchemaOperation::AddIndex(_) => 5,
+        // EXCLUDE constraints sit alongside indexes in the phase
+        // ordering — they share index-method semantics (GIST / BTREE)
+        // and depend on the columns being present, so they run after
+        // AddTable / AddColumn but before any drops. The
+        // AddExclusionConstraint variant is OfflineOnly per the v3
+        // plan, so it never reaches the live runner; this phase
+        // value is for the synchronous `compose` ordering only.
+        SchemaOperation::AddExclusionConstraint { .. } => 5,
         SchemaOperation::DropIndex(_) => 6,
+        SchemaOperation::DropExclusionConstraint { .. } => 6,
         SchemaOperation::DropForeignKey { .. } => 7,
         SchemaOperation::DropColumn { .. } => 8,
         SchemaOperation::DropTable(_) => 9,

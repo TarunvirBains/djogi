@@ -167,6 +167,13 @@ pub struct TableSchema {
     /// `#[model(tenant_key = "col_name")]` value. `Some(col)`
     /// activates RLS policy generation against that column.
     pub tenant_key: Option<String>,
+
+    /// Table-level `EXCLUDE` constraints declared via
+    /// `#[model(exclusion(...))]`. Empty for the common case. Sorted
+    /// by `name` for determinism. `#[serde(default)]` so snapshots
+    /// predating this field round-trip cleanly.
+    #[serde(default)]
+    pub exclusion_constraints: Vec<ExclusionConstraintSchema>,
 }
 
 /// Per-column snapshot.
@@ -187,6 +194,13 @@ pub struct ColumnSchema {
     /// Foreign key declaration when this column stores the source
     /// side of an FK / O2O relation. `None` for scalar columns.
     pub foreign_key: Option<ForeignKeySchema>,
+
+    /// `GENERATED ALWAYS AS (<expr>) STORED` declaration. `None` for
+    /// regular columns (the common case). Set when the field carries
+    /// `#[field(generated = "<expr>")]`. `#[serde(default)]` so
+    /// snapshots predating this field round-trip cleanly.
+    #[serde(default)]
+    pub generated: Option<GeneratedColumnSchema>,
 
     /// Column-level `INDEX USING <method>` override — `None` falls
     /// back to BTree at emission time.
@@ -354,6 +368,74 @@ pub enum RelationKindSchema {
     ForeignKey,
     /// `OneToOneField<T>` / `Option<OneToOneField<T>>` — one-to-one.
     OneToOne,
+}
+
+/// `GENERATED ALWAYS AS (<expr>) STORED` declaration on a column.
+/// Mirrors [`crate::descriptor::GeneratedColumnSpec`] in owned form.
+///
+/// Pg18 only supports `STORED`; `stored = false` is reserved for the
+/// future Pg19+ `VIRTUAL` variant and is rejected by the macro today.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedColumnSchema {
+    /// SQL expression evaluated to produce the column value. Emitted
+    /// verbatim inside `GENERATED ALWAYS AS (<expression>) STORED`.
+    pub expression: String,
+    /// `true` emits `STORED`. The macro currently rejects `false` —
+    /// the field exists so future Pg19+ `VIRTUAL` columns round-trip
+    /// cleanly without a snapshot-format bump.
+    pub stored: bool,
+}
+
+/// Per-column member of an [`ExclusionConstraintSchema`].
+///
+/// One entry per `<expr> WITH <op>` clause inside the `EXCLUDE`
+/// constraint body. `EXCLUDE USING gist (room_id WITH =, period WITH &&)`
+/// decomposes into two entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExclusionElementSchema {
+    /// Column name or expression. Emitted verbatim before `WITH`.
+    pub expr: String,
+    /// Postgres operator class member used for the exclusion comparison
+    /// (e.g. `"="`, `"&&"`, `"<>"`). Emitted verbatim after `WITH`.
+    pub with_operator: String,
+}
+
+/// Table-level `EXCLUDE` constraint declaration. Mirrors
+/// [`crate::descriptor::ExclusionConstraintSpec`] in owned form.
+///
+/// Adding an `EXCLUDE` constraint to a populated table classifies as
+/// [`OnlineSafetyClassification::OfflineOnly`] — Postgres 18 has no
+/// `NOT VALID` for `EXCLUDE`, so two-phase staging is structurally
+/// impossible. The empty-table case (CREATE TABLE inline, or an
+/// existing table with zero rows) flows through the regular
+/// `OnlineSafe` path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExclusionConstraintSchema {
+    /// Constraint name. Drives diff identity — two constraints with
+    /// the same name on the same table are considered the same
+    /// constraint by the differ.
+    pub name: String,
+    /// Index method (e.g. `"gist"`, `"btree"`). Emitted verbatim into
+    /// `EXCLUDE USING <method>`.
+    pub using: String,
+    /// Element list in declaration order. Order is preserved verbatim
+    /// in the emitted DDL because `EXCLUDE` operator class semantics
+    /// depend on element order.
+    pub elements: Vec<ExclusionElementSchema>,
+    /// Optional `WHERE` predicate. Raw SQL, emitted verbatim. `None`
+    /// means the constraint applies to every row.
+    pub where_clause: Option<String>,
+    /// `true` emits `DEFERRABLE`. The macro enforces that
+    /// `initially_deferred = true` requires `deferrable = true`.
+    #[serde(default)]
+    pub deferrable: bool,
+    /// `true` emits `INITIALLY DEFERRED`. Only meaningful when
+    /// `deferrable = true`.
+    #[serde(default)]
+    pub initially_deferred: bool,
 }
 
 /// Postgres index method. Mirrors

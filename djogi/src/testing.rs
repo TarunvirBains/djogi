@@ -820,6 +820,8 @@ fn additive_op_label(op: &SchemaOperation) -> &'static str {
         SchemaOperation::DropForeignKey { .. } => "DropForeignKey",
         SchemaOperation::AddIndex(_) => "AddIndex",
         SchemaOperation::DropIndex(_) => "DropIndex",
+        SchemaOperation::AddExclusionConstraint { .. } => "AddExclusionConstraint",
+        SchemaOperation::DropExclusionConstraint { .. } => "DropExclusionConstraint",
         SchemaOperation::AddEnum(_) => "AddEnum",
         SchemaOperation::DropEnum(_) => "DropEnum",
         SchemaOperation::AddEnumVariant { .. } => "AddEnumVariant",
