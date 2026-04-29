@@ -232,9 +232,12 @@ SELECT plan_id, target_database, app_label, current_step \
 FROM djogi_live_plans \
 WHERE status = 'running' \
   AND current_step IN ('backfill_chunked', 'validate_backfill') \
-  AND (last_progress_at < now() - (INTERVAL '1 second' * $1) \
-       OR last_progress_at IS NULL) \
-  AND (claimed_by_pid IS NULL OR claimed_by_pid = $2)";
+  AND ( \
+       claimed_by_pid = $2 \
+    OR ( claimed_by_pid IS NULL \
+         AND ( last_progress_at IS NULL \
+               OR last_progress_at < now() - (INTERVAL '1 second' * $1) ) ) \
+  )";
 
 /// Update statement that records a successful claim. Sets `claimed_by_pid`,
 /// `claimed_by_host`, and `claimed_at = now()` for the row identified by
@@ -781,23 +784,26 @@ mod tests {
     }
 
     #[test]
-    fn candidate_query_combines_stale_and_claim_predicates_with_and() {
-        // The two predicates — staleness and free-to-claim — must be
-        // AND-ed, not OR-ed. The previous shape OR-ed three sub-clauses
-        // together, which incorrectly picked up unclaimed-but-fresh
-        // rows AND failed to reclaim THIS daemon's previous claims.
-        // Pin the corrected shape so refactors don't regress.
+    fn candidate_query_self_pid_is_or_escape_hatch() {
+        // The candidate predicate is (own_pid OR (unclaimed AND stale)) —
+        // own-pid reclaim bypasses the stale threshold so a restarted
+        // daemon picks its prior claims up immediately, while
+        // other-daemon claims are skipped until they expire.
         assert!(
-            CANDIDATE_QUERY_SQL.contains("(last_progress_at < now() - (INTERVAL '1 second' * $1)"),
-            "stale predicate must use `<` against now()-INTERVAL: {CANDIDATE_QUERY_SQL}",
+            CANDIDATE_QUERY_SQL.contains("claimed_by_pid = $2"),
+            "self-pid escape hatch must be present: {CANDIDATE_QUERY_SQL}",
         );
         assert!(
-            CANDIDATE_QUERY_SQL.contains("OR last_progress_at IS NULL)"),
-            "stale predicate must include the never-progressed branch: {CANDIDATE_QUERY_SQL}",
+            CANDIDATE_QUERY_SQL.contains("claimed_by_pid IS NULL"),
+            "unclaimed branch must be guarded by claimed_by_pid IS NULL: {CANDIDATE_QUERY_SQL}",
         );
         assert!(
-            CANDIDATE_QUERY_SQL.contains("(claimed_by_pid IS NULL OR claimed_by_pid = $2)"),
-            "free-to-claim predicate must accept unclaimed OR own-pid: {CANDIDATE_QUERY_SQL}",
+            CANDIDATE_QUERY_SQL.contains("last_progress_at IS NULL"),
+            "stale branch must accept never-progressed rows: {CANDIDATE_QUERY_SQL}",
+        );
+        assert!(
+            CANDIDATE_QUERY_SQL.contains("last_progress_at < now() - (INTERVAL '1 second' * $1)"),
+            "stale branch must use `<` against now()-INTERVAL: {CANDIDATE_QUERY_SQL}",
         );
     }
 
