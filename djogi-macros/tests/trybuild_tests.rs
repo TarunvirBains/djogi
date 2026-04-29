@@ -10,10 +10,15 @@
 //! The fix: one `#[test]` per phase prefix. cargo's default test
 //! parallelism runs them concurrently; `cargo test compile_pass_phase7_5`
 //! filters down to the ~3 fixtures relevant to a single phase change
-//! (~30s instead of 15 min). Total work on a full sweep is unchanged
-//! but wall-clock scales with cores. The phase split mirrors the
-//! `phase{N}_*.rs` naming convention adopters already use; new phases
-//! add a new `#[test]` and a new glob.
+//! (~30s instead of 15 min). The phase split mirrors the `phase{N}_*.rs`
+//! naming convention adopters already use; new phases add a new
+//! `#[test]` and a new glob.
+//!
+//! Full-sweep wall-clock is somewhat worse than the single-glob baseline
+//! because each split function ends with `Drop` on a `TestCases` →
+//! one `cargo build` invocation, so 22 functions ⇒ 22 invocations vs.
+//! the prior 2. We trade that throughput for the targeted-dev win,
+//! which is the dominant workflow; full-sweep runs once at PR time.
 //!
 //! `unphased` collects fixtures that pre-date the phased naming
 //! convention (`basic_inject.rs`, `reverse_one_to_*.rs`, the M2M

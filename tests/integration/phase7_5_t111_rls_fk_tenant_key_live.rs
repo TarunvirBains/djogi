@@ -78,15 +78,7 @@ pub struct Document {
 /// it; the existence-then-create idiom matches the pattern in
 /// `phase5_postgres_native::set_tenant_rls_isolates_tenants`.
 async fn setup(ctx: &mut djogi::DjogiContext) {
-    // Per-test DB starts empty — DROP IF EXISTS guards make this
-    // re-runnable inside the same test (defense in depth even though
-    // `#[djogi_test]` provisions a fresh DB).
-    ctx.raw_ddl("DROP TABLE IF EXISTS phase7_5_t111_documents")
-        .await
-        .expect("drop documents");
-    ctx.raw_ddl("DROP TABLE IF EXISTS phase7_5_t111_owners")
-        .await
-        .expect("drop owners");
+    // `#[djogi_test]` provisions a fresh DB, so no DROP guards needed.
 
     ctx.raw_execute(
         "CREATE TABLE phase7_5_t111_owners (
@@ -177,6 +169,30 @@ async fn setup(ctx: &mut djogi::DjogiContext) {
         .expect("grant schema");
 }
 
+/// Open a fresh `atomic()` scope under the restricted RLS-test role,
+/// apply `set_tenant(tenant)`, fetch all `Document` rows, and project
+/// to titles. Each invocation gets its own transaction so role / tenant
+/// state from prior calls cannot leak.
+async fn fetch_titles_as_tenant(pool: &djogi::pg::pool::DjogiPool, tenant: &str) -> Vec<String> {
+    let tenant_owned = tenant.to_owned();
+    djogi::transaction::atomic(pool, |tx| {
+        Box::pin(async move {
+            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
+                .await?;
+            tx.set_tenant(&tenant_owned).await?;
+            let titles: Vec<String> = Document::objects()
+                .fetch_all(tx)
+                .await?
+                .into_iter()
+                .map(|d| d.title)
+                .collect();
+            Ok::<_, djogi::DjogiError>(titles)
+        })
+    })
+    .await
+    .unwrap_or_else(|e| panic!("fetch as tenant {tenant}: {e:?}"))
+}
+
 #[djogi::djogi_test]
 async fn rls_with_fk_tenant_key_filters_correctly(mut ctx: djogi::DjogiContext) {
     setup(&mut ctx).await;
@@ -202,78 +218,31 @@ async fn rls_with_fk_tenant_key_filters_correctly(mut ctx: djogi::DjogiContext) 
 
     let pool = ctx.pool().expect("test ctx must be pool-backed").clone();
 
-    // ── Tenant A: must see exactly 'org-a-doc' ───────────────────────────
-    let a_titles: Vec<String> = djogi::transaction::atomic(&pool, |tx| {
-        Box::pin(async move {
-            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
-                .await?;
-            tx.set_tenant("1000").await?;
-            let titles: Vec<String> = Document::objects()
-                .fetch_all(tx)
-                .await?
-                .into_iter()
-                .map(|d| d.title)
-                .collect();
-            Ok::<_, djogi::DjogiError>(titles)
-        })
-    })
-    .await
-    .expect("fetch as tenant 1000");
+    // Tenant A: only org-a-doc. Pre-fix #37 returned 0 rows because the
+    // empty cast suffix produced an untyped current_setting() compared
+    // to a BIGINT column, which Postgres treats as NULL after coercion
+    // failure.
     assert_eq!(
-        a_titles,
+        fetch_titles_as_tenant(&pool, "1000").await,
         vec!["org-a-doc".to_string()],
-        "tenant 1000 must see exactly its own document — pre-fix #37 returned 0 rows because \
-         the empty cast suffix produced an untyped current_setting() compared to a BIGINT \
-         column, which Postgres treats as NULL after coercion failure",
+        "tenant 1000 must see exactly its own document",
     );
 
-    // ── Tenant B: must see exactly 'org-b-doc' ───────────────────────────
-    let b_titles: Vec<String> = djogi::transaction::atomic(&pool, |tx| {
-        Box::pin(async move {
-            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
-                .await?;
-            tx.set_tenant("2000").await?;
-            let titles: Vec<String> = Document::objects()
-                .fetch_all(tx)
-                .await?
-                .into_iter()
-                .map(|d| d.title)
-                .collect();
-            Ok::<_, djogi::DjogiError>(titles)
-        })
-    })
-    .await
-    .expect("fetch as tenant 2000");
+    // Tenant B: only org-b-doc. Switching tenants via set_tenant must
+    // change the visible row set.
     assert_eq!(
-        b_titles,
+        fetch_titles_as_tenant(&pool, "2000").await,
         vec!["org-b-doc".to_string()],
-        "tenant 2000 must see exactly its own document — switching tenants via set_tenant \
-         must change the visible row set",
+        "tenant 2000 must see exactly its own document",
     );
 
-    // ── Non-existent tenant: zero rows visible ───────────────────────────
-    // 9999 is a valid bigint that cleanly survives the `::bigint` cast but
-    // matches no row, so the policy hides all documents. This pinpoints
-    // "the cast worked AND filtering correctly excludes other tenants" —
-    // pre-fix #37 the empty cast suffix would produce the same zero-rows
-    // outcome for the wrong reason (NULL coercion), making this a useful
-    // tightening of the assertion above.
-    let nine_titles: Vec<String> = djogi::transaction::atomic(&pool, |tx| {
-        Box::pin(async move {
-            tx.raw_execute("SET LOCAL ROLE djogi_rls_test_user", &[])
-                .await?;
-            tx.set_tenant("9999").await?;
-            let titles: Vec<String> = Document::objects()
-                .fetch_all(tx)
-                .await?
-                .into_iter()
-                .map(|d| d.title)
-                .collect();
-            Ok::<_, djogi::DjogiError>(titles)
-        })
-    })
-    .await
-    .expect("fetch as tenant 9999");
+    // 9999 is a valid bigint that cleanly survives the `::bigint` cast
+    // but matches no row, so the policy hides all documents. This
+    // pinpoints "the cast worked AND filtering correctly excludes other
+    // tenants" — pre-fix #37 the empty cast suffix would produce the
+    // same zero-rows outcome for the wrong reason (NULL coercion),
+    // making this a useful tightening of the assertions above.
+    let nine_titles = fetch_titles_as_tenant(&pool, "9999").await;
     assert!(
         nine_titles.is_empty(),
         "tenant 9999 has no documents; policy must hide both org-a and org-b rows; \

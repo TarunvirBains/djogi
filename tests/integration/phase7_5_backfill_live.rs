@@ -66,17 +66,21 @@ async fn setup_source_table(ctx: &mut DjogiContext) {
     .expect("CREATE TABLE source");
 }
 
-/// Seed `n` rows with mixed-case `email` and `NULL email_lower`.
+/// Seed `n` rows with mixed-case `email` and `NULL email_lower`. One
+/// round-trip via `generate_series` rather than N INSERTs — keeps the
+/// helper cheap if a future test ever bumps `n` beyond the current
+/// 5/10-row fixtures.
 async fn seed_rows(ctx: &mut DjogiContext, n: i64) {
-    for i in 0..n {
-        let email = format!("User-{i}@Example.COM");
-        ctx.raw_execute(
-            &format!("INSERT INTO {SOURCE_TABLE} (email) VALUES ($1)"),
-            &[&email],
-        )
-        .await
-        .expect("INSERT seed row");
-    }
+    ctx.raw_execute(
+        &format!(
+            "INSERT INTO {SOURCE_TABLE} (email) \
+             SELECT format('User-%s@Example.COM', g) \
+             FROM generate_series(0, $1::int - 1) AS g"
+        ),
+        &[&(n as i32)],
+    )
+    .await
+    .expect("INSERT seed rows via generate_series");
 }
 
 /// Insert a `djogi_live_plans` row in `Running` state, ready for the
@@ -117,15 +121,21 @@ async fn null_count(ctx: &mut DjogiContext) -> i64 {
     .expect("count NULLs")
 }
 
-/// Standard predicate used by the nullable_not_null pattern's chunk
-/// loop. The runner concatenates `UPDATE <table> ` with this template
-/// and binds `chunk_size` at `$1`.
-const PREDICATE_TEMPLATE: &str = "SET email_lower = LOWER(email) \
-                                  WHERE id IN ( \
-                                      SELECT id FROM phase7_5_backfill_users \
-                                      WHERE email_lower IS NULL \
-                                      LIMIT $1 \
-                                  )";
+/// Build the standard predicate used by the nullable_not_null pattern's
+/// chunk loop. The runner concatenates `UPDATE <table> ` with this
+/// template and binds `chunk_size` at `$1`. Derived from `SOURCE_TABLE`
+/// so a rename of the source table can't drift into a stale predicate
+/// targeting a non-existent table.
+fn predicate_template() -> String {
+    format!(
+        "SET email_lower = LOWER(email) \
+         WHERE id IN ( \
+             SELECT id FROM {SOURCE_TABLE} \
+             WHERE email_lower IS NULL \
+             LIMIT $1 \
+         )"
+    )
+}
 
 #[djogi::djogi_test]
 async fn execute_drives_chunks_to_completion(mut ctx: DjogiContext) {
@@ -143,7 +153,7 @@ async fn execute_drives_chunks_to_completion(mut ctx: DjogiContext) {
         &mut ctx,
         plan_id,
         SOURCE_TABLE,
-        PREDICATE_TEMPLATE,
+        &predicate_template(),
         3,
         false,
     )
@@ -201,7 +211,7 @@ async fn resume_picks_up_inserts_and_is_idempotent(mut ctx: DjogiContext) {
         &mut ctx,
         plan_id,
         SOURCE_TABLE,
-        PREDICATE_TEMPLATE,
+        &predicate_template(),
         10,
         false,
     )
@@ -232,7 +242,7 @@ async fn resume_picks_up_inserts_and_is_idempotent(mut ctx: DjogiContext) {
         &mut ctx,
         plan_id,
         SOURCE_TABLE,
-        PREDICATE_TEMPLATE,
+        &predicate_template(),
         10,
         false,
     )
@@ -263,7 +273,7 @@ async fn resume_picks_up_inserts_and_is_idempotent(mut ctx: DjogiContext) {
         &mut ctx,
         plan_id,
         SOURCE_TABLE,
-        PREDICATE_TEMPLATE,
+        &predicate_template(),
         10,
         false,
     )
