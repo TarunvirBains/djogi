@@ -953,7 +953,7 @@ mod tests {
         }
     }
 
-    // ── Phase 7 T10: sync_models invariants ─────────────────────────
+    // ── sync_models invariants ──────────────────────────────────────
     //
     // These tests pin the empty-target additive-only contract without
     // touching a live database. The invariant guard sits between the

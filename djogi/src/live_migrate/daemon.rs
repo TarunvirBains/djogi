@@ -107,6 +107,12 @@ pub struct DaemonConfig {
     /// Process ID recorded in `djogi_live_plans.claimed_by_pid` while
     /// this daemon owns the row. Diagnostic only.
     pub pid: i64,
+    /// `Djogi.toml::profile` value, threaded through by the CLI. The
+    /// daemon's environment gate refuses to start when this is the
+    /// literal lowercase string `"production"`. Mirrors the predicate
+    /// `db reset` and `db cleanup-test-dbs` use so the same rules
+    /// govern every long-running destructive surface.
+    pub profile: String,
 }
 
 impl DaemonConfig {
@@ -129,6 +135,7 @@ impl DaemonConfig {
             database_url: database_url.into(),
             host: hostname_or_unknown(),
             pid: i64::from(std::process::id()),
+            profile: "development".to_string(),
         }
     }
 }
@@ -190,25 +197,33 @@ impl From<DbError> for DaemonError {
 
 /// Candidate-row query. Returns one row per plan whose `current_step`
 /// is in the daemon's auto-resume set AND whose
-/// `(last_progress_at, claimed_by_pid)` shape marks the row as stale.
+/// `(last_progress_at, claimed_by_pid)` shape marks the row as both
+/// stale AND eligible-to-claim.
 ///
 /// The `INTERVAL '1 second' * $1` form lets us pass the stale-claim
 /// threshold as a `BIGINT` parameter (number of seconds) rather than
 /// formatting an interval literal — the parameter binder cannot bind
 /// a `Duration` directly, but seconds-as-i64 round-trips cleanly.
 ///
-/// The candidate filter:
+/// The candidate filter is two AND-ed predicates:
 ///
-/// 1. `status = 'running'` — Pending plans are operator-promoted via
-///    `live run`; Paused plans are explicit operator checkpoints;
-///    terminal states (Complete / Abandoned / Failed) are never
-///    auto-resumed.
-/// 2. `current_step IN ('backfill_chunked', 'validate_backfill')` —
-///    the only two step kinds the daemon will advance.
-/// 3. `(last_progress_at IS NULL OR last_progress_at < now() - $1)` OR
-///    `claimed_by_pid IS NULL`. The first half catches plans that
-///    were claimed but stopped progressing; the second half catches
-///    plans that have never been touched by a daemon.
+/// 1. **Eligible step / status.** `status = 'running'` AND
+///    `current_step IN ('backfill_chunked', 'validate_backfill')`.
+///    Pending plans are operator-promoted via `live run`; Paused
+///    plans are explicit operator checkpoints; terminal states
+///    (Complete / Abandoned / Failed) are never auto-resumed.
+/// 2. **Stale (or never-progressed) AND free-to-claim.** The row must
+///    be stale — `last_progress_at < now() - $1::interval OR
+///    last_progress_at IS NULL` (a row that has never recorded
+///    progress is treated as stale by definition). The row must also
+///    be free to claim — `claimed_by_pid IS NULL OR claimed_by_pid =
+///    $2`: unclaimed, OR already claimed by THIS daemon (so a
+///    restarted daemon process can re-claim its own previous work
+///    rather than waiting for the stale threshold).
+///
+/// `$2` binds the running daemon's PID — passing it explicitly keeps
+/// the predicate self-contained without smuggling state through the
+/// SQL session.
 ///
 /// The query is documented as a constant so tests can assert its
 /// shape without reaching into private internals.
@@ -217,11 +232,9 @@ SELECT plan_id, target_database, app_label, current_step \
 FROM djogi_live_plans \
 WHERE status = 'running' \
   AND current_step IN ('backfill_chunked', 'validate_backfill') \
-  AND ( \
-        last_progress_at IS NULL \
-        OR last_progress_at < now() - (INTERVAL '1 second' * $1) \
-        OR claimed_by_pid IS NULL \
-      )";
+  AND (last_progress_at < now() - (INTERVAL '1 second' * $1) \
+       OR last_progress_at IS NULL) \
+  AND (claimed_by_pid IS NULL OR claimed_by_pid = $2)";
 
 /// Update statement that records a successful claim. Sets `claimed_by_pid`,
 /// `claimed_by_host`, and `claimed_at = now()` for the row identified by
@@ -262,33 +275,85 @@ pub async fn run_daemon(ctx: &mut DjogiContext, config: DaemonConfig) -> Result<
         "live-migrate daemon started",
     );
 
+    // Production daemons typically receive SIGTERM from systemd /
+    // kubernetes / `docker stop`; SIGINT (Ctrl-C) is the interactive
+    // case. On Unix we listen to both; on non-Unix only `ctrl_c` is
+    // available (Windows lacks SIGTERM, so the cfg gate is necessary).
+    #[cfg(unix)]
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| {
+            DaemonError::Database(DjogiError::Db(DbError::other(format!(
+                "register SIGTERM handler: {e}"
+            ))))
+        })?;
+
     loop {
-        tokio::select! {
-            // Always poll the shutdown signal alongside the timer so
-            // SIGTERM during a long sleep takes effect within one
-            // iteration.
-            _ = tokio::signal::ctrl_c() => {
-                tracing::info!("live-migrate daemon: shutdown signal received");
-                return Err(DaemonError::Shutdown);
+        // Always poll the shutdown signals alongside the timer so a
+        // signal during a long sleep takes effect within one
+        // iteration.
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("live-migrate daemon: SIGINT received");
+                    return Err(DaemonError::Shutdown);
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("live-migrate daemon: SIGTERM received");
+                    return Err(DaemonError::Shutdown);
+                }
+                _ = tokio::time::sleep(config.poll_interval) => {
+                    if let Err(e) = poll_once(ctx, &config).await {
+                        tracing::warn!(
+                            error = %e,
+                            "live-migrate daemon: poll iteration failed; \
+                             continuing to next interval",
+                        );
+                    }
+                }
             }
-            _ = tokio::time::sleep(config.poll_interval) => {
-                if let Err(e) = poll_once(ctx, &config).await {
-                    tracing::warn!(
-                        error = %e,
-                        "live-migrate daemon: poll iteration failed; \
-                         continuing to next interval",
-                    );
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("live-migrate daemon: shutdown signal received");
+                    return Err(DaemonError::Shutdown);
+                }
+                _ = tokio::time::sleep(config.poll_interval) => {
+                    if let Err(e) = poll_once(ctx, &config).await {
+                        tracing::warn!(
+                            error = %e,
+                            "live-migrate daemon: poll iteration failed; \
+                             continuing to next interval",
+                        );
+                    }
                 }
             }
         }
     }
 }
 
-/// Apply the production-env + localhost gates. Lifted into a free
-/// function so unit tests can exercise both refusal paths without
-/// running the full poll loop.
+/// Apply the production-env + production-profile + localhost gates.
+/// Lifted into a free function so unit tests can exercise every refusal
+/// path without running the full poll loop.
+///
+/// Three independent refusals fire here:
+///
+/// 1. `DJOGI_ENV` set to `production` (case-insensitive).
+/// 2. `DjogiConfig::profile` set to the literal lowercase
+///    `"production"` — mirrors the predicate `db reset` and
+///    `db cleanup-test-dbs` use so every long-running destructive
+///    surface follows the same rule. Strict lowercase match: a typo
+///    (`"Production"`, `"PROD"`) falls back to the safe-for-dev
+///    default rather than silently flipping the gate.
+/// 3. Application URL is not localhost AND `--allow-non-localhost`
+///    was not passed.
 fn enforce_environment_gates(config: &DaemonConfig) -> Result<(), DaemonError> {
     if production_env_set() {
+        return Err(DaemonError::Production);
+    }
+    if config.profile == "production" {
         return Err(DaemonError::Production);
     }
     if !config.allow_non_localhost && !crate::migrate::is_localhost_connection(&config.database_url)
@@ -315,7 +380,7 @@ fn production_env_set() -> bool {
 /// resume. Errors from individual plans are logged + skipped; only a
 /// failure to read the candidate list itself bubbles out.
 async fn poll_once(ctx: &mut DjogiContext, config: &DaemonConfig) -> Result<(), DaemonError> {
-    let candidates = read_candidates(ctx, config.claim_stale_after).await?;
+    let candidates = read_candidates(ctx, config.claim_stale_after, config.pid).await?;
     if candidates.is_empty() {
         return Ok(());
     }
@@ -348,13 +413,20 @@ struct DaemonCandidate {
     current_step: String,
 }
 
-/// SELECT the candidate-row set for this iteration.
+/// SELECT the candidate-row set for this iteration. Binds the
+/// stale-threshold seconds as `$1` and the daemon's PID as `$2` so the
+/// predicate `claimed_by_pid = $2` matches THIS daemon's own previous
+/// claims (stale-threshold-bypass for self-restart) without exposing a
+/// session-state escape hatch.
 async fn read_candidates(
     ctx: &mut DjogiContext,
     claim_stale_after: Duration,
+    pid: i64,
 ) -> Result<Vec<DaemonCandidate>, DaemonError> {
     let stale_secs: i64 = i64::try_from(claim_stale_after.as_secs()).unwrap_or(i64::MAX);
-    let rows = ctx.raw_rows(CANDIDATE_QUERY_SQL, &[&stale_secs]).await?;
+    let rows = ctx
+        .raw_rows(CANDIDATE_QUERY_SQL, &[&stale_secs, &pid])
+        .await?;
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let plan_id: i64 = row.try_get(0).map_err(|e| {
@@ -591,6 +663,7 @@ mod tests {
             database_url: database_url.to_string(),
             host: "test-host".to_string(),
             pid: 12345,
+            profile: "development".to_string(),
         }
     }
 
@@ -628,6 +701,16 @@ mod tests {
     fn default_for_localhost_records_supplied_url() {
         let cfg = DaemonConfig::default_for_localhost("postgres://127.0.0.1/main");
         assert_eq!(cfg.database_url, "postgres://127.0.0.1/main");
+    }
+
+    #[test]
+    fn default_for_localhost_uses_development_profile() {
+        // The default constructor sets profile to a non-production
+        // value so the gate doesn't fire on a freshly-built config.
+        // The CLI overwrites this with the actual `Djogi.toml` value
+        // before passing the config to `run_daemon`.
+        let cfg = DaemonConfig::default_for_localhost("postgres://localhost/x");
+        assert_eq!(cfg.profile, "development");
     }
 
     // ── Candidate-row query shape ─────────────────────────────────────
@@ -697,6 +780,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn candidate_query_combines_stale_and_claim_predicates_with_and() {
+        // The two predicates — staleness and free-to-claim — must be
+        // AND-ed, not OR-ed. The previous shape OR-ed three sub-clauses
+        // together, which incorrectly picked up unclaimed-but-fresh
+        // rows AND failed to reclaim THIS daemon's previous claims.
+        // Pin the corrected shape so refactors don't regress.
+        assert!(
+            CANDIDATE_QUERY_SQL.contains("(last_progress_at < now() - (INTERVAL '1 second' * $1)"),
+            "stale predicate must use `<` against now()-INTERVAL: {CANDIDATE_QUERY_SQL}",
+        );
+        assert!(
+            CANDIDATE_QUERY_SQL.contains("OR last_progress_at IS NULL)"),
+            "stale predicate must include the never-progressed branch: {CANDIDATE_QUERY_SQL}",
+        );
+        assert!(
+            CANDIDATE_QUERY_SQL.contains("(claimed_by_pid IS NULL OR claimed_by_pid = $2)"),
+            "free-to-claim predicate must accept unclaimed OR own-pid: {CANDIDATE_QUERY_SQL}",
+        );
+    }
+
+    #[test]
+    fn candidate_query_binds_pid_as_parameter_two() {
+        // The daemon's PID flows in as `$2` so a restarted daemon can
+        // re-claim its own previous work without waiting for the stale
+        // threshold to expire on its own claim.
+        assert!(
+            CANDIDATE_QUERY_SQL.contains("claimed_by_pid = $2"),
+            "PID must bind as `$2`: {CANDIDATE_QUERY_SQL}",
+        );
+    }
+
+    // ── SIGTERM wiring (Finding 4) ────────────────────────────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn sigterm_handler_registration_succeeds_on_unix() {
+        // The SIGTERM handler is registered inside `run_daemon` before
+        // entering the loop. We can't run `run_daemon` synchronously
+        // here (it loops forever), but we can verify the underlying
+        // `tokio::signal::unix::signal` call path is available — i.e.
+        // that the `signal` feature is enabled on the workspace tokio
+        // dep. The handler resource is dropped immediately.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime build");
+        rt.block_on(async {
+            let result = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+            assert!(
+                result.is_ok(),
+                "tokio signal feature must be enabled for SIGTERM handler",
+            );
+        });
+    }
+
     // ── Triple-gate logic ─────────────────────────────────────────────
 
     #[test]
@@ -748,6 +887,53 @@ mod tests {
         let mut cfg = test_config("postgres://prod.example.com:5432/main");
         cfg.allow_non_localhost = true;
         assert!(enforce_environment_gates(&cfg).is_ok());
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
+            None => unsafe { std::env::remove_var("DJOGI_ENV") },
+        }
+    }
+
+    #[test]
+    fn enforce_gates_refuses_production_profile() {
+        // Production profile in `Djogi.toml` is its own gate, separate
+        // from `DJOGI_ENV`. The CLI threads `DjogiConfig::profile`
+        // through to `DaemonConfig::profile`; the gate fires when the
+        // value is the literal lowercase `"production"`.
+        let prior = std::env::var("DJOGI_ENV").ok();
+        // SAFETY: tests run with --test-threads=1.
+        unsafe { std::env::remove_var("DJOGI_ENV") };
+        let mut cfg = test_config("postgres://localhost/main");
+        cfg.profile = "production".to_string();
+        let err = enforce_environment_gates(&cfg).unwrap_err();
+        assert!(matches!(err, DaemonError::Production));
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
+            None => unsafe { std::env::remove_var("DJOGI_ENV") },
+        }
+    }
+
+    #[test]
+    fn enforce_gates_accepts_non_production_profile_strings() {
+        // A typo in the profile field (`"Production"`, `"PROD"`) falls
+        // back to the safe-for-dev default rather than silently flipping
+        // the gate. Mirrors `DjogiConfig::is_production`'s strict match.
+        let prior = std::env::var("DJOGI_ENV").ok();
+        unsafe { std::env::remove_var("DJOGI_ENV") };
+        for profile in [
+            "development",
+            "staging",
+            "test",
+            "Production",
+            "PROD",
+            "prod",
+        ] {
+            let mut cfg = test_config("postgres://localhost/main");
+            cfg.profile = profile.to_string();
+            assert!(
+                enforce_environment_gates(&cfg).is_ok(),
+                "profile=`{profile}` must NOT fire the gate (only lowercase `production` does)",
+            );
+        }
         match prior {
             Some(v) => unsafe { std::env::set_var("DJOGI_ENV", v) },
             None => unsafe { std::env::remove_var("DJOGI_ENV") },

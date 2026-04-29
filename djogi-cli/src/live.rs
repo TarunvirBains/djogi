@@ -158,17 +158,20 @@ pub enum LiveCmd {
     /// Exits cleanly on SIGTERM / SIGINT; per-plan failures inside the
     /// loop are logged and the daemon continues.
     Daemon {
-        /// Seconds between candidate-row scans. Default 30.
-        #[arg(long, default_value_t = 30)]
-        poll_interval_secs: u64,
+        /// Interval between candidate-row scans. Accepts humantime
+        /// single-unit durations: `30s`, `5m`, `2h`, `1d`. Default 30s.
+        #[arg(long, default_value = "30s", value_parser = parse_humantime_duration)]
+        poll_interval: std::time::Duration,
         /// A row is treated as stale (and therefore claimable) when
-        /// its `last_progress_at` is older than this many seconds.
-        /// Default 600 (10 minutes).
-        #[arg(long, default_value_t = 600)]
-        claim_stale_after_secs: u64,
+        /// its `last_progress_at` is older than this duration. Accepts
+        /// the same humantime forms as `--poll-interval`. Default 10m.
+        #[arg(long, default_value = "10m", value_parser = parse_humantime_duration)]
+        claim_stale_after: std::time::Duration,
         /// Allow the daemon to drive a non-localhost database. Mirrors
         /// the seed gate; the production-environment gate
-        /// (`DJOGI_ENV=production`) still refuses regardless.
+        /// (`DJOGI_ENV=production`) and production-profile gate
+        /// (`Djogi.toml::profile = "production"`) still refuse
+        /// regardless.
         #[arg(long, default_value_t = false)]
         allow_non_localhost: bool,
         /// Workspace root override.
@@ -316,14 +319,14 @@ async fn run(cmd: LiveCmd) -> Result<i32, LiveCmdError> {
             workspace,
         } => abandon_cmd(&plan_id, force, workspace).await,
         LiveCmd::Daemon {
-            poll_interval_secs,
-            claim_stale_after_secs,
+            poll_interval,
+            claim_stale_after,
             allow_non_localhost,
             workspace,
         } => {
             daemon_cmd(
-                poll_interval_secs,
-                claim_stale_after_secs,
+                poll_interval,
+                claim_stale_after,
                 allow_non_localhost,
                 workspace,
             )
@@ -387,6 +390,43 @@ fn justify_is_empty(justify: Option<&str>) -> bool {
     justify.map(|s| s.trim().is_empty()).unwrap_or(true)
 }
 
+/// Pre-flight scan over a loaded plan. Refuses with
+/// [`LivePlanGate::DestructiveWithoutJustify`] when the plan contains
+/// at least one step whose execution would emit destructive SQL but
+/// the operator did not pass BOTH `--allow-destructive` and a
+/// non-empty `--justify "<reason>"`.
+///
+/// The scan is conservative: when the plan's destructive steps all
+/// pre-date the row's `current_step_index`, the gate still fires. This
+/// is intentional — a re-run that resumes past a destructive step into
+/// non-destructive territory still required `--allow-destructive` on
+/// the original invocation, and the audit trail benefits from the gate
+/// being uniformly recorded for any plan that ever contained one.
+fn require_destructive_gate_for_plan(
+    plan: &djogi::live_migrate::LivePlan,
+    allow_destructive: bool,
+    justify: Option<&str>,
+) -> Result<(), LiveCmdError> {
+    if !plan.has_destructive_steps() {
+        return Ok(());
+    }
+    if !allow_destructive {
+        return Err(LiveCmdError::ArgRefused(
+            "plan contains a destructive step (DROP / TRUNCATE class); \
+             pass `--allow-destructive --justify \"<reason>\"` to proceed"
+                .to_string(),
+        ));
+    }
+    if justify_is_empty(justify) {
+        return Err(LiveCmdError::ArgRefused(
+            "plan contains a destructive step; `--allow-destructive` requires \
+             `--justify \"<reason>\"`"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Decide whether `live abandon --force` is permitted in the current
 /// environment. Refuses when `DJOGI_ENV == "production"` (case-
 /// insensitive). All other values — including unset — pass.
@@ -395,6 +435,70 @@ fn force_allowed_in_env() -> bool {
         Ok(v) => !v.eq_ignore_ascii_case("production"),
         Err(_) => true,
     }
+}
+
+/// Parse a humantime-style single-unit duration string into a
+/// [`std::time::Duration`]. Supported units (suffix character):
+///
+/// | Suffix | Meaning  | Multiplier |
+/// |--------|----------|------------|
+/// | `s`    | seconds  | 1          |
+/// | `m`    | minutes  | 60         |
+/// | `h`    | hours    | 3600       |
+/// | `d`    | days     | 86_400     |
+///
+/// `min` is also accepted as an alias for `m` so operators familiar
+/// with `humantime`-style strings can write `10min`. The numeric prefix
+/// must be one or more ASCII digits; the unit is one of the suffixes
+/// above. Trailing whitespace is rejected — the input is the entire
+/// flag value.
+///
+/// Implementation note: no regex engine, no third-party humantime
+/// crate. Byte-level walk per project policy.
+///
+/// Returns the input echoed back inside the error string so operators
+/// see what they typed.
+fn parse_humantime_duration(s: &str) -> Result<std::time::Duration, String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(format!(
+            "empty duration string `{s}`; expected e.g. `30s` / `5m` / `2h` / `1d` / `10min`"
+        ));
+    }
+    let bytes = trimmed.as_bytes();
+    // Walk leading ASCII digits.
+    let mut i = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 {
+        return Err(format!(
+            "duration `{s}` must start with one or more ASCII digits"
+        ));
+    }
+    let digits = &trimmed[..i];
+    let unit = &trimmed[i..];
+    let value: u64 = digits
+        .parse()
+        .map_err(|e| format!("duration `{s}`: numeric prefix `{digits}` overflows u64: {e}"))?;
+    let secs: u64 = match unit {
+        "s" => value,
+        "m" | "min" => value
+            .checked_mul(60)
+            .ok_or_else(|| format!("duration `{s}` overflows u64 seconds"))?,
+        "h" => value
+            .checked_mul(3_600)
+            .ok_or_else(|| format!("duration `{s}` overflows u64 seconds"))?,
+        "d" => value
+            .checked_mul(86_400)
+            .ok_or_else(|| format!("duration `{s}` overflows u64 seconds"))?,
+        other => {
+            return Err(format!(
+                "duration `{s}`: unknown unit `{other}`; expected `s` / `m` / `min` / `h` / `d`"
+            ));
+        }
+    };
+    Ok(std::time::Duration::from_secs(secs))
 }
 
 // ── Plan-file location helpers ────────────────────────────────────────
@@ -635,7 +739,17 @@ async fn run_cmd(
     assert_run_status_allows_progress(row.status)?;
     let path = resolve_plan_file_path(&workspace, &row);
     verify_checksum(&path, &row.plan_file_checksum)?;
-    let _plan = read_plan(&path)?;
+    let plan = read_plan(&path)?;
+
+    // Walk the plan ahead of time and refuse any destructive step
+    // (CleanupLegacyState, or RunReversibleSchemaOp whose up_sql drops
+    // state) unless the operator passed BOTH `--allow-destructive` and a
+    // non-empty `--justify`. Without this proactive scan, a plan whose
+    // tail contains a DROP COLUMN would silently execute as soon as the
+    // runner reached that step. The check fires before any side effect
+    // so the operator sees the refusal and can re-invoke with the gate
+    // pair.
+    require_destructive_gate_for_plan(&plan, allow_destructive, justify)?;
 
     // The actual step-walking executor lives behind the live-plan
     // engine entry point that ships alongside the `live plan` compose
@@ -648,7 +762,6 @@ async fn run_cmd(
     // [`validation_failed`] (exit 3). The mapping is exercised by the
     // exit-code unit tests; the production wiring lands with the
     // executor.
-    let _ = allow_destructive; // silence unused-flag warning until engine lands
     let _ = allow_raw_dangerous;
     if row.last_error.is_some() {
         return Err(validation_failed(format!(
@@ -684,8 +797,9 @@ async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32
 }
 
 /// Reject statuses where `live run` would be a state-machine error.
-/// `Pending` / `Running` / `Paused` advance; everything else is a
-/// state conflict (exit 5).
+/// Only `Pending` and `Running` advance — `Paused` is the operator's
+/// explicit checkpoint state and requires `live resume` to re-enter
+/// the run loop. Every other state is a state conflict (exit 5).
 ///
 /// `PlanStatus` is `#[non_exhaustive]`; the trailing wildcard arm
 /// classifies any future-added variant as a state conflict by default.
@@ -693,14 +807,20 @@ async fn resume_cmd(plan_id_raw: &str, workspace: Option<PathBuf>) -> Result<i32
 /// yet understand should refuse rather than silently advance.
 fn assert_run_status_allows_progress(status: PlanStatus) -> Result<(), LiveCmdError> {
     match status {
-        PlanStatus::Pending | PlanStatus::Running | PlanStatus::Paused => Ok(()),
+        PlanStatus::Pending | PlanStatus::Running => Ok(()),
+        PlanStatus::Paused => Err(LiveCmdError::StateConflict(
+            "plan is in `paused`; use `live resume` to re-enter the run loop \
+             (paused is an explicit operator checkpoint and `live run` does \
+             not auto-advance through it)"
+                .to_string(),
+        )),
         PlanStatus::Validating
         | PlanStatus::Cutover
         | PlanStatus::Finalizing
         | PlanStatus::Complete
         | PlanStatus::Abandoned
         | PlanStatus::Failed => Err(LiveCmdError::StateConflict(format!(
-            "plan is in `{}`; `live run` advances only Pending / Running / Paused plans",
+            "plan is in `{}`; `live run` advances only Pending / Running plans",
             status.as_db_str()
         ))),
         _ => Err(LiveCmdError::StateConflict(format!(
@@ -846,8 +966,14 @@ async fn abandon_cmd(
 }
 
 /// Reject statuses where `live abandon` would be a no-op or rewrite
-/// terminal state. `Complete` and `Abandoned` are terminal; the rest
-/// can be abandoned.
+/// terminal state. `Complete`, `Abandoned`, and `Failed` are all
+/// terminal per the v3 plan §3 state machine; the rest (Pending,
+/// Running, Paused, Validating, Cutover, Finalizing) can be abandoned.
+///
+/// `Failed` is terminal: a failed plan documents the failure for the
+/// audit trail and should not be silently overwritten with `abandoned`
+/// by the CLI. Operators recovering from a failed plan generate a
+/// fresh plan after addressing the underlying cause.
 fn assert_abandon_status(status: PlanStatus) -> Result<(), LiveCmdError> {
     match status {
         PlanStatus::Complete => Err(LiveCmdError::StateConflict(
@@ -856,7 +982,22 @@ fn assert_abandon_status(status: PlanStatus) -> Result<(), LiveCmdError> {
         PlanStatus::Abandoned => Err(LiveCmdError::StateConflict(
             "plan is already `abandoned`".to_string(),
         )),
-        _ => Ok(()),
+        PlanStatus::Failed => Err(LiveCmdError::StateConflict(
+            "plan is `failed`; the failure is recorded for audit and the \
+             plan is terminal — generate a fresh plan after addressing the \
+             underlying cause"
+                .to_string(),
+        )),
+        PlanStatus::Pending
+        | PlanStatus::Running
+        | PlanStatus::Paused
+        | PlanStatus::Validating
+        | PlanStatus::Cutover
+        | PlanStatus::Finalizing => Ok(()),
+        _ => Err(LiveCmdError::StateConflict(format!(
+            "plan is in `{}`; this CLI build does not recognise the status",
+            status.as_db_str()
+        ))),
     }
 }
 
@@ -874,20 +1015,21 @@ fn assert_abandon_status(status: PlanStatus) -> Result<(), LiveCmdError> {
 /// difference between "gate refused" and "ran but failed" is captured
 /// in the error message rather than the exit code).
 async fn daemon_cmd(
-    poll_interval_secs: u64,
-    claim_stale_after_secs: u64,
+    poll_interval: std::time::Duration,
+    claim_stale_after: std::time::Duration,
     allow_non_localhost: bool,
     workspace: Option<PathBuf>,
 ) -> Result<i32, LiveCmdError> {
     let workspace = resolve_workspace(workspace);
     let config = load_config(&workspace)?;
     let cfg = DaemonConfig {
-        poll_interval: std::time::Duration::from_secs(poll_interval_secs),
-        claim_stale_after: std::time::Duration::from_secs(claim_stale_after_secs),
+        poll_interval,
+        claim_stale_after,
         allow_non_localhost,
         database_url: config.database.url.clone(),
         host: hostname_for_claim(),
         pid: i64::from(std::process::id()),
+        profile: config.profile.clone(),
     };
     let mut ctx = connect(&config.database.url).await?;
     match run_daemon(&mut ctx, cfg).await {
@@ -1088,14 +1230,19 @@ mod tests {
         let parsed = parse(&["daemon"]).expect("daemon parses with no args");
         match parsed.cmd {
             LiveCmd::Daemon {
-                poll_interval_secs,
-                claim_stale_after_secs,
+                poll_interval,
+                claim_stale_after,
                 allow_non_localhost,
                 ..
             } => {
-                assert_eq!(poll_interval_secs, 30, "default poll interval is 30s");
                 assert_eq!(
-                    claim_stale_after_secs, 600,
+                    poll_interval,
+                    std::time::Duration::from_secs(30),
+                    "default poll interval is 30s",
+                );
+                assert_eq!(
+                    claim_stale_after,
+                    std::time::Duration::from_secs(600),
                     "default stale threshold is 10 minutes",
                 );
                 assert!(
@@ -1111,23 +1258,48 @@ mod tests {
     fn live_daemon_accepts_custom_intervals() {
         let parsed = parse(&[
             "daemon",
-            "--poll-interval-secs",
-            "5",
-            "--claim-stale-after-secs",
-            "60",
+            "--poll-interval",
+            "5s",
+            "--claim-stale-after",
+            "1m",
             "--allow-non-localhost",
         ])
         .expect("daemon with overrides parses");
         match parsed.cmd {
             LiveCmd::Daemon {
-                poll_interval_secs,
-                claim_stale_after_secs,
+                poll_interval,
+                claim_stale_after,
                 allow_non_localhost,
                 ..
             } => {
-                assert_eq!(poll_interval_secs, 5);
-                assert_eq!(claim_stale_after_secs, 60);
+                assert_eq!(poll_interval, std::time::Duration::from_secs(5));
+                assert_eq!(claim_stale_after, std::time::Duration::from_secs(60));
                 assert!(allow_non_localhost);
+            }
+            other => panic!("expected Daemon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_daemon_accepts_humantime_minutes_and_hours() {
+        // The humantime parser accepts `m` / `min` / `h` / `d`. Pin the
+        // common operator-runbook forms.
+        let parsed = parse(&[
+            "daemon",
+            "--poll-interval",
+            "10min",
+            "--claim-stale-after",
+            "2h",
+        ])
+        .expect("daemon with humantime durations parses");
+        match parsed.cmd {
+            LiveCmd::Daemon {
+                poll_interval,
+                claim_stale_after,
+                ..
+            } => {
+                assert_eq!(poll_interval, std::time::Duration::from_secs(600));
+                assert_eq!(claim_stale_after, std::time::Duration::from_secs(7200));
             }
             other => panic!("expected Daemon, got {other:?}"),
         }
@@ -1146,6 +1318,92 @@ mod tests {
             }
             other => panic!("expected Daemon, got {other:?}"),
         }
+    }
+
+    // ── parse_humantime_duration (Finding 7) ──────────────────────────
+
+    #[test]
+    fn parse_humantime_duration_accepts_seconds() {
+        assert_eq!(
+            parse_humantime_duration("30s").unwrap(),
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(
+            parse_humantime_duration("0s").unwrap(),
+            std::time::Duration::from_secs(0),
+        );
+    }
+
+    #[test]
+    fn parse_humantime_duration_accepts_minutes_and_hours_and_days() {
+        assert_eq!(
+            parse_humantime_duration("5m").unwrap(),
+            std::time::Duration::from_secs(300),
+        );
+        assert_eq!(
+            parse_humantime_duration("10min").unwrap(),
+            std::time::Duration::from_secs(600),
+        );
+        assert_eq!(
+            parse_humantime_duration("2h").unwrap(),
+            std::time::Duration::from_secs(7_200),
+        );
+        assert_eq!(
+            parse_humantime_duration("1d").unwrap(),
+            std::time::Duration::from_secs(86_400),
+        );
+    }
+
+    #[test]
+    fn parse_humantime_duration_rejects_empty_input() {
+        let err = parse_humantime_duration("").unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+        let err = parse_humantime_duration("   ").unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn parse_humantime_duration_rejects_missing_digits() {
+        let err = parse_humantime_duration("s").unwrap_err();
+        assert!(err.contains("ASCII digits"), "{err}");
+        let err = parse_humantime_duration("min").unwrap_err();
+        assert!(err.contains("ASCII digits"), "{err}");
+    }
+
+    #[test]
+    fn parse_humantime_duration_rejects_unknown_unit() {
+        let err = parse_humantime_duration("30y").unwrap_err();
+        assert!(err.contains("unknown unit"), "{err}");
+        // Mixed-unit forms are rejected (V1 is single-unit only).
+        let err = parse_humantime_duration("1h30m").unwrap_err();
+        assert!(err.contains("unknown unit"), "{err}");
+    }
+
+    #[test]
+    fn parse_humantime_duration_rejects_trailing_junk() {
+        // Garbage after the unit fails the unit-match arm.
+        let err = parse_humantime_duration("30sX").unwrap_err();
+        assert!(
+            err.contains("unknown unit") || err.contains("expected"),
+            "{err}"
+        );
+        // Whitespace between digits and unit is also rejected — the
+        // unit slice begins right after the trailing digit.
+        let err = parse_humantime_duration("30 s").unwrap_err();
+        assert!(
+            err.contains("unknown unit") || err.contains("expected"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parse_humantime_duration_handles_outer_whitespace() {
+        // Outer whitespace is trimmed so `--poll-interval " 30s "`
+        // (e.g. from a quoted shell var) round-trips.
+        assert_eq!(
+            parse_humantime_duration("  30s  ").unwrap(),
+            std::time::Duration::from_secs(30),
+        );
     }
 
     #[test]
@@ -1190,6 +1448,66 @@ mod tests {
         assert!(matches!(err, LiveCmdError::ArgRefused(_)));
         require_justify_for_dangerous(false, None).unwrap();
         require_justify_for_dangerous(true, Some("runbook")).unwrap();
+    }
+
+    #[test]
+    fn require_destructive_gate_passes_for_non_destructive_plan() {
+        use djogi::live_migrate::{
+            LivePlan, PlanClassification, PlanHeader, Step, StepKind, StepParameters,
+        };
+        let plan = LivePlan {
+            header: PlanHeader {
+                plan_id: HeerId::ZERO,
+                slug: "demo".to_string(),
+                classification: PlanClassification::ExpandContract,
+                originating_migration: "V20260428000000__demo".to_string(),
+                target_database: "main".to_string(),
+                app_label: "".to_string(),
+            },
+            steps: vec![Step {
+                kind: StepKind::ExpandSchema,
+                ordinal: 0,
+                parameters: StepParameters::ExpandSchema {
+                    sql_segments: vec!["ALTER TABLE foo ADD COLUMN bar INT".to_string()],
+                },
+            }],
+        };
+        // Without --allow-destructive: passes (no destructive step).
+        require_destructive_gate_for_plan(&plan, false, None).unwrap();
+    }
+
+    #[test]
+    fn require_destructive_gate_refuses_destructive_plan_without_flag() {
+        use djogi::live_migrate::{
+            LivePlan, PlanClassification, PlanHeader, Step, StepKind, StepParameters,
+        };
+        let plan = LivePlan {
+            header: PlanHeader {
+                plan_id: HeerId::ZERO,
+                slug: "demo".to_string(),
+                classification: PlanClassification::ExpandContract,
+                originating_migration: "V20260428000000__demo".to_string(),
+                target_database: "main".to_string(),
+                app_label: "".to_string(),
+            },
+            steps: vec![Step {
+                kind: StepKind::CleanupLegacyState,
+                ordinal: 0,
+                parameters: StepParameters::CleanupLegacyState {
+                    sql_segments: vec!["ALTER TABLE foo DROP COLUMN baz".to_string()],
+                },
+            }],
+        };
+        // No `--allow-destructive` → refuse.
+        let err = require_destructive_gate_for_plan(&plan, false, None).unwrap_err();
+        assert!(matches!(err, LiveCmdError::ArgRefused(_)));
+        // `--allow-destructive` without `--justify` → refuse.
+        let err = require_destructive_gate_for_plan(&plan, true, None).unwrap_err();
+        assert!(matches!(err, LiveCmdError::ArgRefused(_)));
+        let err = require_destructive_gate_for_plan(&plan, true, Some("   ")).unwrap_err();
+        assert!(matches!(err, LiveCmdError::ArgRefused(_)));
+        // Both set → accepts.
+        require_destructive_gate_for_plan(&plan, true, Some("ops runbook RB-19")).unwrap();
     }
 
     #[test]
@@ -1251,10 +1569,25 @@ mod tests {
     // ── status-gate helpers ──────────────────────────────────────────
 
     #[test]
-    fn assert_run_status_accepts_pending_running_paused() {
+    fn assert_run_status_accepts_pending_running() {
         assert!(assert_run_status_allows_progress(PlanStatus::Pending).is_ok());
         assert!(assert_run_status_allows_progress(PlanStatus::Running).is_ok());
-        assert!(assert_run_status_allows_progress(PlanStatus::Paused).is_ok());
+    }
+
+    #[test]
+    fn assert_run_status_refuses_paused_pointing_to_resume() {
+        // `Paused` is the operator's explicit checkpoint state — `live run`
+        // does not auto-advance through it; the operator must invoke
+        // `live resume` to re-enter the run loop. This pins the gate.
+        let err = assert_run_status_allows_progress(PlanStatus::Paused)
+            .expect_err("paused must be a state conflict for `live run`");
+        match err {
+            LiveCmdError::StateConflict(msg) => {
+                assert!(msg.contains("paused"), "{msg}");
+                assert!(msg.contains("live resume"), "{msg}");
+            }
+            other => panic!("expected StateConflict, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1319,17 +1652,18 @@ mod tests {
     }
 
     #[test]
-    fn assert_abandon_status_refuses_terminal_states() {
-        // Complete and Abandoned are the only state-conflict cases.
-        assert!(matches!(
-            assert_abandon_status(PlanStatus::Complete).unwrap_err(),
-            LiveCmdError::StateConflict(_)
-        ));
-        assert!(matches!(
-            assert_abandon_status(PlanStatus::Abandoned).unwrap_err(),
-            LiveCmdError::StateConflict(_)
-        ));
-        // Every other status is a valid abandonment target.
+    fn assert_abandon_status_refuses_every_terminal_state() {
+        // All three terminal states refuse: Complete, Abandoned, Failed.
+        for status in [
+            PlanStatus::Complete,
+            PlanStatus::Abandoned,
+            PlanStatus::Failed,
+        ] {
+            let err = assert_abandon_status(status)
+                .expect_err("terminal status must be a state conflict for abandon");
+            assert!(matches!(err, LiveCmdError::StateConflict(_)));
+        }
+        // Every non-terminal status is a valid abandonment target.
         for status in [
             PlanStatus::Pending,
             PlanStatus::Running,
@@ -1337,9 +1671,22 @@ mod tests {
             PlanStatus::Validating,
             PlanStatus::Cutover,
             PlanStatus::Finalizing,
-            PlanStatus::Failed,
         ] {
             assert!(assert_abandon_status(status).is_ok(), "{status:?} accepts");
+        }
+    }
+
+    #[test]
+    fn assert_abandon_status_failed_message_points_to_fresh_plan() {
+        // The Failed-refusal message is the operator's signpost — pin
+        // the wording so refactors notice if the audit trail story drifts.
+        let err = assert_abandon_status(PlanStatus::Failed).expect_err("failed must refuse");
+        match err {
+            LiveCmdError::StateConflict(msg) => {
+                assert!(msg.contains("failed"), "{msg}");
+                assert!(msg.contains("fresh plan") || msg.contains("audit"), "{msg}",);
+            }
+            other => panic!("expected StateConflict, got {other:?}"),
         }
     }
 

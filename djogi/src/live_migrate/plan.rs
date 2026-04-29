@@ -340,6 +340,120 @@ impl Step {
     pub fn is_consistent(&self) -> bool {
         self.kind == self.parameters.kind()
     }
+
+    /// Returns `true` iff this step's execution would emit destructive
+    /// SQL (DROP COLUMN / DROP TABLE / DROP INDEX-style state removal).
+    ///
+    /// Two variants qualify:
+    ///
+    /// - [`StepKind::CleanupLegacyState`] — the canonical destructive
+    ///   step in every expand → contract sequence; drops the legacy
+    ///   column / table / index that the [`StepKind::ExpandSchema`] step
+    ///   parallelled.
+    /// - [`StepKind::RunReversibleSchemaOp`] when its `up_sql` payload
+    ///   contains a token that materially drops state. The check walks
+    ///   the SQL byte-by-byte (no regex per project policy) and matches
+    ///   the conservative set of literal tokens — false positives lead
+    ///   to a `--justify` requirement, which is the safe direction.
+    ///
+    /// All other step kinds are non-destructive — they either add state
+    /// (ExpandSchema, FinalizeConstraints), gate on operator confirmation
+    /// (ValidateBackfill / CutoverReads / CutoverWrites), or are pure
+    /// data writes (BackfillChunked).
+    pub fn emits_destructive_sql(&self) -> bool {
+        match (&self.kind, &self.parameters) {
+            (StepKind::CleanupLegacyState, _) => true,
+            (
+                StepKind::RunReversibleSchemaOp,
+                StepParameters::RunReversibleSchemaOp { up_sql, .. },
+            ) => sql_contains_destructive_token(up_sql),
+            _ => false,
+        }
+    }
+}
+
+/// Conservative destructive-token scan. Walks `sql` byte-by-byte and
+/// returns `true` if any of a fixed set of destructive ASCII tokens
+/// appears (ASCII case-insensitive) at a non-identifier word boundary:
+/// `DROP` (followed at any offset by `TABLE` / `COLUMN` / `INDEX` /
+/// `CONSTRAINT` / `SCHEMA` / `TYPE` / `VIEW` / `FUNCTION` / `TRIGGER`)
+/// and `TRUNCATE`. Whitespace between `DROP` and the kind keyword is one
+/// or more ASCII space / tab / newline / CR bytes.
+///
+/// The match requires a non-alphanumeric / non-underscore boundary on
+/// each side so identifiers like `do_drop_table` do not trigger.
+///
+/// No regex engine — per project policy, use byte-level checks.
+fn sql_contains_destructive_token(sql: &str) -> bool {
+    const DROP_KIND_KEYWORDS: &[&[u8]] = &[
+        b"TABLE",
+        b"COLUMN",
+        b"INDEX",
+        b"CONSTRAINT",
+        b"SCHEMA",
+        b"TYPE",
+        b"VIEW",
+        b"FUNCTION",
+        b"TRIGGER",
+    ];
+    let bytes = sql.as_bytes();
+    let n = bytes.len();
+    let is_ident_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let is_ws_byte = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
+    let mut i = 0usize;
+    while i < n {
+        // Token boundary: start of input or previous byte is non-ident.
+        let prev_ok = i == 0 || !is_ident_byte(bytes[i - 1]);
+        if prev_ok {
+            // Try TRUNCATE.
+            if bytes_match_kw(&bytes[i..], b"TRUNCATE") {
+                let after = i + b"TRUNCATE".len();
+                let next_ok = after == n || !is_ident_byte(bytes[after]);
+                if next_ok {
+                    return true;
+                }
+            }
+            // Try DROP <whitespace+> <KIND>.
+            if bytes_match_kw(&bytes[i..], b"DROP") {
+                let after_drop = i + b"DROP".len();
+                // Require a non-ident byte after DROP (so `dropped` doesn't trip).
+                if after_drop < n && !is_ident_byte(bytes[after_drop]) {
+                    let mut j = after_drop;
+                    while j < n && is_ws_byte(bytes[j]) {
+                        j += 1;
+                    }
+                    if j < n {
+                        for kw in DROP_KIND_KEYWORDS {
+                            if bytes_match_kw(&bytes[j..], kw) {
+                                let after_kw = j + kw.len();
+                                let next_ok = after_kw == n || !is_ident_byte(bytes[after_kw]);
+                                if next_ok {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// ASCII case-insensitive prefix match. Returns `true` if the first
+/// `kw.len()` bytes of `input` equal `kw` ignoring ASCII case. `kw` must
+/// be ASCII; `input` may be any byte slice.
+fn bytes_match_kw(input: &[u8], kw: &[u8]) -> bool {
+    if input.len() < kw.len() {
+        return false;
+    }
+    for (a, b) in input.iter().zip(kw.iter()) {
+        if !a.eq_ignore_ascii_case(b) {
+            return false;
+        }
+    }
+    true
 }
 
 // ── PlanHeader ────────────────────────────────────────────────────────
@@ -398,6 +512,15 @@ impl LivePlan {
     /// Called by [`crate::live_migrate::plan_file::write_plan`] before
     /// the file is written and by
     /// [`crate::live_migrate::plan_file::read_plan`] after parsing.
+    /// Returns `true` iff at least one step in the plan emits
+    /// destructive SQL per [`Step::emits_destructive_sql`]. The CLI's
+    /// `live run` / `live finalize` gates use this to refuse a plan
+    /// without the operator-supplied `--allow-destructive --justify`
+    /// pair.
+    pub fn has_destructive_steps(&self) -> bool {
+        self.steps.iter().any(Step::emits_destructive_sql)
+    }
+
     pub fn validate(&self) -> Result<(), PlanValidationError> {
         if self.steps.is_empty() {
             return Err(PlanValidationError::EmptySteps);
@@ -818,5 +941,113 @@ mod tests {
         assert_eq!(steps[0].kind, StepKind::ExpandSchema);
         assert_eq!(steps[1].kind, StepKind::BackfillChunked);
         assert_eq!(steps[2].kind, StepKind::CutoverReads);
+    }
+
+    // ── destructive-step detection (Finding 1) ────────────────────────
+
+    #[test]
+    fn cleanup_legacy_state_step_is_always_destructive() {
+        let step = sample_step(StepKind::CleanupLegacyState, 0);
+        assert!(step.emits_destructive_sql());
+    }
+
+    #[test]
+    fn expand_and_backfill_steps_are_not_destructive() {
+        for kind in [
+            StepKind::ExpandSchema,
+            StepKind::BeginCompatibilityWindow,
+            StepKind::BackfillChunked,
+            StepKind::ValidateBackfill,
+            StepKind::CutoverReads,
+            StepKind::CutoverWrites,
+            StepKind::FinalizeConstraints,
+        ] {
+            let step = sample_step(kind, 0);
+            assert!(
+                !step.emits_destructive_sql(),
+                "{kind:?} must not be classified destructive",
+            );
+        }
+    }
+
+    #[test]
+    fn run_reversible_op_destructive_when_up_sql_drops_state() {
+        for sql in [
+            "DROP TABLE foo",
+            "alter table foo drop column bar",
+            "DROP INDEX CONCURRENTLY idx_x",
+            "TRUNCATE foo",
+            "DROP\nTABLE foo",
+            "ALTER TABLE foo DROP CONSTRAINT bar_fk",
+        ] {
+            let step = Step {
+                kind: StepKind::RunReversibleSchemaOp,
+                ordinal: 0,
+                parameters: StepParameters::RunReversibleSchemaOp {
+                    up_sql: sql.to_string(),
+                    down_sql: "".to_string(),
+                },
+            };
+            assert!(
+                step.emits_destructive_sql(),
+                "expected `{sql}` to be classified destructive",
+            );
+        }
+    }
+
+    #[test]
+    fn run_reversible_op_not_destructive_when_up_sql_only_creates() {
+        for sql in [
+            "CREATE INDEX idx_foo ON foo(bar)",
+            "ALTER TABLE foo ADD COLUMN bar INT",
+            "CREATE TABLE bar (id BIGINT PRIMARY KEY)",
+            "-- DROP TABLE in a comment shouldn't trip but the helper is conservative",
+        ] {
+            let step = Step {
+                kind: StepKind::RunReversibleSchemaOp,
+                ordinal: 0,
+                parameters: StepParameters::RunReversibleSchemaOp {
+                    up_sql: sql.to_string(),
+                    down_sql: "".to_string(),
+                },
+            };
+            // Note: the comment case WILL trip the helper because we
+            // don't strip SQL comments. That's the conservative choice
+            // — false positive forces a `--justify`, which is safe.
+            // Pin behaviour so future refactors notice.
+            let observed = step.emits_destructive_sql();
+            if sql.contains("DROP TABLE") || sql.contains("TRUNCATE") {
+                assert!(observed, "conservative: comment with DROP trips: {sql}");
+            } else {
+                assert!(!observed, "no destructive token in: {sql}");
+            }
+        }
+    }
+
+    #[test]
+    fn destructive_token_does_not_match_inside_identifiers() {
+        for sql in [
+            "INSERT INTO do_not_drop_table VALUES (1)",
+            "UPDATE dropped_records SET x = 1",
+            "SELECT truncate_log_id FROM foo",
+        ] {
+            assert!(
+                !sql_contains_destructive_token(sql),
+                "must not match inside identifier: {sql}",
+            );
+        }
+    }
+
+    #[test]
+    fn live_plan_has_destructive_steps_walks_all_steps() {
+        // Plan with no cleanup step is non-destructive.
+        let plan = sample_plan();
+        assert!(!plan.has_destructive_steps());
+        // Adding a cleanup step trips the predicate.
+        let mut plan2 = sample_plan();
+        plan2
+            .steps
+            .push(sample_step(StepKind::CleanupLegacyState, 3));
+        assert!(plan2.has_destructive_steps());
     }
 }
