@@ -530,17 +530,11 @@ fn is_narrowing_or_truncating(from: &str, to: &str) -> bool {
     let f = from.trim().to_ascii_lowercase();
     let t = to.trim().to_ascii_lowercase();
 
-    // Integer narrowing.
-    let is_narrowing_int = matches!(
-        (f.as_str(), t.as_str()),
-        ("bigint", "integer")
-            | ("bigint", "smallint")
-            | ("integer", "smallint")
-            | ("int8", "int4")
-            | ("int8", "int2")
-            | ("int4", "int2")
-    );
-    if is_narrowing_int {
+    // Integer narrowing — canonicalise aliases first so cross-alias
+    // pairs (e.g., `bigint -> int4`, `int8 -> integer`) are matched.
+    if let (Some(fw), Some(tw)) = (canonical_int_width(&f), canonical_int_width(&t))
+        && tw < fw
+    {
         return true;
     }
 
@@ -560,18 +554,34 @@ fn is_narrowing_or_truncating(from: &str, to: &str) -> bool {
         return true;
     }
 
-    // NUMERIC narrowing — precision or scale loss.
+    // NUMERIC narrowing — precision or scale loss. An unbounded source
+    // (`numeric` / `decimal`) classed against a bounded destination is
+    // narrowing too: the destination imposes a precision/scale ceiling
+    // that may reject existing rows.
     if let Some((from_p, from_s)) = parse_numeric_params(&f)
         && let Some((to_p, to_s)) = parse_numeric_params(&t)
     {
         match (from_p, to_p, from_s, to_s) {
             (Some(fp), Some(tp), _, _) if tp < fp => return true,
             (_, _, Some(fs), Some(ts)) if ts < fs => return true,
+            (None, Some(_), _, _) | (_, _, None, Some(_)) => return true,
             _ => {}
         }
     }
 
     false
+}
+
+/// Canonical integer width in bits, with Postgres alias normalisation:
+/// `bigint`/`int8` → 64, `integer`/`int`/`int4` → 32, `smallint`/`int2`
+/// → 16. Returns `None` for non-integer SQL types.
+fn canonical_int_width(name: &str) -> Option<u8> {
+    match name {
+        "bigint" | "int8" => Some(64),
+        "integer" | "int" | "int4" => Some(32),
+        "smallint" | "int2" => Some(16),
+        _ => None,
+    }
 }
 
 /// Parse `numeric(p)` / `numeric(p, s)` / bare `numeric` into
@@ -1304,6 +1314,57 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "numeric(20, 4)".to_string(),
                 to: "numeric(20, 2)".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn bigint_to_int4_alias_is_offline_only() {
+        // Cross-alias narrowing: source uses Postgres canonical name
+        // (`bigint`), destination uses int8/int4-style alias. The
+        // canonicalising helper must collapse both sides to the same
+        // width-keyed lattice before comparing.
+        let (_unused, ctx) = ctx_app(Some(0));
+        for (from, to) in [
+            ("bigint", "int4"),
+            ("bigint", "int2"),
+            ("int8", "integer"),
+            ("int8", "smallint"),
+            ("int4", "smallint"),
+            ("integer", "int2"),
+        ] {
+            let op = SchemaOperation::AlterColumn {
+                table: "metrics".to_string(),
+                column: "count".to_string(),
+                change: ColumnChange::ChangeType {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                },
+            };
+            assert_eq!(
+                classify_operation(&op, &ctx),
+                OnlineSafetyClassification::OfflineOnly,
+                "{from} -> {to}"
+            );
+        }
+    }
+
+    #[test]
+    fn unbounded_numeric_to_bounded_is_offline_only() {
+        // `numeric` (unbounded) → `numeric(10, 2)` introduces a
+        // precision/scale ceiling that may reject existing rows whose
+        // magnitude or scale exceeds the new bound.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "ledger".to_string(),
+            column: "amount".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "numeric".to_string(),
+                to: "numeric(10, 2)".to_string(),
             },
         };
         assert_eq!(

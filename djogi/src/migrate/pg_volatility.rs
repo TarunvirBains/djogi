@@ -224,7 +224,14 @@ fn is_literal_shape(expr: &str) -> bool {
     if is_single_quoted_run(bytes, 0) {
         return true;
     }
-    if bytes.len() >= 3 && (bytes[0] == b'E' || bytes[0] == b'e') && is_single_quoted_run(bytes, 1)
+    // E-strings allow C-style backslash escapes inside the literal —
+    // `E'it\'s'` is a single literal whose body holds an apostrophe.
+    // Plain `'...'` runs do not interpret backslash escapes (only the
+    // `''` doubled-quote form), so the two paths use different
+    // sub-walkers.
+    if bytes.len() >= 3
+        && (bytes[0] == b'E' || bytes[0] == b'e')
+        && is_single_e_string_run(bytes, 1)
     {
         return true;
     }
@@ -262,6 +269,45 @@ fn is_single_quoted_run(bytes: &[u8], start: usize) -> bool {
             }
             // Single quote: this must be the closing quote, and the
             // run must end here exactly.
+            return idx + 1 == bytes.len();
+        }
+        idx += 1;
+    }
+    false
+}
+
+/// `true` iff `bytes[start..]` is `'...'` for the body of an
+/// E-string (`E'...'`). Inside an E-string Postgres interprets
+/// C-style backslash escapes: `\'` is an apostrophe, `\\` is a
+/// backslash, etc. The walker treats any byte after `\` as escaped
+/// and skips it; the run ends only at an unescaped `'`.
+fn is_single_e_string_run(bytes: &[u8], start: usize) -> bool {
+    if start + 2 > bytes.len() {
+        return false;
+    }
+    if bytes[start] != b'\'' {
+        return false;
+    }
+    let mut idx = start + 1;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\\' {
+            // Backslash-escape: consume the backslash and the next byte
+            // verbatim (whatever it is) and continue.
+            if idx + 1 >= bytes.len() {
+                return false;
+            }
+            idx += 2;
+            continue;
+        }
+        if bytes[idx] == b'\'' {
+            // Postgres's `''` doubled-quote escape works in E-strings
+            // too — consume both and continue the run.
+            if idx + 1 < bytes.len() && bytes[idx + 1] == b'\'' {
+                idx += 2;
+                continue;
+            }
+            // Single unescaped quote: must be the closing quote, and
+            // the run must end here exactly.
             return idx + 1 == bytes.len();
         }
         idx += 1;
@@ -404,6 +450,28 @@ mod tests {
         );
         assert_eq!(
             classify_default_expression("$tag$dollar quoted$tag$"),
+            Volatility::Immutable
+        );
+    }
+
+    #[test]
+    fn e_string_with_escaped_quote_classifies_as_immutable() {
+        // `E'it\'s'` is a single literal whose body holds an
+        // apostrophe via the C-style backslash escape. The plain
+        // `'...'` walker would see the embedded `\'` and either reject
+        // (treating the unescaped `'` as the close) or fail to
+        // close — only the E-string walker handles the escape.
+        assert_eq!(
+            classify_default_expression(r"E'it\'s'"),
+            Volatility::Immutable
+        );
+        assert_eq!(
+            classify_default_expression(r"E'tab\there'"),
+            Volatility::Immutable
+        );
+        // Doubled-quote escape still works inside E-strings.
+        assert_eq!(
+            classify_default_expression("E'don''t'"),
             Volatility::Immutable
         );
     }
