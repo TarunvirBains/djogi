@@ -20,3 +20,6 @@ djogi.workspace = true
 # carries `time` via the workspace dep; the CLI binary picks it up
 # directly so the compose path stays a thin wrapper.
 time.workspace = true
+# Used by the `live` subcommand to surface typed CLI errors
+# (`LiveCmdError`) without per-call boilerplate.
+thiserror.workspace = true

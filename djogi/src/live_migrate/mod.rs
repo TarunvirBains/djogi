@@ -75,7 +75,7 @@ pub use hooks::{
     ActiveHooks, DualReadHook, DualWriteHook, HookError, active_hooks_at_step,
     side_effects_suppressed,
 };
-pub use patterns::{Pattern, PatternContext, PatternError};
+pub use patterns::{Pattern, PatternContext, PatternError, dispatch_pattern};
 pub use plan::{
     LivePlan, PlanClassification, PlanHeader, PlanValidationError, Step, StepKind, StepParameters,
 };

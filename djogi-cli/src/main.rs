@@ -15,6 +15,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 mod db;
+mod live;
 mod migrations;
 
 #[derive(Parser)]
@@ -39,6 +40,13 @@ enum TopCommand {
     Migrations {
         #[command(subcommand)]
         command: MigrationsCommand,
+    },
+    /// Phase 7.5 live-migration operator surface — drives expand →
+    /// backfill → flip → contract sequences for `ExpandContract`-
+    /// classified deltas.
+    Live {
+        #[command(subcommand)]
+        command: live::LiveCmd,
     },
     /// Render Markdown documentation from the descriptor inventory.
     ///
@@ -254,6 +262,7 @@ fn main() -> ExitCode {
             } => db::seed_cmd(database, allow_non_localhost, workspace),
         },
         TopCommand::Docs { output, workspace } => db::docs_cmd(output, workspace),
+        TopCommand::Live { command } => live::dispatch(command),
         TopCommand::Migrations { command } => match command {
             MigrationsCommand::Compose {
                 name,
