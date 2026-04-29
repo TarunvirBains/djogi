@@ -243,10 +243,19 @@ WHERE status = 'running' \
 /// `claimed_by_host`, and `claimed_at = now()` for the row identified by
 /// the bucket key. Issued only after the corresponding advisory lock
 /// has been acquired.
+///
+/// The `WHERE` clause re-asserts the same status / step filter the
+/// candidate query uses (`status = 'running'` AND `current_step IN
+/// (...)`) so a row that was paused / abandoned / advanced between the
+/// SELECT and the claim cannot have its claim columns mutated. Callers
+/// inspect the returned row count: 0 means the row was pre-empted and
+/// the resume path must skip this candidate.
 const CLAIM_UPDATE_SQL: &str = "\
 UPDATE djogi_live_plans \
 SET claimed_by_pid = $4, claimed_by_host = $5, claimed_at = now() \
-WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+WHERE target_database = $1 AND app_label = $2 AND plan_id = $3 \
+  AND status = 'running' \
+  AND current_step IN ('backfill_chunked', 'validate_backfill')";
 
 /// Update statement that releases a previously-recorded claim. Cleared
 /// when the daemon is done with the row (either the resume succeeded
@@ -498,7 +507,17 @@ async fn drive_under_lock(
     config: &DaemonConfig,
     candidate: &DaemonCandidate,
 ) -> Result<(), DaemonError> {
-    record_claim(ctx, config, candidate).await?;
+    if !record_claim(ctx, config, candidate).await? {
+        // The row was pre-empted between SELECT and UPDATE — operator
+        // paused / abandoned the plan, or the pipeline advanced past
+        // the auto-resumable step. Skip the resume; the next poll
+        // re-checks the row.
+        tracing::debug!(
+            plan_id = candidate.plan_id,
+            "live-migrate daemon: claim pre-empted between SELECT and UPDATE; skipping",
+        );
+        return Ok(());
+    }
     // The current_step label distinguishes the two auto-resumable kinds.
     // BackfillChunked is the chunk loop; ValidateBackfill is a re-runnable
     // gate query the daemon does NOT advance through — it merely verifies
@@ -611,23 +630,31 @@ async fn release_advisory_lock(ctx: &mut DjogiContext, lock_key: i64) {
 /// UPDATE the `claimed_by_*` columns to reflect the current daemon's
 /// ownership. Issued after the advisory lock is acquired so concurrent
 /// daemons cannot stomp each other's claim metadata.
+///
+/// Returns `true` when the row was claimed (1 row affected) and `false`
+/// when the row was pre-empted between the candidate SELECT and this
+/// UPDATE — i.e. an operator paused / abandoned the plan, or the
+/// pipeline advanced past the auto-resumable step. In the pre-empted
+/// case the caller must skip the resume path; the claim columns are
+/// untouched and the advisory lock will release on the normal path.
 async fn record_claim(
     ctx: &mut DjogiContext,
     config: &DaemonConfig,
     candidate: &DaemonCandidate,
-) -> Result<(), DaemonError> {
-    ctx.raw_execute(
-        CLAIM_UPDATE_SQL,
-        &[
-            &candidate.target_database,
-            &candidate.app_label,
-            &candidate.plan_id,
-            &config.pid,
-            &config.host,
-        ],
-    )
-    .await?;
-    Ok(())
+) -> Result<bool, DaemonError> {
+    let affected = ctx
+        .raw_execute(
+            CLAIM_UPDATE_SQL,
+            &[
+                &candidate.target_database,
+                &candidate.app_label,
+                &candidate.plan_id,
+                &config.pid,
+                &config.host,
+            ],
+        )
+        .await?;
+    Ok(affected == 1)
 }
 
 /// Reset the `claimed_by_*` columns to NULL after the daemon is done
@@ -815,6 +842,38 @@ mod tests {
         assert!(
             CANDIDATE_QUERY_SQL.contains("claimed_by_pid = $2"),
             "PID must bind as `$2`: {CANDIDATE_QUERY_SQL}",
+        );
+    }
+
+    // ── Claim CAS guard (round-3 BLOCK-1) ─────────────────────────────
+
+    #[test]
+    fn claim_update_re_asserts_status_running() {
+        // The candidate query filters by `status = 'running'`. The
+        // UPDATE that records the claim must re-check the same
+        // predicate so a row paused / abandoned between SELECT and
+        // UPDATE cannot have its claim columns mutated. Caller
+        // inspects the returned row count to detect the pre-empted
+        // case and skip the resume path.
+        assert!(
+            CLAIM_UPDATE_SQL.contains("status = 'running'"),
+            "claim UPDATE must re-assert status = 'running': {CLAIM_UPDATE_SQL}",
+        );
+    }
+
+    #[test]
+    fn claim_update_re_asserts_auto_resumable_steps() {
+        // The candidate query restricts to the two auto-resumable
+        // step labels. The UPDATE must re-check the same set so a row
+        // whose pipeline advanced (e.g. operator promoted past the
+        // gate) is not accidentally re-claimed.
+        assert!(
+            CLAIM_UPDATE_SQL.contains("'backfill_chunked'"),
+            "claim UPDATE must re-assert backfill_chunked",
+        );
+        assert!(
+            CLAIM_UPDATE_SQL.contains("'validate_backfill'"),
+            "claim UPDATE must re-assert validate_backfill",
         );
     }
 
