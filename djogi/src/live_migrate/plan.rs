@@ -348,6 +348,7 @@ impl LivePlan {
 /// so the runner can surface the precise mismatch in operator messages
 /// without re-deriving the structural rule.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum PlanValidationError {
     /// The plan carries zero steps — a plan with no work is not a
     /// plan, and the runner refuses to register it.

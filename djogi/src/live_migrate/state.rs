@@ -40,14 +40,20 @@ use crate::types::HeerId;
 // ── INSTALL_SQL ───────────────────────────────────────────────────────
 
 /// DDL that idempotently installs the `djogi_live_plans` table plus
-/// the per-bucket uniqueness index.
+/// the per-bucket lookup index.
 ///
 /// Per v3 §6.5, every live plan is scoped to a single
-/// `(target_database, app_label)` bucket. The unique index
+/// `(target_database, app_label)` bucket. `plan_id` is a HeerId, so
+/// the table-level `PRIMARY KEY` already prevents collisions
+/// regardless of bucket. The composite index
 /// `djogi_live_plans_bucket_plan_id_uidx` on
-/// `(target_database, app_label, plan_id)` materialises that
-/// invariant — the runner refuses an INSERT that violates it via the
-/// standard tokio_postgres unique-violation error code.
+/// `(target_database, app_label, plan_id)` is therefore a query-plan
+/// optimisation — every operator-driven lookup keys off the bucket
+/// before the plan_id, and the index lets Postgres satisfy
+/// `WHERE target_database = $1 AND app_label = $2 AND plan_id = $3`
+/// without scanning. The `UNIQUE` qualifier is redundant as a
+/// uniqueness guarantee but documents the bucket-anchored access
+/// pattern.
 ///
 /// Idempotent — safe to call on every runner invocation.
 pub const INSTALL_SQL: &str = r#"
@@ -409,12 +415,41 @@ mod tests {
         assert_eq!(PlanStatus::from_db_str("Pending"), None);
     }
 
+    // Exhaustive in-crate matches: adding a variant to `PlanStatus`
+    // or `PlanClassification` without listing it here fails to
+    // compile, which is the load-bearing guard against drift between
+    // the Rust enum and the SQL CHECK list. (`#[non_exhaustive]` only
+    // affects matches in downstream crates.) The label returned by
+    // each arm is asserted byte-for-byte against `as_db_str()` so the
+    // tests below also pin the SQL token.
+    const fn plan_status_label_for_drift_guard(s: PlanStatus) -> &'static str {
+        match s {
+            PlanStatus::Pending => "pending",
+            PlanStatus::Running => "running",
+            PlanStatus::Paused => "paused",
+            PlanStatus::Validating => "validating",
+            PlanStatus::Cutover => "cutover",
+            PlanStatus::Finalizing => "finalizing",
+            PlanStatus::Complete => "complete",
+            PlanStatus::Abandoned => "abandoned",
+            PlanStatus::Failed => "failed",
+        }
+    }
+
+    const fn plan_classification_label_for_drift_guard(c: PlanClassification) -> &'static str {
+        match c {
+            PlanClassification::OnlineSafe => "online_safe",
+            PlanClassification::ExpandContract => "expand_contract",
+            PlanClassification::OfflineOnly => "offline_only",
+        }
+    }
+
     #[test]
     fn install_sql_lists_every_plan_status_variant() {
-        // The SQL CHECK list must mention every Rust variant. If a
-        // future variant is added without updating INSTALL_SQL the
-        // INSERT path will fail at runtime — this test catches the
-        // drift at unit-test time.
+        // The SQL CHECK list must mention every Rust variant. The
+        // exhaustive match in `plan_status_label_for_drift_guard`
+        // forces updating this list when a variant lands; the
+        // assertion below then catches an INSTALL_SQL miss.
         for status in [
             PlanStatus::Pending,
             PlanStatus::Running,
@@ -426,7 +461,13 @@ mod tests {
             PlanStatus::Abandoned,
             PlanStatus::Failed,
         ] {
-            let needle = format!("'{}'", status.as_db_str());
+            let label = plan_status_label_for_drift_guard(status);
+            assert_eq!(
+                label,
+                status.as_db_str(),
+                "drift between drift-guard table and `as_db_str()` for {status:?}",
+            );
+            let needle = format!("'{label}'");
             assert!(
                 INSTALL_SQL.contains(&needle),
                 "INSTALL_SQL missing CHECK entry for status {needle}",
@@ -441,7 +482,13 @@ mod tests {
             PlanClassification::ExpandContract,
             PlanClassification::OfflineOnly,
         ] {
-            let needle = format!("'{}'", c.as_db_str());
+            let label = plan_classification_label_for_drift_guard(c);
+            assert_eq!(
+                label,
+                c.as_db_str(),
+                "drift between drift-guard table and `as_db_str()` for {c:?}",
+            );
+            let needle = format!("'{label}'");
             assert!(
                 INSTALL_SQL.contains(&needle),
                 "INSTALL_SQL missing CHECK entry for classification {needle}",
