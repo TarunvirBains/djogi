@@ -161,10 +161,14 @@ impl<M, V> JsonbPathRef<M, V> {
 ///
 /// Matching uses `std::any::type_name::<V>()`. Primitive types (`i16`,
 /// `i32`, `f32`, `bool`, …) return their short form. Types from external
-/// crates return fully-qualified paths (`time::Date`, `uuid::Uuid`,
-/// `rust_decimal::Decimal`). All known `IntoFilterValue` implementors are
-/// explicitly mapped; an unknown type falls through to `None` (compared
-/// as text).
+/// crates return their **fully-qualified path including private module
+/// segments** — e.g. `time::offset_date_time::OffsetDateTime` rather
+/// than the public re-export `time::OffsetDateTime`. The match arms
+/// below carry both the canonical `type_name` output and the public
+/// re-export string defensively (test fixtures and hand-written
+/// callers may use either form). All known `IntoFilterValue`
+/// implementors are explicitly mapped; an unknown type falls through
+/// to `None` (compared as text).
 ///
 /// Every `IntoFilterValue` implementor must appear in this table. If a
 /// new implementor is added to `query::field` without a corresponding
@@ -193,19 +197,37 @@ pub(crate) fn sql_cast_for_type(type_name: &str) -> Option<&'static str> {
         "f64" => Some("::float8"),
         // Boolean.
         "bool" => Some("::boolean"),
-        // Temporal types — `type_name` returns the short crate::module path.
-        "time::OffsetDateTime" | "OffsetDateTime" => Some("::timestamptz"),
-        "time::Date" | "Date" => Some("::date"),
+        // Temporal types — `std::any::type_name::<T>()` returns the FULL
+        // path including private modules, so the canonical match strings
+        // are `time::offset_date_time::OffsetDateTime` and `time::date::Date`,
+        // not the public re-export paths. The short-form arms
+        // (`"OffsetDateTime"`, `"Date"`, `"time::OffsetDateTime"`, etc.) are
+        // kept defensively in case a caller passes a hand-written name
+        // (test fixtures do this) or a future rustc release simplifies
+        // the format. Codex round-1 BLOCK (Cluster A finding 1) caught
+        // that the table mapped only the public-path forms while
+        // `type_name<>()` produced the full forms — every temporal jsonb
+        // path comparison was silently falling back to text.
+        "time::offset_date_time::OffsetDateTime" | "time::OffsetDateTime" | "OffsetDateTime" => {
+            Some("::timestamptz")
+        }
+        "time::date::Date" | "time::Date" | "Date" => Some("::date"),
         // UUID — applies to both uuid::Uuid directly and djogi's RanjId,
         // which is a newtype over uuid::Uuid with the same wire format.
         "uuid::Uuid" | "Uuid" => Some("::uuid"),
-        // djogi::types::HeerId is a 64-bit integer on the wire.
-        // type_name returns the fully-qualified path as seen from inside djogi.
-        "djogi::types::HeerId" | "heeranjid::HeerId" => Some("::int8"),
-        // djogi::types::RanjId is a UUID on the wire.
-        "djogi::types::RanjId" | "heeranjid::RanjId" => Some("::uuid"),
+        // HeerId — `type_name<heeranjid::HeerId>()` is
+        // `heeranjid::heer::HeerId`. The short re-export form
+        // `heeranjid::HeerId` and djogi's `djogi::types::HeerId` alias
+        // (which `type_name` would never produce — aliases resolve at
+        // monomorphisation — but defensive against hand-written
+        // strings) are also accepted.
+        "heeranjid::heer::HeerId" | "djogi::types::HeerId" | "heeranjid::HeerId" => Some("::int8"),
+        // RanjId — same shape as HeerId. Real `type_name` is
+        // `heeranjid::ranj::RanjId`; aliases preserved for parity.
+        "heeranjid::ranj::RanjId" | "djogi::types::RanjId" | "heeranjid::RanjId" => Some("::uuid"),
         // rust_decimal::Decimal — stored as NUMERIC in Postgres.
-        "rust_decimal::Decimal" | "Decimal" => Some("::numeric"),
+        // Real `type_name` is `rust_decimal::decimal::Decimal`.
+        "rust_decimal::decimal::Decimal" | "rust_decimal::Decimal" | "Decimal" => Some("::numeric"),
         // alloc::string::String / &str — text extraction already yields TEXT,
         // no cast needed. Both spellings are listed defensively.
         "alloc::string::String" | "String" | "&str" | "str" => None,
@@ -593,5 +615,74 @@ mod tests {
     #[test]
     fn sql_cast_for_unknown_is_none() {
         assert_eq!(sql_cast_for_type("some::unknown::Type"), None);
+    }
+
+    // Codex round-1 BLOCK (Cluster A finding 1) — assert the cast arms
+    // against `std::any::type_name::<V>()` output directly, not against
+    // hand-written strings. The hand-written `"time::OffsetDateTime"`
+    // form is what we *thought* `type_name` produced; the real output
+    // is `time::offset_date_time::OffsetDateTime` (the full private-
+    // module path). These tests lock the fix in so a future rustc
+    // change to the `type_name` format surfaces here, not as silent
+    // text-fallback in production JSONB queries.
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_offset_datetime() {
+        let name = std::any::type_name::<::time::OffsetDateTime>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::timestamptz"),
+            "type_name<OffsetDateTime>() = {name:?} did not map to ::timestamptz"
+        );
+    }
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_date() {
+        let name = std::any::type_name::<::time::Date>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::date"),
+            "type_name<Date>() = {name:?} did not map to ::date"
+        );
+    }
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_uuid() {
+        let name = std::any::type_name::<::uuid::Uuid>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::uuid"),
+            "type_name<Uuid>() = {name:?} did not map to ::uuid"
+        );
+    }
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_heer_id() {
+        let name = std::any::type_name::<::heeranjid::HeerId>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::int8"),
+            "type_name<HeerId>() = {name:?} did not map to ::int8"
+        );
+    }
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_decimal() {
+        let name = std::any::type_name::<::rust_decimal::Decimal>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            Some("::numeric"),
+            "type_name<Decimal>() = {name:?} did not map to ::numeric"
+        );
+    }
+
+    #[test]
+    fn sql_cast_uses_actual_type_name_for_string_returns_none() {
+        let name = std::any::type_name::<String>();
+        assert_eq!(
+            sql_cast_for_type(name),
+            None,
+            "type_name<String>() = {name:?} should require no cast"
+        );
     }
 }

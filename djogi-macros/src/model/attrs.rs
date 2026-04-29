@@ -1877,8 +1877,20 @@ pub fn rust_type_to_sql(ty: &syn::Type) -> Option<&'static str> {
         "f32" => Some("REAL"),
         "f64" => Some("DOUBLE PRECISION"),
         "bool" => Some("BOOLEAN"),
-        "DateTime" | "time::OffsetDateTime" | "OffsetDateTime" => Some("TIMESTAMPTZ"),
-        "Date" | "time::Date" => Some("DATE"),
+        // Codex round-1 BLOCK (Cluster A finding 2 from #40 review) —
+        // the original arm matched only the bare `DateTime` and
+        // `time::*` short forms, so user fields spelled
+        // `djogi::DateTime` / `djogi::types::DateTime` (the canonical
+        // adopter spellings, since `pub use crate::types::DateTime`
+        // re-exports those at the crate root) silently fell through
+        // and lowered to TEXT in the descriptor. Same alias family as
+        // GH issue #40.
+        "DateTime"
+        | "time::OffsetDateTime"
+        | "OffsetDateTime"
+        | "djogi::DateTime"
+        | "djogi::types::DateTime" => Some("TIMESTAMPTZ"),
+        "Date" | "time::Date" | "djogi::Date" | "djogi::types::Date" => Some("DATE"),
         "Decimal" | "rust_decimal::Decimal" => Some("NUMERIC"),
         "Uuid" | "uuid::Uuid" => Some("UUID"),
         // Phase 7-Zero-2 T4 — built-in PK types (HeerId / RanjId family) are
@@ -2419,5 +2431,34 @@ mod tests {
     fn plain_uuid_tenant_key_still_routes_to_uuid() {
         let ty: syn::Type = parse_quote!(Uuid);
         assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::Uuid);
+    }
+
+    // Codex round-1 BLOCK (Cluster A finding 2 from #40 review) —
+    // `rust_type_to_sql` must accept the canonical djogi aliases for
+    // temporal types so user fields spelled `djogi::DateTime` /
+    // `djogi::types::DateTime` (etc.) lower to `TIMESTAMPTZ` instead
+    // of falling through to TEXT.
+    #[test]
+    fn djogi_datetime_alias_lowers_to_timestamptz() {
+        let bare: syn::Type = parse_quote!(DateTime);
+        let djogi: syn::Type = parse_quote!(djogi::DateTime);
+        let djogi_types: syn::Type = parse_quote!(djogi::types::DateTime);
+        let absolute: syn::Type = parse_quote!(::djogi::types::DateTime);
+        assert_eq!(rust_type_to_sql(&bare), Some("TIMESTAMPTZ"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("TIMESTAMPTZ"));
+        assert_eq!(rust_type_to_sql(&djogi_types), Some("TIMESTAMPTZ"));
+        assert_eq!(rust_type_to_sql(&absolute), Some("TIMESTAMPTZ"));
+    }
+
+    #[test]
+    fn djogi_date_alias_lowers_to_date() {
+        let bare: syn::Type = parse_quote!(Date);
+        let djogi: syn::Type = parse_quote!(djogi::Date);
+        let djogi_types: syn::Type = parse_quote!(djogi::types::Date);
+        let absolute: syn::Type = parse_quote!(::djogi::types::Date);
+        assert_eq!(rust_type_to_sql(&bare), Some("DATE"));
+        assert_eq!(rust_type_to_sql(&djogi), Some("DATE"));
+        assert_eq!(rust_type_to_sql(&djogi_types), Some("DATE"));
+        assert_eq!(rust_type_to_sql(&absolute), Some("DATE"));
     }
 }
