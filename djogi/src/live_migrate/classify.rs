@@ -45,6 +45,7 @@
 //!   because the drop op alone does not carry the foreign-key graph;
 //!   compose passes the count from the live snapshot.
 
+use crate::descriptor::DefaultVolatility;
 use crate::live_migrate::LoggingProfile;
 use crate::migrate::diff::{ColumnChange, SchemaOperation};
 use crate::migrate::pg_volatility::{Volatility, classify_default_expression};
@@ -104,12 +105,27 @@ pub struct ClassifyContext<'a> {
     /// `ExpandContract`). Populated by compose from the snapshot's
     /// FK graph; empty maps disable the escalation.
     pub inbound_fk_counts: &'a BTreeMap<String, u32>,
+
+    /// Adopter override per `#[field(default_volatility = "stable")]`
+    /// for known-safe UDFs that the static `pg_volatility.rs` table
+    /// cannot classify. Keyed by `(table_name, column_name)`. When an
+    /// entry is present for an `AddColumn` op, the classifier consults
+    /// the override before falling through to the static volatility
+    /// table — letting adopters fast-path columns whose default
+    /// expression Djogi could not classify deterministically.
+    ///
+    /// Spec: §3 / §820 of the Phase 7.5 v3 plan. Populated by compose
+    /// from `FieldDescriptor::default_volatility_override` (T3, PR 1).
+    pub default_volatility_overrides: &'a BTreeMap<(String, String), DefaultVolatility>,
 }
 
 impl<'a> ClassifyContext<'a> {
     /// Reasonable defaults for testing / inline construction. Production
     /// callers populate every field from `Djogi.toml`.
-    pub fn application_default(inbound_fk_counts: &'a BTreeMap<String, u32>) -> Self {
+    pub fn application_default(
+        inbound_fk_counts: &'a BTreeMap<String, u32>,
+        default_volatility_overrides: &'a BTreeMap<(String, String), DefaultVolatility>,
+    ) -> Self {
         Self {
             estimated_rows: None,
             validation_threshold_rows: 100_000,
@@ -117,6 +133,7 @@ impl<'a> ClassifyContext<'a> {
             logging_profile: LoggingProfile::Balanced,
             target_database: TargetDatabase::Application,
             inbound_fk_counts,
+            default_volatility_overrides,
         }
     }
 }
@@ -147,9 +164,11 @@ pub enum TargetDatabase {
 /// operations — those are routed through Phase 7's `pk_flip`
 /// emitter family and never reach this classifier per the §6.5
 /// boundary contract. The function still has match arms for those
-/// variants (returning `OnlineSafe` so the function is total),
-/// but production callers go through [`classify_delta`] which
-/// performs the filtering as part of its walk.
+/// variants (returning [`OnlineSafetyClassification::OfflineOnly`]
+/// so a misuse caller gets a refused-classification verdict — see
+/// the dispatch arm), but production callers go through
+/// [`classify_delta`] which performs the filtering as part of its
+/// walk.
 pub fn classify_operation(
     op: &SchemaOperation,
     ctx: &ClassifyContext<'_>,
@@ -166,7 +185,7 @@ pub fn classify_operation(
         // §7: "Add nullable column" → OnlineSafe (no backfill, no
         // lock window beyond the catalog touch). Non-nullable columns
         // dispatch through default-expression analysis.
-        SchemaOperation::AddColumn { column, .. } => classify_add_column(column),
+        SchemaOperation::AddColumn { table, column } => classify_add_column(table, column, ctx),
 
         // §7: "Drop column" → FastLockDestructiveGuarded (corrected
         // per Codex P1-01 — destroys data + invalidates dependents).
@@ -231,12 +250,16 @@ pub fn classify_operation(
             OnlineSafetyClassification::OnlineSafe
         }
 
-        // PK-flip ops are routed elsewhere — see the boundary contract
-        // in the module docs. Returning `OnlineSafe` keeps the function
-        // total; production callers filter these via classify_delta.
+        // PK-flip ops must be filtered before reaching this dispatch —
+        // they belong to Phase 7's `pk_flip` cascade emitter family per
+        // the §6.5 boundary contract, not the Phase 7.5 online-safety
+        // surface. A misuse caller bypassing `classify_delta` should
+        // get a refused-classification verdict so Phase 7's runner
+        // refuses to apply rather than silently fast-applying a PK
+        // flip. `OfflineOnly` is the safe-by-default verdict.
         SchemaOperation::PkTypeFlip { .. }
         | SchemaOperation::PkTypeFlipGroup(_)
-        | SchemaOperation::PkTypeFlipMultiGroup(_) => OnlineSafetyClassification::OnlineSafe,
+        | SchemaOperation::PkTypeFlipMultiGroup(_) => OnlineSafetyClassification::OfflineOnly,
 
         // §7: "Opaque type transform" / unsupported variants →
         // OfflineOnly (operator must hand-edit).
@@ -315,7 +338,18 @@ fn classifier_applies(ctx: &ClassifyContext<'_>) -> bool {
 
 /// §7: "Add nullable column" → OnlineSafe; non-nullable depends on the
 /// default expression's volatility.
-fn classify_add_column(column: &ColumnSchema) -> OnlineSafetyClassification {
+///
+/// Volatility resolution order (§820): adopter override per
+/// [`ClassifyContext::default_volatility_overrides`] takes precedence
+/// over the static `pg_volatility.rs` lookup, so known-safe UDFs
+/// asserted via `#[field(default_volatility = "stable")]` reach the
+/// Pg18 fast-path even when the static table would conservatively
+/// classify the expression as VOLATILE.
+fn classify_add_column(
+    table: &str,
+    column: &ColumnSchema,
+    ctx: &ClassifyContext<'_>,
+) -> OnlineSafetyClassification {
     if column.nullable {
         // Nullable column — no backfill, catalog-only.
         return OnlineSafetyClassification::OnlineSafe;
@@ -326,6 +360,22 @@ fn classify_add_column(column: &ColumnSchema) -> OnlineSafetyClassification {
     let Some(default) = column.default_sql.as_deref() else {
         return OnlineSafetyClassification::ExpandContract;
     };
+    // Adopter override wins over the static table — the override is
+    // a deliberate assertion that a Djogi-unclassifiable expression is
+    // safe to fast-path. T3 enforces that overrides only attach to
+    // fields with a default expression, so the lookup is always
+    // meaningful when present.
+    if let Some(override_volatility) = ctx
+        .default_volatility_overrides
+        .get(&(table.to_string(), column.name.clone()))
+    {
+        return match override_volatility {
+            DefaultVolatility::Immutable | DefaultVolatility::Stable => {
+                OnlineSafetyClassification::OnlineSafe
+            }
+            DefaultVolatility::Volatile => OnlineSafetyClassification::ExpandContract,
+        };
+    }
     match classify_default_expression(default) {
         Volatility::Immutable | Volatility::Stable => OnlineSafetyClassification::OnlineSafe,
         Volatility::Volatile => OnlineSafetyClassification::ExpandContract,
@@ -336,16 +386,20 @@ fn classify_add_column(column: &ColumnSchema) -> OnlineSafetyClassification {
 /// changes.
 fn classify_column_change(
     change: &ColumnChange,
-    _ctx: &ClassifyContext<'_>,
+    ctx: &ClassifyContext<'_>,
 ) -> OnlineSafetyClassification {
     match change {
-        // "Tighten nullability (null → not-null)" → ExpandContract.
+        // §7: "Add NOT NULL constraint to populated table" →
+        // ExpandContract when above `validation_threshold_rows`;
+        // single-statement OnlineSafe below threshold (Pg18
+        // `CHECK (col IS NOT NULL) NOT VALID` + `VALIDATE` + `SET NOT
+        // NULL` reduces to a direct `SET NOT NULL` on small tables).
         // The reverse direction (NOT NULL → NULL) is catalog-only.
         ColumnChange::SetNullable(now_nullable) => {
             if *now_nullable {
                 OnlineSafetyClassification::OnlineSafe
             } else {
-                OnlineSafetyClassification::ExpandContract
+                classify_validation_against_threshold(ctx)
             }
         }
 
@@ -356,12 +410,12 @@ fn classify_column_change(
         ColumnChange::ChangeType { from, to } => classify_type_change(from, to),
 
         // §7: "Add CHECK constraint to populated table" → ExpandContract
-        // when above threshold. The classifier conservatively assumes
-        // a populated table when adding a non-None check; SET CHECK to
-        // None (drop) is OnlineSafe.
+        // when above `validation_threshold_rows`; below threshold the
+        // ADD CHECK validates inline as a single statement and stays
+        // OnlineSafe. SET CHECK to None (drop) is always catalog-only.
         ColumnChange::SetCheck(new_check) => {
             if new_check.is_some() {
-                OnlineSafetyClassification::ExpandContract
+                classify_validation_against_threshold(ctx)
             } else {
                 OnlineSafetyClassification::OnlineSafe
             }
@@ -501,13 +555,26 @@ fn parse_varchar(t: &str) -> Option<(&'static str, Option<u32>)> {
 /// Multi-FK aggregation (4+ FKs on one table) is layered on top by
 /// [`classify_delta`].
 fn classify_fk_addition(ctx: &ClassifyContext<'_>) -> OnlineSafetyClassification {
+    classify_validation_against_threshold(ctx)
+}
+
+/// Shared decision for the §7 family of "add validating constraint to
+/// populated table" rows — CHECK additions (line 814), NOT NULL
+/// additions (line 815), and FK validation (line 816). Each routes
+/// through the same `validation_threshold_rows` knob so adopters get a
+/// single tunable on `Djogi.toml`.
+///
+/// Returns [`OnlineSafetyClassification::OnlineSafe`] iff
+/// `estimated_rows` is known and at-or-below the threshold; otherwise
+/// [`OnlineSafetyClassification::ExpandContract`]. Unknown row count
+/// (`None`) takes the conservative above-threshold path — the slower
+/// staged-validation plan is always safe; the catalog-only fast path is
+/// only safe when the row count is provably small.
+fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSafetyClassification {
     match ctx.estimated_rows {
         Some(rows) if rows <= ctx.validation_threshold_rows => {
             OnlineSafetyClassification::OnlineSafe
         }
-        // Unknown row count → conservative ExpandContract (slower path
-        // is safer per the "no arbitrary deferrals" rule). Above
-        // threshold is the same — staged validation.
         _ => OnlineSafetyClassification::ExpandContract,
     }
 }
@@ -605,10 +672,13 @@ mod tests {
     }
 
     fn ctx_app(estimated: Option<u64>) -> (BTreeMap<String, u32>, ClassifyContext<'static>) {
-        // SAFETY: leak the inbound map for tests so the lifetime fits
-        // ClassifyContext<'static>. Tests only — production code
-        // constructs a freshly borrowed context per call.
-        let map: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        // SAFETY: leak the inbound + override maps for tests so the
+        // lifetimes fit ClassifyContext<'static>. Tests only —
+        // production code constructs a freshly borrowed context per
+        // call.
+        let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(BTreeMap::new()));
         (
             BTreeMap::new(),
             ClassifyContext {
@@ -617,7 +687,8 @@ mod tests {
                 multi_fk_threshold: 4,
                 logging_profile: LoggingProfile::Balanced,
                 target_database: TargetDatabase::Application,
-                inbound_fk_counts: map,
+                inbound_fk_counts: inbound,
+                default_volatility_overrides: overrides,
             },
         )
     }
@@ -717,13 +788,47 @@ mod tests {
     }
 
     #[test]
-    fn tighten_nullability_is_expand_contract() {
-        let (_unused, ctx) = ctx_app(Some(0));
+    fn tighten_nullability_above_threshold_is_expand_contract() {
+        let (_unused, ctx) = ctx_app(Some(500_000));
         let op = SchemaOperation::AlterColumn {
             table: "users".to_string(),
             column: "email".to_string(),
             change: ColumnChange::SetNullable(false),
         };
+        // Populated table above threshold — staged
+        // `CHECK (col IS NOT NULL) NOT VALID` + `VALIDATE` + `SET NOT
+        // NULL` per §815.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn tighten_nullability_below_threshold_is_online_safe() {
+        let (_unused, ctx) = ctx_app(Some(50_000));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "email".to_string(),
+            change: ColumnChange::SetNullable(false),
+        };
+        // Small table — direct `SET NOT NULL` validates inline as a
+        // single statement.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn tighten_nullability_unknown_rows_is_expand_contract() {
+        let (_unused, ctx) = ctx_app(None);
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "email".to_string(),
+            change: ColumnChange::SetNullable(false),
+        };
+        // Unknown row count → conservative staged path.
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::ExpandContract
@@ -890,6 +995,8 @@ mod tests {
         let mut inbound: BTreeMap<String, u32> = BTreeMap::new();
         inbound.insert("legacy".to_string(), 5);
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(inbound));
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(BTreeMap::new()));
         let ctx = ClassifyContext {
             estimated_rows: Some(0),
             validation_threshold_rows: 100_000,
@@ -897,6 +1004,7 @@ mod tests {
             logging_profile: LoggingProfile::Balanced,
             target_database: TargetDatabase::Application,
             inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
         };
         let op = SchemaOperation::DropTable("legacy".to_string());
         assert_eq!(
@@ -959,6 +1067,8 @@ mod tests {
     #[test]
     fn event_log_target_short_circuits_to_online_safe() {
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(BTreeMap::new()));
         let ctx = ClassifyContext {
             estimated_rows: Some(0),
             validation_threshold_rows: 100_000,
@@ -966,6 +1076,7 @@ mod tests {
             logging_profile: LoggingProfile::StrictAudit,
             target_database: TargetDatabase::EventLog,
             inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
         };
         // Without short-circuit this would be ExpandContract; the
         // §6.5 rule routes event-log targets directly to Phase 7.
@@ -982,6 +1093,8 @@ mod tests {
     #[test]
     fn crud_log_under_balanced_short_circuits() {
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(BTreeMap::new()));
         let ctx = ClassifyContext {
             estimated_rows: Some(0),
             validation_threshold_rows: 100_000,
@@ -989,6 +1102,7 @@ mod tests {
             logging_profile: LoggingProfile::Balanced,
             target_database: TargetDatabase::CrudLog,
             inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
         };
         let op = SchemaOperation::DropColumn {
             table: "users_log".to_string(),
@@ -1006,6 +1120,8 @@ mod tests {
     #[test]
     fn crud_log_under_strict_audit_runs_full_classifier() {
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(BTreeMap::new()));
         let ctx = ClassifyContext {
             estimated_rows: Some(0),
             validation_threshold_rows: 100_000,
@@ -1013,6 +1129,7 @@ mod tests {
             logging_profile: LoggingProfile::StrictAudit,
             target_database: TargetDatabase::CrudLog,
             inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
         };
         let op = SchemaOperation::DropColumn {
             table: "users_log".to_string(),
@@ -1074,6 +1191,158 @@ mod tests {
             // ExpandContract.
             assert_eq!(*verdict, OnlineSafetyClassification::ExpandContract);
         }
+    }
+
+    #[test]
+    fn set_check_below_threshold_is_online_safe() {
+        let (_unused, ctx) = ctx_app(Some(50_000));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "age".to_string(),
+            change: ColumnChange::SetCheck(Some("age >= 0".to_string())),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn set_check_above_threshold_is_expand_contract() {
+        let (_unused, ctx) = ctx_app(Some(200_000));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "age".to_string(),
+            change: ColumnChange::SetCheck(Some("age >= 0".to_string())),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn set_check_unknown_rows_is_expand_contract() {
+        let (_unused, ctx) = ctx_app(None);
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "age".to_string(),
+            change: ColumnChange::SetCheck(Some("age >= 0".to_string())),
+        };
+        // Unknown row count → conservative staged-validation path.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn default_volatility_override_stable_routes_to_online_safe() {
+        // Build a context whose override map asserts the default is
+        // STABLE. Without the override the static table classifies
+        // `gen_random_uuid()` as VOLATILE → ExpandContract.
+        let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let mut overrides_map: BTreeMap<(String, String), DefaultVolatility> = BTreeMap::new();
+        overrides_map.insert(
+            ("users".to_string(), "token".to_string()),
+            DefaultVolatility::Stable,
+        );
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(overrides_map));
+        let ctx = ClassifyContext {
+            estimated_rows: Some(0),
+            validation_threshold_rows: 100_000,
+            multi_fk_threshold: 4,
+            logging_profile: LoggingProfile::Balanced,
+            target_database: TargetDatabase::Application,
+            inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
+        };
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: non_null_column("token", Some("gen_random_uuid()")),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn default_volatility_override_immutable_routes_to_online_safe() {
+        let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let mut overrides_map: BTreeMap<(String, String), DefaultVolatility> = BTreeMap::new();
+        overrides_map.insert(
+            ("users".to_string(), "token".to_string()),
+            DefaultVolatility::Immutable,
+        );
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(overrides_map));
+        let ctx = ClassifyContext {
+            estimated_rows: Some(0),
+            validation_threshold_rows: 100_000,
+            multi_fk_threshold: 4,
+            logging_profile: LoggingProfile::Balanced,
+            target_database: TargetDatabase::Application,
+            inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
+        };
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: non_null_column("token", Some("my_pure_udf()")),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn default_volatility_override_absent_falls_through_to_static_table() {
+        // No entry in the override map → static `pg_volatility.rs`
+        // table classifies `gen_random_uuid()` as VOLATILE →
+        // ExpandContract.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: non_null_column("token", Some("gen_random_uuid()")),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn pk_type_flip_dispatch_returns_offline_only_to_refuse_misuse() {
+        // A misuse caller bypassing classify_delta and dispatching a
+        // PK-flip op directly through classify_operation must get a
+        // refused-classification verdict — not OnlineSafe — so the
+        // Phase 7 runner refuses to apply rather than silently
+        // fast-applying. PK-flip routing is Phase 7's exclusive
+        // territory.
+        use crate::migrate::diff::{PkFlipDirection, PkFlipJoinTableOption, PkTypeFlipGroup};
+        use crate::migrate::schema::PkKindSchema;
+        let (_unused, ctx) = ctx_app(Some(0));
+        let group = PkTypeFlipGroup {
+            parent_table: "users".to_string(),
+            parent_from: PkKindSchema::HeerId,
+            parent_to: PkKindSchema::HeerIdRecencyBiased,
+            direction: PkFlipDirection::AscToDesc,
+            children: Vec::new(),
+            self_fk: None,
+            join_tables: Vec::new(),
+            cycles: Vec::new(),
+            partitioned_parent: None,
+            co_destructive: false,
+            co_lossy: false,
+            join_table_option: PkFlipJoinTableOption::OptionA,
+        };
+        let op = SchemaOperation::PkTypeFlipGroup(group);
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
     }
 
     #[test]
