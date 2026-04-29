@@ -472,6 +472,22 @@ fn emit_add_table(t: &TableSchema) -> OperationSql {
         up.push_str(",\n    ");
         up.push_str(&pk_clause);
     }
+    // Phase 7.5 PR 7: inline `EXCLUDE` constraints. EXCLUDE-on-
+    // populated classifies as OfflineOnly, but a brand-new table
+    // necessarily has zero rows — declaring the constraint inline
+    // means Postgres registers it as part of the table create with no
+    // separate ALTER pass. Constraint name comes from the descriptor;
+    // emission order matches the projection's name-sorted slice for
+    // deterministic SQL. The standalone
+    // `AddExclusionConstraint` variant is reserved for "add EXCLUDE
+    // to an already-existing table" which never reaches the live
+    // runner (OfflineOnly verdict from the classifier).
+    for exclusion in &t.exclusion_constraints {
+        up.push_str(",\n    CONSTRAINT ");
+        up.push_str(&quote_ident(&exclusion.name));
+        up.push(' ');
+        up.push_str(&render_exclusion_body(exclusion));
+    }
     up.push('\n');
     up.push(')');
     if let Some(part) = &t.partition {
@@ -1195,7 +1211,21 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema) {
     if !col.nullable {
         out.push_str(" NOT NULL");
     }
-    if let Some(def) = &col.default_sql {
+    // Stored generated columns replace DEFAULT — Postgres rejects
+    // both clauses on the same column. The GENERATED clause carries
+    // the value source instead.
+    if let Some(generated) = &col.generated {
+        let stored_clause = if generated.stored {
+            "STORED"
+        } else {
+            "VIRTUAL"
+        };
+        let _ = write!(
+            out,
+            " GENERATED ALWAYS AS ({}) {stored_clause}",
+            generated.expression,
+        );
+    } else if let Some(def) = &col.default_sql {
         let _ = write!(out, " DEFAULT {def}");
     }
     if col.unique {
@@ -2226,5 +2256,139 @@ mod tests {
     fn truncate_constraint_passes_short_names_through() {
         let short = "users_email_check".to_string();
         assert_eq!(truncate_constraint(short.clone()), short);
+    }
+
+    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated emission ─────────
+
+    use crate::migrate::schema::{
+        ExclusionConstraintSchema, ExclusionElementSchema, GeneratedColumnSchema,
+    };
+
+    fn period_overlap_exclusion() -> ExclusionConstraintSchema {
+        ExclusionConstraintSchema {
+            deferrable: false,
+            elements: vec![
+                ExclusionElementSchema {
+                    expr: "room_id".to_string(),
+                    with_operator: "=".to_string(),
+                },
+                ExclusionElementSchema {
+                    expr: "period".to_string(),
+                    with_operator: "&&".to_string(),
+                },
+            ],
+            initially_deferred: false,
+            name: "no_overlap".to_string(),
+            using: "gist".to_string(),
+            where_clause: None,
+        }
+    }
+
+    #[test]
+    fn create_table_inlines_exclusion_constraint() {
+        let mut t = synth_table("bookings");
+        t.exclusion_constraints = vec![period_overlap_exclusion()];
+        let op = emit_add_table(&t);
+        assert!(op.up.contains(
+            "CONSTRAINT \"no_overlap\" EXCLUDE USING gist (room_id WITH =, period WITH &&)"
+        ));
+        // Ensure the constraint is inside the parens (precedes ');').
+        let close_paren = op.up.find(");").expect("expected closing paren");
+        let constraint_idx = op.up.find("CONSTRAINT \"no_overlap\"").unwrap();
+        assert!(constraint_idx < close_paren);
+    }
+
+    #[test]
+    fn create_table_emits_exclusion_with_where_and_deferrable() {
+        let mut t = synth_table("bookings");
+        let mut excl = period_overlap_exclusion();
+        excl.where_clause = Some("status = 'confirmed'".to_string());
+        excl.deferrable = true;
+        excl.initially_deferred = true;
+        t.exclusion_constraints = vec![excl];
+        let op = emit_add_table(&t);
+        assert!(
+            op.up.contains("WHERE (status = 'confirmed')"),
+            "missing WHERE clause: {}",
+            op.up
+        );
+        assert!(
+            op.up.contains("DEFERRABLE INITIALLY DEFERRED"),
+            "missing deferrable suffix: {}",
+            op.up
+        );
+    }
+
+    #[test]
+    fn alter_table_add_exclusion_emits_constraint() {
+        let op = emit_add_exclusion_constraint("bookings", &period_overlap_exclusion());
+        assert_eq!(
+            op.up,
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"no_overlap\" \
+             EXCLUDE USING gist (room_id WITH =, period WITH &&);",
+        );
+        assert_eq!(
+            op.down,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"no_overlap\";",
+        );
+    }
+
+    #[test]
+    fn alter_table_drop_exclusion_round_trips_via_carried_schema() {
+        let op =
+            emit_drop_exclusion_constraint("bookings", "no_overlap", &period_overlap_exclusion());
+        assert_eq!(
+            op.up,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"no_overlap\";",
+        );
+        // Down side reconstructs the EXCLUDE clause from the carried
+        // schema — full round-trip without re-walking the descriptor.
+        assert!(op.down.contains(
+            "ADD CONSTRAINT \"no_overlap\" EXCLUDE USING gist (room_id WITH =, period WITH &&)"
+        ));
+    }
+
+    #[test]
+    fn add_column_with_generated_emits_stored_clause() {
+        let column = ColumnSchema {
+            generated: Some(GeneratedColumnSchema {
+                expression: "LOWER(email)".to_string(),
+                stored: true,
+            }),
+            ..col("email_lower", "TEXT", true)
+        };
+        let op = emit_add_column("users", &column);
+        assert!(
+            op.up.contains("GENERATED ALWAYS AS (LOWER(email)) STORED"),
+            "missing GENERATED clause: {}",
+            op.up
+        );
+        // Generated columns must NOT carry a DEFAULT clause —
+        // Postgres rejects both on the same column.
+        assert!(
+            !op.up.contains("DEFAULT"),
+            "generated column should not emit DEFAULT: {}",
+            op.up
+        );
+    }
+
+    #[test]
+    fn create_table_inlines_generated_column() {
+        let generated = ColumnSchema {
+            generated: Some(GeneratedColumnSchema {
+                expression: "LOWER(email)".to_string(),
+                stored: true,
+            }),
+            ..col("email_lower", "TEXT", true)
+        };
+        let mut t = synth_table("users");
+        t.columns.push(generated);
+        let op = emit_add_table(&t);
+        assert!(
+            op.up
+                .contains("\"email_lower\" TEXT GENERATED ALWAYS AS (LOWER(email)) STORED"),
+            "missing inline GENERATED: {}",
+            op.up
+        );
     }
 }
