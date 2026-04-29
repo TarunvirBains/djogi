@@ -63,6 +63,7 @@ pub mod docs;
 pub mod guard;
 pub mod ledger;
 pub mod naming;
+pub mod pg_volatility;
 pub mod pk_flip;
 pub mod policy;
 pub mod projection;
@@ -115,6 +116,7 @@ pub use naming::{
     MAX_SLUG_LEN, down_filename, pending_json_filename, sanitize_slug, up_filename, version_id,
     version_prefix,
 };
+pub use pg_volatility::{Volatility, classify_default_expression};
 pub use pk_flip::{PkFlipError, lower_pk_flip_group};
 pub use policy::{OutOfOrderPolicy, is_localhost_connection};
 pub use projection::{BucketKey, ProjectionError, project_from_inventory};

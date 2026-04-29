@@ -61,6 +61,59 @@
 
 use crate::migrate::OnlineSafetyClassification;
 
+pub mod classify;
+pub mod plan;
+pub mod plan_file;
+pub mod state;
+
+pub use classify::{ClassifyContext, TargetDatabase, classify_delta, classify_operation};
+pub use plan::{
+    LivePlan, PlanClassification, PlanHeader, PlanValidationError, Step, StepKind, StepParameters,
+};
+pub use plan_file::{
+    PlanFileError, compute_checksum, plan_path, read_plan, verify_checksum, write_plan,
+};
+pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus};
+
+/// Logging-profile axis read from `Djogi.toml`'s `[logging] profile`
+/// at compose time and threaded into [`ClassifyContext`].
+///
+/// The profile drives the §6.5 three-DB short-circuit: under `Light`
+/// and `Balanced` the CRUD-log database degrades audit writes
+/// gracefully, so brief lock windows on crud-log mirror tables don't
+/// block production application writes. Under `StrictAudit` the audit
+/// contract is fail-closed — a lock on a crud-log mirror blocks every
+/// `INSERT` / `UPDATE` / `DELETE` on the corresponding application
+/// table — so populated crud-log mirrors classify the same way as
+/// the application database.
+///
+/// Defined here (rather than in [`crate::config`]) because Phase 7
+/// has not yet shipped the logging profile config plumbing; T5 needs
+/// the type to drive its `ClassifyContext`. When Phase 7's logging
+/// substrate lands, this enum becomes the canonical home and config
+/// parsing maps the `[logging] profile = "..."` string into one of
+/// these variants.
+///
+/// `#[non_exhaustive]` so future profiles (e.g. a `BestEffort` or
+/// `Replicated` variant) can be added without breaking downstream
+/// matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum LoggingProfile {
+    /// Lowest-overhead profile — audit writes are best-effort,
+    /// failures degrade silently. Migrations on crud-log mirror
+    /// tables route directly to Phase 7 (no live-plan).
+    Light,
+    /// Default profile — bounded retry on audit writes, failures
+    /// surface as warnings. Same direct-route policy as `Light`.
+    Balanced,
+    /// Fail-closed audit contract — application writes refuse to
+    /// commit until the audit row is durable. Crud-log lock windows
+    /// block production, so the classifier runs the full live-plan
+    /// path on populated crud-log mirrors.
+    StrictAudit,
+}
+
 /// Returns `true` iff `classification` is the variant `live_migrate`
 /// is allowed to consume. This is the load-bearing contract
 /// assertion — every later live-plan entry point gates on it so the
