@@ -48,6 +48,7 @@ pub mod descriptor;
 pub mod enum_;
 pub mod error;
 pub mod expr;
+pub mod field_codec;
 pub mod fts;
 pub mod fts_query;
 #[cfg(feature = "spatial")]
@@ -204,6 +205,12 @@ pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
 pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+// Phase 7.5 T4 — field-level codec surface. The trait is the public
+// extension point for at-rest column transformations; `is_registered`
+// answers "is this `&str` the ID of a codec shipped with this build of
+// Djogi?". The registry itself stays module-private so future phases
+// can swap representations without breaking downstream call sites.
+pub use field_codec::{FieldCodec, is_registered as is_codec_registered};
 pub use fts::{FtsDescriptor, TsQuery, TsVector};
 pub use fts_query::FtsFieldRef;
 pub use query::{
@@ -235,6 +242,12 @@ pub mod prelude {
     };
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+    // Phase 7.5 T4 — `FieldCodec` is the trait adopters implement when
+    // declaring a codec; `is_codec_registered` is the lookup the macro
+    // layer uses to validate `#[field(protected(codec = "<id>"))]`.
+    // Both belong in the prelude because protected-field declarations
+    // live in adopter model files.
+    pub use crate::field_codec::{FieldCodec, is_registered as is_codec_registered};
     pub use crate::fts::{FtsDescriptor, TsQuery, TsVector};
     pub use crate::fts_query::FtsFieldRef;
     pub use crate::jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};

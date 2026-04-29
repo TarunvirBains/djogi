@@ -86,6 +86,16 @@ sha2 = "0.11"
 # self-contained.
 libc = "0.2"
 
+# phf — compile-time perfect-hash sets / maps. Phase 7.5 T4 uses
+# `phf::Set<&'static str>` to publish the registry of known field-codec
+# IDs at framework-compile time. The registry must be built at compile
+# time (per Phase 7.5 v3 §1 D3 — codecs are code, not data; runtime
+# registration is rejected as a footgun) so the `#[field(protected(
+# codec = "<id>"))]` macro can reject unknown identifiers during macro
+# expansion rather than at runtime. The `macros` feature unlocks
+# `phf::phf_set!` / `phf::phf_map!`.
+phf = { version = "0.13", features = ["macros"] }
+
 # Testing
 trybuild = { version = "1", features = ["diff"] }
 
