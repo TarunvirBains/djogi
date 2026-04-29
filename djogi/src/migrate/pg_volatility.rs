@@ -169,8 +169,7 @@ pub fn classify_default_expression(expr: &str) -> Volatility {
 /// Recognise the four literal shapes Postgres accepts in a `DEFAULT`
 /// expression: string, numeric, boolean, and `NULL`.
 ///
-/// Plain-English shape rules (per `feedback_no_regex_in_djogi.md` —
-/// no regex, byte-level checks only):
+/// Plain-English shape rules, implemented with byte-level checks only:
 ///
 /// - **String literal.** First non-whitespace byte is a single quote
 ///   `'`, OR is `E` / `e` followed immediately by a single quote

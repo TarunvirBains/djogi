@@ -49,7 +49,9 @@ use crate::descriptor::DefaultVolatility;
 use crate::live_migrate::LoggingProfile;
 use crate::migrate::diff::{ColumnChange, SchemaOperation};
 use crate::migrate::pg_volatility::{Volatility, classify_default_expression};
-use crate::migrate::schema::{ColumnSchema, IndexSchema, OnlineSafetyClassification};
+use crate::migrate::schema::{
+    ColumnSchema, IndexSchema, IndexTargetSchema, OnlineSafetyClassification,
+};
 use std::collections::BTreeMap;
 
 /// Ambient context the classifier consults that is not carried by a
@@ -173,6 +175,10 @@ pub fn classify_operation(
     op: &SchemaOperation,
     ctx: &ClassifyContext<'_>,
 ) -> OnlineSafetyClassification {
+    if is_pk_type_flip_operation(op) {
+        return OnlineSafetyClassification::OfflineOnly;
+    }
+
     // §6.5 short-circuit. Event-log target never live-plans; crud-log
     // under non-strict profiles never live-plans either. The classifier
     // returns `OnlineSafe` so the runner applies the operation
@@ -284,6 +290,18 @@ pub fn classify_delta(
     ops: &[SchemaOperation],
     ctx: &ClassifyContext<'_>,
 ) -> Vec<(SchemaOperation, OnlineSafetyClassification)> {
+    if !classifier_applies(ctx) {
+        let mut out: Vec<(SchemaOperation, OnlineSafetyClassification)> =
+            Vec::with_capacity(ops.len());
+        for op in ops {
+            if is_pk_type_flip_operation(op) {
+                continue;
+            }
+            out.push((op.clone(), OnlineSafetyClassification::OnlineSafe));
+        }
+        return out;
+    }
+
     // Pre-pass — count FK additions per table for the multi-FK rule.
     let mut fk_addition_counts: BTreeMap<&str, u32> = BTreeMap::new();
     for op in ops {
@@ -298,12 +316,7 @@ pub fn classify_delta(
         // `PkTypeFlip` variant survives only for unit-test fixtures
         // (production deltas always carry `PkTypeFlipGroup` after the
         // bucket-walk finalisation) — also filter it for safety.
-        if matches!(
-            op,
-            SchemaOperation::PkTypeFlipGroup(_)
-                | SchemaOperation::PkTypeFlipMultiGroup(_)
-                | SchemaOperation::PkTypeFlip { .. }
-        ) {
+        if is_pk_type_flip_operation(op) {
             continue;
         }
 
@@ -319,9 +332,22 @@ pub fn classify_delta(
             verdict = OnlineSafetyClassification::ExpandContract;
         }
 
+        if index_replacement_requires_refusal(op, ops) {
+            verdict = OnlineSafetyClassification::OfflineOnly;
+        }
+
         out.push((op.clone(), verdict));
     }
     out
+}
+
+fn is_pk_type_flip_operation(op: &SchemaOperation) -> bool {
+    matches!(
+        op,
+        SchemaOperation::PkTypeFlip { .. }
+            | SchemaOperation::PkTypeFlipGroup(_)
+            | SchemaOperation::PkTypeFlipMultiGroup(_)
+    )
 }
 
 /// `true` iff the classifier should run on operations targeting this
@@ -499,7 +525,7 @@ fn is_binary_coercible_widening(from: &str, to: &str) -> bool {
 
     // Varchar-length widening — `varchar(n)` → `varchar(m)` with m >=
     // n, and `varchar(_)` → `text`. We extract the parenthesised length
-    // by manual byte scan (no regex per `feedback_no_regex_in_djogi.md`).
+    // by manual byte scan.
     if let Some((from_kind, from_len)) = parse_varchar(&f)
         && let Some((to_kind, to_len)) = parse_varchar(&t)
         && from_kind == to_kind
@@ -598,6 +624,49 @@ fn classify_index_addition(index: &IndexSchema) -> OnlineSafetyClassification {
     OnlineSafetyClassification::ExpandContract
 }
 
+/// §7: replacing an index is only online when both DROP and CREATE use
+/// the out-of-transaction path. Otherwise the replacement is refused
+/// because a live-plan handoff cannot make the blocking index build
+/// safe after the drop/create pair has already been chosen.
+fn index_replacement_requires_refusal(op: &SchemaOperation, ops: &[SchemaOperation]) -> bool {
+    match op {
+        SchemaOperation::AddIndex(add) => ops.iter().any(|other| {
+            if let SchemaOperation::DropIndex(drop) = other {
+                indexes_replace_each_other(add, drop)
+                    && (!add.requires_out_of_transaction || !drop.requires_out_of_transaction)
+            } else {
+                false
+            }
+        }),
+        SchemaOperation::DropIndex(drop) => ops.iter().any(|other| {
+            if let SchemaOperation::AddIndex(add) = other {
+                indexes_replace_each_other(add, drop)
+                    && (!add.requires_out_of_transaction || !drop.requires_out_of_transaction)
+            } else {
+                false
+            }
+        }),
+        _ => false,
+    }
+}
+
+fn indexes_replace_each_other(add: &IndexSchema, drop: &IndexSchema) -> bool {
+    add.table == drop.table && index_targets_overlap(&add.target, &drop.target)
+}
+
+fn index_targets_overlap(left: &IndexTargetSchema, right: &IndexTargetSchema) -> bool {
+    match (left, right) {
+        (IndexTargetSchema::Columns(left_cols), IndexTargetSchema::Columns(right_cols)) => {
+            left_cols.iter().any(|left_col| {
+                right_cols
+                    .iter()
+                    .any(|right_col| left_col.name == right_col.name)
+            })
+        }
+        _ => false,
+    }
+}
+
 /// §7: "Drop table with 4+ inbound FKs" → ExpandContract; otherwise
 /// FastLockDestructiveGuarded.
 fn classify_drop_table(table: &str, ctx: &ClassifyContext<'_>) -> OnlineSafetyClassification {
@@ -613,8 +682,9 @@ mod tests {
     use super::*;
     use crate::migrate::diff::{ColumnChange, SchemaOperation};
     use crate::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, IndexKindSchema, IndexSchema, IndexTargetSchema,
-        IndexTypeSchema, OnDeleteSchema,
+        ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
+        IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, OnDeleteSchema,
+        PkKindSchema,
     };
 
     fn nullable_column(name: &str) -> ColumnSchema {
@@ -658,6 +728,18 @@ mod tests {
             requires_out_of_transaction: concurrently,
             table: table.to_string(),
             target: IndexTargetSchema::Columns(Vec::new()),
+        }
+    }
+
+    fn index_on_column(name: &str, table: &str, column: &str, concurrently: bool) -> IndexSchema {
+        IndexSchema {
+            target: IndexTargetSchema::Columns(vec![IndexColumnSchema {
+                name: column.to_string(),
+                nulls: IndexNullsOrderSchema::Default,
+                opclass: None,
+                order: IndexOrderSchema::Asc,
+            }]),
+            ..index(name, table, concurrently)
         }
     }
 
@@ -1091,6 +1173,33 @@ mod tests {
     }
 
     #[test]
+    fn event_log_delta_short_circuit_is_not_overridden_by_multi_fk_aggregation() {
+        let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(BTreeMap::new()));
+        let ctx = ClassifyContext {
+            estimated_rows: Some(50),
+            validation_threshold_rows: 100_000,
+            multi_fk_threshold: 4,
+            logging_profile: LoggingProfile::StrictAudit,
+            target_database: TargetDatabase::EventLog,
+            inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
+        };
+        let ops: Vec<SchemaOperation> = (0..4)
+            .map(|i| SchemaOperation::AddForeignKey {
+                table: "events".to_string(),
+                column: format!("ref_{i}"),
+                fk: fk_for("authors"),
+            })
+            .collect();
+        let out = classify_delta(&ops, &ctx);
+        for (_op, verdict) in &out {
+            assert_eq!(*verdict, OnlineSafetyClassification::OnlineSafe);
+        }
+    }
+
+    #[test]
     fn crud_log_under_balanced_short_circuits() {
         let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
         let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
@@ -1343,6 +1452,45 @@ mod tests {
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::OfflineOnly
         );
+    }
+
+    #[test]
+    fn pk_type_flip_dispatch_refuses_even_when_target_short_circuits() {
+        let inbound: &'static BTreeMap<String, u32> = Box::leak(Box::new(BTreeMap::new()));
+        let overrides: &'static BTreeMap<(String, String), DefaultVolatility> =
+            Box::leak(Box::new(BTreeMap::new()));
+        let ctx = ClassifyContext {
+            estimated_rows: Some(0),
+            validation_threshold_rows: 100_000,
+            multi_fk_threshold: 4,
+            logging_profile: LoggingProfile::Balanced,
+            target_database: TargetDatabase::EventLog,
+            inbound_fk_counts: inbound,
+            default_volatility_overrides: overrides,
+        };
+        let op = SchemaOperation::PkTypeFlip {
+            table: "users".to_string(),
+            from: PkKindSchema::HeerId,
+            to: PkKindSchema::HeerIdRecencyBiased,
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn replacement_index_with_blocking_side_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(50));
+        let ops = vec![
+            SchemaOperation::DropIndex(index_on_column("ix_old", "users", "email", false)),
+            SchemaOperation::AddIndex(index_on_column("ix_new", "users", "email", true)),
+        ];
+        let out = classify_delta(&ops, &ctx);
+        assert_eq!(out.len(), 2);
+        for (_op, verdict) in &out {
+            assert_eq!(*verdict, OnlineSafetyClassification::OfflineOnly);
+        }
     }
 
     #[test]
