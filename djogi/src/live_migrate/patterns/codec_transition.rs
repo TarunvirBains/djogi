@@ -23,26 +23,32 @@
 //! # Step graph
 //!
 //! 1. [`StepKind::ExpandSchema`] — `ALTER TABLE <t> ADD COLUMN
-//!    <c>_recoded BYTEA NULL`. The shadow column lands as `BYTEA` so
+//!    <c>_new BYTEA NULL`. The shadow column lands as `BYTEA` so
 //!    the codec can swap encoding shapes (the `to` codec ID lives in
-//!    the descriptor, not in the column type).
+//!    the descriptor, not in the column type). The `_new` suffix
+//!    matches the convention pinned by
+//!    [`replacement_column`](super::replacement_column) and the
+//!    runtime hook parser at
+//!    [`crate::live_migrate::hooks`] — every shadow-column-style
+//!    pattern uses the same suffix so the parser can derive
+//!    `shadow_column` from a hook ID alone.
 //! 2. [`StepKind::BeginCompatibilityWindow`] — register the dual-
 //!    read / dual-write hooks. The hook IDs include the old + new
 //!    codec identifiers so the runtime layer can route encode /
 //!    decode calls to the right codec implementation per row.
-//! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_recoded`
+//! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_new`
 //!    re-encoded under the new codec. The predicate `WHERE
-//!    <c>_recoded IS NULL` is structurally idempotent — once a row
+//!    <c>_new IS NULL` is structurally idempotent — once a row
 //!    is re-encoded the chunk skips it on subsequent passes.
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until `SELECT count(*) FROM <t> WHERE <c>_recoded IS NULL`
+//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL`
 //!    returns zero.
 //! 5. [`StepKind::CutoverReads`] — visage projection switches reads
 //!    onto the new codec.
 //! 6. [`StepKind::CutoverWrites`] — writes target the new codec
 //!    only.
 //! 7. [`StepKind::CleanupLegacyState`] — `DROP COLUMN <c>` then
-//!    `RENAME COLUMN <c>_recoded TO <c>`.
+//!    `RENAME COLUMN <c>_new TO <c>`.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};
@@ -72,15 +78,38 @@ impl Pattern for CodecTransition {
             }
         };
 
-        let shadow = format!("{column}_recoded");
+        // Shadow column convention: every shadow-column-style pattern
+        // uses the `_new` suffix (see module docs above and the parser
+        // in [`crate::live_migrate::hooks`]). Codec transition is no
+        // exception — uniformity lets the hook parser derive
+        // `shadow_column` from a hook ID alone, with no per-pattern
+        // suffix table.
+        let shadow = format!("{column}_new");
         let expand_sql = format!(
             "ALTER TABLE {tbl} ADD COLUMN {shadow_q} BYTEA NULL",
             tbl = quote_ident(table),
             shadow_q = quote_ident(&shadow),
         );
+        // Backfill template: the runner concatenates this onto
+        // `UPDATE <table> `, producing a complete UPDATE statement.
+        // The conversion expression `djogi_codec_recode(<col>, '<from>',
+        // '<to>')` is a placeholder identifier — the runtime layer
+        // resolves it through the codec dispatch registry. The SQL
+        // body is shaped the same as
+        // [`super::replacement_column`]: idempotent inner predicate
+        // (`<shadow> IS NULL`) bounded by `LIMIT $1`, no other
+        // placeholders. The codec function name is interpolated as a
+        // bare SQL identifier (no quoting required — the registry
+        // owns the namespace) and the codec IDs travel as quoted
+        // single-quoted literals; both sides of the conversion are
+        // controlled by the framework, not by user input.
         let backfill_predicate = format!(
-            "WHERE {shadow_q} IS NULL AND id BETWEEN $1 AND $2",
+            "SET {shadow_q} = djogi_codec_recode({col_q}, '{from}', '{to}') WHERE id IN (SELECT id FROM {tbl} WHERE {shadow_q} IS NULL LIMIT $1)",
             shadow_q = quote_ident(&shadow),
+            col_q = quote_ident(column),
+            from = from_codec,
+            to = to_codec,
+            tbl = quote_ident(table),
         );
         let gate_query = format!(
             "SELECT count(*) FROM {tbl} WHERE {shadow_q} IS NULL",
@@ -227,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_predicate_is_idempotent_via_is_null() {
+    fn backfill_template_emits_complete_update_tail_with_set_and_limit() {
         let steps = CodecTransition::emit(&op(), &ctx()).unwrap();
         let StepParameters::BackfillChunked {
             predicate_template, ..
@@ -235,8 +264,64 @@ mod tests {
         else {
             panic!("expected BackfillChunked");
         };
+        assert!(predicate_template.contains("SET"));
+        assert!(predicate_template.contains("\"ciphertext_new\""));
+        assert!(predicate_template.contains("djogi_codec_recode"));
+        assert!(predicate_template.contains("'aes_gcm_v1'"));
+        assert!(predicate_template.contains("'aes_gcm_v2'"));
         assert!(predicate_template.contains("IS NULL"));
-        assert!(predicate_template.contains("\"ciphertext_recoded\""));
+        assert!(predicate_template.contains("LIMIT $1"));
+        assert!(predicate_template.contains("WHERE id IN (SELECT id FROM"));
+        assert!(
+            !predicate_template.contains("$2"),
+            "template must not bind any placeholder beyond $1: {predicate_template}",
+        );
+    }
+
+    #[test]
+    fn backfill_template_concatenates_into_valid_update_statement() {
+        let steps = CodecTransition::emit(&op(), &ctx()).unwrap();
+        let StepParameters::BackfillChunked {
+            table,
+            predicate_template,
+            ..
+        } = &steps[2].parameters
+        else {
+            panic!("expected BackfillChunked");
+        };
+        let stmt = format!("UPDATE {table} {predicate_template}");
+        assert!(stmt.contains("UPDATE"));
+        assert!(stmt.contains("SET"));
+        assert!(stmt.contains("WHERE"));
+        assert!(stmt.contains("LIMIT $1"));
+        let set_pos = stmt.find("SET").unwrap();
+        let where_pos = stmt.find("WHERE").unwrap();
+        assert!(set_pos < where_pos, "SET must precede WHERE: {stmt}");
+    }
+
+    #[test]
+    fn shadow_column_uses_canonical_new_suffix() {
+        // The runtime hook parser in [`crate::live_migrate::hooks`]
+        // derives `shadow_column` by appending `_new` to the legacy
+        // column. Every shadow-column-style pattern (replacement_column
+        // and codec_transition both) must follow that convention so the
+        // parser can recover the shadow column name from a hook ID
+        // without a per-pattern suffix table.
+        let steps = CodecTransition::emit(&op(), &ctx()).unwrap();
+        let StepParameters::ExpandSchema { sql_segments } = &steps[0].parameters else {
+            panic!("expected ExpandSchema");
+        };
+        assert_eq!(sql_segments.len(), 1);
+        assert!(
+            sql_segments[0].contains("\"ciphertext_new\""),
+            "shadow column must use the canonical _new suffix: {}",
+            sql_segments[0],
+        );
+        assert!(
+            !sql_segments[0].contains("_recoded"),
+            "shadow column must NOT use the legacy _recoded suffix: {}",
+            sql_segments[0],
+        );
     }
 
     #[test]
@@ -247,7 +332,7 @@ mod tests {
         };
         assert_eq!(sql_segments.len(), 2);
         assert!(sql_segments[0].contains("DROP COLUMN \"ciphertext\""));
-        assert!(sql_segments[1].contains("RENAME COLUMN \"ciphertext_recoded\" TO \"ciphertext\""));
+        assert!(sql_segments[1].contains("RENAME COLUMN \"ciphertext_new\" TO \"ciphertext\""));
     }
 
     #[test]

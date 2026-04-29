@@ -298,12 +298,15 @@ mod tests {
         // backfill".
         let ctx = PatternContext::with_defaults();
         let op = SchemaOperation::AlterColumn {
-            table: "demo_t".to_string(),
-            column: "demo_col".to_string(),
-            change: ColumnChange::SetNullable(false),
+            table: "ledger_entry".to_string(),
+            column: "amount".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "INTEGER".to_string(),
+                to: "BIGINT".to_string(),
+            },
         };
-        let steps = nullable_not_null::NullableNotNull::emit(&op, &ctx).unwrap();
-        const { assert!(nullable_not_null::NullableNotNull::IDEMPOTENT_PREDICATE) };
+        let steps = replacement_column::ReplacementColumn::emit(&op, &ctx).unwrap();
+        const { assert!(replacement_column::ReplacementColumn::IDEMPOTENT_PREDICATE) };
         assert!(
             steps
                 .iter()
@@ -314,6 +317,22 @@ mod tests {
         // Sanity-check the inverse for a pattern that does not emit
         // chunked backfill (index_dependent).
         const { assert!(!index_dependent::IndexDependent::IDEMPOTENT_PREDICATE) };
+        // And for nullable_not_null — its constant is `false` because
+        // the pattern emits no chunked backfill at all (filling NULL
+        // rows is operator responsibility).
+        const { assert!(!nullable_not_null::NullableNotNull::IDEMPOTENT_PREDICATE) };
+        let nn_op = SchemaOperation::AlterColumn {
+            table: "demo_t".to_string(),
+            column: "demo_col".to_string(),
+            change: ColumnChange::SetNullable(false),
+        };
+        let nn_steps = nullable_not_null::NullableNotNull::emit(&nn_op, &ctx).unwrap();
+        assert!(
+            nn_steps
+                .iter()
+                .all(|s| !matches!(s.parameters, StepParameters::BackfillChunked { .. })),
+            "nullable_not_null must NOT emit BackfillChunked",
+        );
         let op = SchemaOperation::AddIndex(crate::migrate::schema::IndexSchema {
             extension_dependency: None,
             include: Vec::new(),

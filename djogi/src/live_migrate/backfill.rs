@@ -218,34 +218,84 @@ fn validate_table_ident(table: &str) -> Result<(), BackfillError> {
 }
 
 /// Validate that the predicate template carries the required
-/// `LIMIT $1` placeholder. The contract is documented at module level:
-/// the pattern emitter owns the SQL fragment, but the runner pins the
-/// shape so a missing `LIMIT` (which would unbound the chunk) is
-/// caught up front rather than detected as a row-count surprise mid-run.
+/// `LIMIT $1` placeholder AND no other `$n` placeholders. The contract
+/// is documented at module level: the pattern emitter owns the SQL
+/// fragment, but the runner pins the shape so a missing `LIMIT` (which
+/// would unbound the chunk) or a stray placeholder (which the runner
+/// would not bind) is caught up front rather than producing a runtime
+/// "unbound parameter" error mid-run.
 ///
-/// The check is a plain substring match — sufficient because the
-/// project's no-regex policy applies (CLAUDE.md "Dependencies"). A
-/// stricter parse (e.g. confirming the placeholder is the only `$n`
-/// in the fragment) is deliberately out of scope: pattern emitters are
-/// trusted infrastructure, and stricter checks lock out reasonable
-/// expansions like a future `RETURNING $2` shape.
+/// The check is a byte-level scan over the template (no regex per
+/// CLAUDE.md). The walker treats `$<digit>` as a placeholder token:
+///
+/// - `$1` is the only accepted placeholder. Anything else (`$2`, `$3`,
+///   `$10`, …) is an unbound parameter and rejected.
+/// - `$<non-digit>` is left alone. Postgres dollar-quoted string
+///   literals (`$tag$ … $tag$`) and other non-placeholder uses of `$`
+///   live in this branch; the runner does not try to parse Postgres
+///   string-literal syntax beyond this point.
+///
+/// The `LIMIT $1` substring must appear at least once.
 fn validate_predicate_template(template: &str) -> Result<(), BackfillError> {
     if !template.contains("LIMIT $1") {
         return Err(BackfillError::MalformedPredicateTemplate);
+    }
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        // Found `$`. Look at the next byte.
+        let next = match bytes.get(i + 1) {
+            Some(&b) => b,
+            None => break, // trailing `$` with no follow-up byte — not a placeholder.
+        };
+        if !next.is_ascii_digit() {
+            // `$<non-digit>` — not a placeholder (could be a dollar-quoted
+            // string tag or an unrelated literal `$`). Skip past the `$`.
+            i += 1;
+            continue;
+        }
+        // `$<digit>`. Walk every consecutive digit so multi-digit
+        // placeholders (`$10`, `$11`) are recognised as a single token.
+        let digits_start = i + 1;
+        let mut digits_end = digits_start;
+        while digits_end < bytes.len() && bytes[digits_end].is_ascii_digit() {
+            digits_end += 1;
+        }
+        // Accept exactly the single ASCII byte `1` — any longer digit
+        // run (e.g. `$10`) or any other single digit (`$2`) is a
+        // placeholder the runner does not bind.
+        let digit_run = digits_end - digits_start;
+        if !(digit_run == 1 && bytes[digits_start] == b'1') {
+            return Err(BackfillError::MalformedPredicateTemplate);
+        }
+        i = digits_end;
     }
     Ok(())
 }
 
 /// Compute the cumulative `rows_done_total` after a chunk of
 /// `rows_just_added` lands on a row that already had `rows_already`
-/// done. Saturating to `u64::MAX` so an arithmetic overflow surfaces as
-/// a clamp rather than a panic; in practice no real-world backfill
-/// approaches `2^64` rows, but defensive saturation costs nothing.
+/// done. Saturating to `i64::MAX as u64` so the in-memory value can
+/// never exceed what the persisted `djogi_live_plans.backfill_rows_done`
+/// column (`BIGINT`, max `i64::MAX`) is able to store. In practice no
+/// real-world backfill approaches `2^63` rows, but defensive saturation
+/// at the persisted boundary costs nothing and keeps the in-memory and
+/// on-disk values aligned.
 ///
 /// Lifted into a free function purely so the unit tests can pin its
 /// edge cases without spinning up a `DjogiContext`.
 pub(crate) fn compute_rows_done_total(rows_already: u64, rows_just_added: u64) -> u64 {
-    rows_already.saturating_add(rows_just_added)
+    const PERSISTED_MAX: u64 = i64::MAX as u64;
+    let raw = rows_already.saturating_add(rows_just_added);
+    if raw > PERSISTED_MAX {
+        PERSISTED_MAX
+    } else {
+        raw
+    }
 }
 
 // ── execute / resume ──────────────────────────────────────────────────
@@ -397,6 +447,7 @@ async fn drive_chunks(
     let mut chunks: Vec<BackfillChunk> = Vec::new();
     let mut rows_done_total = starting_rows_done;
     let mut ordinal: u64 = 0;
+    let chunk_size_u64 = u64::from(chunk_size);
 
     loop {
         ordinal = ordinal.saturating_add(1);
@@ -404,6 +455,7 @@ async fn drive_chunks(
             &pool,
             &chunk_sql,
             chunk_size_i64,
+            chunk_size_u64,
             emit_events,
             plan_id,
             &target_database,
@@ -418,51 +470,65 @@ async fn drive_chunks(
             rows_done_total,
         });
 
-        if outcome.rows_affected == 0 && ordinal == 1 && starting_rows_done == 0 {
-            // Initial run, first chunk, zero rows: predicate matched
-            // nothing on entry. Treat as immediate exhaustion (the
-            // table was empty / already backfilled). This is NOT the
-            // `PredicateStuck` case because there's no "stuck" state to
-            // diagnose.
+        if outcome.rows_affected == 0 && ordinal == 1 {
+            // First chunk reports zero rows. Two legitimate sub-cases:
+            //
+            // 1. Initial run, predicate matched nothing on entry — the
+            //    table was empty or already backfilled. Treat as
+            //    immediate exhaustion. The `run_one_chunk` closure
+            //    already promoted the plan to `Validating` inside the
+            //    same transaction (it observed `rows_affected <
+            //    chunk_size`), so the on-disk row is consistent with
+            //    the in-memory `chunks` we are about to return.
+            //
+            // 2. Resume after crash: a prior run committed the last
+            //    chunk's UPDATE + progress row but crashed before the
+            //    status promotion landed. On resume, the predicate
+            //    yields 0 rows on the FIRST chunk (because the prior
+            //    run already drained the table) but `starting_rows_done
+            //    > 0` records the progress that survived. The runner
+            //    must NOT fire `PredicateStuck` in this case — the
+            //    closure idempotently re-promotes status to
+            //    `Validating` and we exit cleanly. Without this branch
+            //    a crash between the last chunk's commit and the
+            //    historical out-of-transaction status update would
+            //    leave the plan permanently stuck on resume.
             break;
         }
         if outcome.rows_affected == 0 {
             // Subsequent chunk reported zero work but the predicate did
             // not exhaust on the previous chunk's count. Either the
-            // table is empty (legitimate exhaustion) or the predicate
-            // is no longer matching rows it was matching a moment ago
-            // — fail loud and let the operator investigate.
+            // table is empty (legitimate exhaustion — caught above for
+            // the first-chunk case) or the predicate is no longer
+            // matching rows it was matching a moment ago — fail loud
+            // and let the operator investigate.
             return Err(BackfillError::PredicateStuck);
         }
-        if outcome.rows_affected < u64::from(chunk_size) {
-            // Partial chunk — predicate exhausted. Done.
+        if outcome.rows_affected < chunk_size_u64 {
+            // Partial chunk — predicate exhausted. The closure already
+            // promoted status to `Validating` inside the same atomic
+            // block; nothing more to do here.
             break;
         }
         // Otherwise full chunk; loop continues.
     }
 
-    // Predicate exhausted. Promote the plan to `Validating` so the
-    // operator's next CLI step sees the gate.
-    state::update_status(
-        ctx,
-        plan_id,
-        &target_database,
-        &app_label,
-        PlanStatus::Validating,
-    )
-    .await
-    .map_err(BackfillError::from)?;
-
     Ok(chunks)
 }
 
 /// One chunk's worth of work, all inside a single `atomic()` scope so
-/// the chunk's `UPDATE` and the progress write commit together.
+/// the chunk's `UPDATE`, the progress write, AND (when this chunk
+/// exhausts the predicate) the `Running → Validating` status
+/// promotion commit together. Pinning all three writes to the same
+/// transaction makes the resume contract atomic by construction: a
+/// crash between the chunk's commit and the status promotion is
+/// impossible because the two writes share a transaction boundary.
 #[allow(clippy::too_many_arguments)]
 async fn run_one_chunk(
     pool: &crate::pg::pool::DjogiPool,
     chunk_sql: &str,
     chunk_size_i64: i64,
+    chunk_size_u64: u64,
     emit_events: bool,
     plan_id: HeerId,
     target_database: &str,
@@ -490,10 +556,9 @@ async fn run_one_chunk(
             let rows_affected = tx_ctx.execute(&chunk_sql_owned, &[&chunk_size_i64]).await?;
 
             let new_rows_done_u64 = compute_rows_done_total(prior_rows_done, rows_affected);
-            // `djogi_live_plans.backfill_rows_done` is BIGINT (i64).
-            // Saturate at i64::MAX rather than wrapping into a negative
-            // value if the cumulative ever exceeds i64 range — defensive
-            // only; no real backfill approaches 2^63 rows.
+            // `compute_rows_done_total` already saturates at
+            // `i64::MAX as u64`, so the cast cannot lose precision —
+            // BIGINT range is the in-memory ceiling by construction.
             let new_rows_done_i64 = i64::try_from(new_rows_done_u64).unwrap_or(i64::MAX);
             state::update_progress(
                 tx_ctx,
@@ -503,6 +568,23 @@ async fn run_one_chunk(
                 new_rows_done_i64,
             )
             .await?;
+
+            // Predicate-exhaustion check: if the chunk drained fewer
+            // rows than the chunk size, the next loop iteration would
+            // observe zero rows and break. Promote status to
+            // `Validating` HERE — inside the same transaction — so the
+            // operator's resume path always sees a self-consistent
+            // (rows_done, status) pair on disk.
+            if rows_affected < chunk_size_u64 {
+                state::update_status(
+                    tx_ctx,
+                    plan_id,
+                    &target_database_owned,
+                    &app_label_owned,
+                    PlanStatus::Validating,
+                )
+                .await?;
+            }
 
             Ok::<ChunkOutcome, DjogiError>(ChunkOutcome { rows_affected })
         })
@@ -729,15 +811,23 @@ mod tests {
 
     #[test]
     fn compute_rows_done_total_saturates_on_overflow() {
-        // Defensive — no real backfill approaches 2^64, but saturating
-        // keeps us in `Result`-land rather than `panic!`-land if a
-        // pattern emitter ever produces an absurd row count.
+        // Defensive — no real backfill approaches 2^63, but saturating
+        // at the persisted-column boundary (`BIGINT`, max `i64::MAX`)
+        // keeps the in-memory value aligned with what
+        // `djogi_live_plans.backfill_rows_done` can actually store.
+        let cap = i64::MAX as u64;
         assert_eq!(
-            compute_rows_done_total(u64::MAX - 5, 100),
-            u64::MAX,
-            "overflow must saturate, not panic",
+            compute_rows_done_total(cap - 5, 100),
+            cap,
+            "overflow must saturate at i64::MAX as u64, not u64::MAX",
         );
-        assert_eq!(compute_rows_done_total(u64::MAX, 1), u64::MAX);
+        assert_eq!(compute_rows_done_total(cap, 1), cap);
+        // Exactly at the cap is a passthrough.
+        assert_eq!(compute_rows_done_total(cap, 0), cap);
+        // Any value `u64::MAX - n` for small n must NOT survive — it
+        // exceeds i64::MAX and must clamp down to the persisted ceiling.
+        assert_eq!(compute_rows_done_total(u64::MAX - 5, 100), cap);
+        assert_eq!(compute_rows_done_total(u64::MAX, 0), cap);
     }
 
     // ── validate_table_ident ─────────────────────────────────────────
@@ -817,11 +907,69 @@ mod tests {
 
     #[test]
     fn validate_predicate_template_rejects_wrong_placeholder() {
-        // `LIMIT $2` — wrong placeholder index. Caught by the substring
-        // check.
+        // `LIMIT $2` — wrong placeholder index. Caught because the
+        // template lacks `LIMIT $1`.
         let template = "SET new_col = derive(old_col) WHERE new_col IS NULL LIMIT $2 RETURNING id";
         let err = validate_predicate_template(template).expect_err("wrong placeholder must fail");
         assert!(matches!(err, BackfillError::MalformedPredicateTemplate));
+    }
+
+    #[test]
+    fn validate_predicate_template_rejects_extra_placeholder_alongside_limit() {
+        // Template carries the required `LIMIT $1` AND a stray `$2`
+        // the runner would never bind. Must reject — this is the bug
+        // the byte-scan walker exists to catch.
+        let template = "SET new_col = $2 WHERE new_col IS NULL LIMIT $1 RETURNING id";
+        let err = validate_predicate_template(template).expect_err("stray $2 must fail");
+        assert!(matches!(err, BackfillError::MalformedPredicateTemplate));
+    }
+
+    #[test]
+    fn validate_predicate_template_rejects_three_or_higher() {
+        // Same shape as above with `$3` and `$9` — every placeholder
+        // other than `$1` must be rejected.
+        for stray in ["$3", "$4", "$5", "$6", "$7", "$8", "$9"] {
+            let template = format!(
+                "SET new_col = derive({stray}, old_col) WHERE new_col IS NULL LIMIT $1 RETURNING id",
+            );
+            let err = validate_predicate_template(&template)
+                .err()
+                .unwrap_or_else(|| panic!("expected reject for stray {stray}; got ok"));
+            assert!(matches!(err, BackfillError::MalformedPredicateTemplate));
+        }
+    }
+
+    #[test]
+    fn validate_predicate_template_rejects_multi_digit_placeholder() {
+        // `$10` is a valid Postgres placeholder but the runner only
+        // binds `$1` — a multi-digit run must reject even though the
+        // first digit happens to be `1`.
+        let template = "SET new_col = $10 WHERE new_col IS NULL LIMIT $1 RETURNING id";
+        let err = validate_predicate_template(template).expect_err("$10 must fail");
+        assert!(matches!(err, BackfillError::MalformedPredicateTemplate));
+        // Same shape with `$11`.
+        let template = "SET new_col = $11 WHERE new_col IS NULL LIMIT $1 RETURNING id";
+        let err = validate_predicate_template(template).expect_err("$11 must fail");
+        assert!(matches!(err, BackfillError::MalformedPredicateTemplate));
+    }
+
+    #[test]
+    fn validate_predicate_template_allows_dollar_followed_by_non_digit() {
+        // Postgres dollar-quoted string literals (`$tag$ … $tag$`) and
+        // other non-placeholder `$` uses must NOT be flagged. The
+        // walker only treats `$<digit>` as a placeholder; `$<letter>`
+        // is left alone.
+        let template = "SET new_col = $tag$value$tag$ WHERE new_col IS NULL LIMIT $1 RETURNING id";
+        assert!(validate_predicate_template(template).is_ok());
+        let template = "SET new_col = '$' WHERE new_col IS NULL LIMIT $1 RETURNING id";
+        assert!(validate_predicate_template(template).is_ok());
+    }
+
+    #[test]
+    fn validate_predicate_template_handles_trailing_dollar() {
+        // Trailing `$` with no follow-up byte — not a placeholder.
+        let template = "SET col = 'price$' WHERE col IS NULL LIMIT $1";
+        assert!(validate_predicate_template(template).is_ok());
     }
 
     // ── side-effect suppression GUC name pinning ─────────────────────

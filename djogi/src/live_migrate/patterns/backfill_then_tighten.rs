@@ -20,11 +20,21 @@
 //!    added the column / `NOT VALID` constraint; this pattern owns
 //!    only the validation half.
 //! 2. [`StepKind::BackfillChunked`] — UPDATE rows whose `<col>`
-//!    fails the FK predicate. The predicate template
-//!    `WHERE <col> IS NOT NULL AND <col> NOT IN (SELECT <ref_col>
-//!    FROM <ref_table>)` is idempotent — once the offending rows
-//!    have been nulled (or remediated), they fall out of the
-//!    predicate.
+//!    fails the FK predicate. The pattern emits a complete
+//!    UPDATE-tail fragment of the shape
+//!
+//!    ```sql
+//!    SET <col> = NULL
+//!    WHERE id IN (SELECT id FROM <table>
+//!                 WHERE <col> IS NOT NULL
+//!                   AND <col> NOT IN (SELECT <ref_col> FROM <ref_table>)
+//!                 LIMIT $1)
+//!    ```
+//!
+//!    Idempotent — once the offending rows have been nulled (or
+//!    remediated by the operator out-of-band), they fall out of the
+//!    inner predicate forever. `LIMIT $1` bounds the row count to one
+//!    chunk; `$1` is the only placeholder the runner binds.
 //! 3. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
 //!    until the count of violators is zero.
 //! 4. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <t> VALIDATE
@@ -54,9 +64,18 @@ impl Pattern for BackfillThenTighten {
         };
 
         let constraint_name = format!("fk_{table}_{column}");
+        // Backfill template: `SET <col> = NULL` for rows whose FK
+        // value points at a missing parent. The conservative null-out
+        // fix avoids guessing a "right" parent — the operator can
+        // re-row the affected records out-of-band before the
+        // VALIDATE CONSTRAINT step lands. The inner predicate
+        // self-cancels: once a row is nulled, it falls out of
+        // `<col> IS NOT NULL` forever. LIMIT $1 is the only
+        // placeholder the runner binds.
         let backfill_predicate = format!(
-            "WHERE {col_q} IS NOT NULL AND {col_q} NOT IN (SELECT {ref_col_q} FROM {ref_tbl_q}) AND id BETWEEN $1 AND $2",
+            "SET {col_q} = NULL WHERE id IN (SELECT id FROM {tbl_q} WHERE {col_q} IS NOT NULL AND {col_q} NOT IN (SELECT {ref_col_q} FROM {ref_tbl_q}) LIMIT $1)",
             col_q = quote_ident(column),
+            tbl_q = quote_ident(table),
             ref_col_q = quote_ident(&fk.ref_column),
             ref_tbl_q = quote_ident(&fk.ref_table),
         );
@@ -163,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_predicate_references_referent_table() {
+    fn backfill_template_emits_complete_update_tail_with_set_and_limit() {
         let steps = BackfillThenTighten::emit(&op(), &ctx()).unwrap();
         let StepParameters::BackfillChunked {
             predicate_template, ..
@@ -171,13 +190,49 @@ mod tests {
         else {
             panic!("expected BackfillChunked");
         };
-        assert!(predicate_template.contains("\"owner_id\""));
+        assert!(
+            predicate_template.contains("SET \"owner_id\" = NULL"),
+            "template must null-out offending FK column: {predicate_template}",
+        );
         assert!(predicate_template.contains("\"owner\""));
         assert!(predicate_template.contains("\"id\""));
         assert!(
             predicate_template.contains("NOT IN") && predicate_template.contains("IS NOT NULL"),
             "predicate must isolate violators idempotently: {predicate_template}",
         );
+        assert!(
+            predicate_template.contains("LIMIT $1"),
+            "template must bound row count via LIMIT $1: {predicate_template}",
+        );
+        assert!(
+            predicate_template.contains("WHERE id IN (SELECT id FROM"),
+            "template must use canonical id-IN-subquery shape: {predicate_template}",
+        );
+        assert!(
+            !predicate_template.contains("$2"),
+            "template must not bind any placeholder beyond $1: {predicate_template}",
+        );
+    }
+
+    #[test]
+    fn backfill_template_concatenates_into_valid_update_statement() {
+        let steps = BackfillThenTighten::emit(&op(), &ctx()).unwrap();
+        let StepParameters::BackfillChunked {
+            table,
+            predicate_template,
+            ..
+        } = &steps[1].parameters
+        else {
+            panic!("expected BackfillChunked");
+        };
+        let stmt = format!("UPDATE {table} {predicate_template}");
+        assert!(stmt.contains("UPDATE"));
+        assert!(stmt.contains("SET"));
+        assert!(stmt.contains("WHERE"));
+        assert!(stmt.contains("LIMIT $1"));
+        let set_pos = stmt.find("SET").unwrap();
+        let where_pos = stmt.find("WHERE").unwrap();
+        assert!(set_pos < where_pos, "SET must precede WHERE: {stmt}");
     }
 
     #[test]

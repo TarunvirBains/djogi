@@ -28,9 +28,22 @@
 //!    catches up; the dual-write hook flags the column as
 //!    transitionally nullable.
 //! 3. [`StepKind::BackfillChunked`] — populate the column for
-//!    existing rows. The predicate is `WHERE <col> IS NULL`,
-//!    structurally idempotent — once a row is backfilled it falls
-//!    out of the predicate forever.
+//!    existing rows. The pattern emits a complete UPDATE-tail
+//!    fragment of the shape
+//!
+//!    ```sql
+//!    SET <col> = <default-expression>
+//!    WHERE id IN (SELECT id FROM <table>
+//!                 WHERE <col> IS NULL
+//!                 LIMIT $1)
+//!    ```
+//!
+//!    The default expression evaluates per-row inside the chunk
+//!    transaction — the volatility we are staging around is precisely
+//!    the reason the column had to be added without an inline
+//!    DEFAULT. The `<col> IS NULL` inner predicate self-cancels so
+//!    chunk re-runs on the same range are no-ops; `LIMIT $1` bounds
+//!    the row count to one chunk.
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
 //!    until `SELECT count(*) FROM <t> WHERE <col> IS NULL` returns
 //!    zero.
@@ -80,9 +93,17 @@ impl Pattern for ThreeStepDefault {
             col_q = quote_ident(&column.name),
             ty = render_sql_type(column),
         );
+        // Backfill template: complete UPDATE-tail. The default
+        // expression is interpolated as raw SQL (it is the very
+        // expression Phase 7 verified as syntactically well-formed
+        // before the live plan was composed) so per-row evaluation
+        // produces fresh values for each populated row. LIMIT $1 is
+        // the only placeholder the runner binds.
         let backfill_predicate = format!(
-            "WHERE {col_q} IS NULL AND id BETWEEN $1 AND $2",
+            "SET {col_q} = {expr} WHERE id IN (SELECT id FROM {tbl_q} WHERE {col_q} IS NULL LIMIT $1)",
             col_q = quote_ident(&column.name),
+            expr = default_expr,
+            tbl_q = quote_ident(table),
         );
         let gate_query = format!(
             "SELECT count(*) FROM {tbl_q} WHERE {col_q} IS NULL",
@@ -252,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_predicate_is_idempotent_via_is_null() {
+    fn backfill_template_emits_complete_update_tail_with_set_and_limit() {
         let steps = ThreeStepDefault::emit(&op(Some("gen_random_uuid()"), false), &ctx()).unwrap();
         let StepParameters::BackfillChunked {
             predicate_template, ..
@@ -260,8 +281,40 @@ mod tests {
         else {
             panic!("expected BackfillChunked");
         };
-        assert!(predicate_template.contains("IS NULL"));
+        assert!(predicate_template.contains("SET"));
         assert!(predicate_template.contains("\"uuid_column\""));
+        assert!(
+            predicate_template.contains("gen_random_uuid()"),
+            "default expression must appear in SET clause: {predicate_template}",
+        );
+        assert!(predicate_template.contains("IS NULL"));
+        assert!(predicate_template.contains("LIMIT $1"));
+        assert!(predicate_template.contains("WHERE id IN (SELECT id FROM"));
+        assert!(
+            !predicate_template.contains("$2"),
+            "template must not bind any placeholder beyond $1: {predicate_template}",
+        );
+    }
+
+    #[test]
+    fn backfill_template_concatenates_into_valid_update_statement() {
+        let steps = ThreeStepDefault::emit(&op(Some("gen_random_uuid()"), false), &ctx()).unwrap();
+        let StepParameters::BackfillChunked {
+            table,
+            predicate_template,
+            ..
+        } = &steps[2].parameters
+        else {
+            panic!("expected BackfillChunked");
+        };
+        let stmt = format!("UPDATE {table} {predicate_template}");
+        assert!(stmt.contains("UPDATE"));
+        assert!(stmt.contains("SET"));
+        assert!(stmt.contains("WHERE"));
+        assert!(stmt.contains("LIMIT $1"));
+        let set_pos = stmt.find("SET").unwrap();
+        let where_pos = stmt.find("WHERE").unwrap();
+        assert!(set_pos < where_pos, "SET must precede WHERE: {stmt}");
     }
 
     #[test]

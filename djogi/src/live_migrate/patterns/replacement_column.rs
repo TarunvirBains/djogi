@@ -17,11 +17,15 @@
 //!    read / dual-write hooks that keep `<c>` and `<c>_new` aligned
 //!    across in-flight transactions.
 //! 3. [`StepKind::BackfillChunked`] — copy `<c>` into `<c>_new`. The
-//!    predicate is `WHERE <c>_new IS DISTINCT FROM <c>` so re-runs
-//!    skip rows already converged.
+//!    predicate template emits a complete `UPDATE`-tail fragment of
+//!    the shape `SET <c>_new = <c>::<to-type> WHERE id IN (SELECT id
+//!    FROM <t> WHERE <c>_new IS NULL LIMIT $1)` — bounded to one
+//!    chunk via the `LIMIT $1` placeholder, idempotent because the
+//!    inner predicate self-cancels (once a row's shadow column is
+//!    populated, the chunk skips it).
 //! 4. [`StepKind::ValidateBackfill`] — operator gate; runner pauses
-//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS DISTINCT FROM
-//!    <c>` returns zero.
+//!    until `SELECT count(*) FROM <t> WHERE <c>_new IS NULL` returns
+//!    zero.
 //! 5. [`StepKind::CutoverReads`] — visage projection switches reads
 //!    to `<c>_new`.
 //! 6. [`StepKind::CutoverWrites`] — writes target `<c>_new` only.
@@ -33,9 +37,12 @@
 //!
 //! # Idempotency
 //!
-//! `IS DISTINCT FROM` is the canonical row-equality predicate that
-//! handles `NULL` symmetrically — once a row converges, subsequent
-//! chunk runs see `<c>_new = <c>` and skip the row.
+//! The chunk's WHERE predicate `<c>_new IS NULL` self-cancels — once
+//! a row's shadow column has a non-null value, the row falls out of
+//! the predicate forever and re-runs are a no-op. The `SET <c>_new =
+//! <c>::<to-type>` cast is a stable-volatility expression so a
+//! crashed-and-resumed chunk produces the same shadow value as the
+//! prior attempt would have.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};
@@ -72,16 +79,35 @@ impl Pattern for ReplacementColumn {
             shadow_q = quote_ident(&shadow),
             ty = to_type,
         );
+        // Backfill template: a complete UPDATE-tail fragment that the
+        // runner concatenates onto `UPDATE <table> `. The shape is
+        //
+        //     SET <shadow> = <legacy>::<to-type>
+        //     WHERE id IN (SELECT id FROM <table>
+        //                  WHERE <shadow> IS NULL
+        //                  LIMIT $1)
+        //
+        // - `SET <shadow> = <legacy>::<to-type>` is the conversion. A
+        //   plain SQL cast suffices for the shapes the classifier
+        //   routes here (binary-coercible widening was filtered out by
+        //   the classifier and never reaches this pattern; rewrites
+        //   that need a non-cast transform must classify as
+        //   OfflineOnly per the §7 amendment).
+        // - The WHERE predicate `<shadow> IS NULL` is structurally
+        //   idempotent: once a row converges, it falls out forever.
+        // - `LIMIT $1` bounds the row count to one chunk; `$1` is the
+        //   only placeholder the runner binds.
         let backfill_predicate = format!(
-            "WHERE {shadow_q} IS DISTINCT FROM {col_q} AND id BETWEEN $1 AND $2",
+            "SET {shadow_q} = {col_q}::{ty} WHERE id IN (SELECT id FROM {tbl} WHERE {shadow_q} IS NULL LIMIT $1)",
             shadow_q = quote_ident(&shadow),
             col_q = quote_ident(column),
+            ty = to_type,
+            tbl = quote_ident(table),
         );
         let gate_query = format!(
-            "SELECT count(*) FROM {tbl} WHERE {shadow_q} IS DISTINCT FROM {col_q}",
+            "SELECT count(*) FROM {tbl} WHERE {shadow_q} IS NULL",
             tbl = quote_ident(table),
             shadow_q = quote_ident(&shadow),
-            col_q = quote_ident(column),
         );
         let drop_legacy_sql = format!(
             "ALTER TABLE {tbl} DROP COLUMN {col_q}",
@@ -231,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn backfill_predicate_is_idempotent_via_is_distinct_from() {
+    fn backfill_template_emits_complete_update_tail_with_set_and_limit() {
         let steps = ReplacementColumn::emit(&op(), &ctx()).unwrap();
         let StepParameters::BackfillChunked {
             predicate_template, ..
@@ -239,9 +265,65 @@ mod tests {
         else {
             panic!("expected BackfillChunked");
         };
-        assert!(predicate_template.contains("IS DISTINCT FROM"));
-        assert!(predicate_template.contains("\"amount_new\""));
-        assert!(predicate_template.contains("\"amount\""));
+        // SET clause names the shadow column and the conversion.
+        assert!(
+            predicate_template.contains("SET"),
+            "template must include SET clause: {predicate_template}",
+        );
+        assert!(
+            predicate_template.contains("\"amount_new\""),
+            "template must reference shadow column: {predicate_template}",
+        );
+        // Idempotent WHERE inside a subquery, bounded by LIMIT $1.
+        assert!(
+            predicate_template.contains("IS NULL"),
+            "WHERE predicate must self-cancel via IS NULL: {predicate_template}",
+        );
+        assert!(
+            predicate_template.contains("LIMIT $1"),
+            "template must bound row count via LIMIT $1: {predicate_template}",
+        );
+        // Subquery that bounds the rewrite to one chunk.
+        assert!(
+            predicate_template.contains("WHERE id IN (SELECT id FROM"),
+            "template must use canonical id-IN-subquery shape: {predicate_template}",
+        );
+        // No stray placeholder beyond `$1`.
+        assert!(
+            !predicate_template.contains("$2"),
+            "template must not bind any placeholder beyond $1: {predicate_template}",
+        );
+    }
+
+    #[test]
+    fn backfill_template_concatenates_into_valid_update_statement() {
+        // End-to-end check: the runner builds the chunk SQL by
+        // concatenating "UPDATE <table> " with the predicate template.
+        // The result must be a valid Postgres UPDATE statement —
+        // specifically, it must contain `UPDATE`, `SET`, `WHERE`, and
+        // a `LIMIT $1` somewhere after the SET.
+        let steps = ReplacementColumn::emit(&op(), &ctx()).unwrap();
+        let StepParameters::BackfillChunked {
+            table,
+            predicate_template,
+            ..
+        } = &steps[2].parameters
+        else {
+            panic!("expected BackfillChunked");
+        };
+        let stmt = format!("UPDATE {table} {predicate_template}");
+        assert!(stmt.contains("UPDATE"));
+        assert!(stmt.contains("SET"));
+        assert!(stmt.contains("WHERE"));
+        assert!(stmt.contains("LIMIT $1"));
+        // SET must come before WHERE — otherwise the statement is
+        // syntactically broken.
+        let set_pos = stmt.find("SET").unwrap();
+        let where_pos = stmt.find("WHERE").unwrap();
+        assert!(
+            set_pos < where_pos,
+            "SET must precede WHERE in the synthesised UPDATE: {stmt}",
+        );
     }
 
     #[test]

@@ -16,29 +16,42 @@
 //!    `ADD COLUMN` happened in Phase 7 (or in a previous live plan
 //!    via [`replacement_column`](super::replacement_column)); this
 //!    pattern records a no-op expand fragment so the plan-file shape
-//!    matches the canonical expand → backfill → finalize sequence
+//!    matches the canonical expand → validate → finalize sequence
 //!    other patterns share.
-//! 2. [`StepKind::BackfillChunked`] — populate rows where the column
-//!    is currently `NULL`. The predicate is `WHERE <col> IS NULL`,
-//!    which is structurally idempotent — once a row is no longer
-//!    `NULL`, subsequent chunk re-runs skip it.
-//! 3. [`StepKind::ValidateBackfill`] — operator gate. The runner
+//! 2. [`StepKind::ValidateBackfill`] — operator gate. The runner
 //!    pauses until `SELECT count(*) FROM <table> WHERE <col> IS
-//!    NULL` returns zero.
-//! 4. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <table> ALTER
+//!    NULL` returns zero. Filling existing NULL rows is the
+//!    operator's responsibility — the
+//!    [`SchemaOperation::AlterColumn`] delta carrying
+//!    [`ColumnChange::SetNullable(false)`] does NOT itself supply a
+//!    backfill expression, so this pattern intentionally omits a
+//!    [`StepKind::BackfillChunked`] step. The operator either backfills
+//!    the column out-of-band (e.g. via an application-side migration
+//!    that writes the missing values) or routes the change through
+//!    [`super::three_step_default`] / [`super::replacement_column`]
+//!    when an expression is available.
+//! 3. [`StepKind::FinalizeConstraints`] — `ALTER TABLE <table> ALTER
 //!    COLUMN <col> SET NOT NULL`.
 //!
 //! # Idempotency
 //!
-//! The chunked-backfill predicate `IS NULL` is the canonical
-//! self-cancelling shape — once the chunk's UPDATE writes a non-null
-//! value, the row falls out of the predicate forever. Re-running a
-//! chunk against a partially-completed range is a no-op.
+//! The validate gate is naturally idempotent: re-checking the
+//! `WHERE <col> IS NULL` count is read-only. The pattern emits no
+//! chunked backfill, so the §3 idempotent-predicate contract is
+//! satisfied vacuously; [`Pattern::IDEMPOTENT_PREDICATE`] is left
+//! `true` to mean "any backfill predicate this pattern would emit
+//! would be idempotent", which the absence of a chunked step trivially
+//! satisfies.
 
 use super::{Pattern, PatternContext, PatternError};
 use crate::live_migrate::plan::{Step, StepKind, StepParameters};
 use crate::migrate::SchemaOperation;
 use crate::migrate::diff::ColumnChange;
+
+// Suppress the unused-context warning: the trait signature requires the
+// ambient context, and other patterns consume `ctx.backfill_chunk_size`
+// when they emit chunked backfill. This pattern emits no chunked
+// backfill (see module-level docs) but must still accept the parameter.
 
 /// Marker type implementing [`Pattern`] for the nullable-to-not-null
 /// finalize sequence. Zero-sized — no per-instance state, the
@@ -48,9 +61,13 @@ pub struct NullableNotNull;
 
 impl Pattern for NullableNotNull {
     const ID: &'static str = "nullable_not_null";
-    const IDEMPOTENT_PREDICATE: bool = true;
+    /// `false` because this pattern never emits a chunked backfill —
+    /// the §3 idempotent-predicate contract is therefore satisfied
+    /// vacuously. See the module-level docstring for why no chunked
+    /// step ships.
+    const IDEMPOTENT_PREDICATE: bool = false;
 
-    fn emit(op: &SchemaOperation, ctx: &PatternContext) -> Result<Vec<Step>, PatternError> {
+    fn emit(op: &SchemaOperation, _ctx: &PatternContext) -> Result<Vec<Step>, PatternError> {
         let (table, column) = match op {
             SchemaOperation::AlterColumn {
                 table,
@@ -65,10 +82,6 @@ impl Pattern for NullableNotNull {
             }
         };
 
-        let backfill_predicate = format!(
-            "WHERE {col} IS NULL AND id BETWEEN $1 AND $2",
-            col = quote_ident(column),
-        );
         let gate_query = format!(
             "SELECT count(*) FROM {tbl} WHERE {col} IS NULL",
             tbl = quote_ident(table),
@@ -89,22 +102,13 @@ impl Pattern for NullableNotNull {
                 },
             },
             Step {
-                kind: StepKind::BackfillChunked,
-                ordinal: 1,
-                parameters: StepParameters::BackfillChunked {
-                    table: table.clone(),
-                    predicate_template: backfill_predicate,
-                    chunk_size: ctx.backfill_chunk_size,
-                },
-            },
-            Step {
                 kind: StepKind::ValidateBackfill,
-                ordinal: 2,
+                ordinal: 1,
                 parameters: StepParameters::ValidateBackfill { gate_query },
             },
             Step {
                 kind: StepKind::FinalizeConstraints,
-                ordinal: 3,
+                ordinal: 2,
                 parameters: StepParameters::FinalizeConstraints {
                     sql_segments: vec![finalize_sql],
                 },
@@ -142,13 +146,30 @@ mod tests {
     }
 
     #[test]
-    fn emits_canonical_four_step_sequence() {
+    fn emits_canonical_three_step_sequence() {
+        // The pattern intentionally omits BackfillChunked — see the
+        // module-level docstring. Filling existing NULL rows is the
+        // operator's responsibility; the validate gate refuses to
+        // proceed until the count is zero.
         let steps = NullableNotNull::emit(&op(), &ctx()).unwrap();
-        assert_eq!(steps.len(), 4);
+        assert_eq!(steps.len(), 3);
         assert_eq!(steps[0].kind, StepKind::ExpandSchema);
-        assert_eq!(steps[1].kind, StepKind::BackfillChunked);
-        assert_eq!(steps[2].kind, StepKind::ValidateBackfill);
-        assert_eq!(steps[3].kind, StepKind::FinalizeConstraints);
+        assert_eq!(steps[1].kind, StepKind::ValidateBackfill);
+        assert_eq!(steps[2].kind, StepKind::FinalizeConstraints);
+    }
+
+    #[test]
+    fn emits_no_backfill_chunked_step() {
+        // Defensive: NullableNotNull must not emit any BackfillChunked
+        // step. Filling NULLs is operator responsibility because the
+        // delta does not carry a backfill expression.
+        let steps = NullableNotNull::emit(&op(), &ctx()).unwrap();
+        assert!(
+            steps
+                .iter()
+                .all(|s| !matches!(s.parameters, StepParameters::BackfillChunked { .. })),
+            "nullable_not_null must NOT emit BackfillChunked",
+        );
     }
 
     #[test]
@@ -161,29 +182,22 @@ mod tests {
     }
 
     #[test]
-    fn backfill_predicate_uses_idempotent_is_null_shape() {
+    fn validate_gate_uses_is_null_count() {
         let steps = NullableNotNull::emit(&op(), &ctx()).unwrap();
-        let StepParameters::BackfillChunked {
-            predicate_template, ..
-        } = &steps[1].parameters
-        else {
-            panic!("expected BackfillChunked at ordinal 1");
+        let StepParameters::ValidateBackfill { gate_query } = &steps[1].parameters else {
+            panic!("expected ValidateBackfill at ordinal 1");
         };
-        assert!(
-            predicate_template.contains("IS NULL"),
-            "predicate must be self-cancelling: {predicate_template}",
-        );
-        assert!(
-            predicate_template.contains("\"owner_id\""),
-            "predicate must reference the target column: {predicate_template}",
-        );
+        assert!(gate_query.contains("count(*)"));
+        assert!(gate_query.contains("IS NULL"));
+        assert!(gate_query.contains("\"owner_id\""));
+        assert!(gate_query.contains("\"vehicle\""));
     }
 
     #[test]
     fn finalize_emits_set_not_null() {
         let steps = NullableNotNull::emit(&op(), &ctx()).unwrap();
-        let StepParameters::FinalizeConstraints { sql_segments } = &steps[3].parameters else {
-            panic!("expected FinalizeConstraints at ordinal 3");
+        let StepParameters::FinalizeConstraints { sql_segments } = &steps[2].parameters else {
+            panic!("expected FinalizeConstraints at ordinal 2");
         };
         assert_eq!(sql_segments.len(), 1);
         assert!(sql_segments[0].contains("SET NOT NULL"));
