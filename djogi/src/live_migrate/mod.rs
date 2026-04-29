@@ -59,7 +59,7 @@
 //! [`SchemaOperation::PkTypeFlipGroup`]: crate::migrate::SchemaOperation::PkTypeFlipGroup
 //! [`SchemaOperation::PkTypeFlipMultiGroup`]: crate::migrate::SchemaOperation::PkTypeFlipMultiGroup
 
-use crate::migrate::schema::OnlineSafetyClassification;
+use crate::migrate::OnlineSafetyClassification;
 
 /// Returns `true` iff `classification` is the variant `live_migrate`
 /// is allowed to consume. This is the load-bearing contract
@@ -73,7 +73,7 @@ pub fn accepts(classification: OnlineSafetyClassification) -> bool {
 #[cfg(test)]
 mod tests {
     use super::accepts;
-    use crate::migrate::schema::OnlineSafetyClassification;
+    use crate::migrate::OnlineSafetyClassification;
 
     #[test]
     fn accepts_only_expand_contract() {
