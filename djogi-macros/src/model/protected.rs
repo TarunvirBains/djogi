@@ -239,6 +239,13 @@ pub struct ProtectedSpec {
     pub codec: Option<String>,
     pub codec_span: Option<Span>,
     pub retention: RetentionLit,
+    /// `Some(span)` when `retention = "..."` was written explicitly,
+    /// even when its value happens to equal the neutral default. Rule
+    /// (a) discriminates "the user wrote this key" from "the value is
+    /// the default" via this span — explicit `retention = "standard"`
+    /// alongside `sensitivity = "none"` is still a contradiction, even
+    /// though the resulting value matches the default.
+    pub retention_span: Option<Span>,
     /// Span of the entire `protected(...)` list — used as the fallback
     /// span when an error references the attribute as a whole rather
     /// than a single key.
@@ -297,6 +304,32 @@ pub fn parse_from_field(field: &syn::Field) -> syn::Result<Option<ProtectedSpec>
             continue;
         };
         for nested in &inner {
+            // `protected` is only valid as a list — i.e. `protected(...)`.
+            // The bare-path (`#[field(protected)]`) and name-value
+            // (`#[field(protected = "x")]`) shapes were silently dropped
+            // by an earlier pass, so adopters writing those malformed
+            // forms got no diagnostic and their intent vanished. Reject
+            // them up front; the actionable error tells them which
+            // shape the macro accepts.
+            match nested {
+                Meta::Path(path) if path.is_ident("protected") => {
+                    return Err(syn::Error::new(
+                        path.span(),
+                        "`protected` must be invoked as `protected(sensitivity = \"...\", ...)`. \
+                         Bare `protected` and name-value `protected = \"...\"` forms are not \
+                         valid syntax for protected-field metadata.",
+                    ));
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("protected") => {
+                    return Err(syn::Error::new(
+                        nv.value.span(),
+                        "`protected` must be invoked as `protected(sensitivity = \"...\", ...)`. \
+                         Bare `protected` and name-value `protected = \"...\"` forms are not \
+                         valid syntax for protected-field metadata.",
+                    ));
+                }
+                _ => {}
+            }
             let Meta::List(list) = nested else { continue };
             if !list.path.is_ident("protected") {
                 continue;
@@ -427,7 +460,11 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
         redaction_span: redaction.as_ref().map(|(_, sp)| *sp),
         codec: codec.as_ref().map(|(s, _)| s.clone()),
         codec_span: codec.as_ref().map(|(_, sp)| *sp),
-        retention: retention.map(|(r, _)| r).unwrap_or(RetentionLit::Standard),
+        retention: retention
+            .as_ref()
+            .map(|(r, _)| *r)
+            .unwrap_or(RetentionLit::Standard),
+        retention_span: retention.as_ref().map(|(_, sp)| *sp),
         list_span,
     })
 }
@@ -439,17 +476,22 @@ fn parse_protected_list(list: &syn::MetaList) -> syn::Result<ProtectedSpec> {
 pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
     // Rule (a): `sensitivity = "none"` is the explicit "ordinary
     // field" assertion and cannot be combined with any other knob.
-    // Pointing the error at the sensitivity literal keeps the
-    // diagnostic actionable — the user either drops the attribute or
-    // raises sensitivity.
+    // Discrimination is by per-key *presence* (span-tracked), not
+    // value comparison: an explicit `redaction = "none"` is still a
+    // user-written extra knob even though the resulting value is the
+    // neutral default. Anchoring the caret at the first non-sensitivity
+    // span the user wrote gives them a "drop this key or raise
+    // sensitivity" pointer instead of a generic complaint about the
+    // sensitivity literal itself.
     if spec.sensitivity == SensitivityLit::None {
-        let extras = spec.rationale.is_some()
-            || spec.redaction != RedactionLit::None
-            || spec.codec.is_some()
-            || spec.retention != RetentionLit::Standard;
-        if extras {
+        let first_extra_span = spec
+            .rationale_span
+            .or(spec.redaction_span)
+            .or(spec.codec_span)
+            .or(spec.retention_span);
+        if let Some(span) = first_extra_span {
             return Err(syn::Error::new(
-                spec.sensitivity_span,
+                span,
                 "`sensitivity = \"none\"` cannot be combined with other \
                  protected-field metadata (rationale / redaction / codec / \
                  retention). Either drop the `protected(...)` attribute \
@@ -682,6 +724,66 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("sensitivity = \"none\""), "got: {msg}");
         assert!(msg.contains("cannot be combined"), "got: {msg}");
+    }
+
+    #[test]
+    fn rule_a_rejects_explicit_neutral_redaction_alongside_sensitivity_none() {
+        // The user wrote `redaction = "none"` explicitly. Even though
+        // the resulting `RedactionLit` value equals the neutral default,
+        // rule (a) treats the *presence* of the key as a contradiction
+        // — so the macro must reject this.
+        let f = field(quote! {
+            #[field(protected(sensitivity = "none", redaction = "none"))]
+            pub note: String,
+        });
+        let spec = parse_from_field(&f).expect("parse").expect("present");
+        assert!(
+            spec.redaction_span.is_some(),
+            "redaction_span must be populated when `redaction = ...` was written",
+        );
+        let err = validate(&spec, &f).expect_err("rule (a) presence check");
+        let msg = err.to_string();
+        assert!(msg.contains("cannot be combined"), "got: {msg}");
+    }
+
+    #[test]
+    fn rule_a_rejects_explicit_neutral_retention_alongside_sensitivity_none() {
+        // Same shape as the redaction case but for `retention =
+        // "standard"` — the previous value-comparison gate accepted
+        // this silently. Span-presence rejects it correctly.
+        let f = field(quote! {
+            #[field(protected(sensitivity = "none", retention = "standard"))]
+            pub note: String,
+        });
+        let spec = parse_from_field(&f).expect("parse").expect("present");
+        assert!(
+            spec.retention_span.is_some(),
+            "retention_span must be populated when `retention = ...` was written",
+        );
+        let err = validate(&spec, &f).expect_err("rule (a) retention presence");
+        assert!(err.to_string().contains("cannot be combined"));
+    }
+
+    #[test]
+    fn parse_from_field_rejects_bare_protected_path() {
+        let f = field(quote! {
+            #[field(protected)]
+            pub note: String,
+        });
+        let err = parse_from_field(&f).expect_err("bare path form");
+        let msg = err.to_string();
+        assert!(msg.contains("must be invoked as `protected("), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_from_field_rejects_name_value_protected() {
+        let f = field(quote! {
+            #[field(protected = "pii")]
+            pub note: String,
+        });
+        let err = parse_from_field(&f).expect_err("name-value form");
+        let msg = err.to_string();
+        assert!(msg.contains("must be invoked as `protected("), "got: {msg}");
     }
 
     #[test]
