@@ -212,6 +212,7 @@ mod tests {
             check: None,
             default_sql: default_sql.map(str::to_string),
             foreign_key: None,
+            generated: None,
             index_type: None,
             indexed: false,
             max_length: None,

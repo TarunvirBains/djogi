@@ -975,6 +975,7 @@ mod tests {
         TableSchema {
             app: None,
             columns: Vec::new(),
+            exclusion_constraints: Vec::new(),
             fts: None,
             is_through: false,
             moved_from_app: None,

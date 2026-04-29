@@ -118,6 +118,13 @@ pub struct TableSchema {
     /// order and the snapshot must round-trip exactly.
     pub columns: Vec<ColumnSchema>,
 
+    /// Table-level `EXCLUDE` constraints declared via
+    /// `#[model(exclusion(...))]`. Empty for the common case. Sorted
+    /// by `name` for determinism. `#[serde(default)]` so snapshots
+    /// predating this field round-trip cleanly.
+    #[serde(default)]
+    pub exclusion_constraints: Vec<ExclusionConstraintSchema>,
+
     /// Full-text search configuration when the model carries
     /// `#[model(fts = { source = "...", dictionary = "..." })]`.
     /// Snapshot is the single place the differ reads to detect
@@ -167,13 +174,6 @@ pub struct TableSchema {
     /// `#[model(tenant_key = "col_name")]` value. `Some(col)`
     /// activates RLS policy generation against that column.
     pub tenant_key: Option<String>,
-
-    /// Table-level `EXCLUDE` constraints declared via
-    /// `#[model(exclusion(...))]`. Empty for the common case. Sorted
-    /// by `name` for determinism. `#[serde(default)]` so snapshots
-    /// predating this field round-trip cleanly.
-    #[serde(default)]
-    pub exclusion_constraints: Vec<ExclusionConstraintSchema>,
 }
 
 /// Per-column snapshot.
@@ -414,6 +414,18 @@ pub struct ExclusionElementSchema {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExclusionConstraintSchema {
+    /// `true` emits `DEFERRABLE`. The macro enforces that
+    /// `initially_deferred = true` requires `deferrable = true`.
+    #[serde(default)]
+    pub deferrable: bool,
+    /// Element list in declaration order. Order is preserved verbatim
+    /// in the emitted DDL because `EXCLUDE` operator class semantics
+    /// depend on element order.
+    pub elements: Vec<ExclusionElementSchema>,
+    /// `true` emits `INITIALLY DEFERRED`. Only meaningful when
+    /// `deferrable = true`.
+    #[serde(default)]
+    pub initially_deferred: bool,
     /// Constraint name. Drives diff identity — two constraints with
     /// the same name on the same table are considered the same
     /// constraint by the differ.
@@ -421,21 +433,9 @@ pub struct ExclusionConstraintSchema {
     /// Index method (e.g. `"gist"`, `"btree"`). Emitted verbatim into
     /// `EXCLUDE USING <method>`.
     pub using: String,
-    /// Element list in declaration order. Order is preserved verbatim
-    /// in the emitted DDL because `EXCLUDE` operator class semantics
-    /// depend on element order.
-    pub elements: Vec<ExclusionElementSchema>,
     /// Optional `WHERE` predicate. Raw SQL, emitted verbatim. `None`
     /// means the constraint applies to every row.
     pub where_clause: Option<String>,
-    /// `true` emits `DEFERRABLE`. The macro enforces that
-    /// `initially_deferred = true` requires `deferrable = true`.
-    #[serde(default)]
-    pub deferrable: bool,
-    /// `true` emits `INITIALLY DEFERRED`. Only meaningful when
-    /// `deferrable = true`.
-    #[serde(default)]
-    pub initially_deferred: bool,
 }
 
 /// Postgres index method. Mirrors

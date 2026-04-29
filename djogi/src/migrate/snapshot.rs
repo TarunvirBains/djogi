@@ -472,6 +472,7 @@ mod tests {
                 check: None,
                 default_sql: Some("generate_id_desc()".to_string()),
                 foreign_key: None,
+                generated: None,
                 index_type: None,
                 indexed: false,
                 max_length: None,
@@ -496,6 +497,7 @@ mod tests {
                     ref_column: "id".to_string(),
                     ref_table: "owners".to_string(),
                 }),
+                generated: None,
                 index_type: None,
                 indexed: true,
                 max_length: None,
@@ -514,6 +516,7 @@ mod tests {
         let table = TableSchema {
             app: Some("billing".to_string()),
             columns,
+            exclusion_constraints: Vec::new(),
             fts: Some(FtsSchema {
                 column: "search".to_string(),
                 dictionary: "english".to_string(),

@@ -223,9 +223,7 @@ pub fn classify_operation(
         // row. Empty-table additions still classify here; compose's
         // empty-table fast-path emits the constraint inline before any
         // rows exist (PR 7 task 4).
-        SchemaOperation::AddExclusionConstraint { .. } => {
-            OnlineSafetyClassification::OfflineOnly
-        }
+        SchemaOperation::AddExclusionConstraint { .. } => OnlineSafetyClassification::OfflineOnly,
 
         // Dropping an exclusion constraint is catalog-only — Postgres
         // releases the underlying GiST/B-tree index without scanning
@@ -897,7 +895,8 @@ mod tests {
     use super::*;
     use crate::migrate::diff::{ColumnChange, SchemaOperation};
     use crate::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
+        ColumnSchema, ExclusionConstraintSchema, ExclusionElementSchema, ForeignKeySchema,
+        GeneratedColumnSchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
         IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, OnDeleteSchema,
         PkKindSchema,
     };
@@ -907,6 +906,7 @@ mod tests {
             check: None,
             default_sql: None,
             foreign_key: None,
+            generated: None,
             index_type: None,
             indexed: false,
             max_length: None,
@@ -2072,5 +2072,124 @@ mod tests {
             // per-op verdict (OnlineSafe for low-row tables).
             assert_eq!(*verdict, OnlineSafetyClassification::OnlineSafe);
         }
+    }
+
+    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated classification ──
+
+    fn exclusion(name: &str) -> ExclusionConstraintSchema {
+        ExclusionConstraintSchema {
+            deferrable: false,
+            elements: vec![ExclusionElementSchema {
+                expr: "room_id".to_string(),
+                with_operator: "=".to_string(),
+            }],
+            initially_deferred: false,
+            name: name.to_string(),
+            using: "gist".to_string(),
+            where_clause: None,
+        }
+    }
+
+    fn generated_column(name: &str, expression: &str) -> ColumnSchema {
+        ColumnSchema {
+            generated: Some(GeneratedColumnSchema {
+                expression: expression.to_string(),
+                stored: true,
+            }),
+            ..nullable_column(name)
+        }
+    }
+
+    #[test]
+    fn add_exclusion_constraint_classifies_as_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddExclusionConstraint {
+            table: "bookings".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
+        // Even on an empty table the verdict is OfflineOnly — Pg18 has
+        // no `NOT VALID` for `EXCLUDE`, so the live-plan layer refuses.
+        // The empty-table case is handled by compose's fast-path
+        // (PR 7 task 4) which emits the constraint inline before any
+        // rows exist; that path bypasses the classifier entirely.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn drop_exclusion_constraint_classifies_as_online_safe() {
+        let (_unused, ctx) = ctx_app(Some(1_000_000));
+        let op = SchemaOperation::DropExclusionConstraint {
+            table: "bookings".to_string(),
+            name: "no_overlap".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
+        // DROP CONSTRAINT releases the underlying GiST index; catalog-
+        // only operation regardless of row count.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe,
+        );
+    }
+
+    #[test]
+    fn add_stored_generated_column_classifies_as_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: generated_column("email_lower", "LOWER(email)"),
+        };
+        // Empty-table case still routes here; compose's fast-path is
+        // what bypasses the classifier when no rows exist.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn alter_column_set_generated_classifies_as_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(50));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "email_lower".to_string(),
+            change: ColumnChange::SetGenerated {
+                from: None,
+                to: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn alter_column_drop_generated_also_classifies_as_offline_only() {
+        // Even removing the generated expression is OfflineOnly: Pg
+        // re-evaluates the column's storage state under
+        // AccessExclusiveLock. There is no online path; the operator
+        // hand-edits a DROP+ADD COLUMN sequence.
+        let (_unused, ctx) = ctx_app(Some(50));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "email_lower".to_string(),
+            change: ColumnChange::SetGenerated {
+                from: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+                to: None,
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
     }
 }

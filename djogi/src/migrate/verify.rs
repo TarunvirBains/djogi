@@ -1856,6 +1856,7 @@ mod tests {
             check: None,
             default_sql: None,
             foreign_key: None,
+            generated: None,
             index_type: None,
             indexed: false,
             max_length: None,
@@ -1898,6 +1899,7 @@ mod tests {
         TableSchema {
             app: None,
             columns,
+            exclusion_constraints: Vec::new(),
             fts: None,
             is_through: false,
             moved_from_app: None,

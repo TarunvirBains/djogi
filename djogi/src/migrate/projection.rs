@@ -636,7 +636,11 @@ fn project_exclusion_constraint(spec: &ExclusionConstraintSpec) -> ExclusionCons
     ExclusionConstraintSchema {
         name: spec.name.to_string(),
         using: spec.using.to_string(),
-        elements: spec.elements.iter().map(project_exclusion_element).collect(),
+        elements: spec
+            .elements
+            .iter()
+            .map(project_exclusion_element)
+            .collect(),
         where_clause: spec.where_clause.map(|s| s.to_string()),
         deferrable: spec.deferrable,
         initially_deferred: spec.initially_deferred,
