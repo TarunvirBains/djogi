@@ -94,7 +94,7 @@ fn compile_pass_phase6_5() {
 
 #[test]
 fn compile_pass_phase7() {
-    // Note: globs lack negative lookahead, so this can't be expressed
+    // Note: globs cannot exclude sub-prefixes, so this can't be expressed
     // as `phase7_*.rs`. Each phase7-only fixture (excluding `phase7_zero*`
     // and `phase7_5_*`) is listed explicitly. There is currently just one.
     TestCases::new().pass("tests/compile_pass/phase7_gap2_deferrable_fk.rs");
@@ -165,7 +165,7 @@ fn compile_fail_phase6() {
 
 #[test]
 fn compile_fail_phase7() {
-    // Globs lack negative lookahead, so this can't be expressed as
+    // Globs cannot exclude sub-prefixes, so this can't be expressed as
     // `phase7_*.rs`. Each phase7-only fixture (excluding `phase7_zero*`
     // and `phase7_5_*`) is listed explicitly. There is currently just one.
     TestCases::new()
