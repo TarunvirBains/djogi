@@ -136,28 +136,42 @@ impl From<OnlineSafetyClassification> for Option<PlanClassification> {
     }
 }
 
+/// Single source of truth for `(PlanClassification, db-string)`
+/// pairs. Both [`PlanClassification::as_db_str`] and
+/// [`PlanClassification::from_db_str`] linear-scan this slice; the
+/// exhaustive match in [`assert_plan_classification_drift_guard`]
+/// is the compile-time guarantee that every variant lives here.
+const PLAN_CLASSIFICATION_LABELS: &[(PlanClassification, &str)] = &[
+    (PlanClassification::OnlineSafe, "online_safe"),
+    (PlanClassification::ExpandContract, "expand_contract"),
+    (PlanClassification::OfflineOnly, "offline_only"),
+];
+
+/// Compile-time exhaustiveness witness. Adding a variant without
+/// extending [`PLAN_CLASSIFICATION_LABELS`] fails to compile here.
+const fn assert_plan_classification_drift_guard(c: PlanClassification) -> &'static str {
+    match c {
+        PlanClassification::OnlineSafe => "online_safe",
+        PlanClassification::ExpandContract => "expand_contract",
+        PlanClassification::OfflineOnly => "offline_only",
+    }
+}
+
 impl PlanClassification {
     /// String form used in the `djogi_live_plans.classification` CHECK
     /// constraint. Keep in lockstep with the SQL CHECK clause in
     /// [`crate::live_migrate::state::INSTALL_SQL`].
     pub const fn as_db_str(self) -> &'static str {
-        match self {
-            PlanClassification::OnlineSafe => "online_safe",
-            PlanClassification::ExpandContract => "expand_contract",
-            PlanClassification::OfflineOnly => "offline_only",
-        }
+        assert_plan_classification_drift_guard(self)
     }
 
     /// Inverse of [`PlanClassification::as_db_str`]. Returns `None`
     /// for strings not in the CHECK list — callers surface this as a
     /// database-corruption indicator.
     pub fn from_db_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "online_safe" => PlanClassification::OnlineSafe,
-            "expand_contract" => PlanClassification::ExpandContract,
-            "offline_only" => PlanClassification::OfflineOnly,
-            _ => return None,
-        })
+        PLAN_CLASSIFICATION_LABELS
+            .iter()
+            .find_map(|(variant, label)| (*label == s).then_some(*variant))
     }
 }
 

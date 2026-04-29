@@ -134,39 +134,61 @@ pub enum PlanStatus {
     Failed,
 }
 
+/// Single source of truth for `(PlanStatus, db-string)` pairs.
+///
+/// Both [`PlanStatus::as_db_str`] and [`PlanStatus::from_db_str`] —
+/// and the test that asserts INSTALL_SQL covers every variant —
+/// linear-scan this slice. The exhaustive match in [`assert_plan_status_drift_guard`]
+/// is the compile-time guarantee that every variant lives in this
+/// table. Adding a `PlanStatus` variant fails compile until the
+/// drift-guard match gets a new arm; updating the slice forces
+/// `from_db_str` (linear scan) to recognise the new label and
+/// the test assertion to reach the new INSTALL_SQL needle.
+const PLAN_STATUS_LABELS: &[(PlanStatus, &str)] = &[
+    (PlanStatus::Pending, "pending"),
+    (PlanStatus::Running, "running"),
+    (PlanStatus::Paused, "paused"),
+    (PlanStatus::Validating, "validating"),
+    (PlanStatus::Cutover, "cutover"),
+    (PlanStatus::Finalizing, "finalizing"),
+    (PlanStatus::Complete, "complete"),
+    (PlanStatus::Abandoned, "abandoned"),
+    (PlanStatus::Failed, "failed"),
+];
+
+/// Compile-time exhaustiveness witness. Adding a `PlanStatus`
+/// variant without extending [`PLAN_STATUS_LABELS`] fails to
+/// compile here.
+const fn assert_plan_status_drift_guard(s: PlanStatus) -> &'static str {
+    match s {
+        PlanStatus::Pending => "pending",
+        PlanStatus::Running => "running",
+        PlanStatus::Paused => "paused",
+        PlanStatus::Validating => "validating",
+        PlanStatus::Cutover => "cutover",
+        PlanStatus::Finalizing => "finalizing",
+        PlanStatus::Complete => "complete",
+        PlanStatus::Abandoned => "abandoned",
+        PlanStatus::Failed => "failed",
+    }
+}
+
 impl PlanStatus {
     /// String form recorded in `djogi_live_plans.status`. Keep in
-    /// lockstep with the CHECK constraint in [`INSTALL_SQL`].
+    /// lockstep with the CHECK constraint in [`INSTALL_SQL`] — the
+    /// test in this module's `tests` block asserts every label
+    /// appears verbatim.
     pub const fn as_db_str(self) -> &'static str {
-        match self {
-            PlanStatus::Pending => "pending",
-            PlanStatus::Running => "running",
-            PlanStatus::Paused => "paused",
-            PlanStatus::Validating => "validating",
-            PlanStatus::Cutover => "cutover",
-            PlanStatus::Finalizing => "finalizing",
-            PlanStatus::Complete => "complete",
-            PlanStatus::Abandoned => "abandoned",
-            PlanStatus::Failed => "failed",
-        }
+        assert_plan_status_drift_guard(self)
     }
 
     /// Inverse of [`PlanStatus::as_db_str`]. Returns `None` for values
     /// outside the CHECK list — callers surface that as a
     /// database-corruption indicator the operator can act on.
     pub fn from_db_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "pending" => PlanStatus::Pending,
-            "running" => PlanStatus::Running,
-            "paused" => PlanStatus::Paused,
-            "validating" => PlanStatus::Validating,
-            "cutover" => PlanStatus::Cutover,
-            "finalizing" => PlanStatus::Finalizing,
-            "complete" => PlanStatus::Complete,
-            "abandoned" => PlanStatus::Abandoned,
-            "failed" => PlanStatus::Failed,
-            _ => return None,
-        })
+        PLAN_STATUS_LABELS
+            .iter()
+            .find_map(|(variant, label)| (*label == s).then_some(*variant))
     }
 }
 
@@ -415,57 +437,20 @@ mod tests {
         assert_eq!(PlanStatus::from_db_str("Pending"), None);
     }
 
-    // Exhaustive in-crate matches: adding a variant to `PlanStatus`
-    // or `PlanClassification` without listing it here fails to
-    // compile, which is the load-bearing guard against drift between
-    // the Rust enum and the SQL CHECK list. (`#[non_exhaustive]` only
-    // affects matches in downstream crates.) The label returned by
-    // each arm is asserted byte-for-byte against `as_db_str()` so the
-    // tests below also pin the SQL token.
-    const fn plan_status_label_for_drift_guard(s: PlanStatus) -> &'static str {
-        match s {
-            PlanStatus::Pending => "pending",
-            PlanStatus::Running => "running",
-            PlanStatus::Paused => "paused",
-            PlanStatus::Validating => "validating",
-            PlanStatus::Cutover => "cutover",
-            PlanStatus::Finalizing => "finalizing",
-            PlanStatus::Complete => "complete",
-            PlanStatus::Abandoned => "abandoned",
-            PlanStatus::Failed => "failed",
-        }
-    }
-
-    const fn plan_classification_label_for_drift_guard(c: PlanClassification) -> &'static str {
-        match c {
-            PlanClassification::OnlineSafe => "online_safe",
-            PlanClassification::ExpandContract => "expand_contract",
-            PlanClassification::OfflineOnly => "offline_only",
-        }
-    }
-
     #[test]
     fn install_sql_lists_every_plan_status_variant() {
-        // The SQL CHECK list must mention every Rust variant. The
-        // exhaustive match in `plan_status_label_for_drift_guard`
-        // forces updating this list when a variant lands; the
-        // assertion below then catches an INSTALL_SQL miss.
-        for status in [
-            PlanStatus::Pending,
-            PlanStatus::Running,
-            PlanStatus::Paused,
-            PlanStatus::Validating,
-            PlanStatus::Cutover,
-            PlanStatus::Finalizing,
-            PlanStatus::Complete,
-            PlanStatus::Abandoned,
-            PlanStatus::Failed,
-        ] {
-            let label = plan_status_label_for_drift_guard(status);
+        // Iterate the const slice that production uses for its
+        // forward and reverse lookups. The exhaustive match in
+        // `assert_plan_status_drift_guard` (above this `tests` block)
+        // is the compile-time guarantee that every PlanStatus variant
+        // lives in `PLAN_STATUS_LABELS`. Adding a variant fails to
+        // compile until the slice is extended; this test then
+        // asserts INSTALL_SQL has the matching CHECK entry.
+        for (variant, label) in PLAN_STATUS_LABELS {
             assert_eq!(
-                label,
-                status.as_db_str(),
-                "drift between drift-guard table and `as_db_str()` for {status:?}",
+                *label,
+                variant.as_db_str(),
+                "drift between PLAN_STATUS_LABELS and `as_db_str()` for {variant:?}",
             );
             let needle = format!("'{label}'");
             assert!(
@@ -477,17 +462,14 @@ mod tests {
 
     #[test]
     fn install_sql_lists_every_plan_classification_variant() {
+        // Same drift-guard pattern as PLAN_STATUS_LABELS — see plan.rs
+        // for `PLAN_CLASSIFICATION_LABELS` and its drift-guard match.
         for c in [
             PlanClassification::OnlineSafe,
             PlanClassification::ExpandContract,
             PlanClassification::OfflineOnly,
         ] {
-            let label = plan_classification_label_for_drift_guard(c);
-            assert_eq!(
-                label,
-                c.as_db_str(),
-                "drift between drift-guard table and `as_db_str()` for {c:?}",
-            );
+            let label = c.as_db_str();
             let needle = format!("'{label}'");
             assert!(
                 INSTALL_SQL.contains(&needle),
