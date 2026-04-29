@@ -98,6 +98,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
+                protected: None,
             }
         }),
         PkStrategy::RanjId => Some(quote! {
@@ -122,6 +123,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
+                protected: None,
             }
         }),
         // HeerIdDesc / RanjIdDesc share the same descriptor shape as their
@@ -150,6 +152,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
+                protected: None,
             }
         }),
         PkStrategy::RanjIdDesc => Some(quote! {
@@ -174,6 +177,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
+                protected: None,
             }
         }),
         PkStrategy::Serial => Some(quote! {
@@ -198,6 +202,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
+                protected: None,
             }
         }),
         PkStrategy::None => None,
@@ -230,6 +235,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
+                protected: None,
             }
         }),
     };
@@ -256,6 +262,7 @@ pub fn expand(
                 ("public", "created_at"),
                 ("self_view", "created_at"),
             ],
+            protected: None,
         }
     };
     let updated_at_desc = quote! {
@@ -280,6 +287,7 @@ pub fn expand(
                 ("public", "updated_at"),
                 ("self_view", "updated_at"),
             ],
+            protected: None,
         }
     };
 
@@ -423,6 +431,7 @@ pub fn expand(
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
                     visage_map: #projection_map_tokens,
+                    protected: ::std::option::Option::None,
                 }
             }
         })

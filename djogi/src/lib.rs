@@ -181,7 +181,8 @@ pub use context::DjogiContext;
 pub use descriptor::{
     DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype,
     IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget, IndexNullsOrder, IndexOrder,
-    IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType, index_name,
+    IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
 };
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
 // the symbol does not appear in default-feature builds or `cargo doc` output
@@ -229,7 +230,8 @@ pub mod prelude {
     pub use crate::descriptor::{
         DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype,
         IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
-        ModelDescriptor, PartitionSpec, PkType,
+        ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata, RedactionPolicy,
+        RetentionLabel, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};

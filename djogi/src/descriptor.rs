@@ -910,6 +910,7 @@ mod tests {
             on_delete: None,
             target_type_name: None,
             visage_map: &[],
+            protected: None,
         }];
 
         let _ = (OnDelete::Restrict, RelationKind::ForeignKey);
@@ -966,6 +967,7 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             },
             FieldDescriptor {
                 name: "label",
@@ -983,6 +985,7 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             },
         ];
 
@@ -1059,6 +1062,7 @@ mod tests {
         on_delete: None,
         target_type_name: None,
         visage_map: &[],
+        protected: None,
     };
 
     static T11_TEXT_FIELD: FieldDescriptor = FieldDescriptor {
@@ -1077,6 +1081,7 @@ mod tests {
         on_delete: None,
         target_type_name: None,
         visage_map: &[],
+        protected: None,
     };
 
     static T11_BOUNDARY_COLS: &[super::IndexColumnSpec] =
@@ -1229,6 +1234,122 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod protected_field_metadata_tests {
+    use super::{
+        FieldDescriptor, FieldSqlType, ProtectedFieldMetadata, RedactionPolicy, RetentionLabel,
+        Sensitivity,
+    };
+
+    /// Constructing a `ProtectedFieldMetadata` with non-default variants of
+    /// every enum field locks the struct shape to §1 D5 — adding or
+    /// renaming a field forces this test to fail before any consumer is
+    /// touched.
+    #[test]
+    fn protected_field_metadata_round_trips_non_default_variants() {
+        let pfm = ProtectedFieldMetadata {
+            sensitivity: Sensitivity::Pii,
+            rationale: "GDPR Art. 6(1)(b) — notification delivery",
+            redaction: RedactionPolicy::Mask,
+            codec: Some("aes256_gcm_v1"),
+            retention: RetentionLabel::Extended,
+        };
+        assert_eq!(pfm.sensitivity, Sensitivity::Pii);
+        assert_eq!(pfm.rationale, "GDPR Art. 6(1)(b) — notification delivery");
+        assert_eq!(pfm.redaction, RedactionPolicy::Mask);
+        assert_eq!(pfm.codec, Some("aes256_gcm_v1"));
+        assert_eq!(pfm.retention, RetentionLabel::Extended);
+    }
+
+    /// `Default` produces the neutral "ordinary field" state. T3+ relies on
+    /// these defaults when the macro elides unset attribute knobs.
+    #[test]
+    fn default_protected_field_metadata_is_neutral() {
+        let pfm = ProtectedFieldMetadata::default();
+        assert_eq!(pfm.sensitivity, Sensitivity::None);
+        assert_eq!(pfm.rationale, "");
+        assert_eq!(pfm.redaction, RedactionPolicy::None);
+        assert_eq!(pfm.codec, None);
+        assert_eq!(pfm.retention, RetentionLabel::Standard);
+    }
+
+    /// Enum-level `Default` impls match the struct-level neutral state —
+    /// independently checked so future refactors that move the defaults
+    /// onto the enums (or back) cannot drift.
+    #[test]
+    fn enum_defaults_match_neutral_metadata() {
+        assert_eq!(Sensitivity::default(), Sensitivity::None);
+        assert_eq!(RedactionPolicy::default(), RedactionPolicy::None);
+        assert_eq!(RetentionLabel::default(), RetentionLabel::Standard);
+    }
+
+    /// Logging consumers compare `Sensitivity` ordinals to gate field
+    /// exposure — pin the variant ordering so a future variant insertion
+    /// in the middle of the enum surfaces as a test failure.
+    #[test]
+    fn sensitivity_ordering_pins_least_to_most_sensitive() {
+        assert!(Sensitivity::None < Sensitivity::Internal);
+        assert!(Sensitivity::Internal < Sensitivity::Pii);
+        assert!(Sensitivity::Pii < Sensitivity::Sensitive);
+        assert!(Sensitivity::Sensitive < Sensitivity::Secret);
+    }
+
+    /// `FieldDescriptor` accepts both `protected: None` (the default that
+    /// the macro emits today) and `protected: Some(_)` (the shape T3 will
+    /// emit once `#[field(protected(...))]` is wired). A literal-level
+    /// smoke test prevents accidental shape regressions.
+    #[test]
+    fn field_descriptor_accepts_protected_none_and_some() {
+        let none_desc = FieldDescriptor {
+            name: "ordinary",
+            sql_type: FieldSqlType::Text,
+            nullable: false,
+            unique: false,
+            indexed: false,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            visage_map: &[],
+            protected: None,
+        };
+        assert!(none_desc.protected.is_none());
+
+        let some_desc = FieldDescriptor {
+            name: "email",
+            sql_type: FieldSqlType::Text,
+            nullable: false,
+            unique: true,
+            indexed: true,
+            max_length: None,
+            renamed_from: None,
+            rationale: None,
+            outbox_exclude: false,
+            sequence_within: None,
+            index_type: None,
+            relation_kind: None,
+            on_delete: None,
+            target_type_name: None,
+            visage_map: &[],
+            protected: Some(ProtectedFieldMetadata {
+                sensitivity: Sensitivity::Pii,
+                rationale: "Notification delivery",
+                redaction: RedactionPolicy::Mask,
+                codec: Some("aes256_gcm_v1"),
+                retention: RetentionLabel::Standard,
+            }),
+        };
+        let pfm = some_desc.protected.expect("constructed with Some(...)");
+        assert_eq!(pfm.sensitivity, Sensitivity::Pii);
+        assert_eq!(pfm.codec, Some("aes256_gcm_v1"));
+    }
+}
+
 /// Metadata for a single model field.
 ///
 /// `ModelDescriptor::fields` is the complete schema contract — it
@@ -1307,6 +1428,152 @@ pub struct FieldDescriptor {
     /// visage emitter projects the column under the aliased name
     /// when the given scope is active.
     pub visage_map: &'static [(&'static str, &'static str)],
+
+    /// `#[field(protected(...))]` metadata. `None` for fields that did
+    /// not opt in. Phase 7.5 T2 — descriptor surface only; T3 wires
+    /// macro parsing; T5+ classifier consumes for transition routing.
+    ///
+    /// Distinct from `Sensitivity::None` inside a `Some(_)` value: an
+    /// outer `None` means the adopter never invoked `protected(...)`,
+    /// while `Some(ProtectedFieldMetadata { sensitivity: None, .. })`
+    /// is an explicit "ordinary field" assertion. Auditing tools that
+    /// surface unannotated fields rely on this distinction.
+    pub protected: Option<ProtectedFieldMetadata>,
+}
+
+/// Sensitivity classification for protected fields. Phase 7.5 T2.
+///
+/// Drives downstream policy: redaction (logs / admin UI), codec
+/// selection (at-rest encryption), retention (purge cadence). Ordered
+/// from least to most sensitive — `None` is the explicit "ordinary
+/// field" marker. Logging consumers compare ordinals to gate field
+/// exposure, so the variant order is part of the contract.
+///
+/// `#[non_exhaustive]` so future regulatory classes (e.g. PHI / payment
+/// data) can be added without breaking downstream matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum Sensitivity {
+    /// Ordinary field; no protected-field semantics.
+    None,
+    /// Internal-only — operational metadata that should not surface
+    /// in adopter-facing UIs by default.
+    Internal,
+    /// Personally identifying information (GDPR Art. 4(1)).
+    Pii,
+    /// Sensitive personal data (GDPR Art. 9 special categories) or
+    /// equivalent regulatory class.
+    Sensitive,
+    /// Cryptographic secrets / authentication material.
+    Secret,
+}
+
+impl Default for Sensitivity {
+    /// `None` — opting into protected-field semantics is explicit.
+    fn default() -> Self {
+        Sensitivity::None
+    }
+}
+
+/// Redaction policy applied when a protected field is rendered into
+/// logs, admin UI, or any downstream surface that the adopter has not
+/// explicitly opted into. Phase 7.5 T2.
+///
+/// `#[non_exhaustive]` so future strategies (tokenisation, format-
+/// preserving redaction, etc.) can be added without breaking matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RedactionPolicy {
+    /// No redaction — the value flows through verbatim.
+    None,
+    /// Hash the value using HeeRanjId-compatible hashing (HMAC-SHA256
+    /// with a per-deployment key) before emission. Only valid on
+    /// fields whose stored type is HeerId / RanjId compatible — T3
+    /// enforces that constraint at macro-parse time.
+    HashId,
+    /// Mask the value — preserve length / type signal, replace
+    /// content with the deployment's masking glyph (default `*`).
+    Mask,
+    /// Drop the field entirely from the redacted projection.
+    Drop,
+}
+
+impl Default for RedactionPolicy {
+    /// `None` — redaction is opt-in alongside the rest of the
+    /// protected-field metadata.
+    fn default() -> Self {
+        RedactionPolicy::None
+    }
+}
+
+/// Retention label drives later purge / archival policy. Phase 7.5 T2.
+///
+/// `Standard` is the neutral default — the project's default retention
+/// window applies unless an adopter calls out a different label.
+///
+/// `#[non_exhaustive]` so future labels (e.g. legal-hold subclasses)
+/// can be added without breaking downstream matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum RetentionLabel {
+    /// Transient — purge eligible immediately after transactional use.
+    Transient,
+    /// Standard — purge per the project's default retention window.
+    Standard,
+    /// Extended — held longer than standard; specific window set by
+    /// the adopter's retention policy.
+    Extended,
+    /// Archival — long-term retention for legal / regulatory holds.
+    Archival,
+}
+
+impl Default for RetentionLabel {
+    /// `Standard` — most fields fall under the default retention
+    /// window; transient / extended / archival are explicit choices.
+    fn default() -> Self {
+        RetentionLabel::Standard
+    }
+}
+
+/// Protected-field metadata attached to a [`FieldDescriptor`]. Phase 7.5 T2.
+///
+/// Attached as `Option<ProtectedFieldMetadata>` on `FieldDescriptor`;
+/// `None` means "no protected-field semantics set" (the absence is
+/// distinct from `Sensitivity::None` because absence also implies the
+/// adopter never invoked `#[field(protected(...))]`, which keeps later
+/// auditing tools from confusing the two).
+///
+/// Fields are transport-neutral — every consumer (classifier, logging
+/// projection, admin UI projection) reads the same struct without
+/// reinterpretation.
+///
+/// `rationale` is a bare `&'static str` (not `Option<&'static str>`)
+/// to match the spec: when `sensitivity == None` the rationale is
+/// empty (`""`); when `sensitivity > None` T3's macro enforces a
+/// non-empty literal at parse time. The descriptor itself does not
+/// enforce the constraint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProtectedFieldMetadata {
+    pub sensitivity: Sensitivity,
+    pub rationale: &'static str,
+    pub redaction: RedactionPolicy,
+    pub codec: Option<&'static str>,
+    pub retention: RetentionLabel,
+}
+
+impl Default for ProtectedFieldMetadata {
+    /// Neutral defaults: no sensitivity, no rationale, no redaction,
+    /// no codec, standard retention. Constructed via `..Default::default()`
+    /// in T3+ when the macro elides unset attribute knobs.
+    fn default() -> Self {
+        Self {
+            sensitivity: Sensitivity::None,
+            rationale: "",
+            redaction: RedactionPolicy::None,
+            codec: None,
+            retention: RetentionLabel::Standard,
+        }
+    }
 }
 
 /// Sidecar FK-deferrability metadata emitted separately from

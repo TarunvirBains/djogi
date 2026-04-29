@@ -926,6 +926,7 @@ async fn missing_gist_warn_fires_at_most_once(_ctx: djogi::DjogiContext) {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             }];
             static DESC: ModelDescriptor = ModelDescriptor {
                 type_name: "UnindexedRegion",

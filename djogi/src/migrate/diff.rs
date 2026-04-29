@@ -2588,6 +2588,7 @@ mod tests {
             on_delete: None,
             target_type_name: None,
             visage_map: &[],
+            protected: None,
         }
     }
 
@@ -2812,6 +2813,7 @@ mod tests {
             on_delete: None,
             target_type_name: None,
             visage_map: &[],
+            protected: None,
         };
         static NEW_SLICE: &[FieldDescriptor] = &[NEW_NAME];
         let bare = ModelDescriptor {

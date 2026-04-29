@@ -1172,6 +1172,7 @@ mod tests {
                 on_delete: Some(OnDelete::Restrict),
                 target_type_name: Some("Owner"),
                 visage_map: &[],
+                protected: None,
             }],
             ..synth_model("vehicles", "Vehicle")
         };
@@ -1208,6 +1209,7 @@ mod tests {
             on_delete: Some(on_delete),
             target_type_name: Some("Owner"),
             visage_map: &[],
+            protected: None,
         }
     }
 
@@ -1281,6 +1283,7 @@ mod tests {
                 on_delete: Some(OnDelete::Restrict),
                 target_type_name: Some("Owner"),
                 visage_map: &[],
+                protected: None,
             }],
             ..synth_model("vehicles", "Vehicle")
         };
@@ -1332,6 +1335,7 @@ mod tests {
                 on_delete: Some(OnDelete::Restrict),
                 target_type_name: Some("User"),
                 visage_map: &[],
+                protected: None,
             }],
             ..synth_model("invoices", "Invoice")
         };
@@ -1372,6 +1376,7 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             }],
             ..synth_model("widgets", "Widget")
         };
@@ -1498,6 +1503,7 @@ mod tests {
                 on_delete: Some(OnDelete::Restrict),
                 target_type_name: Some("AuditRow"),
                 visage_map: &[],
+                protected: None,
             }],
             ..synth_model("invoices", "Invoice")
         };
@@ -1559,6 +1565,7 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             },
             FieldDescriptor {
                 name: "updated_at",
@@ -1576,6 +1583,7 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             },
         ];
         let m = ModelDescriptor {
@@ -1627,6 +1635,7 @@ mod tests {
             on_delete: None,
             target_type_name: None,
             visage_map: &[],
+            protected: None,
         }];
         let m = ModelDescriptor {
             fields: FIELDS,
@@ -1675,6 +1684,7 @@ mod tests {
             on_delete: Some(OnDelete::Restrict),
             target_type_name: Some("Owner"),
             visage_map: &[],
+            protected: None,
         }];
 
         // Each row: target PK type, expected substituted SQL on the FK
@@ -1755,6 +1765,7 @@ mod tests {
                 on_delete: Some(OnDelete::Restrict),
                 target_type_name: Some("Owner"),
                 visage_map: &[],
+                protected: None,
             },
             // Non-FK SmallInt — must NOT be rewritten to UUID (or to
             // anything else) just because it lives on a model with FK
@@ -1776,6 +1787,7 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             },
             // Non-FK Text — also must pass through verbatim.
             FieldDescriptor {
@@ -1794,6 +1806,7 @@ mod tests {
                 on_delete: None,
                 target_type_name: None,
                 visage_map: &[],
+                protected: None,
             },
         ];
         let owner = ModelDescriptor {
