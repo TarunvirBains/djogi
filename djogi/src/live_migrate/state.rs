@@ -138,12 +138,13 @@ pub enum PlanStatus {
 ///
 /// Both [`PlanStatus::as_db_str`] and [`PlanStatus::from_db_str`] —
 /// and the test that asserts INSTALL_SQL covers every variant —
-/// linear-scan this slice. The exhaustive match in [`assert_plan_status_drift_guard`]
-/// is the compile-time guarantee that every variant lives in this
-/// table. Adding a `PlanStatus` variant fails compile until the
-/// drift-guard match gets a new arm; updating the slice forces
-/// `from_db_str` (linear scan) to recognise the new label and
-/// the test assertion to reach the new INSTALL_SQL needle.
+/// linear-scan this slice. The compile-time `_PLAN_STATUS_DRIFT_GUARD`
+/// block (an exhaustive match) is the guarantee that every variant
+/// lives in this table: adding a `PlanStatus` variant fails compile
+/// until the drift-guard match gets a new arm; updating the match
+/// without updating the slice causes `as_db_str` to panic for the new
+/// variant in tests (`expect("invariant: ...")`), and `from_db_str`
+/// stops recognising the new label.
 const PLAN_STATUS_LABELS: &[(PlanStatus, &str)] = &[
     (PlanStatus::Pending, "pending"),
     (PlanStatus::Running, "running"),
@@ -156,30 +157,45 @@ const PLAN_STATUS_LABELS: &[(PlanStatus, &str)] = &[
     (PlanStatus::Failed, "failed"),
 ];
 
-/// Compile-time exhaustiveness witness. Adding a `PlanStatus`
-/// variant without extending [`PLAN_STATUS_LABELS`] fails to
-/// compile here.
-const fn assert_plan_status_drift_guard(s: PlanStatus) -> &'static str {
-    match s {
-        PlanStatus::Pending => "pending",
-        PlanStatus::Running => "running",
-        PlanStatus::Paused => "paused",
-        PlanStatus::Validating => "validating",
-        PlanStatus::Cutover => "cutover",
-        PlanStatus::Finalizing => "finalizing",
-        PlanStatus::Complete => "complete",
-        PlanStatus::Abandoned => "abandoned",
-        PlanStatus::Failed => "failed",
+/// Compile-time exhaustiveness witness. Adding a `PlanStatus` variant
+/// without extending the inner `match` fails to compile here. The
+/// block has no runtime effect — the value is `()` — but the
+/// exhaustive match enforces "every variant is named in source" so
+/// [`PLAN_STATUS_LABELS`] is forced to grow alongside (the test in
+/// the `tests` module asserts the slice covers every variant).
+const _PLAN_STATUS_DRIFT_GUARD: () = {
+    const fn check(s: PlanStatus) -> u8 {
+        match s {
+            PlanStatus::Pending => 0,
+            PlanStatus::Running => 1,
+            PlanStatus::Paused => 2,
+            PlanStatus::Validating => 3,
+            PlanStatus::Cutover => 4,
+            PlanStatus::Finalizing => 5,
+            PlanStatus::Complete => 6,
+            PlanStatus::Abandoned => 7,
+            PlanStatus::Failed => 8,
+        }
     }
-}
+    // Force the exhaustive match to be evaluated at const-eval time;
+    // the value is discarded but the compiler still checks coverage.
+    let _ = check(PlanStatus::Pending);
+};
 
 impl PlanStatus {
     /// String form recorded in `djogi_live_plans.status`. Keep in
     /// lockstep with the CHECK constraint in [`INSTALL_SQL`] — the
     /// test in this module's `tests` block asserts every label
     /// appears verbatim.
-    pub const fn as_db_str(self) -> &'static str {
-        assert_plan_status_drift_guard(self)
+    ///
+    /// Single source of truth: [`PLAN_STATUS_LABELS`]. Linear scan
+    /// over a 9-element slice is microsecond-cheap and the
+    /// drift-guard block above ensures every variant has a row.
+    pub fn as_db_str(self) -> &'static str {
+        PLAN_STATUS_LABELS
+            .iter()
+            .find_map(|(v, label)| (*v == self).then_some(*label))
+            .expect("invariant: PlanStatus variant missing from PLAN_STATUS_LABELS")
     }
 
     /// Inverse of [`PlanStatus::as_db_str`]. Returns `None` for values
@@ -435,6 +451,42 @@ mod tests {
         assert_eq!(PlanStatus::from_db_str(""), None);
         // Case-sensitive — uppercase variants are NOT in the CHECK list.
         assert_eq!(PlanStatus::from_db_str("Pending"), None);
+    }
+
+    #[test]
+    fn plan_status_label_slice_covers_every_variant() {
+        // PLAN_STATUS_LABELS is the runtime source for both as_db_str
+        // and from_db_str. Drift between the slice and the variant
+        // list would manifest as a panic in `as_db_str` (slice missing
+        // a row) or as `from_db_str` returning None for a real label
+        // (slice carrying a stale row). The compile-time
+        // `_PLAN_STATUS_DRIFT_GUARD` enforces "every variant named in
+        // source"; this test pins "every variant has a row in the
+        // slice and the row round-trips".
+        let exhaustive_list = [
+            PlanStatus::Pending,
+            PlanStatus::Running,
+            PlanStatus::Paused,
+            PlanStatus::Validating,
+            PlanStatus::Cutover,
+            PlanStatus::Finalizing,
+            PlanStatus::Complete,
+            PlanStatus::Abandoned,
+            PlanStatus::Failed,
+        ];
+        assert_eq!(
+            PLAN_STATUS_LABELS.len(),
+            exhaustive_list.len(),
+            "PLAN_STATUS_LABELS must contain exactly one row per PlanStatus variant"
+        );
+        for variant in exhaustive_list {
+            let label = variant.as_db_str();
+            assert_eq!(
+                PlanStatus::from_db_str(label),
+                Some(variant),
+                "round-trip failed for {variant:?}",
+            );
+        }
     }
 
     #[test]

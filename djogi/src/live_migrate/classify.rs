@@ -50,7 +50,7 @@ use crate::live_migrate::LoggingProfile;
 use crate::migrate::diff::{ColumnChange, SchemaOperation};
 use crate::migrate::pg_volatility::{Volatility, classify_default_expression};
 use crate::migrate::schema::{
-    ColumnSchema, IndexSchema, IndexTargetSchema, OnlineSafetyClassification,
+    ColumnSchema, IndexKindSchema, IndexSchema, IndexTargetSchema, OnlineSafetyClassification,
 };
 use std::collections::BTreeMap;
 
@@ -256,13 +256,13 @@ pub fn classify_operation(
             OnlineSafetyClassification::OnlineSafe
         }
 
-        // PK-flip ops must be filtered before reaching this dispatch —
-        // they belong to Phase 7's `pk_flip` cascade emitter family per
-        // the §6.5 boundary contract, not the Phase 7.5 online-safety
-        // surface. A misuse caller bypassing `classify_delta` should
-        // get a refused-classification verdict so Phase 7's runner
-        // refuses to apply rather than silently fast-applying a PK
-        // flip. `OfflineOnly` is the safe-by-default verdict.
+        // PK-flip ops belong to the core-migration `pk_flip` cascade
+        // emitter family — they must be filtered out by `classify_delta`
+        // before reaching this dispatch per the §6.5 boundary contract.
+        // A misuse caller bypassing the delta walk should get a
+        // refused-classification verdict so the runner refuses to apply
+        // rather than silently fast-applying a PK flip. `OfflineOnly`
+        // is the safe-by-default verdict.
         SchemaOperation::PkTypeFlip { .. }
         | SchemaOperation::PkTypeFlipGroup(_)
         | SchemaOperation::PkTypeFlipMultiGroup(_) => OnlineSafetyClassification::OfflineOnly,
@@ -362,8 +362,16 @@ fn classifier_applies(ctx: &ClassifyContext<'_>) -> bool {
     }
 }
 
-/// §7: "Add nullable column" → OnlineSafe; non-nullable depends on the
-/// default expression's volatility.
+/// §7: "Add nullable column" → OnlineSafe iff there is no default;
+/// nullability is orthogonal to the volatility classification.
+///
+/// A nullable add with a volatile default (`gen_random_uuid()` /
+/// `random()` / `clock_timestamp()`) still requires the 3-step
+/// ExpandContract pattern: Pg18's catalog-only fast-path is gated on
+/// the default being non-volatile, and Postgres evaluates the default
+/// once-per-row at backfill time regardless of the column's NULL
+/// permission. Both the nullable and non-nullable cases therefore route
+/// through the same volatility/override pipeline.
 ///
 /// Volatility resolution order (§820): adopter override per
 /// [`ClassifyContext::default_volatility_overrides`] takes precedence
@@ -376,21 +384,20 @@ fn classify_add_column(
     column: &ColumnSchema,
     ctx: &ClassifyContext<'_>,
 ) -> OnlineSafetyClassification {
-    if column.nullable {
-        // Nullable column — no backfill, catalog-only.
-        return OnlineSafetyClassification::OnlineSafe;
-    }
-    // Non-nullable. Pg18 catalog-fast-paths a non-nullable add only
-    // when the default is non-volatile. No default at all → backfill
-    // required → ExpandContract.
     let Some(default) = column.default_sql.as_deref() else {
+        // No default at all. Nullable → catalog-only fast-path.
+        // Non-nullable without a default → backfill required because
+        // Postgres has nothing to populate the column with.
+        if column.nullable {
+            return OnlineSafetyClassification::OnlineSafe;
+        }
         return OnlineSafetyClassification::ExpandContract;
     };
-    // Adopter override wins over the static table — the override is
-    // a deliberate assertion that a Djogi-unclassifiable expression is
-    // safe to fast-path. T3 enforces that overrides only attach to
-    // fields with a default expression, so the lookup is always
-    // meaningful when present.
+    // Default is present — same volatility/override pipeline applies
+    // regardless of nullability. Adopter override wins over the static
+    // table; T3 enforces that overrides only attach to fields with a
+    // default expression, so the lookup is always meaningful when
+    // present.
     if let Some(override_volatility) = ctx
         .default_volatility_overrides
         .get(&(table.to_string(), column.name.clone()))
@@ -480,12 +487,18 @@ fn classify_column_change(
 ///   OnlineSafe.
 /// - Widening without rewrite (`int4` → `int8`, `int2` → `int4`) →
 ///   OnlineSafe.
-/// - Otherwise → ExpandContract via shadow-column pattern. The
-///   "narrowing with truncation" → OfflineOnly case requires explicit
-///   adopter signal (`#[field(version, transform = ...)]`) the
-///   classifier cannot infer from the type pair alone, so the
-///   conservative ExpandContract verdict applies until that signal
-///   surfaces in a later phase.
+/// - Known narrowing pairs (BIGINT → INT4, varchar(N) → varchar(M)
+///   with M < N, TEXT → varchar(N), NUMERIC precision/scale loss) →
+///   OfflineOnly. Narrowing risks truncation / overflow at the row
+///   level; without an explicit `#[field(version, transform = ...)]`
+///   signal the classifier cannot prove the conversion is lossless,
+///   so it refuses the live path. When the transform field lands in a
+///   later phase, this routing refines to ExpandContract when the
+///   transform is present.
+/// - Other / unknown type changes (ENUM rename, JSONB shape change,
+///   foreign-type swaps) → ExpandContract via shadow-column pattern.
+///   These cases require backfill and operator gates regardless of
+///   direction.
 fn classify_type_change(from: &str, to: &str) -> OnlineSafetyClassification {
     if from == to {
         return OnlineSafetyClassification::OnlineSafe;
@@ -493,7 +506,108 @@ fn classify_type_change(from: &str, to: &str) -> OnlineSafetyClassification {
     if is_binary_coercible_widening(from, to) {
         return OnlineSafetyClassification::OnlineSafe;
     }
+    if is_narrowing_or_truncating(from, to) {
+        return OnlineSafetyClassification::OfflineOnly;
+    }
     OnlineSafetyClassification::ExpandContract
+}
+
+/// `true` when `from → to` is a known narrowing / truncating pair.
+///
+/// Recognised cases per §7:
+///
+/// - Integer narrowing: BIGINT → INT4, BIGINT → SMALLINT, INT4 →
+///   SMALLINT (overflow risk).
+/// - varchar-length narrowing: `varchar(N)` → `varchar(M)` with
+///   `M < N` (truncation risk).
+/// - text → `varchar(N)` (truncation risk, regardless of N).
+/// - NUMERIC narrowing: `numeric(p1, s1)` → `numeric(p2, s2)` with
+///   `p2 < p1` or `s2 < s1` (precision / scale loss).
+///
+/// Pairs the classifier cannot recognise as narrowing fall through —
+/// the caller then routes them via the regular ExpandContract path.
+fn is_narrowing_or_truncating(from: &str, to: &str) -> bool {
+    let f = from.trim().to_ascii_lowercase();
+    let t = to.trim().to_ascii_lowercase();
+
+    // Integer narrowing.
+    let is_narrowing_int = matches!(
+        (f.as_str(), t.as_str()),
+        ("bigint", "integer")
+            | ("bigint", "smallint")
+            | ("integer", "smallint")
+            | ("int8", "int4")
+            | ("int8", "int2")
+            | ("int4", "int2")
+    );
+    if is_narrowing_int {
+        return true;
+    }
+
+    // varchar / char length narrowing — same kind, smaller length.
+    if let Some((from_kind, from_len)) = parse_varchar(&f)
+        && let Some((to_kind, to_len)) = parse_varchar(&t)
+        && from_kind == to_kind
+        && let (Some(fl), Some(tl)) = (from_len, to_len)
+        && tl < fl
+    {
+        return true;
+    }
+
+    // text → varchar(N) — any length is potentially narrower than
+    // unbounded text.
+    if f == "text" && parse_varchar(&t).is_some() {
+        return true;
+    }
+
+    // NUMERIC narrowing — precision or scale loss.
+    if let Some((from_p, from_s)) = parse_numeric_params(&f)
+        && let Some((to_p, to_s)) = parse_numeric_params(&t)
+    {
+        match (from_p, to_p, from_s, to_s) {
+            (Some(fp), Some(tp), _, _) if tp < fp => return true,
+            (_, _, Some(fs), Some(ts)) if ts < fs => return true,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+/// Parse `numeric(p)` / `numeric(p, s)` / bare `numeric` into
+/// `(precision, scale)`. Returns `None` for non-numeric types. Each
+/// component is `None` when not specified in the source string.
+///
+/// `decimal` is a Postgres alias for `numeric` and is handled the
+/// same way.
+fn parse_numeric_params(t: &str) -> Option<(Option<u32>, Option<u32>)> {
+    let normalized = t.trim();
+    let rest = normalized
+        .strip_prefix("numeric")
+        .or_else(|| normalized.strip_prefix("decimal"))?
+        .trim_start();
+    if rest.is_empty() {
+        return Some((None, None));
+    }
+    let bytes = rest.as_bytes();
+    if bytes.first() != Some(&b'(') || bytes.last() != Some(&b')') {
+        return None;
+    }
+    let inner = rest[1..rest.len() - 1].trim();
+    if inner.is_empty() {
+        return Some((None, None));
+    }
+    let mut parts = inner.split(',');
+    let p_str = parts.next()?.trim();
+    let p: u32 = p_str.parse().ok()?;
+    let s = match parts.next() {
+        Some(s_str) => Some(s_str.trim().parse().ok()?),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((Some(p), s))
 }
 
 /// `true` when `from → to` is a Pg18 binary-coercible widening — no
@@ -605,23 +719,46 @@ fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSaf
     }
 }
 
-/// §7: "Add index" → OnlineSafe iff `concurrently = true`; otherwise
-/// ExpandContract with the Phase 7 advisory warning. Hash indexes
-/// without concurrent are refused at compose time (a separate
-/// validation entry point handles the refusal — out of T5 scope).
+/// §7: "Add index" routing.
+///
+/// Unique indexes (`UniqueConstraint` / `UniqueIndex`) ALWAYS route
+/// through `ExpandContract` regardless of the `concurrently` flag.
+/// The §7 rollout for "add unique constraint to populated table" is a
+/// 2-step pattern — `CREATE UNIQUE INDEX CONCURRENTLY` builds the
+/// index online, then `ALTER TABLE ... ADD CONSTRAINT ... USING INDEX`
+/// promotes it. Concurrency is required for the build but not
+/// sufficient on its own — the operator-driven 2-step gate is what
+/// `ExpandContract` represents.
+///
+/// Non-unique indexes:
+///
+/// - `concurrently = true` → `OnlineSafe` (`CREATE INDEX CONCURRENTLY`
+///   runs outside a transaction and does not block writes).
+/// - `concurrently = false` → `ExpandContract`. Catalog-only on an
+///   empty table, but on a populated table it holds an
+///   `AccessExclusiveLock` for the duration of the build. The
+///   classifier does not always know row count, so the conservative
+///   path applies (the empty-table fast-path stays hidden behind a
+///   later refinement that consults `estimated_rows`).
+///
+/// Hash indexes without concurrent are refused at compose time (a
+/// separate validation entry point handles the refusal — out of T5
+/// scope).
 fn classify_index_addition(index: &IndexSchema) -> OnlineSafetyClassification {
-    if index.requires_out_of_transaction {
-        // CREATE INDEX CONCURRENTLY — runs outside a transaction,
-        // does not block writes.
-        return OnlineSafetyClassification::OnlineSafe;
+    match index.kind {
+        IndexKindSchema::UniqueConstraint | IndexKindSchema::UniqueIndex => {
+            // Concurrency is required but not sufficient — the operator
+            // still drives the 2-step build-then-promote rollout.
+            OnlineSafetyClassification::ExpandContract
+        }
+        IndexKindSchema::NonUnique => {
+            if index.requires_out_of_transaction {
+                OnlineSafetyClassification::OnlineSafe
+            } else {
+                OnlineSafetyClassification::ExpandContract
+            }
+        }
     }
-    // Non-concurrent — catalog-only on an empty table, but on a
-    // populated table it holds an AccessExclusiveLock for the duration
-    // of the build. The classifier conservatively reports
-    // ExpandContract regardless of `index.kind`; the alternative
-    // (OnlineSafe with an unbounded lock window) would silently skip
-    // the live-plan handoff for populated tables.
-    OnlineSafetyClassification::ExpandContract
 }
 
 /// §7: replacing an index is only online when both DROP and CREATE use
@@ -716,6 +853,13 @@ mod tests {
         }
     }
 
+    fn nullable_column_with_default(name: &str, default: &str) -> ColumnSchema {
+        ColumnSchema {
+            default_sql: Some(default.to_string()),
+            ..nullable_column(name)
+        }
+    }
+
     fn index(name: &str, table: &str, concurrently: bool) -> IndexSchema {
         IndexSchema {
             extension_dependency: None,
@@ -728,6 +872,18 @@ mod tests {
             requires_out_of_transaction: concurrently,
             table: table.to_string(),
             target: IndexTargetSchema::Columns(Vec::new()),
+        }
+    }
+
+    fn unique_index(
+        name: &str,
+        table: &str,
+        kind: IndexKindSchema,
+        concurrently: bool,
+    ) -> IndexSchema {
+        IndexSchema {
+            kind,
+            ..index(name, table, concurrently)
         }
     }
 
@@ -826,6 +982,68 @@ mod tests {
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_nullable_column_with_random_default_is_expand_contract() {
+        // Spec-correctness: `ADD COLUMN <nullable> DEFAULT random()`
+        // STILL requires the 3-step ExpandContract pattern. Pg18's
+        // catalog-only fast-path is gated on the default being
+        // non-volatile; the column's NULL permission does not change
+        // the underlying volatility check. Pre-fix the classifier
+        // returned OnlineSafe for any nullable add regardless of
+        // default volatility.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: nullable_column_with_default("seed", "random()"),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_nullable_column_with_gen_random_uuid_default_is_expand_contract() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: nullable_column_with_default("token", "gen_random_uuid()"),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_nullable_column_with_clock_timestamp_default_is_expand_contract() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddColumn {
+            table: "events".to_string(),
+            column: nullable_column_with_default("logged_at", "clock_timestamp()"),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_nullable_column_with_stable_default_is_online_safe() {
+        // Confirms the pipeline handles the non-volatile case for
+        // nullable columns too — `now()` is STABLE, catalog-only
+        // fast-path still applies.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddColumn {
+            table: "events".to_string(),
+            column: nullable_column_with_default("logged_at", "now()"),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
         );
     }
 
@@ -983,8 +1201,11 @@ mod tests {
     }
 
     #[test]
-    fn text_to_varchar_is_expand_contract() {
-        // Narrowing direction — conservative ExpandContract.
+    fn text_to_varchar_is_offline_only() {
+        // Narrowing direction — text is unbounded, varchar(N) imposes
+        // a maximum length, so the conversion risks truncation.
+        // Without an explicit transform signal the classifier refuses
+        // the live path.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AlterColumn {
             table: "users".to_string(),
@@ -992,6 +1213,117 @@ mod tests {
             change: ColumnChange::ChangeType {
                 from: "text".to_string(),
                 to: "varchar(255)".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn bigint_to_int4_is_offline_only() {
+        // Narrowing integer pair — overflow risk on rows with values
+        // outside INT4 range. Routes to OfflineOnly until an explicit
+        // transform signal lets the classifier prove the conversion
+        // is lossless.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "metrics".to_string(),
+            column: "count".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "bigint".to_string(),
+                to: "integer".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn int4_to_smallint_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "metrics".to_string(),
+            column: "count".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "integer".to_string(),
+                to: "smallint".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn varchar_narrowing_is_offline_only() {
+        // varchar(20) → varchar(10) — truncation risk for rows with
+        // values longer than 10 bytes.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "tag".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "varchar(20)".to_string(),
+                to: "varchar(10)".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn numeric_precision_loss_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "ledger".to_string(),
+            column: "amount".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "numeric(20, 4)".to_string(),
+                to: "numeric(10, 4)".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn numeric_scale_loss_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "ledger".to_string(),
+            column: "amount".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "numeric(20, 4)".to_string(),
+                to: "numeric(20, 2)".to_string(),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly
+        );
+    }
+
+    #[test]
+    fn unknown_type_change_remains_expand_contract() {
+        // ENUM rename / JSONB shape change / other unknown type pair
+        // — not a known narrowing or widening, so the conservative
+        // ExpandContract path applies.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "status".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "user_status_v1".to_string(),
+                to: "user_status_v2".to_string(),
             },
         };
         assert_eq!(
@@ -1056,6 +1388,64 @@ mod tests {
     fn add_non_concurrent_index_is_expand_contract() {
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_concurrent_unique_constraint_is_expand_contract() {
+        // Per §7: adding a unique constraint to a populated table is a
+        // 2-step rollout — CREATE UNIQUE INDEX CONCURRENTLY then
+        // ALTER TABLE ... ADD CONSTRAINT ... USING INDEX. Concurrency
+        // alone does NOT make the constraint addition OnlineSafe; the
+        // operator-driven gate is what ExpandContract represents.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddIndex(unique_index(
+            "ux_email",
+            "users",
+            IndexKindSchema::UniqueConstraint,
+            true,
+        ));
+        let verdict = classify_operation(&op, &ctx);
+        assert_ne!(
+            verdict,
+            OnlineSafetyClassification::OnlineSafe,
+            "unique constraint must not short-circuit to OnlineSafe even when built concurrently"
+        );
+        assert_eq!(verdict, OnlineSafetyClassification::ExpandContract);
+    }
+
+    #[test]
+    fn add_concurrent_unique_index_is_expand_contract() {
+        // Same rule applies to UniqueIndex (partial unique / NULLS NOT
+        // DISTINCT) — the build is online, the promotion is the gate.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddIndex(unique_index(
+            "ux_email_partial",
+            "users",
+            IndexKindSchema::UniqueIndex,
+            true,
+        ));
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_non_concurrent_unique_constraint_is_expand_contract() {
+        // Non-concurrent unique build holds AccessExclusiveLock for the
+        // duration plus needs the constraint promotion — both reasons
+        // route through ExpandContract.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddIndex(unique_index(
+            "ux_email",
+            "users",
+            IndexKindSchema::UniqueConstraint,
+            false,
+        ));
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::ExpandContract

@@ -91,6 +91,56 @@ pub enum StepKind {
     RunReversibleSchemaOp,
 }
 
+/// Single source of truth for `(StepKind, snake_case-label)` pairs.
+///
+/// `StepKind` derives `Serialize` / `Deserialize` with
+/// `#[serde(rename_all = "snake_case")]`, so production
+/// serialisation routes through serde directly. This slice — paired
+/// with the `_STEP_KIND_DRIFT_GUARD` block above and the exhaustive
+/// snapshot test in the `tests` module — pins the canonical label
+/// for every variant so a variant rename in source can't silently
+/// change the persisted plan-file JSON.
+///
+/// Test-gated because the production path is serde; the slice exists
+/// purely to anchor the drift-guard test.
+#[cfg(test)]
+const STEP_KIND_LABELS: &[(StepKind, &str)] = &[
+    (StepKind::ExpandSchema, "expand_schema"),
+    (
+        StepKind::BeginCompatibilityWindow,
+        "begin_compatibility_window",
+    ),
+    (StepKind::BackfillChunked, "backfill_chunked"),
+    (StepKind::ValidateBackfill, "validate_backfill"),
+    (StepKind::CutoverReads, "cutover_reads"),
+    (StepKind::CutoverWrites, "cutover_writes"),
+    (StepKind::FinalizeConstraints, "finalize_constraints"),
+    (StepKind::CleanupLegacyState, "cleanup_legacy_state"),
+    (StepKind::RunReversibleSchemaOp, "run_reversible_schema_op"),
+];
+
+/// Compile-time exhaustiveness witness for `StepKind`. Adding a
+/// variant without extending the inner `match` fails to compile here.
+/// The block has no runtime effect — the value is `()` — but the
+/// exhaustive match enforces "every variant is named in source" so
+/// [`STEP_KIND_LABELS`] is forced to grow alongside.
+const _STEP_KIND_DRIFT_GUARD: () = {
+    const fn check(k: StepKind) -> u8 {
+        match k {
+            StepKind::ExpandSchema => 0,
+            StepKind::BeginCompatibilityWindow => 1,
+            StepKind::BackfillChunked => 2,
+            StepKind::ValidateBackfill => 3,
+            StepKind::CutoverReads => 4,
+            StepKind::CutoverWrites => 5,
+            StepKind::FinalizeConstraints => 6,
+            StepKind::CleanupLegacyState => 7,
+            StepKind::RunReversibleSchemaOp => 8,
+        }
+    }
+    let _ = check(StepKind::ExpandSchema);
+};
+
 // ── PlanClassification ────────────────────────────────────────────────
 
 /// The classification recorded in the `djogi_live_plans.classification`
@@ -139,8 +189,11 @@ impl From<OnlineSafetyClassification> for Option<PlanClassification> {
 /// Single source of truth for `(PlanClassification, db-string)`
 /// pairs. Both [`PlanClassification::as_db_str`] and
 /// [`PlanClassification::from_db_str`] linear-scan this slice; the
-/// exhaustive match in [`assert_plan_classification_drift_guard`]
-/// is the compile-time guarantee that every variant lives here.
+/// compile-time `_PLAN_CLASSIFICATION_DRIFT_GUARD` block is the
+/// guarantee that every variant lives here. Adding a variant fails
+/// compile until the drift-guard match grows; updating the match
+/// without updating the slice causes `as_db_str` to panic for the
+/// new variant in tests.
 const PLAN_CLASSIFICATION_LABELS: &[(PlanClassification, &str)] = &[
     (PlanClassification::OnlineSafe, "online_safe"),
     (PlanClassification::ExpandContract, "expand_contract"),
@@ -148,21 +201,34 @@ const PLAN_CLASSIFICATION_LABELS: &[(PlanClassification, &str)] = &[
 ];
 
 /// Compile-time exhaustiveness witness. Adding a variant without
-/// extending [`PLAN_CLASSIFICATION_LABELS`] fails to compile here.
-const fn assert_plan_classification_drift_guard(c: PlanClassification) -> &'static str {
-    match c {
-        PlanClassification::OnlineSafe => "online_safe",
-        PlanClassification::ExpandContract => "expand_contract",
-        PlanClassification::OfflineOnly => "offline_only",
+/// extending the inner `match` fails to compile here. The block has
+/// no runtime effect — the value is `()` — but the exhaustive match
+/// enforces "every variant is named in source" so
+/// [`PLAN_CLASSIFICATION_LABELS`] is forced to grow alongside.
+const _PLAN_CLASSIFICATION_DRIFT_GUARD: () = {
+    const fn check(c: PlanClassification) -> u8 {
+        match c {
+            PlanClassification::OnlineSafe => 0,
+            PlanClassification::ExpandContract => 1,
+            PlanClassification::OfflineOnly => 2,
+        }
     }
-}
+    let _ = check(PlanClassification::OnlineSafe);
+};
 
 impl PlanClassification {
     /// String form used in the `djogi_live_plans.classification` CHECK
     /// constraint. Keep in lockstep with the SQL CHECK clause in
     /// [`crate::live_migrate::state::INSTALL_SQL`].
-    pub const fn as_db_str(self) -> &'static str {
-        assert_plan_classification_drift_guard(self)
+    ///
+    /// Single source of truth: [`PLAN_CLASSIFICATION_LABELS`]. Linear
+    /// scan over a 3-element slice is microsecond-cheap and the
+    /// drift-guard block above ensures every variant has a row.
+    pub fn as_db_str(self) -> &'static str {
+        PLAN_CLASSIFICATION_LABELS
+            .iter()
+            .find_map(|(v, label)| (*v == self).then_some(*label))
+            .expect("invariant: PlanClassification variant missing from PLAN_CLASSIFICATION_LABELS")
     }
 
     /// Inverse of [`PlanClassification::as_db_str`]. Returns `None`
@@ -390,11 +456,10 @@ pub enum PlanValidationError {
         expected: u32,
         observed: u32,
     },
-    /// The header's slug contained a byte outside the portable
-    /// `[A-Za-z0-9_]` (described in plain English: ASCII letter, ASCII
-    /// digit, or underscore) set used for the on-disk filename. The
-    /// offset and offending byte are reported so the operator can
-    /// pinpoint the bad character.
+    /// The header's slug contained a byte outside the portable set
+    /// used for the on-disk filename — that set is "ASCII letter,
+    /// ASCII digit, or underscore". The offset and offending byte are
+    /// reported so the operator can pinpoint the bad character.
     #[error("slug contains non-portable byte 0x{byte:02x} at offset {offset}")]
     SlugByte { offset: usize, byte: u8 },
     /// The header's slug was the empty string.
@@ -508,6 +573,71 @@ mod tests {
         assert_eq!(s, "\"begin_compatibility_window\"");
         let s = serde_json::to_string(&StepKind::RunReversibleSchemaOp).unwrap();
         assert_eq!(s, "\"run_reversible_schema_op\"");
+    }
+
+    #[test]
+    fn step_kind_label_slice_covers_every_variant_with_canonical_form() {
+        // Drift guard for the on-disk plan-file JSON: every StepKind
+        // variant must serialise to exactly the label recorded in
+        // STEP_KIND_LABELS. The compile-time `_STEP_KIND_DRIFT_GUARD`
+        // block enforces "every variant named in source"; this test
+        // pins "every variant has a row in the slice AND that row's
+        // label matches what serde emits". Together they make a
+        // variant rename a compile failure or a test failure, never a
+        // silent change to persisted plan-file bytes.
+        let exhaustive_list = [
+            StepKind::ExpandSchema,
+            StepKind::BeginCompatibilityWindow,
+            StepKind::BackfillChunked,
+            StepKind::ValidateBackfill,
+            StepKind::CutoverReads,
+            StepKind::CutoverWrites,
+            StepKind::FinalizeConstraints,
+            StepKind::CleanupLegacyState,
+            StepKind::RunReversibleSchemaOp,
+        ];
+        assert_eq!(
+            STEP_KIND_LABELS.len(),
+            exhaustive_list.len(),
+            "STEP_KIND_LABELS must contain exactly one row per StepKind variant"
+        );
+        for variant in exhaustive_list {
+            let row = STEP_KIND_LABELS
+                .iter()
+                .find(|(v, _)| *v == variant)
+                .unwrap_or_else(|| panic!("STEP_KIND_LABELS missing row for {variant:?}"));
+            let serialized = serde_json::to_string(&variant).unwrap();
+            let expected = format!("\"{}\"", row.1);
+            assert_eq!(
+                serialized, expected,
+                "serde label for {variant:?} drifted from STEP_KIND_LABELS",
+            );
+        }
+    }
+
+    #[test]
+    fn plan_classification_label_slice_covers_every_variant() {
+        // Drift guard for as_db_str / from_db_str: linear scan over
+        // PLAN_CLASSIFICATION_LABELS must reach every variant, and
+        // every label must round-trip.
+        let exhaustive_list = [
+            PlanClassification::OnlineSafe,
+            PlanClassification::ExpandContract,
+            PlanClassification::OfflineOnly,
+        ];
+        assert_eq!(
+            PLAN_CLASSIFICATION_LABELS.len(),
+            exhaustive_list.len(),
+            "PLAN_CLASSIFICATION_LABELS must contain exactly one row per variant"
+        );
+        for variant in exhaustive_list {
+            let label = variant.as_db_str();
+            assert_eq!(
+                PlanClassification::from_db_str(label),
+                Some(variant),
+                "round-trip failed for {variant:?}",
+            );
+        }
     }
 
     #[test]

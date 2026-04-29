@@ -62,7 +62,12 @@
 ///
 /// Mirrors the Pg18 `pg_proc.provolatile` axis; the variant order
 /// matches Postgres' own ordering of "least to most variable".
+///
+/// `#[non_exhaustive]` so future Postgres categories (or refinements
+/// like a `Leakproof` axis) can land without breaking downstream
+/// matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Volatility {
     /// Pure function — no DB reads, no side effects, same input
     /// always produces same output. Catalog-only fast-path.
@@ -169,20 +174,29 @@ pub fn classify_default_expression(expr: &str) -> Volatility {
 /// Recognise the four literal shapes Postgres accepts in a `DEFAULT`
 /// expression: string, numeric, boolean, and `NULL`.
 ///
+/// **The entire trimmed expression must be a single literal token.**
+/// Compound expressions like `1 + random()` are NOT literals — the
+/// presence of operators, function-call parentheses, or whitespace
+/// separators between tokens means the expression evaluates at write
+/// time and the volatility of any sub-call dominates. Returning `true`
+/// for those would route a volatile compound default through the
+/// Immutable fast-path, silently skipping the 3-step ExpandContract
+/// pattern Pg18 requires.
+///
 /// Plain-English shape rules, implemented with byte-level checks only:
 ///
-/// - **String literal.** First non-whitespace byte is a single quote
-///   `'`, OR is `E` / `e` followed immediately by a single quote
-///   (Postgres' escape-string syntax), OR is `$` (dollar-quoted
-///   strings). Internal escaping is not validated here; the
-///   classifier only needs to decide "is this expression a
-///   constant?" and any malformed literal would fail later at the
-///   `ALTER TABLE` site.
-/// - **Numeric literal.** First byte is an ASCII digit, optionally
-///   preceded by a single `+` or `-` sign. Bytes after that are
-///   either ASCII digits, a single `.`, or one of `e` / `E` for
-///   exponent notation. Validation is loose for the same reason —
-///   Postgres rejects malformed numbers itself.
+/// - **String literal.** Trimmed expression starts AND ends with a
+///   single quote `'`, OR is `E'...'` / `e'...'` (escape-string
+///   syntax) starting with the prefix and ending with `'`, OR is
+///   dollar-quoted (`$tag$...$tag$`) starting and ending with `$`.
+///   The trimmed form must have no characters following the closing
+///   quote. Internal escaping is not validated here — Postgres
+///   rejects malformed literals at the `ALTER TABLE` site.
+/// - **Numeric literal.** Trimmed expression is an optional `+` /
+///   `-` sign, followed by one or more ASCII digits, optionally a
+///   single `.` and more digits, optionally a single `e` / `E`
+///   followed by an optional sign and digits. Anything beyond that
+///   (operators, whitespace, parens, additional tokens) disqualifies.
 /// - **Boolean literal.** Exactly `true` or `false` (case-insensitive,
 ///   matching Postgres' own behaviour).
 /// - **NULL.** Exactly `NULL` or `null` (case-insensitive).
@@ -192,29 +206,9 @@ fn is_literal_shape(expr: &str) -> bool {
         return false;
     }
 
-    // String literal — `'...'`, `E'...'`, `e'...'`, or `$tag$...$tag$`.
-    if bytes[0] == b'\'' || bytes[0] == b'$' {
-        return true;
-    }
-    if bytes.len() >= 2 && (bytes[0] == b'E' || bytes[0] == b'e') && bytes[1] == b'\'' {
-        return true;
-    }
-
-    // Numeric literal — optional sign + leading digit. The classifier
-    // accepts the broader Postgres-numeric grammar (decimals,
-    // exponents) by checking only the first one or two bytes; a fully
-    // malformed numeric still satisfies "shape of a literal" for
-    // classification purposes.
-    if bytes[0].is_ascii_digit() {
-        return true;
-    }
-    if (bytes[0] == b'+' || bytes[0] == b'-') && bytes.len() >= 2 && bytes[1].is_ascii_digit() {
-        return true;
-    }
-
-    // Boolean / NULL — case-insensitive match. The classifier compares
-    // against the full token because `t` / `f` and other shorthand
-    // forms are not accepted in a `DEFAULT` clause.
+    // Boolean / NULL — exact case-insensitive match against the full
+    // expression. `eq_ignore_ascii_case` already enforces "no extra
+    // bytes" because the comparison is byte-length-checked.
     if expr.eq_ignore_ascii_case("true")
         || expr.eq_ignore_ascii_case("false")
         || expr.eq_ignore_ascii_case("null")
@@ -222,7 +216,142 @@ fn is_literal_shape(expr: &str) -> bool {
         return true;
     }
 
+    // String literal — must START and END with the matching quote
+    // delimiter and form a SINGLE self-contained quoted run. The
+    // classifier rejects compound forms like `'a' || 'b'` because
+    // they evaluate at write time; the volatility of the operands
+    // dominates, not the string-ness of either token.
+    if is_single_quoted_run(bytes, 0) {
+        return true;
+    }
+    if bytes.len() >= 3 && (bytes[0] == b'E' || bytes[0] == b'e') && is_single_quoted_run(bytes, 1)
+    {
+        return true;
+    }
+    if is_single_dollar_quoted_run(bytes) {
+        return true;
+    }
+
+    // Numeric literal — single token: optional sign, one or more
+    // digits, optional `.<digits>`, optional `[eE][+-]?<digits>`. The
+    // walk consumes the whole expression; any byte that is not part
+    // of this grammar disqualifies the expression as a pure literal.
+    is_numeric_literal(bytes)
+}
+
+/// `true` iff `bytes[start..]` is `'...'` — a single self-contained
+/// Postgres string literal. Embedded `'` characters are accepted only
+/// as Postgres' standard `''` escape (an apostrophe doubled inside
+/// the literal); a lone `'` mid-string ends the run and would mean
+/// the expression is not a single quoted token.
+fn is_single_quoted_run(bytes: &[u8], start: usize) -> bool {
+    if start + 2 > bytes.len() {
+        return false;
+    }
+    if bytes[start] != b'\'' {
+        return false;
+    }
+    let mut idx = start + 1;
+    while idx < bytes.len() {
+        if bytes[idx] == b'\'' {
+            // Doubled quote — Postgres's standard escape; consume both
+            // bytes and continue the run.
+            if idx + 1 < bytes.len() && bytes[idx + 1] == b'\'' {
+                idx += 2;
+                continue;
+            }
+            // Single quote: this must be the closing quote, and the
+            // run must end here exactly.
+            return idx + 1 == bytes.len();
+        }
+        idx += 1;
+    }
     false
+}
+
+/// `true` iff `bytes` is `$tag$...$tag$` — a single self-contained
+/// dollar-quoted Postgres string. The tag is the bytes between the
+/// leading and second `$`; the matching closing `$tag$` must end the
+/// expression exactly.
+fn is_single_dollar_quoted_run(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes[0] != b'$' {
+        return false;
+    }
+    // Locate the closing `$` of the opening tag.
+    let mut tag_end = 1;
+    while tag_end < bytes.len() && bytes[tag_end] != b'$' {
+        tag_end += 1;
+    }
+    if tag_end >= bytes.len() {
+        return false;
+    }
+    let tag = &bytes[..=tag_end];
+    if bytes.len() < tag.len() * 2 {
+        return false;
+    }
+    // The closing tag must end exactly at the last byte; require the
+    // expression to be `<open-tag><body><close-tag>` with the body
+    // containing no occurrence of `<close-tag>`.
+    let close_start = bytes.len() - tag.len();
+    if &bytes[close_start..] != tag {
+        return false;
+    }
+    let body = &bytes[tag.len()..close_start];
+    // Body must not contain the tag as a substring (otherwise the
+    // expression contains multiple dollar-quoted runs / partial tags).
+    if body.windows(tag.len()).any(|w| w == tag) {
+        return false;
+    }
+    true
+}
+
+/// Walk `bytes` as a single Postgres numeric literal token. Returns
+/// `true` iff the entire byte slice (after the optional sign) consists
+/// of digits with at most one `.` and at most one exponent suffix
+/// (`e` / `E` with an optional sign and one or more digits). No
+/// embedded whitespace, no operators, no parentheses.
+fn is_numeric_literal(bytes: &[u8]) -> bool {
+    if bytes.is_empty() {
+        return false;
+    }
+    let mut idx: usize = 0;
+    if bytes[0] == b'+' || bytes[0] == b'-' {
+        idx += 1;
+    }
+    // Integer part — at least one digit.
+    let int_start = idx;
+    while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    if idx == int_start {
+        // No leading digits after the optional sign — the leading byte
+        // could have been `.` (rare but legal), so handle that here.
+        if idx >= bytes.len() || bytes[idx] != b'.' {
+            return false;
+        }
+    }
+    // Optional fractional part.
+    if idx < bytes.len() && bytes[idx] == b'.' {
+        idx += 1;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+    }
+    // Optional exponent.
+    if idx < bytes.len() && (bytes[idx] == b'e' || bytes[idx] == b'E') {
+        idx += 1;
+        if idx < bytes.len() && (bytes[idx] == b'+' || bytes[idx] == b'-') {
+            idx += 1;
+        }
+        let exp_start = idx;
+        while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+            idx += 1;
+        }
+        if idx == exp_start {
+            return false;
+        }
+    }
+    idx == bytes.len()
 }
 
 #[cfg(test)]
@@ -417,5 +546,82 @@ mod tests {
     fn is_literal_shape_rejects_bare_identifiers() {
         assert!(!is_literal_shape("some_column"));
         assert!(!is_literal_shape("CURRENT_TIMESTAMP"));
+    }
+
+    #[test]
+    fn is_literal_shape_rejects_compound_numeric_expressions() {
+        // `1 + random()` starts with a digit but is not a pure literal —
+        // the operator and function call mean Postgres evaluates the
+        // expression at write time and the volatility of any sub-call
+        // dominates. The classifier MUST NOT short-circuit to Immutable.
+        assert!(!is_literal_shape("1 + random()"));
+        assert!(!is_literal_shape("1+random()"));
+        assert!(!is_literal_shape("0 + clock_timestamp()"));
+        assert!(!is_literal_shape("42 * 2"));
+        assert!(!is_literal_shape("-1 + 2"));
+    }
+
+    #[test]
+    fn is_literal_shape_rejects_string_followed_by_call() {
+        // String literal that is part of a larger expression — must
+        // not classify as a pure literal.
+        assert!(!is_literal_shape("'a' || random()::text"));
+        assert!(!is_literal_shape("'foo' || 'bar'"));
+    }
+
+    #[test]
+    fn is_literal_shape_accepts_decimals_and_exponents() {
+        assert!(is_literal_shape("3.14"));
+        assert!(is_literal_shape("-0.5"));
+        assert!(is_literal_shape("1e10"));
+        assert!(is_literal_shape("1.5E-3"));
+        assert!(is_literal_shape("+0.0"));
+    }
+
+    #[test]
+    fn is_literal_shape_rejects_malformed_numbers() {
+        // Tokens that LOOK numeric-ish but aren't a valid single
+        // numeric literal — must not short-circuit to Immutable.
+        assert!(!is_literal_shape("1.2.3"));
+        assert!(!is_literal_shape("1e"));
+        assert!(!is_literal_shape("1.5e+"));
+        assert!(!is_literal_shape("1 2"));
+    }
+
+    #[test]
+    fn classify_compound_with_volatile_call_returns_volatile() {
+        // Spec-correctness: `1 + random()` MUST classify as Volatile so
+        // the live-migrate classifier routes it through ExpandContract.
+        // Pre-fix the literal-shape check accepted any byte-slice
+        // starting with a digit and silently returned Immutable.
+        assert_eq!(
+            classify_default_expression("1 + random()"),
+            Volatility::Volatile
+        );
+        assert_eq!(
+            classify_default_expression("0 + clock_timestamp()"),
+            Volatility::Volatile
+        );
+    }
+
+    /// Smoke test that every `Volatility` variant is exhaustively
+    /// matched by the classifier. Adding a new variant trips this on
+    /// compile (the match is non-`_`-terminated). `#[non_exhaustive]`
+    /// is enforced at the source level — out-of-crate consumers must
+    /// add a wildcard arm or fail to compile.
+    #[test]
+    fn volatility_variants_are_distinct() {
+        fn classify(v: Volatility) -> u8 {
+            match v {
+                Volatility::Immutable => 0,
+                Volatility::Stable => 1,
+                Volatility::Volatile => 2,
+            }
+        }
+        assert_eq!(classify(Volatility::Immutable), 0);
+        assert_eq!(classify(Volatility::Stable), 1);
+        assert_eq!(classify(Volatility::Volatile), 2);
+        assert_ne!(Volatility::Immutable, Volatility::Stable);
+        assert_ne!(Volatility::Stable, Volatility::Volatile);
     }
 }
