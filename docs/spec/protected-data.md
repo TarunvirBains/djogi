@@ -62,13 +62,16 @@ struct.
   primary signal — without it the annotation is hostile to compliance
   review.
 - **(d) `redaction = "hash_id"` is only valid on PK-shaped types.**
-  Specifically `HeerId`, `RanjId`, and `Option<...>` of the same
-  (plus the `HeerIdRecencyBiased` / `HeerIdDesc` aliases). Adopter
-  custom-PK newtypes from `djogi::primary_key!` are NOT recognised
-  by this rule today — the macro cannot prove a user-named ident
-  implements `PrimaryKey` at parse time, and a wrong accept ships
-  an unsafe redaction policy at runtime, so the recogniser is
-  conservative.
+  Specifically `HeerId`, `RanjId`, their family aliases
+  (`HeerIdDesc` / `HeerIdRecencyBiased` / `RanjIdDesc` /
+  `RanjIdRecencyBiased`), and `Option<...>` of any of the same.
+  Adopter custom-PK newtypes from `djogi::primary_key!` are NOT
+  recognised by this rule today — the macro cannot prove a user-named
+  ident implements `PrimaryKey` at parse time, and a wrong accept
+  ships an unsafe redaction policy at runtime, so the recogniser is
+  conservative. Custom-PK support for this rule is a deferred
+  capability tied to a later phase that gives the macro full
+  descriptor-pass visibility.
 - **(e) `codec = "..."` must name a value in the framework's
   compile-time codec registry.** Phase 7.5 ships an empty registry —
   every codec string is rejected at expansion time with
@@ -174,13 +177,24 @@ the parsed annotation. `None` means no `protected(...)` was declared
 
 ```rust
 pub struct ProtectedFieldMetadata {
-    pub sensitivity: Sensitivity,        // 5-level enum
-    pub rationale: Option<&'static str>, // free text; only set via protected(...)
-    pub redaction: RedactionPolicy,      // named policy enum
-    pub codec: Option<&'static str>,     // codec id; runtime-resolved
-    pub retention: RetentionLabel,       // closed enum
+    pub sensitivity: Sensitivity,    // 5-level enum
+    pub rationale: &'static str,     // free text; "" when absent (set only via protected(...))
+    pub redaction: RedactionPolicy,  // named policy enum
+    pub codec: Option<&'static str>, // codec id; runtime-resolved
+    pub retention: RetentionLabel,   // closed enum
 }
 ```
+
+The `rationale` slot is a bare `&'static str` (not `Option<...>`) — the
+macro emits the empty string `""` when absent. This matches the
+descriptor's "non-empty when sensitivity > none" invariant: rule (c)
+above blocks expansion if a non-`none` sensitivity carries empty
+rationale, so by the time a `ProtectedFieldMetadata` is constructed
+either `sensitivity == None` (in which case `rationale == ""` is
+correct by the spec's neutral-default semantics) or
+`sensitivity != None` (in which case the macro guaranteed non-empty
+text). Consumers reading the field can treat `""` as "no rationale
+recorded" without an `Option` peel.
 
 Not every descriptor consumer activates every dimension immediately,
 but every consumer reads from the same descriptor source.

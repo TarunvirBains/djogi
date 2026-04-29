@@ -570,9 +570,16 @@ pub fn validate(spec: &ProtectedSpec, field: &syn::Field) -> syn::Result<()> {
             span,
             format!(
                 "`redaction = \"hash_id\"` is only valid on fields whose \
-                 stored type is `HeerId`, `RanjId`, or a custom-PK type. \
-                 Field `{field_name}` has type `{rust_type}` which is not \
-                 a HeerId-compatible type.",
+                 stored type is `HeerId`, `RanjId`, or one of their family \
+                 aliases (`HeerIdDesc` / `HeerIdRecencyBiased` / \
+                 `RanjIdDesc` / `RanjIdRecencyBiased`). Field \
+                 `{field_name}` has type `{rust_type}` which is not a \
+                 HeerId/RanjId-compatible type. Custom-PK newtypes \
+                 declared via `djogi::primary_key!` are not yet \
+                 accepted by this rule — the macro cannot prove a \
+                 user-named ident implements `PrimaryKey` at parse \
+                 time, and a wrong accept ships an unsafe redaction \
+                 policy at runtime.",
             ),
         ));
     }

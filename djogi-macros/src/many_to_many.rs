@@ -11,11 +11,19 @@
 //!    `that_fk` accessors, and the three async method bodies
 //!    (`related` / `add_related` / `remove_related`) matching the
 //!    trait contract (see [`djogi::relation::many_to_many`]).
-//! 2. A named inherent accessor `impl Source { pub async fn <relation>(&self, exec) -> Vec<Target> }`
-//!    so users write the ergonomic `person.groups(&pool).await` instead
-//!    of the fully-qualified trait call. The accessor delegates
-//!    straight to the trait method — no independent query logic —
-//!    keeping the trait body the single source of truth.
+//! 2. A per-relation trait `pub trait {Source}{Method-pascal}ManyToManyRelation`
+//!    plus `impl {Trait} for {Source}` carrying
+//!    `pub async fn <relation>(&self, ctx) -> Vec<Target>`, so users write
+//!    the ergonomic `person.groups(&mut ctx).await` instead of the fully-
+//!    qualified trait call. The accessor delegates straight to
+//!    `<Self as ManyToMany<Target>>::related` — no independent query logic
+//!    — keeping the trait body the single source of truth.
+//!
+//!    Trait-based emission (vs an inherent `impl Source { ... }` block)
+//!    is what allows the macro to be invoked in a downstream crate when
+//!    the source model lives upstream — see GH issue #39 for the
+//!    coherence-rule (E0116) rationale, also documented in
+//!    `reverse_relation.rs`.
 //! 3. An `inventory::submit!` block registering a
 //!    [`djogi::relation::registry::ReverseRelationMarker`] with
 //!    `RelationKind::M2M` so Phase 4.5's projection generator can walk
@@ -97,8 +105,15 @@
 //!     }
 //! }
 //!
-//! impl Source {
-//!     pub fn name<'ctx>(
+//! pub trait SourceNameManyToManyRelation {
+//!     fn name<'ctx>(
+//!         &'ctx self,
+//!         ctx: &'ctx mut DjogiContext,
+//!     ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx;
+//! }
+//!
+//! impl SourceNameManyToManyRelation for Source {
+//!     fn name<'ctx>(
 //!         &'ctx self,
 //!         ctx: &'ctx mut DjogiContext,
 //!     ) -> impl Future<Output = Result<Vec<Target>, DjogiError>> + Send + 'ctx
@@ -696,19 +711,25 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
     // Phase 7-Zero-2 T9 — visage-scoped M2M accessors.
     //
-    // For every `expose(scope -> PeerVisage)` clause, emit an inherent
-    // method on `{Source}{Suffix}` (the source's visage at that scope)
-    // that walks the through table, converts the fetched peer rows
-    // through `<PeerVisage as TryFrom<&Target>>::try_from`, and returns
-    // `Vec<PeerVisage>`. The through-row visage is required because the
-    // query pattern `Through::objects().filter(|f| f.this_fk().eq(...))`
-    // returns `Vec<Through>`, and we convert each row's resolved peer
-    // through the peer visage — but the three-way guard the plan asks
-    // for is achieved more tightly by requiring the through model to
-    // expose a scope visage too (the emitted body references
-    // `<ThroughVisage as TryFrom<&Through>>::try_from` to prove every
-    // junction row also admits projection at the named scope before
-    // fetching the peer).
+    // For every `expose(scope -> PeerVisage)` clause, emit a per-scope
+    // trait `pub trait {Source}{Scope-pascal}{Method-pascal}ManyToManyVisageRelation`
+    // plus `impl {Trait} for {Source}{Suffix}` (the source's visage at
+    // that scope) carrying a sync method that returns
+    // `VisageQuerySet<PeerVisage>`. The through-row visage is required
+    // because the queryset's EXISTS-correlated subquery references the
+    // through table directly. Trait-based emission (vs an inherent impl
+    // on `{Source}{Suffix}`) lifts the same coherence-rule constraint
+    // GH issue #39 fixed for the model-scoped accessor — see the
+    // module-level docs above for the full rationale.
+    //
+    // The three-way guard the plan asks for (source visage + through
+    // visage + peer visage all admit projection at the named scope) is
+    // enforced via a zero-runtime existence probe in the emitted body:
+    // `<ThroughVisage as TryFrom<&Through>>::try_from` is named only as
+    // a type-existence check — the compiler verifies the visage exists
+    // at the named scope, but the conversion itself never runs. The
+    // queryset returns `VisageQuerySet<PeerVisage>` lazily; callers
+    // chain `.fetch_all(ctx)` / `.first(ctx)` / `.count(ctx)` etc.
     //
     // Conservative choice: if the peer or through visage is missing,
     // the emitted body fails to compile with a clean `no method named`
