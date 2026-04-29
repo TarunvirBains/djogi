@@ -14,13 +14,17 @@
 //! uniqueness invariant is on `(target_database, app_label, plan_id)`
 //! — the [`INSTALL_SQL`] DDL emits a matching unique index.
 //!
-//! # Forward references
+//! # Daemon-mode claim columns
 //!
-//! T15's daemon-mode resume will add `claimed_by_pid`,
-//! `claimed_by_host`, and `claimed_at` columns. T6 deliberately does
-//! NOT add them — they belong to the daemon contract, not the plan
-//! contract. When T15 lands, [`INSTALL_SQL`] grows additional
-//! `ALTER TABLE` statements (idempotent `ADD COLUMN IF NOT EXISTS`).
+//! `claimed_by_pid`, `claimed_by_host`, and `claimed_at` are owned by
+//! the daemon contract (see [`crate::live_migrate::daemon`]) rather
+//! than the plan contract. They are appended to the table by
+//! [`INSTALL_SQL`] as idempotent `ADD COLUMN IF NOT EXISTS` clauses
+//! so existing deployments grow the columns on the next runner
+//! invocation without a separate migration step. The plan
+//! lifecycle (status / classification / step pointer) is unaffected
+//! by these columns; nothing outside the daemon poll loop reads or
+//! writes them.
 //!
 //! # Status and classification CHECK constraints
 //!
@@ -85,6 +89,12 @@ CREATE TABLE IF NOT EXISTS djogi_live_plans (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS djogi_live_plans_bucket_plan_id_uidx
     ON djogi_live_plans (target_database, app_label, plan_id);
+ALTER TABLE djogi_live_plans
+    ADD COLUMN IF NOT EXISTS claimed_by_pid BIGINT;
+ALTER TABLE djogi_live_plans
+    ADD COLUMN IF NOT EXISTS claimed_by_host TEXT;
+ALTER TABLE djogi_live_plans
+    ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 "#;
 
 // ── PlanStatus ────────────────────────────────────────────────────────

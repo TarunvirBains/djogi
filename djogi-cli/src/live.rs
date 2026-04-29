@@ -53,8 +53,8 @@ use clap::Subcommand;
 use djogi::config::DjogiConfig;
 use djogi::context::DjogiContext;
 use djogi::live_migrate::{
-    LivePlanRow, PlanFileError, PlanStatus, active_hooks_at_step, plan_path, read_plan,
-    verify_checksum,
+    DaemonConfig, DaemonError, LivePlanRow, PlanFileError, PlanStatus, active_hooks_at_step,
+    plan_path, read_plan, run_daemon, verify_checksum,
 };
 use djogi::pg::pool::DjogiPool;
 use djogi::types::HeerId;
@@ -143,6 +143,34 @@ pub enum LiveCmd {
         /// `DJOGI_ENV != production`; refuses otherwise.
         #[arg(long, default_value_t = false)]
         force: bool,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Long-running daemon that resumes stale `BackfillChunked` /
+    /// `ValidateBackfill` steps. Triple-gated — refuses on
+    /// `DJOGI_ENV=production`, refuses on a non-localhost
+    /// `DATABASE_URL` unless `--allow-non-localhost` is set, and never
+    /// auto-advances past an operator gate (`CutoverReads` /
+    /// `CutoverWrites` / `FinalizeConstraints` stay manual via
+    /// `live run` / `live finalize`).
+    ///
+    /// Exits cleanly on SIGTERM / SIGINT; per-plan failures inside the
+    /// loop are logged and the daemon continues.
+    Daemon {
+        /// Seconds between candidate-row scans. Default 30.
+        #[arg(long, default_value_t = 30)]
+        poll_interval_secs: u64,
+        /// A row is treated as stale (and therefore claimable) when
+        /// its `last_progress_at` is older than this many seconds.
+        /// Default 600 (10 minutes).
+        #[arg(long, default_value_t = 600)]
+        claim_stale_after_secs: u64,
+        /// Allow the daemon to drive a non-localhost database. Mirrors
+        /// the seed gate; the production-environment gate
+        /// (`DJOGI_ENV=production`) still refuses regardless.
+        #[arg(long, default_value_t = false)]
+        allow_non_localhost: bool,
         /// Workspace root override.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -287,6 +315,20 @@ async fn run(cmd: LiveCmd) -> Result<i32, LiveCmdError> {
             force,
             workspace,
         } => abandon_cmd(&plan_id, force, workspace).await,
+        LiveCmd::Daemon {
+            poll_interval_secs,
+            claim_stale_after_secs,
+            allow_non_localhost,
+            workspace,
+        } => {
+            daemon_cmd(
+                poll_interval_secs,
+                claim_stale_after_secs,
+                allow_non_localhost,
+                workspace,
+            )
+            .await
+        }
     }
 }
 
@@ -818,6 +860,61 @@ fn assert_abandon_status(status: PlanStatus) -> Result<(), LiveCmdError> {
     }
 }
 
+// ── live daemon ───────────────────────────────────────────────────────
+
+/// `djogi live daemon` body. Builds the [`DaemonConfig`] from operator
+/// flags and routes through [`run_daemon`]. The daemon's triple-gate
+/// (production env + localhost) fires inside `run_daemon`; this body
+/// only translates the result back to a CLI exit code.
+///
+/// Returns `0` on a clean SIGTERM / SIGINT shutdown ([`DaemonError::Shutdown`])
+/// — the daemon's only successful exit path. Production / localhost
+/// gate refusals map to [`LiveCmdError::ArgRefused`] (exit 1 — the
+/// gate fired before any side effect, but the operator-visible
+/// difference between "gate refused" and "ran but failed" is captured
+/// in the error message rather than the exit code).
+async fn daemon_cmd(
+    poll_interval_secs: u64,
+    claim_stale_after_secs: u64,
+    allow_non_localhost: bool,
+    workspace: Option<PathBuf>,
+) -> Result<i32, LiveCmdError> {
+    let workspace = resolve_workspace(workspace);
+    let config = load_config(&workspace)?;
+    let cfg = DaemonConfig {
+        poll_interval: std::time::Duration::from_secs(poll_interval_secs),
+        claim_stale_after: std::time::Duration::from_secs(claim_stale_after_secs),
+        allow_non_localhost,
+        database_url: config.database.url.clone(),
+        host: hostname_for_claim(),
+        pid: i64::from(std::process::id()),
+    };
+    let mut ctx = connect(&config.database.url).await?;
+    match run_daemon(&mut ctx, cfg).await {
+        Ok(()) => Ok(0),
+        Err(DaemonError::Shutdown) => Ok(0),
+        Err(DaemonError::NotLocalhost) => Err(LiveCmdError::ArgRefused(
+            "live daemon refused: not running on localhost (pass --allow-non-localhost to override)"
+                .to_string(),
+        )),
+        Err(DaemonError::Production) => Err(LiveCmdError::ArgRefused(
+            "live daemon refused: DJOGI_ENV=production".to_string(),
+        )),
+        Err(DaemonError::Backfill(e)) => {
+            Err(LiveCmdError::Runtime(format!("daemon backfill: {e}")))
+        }
+        Err(DaemonError::Database(e)) => Err(LiveCmdError::Runtime(format!("daemon db: {e}"))),
+        Err(other) => Err(LiveCmdError::Runtime(format!("daemon: {other}"))),
+    }
+}
+
+/// Read the running host's name for the daemon's claim columns. Falls
+/// back to `"unknown"` so a missing `HOSTNAME` env var produces a
+/// recognisable diagnostic in `live show` rather than an empty string.
+fn hostname_for_claim() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
+}
+
 /// Interactive confirmation prompt for `live abandon`. Reads stdin;
 /// only `y` / `yes` (case-insensitive ASCII) returns `Ok(true)`.
 fn interactive_confirm_abandon(plan_id: HeerId) -> std::io::Result<bool> {
@@ -983,6 +1080,85 @@ mod tests {
                 assert_eq!(plan_id, "12345");
             }
             other => panic!("expected Abandon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_daemon_parses_with_default_intervals() {
+        let parsed = parse(&["daemon"]).expect("daemon parses with no args");
+        match parsed.cmd {
+            LiveCmd::Daemon {
+                poll_interval_secs,
+                claim_stale_after_secs,
+                allow_non_localhost,
+                ..
+            } => {
+                assert_eq!(poll_interval_secs, 30, "default poll interval is 30s");
+                assert_eq!(
+                    claim_stale_after_secs, 600,
+                    "default stale threshold is 10 minutes",
+                );
+                assert!(
+                    !allow_non_localhost,
+                    "default refuses non-localhost connections",
+                );
+            }
+            other => panic!("expected Daemon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_daemon_accepts_custom_intervals() {
+        let parsed = parse(&[
+            "daemon",
+            "--poll-interval-secs",
+            "5",
+            "--claim-stale-after-secs",
+            "60",
+            "--allow-non-localhost",
+        ])
+        .expect("daemon with overrides parses");
+        match parsed.cmd {
+            LiveCmd::Daemon {
+                poll_interval_secs,
+                claim_stale_after_secs,
+                allow_non_localhost,
+                ..
+            } => {
+                assert_eq!(poll_interval_secs, 5);
+                assert_eq!(claim_stale_after_secs, 60);
+                assert!(allow_non_localhost);
+            }
+            other => panic!("expected Daemon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn live_daemon_accepts_workspace_override() {
+        let parsed = parse(&["daemon", "--workspace", "/tmp/example"])
+            .expect("daemon with --workspace parses");
+        match parsed.cmd {
+            LiveCmd::Daemon { workspace, .. } => {
+                assert_eq!(
+                    workspace.as_deref(),
+                    Some(std::path::Path::new("/tmp/example")),
+                );
+            }
+            other => panic!("expected Daemon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hostname_for_claim_falls_back_to_unknown() {
+        // SAFETY: tests run with --test-threads=1.
+        let prior = std::env::var("HOSTNAME").ok();
+        unsafe { std::env::remove_var("HOSTNAME") };
+        assert_eq!(hostname_for_claim(), "unknown");
+        unsafe { std::env::set_var("HOSTNAME", "ci-runner-7") };
+        assert_eq!(hostname_for_claim(), "ci-runner-7");
+        match prior {
+            Some(v) => unsafe { std::env::set_var("HOSTNAME", v) },
+            None => unsafe { std::env::remove_var("HOSTNAME") },
         }
     }
 

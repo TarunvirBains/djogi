@@ -63,6 +63,7 @@ use crate::migrate::OnlineSafetyClassification;
 
 pub mod backfill;
 pub mod classify;
+pub mod daemon;
 pub mod hooks;
 pub mod patterns;
 pub mod plan;
@@ -71,6 +72,7 @@ pub mod state;
 
 pub use backfill::{BackfillChunk, BackfillError, execute_backfill, resume_backfill};
 pub use classify::{ClassifyContext, TargetDatabase, classify_delta, classify_operation};
+pub use daemon::{DaemonConfig, DaemonError, run_daemon};
 pub use hooks::{
     ActiveHooks, DualReadHook, DualWriteHook, HookError, active_hooks_at_step,
     side_effects_suppressed,
