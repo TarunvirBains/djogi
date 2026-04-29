@@ -1,0 +1,5 @@
+error: duplicate exclusion `name = "no_overlap"` — every EXCLUDE constraint on a model must have a unique name
+  --> tests/compile_fail/phase7_5_pr7_exclusion_duplicate_name.rs:18:5
+   |
+18 |     exclusion(
+   |     ^^^^^^^^^
