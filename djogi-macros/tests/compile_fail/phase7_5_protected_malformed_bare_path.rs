@@ -1,4 +1,4 @@
-// Phase 7.5 T3 — malformed `protected` shape: bare path form.
+// Malformed `protected` shape: bare path form.
 //
 // `#[field(protected)]` is not valid syntax for protected-field
 // metadata; the only valid form is `protected(sensitivity = "...",

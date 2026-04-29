@@ -1,4 +1,4 @@
-// Phase 7.5 T3 rule (d) — `redaction = "hash_id"` is only valid on
+// `redaction = "hash_id"` is only valid on
 // fields whose stored type is `HeerId`, `RanjId`, or a custom-PK
 // type that the framework can recognise. A plain `String` field is
 // the canonical wrong shape: hashing a free-form string with

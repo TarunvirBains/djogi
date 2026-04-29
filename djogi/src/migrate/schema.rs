@@ -612,6 +612,13 @@ pub struct EnumSchema {
 /// `Lossy` / `Unsupported{reason}` / `PkTypeFlip{...}`). The two live
 /// at different granularities on `SchemaDelta` and the rename
 /// guarantees that `use` lines and match arms cannot mix them up.
+///
+/// # Stability
+///
+/// Marked `#[non_exhaustive]` so future online-safety categories can
+/// land without a breaking change. Downstream `match` against this
+/// enum from outside the `djogi` crate must include a wildcard arm
+/// (`_ => …`); exhaustive matches inside `djogi` continue to work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OnlineSafetyClassification {

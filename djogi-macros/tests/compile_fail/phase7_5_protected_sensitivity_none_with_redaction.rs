@@ -1,4 +1,4 @@
-// Phase 7.5 T3 rule (a) — `sensitivity = "none"` is the explicit
+// `sensitivity = "none"` is the explicit
 // "ordinary field" assertion and cannot coexist with any other
 // protected-field knob (rationale / redaction / codec / retention).
 // Either the attribute disappears entirely or `sensitivity` rises.

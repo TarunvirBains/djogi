@@ -1,4 +1,4 @@
-// Phase 7.5 T3 — malformed `protected` shape: name-value form.
+// Malformed `protected` shape: name-value form.
 //
 // `#[field(protected = "pii")]` is not valid syntax for protected-field
 // metadata; the only valid form is `protected(sensitivity = "...",

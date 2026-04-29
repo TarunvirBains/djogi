@@ -1,5 +1,5 @@
 error: `sensitivity = "none"` cannot be combined with other protected-field metadata (rationale / redaction / codec / retention). Either drop the `protected(...)` attribute entirely or set `sensitivity` higher.
-  --> tests/compile_fail/phase7_5_protected_explicit_neutral_knob_with_sensitivity_none.rs:18:57
+  --> tests/compile_fail/phase7_5_protected_explicit_neutral_knob_with_sensitivity_none.rs:20:57
    |
-18 |     #[field(protected(sensitivity = "none", redaction = "none"))]
+20 |     #[field(protected(sensitivity = "none", redaction = "none"))]
    |                                                         ^^^^^^

@@ -1,4 +1,4 @@
-// Phase 7.5 T3 rule (b) — `sensitivity` above `none` requires a
+// `sensitivity` above `none` requires a
 // non-empty `rationale`. The rationale is the audit trail's primary
 // signal (e.g. citing GDPR Art. 6(1)(b) for a notification-delivery
 // PII column); a missing rationale defeats the entire annotation.

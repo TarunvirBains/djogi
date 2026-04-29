@@ -1,4 +1,4 @@
-// Phase 7.5 T3 — `default_volatility` accepts exactly three
+// `default_volatility` accepts exactly three
 // variants: `"immutable"`, `"stable"`, `"volatile"`. Anything else
 // is rejected with an error that lists every valid choice so
 // adopters can fix the typo without consulting the docs.

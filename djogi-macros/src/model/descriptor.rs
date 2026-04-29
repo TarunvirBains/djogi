@@ -34,9 +34,13 @@ use syn::ItemStruct;
 /// timestamp columns are neither. The visage map always projects the
 /// column under its own name across the four built-in scopes.
 ///
+/// Relation metadata is unconditionally `None` — `id` is a primary
+/// key, not a foreign key, and `created_at` / `updated_at` are
+/// scalars; the visage hookup attaches per-user-field only.
+///
 /// Centralising the emission means future descriptor field additions
-/// (e.g. T5's `default_volatility_override`) land in one place rather
-/// than rippling through every PK-strategy arm.
+/// land in one place rather than rippling through every PK-strategy
+/// arm.
 fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool) -> TokenStream {
     quote! {
         ::djogi::FieldDescriptor {
