@@ -1,0 +1,5 @@
+error: `redaction = "hash_id"` is only valid on fields whose stored type is `HeerId`, `RanjId`, or a custom-PK type. Field `email` has type `String` which is not a HeerId-compatible type.
+  --> tests/compile_fail/phase7_5_protected_hash_id_on_string.rs:16:21
+   |
+16 |         redaction = "hash_id"
+   |                     ^^^^^^^^^

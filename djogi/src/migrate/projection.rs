@@ -1173,6 +1173,7 @@ mod tests {
                 target_type_name: Some("Owner"),
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             }],
             ..synth_model("vehicles", "Vehicle")
         };
@@ -1210,6 +1211,7 @@ mod tests {
             target_type_name: Some("Owner"),
             visage_map: &[],
             protected: None,
+            default_volatility_override: None,
         }
     }
 
@@ -1284,6 +1286,7 @@ mod tests {
                 target_type_name: Some("Owner"),
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             }],
             ..synth_model("vehicles", "Vehicle")
         };
@@ -1336,6 +1339,7 @@ mod tests {
                 target_type_name: Some("User"),
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             }],
             ..synth_model("invoices", "Invoice")
         };
@@ -1377,6 +1381,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             }],
             ..synth_model("widgets", "Widget")
         };
@@ -1504,6 +1509,7 @@ mod tests {
                 target_type_name: Some("AuditRow"),
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             }],
             ..synth_model("invoices", "Invoice")
         };
@@ -1566,6 +1572,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
             FieldDescriptor {
                 name: "updated_at",
@@ -1584,6 +1591,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
         ];
         let m = ModelDescriptor {
@@ -1636,6 +1644,7 @@ mod tests {
             target_type_name: None,
             visage_map: &[],
             protected: None,
+            default_volatility_override: None,
         }];
         let m = ModelDescriptor {
             fields: FIELDS,
@@ -1685,6 +1694,7 @@ mod tests {
             target_type_name: Some("Owner"),
             visage_map: &[],
             protected: None,
+            default_volatility_override: None,
         }];
 
         // Each row: target PK type, expected substituted SQL on the FK
@@ -1766,6 +1776,7 @@ mod tests {
                 target_type_name: Some("Owner"),
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
             // Non-FK SmallInt — must NOT be rewritten to UUID (or to
             // anything else) just because it lives on a model with FK
@@ -1788,6 +1799,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
             // Non-FK Text — also must pass through verbatim.
             FieldDescriptor {
@@ -1807,6 +1819,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
         ];
         let owner = ModelDescriptor {

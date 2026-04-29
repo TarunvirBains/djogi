@@ -113,6 +113,24 @@ pub trait FieldCodec: Send + Sync + 'static {
 /// query it through [`is_registered`] rather than reaching for the
 /// underlying container; that indirection lets future phases swap the
 /// representation without breaking downstream code.
+///
+/// # Synchronization contract with `djogi-macros`
+///
+/// Adding a codec ID requires updating BOTH this `phf::Set` and the
+/// sibling `KNOWN_CODEC_IDS` sorted const slice in
+/// `djogi-macros::model::protected`. The macro validates
+/// `#[field(protected(codec = "<id>"))]` at proc-macro expansion time
+/// (Phase 7.5 T3); the runtime registry serves runtime queries.
+///
+/// The duplicate is intentional: proc macros run before any runtime
+/// dependency is available, so the macro crate cannot read this
+/// `phf::Set` directly. A `const fn is_registered` would push the
+/// error from "macro expansion" to "downstream compile" — the source
+/// span would point at the macro emission site rather than the user's
+/// `codec = "X"` literal, and the error message would degrade to a
+/// generic "assertion failed" instead of listing valid IDs. Future
+/// framework-internal codec additions are rare; the duplicate is the
+/// explicit cost of compile-time validation with span-precise errors.
 pub(crate) static REGISTRY: phf::Set<&'static str> = phf::phf_set! {};
 
 /// Returns `true` iff `id` is the compile-time identifier of a codec

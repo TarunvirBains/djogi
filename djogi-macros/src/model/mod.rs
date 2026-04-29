@@ -14,6 +14,7 @@ pub mod from_row;
 pub mod indexes;
 pub mod inject;
 pub mod outer_ref;
+pub mod protected;
 pub mod relations;
 pub mod stubs;
 pub mod visage_ctx;

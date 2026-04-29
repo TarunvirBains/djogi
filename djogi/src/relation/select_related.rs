@@ -507,6 +507,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
             FieldDescriptor {
                 name: "name",
@@ -525,6 +526,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
         ],
         partition_by: None,
@@ -562,6 +564,7 @@ mod tests {
             target_type_name: None,
             visage_map: &[],
             protected: None,
+            default_volatility_override: None,
         }],
         partition_by: None,
         has_outbox: false,

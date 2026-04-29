@@ -180,9 +180,9 @@ pub mod __private {
 pub use apps::{App, AppDescriptor, AppDiagnostic, AppIdentity, AppRegistry, CrossAppEdge};
 pub use context::DjogiContext;
 pub use descriptor::{
-    DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype,
-    IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget, IndexNullsOrder, IndexOrder,
-    IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
+    GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget, IndexNullsOrder,
+    IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
     ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
 };
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
@@ -236,10 +236,10 @@ pub mod prelude {
     };
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
-        DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype,
-        IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
-        ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata, RedactionPolicy,
-        RetentionLabel, Sensitivity,
+        DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
+        GeographySubtype, IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec,
+        IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType, ProtectedFieldMetadata,
+        RedactionPolicy, RetentionLabel, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};

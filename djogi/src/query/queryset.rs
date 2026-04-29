@@ -1370,6 +1370,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             }];
             static DESC: ModelDescriptor = ModelDescriptor {
                 type_name: "FakeUnindexedRegion",
@@ -1538,6 +1539,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             }];
             static BOUNDARY_COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("boundary")];
             static INDEXES: &[IndexSpec] = &[IndexSpec {

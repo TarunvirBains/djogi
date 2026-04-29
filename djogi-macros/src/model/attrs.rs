@@ -930,6 +930,44 @@ pub struct FieldAttrs {
     /// error path is never triggered.
     #[darling(skip)]
     pub expose: ExposeSpec,
+
+    /// `#[field(default = "<sql>")]` — column DEFAULT expression used
+    /// at migration-emission time.
+    ///
+    /// Phase 7.5 T3 wires the *attribute slot* so [`Self::default_volatility`]
+    /// can validate "no default → meaningless override". The compose-side
+    /// consumer (DDL emitter that surfaces the expression as a Postgres
+    /// column DEFAULT) lands in T6 / later; T3's job is the parsing
+    /// surface plus the cross-attribute validation. Until T6 ships,
+    /// a `default = "..."` attribute on a field has no other effect
+    /// beyond satisfying the `default_volatility` precondition.
+    #[darling(default)]
+    pub default: Option<String>,
+
+    /// `#[field(default_volatility = "immutable" | "stable" | "volatile")]`
+    /// — adopter-supplied override for the Postgres volatility
+    /// classification of this field's default expression.
+    ///
+    /// `None` means "fall through to the static `pg_volatility.rs`
+    /// lookup at compose time" (T5 territory). Validated at parse time
+    /// against the three documented choices; further cross-attr rules
+    /// (must coexist with `default = ...`; redundant override warning)
+    /// run in [`FieldAttrs::parse`] post-validation.
+    #[darling(default)]
+    pub default_volatility: Option<String>,
+
+    /// `#[field(protected(...))]` — parsed protected-field metadata.
+    /// `None` for the common case (most fields are not protected).
+    ///
+    /// Set entirely via raw attribute walking in
+    /// [`crate::model::protected::parse_from_field`], not via darling
+    /// — the nested `protected(key = "value", ...)` grammar is
+    /// inspected for span-precise diagnostics that darling's
+    /// declarative derive cannot express. The field is `#[darling(skip)]`
+    /// so no name-value `protected = ...` declaration is accepted at
+    /// the field level; the only valid surface is the list form.
+    #[darling(skip)]
+    pub protected: Option<crate::model::protected::ProtectedSpec>,
 }
 
 /// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
@@ -1383,6 +1421,13 @@ impl FieldAttrs {
             "rationale",
             "lazy",
             "version", // Task 3 — optimistic lock version counter
+            // Phase 7.5 T3 — protected-field metadata + default-volatility
+            // override. The `protected(...)` list form is recognised here
+            // as the bare key `protected`; `default` and
+            // `default_volatility` carry name-value string literals.
+            "default",
+            "default_volatility",
+            "protected",
         ];
         // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
         // out of scope at the field level. The feature lives on the model-
@@ -1640,6 +1685,51 @@ impl FieldAttrs {
         }
 
         attrs.expose = expose;
+
+        // Phase 7.5 T3 — parse `#[field(protected(...))]` via the
+        // dedicated walker. Validation runs immediately so the four
+        // §6 rules surface at attribute-parse time rather than
+        // deferring to descriptor emission.
+        attrs.protected = crate::model::protected::parse_from_field(field)?;
+        if let Some(spec) = &attrs.protected {
+            crate::model::protected::validate(spec, field)?;
+        }
+
+        // Phase 7.5 T3 — `#[field(default_volatility = "...")]`
+        // adopter-supplied override for default-expression volatility.
+        // Validate against the three documented variants and require a
+        // companion `#[field(default = "...")]` so the override has
+        // something to classify. The redundancy warning (override
+        // matches the static-table classification) is deferred to T5
+        // because it requires the `pg_volatility.rs` lookup table that
+        // does not yet exist.
+        if let Some(value) = &attrs.default_volatility {
+            let span = find_named_str_lit_span(field, "default_volatility")
+                .unwrap_or_else(|| field.span());
+            // Reject unknown variants with the canonical error
+            // message — `DefaultVolatilityLit::parse` lists the three
+            // valid choices verbatim.
+            crate::model::protected::DefaultVolatilityLit::parse(value, span)?;
+            // Reject overrides without a paired `default = "..."`. The
+            // override classifies a default expression that does not
+            // exist; either add the default or drop the override.
+            if attrs.default.is_none() {
+                return Err(syn::Error::new(
+                    span,
+                    "`default_volatility` is meaningless without a \
+                     `default = \"...\"` attribute on the same field — \
+                     the override classifies a default expression that \
+                     does not exist. Either add a `default = \"...\"` \
+                     or drop the override.",
+                ));
+            }
+            // TODO: post-T5 — once `pg_volatility.rs` ships, warn (not
+            // error) when the override matches the static-table
+            // classification. Plan v3 §9 T3 (3rd default_volatility
+            // rule) is deferred until the lookup table exists; until
+            // then we accept the redundancy silently.
+        }
+
         Ok(attrs)
     }
 }

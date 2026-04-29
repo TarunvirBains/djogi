@@ -911,6 +911,7 @@ mod tests {
             target_type_name: None,
             visage_map: &[],
             protected: None,
+            default_volatility_override: None,
         }];
 
         let _ = (OnDelete::Restrict, RelationKind::ForeignKey);
@@ -968,6 +969,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
             FieldDescriptor {
                 name: "label",
@@ -986,6 +988,7 @@ mod tests {
                 target_type_name: None,
                 visage_map: &[],
                 protected: None,
+                default_volatility_override: None,
             },
         ];
 
@@ -1063,6 +1066,7 @@ mod tests {
         target_type_name: None,
         visage_map: &[],
         protected: None,
+        default_volatility_override: None,
     };
 
     static T11_TEXT_FIELD: FieldDescriptor = FieldDescriptor {
@@ -1082,6 +1086,7 @@ mod tests {
         target_type_name: None,
         visage_map: &[],
         protected: None,
+        default_volatility_override: None,
     };
 
     static T11_BOUNDARY_COLS: &[super::IndexColumnSpec] =
@@ -1317,6 +1322,7 @@ mod protected_field_metadata_tests {
             target_type_name: None,
             visage_map: &[],
             protected: None,
+            default_volatility_override: None,
         };
         assert!(none_desc.protected.is_none());
 
@@ -1343,6 +1349,7 @@ mod protected_field_metadata_tests {
                 codec: Some("aes256_gcm_v1"),
                 retention: RetentionLabel::Standard,
             }),
+            default_volatility_override: None,
         };
         let pfm = some_desc.protected.expect("constructed with Some(...)");
         assert_eq!(pfm.sensitivity, Sensitivity::Pii);
@@ -1439,6 +1446,58 @@ pub struct FieldDescriptor {
     /// is an explicit "ordinary field" assertion. Auditing tools that
     /// surface unannotated fields rely on this distinction.
     pub protected: Option<ProtectedFieldMetadata>,
+
+    /// `#[field(default_volatility = "...")]` adopter-supplied override
+    /// for the default expression's Postgres volatility classification.
+    /// Phase 7.5 T3 stores the parsed override; the consumer (the
+    /// `pg_volatility.rs` lookup table that classifies default
+    /// expressions during compose) lands in T5.
+    ///
+    /// `None` means "fall through to the static `pg_volatility.rs`
+    /// lookup at compose time"; `Some(variant)` means the adopter has
+    /// asserted the volatility class for a default expression Djogi
+    /// could not classify (typically a user-defined function or an
+    /// extension call). The override is a pure assertion — the
+    /// classifier trusts it without re-checking, so a wrong override
+    /// can produce unsafe online-migration plans. T3 enforces:
+    ///
+    /// - Only on fields that also carry `default = "..."` (otherwise
+    ///   there is no expression to classify).
+    /// - Only the three documented variants (`"immutable"`, `"stable"`,
+    ///   `"volatile"`); unknown strings are rejected at macro-expansion
+    ///   time.
+    pub default_volatility_override: Option<DefaultVolatility>,
+}
+
+/// Adopter-supplied override for the Postgres volatility class of a
+/// column default expression. Phase 7.5 T3 — descriptor surface; T5
+/// wires the classifier that consumes the override.
+///
+/// Variants mirror Postgres's `provolatile` categories:
+///
+/// - [`Self::Immutable`] — the expression always returns the same value
+///   for the same inputs and never reads database state. Safe to evaluate
+///   once and cache.
+/// - [`Self::Stable`] — the expression returns the same value within a
+///   single query / statement but can vary across statements (e.g.
+///   `now()` is STABLE, not VOLATILE).
+/// - [`Self::Volatile`] — the expression can return different values on
+///   each call (e.g. `clock_timestamp()`, `random()`). Triggers the
+///   3-step ExpandContract pattern at compose time.
+///
+/// `#[non_exhaustive]` so future Postgres categories (or Djogi-specific
+/// refinements) can land without breaking downstream matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum DefaultVolatility {
+    /// Postgres `IMMUTABLE` — pure function, no side effects, no DB reads.
+    Immutable,
+    /// Postgres `STABLE` — consistent within one statement; consults DB
+    /// state but does not modify it.
+    Stable,
+    /// Postgres `VOLATILE` — value can change on every call. Triggers
+    /// the conservative live-migration path at compose time.
+    Volatile,
 }
 
 /// Sensitivity classification for protected fields. Phase 7.5 T2.

@@ -99,6 +99,7 @@ pub fn expand(
                     ("self_view", "id"),
                 ],
                 protected: ::std::option::Option::None,
+                default_volatility_override: ::std::option::Option::None,
             }
         }),
         PkStrategy::RanjId => Some(quote! {
@@ -124,6 +125,7 @@ pub fn expand(
                     ("self_view", "id"),
                 ],
                 protected: ::std::option::Option::None,
+                default_volatility_override: ::std::option::Option::None,
             }
         }),
         // HeerIdDesc / RanjIdDesc share the same descriptor shape as their
@@ -153,6 +155,7 @@ pub fn expand(
                     ("self_view", "id"),
                 ],
                 protected: ::std::option::Option::None,
+                default_volatility_override: ::std::option::Option::None,
             }
         }),
         PkStrategy::RanjIdDesc => Some(quote! {
@@ -178,6 +181,7 @@ pub fn expand(
                     ("self_view", "id"),
                 ],
                 protected: ::std::option::Option::None,
+                default_volatility_override: ::std::option::Option::None,
             }
         }),
         PkStrategy::Serial => Some(quote! {
@@ -203,6 +207,7 @@ pub fn expand(
                     ("self_view", "id"),
                 ],
                 protected: ::std::option::Option::None,
+                default_volatility_override: ::std::option::Option::None,
             }
         }),
         PkStrategy::None => None,
@@ -236,6 +241,7 @@ pub fn expand(
                     ("self_view", "id"),
                 ],
                 protected: ::std::option::Option::None,
+                default_volatility_override: ::std::option::Option::None,
             }
         }),
     };
@@ -263,6 +269,7 @@ pub fn expand(
                 ("self_view", "created_at"),
             ],
             protected: ::std::option::Option::None,
+            default_volatility_override: ::std::option::Option::None,
         }
     };
     let updated_at_desc = quote! {
@@ -288,6 +295,7 @@ pub fn expand(
                 ("self_view", "updated_at"),
             ],
             protected: ::std::option::Option::None,
+            default_volatility_override: ::std::option::Option::None,
         }
     };
 
@@ -408,6 +416,30 @@ pub fn expand(
                 None => (quote! { None }, quote! { None }, quote! { None }),
             };
 
+            // Phase 7.5 T3 — `#[field(protected(...))]` lowers to
+            // `Some(::djogi::ProtectedFieldMetadata { ... })`; absent
+            // attribute keeps the explicit `None` (distinct from
+            // `Sensitivity::None` per the descriptor's contract).
+            let protected_tokens = match &fa.protected {
+                Some(spec) => spec.to_tokens(),
+                None => quote! { ::std::option::Option::None },
+            };
+            // Phase 7.5 T3 — `#[field(default_volatility = "...")]`
+            // override. Already validated in `FieldAttrs::parse`, so a
+            // non-`None` value is guaranteed to parse cleanly here.
+            let default_volatility_tokens = match fa.default_volatility.as_deref() {
+                Some(value) => {
+                    let lit = crate::model::protected::DefaultVolatilityLit::parse(
+                        value,
+                        ::proc_macro2::Span::call_site(),
+                    )
+                    .expect("invariant: default_volatility validated in FieldAttrs::parse");
+                    let path = lit.to_tokens();
+                    quote! { ::std::option::Option::Some(#path) }
+                }
+                None => quote! { ::std::option::Option::None },
+            };
+
             quote! {
                 ::djogi::FieldDescriptor {
                     name: #name,
@@ -431,7 +463,8 @@ pub fn expand(
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
                     visage_map: #projection_map_tokens,
-                    protected: ::std::option::Option::None,
+                    protected: #protected_tokens,
+                    default_volatility_override: #default_volatility_tokens,
                 }
             }
         })
