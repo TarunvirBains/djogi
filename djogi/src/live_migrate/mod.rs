@@ -63,12 +63,14 @@ use crate::migrate::OnlineSafetyClassification;
 
 pub mod backfill;
 pub mod classify;
+pub mod patterns;
 pub mod plan;
 pub mod plan_file;
 pub mod state;
 
 pub use backfill::{BackfillChunk, BackfillError, execute_backfill, resume_backfill};
 pub use classify::{ClassifyContext, TargetDatabase, classify_delta, classify_operation};
+pub use patterns::{Pattern, PatternContext, PatternError};
 pub use plan::{
     LivePlan, PlanClassification, PlanHeader, PlanValidationError, Step, StepKind, StepParameters,
 };
