@@ -98,7 +98,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
-                protected: None,
+                protected: ::std::option::Option::None,
             }
         }),
         PkStrategy::RanjId => Some(quote! {
@@ -123,7 +123,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
-                protected: None,
+                protected: ::std::option::Option::None,
             }
         }),
         // HeerIdDesc / RanjIdDesc share the same descriptor shape as their
@@ -152,7 +152,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
-                protected: None,
+                protected: ::std::option::Option::None,
             }
         }),
         PkStrategy::RanjIdDesc => Some(quote! {
@@ -177,7 +177,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
-                protected: None,
+                protected: ::std::option::Option::None,
             }
         }),
         PkStrategy::Serial => Some(quote! {
@@ -202,7 +202,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
-                protected: None,
+                protected: ::std::option::Option::None,
             }
         }),
         PkStrategy::None => None,
@@ -235,7 +235,7 @@ pub fn expand(
                     ("public", "id"),
                     ("self_view", "id"),
                 ],
-                protected: None,
+                protected: ::std::option::Option::None,
             }
         }),
     };
@@ -262,7 +262,7 @@ pub fn expand(
                 ("public", "created_at"),
                 ("self_view", "created_at"),
             ],
-            protected: None,
+            protected: ::std::option::Option::None,
         }
     };
     let updated_at_desc = quote! {
@@ -287,7 +287,7 @@ pub fn expand(
                 ("public", "updated_at"),
                 ("self_view", "updated_at"),
             ],
-            protected: None,
+            protected: ::std::option::Option::None,
         }
     };
 
