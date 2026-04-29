@@ -62,8 +62,18 @@
 use crate::migrate::OnlineSafetyClassification;
 
 pub mod classify;
+pub mod plan;
+pub mod plan_file;
+pub mod state;
 
 pub use classify::{ClassifyContext, TargetDatabase, classify_delta, classify_operation};
+pub use plan::{
+    LivePlan, PlanClassification, PlanHeader, PlanValidationError, Step, StepKind, StepParameters,
+};
+pub use plan_file::{
+    PlanFileError, compute_checksum, plan_path, read_plan, verify_checksum, write_plan,
+};
+pub use state::{INSTALL_SQL, LivePlanRow, PlanStatus};
 
 /// Logging-profile axis read from `Djogi.toml`'s `[logging] profile`
 /// at compose time and threaded into [`ClassifyContext`].
