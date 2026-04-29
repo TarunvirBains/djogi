@@ -1500,6 +1500,17 @@ pub enum DefaultVolatility {
     Volatile,
 }
 
+impl Default for DefaultVolatility {
+    /// `Volatile` is the conservative default — when the classifier
+    /// cannot prove an expression is `Stable` or `Immutable`, it must
+    /// route through the 3-step ExpandContract pattern rather than
+    /// the catalog-only fast-path. Mirrors §7 of the v3 plan: "unknown
+    /// identifiers default conservatively to VOLATILE."
+    fn default() -> Self {
+        Self::Volatile
+    }
+}
+
 /// Sensitivity classification for protected fields. Phase 7.5 T2.
 ///
 /// Drives downstream policy: redaction (logs / admin UI), codec

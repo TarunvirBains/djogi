@@ -1421,10 +1421,10 @@ impl FieldAttrs {
             "rationale",
             "lazy",
             "version", // Task 3 — optimistic lock version counter
-            // Phase 7.5 T3 — protected-field metadata + default-volatility
-            // override. The `protected(...)` list form is recognised here
-            // as the bare key `protected`; `default` and
-            // `default_volatility` carry name-value string literals.
+            // Protected-field metadata + default-volatility override.
+            // The `protected(...)` list form is recognised here as the
+            // bare key `protected`; `default` and `default_volatility`
+            // carry name-value string literals.
             "default",
             "default_volatility",
             "protected",
@@ -1686,23 +1686,22 @@ impl FieldAttrs {
 
         attrs.expose = expose;
 
-        // Phase 7.5 T3 — parse `#[field(protected(...))]` via the
-        // dedicated walker. Validation runs immediately so the four
-        // §6 rules surface at attribute-parse time rather than
-        // deferring to descriptor emission.
+        // Parse `#[field(protected(...))]` via the dedicated walker.
+        // Validation runs immediately so the four §6 rules surface at
+        // attribute-parse time rather than deferring to descriptor
+        // emission.
         attrs.protected = crate::model::protected::parse_from_field(field)?;
         if let Some(spec) = &attrs.protected {
             crate::model::protected::validate(spec, field)?;
         }
 
-        // Phase 7.5 T3 — `#[field(default_volatility = "...")]`
-        // adopter-supplied override for default-expression volatility.
-        // Validate against the three documented variants and require a
-        // companion `#[field(default = "...")]` so the override has
-        // something to classify. The redundancy warning (override
-        // matches the static-table classification) is deferred to T5
-        // because it requires the `pg_volatility.rs` lookup table that
-        // does not yet exist.
+        // `#[field(default_volatility = "...")]` adopter-supplied
+        // override for default-expression volatility. Validate against
+        // the three documented variants and require a companion
+        // `#[field(default = "...")]` so the override has something to
+        // classify. The redundancy warning (override matches the
+        // static-table classification) is deferred until the
+        // `pg_volatility.rs` lookup table exists.
         if let Some(value) = &attrs.default_volatility {
             let span = find_named_str_lit_span(field, "default_volatility")
                 .unwrap_or_else(|| field.span());
@@ -1723,11 +1722,10 @@ impl FieldAttrs {
                      or drop the override.",
                 ));
             }
-            // TODO: post-T5 — once `pg_volatility.rs` ships, warn (not
-            // error) when the override matches the static-table
-            // classification. Plan v3 §9 T3 (3rd default_volatility
-            // rule) is deferred until the lookup table exists; until
-            // then we accept the redundancy silently.
+            // TODO: once `pg_volatility.rs` ships, warn (not error)
+            // when the override matches the static-table
+            // classification. Until the lookup table exists we accept
+            // the redundancy silently.
         }
 
         Ok(attrs)

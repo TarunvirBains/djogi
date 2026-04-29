@@ -416,7 +416,7 @@ pub fn expand(
                 None => (quote! { None }, quote! { None }, quote! { None }),
             };
 
-            // Phase 7.5 T3 — `#[field(protected(...))]` lowers to
+            // `#[field(protected(...))]` lowers to
             // `Some(::djogi::ProtectedFieldMetadata { ... })`; absent
             // attribute keeps the explicit `None` (distinct from
             // `Sensitivity::None` per the descriptor's contract).
@@ -424,9 +424,9 @@ pub fn expand(
                 Some(spec) => spec.to_tokens(),
                 None => quote! { ::std::option::Option::None },
             };
-            // Phase 7.5 T3 — `#[field(default_volatility = "...")]`
-            // override. Already validated in `FieldAttrs::parse`, so a
-            // non-`None` value is guaranteed to parse cleanly here.
+            // `#[field(default_volatility = "...")]` override. Already
+            // validated in `FieldAttrs::parse`, so a non-`None` value
+            // is guaranteed to parse cleanly here.
             let default_volatility_tokens = match fa.default_volatility.as_deref() {
                 Some(value) => {
                     let lit = crate::model::protected::DefaultVolatilityLit::parse(
