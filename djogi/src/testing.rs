@@ -302,6 +302,57 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
     }
 }
 
+/// List every database whose name matches the `djogi_test_*` prefix that is
+/// still present on the cluster connected to via `admin_url`.
+///
+/// Read-only counterpart of [`cleanup_orphaned_test_databases`]. Used by
+/// `djogi db cleanup-test-dbs --dry-run` to surface candidates without
+/// dropping. The candidate set comes straight from `pg_database` — no
+/// filesystem scan, no regex — and is returned in lexicographic order.
+///
+/// # Errors
+///
+/// Returns [`DjogiError::Db`] when the admin connection itself fails or
+/// the `pg_database` query fails.
+pub async fn list_orphaned_test_databases(admin_url: &str) -> Result<Vec<String>, DjogiError> {
+    let (client, conn) = tokio_postgres::connect(admin_url, NoTls)
+        .await
+        .map_err(|e| DjogiError::Db(DbError::other(format!("admin connect failed: {e}"))))?;
+
+    tokio::spawn(async move {
+        if let Err(e) = conn.await {
+            eprintln!("[djogi_test] list connection error: {e}");
+        }
+    });
+
+    let rows = client
+        .query(
+            "SELECT datname FROM pg_database \
+             WHERE datname LIKE 'djogi\\_test\\_%' ESCAPE '\\' \
+             ORDER BY datname",
+            &[],
+        )
+        .await
+        .map_err(|e| {
+            DjogiError::Db(DbError::other(format!(
+                "pg_database query failed during orphan listing: {e}"
+            )))
+        })?;
+
+    let mut names = Vec::with_capacity(rows.len());
+    for row in &rows {
+        match row.try_get::<_, String>(0) {
+            Ok(name) => names.push(name),
+            Err(e) => {
+                eprintln!(
+                    "[djogi_test] WARNING: failed to decode datname during orphan listing: {e}"
+                );
+            }
+        }
+    }
+    Ok(names)
+}
+
 /// Drop every database whose name matches the `djogi_test_*` prefix that is
 /// still present on the cluster connected to via `admin_url`.
 ///
@@ -319,15 +370,16 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
 /// **No filesystem scan.** The cleanup is driven entirely from `pg_database`
 /// — no directory listing, no regex.
 ///
-/// Returns the count of databases successfully dropped. A failure to drop an
-/// individual database is logged via `eprintln!` and counted as zero for that
-/// entry (best-effort, non-fatal).
+/// Returns the **lexicographically sorted names** of databases that were
+/// successfully dropped. A failure to drop an individual database is logged
+/// via `eprintln!` and that name is omitted from the returned vector
+/// (best-effort, non-fatal). Callers wanting the count call `.len()`.
 ///
 /// # Errors
 ///
 /// Returns `DjogiError::Db` when the admin connection itself fails or the
 /// `pg_database` query fails. Per-database DROP failures are not propagated
-/// — the caller sees the success count and can retry if needed.
+/// — the caller sees the successful subset and can retry if needed.
 ///
 /// # Note — not tested at unit level
 ///
@@ -335,7 +387,7 @@ pub async fn teardown_test_db(cleanup: TestDbCleanup) {
 /// require a live connection; that coverage belongs in an integration test.
 /// Added but untested at unit level — a future integration-test pass should
 /// cover it.
-pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<usize, DjogiError> {
+pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<Vec<String>, DjogiError> {
     let (client, conn) = tokio_postgres::connect(admin_url, NoTls)
         .await
         .map_err(|e| DjogiError::Db(DbError::other(format!("admin connect failed: {e}"))))?;
@@ -365,7 +417,7 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<usize, D
             )))
         })?;
 
-    let mut dropped = 0usize;
+    let mut dropped = Vec::with_capacity(rows.len());
     for row in &rows {
         let datname: String = match row.try_get(0) {
             Ok(s) => s,
@@ -378,7 +430,7 @@ pub async fn cleanup_orphaned_test_databases(admin_url: &str) -> Result<usize, D
         };
         let sql = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", quoted(&datname));
         match client.batch_execute(&sql).await {
-            Ok(()) => dropped += 1,
+            Ok(()) => dropped.push(datname),
             Err(e) => {
                 eprintln!(
                     "[djogi_test] WARNING: failed to drop orphaned test database \
@@ -901,7 +953,7 @@ mod tests {
         }
     }
 
-    // ── Phase 7 T10: sync_models invariants ─────────────────────────
+    // ── sync_models invariants ──────────────────────────────────────
     //
     // These tests pin the empty-target additive-only contract without
     // touching a live database. The invariant guard sits between the

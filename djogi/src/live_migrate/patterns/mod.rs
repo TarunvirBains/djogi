@@ -178,6 +178,119 @@ pub trait Pattern {
     fn emit(op: &SchemaOperation, ctx: &PatternContext) -> Result<Vec<Step>, PatternError>;
 }
 
+/// Route a single classifier-confirmed `ExpandContract` operation to
+/// the matching pattern emitter and return its step graph.
+///
+/// The classifier ([`crate::live_migrate::classify_operation`]) has
+/// already decided that `op` belongs on the live-plan path; this
+/// function picks the pattern whose declared shape covers the
+/// operation variant. Selection is exhaustive over the variants the
+/// classifier can route here:
+///
+/// - [`SchemaOperation::AlterColumn`] dispatches to
+///   [`replacement_column::ReplacementColumn`] for `ChangeType`,
+///   [`codec_transition::CodecTransition`] for codec rotations, and
+///   [`nullable_not_null::NullableNotNull`] for `SetNullable(false)`.
+/// - [`SchemaOperation::AddForeignKey`] dispatches to
+///   [`backfill_then_tighten::BackfillThenTighten`] for FK adds whose
+///   classifier picked `ExpandContract` (large table → multi-step
+///   validate path).
+/// - [`SchemaOperation::AddIndex`] dispatches to
+///   [`unique_via_index::UniqueViaIndex`] for unique indexes and to
+///   [`index_dependent::IndexDependent`] for non-unique indexes.
+/// - [`SchemaOperation::AddTable`] dispatches to
+///   [`multi_fk_staging::MultiFkStaging`] (only escalated here when the
+///   table carries 4+ outbound FKs; `multi_fk_staging::emit` enforces
+///   the count internally).
+/// - [`SchemaOperation::AddColumn`] dispatches to
+///   [`three_step_default::ThreeStepDefault`] for columns whose default
+///   expression is Postgres-volatile.
+///
+/// Returns [`PatternError::CannotEmit`] for operation variants the
+/// classifier should never have routed onto this path (rename ops,
+/// drop ops, enum ops). The classifier's `OnlineSafetyClassification`
+/// verdict is the gate; this function is the dispatcher behind it.
+pub fn dispatch_pattern(
+    op: &SchemaOperation,
+    ctx: &PatternContext,
+) -> Result<Vec<Step>, PatternError> {
+    use crate::migrate::diff::ColumnChange;
+    use crate::migrate::schema::IndexKindSchema;
+
+    match op {
+        SchemaOperation::AlterColumn { change, .. } => match change {
+            // Per the codec_transition module docstring, codec rotations
+            // currently surface as `ChangeType { from, to }` whose
+            // `from`/`to` are codec IDs rather than SQL types. The
+            // distinction is not yet expressed on the SchemaOperation
+            // enum; this dispatch routes every `ChangeType` to the
+            // [`replacement_column`] pattern. When a dedicated
+            // `CodecChange` variant lands on `ColumnChange` (tracked
+            // for a later phase), this arm grows the codec route.
+            ColumnChange::ChangeType { .. } => replacement_column::ReplacementColumn::emit(op, ctx),
+            ColumnChange::SetNullable(false) => nullable_not_null::NullableNotNull::emit(op, ctx),
+            _ => Err(PatternError::CannotEmit {
+                pattern: "dispatch_pattern",
+                reason: format!(
+                    "no live-plan pattern covers AlterColumn change variant {change:?}"
+                ),
+            }),
+        },
+        SchemaOperation::AddForeignKey { .. } => {
+            backfill_then_tighten::BackfillThenTighten::emit(op, ctx)
+        }
+        SchemaOperation::AddIndex(index) => match index.kind {
+            IndexKindSchema::UniqueConstraint | IndexKindSchema::UniqueIndex => {
+                unique_via_index::UniqueViaIndex::emit(op, ctx)
+            }
+            IndexKindSchema::NonUnique => index_dependent::IndexDependent::emit(op, ctx),
+        },
+        SchemaOperation::AddTable(_) => multi_fk_staging::MultiFkStaging::emit(op, ctx),
+        SchemaOperation::AddColumn { .. } => three_step_default::ThreeStepDefault::emit(op, ctx),
+        SchemaOperation::DropTable(_) => Err(PatternError::CannotEmit {
+            pattern: "dispatch_pattern",
+            reason: "DropTable live-plan staging is deferred to a later phase (this build \
+                     dispatches AlterColumn / AddFK / AddIndex / AddTable / AddColumn)"
+                .to_string(),
+        }),
+        _ => Err(PatternError::CannotEmit {
+            pattern: "dispatch_pattern",
+            reason: format!(
+                "operation variant {} should not have been classified ExpandContract",
+                operation_variant_name(op),
+            ),
+        }),
+    }
+}
+
+/// Diagnostic-only label for a [`SchemaOperation`] variant — used by
+/// [`dispatch_pattern`] to render an actionable error when an
+/// operation that should never reach this dispatcher does.
+fn operation_variant_name(op: &SchemaOperation) -> &'static str {
+    match op {
+        SchemaOperation::AddTable(_) => "AddTable",
+        SchemaOperation::DropTable(_) => "DropTable",
+        SchemaOperation::RenameTable { .. } => "RenameTable",
+        SchemaOperation::AddColumn { .. } => "AddColumn",
+        SchemaOperation::DropColumn { .. } => "DropColumn",
+        SchemaOperation::RenameColumn { .. } => "RenameColumn",
+        SchemaOperation::AlterColumn { .. } => "AlterColumn",
+        SchemaOperation::AddForeignKey { .. } => "AddForeignKey",
+        SchemaOperation::DropForeignKey { .. } => "DropForeignKey",
+        SchemaOperation::AddIndex(_) => "AddIndex",
+        SchemaOperation::DropIndex(_) => "DropIndex",
+        SchemaOperation::AddEnum(_) => "AddEnum",
+        SchemaOperation::DropEnum(_) => "DropEnum",
+        SchemaOperation::AddEnumVariant { .. } => "AddEnumVariant",
+        SchemaOperation::PkTypeFlip { .. } => "PkTypeFlip",
+        SchemaOperation::PkTypeFlipGroup(_) => "PkTypeFlipGroup",
+        SchemaOperation::PkTypeFlipMultiGroup(_) => "PkTypeFlipMultiGroup",
+        SchemaOperation::RenameApp { .. } => "RenameApp",
+        SchemaOperation::MoveModelBetweenApps { .. } => "MoveModelBetweenApps",
+        SchemaOperation::Unsupported { .. } => "Unsupported",
+    }
+}
+
 /// Reasons a pattern's [`Pattern::emit`] may refuse. Exposed publicly
 /// so the dispatch layer (T10) can surface the exact mismatch in
 /// operator messages.
@@ -213,7 +326,7 @@ pub enum PatternError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live_migrate::plan::StepParameters;
+    use crate::live_migrate::plan::{StepKind, StepParameters};
     use crate::migrate::diff::ColumnChange;
 
     #[test]
@@ -383,6 +496,96 @@ mod tests {
         for (idx, step) in steps.iter().enumerate() {
             assert_eq!(step.ordinal as usize, idx);
             assert_eq!(step.kind, step.parameters.kind());
+        }
+    }
+
+    // ── dispatch_pattern ─────────────────────────────────────────────
+
+    #[test]
+    fn dispatch_pattern_routes_alter_column_change_type_to_replacement_column() {
+        let ctx = PatternContext::with_defaults();
+        let op = SchemaOperation::AlterColumn {
+            table: "ledger_entry".to_string(),
+            column: "amount".to_string(),
+            change: ColumnChange::ChangeType {
+                from: "INTEGER".to_string(),
+                to: "BIGINT".to_string(),
+            },
+        };
+        let steps = dispatch_pattern(&op, &ctx).unwrap();
+        assert!(
+            steps
+                .iter()
+                .any(|s| matches!(s.parameters, StepParameters::BackfillChunked { .. })),
+            "ChangeType must route to a backfill-emitting pattern",
+        );
+    }
+
+    #[test]
+    fn dispatch_pattern_routes_alter_column_set_not_null_to_nullable_not_null() {
+        let ctx = PatternContext::with_defaults();
+        let op = SchemaOperation::AlterColumn {
+            table: "demo_t".to_string(),
+            column: "demo_col".to_string(),
+            change: ColumnChange::SetNullable(false),
+        };
+        let steps = dispatch_pattern(&op, &ctx).unwrap();
+        // NullableNotNull's canonical shape is expand → validate → finalize.
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.kind == StepKind::FinalizeConstraints)
+        );
+    }
+
+    #[test]
+    fn dispatch_pattern_routes_add_index_unique_to_unique_via_index() {
+        use crate::migrate::schema::{
+            IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema,
+            IndexSchema, IndexTargetSchema, IndexTypeSchema,
+        };
+        let ctx = PatternContext::with_defaults();
+        let op = SchemaOperation::AddIndex(IndexSchema {
+            extension_dependency: None,
+            include: Vec::new(),
+            index_type: IndexTypeSchema::BTree,
+            kind: IndexKindSchema::UniqueIndex,
+            name: "uq_vehicle_vin".to_string(),
+            nulls_not_distinct: false,
+            predicate: None,
+            requires_out_of_transaction: false,
+            table: "vehicle".to_string(),
+            target: IndexTargetSchema::Columns(vec![IndexColumnSchema {
+                name: "vin".to_string(),
+                nulls: IndexNullsOrderSchema::Default,
+                opclass: None,
+                order: IndexOrderSchema::Asc,
+            }]),
+        });
+        let steps = dispatch_pattern(&op, &ctx).unwrap();
+        assert!(!steps.is_empty(), "unique index dispatch must emit steps");
+    }
+
+    #[test]
+    fn dispatch_pattern_rejects_unsupported_variant() {
+        let ctx = PatternContext::with_defaults();
+        let op = SchemaOperation::Unsupported {
+            reason: "test fixture".to_string(),
+        };
+        let err = dispatch_pattern(&op, &ctx).expect_err("Unsupported must refuse");
+        assert!(matches!(err, PatternError::CannotEmit { .. }));
+    }
+
+    #[test]
+    fn dispatch_pattern_rejects_drop_table_with_actionable_message() {
+        let ctx = PatternContext::with_defaults();
+        let op = SchemaOperation::DropTable("legacy_t".to_string());
+        let err = dispatch_pattern(&op, &ctx).expect_err("DropTable refused for now");
+        match err {
+            PatternError::CannotEmit { reason, .. } => {
+                assert!(reason.contains("DropTable") || reason.contains("deferred"));
+            }
+            other => panic!("expected CannotEmit, got {other:?}"),
         }
     }
 }

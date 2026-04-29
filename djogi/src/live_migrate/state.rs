@@ -14,13 +14,17 @@
 //! uniqueness invariant is on `(target_database, app_label, plan_id)`
 //! — the [`INSTALL_SQL`] DDL emits a matching unique index.
 //!
-//! # Forward references
+//! # Daemon-mode claim columns
 //!
-//! T15's daemon-mode resume will add `claimed_by_pid`,
-//! `claimed_by_host`, and `claimed_at` columns. T6 deliberately does
-//! NOT add them — they belong to the daemon contract, not the plan
-//! contract. When T15 lands, [`INSTALL_SQL`] grows additional
-//! `ALTER TABLE` statements (idempotent `ADD COLUMN IF NOT EXISTS`).
+//! `claimed_by_pid`, `claimed_by_host`, and `claimed_at` are owned by
+//! the daemon contract (see [`crate::live_migrate::daemon`]) rather
+//! than the plan contract. They are appended to the table by
+//! [`INSTALL_SQL`] as idempotent `ADD COLUMN IF NOT EXISTS` clauses
+//! so existing deployments grow the columns on the next runner
+//! invocation without a separate migration step. The plan
+//! lifecycle (status / classification / step pointer) is unaffected
+//! by these columns; nothing outside the daemon poll loop reads or
+//! writes them.
 //!
 //! # Status and classification CHECK constraints
 //!
@@ -85,6 +89,12 @@ CREATE TABLE IF NOT EXISTS djogi_live_plans (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS djogi_live_plans_bucket_plan_id_uidx
     ON djogi_live_plans (target_database, app_label, plan_id);
+ALTER TABLE djogi_live_plans
+    ADD COLUMN IF NOT EXISTS claimed_by_pid BIGINT;
+ALTER TABLE djogi_live_plans
+    ADD COLUMN IF NOT EXISTS claimed_by_host TEXT;
+ALTER TABLE djogi_live_plans
+    ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
 "#;
 
 // ── PlanStatus ────────────────────────────────────────────────────────
@@ -393,6 +403,61 @@ pub async fn update_progress(
         &[&target_database, &app_label, &plan_id_i64, &rows_done],
     )
     .await?;
+    Ok(())
+}
+
+/// Update the row's `current_step_index` and `current_step` fields.
+/// Writes both columns in one statement; called by the CLI runner as
+/// it advances through the step graph so resume points off the row's
+/// own pointer rather than re-deriving from log lines.
+///
+/// `current_step` is the [`crate::live_migrate::plan::StepKind`]'s
+/// snake_case label (per the serde rename) — the operator-facing
+/// status renderer can show it verbatim.
+pub async fn update_step_index(
+    ctx: &mut DjogiContext,
+    plan_id: HeerId,
+    target_database: &str,
+    app_label: &str,
+    new_index: i32,
+    new_step_label: Option<&str>,
+) -> Result<(), DjogiError> {
+    let sql = "UPDATE djogi_live_plans \
+               SET current_step_index = $4, current_step = $5 \
+               WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    let plan_id_i64 = plan_id.as_i64();
+    ctx.execute(
+        sql,
+        &[
+            &target_database,
+            &app_label,
+            &plan_id_i64,
+            &new_index,
+            &new_step_label,
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Stamp the row's `completed_at` to `now()`. Called by `live finalize`
+/// when the runner has executed every cleanup step and is about to
+/// promote the plan into [`PlanStatus::Complete`]. Status promotion
+/// itself flows through [`update_status`]; the two writes are not
+/// inside the same transaction because the runner has nothing to roll
+/// back at that point — completion is durable by construction.
+pub async fn stamp_completed_at(
+    ctx: &mut DjogiContext,
+    plan_id: HeerId,
+    target_database: &str,
+    app_label: &str,
+) -> Result<(), DjogiError> {
+    let sql = "UPDATE djogi_live_plans \
+               SET completed_at = now() \
+               WHERE target_database = $1 AND app_label = $2 AND plan_id = $3";
+    let plan_id_i64 = plan_id.as_i64();
+    ctx.execute(sql, &[&target_database, &app_label, &plan_id_i64])
+        .await?;
     Ok(())
 }
 

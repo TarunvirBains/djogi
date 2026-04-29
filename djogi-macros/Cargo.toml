@@ -10,6 +10,16 @@ description = "Proc macros for the Djogi framework"
 [lib]
 proc-macro = true
 
+[features]
+# Mirror of `djogi`'s `spatial` feature so the cfg-recognition
+# attribute on macro-test fixtures (e.g.,
+# `#[cfg(feature = "spatial")]` in `tests/compile_pass/phase6_spatial_*.rs`
+# fixtures) doesn't trip the `unexpected_cfgs` lint when running
+# `cargo test -p djogi-macros --test compile_pass`. The macro crate
+# itself has no spatial-specific code paths — the flag exists purely
+# so trybuild fixtures using cfg gates compile cleanly.
+spatial = []
+
 [dependencies]
 syn.workspace = true
 quote.workspace = true
