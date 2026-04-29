@@ -22,9 +22,9 @@
 //! nested `JsonbSchema` tree):
 //!
 //! `i16`, `i32`, `i64`, `f32`, `f64`, `bool`, `String`, `&str`,
-//! `time::OffsetDateTime`, `time::Date`, `uuid::Uuid`,
-//! `rust_decimal::Decimal`, `::djogi::types::HeerId`, `::djogi::types::RanjId`,
-//! `serde_json::Value`.
+//! `time::OffsetDateTime`, `time::Date`, `djogi::DateTime`, `djogi::Date`,
+//! `uuid::Uuid`, `rust_decimal::Decimal`, `::djogi::types::HeerId`,
+//! `::djogi::types::RanjId`, `serde_json::Value`.
 //!
 //! Any other type is assumed to be a nested `JsonbSchema` struct.
 //!
@@ -578,6 +578,7 @@ fn unwrap_option(ty: &Type) -> Option<Type> {
 const SCALAR_TYPE_PATTERNS: &[&str] = &[
     "&str",
     "Date",
+    "DateTime",
     "Decimal",
     "OffsetDateTime",
     "String",
@@ -599,8 +600,16 @@ const SCALAR_TYPE_PATTERNS: &[&str] = &[
     "u64",
     "u8",
     "uuid::Uuid",
+    "::djogi::Date",
+    "::djogi::DateTime",
+    "::djogi::types::Date",
+    "::djogi::types::DateTime",
     "::djogi::types::HeerId",
     "::djogi::types::RanjId",
+    "djogi::Date",
+    "djogi::DateTime",
+    "djogi::types::Date",
+    "djogi::types::DateTime",
     "djogi::types::HeerId",
     "djogi::types::RanjId",
     "heeranjid::HeerId",
@@ -633,6 +642,60 @@ mod tests {
     fn nested_struct_is_not_scalar() {
         let ty: Type = syn::parse_str("EngineSpecs").unwrap();
         assert!(!is_scalar_type(&ty));
+    }
+
+    // GH issue #40 — `djogi::DateTime` / `djogi::Date` are canonical aliases
+    // for `time::OffsetDateTime` / `time::Date`. Both the unqualified short
+    // forms (visible after `use djogi::prelude::*`) and the various
+    // qualified spellings must be recognised as scalar leaves so authors
+    // do not have to drop down to the `time` crate just to satisfy the
+    // derive's pattern matcher.
+    #[test]
+    fn djogi_datetime_alias_unqualified_is_scalar() {
+        let ty: Type = syn::parse_str("DateTime").unwrap();
+        assert!(is_scalar_type(&ty));
+    }
+
+    #[test]
+    fn djogi_date_alias_unqualified_is_scalar() {
+        let ty: Type = syn::parse_str("Date").unwrap();
+        assert!(is_scalar_type(&ty));
+    }
+
+    #[test]
+    fn djogi_datetime_alias_qualified_is_scalar() {
+        let ty: Type = syn::parse_str("djogi::DateTime").unwrap();
+        assert!(is_scalar_type(&ty));
+    }
+
+    #[test]
+    fn djogi_date_alias_qualified_is_scalar() {
+        let ty: Type = syn::parse_str("djogi::Date").unwrap();
+        assert!(is_scalar_type(&ty));
+    }
+
+    #[test]
+    fn djogi_types_datetime_alias_is_scalar() {
+        let ty: Type = syn::parse_str("djogi::types::DateTime").unwrap();
+        assert!(is_scalar_type(&ty));
+    }
+
+    #[test]
+    fn djogi_types_date_alias_is_scalar() {
+        let ty: Type = syn::parse_str("djogi::types::Date").unwrap();
+        assert!(is_scalar_type(&ty));
+    }
+
+    #[test]
+    fn djogi_datetime_alias_absolute_is_scalar() {
+        let ty: Type = syn::parse_str("::djogi::DateTime").unwrap();
+        assert!(is_scalar_type(&ty));
+    }
+
+    #[test]
+    fn djogi_types_datetime_alias_absolute_is_scalar() {
+        let ty: Type = syn::parse_str("::djogi::types::DateTime").unwrap();
+        assert!(is_scalar_type(&ty));
     }
 
     #[test]
