@@ -646,6 +646,12 @@ fn emit_rls_side_channel(
                 // Emit a build-time warning to stderr. The RLS file is still
                 // written with an empty cast so the build stays green — a
                 // Phase 7 compile-fail test will tighten this to a hard error.
+                //
+                // GH issue #37 — `ForeignKey<T>` / `OneToOneField<T>` columns
+                // route through `BigInt` in `field_sql_type_category`, so they
+                // do not reach this branch even if the FK target uses RanjId
+                // or a custom PK. Adopters who hit a wrong-cast policy at
+                // runtime must declare `tenant_key` against a non-FK column.
                 eprintln!(
                     "djogi-macros: tenant_key column `{tenant_col}` on struct `{}` \
                      has unsupported SQL type `{other}`; RLS cast will be empty. \

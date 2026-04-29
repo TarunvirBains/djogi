@@ -2202,13 +2202,43 @@ pub enum FieldSqlTypeCategory {
 ///
 /// Used by the RLS DDL emitter to pick the correct `current_setting(...)::cast`
 /// expression. `HeerId` → `BigInt`; `Uuid` / `RanjId` → `Uuid`; `String` →
-/// `Text`; everything else → `Unsupported`.
+/// `Text`; `ForeignKey<T>` / `OneToOneField<T>` → `BigInt` (the framework
+/// default — see assumption note below); everything else → `Unsupported`.
 ///
 /// One `Option<…>` layer is stripped first so nullable tenant columns
-/// (`Option<HeerId>`) are also accepted.
+/// (`Option<HeerId>`, `Option<ForeignKey<T>>`) are also accepted.
+///
+/// # FK assumption (GH issue #37)
+///
+/// When the tenant-key column is typed `ForeignKey<T>` or
+/// `OneToOneField<T>` (or a nullable variant), this function returns
+/// `BigInt` unconditionally. The macro cannot resolve `T::Pk` at
+/// expansion time — proc-macro evaluation order is non-deterministic
+/// and the target's `ModelDescriptor` is not visible from the FK-using
+/// model's expansion. Defaulting to `BigInt` covers the canonical case
+/// (every model that uses the framework default `HeerId` PK), at the
+/// cost of producing a wrong RLS cast if the FK target opts into
+/// `RanjId` or a custom PK.
+///
+/// **Adopters whose FK target uses a non-default PK MUST declare
+/// `tenant_key` against a non-FK column** (a plain `tenant_id: HeerId`,
+/// `RanjId`, or `String` field). The pre-fix behaviour silently emitted
+/// an empty cast and fell back to text comparison, which masked the
+/// bug; the post-fix behaviour produces a `::bigint` cast that fails
+/// loudly at policy-application time if the actual column is a UUID.
+/// Loud failure beats silent miscompare for tenant isolation.
 #[allow(dead_code)]
 pub fn field_sql_type_category(ty: &syn::Type) -> FieldSqlTypeCategory {
     let (inner, _nullable) = unwrap_option(ty);
+
+    // Detect `ForeignKey<T>` / `OneToOneField<T>` wrappers. The relation
+    // detector also handles `Option<ForeignKey<T>>` / `Option<OneToOneField<T>>`,
+    // so we route through it on the *original* `ty` rather than the
+    // already-`unwrap_option`'d inner.
+    if detect_relation(ty).is_some() {
+        return FieldSqlTypeCategory::BigInt;
+    }
+
     // Build a normalised type-string for pattern matching.
     let s = quote::quote!(#inner).to_string().replace(' ', "");
     match s.as_str() {
@@ -2326,5 +2356,68 @@ mod tests {
         // a caller concern. The string-based fallback then matches the
         // `_ if s.starts_with("Option<") => None` arm.
         assert_eq!(rust_type_to_sql(&optioned), None);
+    }
+
+    // GH issue #37 — `ForeignKey<T>` / `OneToOneField<T>` columns route
+    // through `BigInt` in `field_sql_type_category`. The macro cannot
+    // resolve `T::Pk` at expansion time, so it assumes the framework-
+    // default HeerId (BIGINT). The pre-fix behaviour silently emitted
+    // an empty cast, which masked tenant-isolation bugs by falling back
+    // to text comparison.
+    use super::{FieldSqlTypeCategory, field_sql_type_category};
+
+    #[test]
+    fn foreign_key_tenant_key_routes_to_bigint() {
+        let ty: syn::Type = parse_quote!(ForeignKey<Owner>);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::BigInt);
+    }
+
+    #[test]
+    fn nullable_foreign_key_tenant_key_routes_to_bigint() {
+        let ty: syn::Type = parse_quote!(Option<ForeignKey<Owner>>);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::BigInt);
+    }
+
+    #[test]
+    fn one_to_one_field_tenant_key_routes_to_bigint() {
+        let ty: syn::Type = parse_quote!(OneToOneField<Owner>);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::BigInt);
+    }
+
+    #[test]
+    fn nullable_one_to_one_field_tenant_key_routes_to_bigint() {
+        let ty: syn::Type = parse_quote!(Option<OneToOneField<Owner>>);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::BigInt);
+    }
+
+    #[test]
+    fn fully_qualified_foreign_key_tenant_key_routes_to_bigint() {
+        // Adopters who don't use `djogi::prelude::*` may write the FK type
+        // with its full path. The relation detector inspects only the last
+        // segment, so this case must work too.
+        let ty: syn::Type = parse_quote!(::djogi::ForeignKey<Owner>);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::BigInt);
+        let ty2: syn::Type = parse_quote!(djogi::relation::ForeignKey<Owner>);
+        assert_eq!(field_sql_type_category(&ty2), FieldSqlTypeCategory::BigInt);
+    }
+
+    #[test]
+    fn plain_heer_id_tenant_key_still_routes_to_bigint() {
+        // Regression check: the FK-detection branch must NOT eat the
+        // existing `HeerId` arm.
+        let ty: syn::Type = parse_quote!(HeerId);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::BigInt);
+    }
+
+    #[test]
+    fn plain_string_tenant_key_still_routes_to_text() {
+        let ty: syn::Type = parse_quote!(String);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::Text);
+    }
+
+    #[test]
+    fn plain_uuid_tenant_key_still_routes_to_uuid() {
+        let ty: syn::Type = parse_quote!(Uuid);
+        assert_eq!(field_sql_type_category(&ty), FieldSqlTypeCategory::Uuid);
     }
 }
