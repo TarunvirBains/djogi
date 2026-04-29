@@ -124,6 +124,42 @@ enum DbCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Drop orphaned `djogi_test_<uuid>` databases left over from
+    /// crashed `#[djogi_test]` runs (SIGKILL / OOM / panic-after-spawn
+    /// before teardown could fire). Triple-gated identical to
+    /// `db reset` — localhost (override via `--allow-non-localhost`),
+    /// non-production profile, explicit `--yes` (waived under
+    /// `--dry-run`).
+    ///
+    /// Exit codes: 0 on success, 1 on error (config / connect / SQL),
+    /// 2 on gate refusal (non-localhost, production profile, missing
+    /// `--yes` without `--dry-run`).
+    CleanupTestDbs {
+        /// List candidates without dropping. Skips the `--yes`
+        /// confirmation gate because no destructive side effect
+        /// occurs.
+        #[arg(long, default_value_t = false)]
+        dry_run: bool,
+        /// Skip the `--yes` confirmation gate. Required for
+        /// non-interactive invocations unless `--dry-run` is also set.
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+        /// Maintenance database to connect to. Defaults to `postgres`,
+        /// the conventional administrative DB on every cluster.
+        /// Override only when the cluster uses a different admin DB
+        /// (e.g. AWS RDS uses `rdsadmin`).
+        #[arg(long, default_value = "postgres")]
+        maintenance_database: String,
+        /// Allow cleanup against a non-localhost cluster. Off by
+        /// default — the gate matches `db reset`'s localhost
+        /// requirement so destructive ops stay local unless the
+        /// operator explicitly opts out.
+        #[arg(long, default_value_t = false)]
+        allow_non_localhost: bool,
+        /// Workspace root override.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -260,6 +296,19 @@ fn main() -> ExitCode {
                 allow_non_localhost,
                 workspace,
             } => db::seed_cmd(database, allow_non_localhost, workspace),
+            DbCommand::CleanupTestDbs {
+                dry_run,
+                yes,
+                maintenance_database,
+                allow_non_localhost,
+                workspace,
+            } => db::cleanup_test_dbs_cmd(
+                dry_run,
+                yes,
+                maintenance_database,
+                allow_non_localhost,
+                workspace,
+            ),
         },
         TopCommand::Docs { output, workspace } => db::docs_cmd(output, workspace),
         TopCommand::Live { command } => live::dispatch(command),

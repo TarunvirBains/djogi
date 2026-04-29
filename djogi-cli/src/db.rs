@@ -338,6 +338,199 @@ fn print_seed_report(report: &SeedReport) {
     println!("db seed: {applied} applied, {skipped} skipped");
 }
 
+// ── db cleanup-test-dbs ───────────────────────────────────────────────────
+
+/// `djogi db cleanup-test-dbs` entry point — drops orphaned
+/// `djogi_test_<uuid>` databases left behind by `#[djogi_test]` runs
+/// killed by SIGKILL / OOM / panic-after-spawn before
+/// [`djogi::testing::teardown_test_db`] could fire.
+///
+/// Triple-gated identical to `db reset`:
+///
+/// 1. **Localhost.** `DjogiConfig::database.url` MUST resolve to
+///    `127.0.0.1` / `localhost` / `[::1]`, unless the operator passed
+///    `--allow-non-localhost` to override (parity with `db seed`'s
+///    lighter gate — sometimes operators run a remote dev cluster).
+/// 2. **Non-production.** `Djogi.toml::profile` MUST NOT equal
+///    `"production"`. Mirrors `db reset`'s second gate so the same
+///    rules govern any operation that issues `DROP DATABASE`.
+/// 3. **Confirmation.** `--yes` is required, unless `--dry-run` is
+///    passed. `--dry-run` lists candidates without dropping; no
+///    confirmation needed because no side effect occurs.
+///
+/// `maintenance_database` defaults to `"postgres"` — the conventional
+/// administrative DB present on every cluster — and is spliced into
+/// `database.url`'s path component to produce the admin connection
+/// URL (the application database itself can't drop other databases on
+/// the same cluster).
+///
+/// Exit codes match the `db` matrix at the top of this module: `0` on
+/// success, `1` on runtime / SQL / connect failure, `2` on gate
+/// refusal (non-localhost without override, production profile,
+/// missing `--yes`).
+pub fn cleanup_test_dbs_cmd(
+    dry_run: bool,
+    yes: bool,
+    maintenance_database: String,
+    allow_non_localhost: bool,
+    workspace: Option<PathBuf>,
+) -> ExitCode {
+    let workspace = resolve_workspace(workspace);
+    let config = match DjogiConfig::load_from_workspace(&workspace) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("djogi db cleanup-test-dbs: config load: {e}");
+            return ExitCode::from(1);
+        }
+    };
+
+    // Gate 1 — localhost. The cleanup issues `DROP DATABASE` against
+    // every `djogi_test_*` candidate; the localhost requirement
+    // ensures the destructive surface stays on the operator's own
+    // cluster unless they explicitly opt out via
+    // `--allow-non-localhost`.
+    if !allow_non_localhost && !djogi::migrate::is_localhost_connection(&config.database.url) {
+        eprintln!(
+            "djogi db cleanup-test-dbs: refused — DATABASE_URL `{}` is not \
+             localhost; pass `--allow-non-localhost` to override",
+            config.database.url
+        );
+        return ExitCode::from(2);
+    }
+
+    // Gate 2 — production profile. Identical predicate to `db reset`'s
+    // production gate so the rules governing destructive ops stay
+    // consistent across the `db` family.
+    if config.profile == "production" {
+        eprintln!(
+            "djogi db cleanup-test-dbs: refused — Djogi.toml::profile = `{}`; \
+             refusing to run on a production profile",
+            config.profile
+        );
+        return ExitCode::from(2);
+    }
+
+    // Gate 3 — explicit confirmation, unless `--dry-run` is in effect.
+    // `--dry-run` performs no DROPs, so confirmation is moot.
+    if !dry_run && !yes {
+        eprintln!(
+            "djogi db cleanup-test-dbs: refused — pass `--yes` to confirm, \
+             or `--dry-run` to list candidates without dropping"
+        );
+        return ExitCode::from(2);
+    }
+
+    // Validate the maintenance database name before splicing it into
+    // a URL — the same byte-level grammar `db reset` enforces. Strict
+    // Postgres-identifier rules: ASCII letter or underscore followed
+    // by ASCII alphanumerics or underscores, up to 63 bytes.
+    if !is_valid_pg_identifier(&maintenance_database) {
+        eprintln!(
+            "djogi db cleanup-test-dbs: invalid maintenance database name `{maintenance_database}`"
+        );
+        return ExitCode::from(1);
+    }
+
+    // Splice the maintenance database into the application URL. The
+    // application URL's path component points at the per-app database
+    // (e.g. `main`); cleanup must connect to the cluster's admin DB
+    // (default `postgres`) to issue `DROP DATABASE` against the
+    // orphaned `djogi_test_*` peers.
+    let admin_url = match djogi::migrate::derive_per_database_url(
+        &config.database.url,
+        &maintenance_database,
+    ) {
+        Some(u) => u,
+        None => {
+            eprintln!(
+                "djogi db cleanup-test-dbs: malformed application URL `{}` — \
+                 cannot derive maintenance connection URL",
+                config.database.url
+            );
+            return ExitCode::from(1);
+        }
+    };
+
+    let runtime = match build_runtime("db cleanup-test-dbs") {
+        Ok(r) => r,
+        Err(code) => return code,
+    };
+    let exit = runtime.block_on(async { run_cleanup_test_dbs(&admin_url, dry_run).await });
+    ExitCode::from(exit as u8)
+}
+
+/// Async body of [`cleanup_test_dbs_cmd`]. Returns the desired exit
+/// code.
+async fn run_cleanup_test_dbs(admin_url: &str, dry_run: bool) -> i32 {
+    if dry_run {
+        match djogi::testing::list_orphaned_test_databases(admin_url).await {
+            Ok(candidates) => {
+                if candidates.is_empty() {
+                    println!("db cleanup-test-dbs (dry run): no orphaned test databases found");
+                } else {
+                    println!(
+                        "db cleanup-test-dbs (dry run): {} candidate(s):",
+                        candidates.len()
+                    );
+                    for name in &candidates {
+                        println!("  {name}");
+                    }
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("djogi db cleanup-test-dbs: {e}");
+                1
+            }
+        }
+    } else {
+        match djogi::testing::cleanup_orphaned_test_databases(admin_url).await {
+            Ok(dropped) => {
+                if dropped.is_empty() {
+                    println!("db cleanup-test-dbs: no orphaned test databases dropped");
+                } else {
+                    println!(
+                        "db cleanup-test-dbs: dropped {} database(s):",
+                        dropped.len()
+                    );
+                    for name in &dropped {
+                        println!("  {name}");
+                    }
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("djogi db cleanup-test-dbs: {e}");
+                1
+            }
+        }
+    }
+}
+
+/// Strict Postgres-identifier check used for the
+/// `--maintenance-database` argument: ASCII letter or underscore
+/// followed by ASCII alphanumerics or underscores, up to 63 bytes
+/// total. Mirrors the grammar `djogi::migrate::reset` enforces on the
+/// equivalent argument; kept inline (rather than re-exporting the
+/// crate-private helper) so the CLI's defence-in-depth is self
+/// contained at this layer.
+fn is_valid_pg_identifier(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 63 {
+        return false;
+    }
+    let first = bytes[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return false;
+    }
+    for &b in &bytes[1..] {
+        if !(b.is_ascii_alphanumeric() || b == b'_') {
+            return false;
+        }
+    }
+    true
+}
+
 // ── docs ──────────────────────────────────────────────────────────────────
 
 /// `djogi docs` entry point.
@@ -434,6 +627,159 @@ mod tests {
             None => unsafe { std::env::remove_var("DATABASE_URL") },
         }
         let _ = fs::remove_dir_all(&work);
+    }
+
+    // ── cleanup-test-dbs ────────────────────────────────────────────
+
+    /// Non-localhost URL refuses with exit code 2 when
+    /// `--allow-non-localhost` is omitted, regardless of `--yes` or
+    /// `--dry-run`. Mirrors `db reset`'s localhost gate.
+    #[test]
+    fn cleanup_test_dbs_refuses_non_localhost_without_override() {
+        let work = temp_workspace("cleanup_remote");
+        let toml = "[database]\nurl = \"postgres://prod.example.com/main\"\n\
+                    max_connections = 1\ndev_mode = false\n\
+                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let prior = std::env::var("DATABASE_URL").ok();
+        // SAFETY: tests run with --test-threads=1.
+        unsafe { std::env::remove_var("DATABASE_URL") };
+
+        // `--yes` set, `--allow-non-localhost` NOT set, `--dry-run`
+        // NOT set — localhost gate must refuse first.
+        let exit = cleanup_test_dbs_cmd(
+            false,
+            true,
+            "postgres".to_string(),
+            false,
+            Some(work.clone()),
+        );
+        assert_eq!(
+            exit,
+            ExitCode::from(2),
+            "non-localhost without override must refuse"
+        );
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Production profile refuses (exit 2) even with localhost +
+    /// `--yes`. Identical predicate to `db reset`'s production gate.
+    #[test]
+    fn cleanup_test_dbs_refuses_on_production_profile() {
+        let work = temp_workspace("cleanup_prod");
+        let toml = "profile = \"production\"\n\
+                    [database]\nurl = \"postgres://localhost/main\"\n\
+                    max_connections = 1\ndev_mode = false\n\
+                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let prior = std::env::var("DATABASE_URL").ok();
+        unsafe { std::env::remove_var("DATABASE_URL") };
+
+        let exit = cleanup_test_dbs_cmd(
+            false,
+            true,
+            "postgres".to_string(),
+            false,
+            Some(work.clone()),
+        );
+        assert_eq!(exit, ExitCode::from(2), "production must refuse");
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Localhost + non-production + neither `--yes` nor `--dry-run`
+    /// must refuse with exit code 2 (missing confirmation).
+    #[test]
+    fn cleanup_test_dbs_refuses_without_yes_or_dry_run() {
+        let work = temp_workspace("cleanup_no_yes");
+        let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
+                    max_connections = 1\ndev_mode = false\n\
+                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let prior = std::env::var("DATABASE_URL").ok();
+        unsafe { std::env::remove_var("DATABASE_URL") };
+
+        let exit = cleanup_test_dbs_cmd(
+            false,
+            false,
+            "postgres".to_string(),
+            false,
+            Some(work.clone()),
+        );
+        assert_eq!(
+            exit,
+            ExitCode::from(2),
+            "missing --yes without --dry-run must refuse"
+        );
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// Invalid maintenance database name (e.g. SQL-injection
+    /// candidate) is refused at the CLI before any connection
+    /// attempt. Returns exit code 1 — argument validation, not gate
+    /// refusal.
+    #[test]
+    fn cleanup_test_dbs_rejects_invalid_maintenance_database() {
+        let work = temp_workspace("cleanup_bad_maint");
+        let toml = "[database]\nurl = \"postgres://localhost/main\"\n\
+                    max_connections = 1\ndev_mode = false\n\
+                    [server]\nhost = \"127.0.0.1\"\nport = 1234\n";
+        fs::write(work.join("Djogi.toml"), toml).unwrap();
+        let prior = std::env::var("DATABASE_URL").ok();
+        unsafe { std::env::remove_var("DATABASE_URL") };
+
+        let exit = cleanup_test_dbs_cmd(
+            false,
+            true,
+            "'; DROP DATABASE main; --".to_string(),
+            false,
+            Some(work.clone()),
+        );
+        assert_eq!(
+            exit,
+            ExitCode::from(1),
+            "invalid maintenance DB name must reject"
+        );
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("DATABASE_URL", v) },
+            None => unsafe { std::env::remove_var("DATABASE_URL") },
+        }
+        let _ = fs::remove_dir_all(&work);
+    }
+
+    /// `is_valid_pg_identifier` accepts typical names and rejects
+    /// pathological ones — defence-in-depth check on the inline
+    /// validator.
+    #[test]
+    fn is_valid_pg_identifier_byte_grammar() {
+        assert!(is_valid_pg_identifier("postgres"));
+        assert!(is_valid_pg_identifier("rdsadmin"));
+        assert!(is_valid_pg_identifier("_under"));
+        assert!(is_valid_pg_identifier("a"));
+        assert!(is_valid_pg_identifier("a_1_b"));
+
+        assert!(!is_valid_pg_identifier(""));
+        assert!(!is_valid_pg_identifier("1starts_with_digit"));
+        assert!(!is_valid_pg_identifier("has space"));
+        assert!(!is_valid_pg_identifier("'; DROP TABLE foo; --"));
+        // 64 bytes — one over the Postgres identifier-length cap.
+        assert!(!is_valid_pg_identifier(&"a".repeat(64)));
+        assert!(is_valid_pg_identifier(&"a".repeat(63)));
     }
 
     /// `docs` against an empty inventory still produces a README and
