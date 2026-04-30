@@ -178,7 +178,7 @@ Every `SchemaDelta` carries a `Classification` that determines runner behaviour:
 | `Unsupported { reason }` | Differ cannot lower the change safely | Operator must hand-edit the migration |
 | `PkTypeFlip { co_destructive, co_lossy }` | At least one PK-type flip | Routes through T9's expand/contract orchestration; `co_*` flags surface co-existing severity so destructive gating still applies even when the headline classification is the flip |
 
-Phase 7.5 will layer a second classification dimension (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`) that captures lock-time and live-row impact orthogonally.
+Phase 7.5 layered a second classification dimension (`OnlineSafe` / `FastLockDestructiveGuarded` / `ExpandContract` / `OfflineOnly`) that captures lock-time and live-row impact orthogonally. The two dimensions compose: a change can be `Reversible` on the structural axis and `ExpandContract` on the online-safety axis (typical of FK additions), and the runner gates on both.
 
 ## PK-type flip migrations
 

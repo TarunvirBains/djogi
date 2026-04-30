@@ -219,8 +219,8 @@ myapp/
 ```
 
 The frontend crate imports `FooPublic` / `FooSelfView` without
-pulling in `djogi` (or `sqlx`, or `tokio`) — the visages are just
-structs the macro emitted in `myapp_models`.
+pulling in `djogi` or `tokio` — the visages are just structs the
+macro emitted in `myapp_models`.
 
 ## Visage query surface
 

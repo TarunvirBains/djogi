@@ -55,9 +55,9 @@ pub struct Vehicle {
 ```
 
 `ForeignKey<T>` stores the target model's primary key **only** — not an
-eagerly-loaded row. `sqlx::Encode` / `Decode` route it through
-`T::Pk`, so the on-disk column matches the target's PK column type
-(`BIGINT` for HeerId, `UUID` for RanjId, `INTEGER` for serial).
+eagerly-loaded row. `postgres-types::ToSql` / `FromSql` route it
+through `T::Pk`, so the on-disk column matches the target's PK column
+type (`BIGINT` for HeerId, `UUID` for RanjId, `INTEGER` for serial).
 
 Use `Option<ForeignKey<T>>` for nullable FK columns — the migration
 system emits the `NULL` constraint from the `Option<_>` wrapper, not
@@ -87,8 +87,8 @@ match vehicle.owner_id.resolved() {
 ### `on_delete` behaviour
 
 Only valid on `ForeignKey<T>` / `OneToOneField<T>` fields. Recorded in
-`FieldDescriptor::on_delete`; consumed by the Phase 6 migration DDL
-emitter.
+`FieldDescriptor::on_delete`; consumed by the migration DDL emitter
+(Phase 7).
 
 | Value | SQL |
 |---|---|
@@ -188,7 +188,7 @@ shape, same `.fetch(&mut ctx)` / `.resolved()` / prefetch surface. The
 distinction exists so the macro can:
 
 - emit a singular reverse accessor (see below — one `Option<Profile>`, not a `Vec<Profile>`)
-- emit a `UNIQUE` constraint on the FK column in Phase 6 DDL
+- emit a `UNIQUE` constraint on the FK column in the migration DDL
 
 ---
 

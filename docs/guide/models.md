@@ -2,9 +2,9 @@
 
 # Models
 
-A Djogi model is a plain Rust struct annotated with `#[model(table = "...")]`. The proc macro injects the three framework fields (`id`, `created_at`, `updated_at`), generates all CRUD methods, registers the model with the descriptor system via `inventory`, and emits a `FromRow` impl for sqlx deserialization. You define only the business fields.
+A Djogi model is a plain Rust struct annotated with `#[model(table = "...")]`. The proc macro injects the three framework fields (`id`, `created_at`, `updated_at`), generates all CRUD methods, registers the model with the descriptor system via `inventory`, and emits a `FromPgRow` impl for `tokio-postgres` row deserialization. You define only the business fields.
 
-This document is primarily a Phase 1 reference for core model definition. For shipped relation field types, eager loading, and explicit-through many-to-many declarations, see the [relations guide](./relations.md). For features that still are not shipped, see [the models roadmap](../roadmap/models.md).
+This document is the core model-definition reference. For relation field types, eager loading, and explicit-through many-to-many declarations, see the [relations guide](./relations.md). For typed JSONB, spatial types, full-text search, and other rich field types, see the corresponding feature guides.
 
 ---
 
@@ -47,8 +47,8 @@ The macro also generates:
 |---|---|
 | `impl djogi::model::Model for Article` | `table_name()`, `pk_value()`, `descriptor()`, `get()`, `create()`, `save()`, `delete()`, `refresh_from_db()` |
 | `impl Default for Article` | Struct-update convenience (suppressed by `#[model(no_default)]`) |
-| `impl sqlx::FromRow<'_, PgRow> for Article` | SQLx row deserialization |
-| `ArticleFields` / `ArticleFilter` | Typed field accessors / programmatic filter builder — skeleton only in Phase 1; Phase 2 fills in the filter API |
+| `impl FromPgRow for Article` | `tokio_postgres::Row` → `Article` decode |
+| `ArticleFields` / `ArticleFilter` | Typed field accessors / programmatic filter builder — used by the `QuerySet` filter API |
 | `Article::descriptor()` | `&'static ModelDescriptor` collected via `inventory::submit!` |
 | `Article::create_with_id(...)` | Pre-generated-ID insertion (HeerId models only) |
 
@@ -122,7 +122,7 @@ Generated SQL column: `id SERIAL PRIMARY KEY`.
 
 Do not use `Serial` for application data tables. Its sequential, predictable nature makes it unsuitable as a public-facing identifier.
 
-**`None`:** No framework `id` field injected. The user supplies their own primary-key field(s). Phase 1 does NOT emit `impl Model for T` for `pk = None` models — the `Model::Pk` bound requires `postgres_types::ToSql`, which `()` does not satisfy, and a dummy PK type would misrepresent the real key shape. A future phase will introduce a separate trait for composite / user-managed PKs. In Phase 1 these models still get: struct injection of `created_at`/`updated_at`, `Default`, `FromRow`, and descriptor registration — just no CRUD methods.
+**`None`:** No framework `id` field injected. The user supplies their own primary-key field(s). `pk = None` models do NOT emit `impl Model for T` — the `Model::Pk` bound requires `postgres_types::ToSql`, which `()` does not satisfy, and a dummy PK type would misrepresent the real key shape. Composite-PK and user-managed-PK support beyond `djogi::primary_key!` (which already covers single-column custom PKs) remains future work. `pk = None` models still get: struct injection of `created_at`/`updated_at`, `Default`, `FromPgRow`, and descriptor registration — just no CRUD methods.
 
 ---
 
@@ -235,16 +235,18 @@ Phase 1 maps these Rust types to SQL column types:
 | `time::Date` / `djogi::Date` | `DATE` | does not impl Default — use `#[model(no_default)]` |
 | `rust_decimal::Decimal` | `NUMERIC` | |
 | `uuid::Uuid` | `UUID` | |
-| `serde_json::Value` | `JSONB` | untyped JSON — typed `Jsonb<T>` is roadmap |
+| `serde_json::Value` | `JSONB` | untyped JSON — typed `Jsonb<T>` covers the schema-validated case |
+| `Jsonb<T>` | `JSONB` | typed JSONB with unknown-field preservation — see [JSONB guide](./jsonb.md) |
 | `Vec<String>` | `TEXT[]` | |
 | `Vec<i32>` | `INTEGER[]` | |
 | `Vec<i64>` | `BIGINT[]` | |
 | `Vec<bool>` | `BOOLEAN[]` | |
-| `HeerId` | `BIGINT` | via heeranjid `sqlx::Encode`/`Decode` |
-| `RanjId` | `UUID` | via heeranjid `sqlx::Encode`/`Decode` |
+| `HeerId` | `BIGINT` | via heeranjid `postgres-types` `ToSql`/`FromSql` |
+| `RanjId` | `UUID` | via heeranjid `postgres-types` `ToSql`/`FromSql` |
+| `GeoPoint` | `GEOGRAPHY(Point, 4326)` | feature `spatial`; see [spatial guide](./spatial.md) |
 | `Option<T>` | nullable | wraps any of the above |
 
-For shipped relation field types like `ForeignKey<T>` and `OneToOneField<T>`, see the [relations guide](./relations.md). For types that still are not shipped (`Jsonb<T>`, `GeoPoint`, etc.), see [the models roadmap](../roadmap/models.md).
+For relation field types like `ForeignKey<T>` and `OneToOneField<T>`, see the [relations guide](./relations.md).
 
 ---
 
@@ -253,8 +255,7 @@ For shipped relation field types like `ForeignKey<T>` and `OneToOneField<T>`, se
 ```rust
 pub trait Model: Sized + Send + Sync + 'static {
     type Pk: Clone + Send + Sync
-        + for<'q> sqlx::Encode<'q, sqlx::Postgres>
-        + sqlx::Type<sqlx::Postgres>
+        + postgres_types::ToSql
         + 'static;
 
     fn table_name() -> &'static str;
@@ -290,19 +291,19 @@ pub trait Model: Sized + Send + Sync + 'static {
 
 `Pk` is the type of the primary key: `HeerId` for `pk = HeerId`, `HeerIdDesc` for `pk = HeerIdRecencyBiased` (the default), `RanjId` for `pk = RanjId`, `RanjIdDesc` for `pk = RanjIdRecencyBiased`, `i32` for `pk = Serial`. No `Model` impl for `pk = None`.
 
-All CRUD methods take `&mut DjogiContext`. The same call site works against a pool or a transaction — the context pattern-matches on pool-vs-transaction at the sqlx boundary internally:
+All CRUD methods take `&mut DjogiContext`. The same call site works against a pool or a transaction — the context pattern-matches on pool-vs-transaction at the `tokio-postgres` boundary internally:
 
 ```rust
 // Against a pool:
-let mut ctx = DjogiContext::from_pool(pool.clone());
-let article = Article::create(&mut ctx, Article { ... }).await?;
+let pool = djogi::DjogiPool::connect(&database_url).await?;
+let mut ctx = DjogiContext::from_pool(pool);
+let article = Article::create(&mut ctx, Article { /* … */ }).await?;
 
-// Inside a transaction (Phase 4 Task 1's atomic() wrapper takes over;
-// the low-level form lives on DjogiContext directly):
-let tx = pool.begin().await?;
-let mut tx_ctx = DjogiContext::from_transaction(tx);
-let article = Article::create(&mut tx_ctx, Article { ... }).await?;
-tx_ctx.commit().await?;
+// Inside a transaction — use `ctx.atomic(...)`:
+ctx.atomic(|tx| async move {
+    let article = Article::create(tx, Article { /* … */ }).await?;
+    Ok(())
+}).await?;
 ```
 
 ### Inherent: `create_with_id`
@@ -319,7 +320,7 @@ impl Article {
 }
 ```
 
-Used for form pre-generation: allocate the ID up-front via `heeranjid_sqlx::generate_heerid(&pool, node_id)`, render a form with the ID baked in, and submit. The emitted SQL is `INSERT INTO table (id, ...) VALUES ($1, ...) ON CONFLICT (id) DO NOTHING RETURNING *` — idempotent on retry.
+Used for form pre-generation: allocate the ID up-front via `<HeerId as PrimaryKeyDbGen>::generate(&mut ctx).await?`, render a form with the ID baked in, and submit. The emitted SQL is `INSERT INTO table (id, ...) VALUES ($1, ...) ON CONFLICT (id) DO NOTHING RETURNING *` — idempotent on retry.
 
 ### See also
 

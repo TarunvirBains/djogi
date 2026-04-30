@@ -6,17 +6,20 @@ This guide is written for AI coding agents (Claude, GPT, Cursor, etc.)
 working in a Djogi codebase. Read it at the start of a session before
 touching any model, query, or test code.
 
-Djogi is a Model-first ORM for Rust on Postgres. You define Rust structs;
-the `#[model]` proc macro derives ORM methods, `FromRow` deserialization,
+Djogi is a Model-first framework for Rust on Postgres. You define Rust structs;
+the `#[model]` proc macro derives ORM methods, `FromPgRow` deserialization,
 and inventory registration. Your job is to work within that derivation chain
 — not around it.
 
-> **Current scope:** Phases 1 through 3 ship: models + CRUD + descriptor,
-> `QuerySet<T>` + filters + bulk update/delete, and relations
+> **Current scope:** v0.1.0 ships models + CRUD + descriptor,
+> `QuerySet<T>` + filters + bulk update/delete, relations
 > (`ForeignKey<T>`, `OneToOneField<T>`, prefetch / `select_related`,
-> reverse accessors, explicit-through M2M). The `cargo djogi` CLI,
-> `cargo djogi migrate`, the Rhai shell, RLS / tenant isolation, and the
-> expression layer (Phase 4+) do not. This guide covers what actually
+> reverse accessors, explicit-through M2M), transactions + outbox,
+> typed JSONB / arrays / enums / spatial / FTS, RLS via `tenant_key`,
+> visages, the apps subsystem, and a descriptor-driven migration
+> system with `djogi migrations compose / status / attune` plus
+> `djogi db reset / seed`. The Rhai shell and admin console (Maahi)
+> remain on the roadmap. This guide covers what actually
 > ships today. Planned features are
 > documented in [the roadmap](../roadmap/index.md).
 
@@ -80,10 +83,11 @@ For the full attribute list, see [the models guide](./models.md).
 | `Post::descriptor()` | `-> &'static ModelDescriptor` | For inventory registration — do not call manually |
 
 All methods take `&mut DjogiContext` — construct one with
-`DjogiContext::from_pool(pool.clone())` for pool-backed work, or
-`DjogiContext::from_transaction(tx)` to run inside an existing transaction.
-The context pattern-matches on pool-vs-transaction at each sqlx boundary, so
-the same call site works for either mode.
+`DjogiContext::from_pool(pool)` for pool-backed work, or use
+`ctx.atomic(|tx| async { ... })` to run inside a transaction with
+savepoint nesting and on-commit callback dispatch. The context
+pattern-matches on pool-vs-transaction at each `tokio-postgres`
+boundary, so the same call site works for either mode.
 
 ---
 
@@ -155,30 +159,28 @@ invisible until production.
 The `Model` trait methods cover single-row CRUD (`get`, `create`, `save`,
 `delete`). `Model::objects()` returns a `QuerySet<T>` that covers filters,
 ordering, pagination, distinct, bulk update, and bulk delete — see the
-[queries guide](./queries.md). For anything beyond that surface (JOINs,
-CTEs, window functions, `col = col + 1`-style expression UPDATEs), use
-`djogi::raw::*`:
+[queries guide](./queries.md). For anything beyond that surface
+(recursive CTEs, set-returning functions, bespoke JOINs), use the
+raw helpers on `DjogiContext`:
 
 ```rust
-// query_as — Vec<T> where T: FromRow
-let posts: Vec<Post> = djogi::raw::query_as(
-    &mut ctx,
-    "SELECT * FROM posts WHERE published = $1",
-    |q| q.bind(true),
+// raw_query — Vec<T> where T: FromPgRow
+let posts: Vec<Post> = ctx.raw_query(
+    "SELECT id, created_at, updated_at, title, body, published
+     FROM posts WHERE published = $1",
+    &[&true],
 ).await?;
 
-// query_scalar — single scalar
-let count: i64 = djogi::raw::query_scalar(
-    &mut ctx,
+// raw_scalar — single scalar
+let count: i64 = ctx.raw_scalar(
     "SELECT COUNT(*) FROM posts",
-    |q| q,
+    &[],
 ).await?;
 
-// execute — no return value
-djogi::raw::execute(
-    &mut ctx,
+// raw_execute — no return value (returns rows-affected as u64)
+let updated = ctx.raw_execute(
     "UPDATE posts SET view_count = view_count + $1 WHERE id = $2",
-    |q| q.bind(1i32).bind(post_id.as_i64()),
+    &[&1i32, &post_id],
 ).await?;
 ```
 
@@ -281,12 +283,11 @@ CREATE TABLE subscriptions (
 **Step 5: Write your CRUD code and a test.**
 
 ```rust
-#[sqlx::test]
-async fn create_subscription(pool: PgPool) {
-    // setup: install schema + create table (see Getting Started guide)
-    setup_subscriptions(&pool).await;
-
-    let mut ctx = DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn create_subscription(ctx: &mut DjogiContext) {
+    // setup: create table (the harness already installed the schema +
+    // seeded the node — see Getting Started guide)
+    setup_subscriptions(ctx).await;
     let sub = Subscription::create(&mut ctx, Subscription {
         plan_name: "pro".into(),
         status: "active".into(),
@@ -343,9 +344,11 @@ cargo test -p djogi --test phase1_model -- --test-threads=1
 cargo test -p djogi --test phase1_model create_returns_full_row -- --test-threads=1
 ```
 
-`--test-threads=1` is required when tests share a Postgres instance.
-Individual `#[sqlx::test]` tests each get an isolated database, but
-`ALTER DATABASE` calls across simultaneous tests can conflict.
+`--test-threads=1` is the safe default when tests share a Postgres
+instance. Each `#[djogi::djogi_test]` gets its own throwaway
+database, but tests that touch session-level state
+(`set_tenant`, node-id config, `SET LOCAL`) should keep the
+serialized flag.
 
 To validate field type expectations, check
 `djogi-macros/src/model/attrs.rs::rust_type_to_sql` — this is the
@@ -458,15 +461,16 @@ post.delete(&mut ctx).await?;
 
 ### Mismatching Rust type and SQL column type
 
-If `FromRow` deserialization fails at runtime with a type mismatch, the
-Rust type and the Postgres column type are out of sync. Check the type
-mapping table in Rule 5 above.
+If `FromPgRow` deserialization fails at runtime with a type mismatch,
+the Rust type and the Postgres column type are out of sync. Check the
+type mapping table in Rule 5 above.
 
 ### Using `chrono` types
 
 Djogi uses the `time` crate. `time::OffsetDateTime` for timestamps,
-`time::Date` for dates. Using `chrono::DateTime` in a model field will fail
-at compile time when sqlx tries to encode/decode it.
+`time::Date` for dates. Using `chrono::DateTime` in a model field will
+fail at compile time because `postgres-types` does not implement
+`ToSql` / `FromSql` for `chrono` types under Djogi's feature set.
 
 ### Reading `inventory::iter` with parentheses
 

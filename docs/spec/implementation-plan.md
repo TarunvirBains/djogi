@@ -12,6 +12,8 @@
 > see [`ReadMe.MD`](../../ReadMe.MD) — its "Shipped" section is
 > kept in lock-step with `main` after each phase merges.
 
+> **Post-Phase-5-Zero substrate note.** The Phase 0–3 task lists below reference SQLx — that was the substrate at the time those phases shipped. Phase 5-Zero retired SQLx in favor of `tokio-postgres` + `deadpool-postgres` + `postgres-types`. The framework today routes every connection-bearing call through `DjogiContext`, every row decode through `FromPgRow`, every test through `#[djogi::djogi_test]`, and every raw call through `ctx.raw_query` / `raw_scalar` / `raw_execute`. The historical task lists are kept verbatim because they document what shipped at each phase boundary; do not retro-edit them.
+
 ---
 
 ## Guiding Principles
@@ -80,7 +82,7 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 - [ ] Initialize Cargo workspace with 4 crates: `djogi`, `djogi-macros`, `djogi-cli`, `djogi-shell`
 - [ ] Set up `Cargo.toml` workspace dependencies: `sqlx` (postgres, runtime-tokio-rustls), `tokio`, `serde`, `serde_json`, `time`, `heeranjid`
 - [ ] Set up CI (GitHub Actions): `cargo build`, `cargo test`, `cargo clippy`, `cargo fmt --check`
-- [ ] Add `docker-compose.yml` with Postgres 16 for local dev and CI test databases
+- [ ] Add `docker-compose.yml` with Postgres 18 for local dev and CI test databases
 - [ ] Create `Djogi.toml` config loader skeleton via `figment`
 - [ ] Establish integration test infrastructure: test database creation/teardown, `sqlx::test` macros
 

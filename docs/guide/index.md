@@ -2,8 +2,8 @@
 
 # Djogi Guides
 
-Documents describing the shipped framework surface (Phases 1 through 6.5).
-For planned features that don't ship yet, see
+Documents describing the shipped framework surface (Phases 1 through 7.5).
+For design history and items still on the horizon, see
 [the roadmap](../roadmap/index.md).
 
 | Guide | Covers |

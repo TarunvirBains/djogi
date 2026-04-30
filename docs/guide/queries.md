@@ -203,16 +203,16 @@ the deduplicated row set, not the raw one.
 
 ## Terminal methods
 
-Terminal methods consume the queryset, emit SQL via
-`sqlx::QueryBuilder<Postgres>`, and execute against a caller-provided
-`&mut DjogiContext`. Per Phase 4 v3 Q1 the context unifies pool and
-transaction handling: construct one with `DjogiContext::from_pool(pool)`
-for pool-backed use, or pass the context an enclosing transaction scope
-hands you.
+Terminal methods consume the queryset, emit SQL via the framework's
+`SqlAccumulator` (positional `$n` parameters over `tokio-postgres`),
+and execute against a caller-provided `&mut DjogiContext`. The
+context unifies pool and transaction handling: construct one with
+`DjogiContext::from_pool(pool)` for pool-backed use, or pass the
+context an enclosing transaction scope hands you.
 
 | Method | Returns | Notes |
 |---|---|---|
-| `.fetch_all(&mut ctx)` | `Result<Vec<T>, DjogiError>` | Every matching row. Requires `T: FromRow`. |
+| `.fetch_all(&mut ctx)` | `Result<Vec<T>, DjogiError>` | Every matching row. Requires `T: FromPgRow`. |
 | `.fetch_one(&mut ctx)` | `Result<T, DjogiError>` | Exactly one — zero rows → `NotFound`; two or more → `MultipleObjects`. Uses `LIMIT 2` to avoid a `COUNT(*)` round trip. |
 | `.first(&mut ctx)` | `Result<Option<T>, DjogiError>` | `LIMIT 1`; returns `None` when no row matches. Pair with `.order_by(...)` for a deterministic choice. |
 | `.count(&mut ctx)` | `Result<i64, DjogiError>` | `SELECT COUNT(*) …` (or subquery-wrapped when `distinct_on` is set). |
@@ -332,8 +332,8 @@ the single-row `save()` path, which also bumps `updated_at` on every
 write. Callers who need to preserve `updated_at` across a bulk update
 reach for the raw escape hatch below.
 
-The returned count is `u64` — sqlx's `rows_affected()` passed through
-unchanged.
+The returned count is `u64` — `tokio_postgres::Client::execute`'s
+rows-affected return value passed through unchanged.
 
 Empty-assignment short-circuit: `filter(...).update(|_| vec![])` returns
 `Ok(0)` without issuing SQL. An `UPDATE ... SET` with no assignments is
@@ -358,16 +358,17 @@ let n = Post::objects()
 `.delete(&mut ctx)` is a terminal directly on `QuerySet` (no intermediate
 pending struct — there's no payload to carry across a split). An
 unfiltered queryset deletes every row in the table; "wipe this table"
-DDL-style reaches for `TRUNCATE` via `djogi::raw::execute`.
+DDL-style reaches for `TRUNCATE` via `ctx.raw_execute`.
 
 ---
 
 ## Raw escape hatch
 
-When `QuerySet` can't express the query — CTEs, recursive queries,
-window functions, JOINs (Phase 3), arbitrary SQL expressions (Phase 4) —
-drop to `sqlx::QueryBuilder<Postgres>` or the `djogi::raw::*` helpers.
-See [Models §Rule 3][models-raw] for the raw-query surface.
+When `QuerySet` can't express the query — recursive CTEs,
+set-returning functions, bespoke joins beyond what `select_related`
+covers — drop to `ctx.raw_query` / `ctx.raw_scalar` / `ctx.raw_execute`
+on `DjogiContext`. See [Models §Rule 3][models-raw] for the
+raw-query surface.
 
 [models-raw]: ./agent-guide.md#rule-3-use-djogiraw-for-queries-the-model-trait-and-queryset-dont-cover
 

@@ -2,12 +2,13 @@
 
 # Security
 
-> **Warning: Roadmap document — not a shipped feature.**
->
-> The API described in this document does not exist in the current release.
-> It is committed as a design target for a future phase and will move into
-> `docs/guide/` when that phase ships. Code snippets in this document will
-> NOT compile against the current crate.
+> **Status: SHIPPED.** RLS via `#[model(tenant_key = "...")]` plus the
+> `DjogiAuth` trait, `AuthContext`, password hashing, and per-tenant
+> auto-`set_tenant` shipped through Phases 5 + 5.5. The authoritative
+> current API lives in [`docs/guide/auth.md`](../guide/auth.md) and
+> [`docs/guide/tenancy.md`](../guide/tenancy.md). This roadmap document
+> is preserved as design history — the snippets here may not match the
+> shipped surface byte-for-byte.
 
 This guide covers Row Level Security (RLS) isolation for multi-tenant models, the `_insecurely()` escape hatch, the `DjogiAuth` trait, role switching, schema snapshot signing, and common security anti-patterns.
 

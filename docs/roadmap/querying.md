@@ -2,12 +2,15 @@
 
 # Querying
 
-> **Warning: Roadmap document — not a shipped feature.**
->
-> The API described in this document does not exist in the current release.
-> It is committed as a design target for a future phase and will move into
-> `docs/guide/` when that phase ships. Code snippets in this document will
-> NOT compile against the current crate.
+> **Status: SHIPPED.** This document was the design target for the
+> query layer; the API is now live across Phase 2 (`QuerySet<T>` + filters
+> + bulk update/delete), Phase 4 (expression IR, annotations, aggregates),
+> and Phase 6.5 (grouped aggregation type-state). The authoritative
+> current API lives in [`docs/guide/queries.md`](../guide/queries.md),
+> [`docs/guide/expressions.md`](../guide/expressions.md), and
+> [`docs/guide/query-aggregation.md`](../guide/query-aggregation.md).
+> This roadmap document is preserved as design history — the snippets
+> here may not match the shipped surface byte-for-byte.
 
 Djogi's query layer is built around `QuerySet<T>` — a lazy, composable builder that accumulates filters, orderings, and options without touching the database. Nothing executes until you call a terminal method.
 
