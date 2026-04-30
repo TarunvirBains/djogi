@@ -83,7 +83,7 @@ After implementation work, run `cargo fmt --all` and `cargo clippy --all-targets
 
 Djogi is a Model-first framework — narrow in scope, deep within that scope. It targets **Postgres 18 and later, exclusively** (permanent design decisions — JSONB, HeeRanjId, advisory locks, transactional DDL, `RETURNING`, and latest Postgres features all depend on it; earlier versions explicitly unsupported per `docs/spec/decisions.md`). It does **not** wrap or compete with:
 - **Any web framework (Axum, Warp, Actix, Rocket, Poem, …)** — HTTP routing/middleware/extraction. Djogi's core is web-framework-agnostic; per-framework integrations (extractors that surface `DjogiContext`/`AuthContext` from request state, optional router-merging helpers) ship as opt-in sub-feature flags (`axum`, `warp`, `actix`, etc.). Adopters pick whichever HTTP layer fits their app and enable the matching flag — or none, if they wire integration manually.
-- **SQLx** — Djogi wraps SQLx into a typed ORM layer (`Model`, `QuerySet`, `FromRow`, `ConditionBuilder`) but never hides it — raw `sqlx::QueryBuilder` is always an escape hatch.
+- **`tokio-postgres` + `deadpool-postgres`** — Djogi wraps these into a typed ORM layer (`Model`, `QuerySet`, `FromPgRow`, `ConditionBuilder`) but never hides them — `DjogiContext::raw_query` / `raw_execute` route directly to the underlying `tokio_postgres::Client` and remain the always-available escape hatch.
 - **HeeRanjId** — ID generation. Djogi calls `generate_id()` / `generate_ids(n)` / `generate_ranj_id()`.
 - **Tokio** — async runtime. Used as-is.
 
@@ -92,7 +92,7 @@ Djogi is a Model-first framework — narrow in scope, deep within that scope. It
 The macro is the heart of the framework. It:
 1. Injects `id: HeerId`, `created_at: DateTime`, `updated_at: DateTime` as real struct fields
 2. Implements the `Model` trait (CRUD methods)
-3. Implements `FromRow` for SQLx deserialization
+3. Implements `FromPgRow` for `tokio-postgres` row deserialization
 4. Generates `{Model}Fields` — typed field accessors for closure-based filter API
 5. Generates `{Model}Filter` — programmatic filter builder for shell/dynamic use
 6. Generates `{Model}Related` — prefetch selectors for FK relations
@@ -103,9 +103,9 @@ Proc macro testing: use `trybuild` for compile-fail cases, `macrotest` for expan
 
 ### QuerySet and Condition Tree
 
-`QuerySet<T>` is lazy — nothing hits the DB until a terminal method (`.fetch_all()`, `.fetch_one()`, etc.). It accumulates a typed `Condition` enum tree. The `ConditionBuilder` walks this tree and emits positional `$n` parameters via `sqlx::QueryBuilder<Postgres>`. Djogi owns this layer directly — no third-party query builder.
+`QuerySet<T>` is lazy — nothing hits the DB until a terminal method (`.fetch_all()`, `.fetch_one()`, etc.). It accumulates a typed `Condition` enum tree. The `ConditionBuilder` walks this tree and emits positional `$n` parameters via `pg::accumulator::SqlAccumulator`, which collects raw SQL fragments + bound values for `tokio_postgres::Client::query`. Djogi owns this layer directly — no third-party query builder.
 
-For queries beyond `QuerySet`, raw `sqlx::QueryBuilder` is always available as an escape hatch.
+For queries beyond `QuerySet`, `DjogiContext::raw_query` / `raw_execute` (taking positional `&[&(dyn ToSql + Sync)]` binds) are always available as escape hatches.
 
 ### Migration System
 

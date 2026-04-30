@@ -4,6 +4,14 @@
 
 *Sequenced to reach production-readiness for a real-world Postgres-backed application built on any Rust web framework, with Axum used as the best-covered example today. The target shape includes non-trivial schema breadth, complex queries, PostGIS, and a strong fit alongside popular Rust ORM alternatives for Postgres-heavy applications.*
 
+> **Note on accuracy:** This file captures the *original* phased
+> plan and the per-phase intent. Phases marked `*(shipped)*` have
+> landed on `main`; phases without that marker may be either
+> upcoming or shipped (this file is updated periodically, not
+> continuously). For the **current authoritative shipped status**,
+> see [`ReadMe.MD`](../../ReadMe.MD) — its "Shipped" section is
+> kept in lock-step with `main` after each phase merges.
+
 ---
 
 ## Guiding Principles
@@ -11,7 +19,7 @@
 1. **Each phase produces a usable, testable crate** — not a waterfall of unshippable code
 2. **The model macro system (`djogi-macros`) is the foundation** — descriptor generation and model metadata land before higher-level APIs
 3. **Raw SQL escape hatch ships in Phase 1** — the framework must never trap the developer
-4. **Tests against real Postgres** — no mocking the database; use `sqlx::test` fixtures
+4. **Tests against real Postgres** — no mocking the database; use the `#[djogi_test]` harness (which spins up a per-test database, runs HeeRanjId schema install + node seed, and resets `heer.node_id` per test). The earlier-phase mention of `sqlx::test` is historical — `sqlx` was retired in Phase 5-Zero.
 5. **Postgres-only from day one** — every SQL string targets Postgres directly
 6. **Efficient Postgres forms belong in-framework for common work** — raw SQL is for unusual SQL shape, not for recovering performance lost to the ORM
 
@@ -544,19 +552,47 @@ Phase 7's migration CLI is explicitly target-scoped. App, CRUD-log, and event-lo
 
 ---
 
-## Phase 7.5: Protected Data Metadata & Field Codecs
+## Phase 7.5: Live Migrations + Protected Data Metadata & Field Codecs *(shipped)*
 
-**Goal:** Add descriptor-level protected-field semantics and storage transforms.
+**Goal:** Add descriptor-level protected-field semantics and storage transforms; add the live-migration substrate that classifies schema operations by online-safety and orchestrates safe rollouts.
 
-Protected-data support should extend the typed field story rather than replace it with policy soup. Sensitive-field metadata, codecs, and redaction rules belong in descriptor/tooling layers, while ordinary app code should continue to interact with clear Rust types.
+Phase 7.5 expanded beyond the original protected-data scope to absorb the live-migration safety classifier (per the v3 plan). The shipped scope:
 
-- [ ] Add field metadata for sensitivity, redaction scope, rationale, and lifecycle class
-- [ ] Add descriptor support for field codecs such as encrypted/tokenized/custom-serialized columns
-- [ ] Ensure CRUD generation and row decoding apply codecs consistently
-- [ ] Integrate protected-field metadata with generated visages and admin defaults
-- [ ] Emit compile-time diagnostics when sensitive annotations are underspecified
+**Protected-data side (original scope):**
 
-**Deliverable:** Djogi can express protected-field intent once and apply it consistently across generated surfaces.
+- [x] Add field metadata for sensitivity, redaction scope, rationale, and lifecycle class
+- [x] Add descriptor support for field codecs such as encrypted/tokenized/custom-serialized columns
+- [x] Ensure CRUD generation and row decoding apply codecs consistently
+- [x] Integrate protected-field metadata with generated visages
+  *(admin-defaults integration deferred to Phase 10 / Maahi)*
+- [x] Emit compile-time diagnostics when sensitive annotations are underspecified
+
+**Live-migration side (absorbed scope):**
+
+- [x] `live_migrate::{plan, plan_file, state, classify}` substrate
+- [x] `OnlineSafetyClassification` enum (`OnlineSafe` /
+      `FastLockDestructiveGuarded` / `ExpandContract` /
+      `OfflineOnly`, `#[non_exhaustive]`)
+- [x] `pg_volatility` introspection module
+- [x] Backfill engine, chunk-loop SQL pattern, plan resume,
+      daemon-mode runner
+- [x] `djogi live` CLI commands; `db cleanup-test-dbs`
+- [x] EXCLUSION + stored-generated descriptor extension
+      (`ExclusionConstraintSpec`, `GeneratedColumnSpec`,
+      `ColumnSchema.generated`, `TableSchema.exclusion_constraints`,
+      `SchemaOperation::{AddExclusionConstraint, DropExclusionConstraint}`,
+      `ColumnChange::SetGenerated`)
+- [x] T11 tactical bug-fix sprint
+      (protected-data audit, tenant_key + ForeignKey RLS empty cast,
+      `ForeignKey<T>` Serialize fix, reverse-accessor inherent-impl
+      E0116 fix, `JsonbSchema` djogi:: alias acceptance)
+- [x] T12 integration tests + per-phase trybuild dispatcher
+
+**Deferred:**
+
+- T13 (catalog drift detection / runtime-vs-spec divergence audit) — pushed to Phase 8 or a dedicated bug-fix sprint
+
+**Deliverable:** Djogi can classify every schema operation by online-safety, orchestrate safe live-migration rollouts (plan/backfill/resume/daemon), and express protected-field intent once and apply it consistently across generated surfaces.
 
 ---
 

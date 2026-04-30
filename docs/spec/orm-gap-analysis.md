@@ -49,7 +49,7 @@ This document maps every functional capability in Django's ORM, identifies what 
 | **`reverse()`** | Reverse current ordering | Add |
 | **`union()` / `intersection()` / `difference()`** | Set operations (UNION / INTERSECT / EXCEPT) | Add |
 | **`explain()`** | Return EXPLAIN output | Add — invaluable for debugging |
-| **`iterator()` / chunked evaluation** | Memory-efficient streaming without caching | Add — use Postgres cursors via sqlx `fetch()` stream |
+| **`iterator()` / chunked evaluation** | Memory-efficient streaming without caching | Add — use Postgres cursors via `tokio-postgres` `query_raw()` stream |
 | **`earliest()` / `latest()`** | Get by ordering field | Add — convenience over `.order_by(...).first()` |
 | **`contains(obj)`** | Check if instance is in QuerySet | Add |
 | **`using()`** | Select database | Answered by `QuerySet::with_read_mode(ReadMode::...)` in Phase 12 — see [Distributed Topology & Residency](./topology.md). Djogi declares the hint; the pool-selection strategy configured by the application honors it. |
@@ -616,7 +616,7 @@ This is Tier 1 — bulk upsert is extremely common in data pipelines, imports, a
 ### Transaction System
 
 Djogi needs:
-- `atomic()` — context wrapper via sqlx transactions, supports nesting via savepoints
+- `atomic()` — context wrapper via `tokio-postgres` transactions, supports nesting via savepoints
 - `on_commit()` — callbacks that fire only after outermost transaction commits (for emails, events, cache invalidation). Cleared on rollback.
 - `durable` flag — guarantee real top-level transaction, not a savepoint
 - Savepoint-aware callback tracking — rollback discards callbacks registered within that savepoint

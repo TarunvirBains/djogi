@@ -7,7 +7,9 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/TarunvirBains/djogi"
+homepage = "https://github.com/TarunvirBains/djogi"
 authors = ["Tarunvir Bains"]
+rust-version = "1.85"
 
 [workspace.dependencies]
 # Core
@@ -97,6 +99,10 @@ phf = { version = "0.13", features = ["macros"] }
 # Testing
 trybuild = { version = "1", features = ["diff"] }
 
-# Internal
-djogi = { path = "djogi" }
-djogi-macros = { path = "djogi-macros" }
+# Internal — `version` alongside `path` is required so `cargo publish` resolves
+# the dep against crates.io rather than the local path. Local builds use the
+# path; published tarballs use the version. The cyclic dev-dep from djogi-macros
+# back to djogi is handled by overriding to path-only in djogi-macros's
+# `[dev-dependencies]` (dev-deps are stripped from published tarballs anyway).
+djogi = { path = "djogi", version = "0.1.0" }
+djogi-macros = { path = "djogi-macros", version = "0.1.0" }

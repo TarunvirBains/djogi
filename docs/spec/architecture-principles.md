@@ -13,7 +13,7 @@ Its architecture is guided by six principles:
 3. Strong primitives, thin policy.
    Djogi should provide reusable metadata, query, migration, and audit primitives. Business rules belong in application or companion crates.
 4. Postgres-native correctness over generic abstraction.
-   Djogi prefers explicit Postgres features and SQLx integration over lowest-common-denominator portability.
+   Djogi prefers explicit Postgres features and `tokio-postgres` integration over lowest-common-denominator portability.
 5. Performance-safe abstractions over ORM convenience.
    Djogi must not force slower database shapes for common production workloads. Set-based writes, explicit eager loading, row locks, typed visages, and Postgres-native query forms belong in the framework when they are needed to keep the efficient path available without dropping to raw SQL.
 6. Performance-safe defaults over hidden behavior.

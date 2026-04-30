@@ -67,8 +67,8 @@ The `#[model]` attribute generates an implementation of the `Model` trait for th
 ```rust
 pub trait Model: Sized + Send + Sync + 'static {
     type Pk: Clone + Send + Sync
-        + for<'q> sqlx::Encode<'q, sqlx::Postgres>
-        + sqlx::Type<sqlx::Postgres>
+        + postgres_types::ToSql
+        + for<'a> postgres_types::FromSql<'a>
         + 'static;
 
     fn table_name() -> &'static str;
@@ -104,7 +104,7 @@ pub trait Model: Sized + Send + Sync + 'static {
 
 `create()` takes the struct directly — no separate `CreateVehicle` wrapper. Framework-injected fields (`id`, `created_at`, `updated_at`) are **public** — they are visible in struct literals, auto-complete, and pattern matches, just like developer-defined fields. The database overwrites whatever values are passed; callers must supply something syntactically valid.
 
-The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each sqlx boundary. Phase 4's `atomic()` wrapper (Task 1 — this retrofit ships the API-shape change; `atomic()` itself is follow-up work) is the ergonomic way into a transaction; `DjogiContext::from_transaction(tx)` is the low-level escape hatch.
+The context parameter is a `&mut DjogiContext`, which carries either a pool handle or an active transaction. The same call site works against either; the framework pattern-matches on the inner variant at each `tokio-postgres` boundary. `atomic()` is the ergonomic way into a transaction; `DjogiContext::from_transaction(tx)` is the low-level escape hatch.
 
 #### 4.2.1 Construction
 
@@ -144,9 +144,9 @@ The public API does NOT require user-defined field types to implement `Default`.
 ### 4.3 What the Macro Generates
 
 - Struct field injection (`id`, `created_at`, `updated_at`)
-- `impl djogi::model::Model for <Name>` — CRUD methods backed by SQLx
+- `impl djogi::model::Model for <Name>` — CRUD methods backed by `tokio-postgres`
 - `impl Default for <Name>` — suppressed by `#[model(no_default)]` when any user field lacks `Default`
-- `impl sqlx::FromRow<'_, PgRow>` — SQLx row deserialization
+- `impl djogi::pg::decode::FromPgRow for <Name>` — `tokio-postgres` row deserialization
 - `<Name>Fields` / `<Name>Filter` — typed field accessors and programmatic filter builder (skeleton in Phase 1; Phase 2 fills them in)
 - `ModelDescriptor` via `inventory::submit!` — for app registration and migration differ
 - `<Name>::create_with_id(...)` — HeerId models only; pre-allocates the ID before INSERT (used in form pre-generation and bulk workflows)

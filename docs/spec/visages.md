@@ -75,7 +75,7 @@ Generated types must:
 
 - be plain Rust structs
 - derive `Debug`, `Clone`, `Serialize`, `Deserialize` unconditionally
-- avoid SQLx/runtime traits
+- avoid `tokio-postgres` / runtime traits
 - be importable by shared API/frontend crates
 
 `internal` is accepted as a grammar sentinel equivalent to `none` — no
@@ -168,7 +168,7 @@ pub struct UserAdmin {
 Generated visage types:
 
 - derive `Serialize` / `Deserialize` when their fields support it
-- are independent of SQLx and database connection traits
+- are independent of `tokio-postgres` and database connection traits
 - are intended to be imported by API and frontend crates
 
 Djogi does not generate UI components, hooks, routes, or frontend state containers.
