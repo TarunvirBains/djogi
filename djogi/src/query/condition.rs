@@ -80,6 +80,28 @@ impl Default for Condition {
 }
 
 impl Condition {
+    /// Whether this condition is structurally equivalent to TRUE — used by the
+    /// WHERE-clause emitter (model and visage paths) to skip the clause
+    /// entirely rather than emit `WHERE TRUE`. Cleaner logs, no chance of an
+    /// optimizer surprise on trivially-true predicates.
+    ///
+    /// Recognises the shapes the queryset constructors actually produce:
+    /// `True`, `And(empty | all-True)`, and `Not(Or(empty))`. Other shapes
+    /// (`Or(all-True)`, `Not(And(empty))`) are not collapsed because the
+    /// builder API doesn't construct them.
+    pub(crate) fn is_vacuously_true(&self) -> bool {
+        match self {
+            Condition::True => true,
+            Condition::And(xs) => xs.iter().all(Condition::is_vacuously_true),
+            Condition::Not(inner) => {
+                matches!(inner.as_ref(), Condition::Or(xs) if xs.is_empty())
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Condition {
     /// Combine two conditions with SQL AND. Flattens nested `And` trees to
     /// keep the structure shallow for the emitter.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]

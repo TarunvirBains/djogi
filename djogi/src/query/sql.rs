@@ -615,23 +615,11 @@ fn emit_jsonb_path_leaf(
 /// also vacuously TRUE because the emitter renders empty `Or` as `FALSE`
 /// and `NOT FALSE` is `TRUE`.
 ///
-/// Used by [`push_where`] to skip the `WHERE` clause entirely rather than
-/// emitting `WHERE TRUE`. Keeps logs readable and avoids any chance of an
-/// optimizer surprise on trivially-true predicates.
-fn is_vacuously_true(c: &Condition) -> bool {
-    match c {
-        Condition::True => true,
-        Condition::And(xs) => xs.iter().all(is_vacuously_true),
-        Condition::Not(inner) => matches!(inner.as_ref(), Condition::Or(xs) if xs.is_empty()),
-        _ => false,
-    }
-}
-
 /// Emit the `WHERE ...` clause for a QuerySet, if any. Any top-level
-/// condition that collapses to vacuous TRUE (see [`is_vacuously_true`]) is
-/// omitted entirely rather than emitted as `WHERE TRUE` — same semantics,
-/// cleaner logs, and avoids touching the planner with a trivially-true
-/// predicate.
+/// condition that collapses to vacuous TRUE (see
+/// [`Condition::is_vacuously_true`]) is omitted entirely rather than
+/// emitted as `WHERE TRUE` — same semantics, cleaner logs, and avoids
+/// touching the planner with a trivially-true predicate.
 ///
 /// The non-joined path (every caller in this file except
 /// [`build_select_joined`]) uses this shim, which forwards to
@@ -652,7 +640,7 @@ fn push_where_qualified<T: Model>(
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
 ) {
-    if !is_vacuously_true(&qs.condition) {
+    if !qs.condition.is_vacuously_true() {
         acc.push_sql(" WHERE ");
         // `emit_condition` consumes the tree — clone the borrowed reference
         // so the original QuerySet remains usable (matters for `fetch_one`'s

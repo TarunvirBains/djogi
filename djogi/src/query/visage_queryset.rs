@@ -282,7 +282,7 @@ pub(crate) fn build_visage_exists<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
 
 /// Emit the `WHERE ...` clause for a visage queryset, if non-vacuous.
 fn push_visage_where<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
-    if !is_vacuously_true(&qs.condition) {
+    if !qs.condition.is_vacuously_true() {
         acc.push_sql(" WHERE ");
         emit_condition(acc, qs.condition.clone(), None);
     }
@@ -312,17 +312,6 @@ fn push_visage_tail<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
     if let Some(n) = qs.offset {
         acc.push_sql(" OFFSET ");
         acc.push_bind(n);
-    }
-}
-
-/// Mirror of `query::sql::is_vacuously_true` — duplicated so this
-/// module does not depend on a private model-side helper.
-fn is_vacuously_true(c: &Condition) -> bool {
-    match c {
-        Condition::True => true,
-        Condition::And(xs) => xs.iter().all(is_vacuously_true),
-        Condition::Not(inner) => matches!(inner.as_ref(), Condition::Or(xs) if xs.is_empty()),
-        _ => false,
     }
 }
 
