@@ -315,20 +315,26 @@ pub(crate) fn build_path_sql(
 /// joined child. Storing the parts and rendering in the emitter lets
 /// `emit_jsonb_path_leaf` qualify the column consistently with every
 /// other `emit_leaf` arm.
+/// Fields are `pub(crate)` so the only construction path is through the
+/// typed [`JsonbPathRef`] methods (`eq`, `neq`, `gt`, `gte`, `lt`, `lte`,
+/// `is_null`, `is_not_null`, `in_list`). The emitter assumes the typed
+/// surface for `op` (no `Regex`/`IRegex`/`Between` variants), so widening
+/// the fields would let downstream code construct ill-formed leaves that
+/// the emitter renders incorrectly or panics on.
 #[derive(Debug, Clone)]
 pub struct JsonbPathLeaf {
     /// JSONB column name — a `&'static str` validated by `JsonbPathRef::new`.
-    pub column: &'static str,
+    pub(crate) column: &'static str,
     /// Dotted path string, e.g. `"engine.cylinders"`. Each segment was
     /// validated by [`validate_dotted_path`] before storage.
-    pub path: &'static str,
+    pub(crate) path: &'static str,
     /// Optional Postgres cast suffix, e.g. `"::int4"`. `None` for string
     /// and other text-compatible types.
-    pub cast: Option<&'static str>,
+    pub(crate) cast: Option<&'static str>,
     /// The comparison operator.
-    pub op: crate::query::condition::LookupOp,
+    pub(crate) op: crate::query::condition::LookupOp,
     /// The bound value.
-    pub value: FilterValue,
+    pub(crate) value: FilterValue,
 }
 
 // ── Comparison surface for JsonbPathRef<M, V> ─────────────────────────────
