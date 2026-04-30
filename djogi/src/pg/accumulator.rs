@@ -46,6 +46,14 @@ use postgres_types::ToSql;
 /// Collects raw SQL fragments (keywords, identifiers) and typed bind values
 /// into a `(String, Vec<Box<dyn ToSql + Sync + Send>>)` pair ready to be
 /// dispatched via `tokio_postgres::Client::query` or `Client::execute`.
+///
+/// `#[doc(hidden)]` — internal SQL-emission substrate used by the
+/// `#[model]` macro (via `::djogi::__private::pg::SqlAccumulator`) and
+/// the framework's QuerySet emitter. Adopters reach raw SQL through
+/// [`crate::context::DjogiContext::raw_query`] /
+/// [`crate::context::DjogiContext::raw_execute`], which take a string
+/// + bind slice directly — they never construct an accumulator.
+#[doc(hidden)]
 pub struct SqlAccumulator {
     /// The accumulated SQL text. Contains `$1`, `$2`, ... placeholders wherever
     /// `push_bind` was called.

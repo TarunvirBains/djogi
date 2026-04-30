@@ -33,7 +33,7 @@ pub mod order;
 pub mod queryset;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
-pub mod sql;
+pub(crate) mod sql;
 pub mod stream;
 pub mod terminal;
 pub mod update;

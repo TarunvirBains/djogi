@@ -127,6 +127,12 @@ pub trait FromPgRow: Sized {
 /// The `#[model]` macro emits one impl per model. Passing `""`
 /// decodes the model from bare column names; passing a non-empty prefix
 /// decodes the same model from aliased columns in a joined row.
+///
+/// `#[doc(hidden)]` — adopters do not implement this trait by hand; the
+/// macro emits the impl. The trait stays `pub` because cross-crate
+/// macro emission needs `::djogi::pg::decode::FromJoinedPgRow` to
+/// resolve.
+#[doc(hidden)]
 pub trait FromJoinedPgRow: Sized {
     /// Decode `Self` from `row`, reading each field from the
     /// `"{prefix}{field_name}"` column.
@@ -148,6 +154,10 @@ pub trait FromJoinedPgRow: Sized {
 /// `row.columns()[idx].name()` panics with the offending positions —
 /// surfacing column-order drift loudly in `cargo test`. Release builds
 /// drop the assert; ordinal decode stays a single `try_get(idx)` call.
+///
+/// `#[doc(hidden)]` — emitted by `#[model]` and `#[derive(Visage)]`,
+/// not user-facing.
+#[doc(hidden)]
 pub fn decode_at<'a, T>(row: &'a Row, idx: usize, name: &'static str) -> Result<T, DjogiError>
 where
     T: FromSql<'a>,
@@ -168,47 +178,13 @@ where
 ///
 /// Centralises the `tokio_postgres::Error -> DjogiError` conversion for
 /// scalar terminals and raw-row helpers.
+///
+/// `#[doc(hidden)]` — emitted by `djogi::primary_key!` for newtype-PK
+/// decode; not user-facing.
+#[doc(hidden)]
 pub fn try_get_scalar<'a, T>(row: &'a Row, idx: usize) -> Result<T, DjogiError>
 where
     T: FromSql<'a>,
 {
     row.try_get(idx).map_err(DjogiError::from)
 }
-
-/// Positional tuple decoder for raw Postgres rows.
-///
-/// Implemented for tuple arities 1 through 8. Element `i` is decoded
-/// from column ordinal `i`.
-pub trait FromRowTuple<'a>: Sized {
-    /// Decode `Self` positionally from `row`.
-    fn from_row_tuple(row: &'a Row) -> Result<Self, DjogiError>;
-}
-
-/// Decode a tuple from a row via [`FromRowTuple`].
-pub fn try_get_tuple<'a, T: FromRowTuple<'a>>(row: &'a Row) -> Result<T, DjogiError> {
-    T::from_row_tuple(row)
-}
-
-macro_rules! impl_from_row_tuple {
-    ($($name:ident => $idx:tt),+ $(,)?) => {
-        impl<'a, $($name),+> FromRowTuple<'a> for ($($name,)+)
-        where
-            $($name: FromSql<'a>),+
-        {
-            fn from_row_tuple(row: &'a Row) -> Result<Self, DjogiError> {
-                Ok((
-                    $(try_get_scalar::<$name>(row, $idx)?,)+
-                ))
-            }
-        }
-    };
-}
-
-impl_from_row_tuple!(A => 0);
-impl_from_row_tuple!(A => 0, B => 1);
-impl_from_row_tuple!(A => 0, B => 1, C => 2);
-impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3);
-impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4);
-impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5);
-impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6);
-impl_from_row_tuple!(A => 0, B => 1, C => 2, D => 3, E => 4, F => 5, G => 6, H => 7);

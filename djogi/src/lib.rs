@@ -112,9 +112,7 @@ pub mod __private {
         /// Canonical row-decode trait (T3). Emitted by `#[model]` with
         /// `const COLUMNS`, `const COLUMN_LIST`, and an ordinal
         /// `from_pg_row` body guarded by per-column `debug_assert!`s.
-        pub use crate::pg::decode::{
-            FromJoinedPgRow, FromPgRow, FromRowTuple, decode_at, try_get_scalar, try_get_tuple,
-        };
+        pub use crate::pg::decode::{FromJoinedPgRow, FromPgRow, decode_at, try_get_scalar};
         pub use ::postgres_types::{FromSql, ToSql, Type as PgType};
         pub use ::tokio_postgres::Row as PgRow;
         pub use ::tokio_postgres::Statement;
@@ -213,7 +211,7 @@ pub use jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt}
 // raw-tuple-decode promotion.
 pub use pg::decode::FromPgRow;
 #[doc(hidden)]
-pub use pg::decode::{FromJoinedPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
+pub use pg::decode::{FromJoinedPgRow, try_get_scalar};
 pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
@@ -278,7 +276,7 @@ pub mod prelude {
     pub use crate::model::Model;
     pub use crate::pg::decode::FromPgRow;
     #[doc(hidden)]
-    pub use crate::pg::decode::{FromJoinedPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
+    pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
         IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, VisageQuerySet,
