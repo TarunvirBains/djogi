@@ -177,7 +177,13 @@ pub mod __private {
     pub use tracing;
 }
 
-pub use apps::{App, AppDescriptor, AppDiagnostic, AppIdentity, AppRegistry, CrossAppEdge};
+pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
+// `AppDiagnostic` is reserved for future migration consumers (compose / status
+// / attune) per its module doc — currently not wired in production. Keep
+// the symbol available cross-crate but hide it from rustdoc until a real
+// consumer lands and the variant set stabilises.
+#[doc(hidden)]
+pub use apps::AppDiagnostic;
 pub use context::DjogiContext;
 pub use descriptor::{
     DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
@@ -195,7 +201,19 @@ pub use djogi_macros::{
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
 pub use jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
-pub use pg::decode::{FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
+// `FromPgRow` is the canonical row-decode trait — adopters write
+// `ctx.raw_query::<MyType>(...)` against it, so it stays in the public
+// rustdoc surface. The other four below are macro-emission targets and
+// raw helpers that adopter code does not implement directly: macros emit
+// `impl ::djogi::pg::decode::FromJoinedPgRow for T`; `try_get_scalar` is
+// used by the `djogi::primary_key!` macro for newtype-PK decode.
+// `FromRowTuple` + `try_get_tuple` are module-internal today (the public
+// `raw_query` bound is `FromPgRow`, not `FromRowTuple`). Hide them from
+// rustdoc; keep the symbols available for macro emission and any future
+// raw-tuple-decode promotion.
+pub use pg::decode::FromPgRow;
+#[doc(hidden)]
+pub use pg::decode::{FromJoinedPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
 pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 // The `#[djogi_test]` attribute macro re-exported for convenience. The macro
 // itself is always available (proc macros have no runtime component); the
@@ -205,13 +223,15 @@ pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
 pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
-// Field-level codec public surface. `FieldCodec` is the trait
-// adopters implement for at-rest column transformations;
-// `is_codec_registered` answers "is this `&str` the ID of a codec
-// shipped with this build of Djogi?". The registry itself stays
-// module-private so the underlying representation can change without
-// breaking downstream call sites.
-pub use field_codec::{FieldCodec, is_registered as is_codec_registered};
+// Field-level codec public surface. `FieldCodec` is the trait adopters
+// implement for at-rest column transformations.
+pub use field_codec::FieldCodec;
+// `is_codec_registered` is consumed by the macro layer to validate
+// `#[field(codec = "…")]` strings at expansion time. Adopter code does
+// not call it directly. Hide from rustdoc; keep the symbol available
+// cross-crate for macro emission.
+#[doc(hidden)]
+pub use field_codec::is_registered as is_codec_registered;
 pub use fts::{FtsDescriptor, TsQuery, TsVector};
 pub use fts_query::FtsFieldRef;
 pub use query::{
@@ -231,9 +251,9 @@ pub use types::{
 pub use visage::VisageError;
 
 pub mod prelude {
-    pub use crate::apps::{
-        App, AppDescriptor, AppDiagnostic, AppIdentity, AppRegistry, CrossAppEdge,
-    };
+    #[doc(hidden)]
+    pub use crate::apps::AppDiagnostic;
+    pub use crate::apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
         DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
@@ -244,18 +264,21 @@ pub mod prelude {
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
     // `FieldCodec` is the trait adopters implement when declaring a
-    // codec; `is_codec_registered` is the lookup the macro layer uses
-    // to validate `#[field(protected(codec = "<id>"))]`. Both belong
-    // in the prelude because protected-field declarations live in
-    // adopter model files.
-    pub use crate::field_codec::{FieldCodec, is_registered as is_codec_registered};
+    // codec — belongs in the prelude because protected-field
+    // declarations live in adopter model files. `is_codec_registered`
+    // is the lookup the macro layer uses to validate
+    // `#[field(protected(codec = "<id>"))]` at expansion time;
+    // adopter code does not call it directly.
+    pub use crate::field_codec::FieldCodec;
+    #[doc(hidden)]
+    pub use crate::field_codec::is_registered as is_codec_registered;
     pub use crate::fts::{FtsDescriptor, TsQuery, TsVector};
     pub use crate::fts_query::FtsFieldRef;
     pub use crate::jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
     pub use crate::model::Model;
-    pub use crate::pg::decode::{
-        FromJoinedPgRow, FromPgRow, FromRowTuple, try_get_scalar, try_get_tuple,
-    };
+    pub use crate::pg::decode::FromPgRow;
+    #[doc(hidden)]
+    pub use crate::pg::decode::{FromJoinedPgRow, FromRowTuple, try_get_scalar, try_get_tuple};
     pub use crate::query::{
         AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
         IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, VisageQuerySet,
