@@ -1,0 +1,18 @@
+# Djogi.toml — adopter config.
+#
+# Secrets (DATABASE_URL, NODE_ID) come from environment variables.
+# Non-secret app config lives here.
+
+[app]
+label = "elephant_tracker"
+
+[migrations]
+# Migrations directory relative to the example crate root.
+dir = "migrations"
+
+[outbox]
+# `Sighting::create` enqueues `SightingRecorded` here. The outbox
+# worker drains the queue into whatever downstream consumer the
+# operator wires up.
+enabled = true
+worker_interval_ms = 250
