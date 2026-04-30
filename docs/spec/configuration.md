@@ -184,7 +184,7 @@ djogi = { version = "0.1", features = ["axum"] }
 Djogi does not wrap Axum in a second routing abstraction. Handlers stay ordinary Axum handlers, and the pool is accessed through standard `State` extraction.
 ```rust
 async fn vehicle_detail(
-    State(pool): State<PgPool>,
+    State(pool): State<DjogiPool>,
     Path(id): Path<HeerId>,
 ) -> impl IntoResponse {
     let mut ctx = DjogiContext::from_pool(pool.clone());

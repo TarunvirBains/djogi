@@ -12,6 +12,8 @@
 > see [`ReadMe.MD`](../../ReadMe.MD) — its "Shipped" section is
 > kept in lock-step with `main` after each phase merges.
 
+> **Post-Phase-5-Zero substrate note.** The Phase 0–3 task lists below reference SQLx — that was the substrate at the time those phases shipped. Phase 5-Zero retired SQLx in favor of `tokio-postgres` + `deadpool-postgres` + `postgres-types`. The framework today routes every connection-bearing call through `DjogiContext`, every row decode through `FromPgRow`, every test through `#[djogi::djogi_test]`, and every raw call through `ctx.raw_query` / `raw_scalar` / `raw_execute`. The historical task lists are kept verbatim because they document what shipped at each phase boundary; do not retro-edit them.
+
 ---
 
 ## Guiding Principles

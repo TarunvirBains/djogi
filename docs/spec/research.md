@@ -49,7 +49,7 @@
 
 ### QuerySet and Condition Tree
 - `AND`/`OR`/`NOT` as a typed `Condition` enum tree
-- Translating `Condition` → positional SQL parameters via sqlx `QueryBuilder`
+- Translating `Condition` → positional SQL parameters via the framework's `SqlAccumulator`
 - `prefetch()`: collect PKs from first result, fire one `IN (...)` per relation, stitch back
 
 ### ForeignKey Resolved Access
@@ -62,7 +62,7 @@
 - Shell access: Rhai requires concrete types, so each model gets its own registered type
 
 ### Shell Transactions
-- Holding a single `sqlx::Transaction` across multiple Rhai calls
+- Holding a single `tokio_postgres::Transaction` across multiple Rhai calls
 - Savepoint implementation via `SAVEPOINT name` / `ROLLBACK TO SAVEPOINT name`
 - Auto-rollback on shell exit: drop handler or explicit cleanup
 - Prompt state indicator for open transactions
@@ -74,8 +74,8 @@
 
 ### Migration Safety
 - Postgres advisory locks during migration to prevent concurrent runners
-- `--fake` flag: insert into `_sqlx_migrations` without executing SQL
-- Checksum verification of already-applied migrations (sqlx handles this natively)
+- `--fake` flag: insert into `djogi_schema_migrations` without executing SQL
+- Checksum verification of already-applied migrations (Djogi-owned `V<sha256>` ledger checksums)
 
 ### ConditionBuilder
 - Walking the `Condition` enum tree and emitting correct `$n` positional parameters
