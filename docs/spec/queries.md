@@ -87,32 +87,28 @@ Vehicle::objects()
     .filter_struct(filter)
     .fetch_all(&mut ctx).await?;
 ```
-### 5.6 Underlying Engine — Native `ConditionBuilder` over `sqlx::QueryBuilder`
+### 5.6 Underlying Engine — Native `ConditionBuilder` over `SqlAccumulator`
 
-`QuerySet<T>` compiles its `Condition` tree into SQL via Djogi's own internal `ConditionBuilder`, a thin wrapper over `sqlx::QueryBuilder<Postgres>`. The framework does not depend on any third-party query-building crate — this layer is owned entirely by Djogi.
+`QuerySet<T>` compiles its `Condition` tree into SQL via Djogi's own internal `ConditionBuilder`, which writes through `pg::accumulator::SqlAccumulator` — a thin owned-strings + bound-values pair handed to `tokio_postgres::Client::query` at terminal time. The framework does not depend on any third-party query-building crate; this layer is owned entirely by Djogi.
 
-> **Design reference**: The community crate [`sqlx_clean_querybuilder`](https://github.com/this-ILECY/sqlx-clean-querybuilder) (MIT) serves as a reference implementation whose patterns were studied and adapted. It is not taken as a dependency — owning this code directly keeps Djogi's dependency surface lean and eliminates upstream risk for infrastructure-critical behavior.
+> **Historical note**: The original Phase 2 implementation built on `sqlx::QueryBuilder<Postgres>`. Phase 5-Zero retired the `sqlx` substrate in favour of `tokio-postgres + deadpool-postgres + postgres-types`; the typed `ConditionBuilder` shape carried over unchanged.
 
 | Layer | What it does |
 |---|---|
 | `QuerySet<T>` + filter closures | Developer-facing API; accumulates a typed `Condition` tree |
-| `Condition` → `ConditionBuilder` | Djogi-internal: walks the tree, emits `push`/`push_bind` calls with correct `$n` numbering |
-| `sqlx::QueryBuilder<Postgres>` | Manages the raw SQL buffer and positional parameter slots |
-| `sqlx::query_as::<_, T>()` | Executes the built query and deserializes rows into the model type |
+| `Condition` → `ConditionBuilder` | Djogi-internal: walks the tree, emits `push_sql` / `push_bind` calls onto a `pg::accumulator::SqlAccumulator` with correct `$n` numbering |
+| `SqlAccumulator` | Owns the raw SQL string + the `Vec<Box<dyn ToSql + Sync + Send>>` bound-values buffer |
+| `tokio_postgres::Client::query` | Executes the built query; rows decode through `FromPgRow` into the model type |
 
-Developers can always drop down to raw `sqlx::QueryBuilder` directly for queries that exceed the `QuerySet` surface — Djogi is not a leaky abstraction that hides its plumbing:
+Developers can always drop down to raw `tokio-postgres` directly for queries that exceed the `QuerySet` surface — Djogi is not a leaky abstraction that hides its plumbing:
 ```rust
-use sqlx::QueryBuilder;
-
-let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
-    "SELECT * FROM vehicles WHERE make = "
-);
-qb.push_bind("Toyota");
-qb.push(" AND gas_fill > ");
-qb.push_bind(50);
-
-let results: Vec<Vehicle> = qb.build_query_as().fetch_all(&pool).await?;
+let rows = ctx.raw_query::<Vehicle>(
+    "SELECT * FROM vehicles WHERE make = $1 AND gas_fill > $2",
+    &[&"Toyota", &50_i32],
+).await?;
 ```
+
+For shapes outside the typed `FromPgRow` decoder (recursive CTEs, custom row tuples, scalar aggregates), `ctx.raw_scalar` and `ctx.raw_fetch_one` cover the remaining cases, and direct access to `tokio_postgres::Client` is one `match ctx.inner_mut()` away.
 
 ### 5.7 Performance Contract
 
