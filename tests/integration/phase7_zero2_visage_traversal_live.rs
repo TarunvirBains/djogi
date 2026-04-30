@@ -42,7 +42,7 @@
 
 use djogi::prelude::*;
 use djogi::query::Condition;
-use djogi::query::internal::{Leaf, LookupOp};
+use djogi::query::internal::LookupOp;
 
 #[model(table = "phase7_zero2_t8_live_depts")]
 #[derive(Debug, Clone)]
@@ -105,7 +105,7 @@ async fn setup(ctx: &mut DjogiContext) {
 /// Walk the emitted `Condition` and return the leaf's column string.
 fn leaf_column_of(cond: &Condition) -> &str {
     match cond {
-        Condition::Leaf(Leaf { column, .. }) => column,
+        Condition::Leaf(leaf) => leaf.column(),
         other => panic!("expected a Condition::Leaf; got {other:?}"),
     }
 }
@@ -498,8 +498,9 @@ async fn optional_relation_ref_emits_is_not_null_guard(mut ctx: DjogiContext) {
         "map_filter emits exactly two children (guard + inner)"
     );
     match &children[0] {
-        Condition::Leaf(Leaf { column, op, .. }) => {
-            assert_eq!(*column, "author", "guard leaf targets the FK column");
+        Condition::Leaf(leaf) => {
+            assert_eq!(leaf.column(), "author", "guard leaf targets the FK column");
+            let op = leaf.op();
             assert!(
                 matches!(op, LookupOp::IsNotNull),
                 "guard leaf must be IsNotNull; got {op:?}"
@@ -508,9 +509,10 @@ async fn optional_relation_ref_emits_is_not_null_guard(mut ctx: DjogiContext) {
         other => panic!("first child must be the IS NOT NULL guard; got {other:?}"),
     }
     match &children[1] {
-        Condition::Leaf(Leaf { column, .. }) => {
+        Condition::Leaf(leaf) => {
             assert_eq!(
-                *column, "author.display_name",
+                leaf.column(),
+                "author.display_name",
                 "inner leaf must carry the dot-qualified traversal path"
             );
         }
@@ -522,17 +524,17 @@ async fn optional_relation_ref_emits_is_not_null_guard(mut ctx: DjogiContext) {
     // name and the appropriate NULL-check op.
     let some_only: Condition = fields.author().is_some();
     match &some_only {
-        Condition::Leaf(Leaf { column, op, .. }) => {
-            assert_eq!(*column, "author");
-            assert!(matches!(op, LookupOp::IsNotNull));
+        Condition::Leaf(leaf) => {
+            assert_eq!(leaf.column(), "author");
+            assert!(matches!(leaf.op(), LookupOp::IsNotNull));
         }
         other => panic!("is_some must emit a single Leaf; got {other:?}"),
     }
     let none_only: Condition = fields.author().is_none();
     match &none_only {
-        Condition::Leaf(Leaf { column, op, .. }) => {
-            assert_eq!(*column, "author");
-            assert!(matches!(op, LookupOp::IsNull));
+        Condition::Leaf(leaf) => {
+            assert_eq!(leaf.column(), "author");
+            assert!(matches!(leaf.op(), LookupOp::IsNull));
         }
         other => panic!("is_none must emit a single Leaf; got {other:?}"),
     }

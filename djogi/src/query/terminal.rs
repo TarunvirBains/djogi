@@ -73,7 +73,7 @@
 use crate::DjogiError;
 use crate::context::{ContextInner, DjogiContext};
 use crate::model::Model;
-use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromJoinedPgRow, FromPgRow, try_get_scalar};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_count, build_exists, build_select, build_select_joined};
@@ -81,25 +81,11 @@ use crate::query::stream::{DEFAULT_FETCH_SIZE, ModelCursorStream, build_model_st
 use crate::relation::joined_row::JoinedRow;
 use crate::relation::prefetch::{PrefetchedRow, apply_prefetches};
 use crate::relation::select_related::{apply_select_related, stitch_prefetches_into_joined};
-use postgres_types::ToSql;
 use std::collections::HashMap;
 use std::future::Future;
 use std::hash::Hash;
 
-// ── Helper: unpack SqlAccumulator → (sql, params_vec) ─────────────────────
-
-/// Convert an `SqlAccumulator` into a SQL string + a slice-compatible
-/// params vec usable with the context's execution helpers.
-///
-/// Returns `(sql, owned_binds)` where `owned_binds` is a
-/// `Vec<Box<dyn ToSql + Sync + Send>>` (the same type the accumulator
-/// stores). Callers build a `&[&(dyn ToSql + Sync)]` borrow slice from it
-/// for the actual call.
-fn acc_into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
-    acc.into_parts()
-}
-
-// ── Auto-tenant helper (Phase 5.5 Task 10) ────────────────────────────────
+// ── Auto-tenant helper ────────────────────────────────────────────────────
 
 /// If `T` has a `tenant_key` and `ctx.auth()` carries a `tenant_id`, call
 /// `ctx.ensure_tenant_set(tenant_id)` so the `app.tenant_id` GUC is active
@@ -186,11 +172,8 @@ where
             }
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_select(&self);
-            let (sql, binds) = acc_into_sql_and_binds(acc);
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             let result: Vec<T> = rows
                 .iter()
@@ -229,11 +212,8 @@ where
             let mut qs = self;
             qs.limit = Some(2);
             let acc = build_select(&qs);
-            let (sql, binds) = acc_into_sql_and_binds(acc);
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
             match rows.len() {
                 0 => Err(DjogiError::not_found(T::table_name())),
@@ -320,11 +300,8 @@ where
 
             // Main query — identical shape to `fetch_all`.
             let acc = build_select(&self);
-            let (sql, binds) = acc_into_sql_and_binds(acc);
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
             let pg_rows = ctx.query_all(&sql, &params).await?;
             let rows: Vec<T> = pg_rows
                 .iter()
@@ -424,11 +401,8 @@ where
             // both parent and (per registered path) child can be
             // extracted via `FromJoinedPgRow::from_joined_pg_row`.
             let acc = build_select_joined(&self);
-            let (sql, binds) = acc_into_sql_and_binds(acc);
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
             let rows: Vec<tokio_postgres::Row> = match ctx.inner_mut() {
                 ContextInner::Pool(pool) => {
                     let mut conn = pool.get().await?;
@@ -474,11 +448,8 @@ where
             let mut qs = self;
             qs.limit = Some(1);
             let acc = build_select(&qs);
-            let (sql, binds) = acc_into_sql_and_binds(acc);
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
             let opt = ctx.query_opt(&sql, &params).await?;
             opt.as_ref().map(|r| T::from_pg_row(r)).transpose()
         }
@@ -659,10 +630,7 @@ where
             acc.push_list_binds(ids.iter().cloned());
             acc.push_sql(")");
             let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let params = as_params(&binds);
             let pg_rows = ctx.query_all(&sql, &params).await?;
             let mut out: HashMap<T::Pk, T> = HashMap::with_capacity(pg_rows.len());
             for row in &pg_rows {
@@ -696,11 +664,8 @@ impl<T: Model> QuerySet<T> {
             }
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_count(&self);
-            let (sql, binds) = acc_into_sql_and_binds(acc);
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             let n: i64 = try_get_scalar(&row, 0)?;
             Ok(n)
@@ -727,11 +692,8 @@ impl<T: Model> QuerySet<T> {
             }
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_exists(&self);
-            let (sql, binds) = acc_into_sql_and_binds(acc);
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             let b: bool = try_get_scalar(&row, 0)?;
             Ok(b)
@@ -830,11 +792,8 @@ where
         // FETCH that returns 0 rows. This is simpler and more correct than
         // a special empty-stream type.
         let acc = build_select(&self);
-        let (sql, binds) = acc_into_sql_and_binds(acc);
-        let params: Vec<&(dyn ToSql + Sync)> = binds
-            .iter()
-            .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-            .collect();
+        let (sql, binds) = acc.into_parts();
+        let params = as_params(&binds);
         build_model_stream(ctx, &sql, &params, fetch_size).await
     }
 }

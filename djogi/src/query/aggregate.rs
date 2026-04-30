@@ -52,9 +52,9 @@ use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::expr::AggregateExpr;
 use crate::model::Model;
+use crate::pg::accumulator::as_params;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::build_aggregate_select;
-use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -112,10 +112,7 @@ where
             crate::expr::sql::check_aggregate_legality(&self.agg.node)?;
             let acc = build_aggregate_select(&self.qs, &self.agg.node);
             let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             let v: Out = row.try_get(0).map_err(DjogiError::from)?;
             Ok(v)

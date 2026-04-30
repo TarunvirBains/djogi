@@ -250,11 +250,7 @@ impl FilterClause {
     ///
     /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
     pub fn into_condition(self) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: self.op,
-            value: self.value,
-        })
+        Condition::Leaf(Leaf::new(self.column, self.op, self.value))
     }
 }
 
@@ -279,14 +275,13 @@ impl FilterClause {
 /// the rest of the builder surface (`QuerySet`'s chain methods are also
 /// by-value self).
 ///
-/// Phase 3's admin UI may need to store a heterogeneous list of filters
-/// (each column's operator and value come over HTTP at request time,
-/// not known at compile time). When that lands, revisit: options
-/// include adding a sibling `DynModelFilter` trait with
-/// `fn into_clauses(self: Box<Self>) -> Vec<FilterClause>`, or exposing
-/// the clauses via an owned field on the filter struct directly. We
-/// keep this trait's shape unconstrained (no `: Sized` bound) so either
-/// path stays open.
+/// A future admin-UI use case may need to store a heterogeneous list of
+/// filters (each column's operator and value come over HTTP at request
+/// time, not known at compile time). The trait's shape is left
+/// unconstrained (no `: Sized` bound) so either of two extension paths
+/// stays open: a sibling `DynModelFilter` trait with `fn into_clauses(
+/// self: Box<Self>) -> Vec<FilterClause>`, or an owned-clauses field on
+/// the filter struct.
 ///
 /// [`into_clauses`]: ModelFilter::into_clauses
 /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct

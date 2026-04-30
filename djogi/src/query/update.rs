@@ -73,12 +73,12 @@
 use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::model::Model;
+use crate::pg::accumulator::as_params;
 use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_delete, build_update};
 use crate::query::terminal::auto_set_tenant;
-use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -329,10 +329,7 @@ impl<T: Model> UpdateStmt<T> {
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_update(&self.qs, &self.assignments);
             let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
             Ok(rows_affected)
         }
@@ -345,12 +342,15 @@ impl<T: Model> QuerySet<T> {
     /// `Fields` handle and returns one or more typed
     /// [`UpdateAssignment`]s (either a single assignment or a `Vec`).
     ///
-    /// Phase 2 supports literal assignments only — `f.col().set(value)`
-    /// where `value: V: IntoFilterValue`. Expression-backed SET
-    /// (`col = col + 1`, `col = NOW()`, `col = other_col`) lands in
-    /// Phase 4 alongside the rest of the expression layer; until then,
-    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute)
-    /// is the documented escape hatch.
+    /// Two assignment forms are accepted in the closure:
+    ///
+    /// - Literal: `f.col().set(value)` where `value: V: IntoFilterValue`.
+    /// - Expression IR: `f.col().set_expr(expr)` for `col = col + 1`,
+    ///   `col = NOW()`, `col = other_col`, and similar shapes the
+    ///   [`crate::expr`] builder supports.
+    ///
+    /// For SQL the expression builder cannot express, reach for
+    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute).
     ///
     /// The returned [`UpdateStmt`] is inert — the actual SQL runs when
     /// the caller invokes [`UpdateStmt::execute`] with a
@@ -416,10 +416,7 @@ impl<T: Model> QuerySet<T> {
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_delete(&self);
             let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
             Ok(rows_affected)
         }

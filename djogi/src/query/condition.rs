@@ -80,6 +80,28 @@ impl Default for Condition {
 }
 
 impl Condition {
+    /// Whether this condition is structurally equivalent to TRUE — used by the
+    /// WHERE-clause emitter (model and visage paths) to skip the clause
+    /// entirely rather than emit `WHERE TRUE`. Cleaner logs, no chance of an
+    /// optimizer surprise on trivially-true predicates.
+    ///
+    /// Recognises the shapes the queryset constructors actually produce:
+    /// `True`, `And(empty | all-True)`, and `Not(Or(empty))`. Other shapes
+    /// (`Or(all-True)`, `Not(And(empty))`) are not collapsed because the
+    /// builder API doesn't construct them.
+    pub(crate) fn is_vacuously_true(&self) -> bool {
+        match self {
+            Condition::True => true,
+            Condition::And(xs) => xs.iter().all(Condition::is_vacuously_true),
+            Condition::Not(inner) => {
+                matches!(inner.as_ref(), Condition::Or(xs) if xs.is_empty())
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Condition {
     /// Combine two conditions with SQL AND. Flattens nested `And` trees to
     /// keep the structure shallow for the emitter.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
@@ -140,28 +162,59 @@ impl Condition {
 }
 
 /// A single column-level comparison: `column op value`.
+///
+/// Fields are `pub(crate)` so the only construction path is through the
+/// typed `FieldRef` lookup methods (`eq`, `neq`, `gt`, `ilike`, etc.).
+/// The emitter assumes those methods for the `(op, value)` pairing —
+/// e.g. `IContains` carries `FilterValue::String`, `Between` carries
+/// `FilterValue::Pair` — so widening the fields would let downstream
+/// code construct ill-formed leaves that hit emitter `unreachable!`
+/// arms or render incorrect SQL. Same defensive boundary as
+/// [`crate::jsonb::path::JsonbPathLeaf`].
 #[derive(Debug, Clone)]
 pub struct Leaf {
-    pub column: &'static str,
-    pub op: LookupOp,
-    pub value: FilterValue,
+    pub(crate) column: &'static str,
+    pub(crate) op: LookupOp,
+    pub(crate) value: FilterValue,
 }
 
 impl Leaf {
-    /// Test helper — not public API. Phase 2 users construct leaves via
-    /// `FieldRef` lookup methods.
-    #[doc(hidden)]
-    pub fn eq_raw(column: &'static str, value: FilterValue) -> Leaf {
-        Leaf {
-            column,
-            op: LookupOp::Eq,
-            value,
-        }
+    /// Single same-module constructor. The crate-internal typed
+    /// builders (`FieldRef::eq`, `FieldRef::between`, etc.) all funnel
+    /// through here so adding a new `Leaf` field forces every site to
+    /// update; downstream code reaches `Leaf` only via the typed surface.
+    pub(crate) fn new(column: &'static str, op: LookupOp, value: FilterValue) -> Self {
+        Leaf { column, op, value }
+    }
+
+    /// Test helper — not public API. Production code constructs leaves
+    /// via `FieldRef` lookup methods.
+    #[cfg(test)]
+    pub(crate) fn eq_raw(column: &'static str, value: FilterValue) -> Leaf {
+        Leaf::new(column, LookupOp::Eq, value)
+    }
+
+    /// Read-only accessors — external code can inspect leaves it received
+    /// from QuerySet introspection (e.g. visage traversal tests verifying
+    /// a generated condition tree) but cannot construct one. The
+    /// constructor side stays sealed via `pub(crate)` fields.
+    pub fn column(&self) -> &'static str {
+        self.column
+    }
+
+    /// SQL operator on this leaf.
+    pub fn op(&self) -> LookupOp {
+        self.op
+    }
+
+    /// Bound value on the right-hand side of the comparison.
+    pub fn value(&self) -> &FilterValue {
+        &self.value
     }
 }
 
-/// The operator half of a `Leaf`. Every Phase 2 lookup method maps to one
-/// of these variants. SQL emission (`query::sql`) pattern-matches on this
+/// The operator half of a `Leaf`. Every lookup method maps to one of
+/// these variants. SQL emission (`query::sql`) pattern-matches on this
 /// enum to produce the correct operator token.
 ///
 /// Marked `#[non_exhaustive]` — later phases (array ops, JSONB lookups,
@@ -195,6 +248,28 @@ pub enum LookupOp {
     Regex,
     /// Case-insensitive POSIX regex (`~*`).
     IRegex,
+}
+
+impl LookupOp {
+    /// SQL operator token for the simple binary-comparison forms emitted as
+    /// `col OP value`. Returns `None` for variants whose emission shape
+    /// differs (`IS NULL`, `BETWEEN`, `IN`, `ILIKE`, `LOWER(col) = LOWER(v)`).
+    ///
+    /// Used by the leaf emitters in `query::sql` to collapse what was
+    /// previously eight near-identical match arms into one path.
+    pub(crate) fn binary_op_token(self) -> Option<&'static str> {
+        match self {
+            LookupOp::Eq => Some(" = "),
+            LookupOp::Neq => Some(" <> "),
+            LookupOp::Gt => Some(" > "),
+            LookupOp::Gte => Some(" >= "),
+            LookupOp::Lt => Some(" < "),
+            LookupOp::Lte => Some(" <= "),
+            LookupOp::Regex => Some(" ~ "),
+            LookupOp::IRegex => Some(" ~* "),
+            _ => None,
+        }
+    }
 }
 
 /// A concrete value to bind to a query parameter. One variant per

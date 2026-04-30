@@ -115,7 +115,7 @@
 use crate::DjogiError;
 use crate::context::ContextInner;
 use crate::model::Model;
-use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
 use crate::relation::path::RelationPath;
 use postgres_types::ToSql;
@@ -449,10 +449,7 @@ where
         // connection per call; `ContextInner::Transaction` reuses the
         // outer transaction so the prefetch sees its own uncommitted writes.
         let (sql, binds) = acc.into_parts();
-        let params: Vec<&(dyn ToSql + Sync)> = binds
-            .iter()
-            .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-            .collect();
+        let params = as_params(&binds);
         let rows = match exec {
             ContextInner::Pool(pool) => {
                 let mut conn = pool.get().await?;

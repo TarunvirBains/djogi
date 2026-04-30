@@ -13,45 +13,26 @@
 //!   by [`crate::query::field::FieldRef<M, GeoPoint>::order_by_distance`] when
 //!   the `spatial` feature flag is enabled.
 //!
-//! # Design call — Option A (enum) chosen over Option B (wrapper type)
+//! # Why an enum
 //!
-//! The `spatial` feature needs `order_by_distance(center)` to emit two
-//! comma-separated `ORDER BY` terms from one `OrderExpr` — the `ST_Distance`
-//! expression and the primary-key tiebreak. The previous `OrderExpr` struct
-//! was column-only and `Copy`, which cannot carry that payload.
-//!
-//! Three options were evaluated:
-//!
-//! - **Option A (this file): promote `OrderExpr` to an enum.** The `Column`
-//!   variant holds the existing fields; `SpatialDistance` holds the spatial
-//!   ordering payload. `Copy` is dropped (the `SpatialDistance` variant stores
-//!   a `GeoPoint`, which is `Clone` but not `Copy`). Djogi is pre-publish
-//!   (`project_djogi_prepublish`), so dropping `Copy` from `OrderExpr` is not a
-//!   compat event. The emitter delegates to `OrderExpr::emit(acc)` so the
-//!   SQL-generation paths stay uniform with the rest of the query engine.
-//!
-//! - **Option B: `OrderKey` wrapper enum around `OrderExpr`.** Preserves
-//!   `OrderExpr`'s `Copy`-ness by introducing a second type. Bigger ripple:
-//!   `QuerySet::ordering` changes type, the `Into<Vec<OrderKey>>` bridge needs
-//!   adding, and all direct `OrderExpr` construction sites in sql.rs tests would
-//!   still need updating anyway. Feels like unnecessary layering.
-//!
-//! - **Option C: `QuerySet::spatial_ordering` side-field.** Diverges from the
-//!   one-IR principle the Phase 4 expression substrate codifies. Rejected.
-//!
-//! **Option A wins.** The three struct-literal construction sites in `query::sql`
-//! tests were easy to migrate to `OrderExpr::Column { .. }`. The `nulls_first` /
-//! `nulls_last` fluent methods work on the `Column` variant only (which is the
-//! only variant they could logically apply to). Existing `FieldRef::asc()` /
-//! `desc()` callers keep working — they now produce `OrderExpr::Column { .. }`.
+//! The `Column` variant covers ordinary `column ASC|DESC NULLS FIRST|LAST`
+//! ordering. The `SpatialDistance` variant carries the
+//! `GeoPoint` center and the model's PK column so a single `OrderExpr`
+//! emits two comma-separated `ORDER BY` terms (the `ST_Distance`
+//! expression plus the PK tiebreak). A wrapper enum around an
+//! always-Copy column-only struct would force callers and tests to
+//! double-name every site; a side-field on `QuerySet` would diverge
+//! from the one-IR principle the rest of the query engine follows.
+//! Dropping `Copy` from `OrderExpr` (because `SpatialDistance` holds a
+//! `Clone`-but-not-`Copy` `GeoPoint`) is the price of admission.
 //!
 //! # Primary-key tiebreak
 //!
-//! [`OrderExpr::SpatialDistance`] always appends the model's PK column as a
-//! deterministic tiebreaker. Per the Phase 6 plan (RQ6) this is unconditional:
-//! equidistant rows would otherwise sort in arbitrary order, causing flaky tests
-//! and inconsistent pagination. The PK column is captured at construction time
-//! (see [`OrderExpr::spatial_distance_with_pk_tiebreak`]).
+//! [`OrderExpr::SpatialDistance`] always appends the model's PK column as
+//! a deterministic tiebreaker. Equidistant rows would otherwise sort in
+//! arbitrary order, causing flaky tests and inconsistent pagination. The
+//! PK column is captured at construction time (see
+//! [`OrderExpr::spatial_distance_with_pk_tiebreak`]).
 //!
 //! # Where
 //!
@@ -268,9 +249,10 @@ impl OrderExpr {
     /// Build an `OrderExpr::SpatialDistance` for the given geography column and
     /// center point.
     ///
-    /// The `pk_column` is appended as a deterministic tiebreaker per RQ6 of the
-    /// Phase 6 plan. Pass `M::pk_column()` here; for all models Djogi ships with
-    /// a default PK this is `"id"`.
+    /// The `pk_column` is appended as a deterministic tiebreaker — same
+    /// distance buckets must yield the same row order across pages. Pass
+    /// `M::pk_column()` here; for models with the default primary key this
+    /// is `"id"`.
     ///
     /// Emits:
     /// ```sql

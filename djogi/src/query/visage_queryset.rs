@@ -60,7 +60,7 @@
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
-use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::{FromPgRow, try_get_scalar};
 use crate::query::condition::Condition;
 use crate::query::order::OrderExpr;
@@ -228,28 +228,9 @@ impl<V> VisageQuerySet<V> {
     }
 }
 
-/// Convert a `SqlAccumulator` into `(sql, owned_binds)`.
-///
-/// Call `as_params(&owned_binds)` on the result to get the `&[&(dyn ToSql + Sync)]`
-/// that `DjogiContext::query_*` expects. The two-step dance is required because
-/// the param slice borrows from the owned vec.
-#[inline]
-fn into_sql_and_binds(acc: SqlAccumulator) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
-    acc.into_parts()
-}
-
-/// Borrow a `Vec<Box<dyn ToSql + Sync + Send>>` as a `Vec<&(dyn ToSql + Sync)>`.
-#[inline]
-fn as_params(binds: &[Box<dyn ToSql + Sync + Send>]) -> Vec<&(dyn ToSql + Sync)> {
-    binds
-        .iter()
-        .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-        .collect()
-}
-
 /// Build the SELECT SQL + binds for `fetch_all`, `fetch_one`, and `first`.
 fn run_all_sql<V>(qs: &VisageQuerySet<V>) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
-    into_sql_and_binds(build_visage_select(qs))
+    build_visage_select(qs).into_parts()
 }
 
 /// Build `SELECT col1, col2, ... FROM <table> [WHERE ...] [ORDER BY ...]
@@ -262,12 +243,7 @@ fn run_all_sql<V>(qs: &VisageQuerySet<V>) -> (String, Vec<Box<dyn ToSql + Sync +
 pub(crate) fn build_visage_select<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
     let mut acc = SqlAccumulator::new("");
     acc.push_sql("SELECT ");
-    for (i, col) in qs.columns.iter().enumerate() {
-        if i > 0 {
-            acc.push_sql(", ");
-        }
-        acc.push_sql(col);
-    }
+    acc.push_csv(qs.columns.iter().copied());
     acc.push_sql(" FROM ");
     acc.push_sql(qs.table);
     push_visage_tail(&mut acc, qs);
@@ -301,7 +277,7 @@ pub(crate) fn build_visage_exists<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
 
 /// Emit the `WHERE ...` clause for a visage queryset, if non-vacuous.
 fn push_visage_where<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
-    if !is_vacuously_true(&qs.condition) {
+    if !qs.condition.is_vacuously_true() {
         acc.push_sql(" WHERE ");
         emit_condition(acc, qs.condition.clone(), None);
     }
@@ -331,17 +307,6 @@ fn push_visage_tail<V>(acc: &mut SqlAccumulator, qs: &VisageQuerySet<V>) {
     if let Some(n) = qs.offset {
         acc.push_sql(" OFFSET ");
         acc.push_bind(n);
-    }
-}
-
-/// Mirror of `query::sql::is_vacuously_true` — duplicated so this
-/// module does not depend on a private model-side helper.
-fn is_vacuously_true(c: &Condition) -> bool {
-    match c {
-        Condition::True => true,
-        Condition::And(xs) => xs.iter().all(is_vacuously_true),
-        Condition::Not(inner) => matches!(inner.as_ref(), Condition::Or(xs) if xs.is_empty()),
-        _ => false,
     }
 }
 
@@ -439,7 +404,7 @@ impl<V> VisageQuerySet<V> {
         V: 'ctx,
     {
         async move {
-            let (sql, binds) = into_sql_and_binds(build_visage_count(&self));
+            let (sql, binds) = build_visage_count(&self).into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             try_get_scalar::<i64>(&row, 0)
@@ -455,7 +420,7 @@ impl<V> VisageQuerySet<V> {
         V: 'ctx,
     {
         async move {
-            let (sql, binds) = into_sql_and_binds(build_visage_exists(&self));
+            let (sql, binds) = build_visage_exists(&self).into_parts();
             let params = as_params(&binds);
             let row = ctx.query_one(&sql, &params).await?;
             try_get_scalar::<bool>(&row, 0)

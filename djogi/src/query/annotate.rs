@@ -64,11 +64,10 @@ use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::expr::AggregateExpr;
 use crate::model::Model;
-use crate::pg::accumulator::SqlAccumulator;
+use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_select_with_annotations, emit_aggregate_with_window_and_cast};
-use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -315,10 +314,7 @@ where
                 aggregates.push_columns(acc);
             });
             let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
 
             // Name-based decode: `T::from_pg_row` reads only the columns

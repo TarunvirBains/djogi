@@ -102,18 +102,18 @@ pub struct QuerySet<T: Model> {
     pub(crate) limit: Option<i64>,
     /// SQL `OFFSET` — `None` means no offset. `i64` to match Postgres.
     pub(crate) offset: Option<i64>,
-    // TASK 6 CONTRACT: every terminal method added in Task 6 — `fetch_all`,
-    // `fetch_one`, `count`, `exists`, `first`, `update`, `delete` — MUST check
-    // `self.is_empty` first and return the empty result (empty `Vec`, `None`,
-    // `0`, `false`, `0 rows affected`, etc.) WITHOUT issuing any SQL. This is
-    // the whole point of `QuerySet::none()` — it lets authorization / feature-
-    // flag branches short-circuit the DB round-trip without a special-cased
-    // `if` on the caller's side.
+    // EMPTY CONTRACT: every terminal method — `fetch_all`, `fetch_one`,
+    // `count`, `exists`, `first`, `update`, `delete` — MUST check
+    // `self.is_empty` first and return the empty result (empty `Vec`,
+    // `None`, `0`, `false`, `0 rows affected`, etc.) WITHOUT issuing any
+    // SQL. This is the whole point of `QuerySet::none()` — it lets
+    // authorization / feature-flag branches short-circuit the DB round-
+    // trip without a special-cased `if` on the caller's side.
     //
     // Grep marker: TASK6:empty_contract
     //
-    /// Short-circuit flag — `true` means terminal methods (Task 6) return
-    /// the empty result without a DB round-trip. Set only by
+    /// Short-circuit flag — `true` means terminal methods return the
+    /// empty result without a DB round-trip. Set only by
     /// [`QuerySet::none`].
     pub(crate) is_empty: bool,
     /// Registered prefetch paths — one entry per call to
@@ -615,13 +615,12 @@ impl<T: Model> QuerySet<T> {
     ///
     /// # Multi-relation per queryset
     ///
-    /// Phase 3 supports multiple `.select_related(...)` calls on the
-    /// same queryset — each produces its own `LEFT JOIN` with a
-    /// `rel_{source_column}` alias. Aliases never collide because
-    /// source columns are unique per parent model by construction.
-    /// Multi-**hop** `select_related` (chained targets) is out of
-    /// scope for Phase 3 — [`RelationPath`] only carries a single hop
-    /// at the type level.
+    /// Multiple `.select_related(...)` calls on the same queryset stack —
+    /// each produces its own `LEFT JOIN` with a `rel_{source_column}`
+    /// alias. Aliases never collide because source columns are unique
+    /// per parent model by construction. Multi-**hop** `select_related`
+    /// (chained targets) is not supported: [`RelationPath`] only
+    /// carries a single hop at the type level.
     ///
     /// ```ignore
     /// let rows: Vec<JoinedRow<Vehicle>> = Vehicle::objects()
@@ -679,9 +678,8 @@ impl<T: Model> QuerySet<T> {
     ///
     /// `pub(crate)` because it is an implementation detail of the terminal
     /// methods, not user-facing API; users who need "does this queryset
-    /// actually match rows?" should call `.exists()` (Task 6), which also
-    /// runs the real SQL.
-    #[allow(dead_code)] // consumed by Task 6's `query::terminal` module
+    /// actually match rows?" should call `.exists()`, which also runs
+    /// the real SQL.
     pub(crate) fn is_empty(&self) -> bool {
         self.is_empty
     }
@@ -796,8 +794,8 @@ impl<T: Model> QuerySet<T> {
     /// grouping-set column values are accessible via raw row access on the
     /// rows returned by `.fetch_all`.
     ///
-    /// Phase 6.5 ships arity-1 per set (one column per set). Multi-column
-    /// sets are a future promotion.
+    /// Arity-1 per set (one column per set). Multi-column sets are a
+    /// future extension.
     ///
     /// # Example
     ///
