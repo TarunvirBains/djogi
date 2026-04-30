@@ -128,6 +128,39 @@ jobs:
       - name: Test
         run: cargo test --workspace -- --test-threads=1
 
+  # MSRV gate — verifies the code still compiles on the toolchain
+  # declared in `workspace.package.rust-version`. The main `check`
+  # job runs on `@stable` so new clippy lints surface proactively
+  # as the toolchain advances; this separate job pins to the
+  # adopter-contract minimum so a stray `extract_if` (or any other
+  # post-MSRV stdlib API) lights up here before it lands. No tests
+  # run — test-deps drift higher than the library itself, and the
+  # contract is "library code compiles on MSRV", not "test stack
+  # works on MSRV". Default features only; spatial users have their
+  # own feature-specific MSRV expectation.
+  msrv:
+    name: MSRV (Rust 1.95)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install MSRV toolchain (matches workspace.package.rust-version)
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache cargo registry/git/target (MSRV)
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-msrv-
+
+      - name: cargo check (default features)
+        run: cargo check --workspace
+
   # Spatial / PostGIS coverage — runs the Phase 7 T10 sync_models
   # spatial scenario against a PostGIS-enabled Postgres image. The
   # default `check` job above runs only with default features against
