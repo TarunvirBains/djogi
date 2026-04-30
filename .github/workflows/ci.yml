@@ -50,7 +50,13 @@ jobs:
       # preinstalled tooling Djogi doesn't need (dotnet, Haskell, hosted
       # toolcache) restores headroom for the full test surface. Cheap enough
       # (~10s) to keep in every run rather than gate.
+      #
+      # Skipped under `act` (local CI emulation): act bind-mounts the
+      # hostedtoolcache from the runner image (read-only), so the rm
+      # call fails with "Device or resource busy", and disk pressure
+      # is not a concern locally. `env.ACT` is set automatically by act.
       - name: Free disk space on GHA runner
+        if: ${{ !env.ACT }}
         run: |
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
@@ -92,8 +98,15 @@ jobs:
       # it on every PR that touches only Rust sources or docs is waste.
       # Path filter scopes execution to PRs that modify a Cargo.toml /
       # Cargo.lock / deny.toml — i.e. where the policy could change.
+      #
+      # Skipped under act: `dorny/paths-filter` calls `git branch
+      # --show-current` against the runner workspace, which act
+      # populates via `docker cp` (no git history). The cargo-deny
+      # step below treats `env.ACT == true` as "always run" so local
+      # vetting still gets the license/advisory check.
       - name: Detect dependency changes
         id: dep-changes
+        if: ${{ !env.ACT }}
         uses: dorny/paths-filter@v3
         with:
           filters: |
@@ -104,7 +117,7 @@ jobs:
               - 'deny.toml'
 
       - name: cargo-deny (license + advisory check)
-        if: steps.dep-changes.outputs.deps == 'true'
+        if: ${{ env.ACT || steps.dep-changes.outputs.deps == 'true' }}
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
