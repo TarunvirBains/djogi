@@ -6,7 +6,7 @@
 //! validation that needs reserved-keyword rejection lives in
 //! [`crate::ident`], not here.
 
-use syn::{Expr, ExprLit, Lit, LitStr};
+use syn::{Expr, ExprLit, Field, Lit, LitStr};
 
 /// Require a string literal at the right-hand side of `key = …`.
 ///
@@ -25,6 +25,19 @@ pub(crate) fn require_string_lit(value: &Expr, key: &str) -> syn::Result<LitStr>
             format!("`{key} = …` must be a string literal"),
         ))
     }
+}
+
+/// SQL column name for a named-struct field.
+///
+/// The macro convention: a Rust raw-identifier field (`r#type`) maps to the
+/// unprefixed column name (`type`). Plain idents pass through unchanged.
+/// Panics if `field` belongs to a tuple/unit struct — callers in this crate
+/// guard with `validate_shape` upstream so this is unreachable from the
+/// emission path.
+pub(crate) fn column_name_from_field(field: &Field) -> String {
+    let ident = field.ident.as_ref().expect("only named structs supported");
+    let raw = ident.to_string();
+    raw.strip_prefix("r#").unwrap_or(&raw).to_string()
 }
 
 /// Require a boolean literal at the right-hand side of `key = …`.
