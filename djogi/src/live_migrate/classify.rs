@@ -239,7 +239,10 @@ pub fn classify_operation(
         // §7: "Add index" — concurrently=true → OnlineSafe; otherwise
         // ExpandContract. The `requires_out_of_transaction` flag on
         // IndexSchema mirrors the `concurrently = true` model knob.
-        SchemaOperation::AddIndex(index) => classify_index_addition(index),
+        // Empty-table fast-path: estimated_rows == Some(0) routes
+        // non-concurrent non-unique adds to OnlineSafe (the
+        // AccessExclusiveLock is instant on a zero-row table).
+        SchemaOperation::AddIndex(index) => classify_index_addition(index, ctx),
 
         // §7: "Drop index" — catalog-only; OnlineSafe regardless of
         // concurrent flag because Postgres' DROP INDEX is fast and
@@ -820,17 +823,21 @@ fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSaf
 ///
 /// - `concurrently = true` → `OnlineSafe` (`CREATE INDEX CONCURRENTLY`
 ///   runs outside a transaction and does not block writes).
-/// - `concurrently = false` → `ExpandContract`. Catalog-only on an
-///   empty table, but on a populated table it holds an
-///   `AccessExclusiveLock` for the duration of the build. The
-///   classifier does not always know row count, so the conservative
-///   path applies (the empty-table fast-path stays hidden behind a
-///   later refinement that consults `estimated_rows`).
+/// - `concurrently = false`, `estimated_rows == Some(0)` → `OnlineSafe`
+///   (PR 7 empty-table fast-path: zero-row tables hold the
+///   AccessExclusiveLock for an instant; the build is structurally
+///   trivial).
+/// - `concurrently = false`, populated or unknown → `ExpandContract`.
+///   On a populated table the lock holds for the duration of the
+///   build; unknown-row-count takes the conservative path.
 ///
 /// Hash indexes without concurrent are refused at compose time (a
 /// separate validation entry point handles the refusal — out of T5
 /// scope).
-fn classify_index_addition(index: &IndexSchema) -> OnlineSafetyClassification {
+fn classify_index_addition(
+    index: &IndexSchema,
+    ctx: &ClassifyContext<'_>,
+) -> OnlineSafetyClassification {
     match index.kind {
         IndexKindSchema::UniqueConstraint | IndexKindSchema::UniqueIndex => {
             // Concurrency is required but not sufficient — the operator
@@ -839,6 +846,12 @@ fn classify_index_addition(index: &IndexSchema) -> OnlineSafetyClassification {
         }
         IndexKindSchema::NonUnique => {
             if index.requires_out_of_transaction {
+                OnlineSafetyClassification::OnlineSafe
+            } else if ctx.estimated_rows == Some(0) {
+                // Empty-table fast-path: zero-row tables hold the
+                // AccessExclusiveLock for an instant; the build is
+                // structurally trivial. Mirrors the PR 7 routing for
+                // EXCLUSION + stored-generated empty-table cases.
                 OnlineSafetyClassification::OnlineSafe
             } else {
                 OnlineSafetyClassification::ExpandContract
@@ -1568,8 +1581,35 @@ mod tests {
     }
 
     #[test]
-    fn add_non_concurrent_index_is_expand_contract() {
+    fn add_non_concurrent_index_on_populated_table_is_expand_contract() {
+        // Populated table holds AccessExclusiveLock for the duration
+        // of the build — escalate to ExpandContract.
+        let (_unused, ctx) = ctx_app(Some(50_000));
+        let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_non_concurrent_index_on_empty_table_is_online_safe() {
+        // Empty-table fast-path (PR 7 round-2 finding): zero-row
+        // tables hold the AccessExclusiveLock for an instant; the
+        // build is structurally trivial.
         let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn add_non_concurrent_index_with_unknown_row_count_is_expand_contract() {
+        // None takes the conservative ExpandContract path — the
+        // classifier cannot prove the table is empty.
+        let (_unused, ctx) = ctx_app(None);
         let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
         assert_eq!(
             classify_operation(&op, &ctx),
