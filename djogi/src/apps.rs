@@ -611,6 +611,12 @@ pub struct CrossAppEdge {
 ///
 /// Adding a variant is a breaking change; the enum is
 /// `#[non_exhaustive]` so callers outside this crate cannot exhaust.
+///
+/// `#[doc(hidden)]` while no consumer is wired in production — the
+/// variant set may shift before the first migration-tooling release
+/// surfaces these. Re-exposed in rustdoc when compose / status / attune
+/// land their D004 / D010 implementations.
+#[doc(hidden)]
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppDiagnostic {

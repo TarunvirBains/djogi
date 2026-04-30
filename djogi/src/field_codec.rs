@@ -138,11 +138,14 @@ pub(crate) static REGISTRY: phf::Set<&'static str> = phf::phf_set! {};
 ///
 /// T3's macro consumes this during expansion of
 /// `#[field(protected(codec = "<id>"))]` — an unknown identifier is a
-/// compile error, never a runtime failure. Adopter code may also call
-/// it (e.g. when round-tripping a snapshot through code that needs to
-/// reject obsolete identifiers), but reaching for the registry is
-/// rare in practice because the macro layer already guards every
-/// declaration site.
+/// compile error, never a runtime failure. Adopter code rarely needs
+/// to reach the registry directly because the macro layer already
+/// guards every declaration site.
+///
+/// `#[doc(hidden)]` — primarily a macro-layer validator at expansion
+/// time; the macro crate keeps its own mirror of the registry, so this
+/// runtime fn has no current adopter consumer.
+#[doc(hidden)]
 pub fn is_registered(id: &str) -> bool {
     REGISTRY.contains(id)
 }
