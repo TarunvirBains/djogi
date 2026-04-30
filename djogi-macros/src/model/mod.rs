@@ -8,6 +8,7 @@
 pub mod attrs;
 pub mod crud;
 pub mod descriptor;
+pub mod exclusion;
 pub mod filter;
 pub mod from_joined_row;
 pub mod from_row;

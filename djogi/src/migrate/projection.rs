@@ -67,17 +67,19 @@ use std::collections::btree_map::Entry;
 
 use crate::apps::{AppDescriptor, AppRegistry};
 use crate::descriptor::{
-    DeferrabilitySpec, EnumDescriptor, FieldDescriptor, IndexKind, IndexNullsOrder, IndexOrder,
-    IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
+    DeferrabilitySpec, EnumDescriptor, ExclusionConstraintSpec, ExclusionElement, FieldDescriptor,
+    GeneratedColumnSpec, IndexKind, IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType,
+    ModelDescriptor, PartitionSpec, PkType,
 };
 use crate::fts::FtsDescriptor;
 use crate::relation::{OnDelete, RelationKind};
 
 use super::schema::{
-    AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ForeignKeySchema, FtsSchema,
-    IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema,
-    IndexTargetSchema, IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema,
-    PrimaryKeySchema, RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
+    AppliedSchema, ColumnSchema, CustomPkKindSchema, EnumSchema, ExclusionConstraintSchema,
+    ExclusionElementSchema, ForeignKeySchema, FtsSchema, GeneratedColumnSchema, IndexColumnSchema,
+    IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema,
+    IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema, PrimaryKeySchema,
+    RelationKindSchema, SNAPSHOT_FORMAT_VERSION, TableSchema,
 };
 
 /// Identity of a snapshot bucket — `(database_target, app_label)`.
@@ -606,9 +608,17 @@ fn project_model(
 
     let primary_key = project_primary_key(&m.pk_type);
 
+    let mut exclusion_constraints: Vec<ExclusionConstraintSchema> = m
+        .exclusion_constraints
+        .iter()
+        .map(project_exclusion_constraint)
+        .collect();
+    exclusion_constraints.sort_by(|a, b| a.name.cmp(&b.name));
+
     TableSchema {
         app: m.app.map(|s| s.to_string()),
         columns,
+        exclusion_constraints,
         fts: m.fts.as_ref().map(project_fts),
         is_through: m.is_through,
         moved_from_app: m.moved_from_app.map(|s| s.to_string()),
@@ -619,6 +629,35 @@ fn project_model(
         rls_enabled: m.tenant_key.is_some(),
         table: m.table_name.to_string(),
         tenant_key: m.tenant_key.map(|s| s.to_string()),
+    }
+}
+
+fn project_exclusion_constraint(spec: &ExclusionConstraintSpec) -> ExclusionConstraintSchema {
+    ExclusionConstraintSchema {
+        name: spec.name.to_string(),
+        using: spec.using.to_string(),
+        elements: spec
+            .elements
+            .iter()
+            .map(project_exclusion_element)
+            .collect(),
+        where_clause: spec.where_clause.map(|s| s.to_string()),
+        deferrable: spec.deferrable,
+        initially_deferred: spec.initially_deferred,
+    }
+}
+
+fn project_exclusion_element(elem: &ExclusionElement) -> ExclusionElementSchema {
+    ExclusionElementSchema {
+        expr: elem.expr.to_string(),
+        with_operator: elem.with_operator.to_string(),
+    }
+}
+
+fn project_generated_column(spec: &GeneratedColumnSpec) -> GeneratedColumnSchema {
+    GeneratedColumnSchema {
+        expression: spec.expression.to_string(),
+        stored: spec.stored,
     }
 }
 
@@ -707,6 +746,7 @@ fn project_column(
         check: None,
         default_sql,
         foreign_key,
+        generated: f.generated.as_ref().map(project_generated_column),
         index_type: f.index_type.map(project_index_type),
         indexed: f.indexed,
         max_length: f.max_length,
@@ -917,27 +957,12 @@ mod tests {
     use crate::apps::AppDescriptor;
     use crate::descriptor::{
         EnumDescriptor, FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexSpec,
-        IndexTarget, IndexType, ModelDescriptor, PkType,
+        IndexTarget, IndexType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
     };
 
     fn synth_model(table: &'static str, type_name: &'static str) -> ModelDescriptor {
         ModelDescriptor {
-            type_name,
-            table_name: table,
-            pk_type: PkType::HeerIdDesc,
-            fields: &[],
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
-            indexes: &[],
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor(type_name, table, PkType::HeerIdDesc, &[])
         }
     }
 
@@ -1154,27 +1179,16 @@ mod tests {
 
     #[test]
     fn fk_target_resolves_to_table_name() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            target_type_name: Some("Owner"),
+            ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
+        }];
         let owner = synth_model("owners", "Owner");
         let vehicle = ModelDescriptor {
-            fields: &[FieldDescriptor {
-                name: "owner_id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: false,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: Some(RelationKind::ForeignKey),
-                on_delete: Some(OnDelete::Restrict),
-                target_type_name: Some("Owner"),
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
-            }],
+            fields: FIELDS,
             ..synth_model("vehicles", "Vehicle")
         };
         let buckets = project_from_iters(
@@ -1195,23 +1209,11 @@ mod tests {
     /// because `ModelDescriptor.fields: &'static [FieldDescriptor]`.
     const fn fk_field_descriptor(on_delete: OnDelete) -> FieldDescriptor {
         FieldDescriptor {
-            name: "owner_id",
-            sql_type: FieldSqlType::BigInt,
-            nullable: false,
-            unique: false,
             indexed: true,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
             relation_kind: Some(RelationKind::ForeignKey),
             on_delete: Some(on_delete),
             target_type_name: Some("Owner"),
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
         }
     }
 
@@ -1267,27 +1269,16 @@ mod tests {
 
     #[test]
     fn fk_deferrability_round_trips_through_foreign_key_schema() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            target_type_name: Some("Owner"),
+            ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
+        }];
         let owner = synth_model("owners", "Owner");
         let vehicle = ModelDescriptor {
-            fields: &[FieldDescriptor {
-                name: "owner_id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: false,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: Some(RelationKind::ForeignKey),
-                on_delete: Some(OnDelete::Restrict),
-                target_type_name: Some("Owner"),
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
-            }],
+            fields: FIELDS,
             ..synth_model("vehicles", "Vehicle")
         };
         static DEFERRABILITY: &[DeferrabilitySpec] = &[DeferrabilitySpec {
@@ -1314,6 +1305,13 @@ mod tests {
 
     #[test]
     fn cross_bucket_fk_resolves_via_global_type_lookup() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            target_type_name: Some("User"),
+            ..field_descriptor("user_id", FieldSqlType::BigInt, false)
+        }];
         let billing = synth_app("billing", "main");
         let users = synth_app("users", "main");
         let user = ModelDescriptor {
@@ -1322,25 +1320,7 @@ mod tests {
         };
         let invoice = ModelDescriptor {
             app: Some("billing"),
-            fields: &[FieldDescriptor {
-                name: "user_id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: false,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: Some(RelationKind::ForeignKey),
-                on_delete: Some(OnDelete::Restrict),
-                target_type_name: Some("User"),
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
-            }],
+            fields: FIELDS,
             ..synth_model("invoices", "Invoice")
         };
         let buckets = project_from_iters(
@@ -1363,26 +1343,11 @@ mod tests {
 
     #[test]
     fn pk_default_sql_is_generate_id_desc_for_heer_id_desc() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
         let m = ModelDescriptor {
-            fields: &[FieldDescriptor {
-                name: "id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
-            }],
+            fields: FIELDS,
             ..synth_model("widgets", "Widget")
         };
         let buckets = project_from_iters(
@@ -1490,27 +1455,16 @@ mod tests {
             app: Some("audit"),
             ..synth_model("audit_rows", "AuditRow")
         };
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            target_type_name: Some("AuditRow"),
+            ..field_descriptor("audit_id", FieldSqlType::BigInt, false)
+        }];
         let source = ModelDescriptor {
             app: Some("billing"),
-            fields: &[FieldDescriptor {
-                name: "audit_id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: false,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: Some(RelationKind::ForeignKey),
-                on_delete: Some(OnDelete::Restrict),
-                target_type_name: Some("AuditRow"),
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
-            }],
+            fields: FIELDS,
             ..synth_model("invoices", "Invoice")
         };
         let err = project_from_iters(
@@ -1556,42 +1510,10 @@ mod tests {
     fn framework_timestamp_cols_get_now_default() {
         const FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
-                name: "created_at",
-                sql_type: FieldSqlType::Timestamptz,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("created_at", FieldSqlType::Timestamptz, false)
             },
             FieldDescriptor {
-                name: "updated_at",
-                sql_type: FieldSqlType::Timestamptz,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("updated_at", FieldSqlType::Timestamptz, false)
             },
         ];
         let m = ModelDescriptor {
@@ -1628,23 +1550,7 @@ mod tests {
     #[test]
     fn non_framework_timestamptz_col_has_no_default() {
         const FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-            name: "shipped_at",
-            sql_type: FieldSqlType::Timestamptz,
-            nullable: true,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("shipped_at", FieldSqlType::Timestamptz, true)
         }];
         let m = ModelDescriptor {
             fields: FIELDS,
@@ -1673,28 +1579,16 @@ mod tests {
     #[test]
     fn fk_column_sql_type_substituted_from_target_pk() {
         const FK_TO_OWNER: &[FieldDescriptor] = &[FieldDescriptor {
-            name: "owner_id",
             // Macro emits a placeholder type — projection must replace
             // it with the target's PK SQL type. Use BigInt as the
             // placeholder so a regression where substitution silently
             // skips would leave `BIGINT` and the RanjId/Serial assertions
             // would fail.
-            sql_type: FieldSqlType::BigInt,
-            nullable: false,
-            unique: false,
             indexed: true,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
             relation_kind: Some(RelationKind::ForeignKey),
             on_delete: Some(OnDelete::Restrict),
             target_type_name: Some("Owner"),
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
         }];
 
         // Each row: target PK type, expected substituted SQL on the FK
@@ -1760,66 +1654,22 @@ mod tests {
             // Real FK column — substitution applies; ends up as UUID
             // because Owner has a RanjId PK below.
             FieldDescriptor {
-                name: "owner_id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: false,
                 indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
                 relation_kind: Some(RelationKind::ForeignKey),
                 on_delete: Some(OnDelete::Restrict),
                 target_type_name: Some("Owner"),
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("owner_id", FieldSqlType::BigInt, false)
             },
             // Non-FK SmallInt — must NOT be rewritten to UUID (or to
             // anything else) just because it lives on a model with FK
             // fields. The substitution rule is per-field, gated on
             // `relation_kind.is_some()`.
             FieldDescriptor {
-                name: "sort_order",
-                sql_type: FieldSqlType::SmallInt,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("sort_order", FieldSqlType::SmallInt, false)
             },
             // Non-FK Text — also must pass through verbatim.
             FieldDescriptor {
-                name: "name",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("name", FieldSqlType::Text, false)
             },
         ];
         let owner = ModelDescriptor {

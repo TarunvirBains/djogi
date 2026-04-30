@@ -887,7 +887,8 @@ async fn bucket_by_cell_p5_tight_cluster_single_bucket(mut ctx: djogi::DjogiCont
 #[djogi::djogi_test(extensions = ["postgis"])]
 async fn missing_gist_warn_fires_at_most_once(_ctx: djogi::DjogiContext) {
     use djogi::descriptor::{
-        FieldDescriptor, FieldSqlType, GeographySubtype, ModelDescriptor, PkType,
+        FieldDescriptor, FieldSqlType, GeographySubtype, ModelDescriptor, PkType, field_descriptor,
+        model_descriptor,
     };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -908,44 +909,22 @@ async fn missing_gist_warn_fires_at_most_once(_ctx: djogi::DjogiContext) {
         }
         fn descriptor() -> &'static ModelDescriptor {
             static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-                name: "boundary",
-                sql_type: FieldSqlType::Geography {
-                    subtype: GeographySubtype::Polygon,
-                    srid: 4326,
-                },
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor(
+                    "boundary",
+                    FieldSqlType::Geography {
+                        subtype: GeographySubtype::Polygon,
+                        srid: 4326,
+                    },
+                    false,
+                )
             }];
             static DESC: ModelDescriptor = ModelDescriptor {
-                type_name: "UnindexedRegion",
-                table_name: "unindexed_regions_p65",
-                pk_type: PkType::HeerId,
-                fields: FIELDS,
-                partition_by: None,
-                has_outbox: false,
-                idempotency_key: None,
-                tenant_key: None,
-                cache_ttl: None,
-                rationale: None,
-                indexes: &[],
-                is_through: false,
-                fts: None,
-                app: None,
-                moved_from_app: None,
-                renamed_from: None,
+                ..model_descriptor(
+                    "UnindexedRegion",
+                    "unindexed_regions_p65",
+                    PkType::HeerId,
+                    FIELDS,
+                )
             };
             &DESC
         }

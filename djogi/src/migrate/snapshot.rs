@@ -472,6 +472,7 @@ mod tests {
                 check: None,
                 default_sql: Some("generate_id_desc()".to_string()),
                 foreign_key: None,
+                generated: None,
                 index_type: None,
                 indexed: false,
                 max_length: None,
@@ -496,6 +497,7 @@ mod tests {
                     ref_column: "id".to_string(),
                     ref_table: "owners".to_string(),
                 }),
+                generated: None,
                 index_type: None,
                 indexed: true,
                 max_length: None,
@@ -514,6 +516,7 @@ mod tests {
         let table = TableSchema {
             app: Some("billing".to_string()),
             columns,
+            exclusion_constraints: Vec::new(),
             fts: Some(FtsSchema {
                 column: "search".to_string(),
                 dictionary: "english".to_string(),
@@ -565,5 +568,167 @@ mod tests {
         let bytes = serialize_snapshot(&snap).expect("serialize");
         let value: serde_json::Value = serde_json::from_slice(&bytes).expect("re-parse to Value");
         assert_alphabetical_keys(&value, "");
+    }
+
+    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated round-trip ──────
+
+    /// Build a minimal `TableSchema` carrying an `EXCLUDE` constraint
+    /// plus a stored-generated column, so the round-trip exercises
+    /// both new fields together.
+    fn snap_with_pr7_fields() -> AppliedSchema {
+        let mut snap = empty_snapshot();
+        let columns = vec![
+            ColumnSchema {
+                check: None,
+                default_sql: Some("generate_id()".to_string()),
+                foreign_key: None,
+                generated: None,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "id".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "BIGINT".to_string(),
+                unique: false,
+            },
+            ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: None,
+                generated: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "email_lower".to_string(),
+                nullable: true,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "TEXT".to_string(),
+                unique: false,
+            },
+        ];
+        let table = TableSchema {
+            app: None,
+            columns,
+            exclusion_constraints: vec![ExclusionConstraintSchema {
+                deferrable: true,
+                elements: vec![
+                    ExclusionElementSchema {
+                        expr: "room_id".to_string(),
+                        with_operator: "=".to_string(),
+                    },
+                    ExclusionElementSchema {
+                        expr: "period".to_string(),
+                        with_operator: "&&".to_string(),
+                    },
+                ],
+                initially_deferred: true,
+                name: "no_overlap".to_string(),
+                using: "gist".to_string(),
+                where_clause: Some("status = 'confirmed'".to_string()),
+            }],
+            fts: None,
+            is_through: false,
+            moved_from_app: None,
+            partition: None,
+            primary_key: PrimaryKeySchema {
+                columns: vec!["id".to_string()],
+                kind: PkKindSchema::HeerId,
+            },
+            rationale: None,
+            renamed_from: None,
+            rls_enabled: false,
+            table: "bookings".to_string(),
+            tenant_key: None,
+        };
+        snap.models.insert("bookings".to_string(), table);
+        snap
+    }
+
+    #[test]
+    fn round_trip_preserves_exclusion_and_generated_fields() {
+        let snap = snap_with_pr7_fields();
+        let bytes = serialize_snapshot(&snap).expect("serialize");
+        let parsed = parse_snapshot_bytes(&bytes, None).expect("parse");
+        assert_eq!(snap, parsed, "PR 7 fields must round-trip byte-for-byte");
+    }
+
+    #[test]
+    fn pr7_fields_serialize_alphabetically_at_every_depth() {
+        let snap = snap_with_pr7_fields();
+        let bytes = serialize_snapshot(&snap).expect("serialize");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("re-parse to Value");
+        assert_alphabetical_keys(&value, "");
+    }
+
+    #[test]
+    fn snapshot_predating_pr7_fields_loads_with_serde_defaults() {
+        // Older snapshots written before PR 7 don't carry the new
+        // `generated` / `exclusion_constraints` fields. The
+        // `#[serde(default)]` markers ensure those snapshots load
+        // cleanly with the new fields populated to their empty
+        // defaults — `None` for ColumnSchema.generated and an empty
+        // Vec for TableSchema.exclusion_constraints.
+        let blob = r#"{
+            "djogi_version": "0.1.0",
+            "enums": {},
+            "format_version": "1",
+            "generated_at": "2026-04-25T00:00:00Z",
+            "indexes": [],
+            "models": {
+                "old_table": {
+                    "app": null,
+                    "columns": [
+                        {
+                            "check": null,
+                            "default_sql": null,
+                            "foreign_key": null,
+                            "index_type": null,
+                            "indexed": false,
+                            "max_length": null,
+                            "name": "name",
+                            "nullable": true,
+                            "on_delete": null,
+                            "outbox_exclude": false,
+                            "rationale": null,
+                            "relation_kind": null,
+                            "renamed_from": null,
+                            "sequence_within": null,
+                            "sql_type": "TEXT",
+                            "unique": false
+                        }
+                    ],
+                    "fts": null,
+                    "is_through": false,
+                    "moved_from_app": null,
+                    "partition": null,
+                    "primary_key": { "columns": ["id"], "kind": "HeerId" },
+                    "rationale": null,
+                    "renamed_from": null,
+                    "rls_enabled": false,
+                    "table": "old_table",
+                    "tenant_key": null
+                }
+            },
+            "registered_apps": [""]
+        }"#;
+        let parsed = parse_snapshot_bytes(blob.as_bytes(), None).expect("parse legacy snapshot");
+        let table = parsed.models.get("old_table").expect("old_table present");
+        assert!(table.exclusion_constraints.is_empty());
+        let column = &table.columns[0];
+        assert!(column.generated.is_none());
     }
 }

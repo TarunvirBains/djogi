@@ -63,8 +63,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::projection::BucketKey;
 use super::schema::{
-    AppliedSchema, ColumnSchema, EnumSchema, ForeignKeySchema, IndexSchema, PkKindSchema,
-    TableSchema,
+    AppliedSchema, ColumnSchema, EnumSchema, ExclusionConstraintSchema, ForeignKeySchema,
+    GeneratedColumnSchema, IndexSchema, PkKindSchema, TableSchema,
 };
 
 /// Typed delta between two [`AppliedSchema`] values, scoped to a
@@ -160,6 +160,31 @@ pub enum SchemaOperation {
     /// segment kind. Dropping just the name (the previous shape)
     /// forced T3 to re-derive metadata it shouldn't need to recover.
     DropIndex(IndexSchema),
+
+    /// Table-level `EXCLUDE` constraint added on an existing table.
+    /// Adding an `EXCLUDE` to a populated table classifies as
+    /// [`OnlineSafetyClassification::OfflineOnly`] — Pg18 has no
+    /// `NOT VALID` for `EXCLUDE`, so the live-migration two-phase
+    /// staging pattern is structurally impossible. Empty-table
+    /// additions still flow through this variant; the classifier
+    /// gates on the row-count probe.
+    ///
+    /// `EXCLUDE` constraints declared at table-creation time are
+    /// emitted inside the [`AddTable`](Self::AddTable) operation's
+    /// inline DDL, never as a separate `AddExclusionConstraint`.
+    AddExclusionConstraint {
+        table: String,
+        exclusion: ExclusionConstraintSchema,
+    },
+
+    /// Table-level `EXCLUDE` constraint dropped. The full schema is
+    /// carried so the down migration can re-create the constraint
+    /// without re-walking the descriptor.
+    DropExclusionConstraint {
+        table: String,
+        name: String,
+        exclusion: ExclusionConstraintSchema,
+    },
 
     /// `CREATE TYPE ... AS ENUM` for a new Postgres enum.
     AddEnum(EnumSchema),
@@ -355,6 +380,19 @@ pub enum ColumnChange {
 
     /// `#[field(index)]` flag flipped (column-level implicit index).
     SetIndexed(bool),
+
+    /// `GENERATED ALWAYS AS (<expr>) STORED` declaration changed.
+    /// `from = None, to = Some(_)` adds a generated expression to a
+    /// regular column; `from = Some(_), to = None` strips it; both
+    /// `Some` with differing expressions is an expression change.
+    /// All cases on populated tables classify as `OfflineOnly` because
+    /// Postgres rewrites every row under `AccessExclusiveLock` to
+    /// materialise / clear the stored expression. The empty-table
+    /// case flows through the regular fast-path.
+    SetGenerated {
+        from: Option<GeneratedColumnSchema>,
+        to: Option<GeneratedColumnSchema>,
+    },
 }
 
 /// Anchor variant for an [`SchemaOperation::AddEnumVariant`] insertion.
@@ -1879,6 +1917,7 @@ fn diff_tables(
         });
         let column_renames = diff_columns_in_table(before_table, after_table, ops);
         diff_pk_in_table(before_table, after_table, &column_renames, ops);
+        diff_exclusion_constraints_in_table(before_table, after_table, ops);
     }
 
     // Common tables (same name in both schemas) — column diff.
@@ -1892,6 +1931,65 @@ fn diff_tables(
         let column_renames = diff_columns_in_table(before_table, after_table, ops);
         diff_pk_in_table(before_table, after_table, &column_renames, ops);
         diff_app_move_in_table(before_table, after_table, ops);
+        diff_exclusion_constraints_in_table(before_table, after_table, ops);
+    }
+}
+
+/// Detect added / dropped / modified `EXCLUDE` constraints between two
+/// snapshots of the same table. Constraint identity is the `name`
+/// field — modifying any other field (`using`, elements, where_clause,
+/// deferrability) emits a drop+add pair so the live system always sees
+/// a single canonical shape per name.
+fn diff_exclusion_constraints_in_table(
+    before: &TableSchema,
+    after: &TableSchema,
+    ops: &mut Vec<SchemaOperation>,
+) {
+    let before_by_name: BTreeMap<&str, &ExclusionConstraintSchema> = before
+        .exclusion_constraints
+        .iter()
+        .map(|e| (e.name.as_str(), e))
+        .collect();
+    let after_by_name: BTreeMap<&str, &ExclusionConstraintSchema> = after
+        .exclusion_constraints
+        .iter()
+        .map(|e| (e.name.as_str(), e))
+        .collect();
+
+    // Drops first so the down migration is symmetric with the up.
+    for (name, before_excl) in &before_by_name {
+        if after_by_name.contains_key(name) {
+            continue;
+        }
+        ops.push(SchemaOperation::DropExclusionConstraint {
+            table: after.table.clone(),
+            name: (*name).to_string(),
+            exclusion: (*before_excl).clone(),
+        });
+    }
+
+    // Adds (including drop+add for modified constraints).
+    for (name, after_excl) in &after_by_name {
+        match before_by_name.get(name) {
+            Some(before_excl) if before_excl == after_excl => {}
+            Some(before_excl) => {
+                ops.push(SchemaOperation::DropExclusionConstraint {
+                    table: after.table.clone(),
+                    name: (*name).to_string(),
+                    exclusion: (*before_excl).clone(),
+                });
+                ops.push(SchemaOperation::AddExclusionConstraint {
+                    table: after.table.clone(),
+                    exclusion: (*after_excl).clone(),
+                });
+            }
+            None => {
+                ops.push(SchemaOperation::AddExclusionConstraint {
+                    table: after.table.clone(),
+                    exclusion: (*after_excl).clone(),
+                });
+            }
+        }
     }
 }
 
@@ -2012,6 +2110,12 @@ fn emit_alter_column(
         }
         if before.indexed != after.indexed {
             push(ColumnChange::SetIndexed(after.indexed));
+        }
+        if before.generated != after.generated {
+            push(ColumnChange::SetGenerated {
+                from: before.generated.clone(),
+                to: after.generated.clone(),
+            });
         }
     }
     // FK transitions.
@@ -2340,7 +2444,13 @@ fn severity_of(op: &SchemaOperation) -> Severity {
             }
         }
         SchemaOperation::AddColumn { column, .. } => {
-            if !column.nullable && column.default_sql.is_none() {
+            // A column is Lossy on add only if Postgres has no value
+            // source for existing rows. Three sources are recognised:
+            //   1. nullable column → NULL fills existing rows
+            //   2. default_sql → DEFAULT expression fills existing rows
+            //   3. generated → GENERATED ALWAYS expression fills rows
+            // Only when none of these are set is the add Lossy.
+            if !column.nullable && column.default_sql.is_none() && column.generated.is_none() {
                 Severity::Lossy
             } else {
                 Severity::Additive
@@ -2351,10 +2461,12 @@ fn severity_of(op: &SchemaOperation) -> Severity {
         | SchemaOperation::AddEnum(_)
         | SchemaOperation::AddEnumVariant { .. }
         | SchemaOperation::AddForeignKey { .. }
+        | SchemaOperation::AddExclusionConstraint { .. }
         | SchemaOperation::PkTypeFlip { .. }
         | SchemaOperation::PkTypeFlipGroup(_)
         | SchemaOperation::PkTypeFlipMultiGroup(_)
         | SchemaOperation::Unsupported { .. } => Severity::Additive,
+        SchemaOperation::DropExclusionConstraint { .. } => Severity::Destructive,
     }
 }
 
@@ -2421,7 +2533,7 @@ mod tests {
     use crate::apps::AppDescriptor;
     use crate::descriptor::{
         EnumDescriptor, FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexSpec,
-        IndexTarget, IndexType, ModelDescriptor, PkType,
+        IndexTarget, IndexType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
     };
     use crate::migrate::projection::project_from_iters;
     use crate::migrate::schema::{IndexTypeSchema, PrimaryKeySchema, SNAPSHOT_FORMAT_VERSION};
@@ -2437,22 +2549,7 @@ mod tests {
 
     fn synth_model(table: &'static str, type_name: &'static str) -> ModelDescriptor {
         ModelDescriptor {
-            type_name,
-            table_name: table,
-            pk_type: PkType::HeerIdDesc,
-            fields: &[],
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
-            indexes: &[],
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor(type_name, table, PkType::HeerIdDesc, &[])
         }
     }
 
@@ -2560,37 +2657,6 @@ mod tests {
             .collect();
         assert!(kinds.contains(&"drop"));
         assert!(kinds.contains(&"add"));
-    }
-
-    /// Build a `FieldDescriptor` literal that can satisfy `&'static`
-    /// slice borrows when referenced via a `static` slot. Helper fn
-    /// is `const` so callers can declare fixtures as `const FOO:
-    /// FieldDescriptor = field_descriptor(...)` and embed them in
-    /// `static SLICE: &[FieldDescriptor] = &[FOO];`.
-    const fn field_descriptor(
-        name: &'static str,
-        sql_type: FieldSqlType,
-        nullable: bool,
-    ) -> FieldDescriptor {
-        FieldDescriptor {
-            name,
-            sql_type,
-            nullable,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
-        }
     }
 
     #[test]
@@ -2799,23 +2865,8 @@ mod tests {
         const OLD_NAME: FieldDescriptor = field_descriptor("old_name", FieldSqlType::Text, true);
         static OLD_SLICE: &[FieldDescriptor] = &[OLD_NAME];
         const NEW_NAME: FieldDescriptor = FieldDescriptor {
-            name: "new_name",
-            sql_type: FieldSqlType::Text,
-            nullable: true,
-            unique: false,
-            indexed: false,
-            max_length: None,
             renamed_from: Some("old_name"),
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("new_name", FieldSqlType::Text, true)
         };
         static NEW_SLICE: &[FieldDescriptor] = &[NEW_NAME];
         let bare = ModelDescriptor {
@@ -3172,6 +3223,7 @@ mod tests {
                     check: None,
                     default_sql: None,
                     foreign_key: None,
+                    generated: None,
                     index_type: None,
                     indexed: false,
                     max_length: None,
@@ -3186,6 +3238,7 @@ mod tests {
                     sql_type: "BIGINT".to_string(),
                     unique: false,
                 }],
+                exclusion_constraints: Vec::new(),
                 fts: None,
                 is_through: false,
                 moved_from_app: None,
@@ -3437,6 +3490,7 @@ mod tests {
             check: None,
             default_sql: None,
             foreign_key: None,
+            generated: None,
             index_type: None,
             indexed: false,
             max_length: None,
@@ -3462,6 +3516,7 @@ mod tests {
                     ref_column: "id".to_string(),
                     ref_table: ref_table.to_string(),
                 }),
+                generated: None,
                 index_type: None,
                 indexed: false,
                 max_length: None,
@@ -3480,6 +3535,7 @@ mod tests {
         TableSchema {
             app: None,
             columns,
+            exclusion_constraints: Vec::new(),
             fts: None,
             is_through: false,
             moved_from_app: None,
@@ -3530,6 +3586,7 @@ mod tests {
                     check: None,
                     default_sql: None,
                     foreign_key: None,
+                    generated: None,
                     index_type: None,
                     indexed: false,
                     max_length: None,
@@ -3548,6 +3605,7 @@ mod tests {
                     check: None,
                     default_sql: None,
                     foreign_key: None,
+                    generated: None,
                     index_type: None,
                     indexed: false,
                     max_length: None,
@@ -3563,6 +3621,7 @@ mod tests {
                     unique: false,
                 },
             ],
+            exclusion_constraints: Vec::new(),
             fts: None,
             is_through: false,
             moved_from_app: None,
@@ -3587,6 +3646,7 @@ mod tests {
                     check: None,
                     default_sql: Some("generate_id()".to_string()),
                     foreign_key: None,
+                    generated: None,
                     index_type: None,
                     indexed: false,
                     max_length: None,
@@ -3611,6 +3671,7 @@ mod tests {
                         ref_column: "id".to_string(),
                         ref_table: "left_events".to_string(),
                     }),
+                    generated: None,
                     index_type: None,
                     indexed: false,
                     max_length: None,
@@ -3635,6 +3696,7 @@ mod tests {
                         ref_column: "id".to_string(),
                         ref_table: "right_tags".to_string(),
                     }),
+                    generated: None,
                     index_type: None,
                     indexed: false,
                     max_length: None,
@@ -3650,6 +3712,7 @@ mod tests {
                     unique: false,
                 },
             ],
+            exclusion_constraints: Vec::new(),
             fts: None,
             is_through: true,
             moved_from_app: None,

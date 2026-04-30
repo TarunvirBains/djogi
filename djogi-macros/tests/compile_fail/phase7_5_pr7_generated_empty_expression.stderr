@@ -1,0 +1,5 @@
+error: `#[field(generated = "")]` is not allowed — expression must be a non-empty SQL fragment
+  --> tests/compile_fail/phase7_5_pr7_generated_empty_expression.rs:14:25
+   |
+14 |     #[field(generated = "")]
+   |                         ^^

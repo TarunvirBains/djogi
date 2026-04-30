@@ -66,6 +66,7 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             ],
             protected: ::std::option::Option::None,
             default_volatility_override: ::std::option::Option::None,
+            generated: ::std::option::Option::None,
         }
     }
 }
@@ -304,6 +305,26 @@ pub fn expand(
                 }
                 None => quote! { ::std::option::Option::None },
             };
+            // Phase 7.5 PR 7 — `#[field(generated = "<expr>")]`. The
+            // expression is emitted verbatim; `stored: true` is hard-
+            // coded because Pg18 supports only stored generated columns
+            // (the descriptor's `stored` flag is reserved for future
+            // Pg19+ VIRTUAL support, but the macro syntax does not
+            // accept an explicit `stored = ...` today — see
+            // `FieldAttrs::parse`).
+            let generated_tokens = match &fa.generated {
+                Some(lit_str) => {
+                    let expr = lit_str.value();
+                    let expr = expr.as_str();
+                    quote! {
+                        ::std::option::Option::Some(::djogi::descriptor::GeneratedColumnSpec {
+                            expression: #expr,
+                            stored: true,
+                        })
+                    }
+                }
+                None => quote! { ::std::option::Option::None },
+            };
 
             quote! {
                 ::djogi::FieldDescriptor {
@@ -330,6 +351,11 @@ pub fn expand(
                     visage_map: #projection_map_tokens,
                     protected: #protected_tokens,
                     default_volatility_override: #default_volatility_tokens,
+                    // Phase 7.5 PR 7 — stored generated column metadata.
+                    // Lowered from `#[field(generated = "<expr>")]`;
+                    // `stored: true` is implicit (Pg18 supports only
+                    // STORED). `None` for non-generated columns.
+                    generated: #generated_tokens,
                 }
             }
         })
@@ -550,6 +576,21 @@ pub fn expand(
         None => quote! { ::core::option::Option::None },
     };
 
+    // Phase 7.5 PR 7 — `#[model(exclusion(...))]` lowering. Each parsed
+    // ExclusionDecl emits one ExclusionConstraintSpec struct literal;
+    // the descriptor field receives the wrapped `&[ ... ]` slice. Empty
+    // slice when no exclusion(...) entry was declared.
+    let exclusion_constraints_tokens = if model_attrs.exclusions.is_empty() {
+        quote! { &[] }
+    } else {
+        let entries: Vec<proc_macro2::TokenStream> = model_attrs
+            .exclusions
+            .iter()
+            .map(crate::model::exclusion::emit_exclusion_spec_tokens)
+            .collect();
+        quote! { &[ #(#entries,)* ] }
+    };
+
     quote! {
         #tombstone_guard_tokens
 
@@ -585,6 +626,11 @@ pub fn expand(
                 moved_from_app: #moved_from_app_tokens,
                 // Phase 7 T2 — table-rename hint.
                 renamed_from: #renamed_from_tokens,
+                // Phase 7.5 PR 7 — `EXCLUDE` constraint declarations.
+                // Lowered from the parsed `#[model(exclusion(...))]`
+                // entries on `model_attrs.exclusions`. Empty slice when
+                // no `exclusion(...)` group is present.
+                exclusion_constraints: #exclusion_constraints_tokens,
             }
         }
         #(#deferrability_submits)*

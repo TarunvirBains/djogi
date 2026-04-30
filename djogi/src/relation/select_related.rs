@@ -416,7 +416,9 @@ mod tests {
     //! `tests/integration/phase3_relations.rs`.
 
     use super::*;
-    use crate::descriptor::{FieldDescriptor, FieldSqlType, ModelDescriptor, PkType};
+    use crate::descriptor::{
+        FieldDescriptor, FieldSqlType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
+    };
     use crate::model::Model;
     use crate::pg::accumulator::SqlAccumulator;
     use crate::types::HeerId;
@@ -486,98 +488,34 @@ mod tests {
     // emitter tests. Must be static so the fn pointer below can return
     // a `&'static ModelDescriptor` without runtime construction.
     static OWNERS_DESC: ModelDescriptor = ModelDescriptor {
-        type_name: "Owner",
-        table_name: "owners",
-        pk_type: PkType::HeerId,
-        fields: &[
-            FieldDescriptor {
-                name: "id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: true,
-                indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
-            },
-            FieldDescriptor {
-                name: "name",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
-            },
-        ],
-        partition_by: None,
-        has_outbox: false,
-        idempotency_key: None,
-        tenant_key: None,
-        cache_ttl: None,
-        rationale: None,
-        indexes: &[],
-        is_through: false,
-        fts: None,
-        app: None,
-        moved_from_app: None,
-        renamed_from: None,
+        ..model_descriptor(
+            "Owner",
+            "owners",
+            PkType::HeerId,
+            &[
+                FieldDescriptor {
+                    unique: true,
+                    indexed: true,
+                    ..field_descriptor("id", FieldSqlType::BigInt, false)
+                },
+                FieldDescriptor {
+                    ..field_descriptor("name", FieldSqlType::Text, false)
+                },
+            ],
+        )
     };
 
     static FUEL_TYPES_DESC: ModelDescriptor = ModelDescriptor {
-        type_name: "FuelType",
-        table_name: "fuel_types",
-        pk_type: PkType::HeerId,
-        fields: &[FieldDescriptor {
-            name: "id",
-            sql_type: FieldSqlType::BigInt,
-            nullable: false,
-            unique: true,
-            indexed: true,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
-        }],
-        partition_by: None,
-        has_outbox: false,
-        idempotency_key: None,
-        tenant_key: None,
-        cache_ttl: None,
-        rationale: None,
-        indexes: &[],
-        is_through: false,
-        fts: None,
-        app: None,
-        moved_from_app: None,
-        renamed_from: None,
+        ..model_descriptor(
+            "FuelType",
+            "fuel_types",
+            PkType::HeerId,
+            &[FieldDescriptor {
+                unique: true,
+                indexed: true,
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
+            }],
+        )
     };
 
     fn owners_descriptor() -> &'static ModelDescriptor {

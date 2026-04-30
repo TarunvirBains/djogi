@@ -153,6 +153,16 @@ pub struct ModelAttrs {
     /// generated name before producing the final slice literal.
     pub indexes: Vec<crate::model::indexes::ModelIndexDecl>,
 
+    /// Model-level `EXCLUDE` constraint declarations parsed from
+    /// `#[model(exclusion(...))]` — Phase 7.5 PR 7.
+    ///
+    /// Multiple `exclusion(...)` entries on the same model are valid
+    /// and accumulate here in source order. Names must be unique within
+    /// a model; duplicate names are rejected at parse time. Each entry
+    /// lowers to one `ExclusionConstraintSpec` struct literal in the
+    /// descriptor's `exclusion_constraints` slice.
+    pub exclusions: Vec<crate::model::exclusion::ExclusionDecl>,
+
     /// Compile-time schema ownership domain — the type path of the app
     /// this model belongs to. Set via `#[model(app = Vehicles)]`.
     /// `None` places the model in the synthetic global bucket, which
@@ -258,6 +268,7 @@ impl ModelAttrs {
         let mut fts: Option<FtsSpec> = Option::None;
         let mut indexes: Vec<crate::model::indexes::ModelIndexDecl> = Vec::new();
         let mut seen_indexes = false;
+        let mut exclusions: Vec<crate::model::exclusion::ExclusionDecl> = Vec::new();
         let mut app: Option<syn::Path> = Option::None;
         let mut moved_from_app: Option<syn::Path> = Option::None;
         let mut renamed_from: Option<String> = Option::None;
@@ -432,7 +443,7 @@ impl ModelAttrs {
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `fts`, \
-                                 `no_default`, `through`, or `events`",
+                                 `indexes`, `exclusion`, `no_default`, `through`, or `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -461,6 +472,16 @@ impl ModelAttrs {
                     }
                     seen_indexes = true;
                     indexes = crate::model::indexes::parse_indexes_meta_list(list)?;
+                }
+                // `exclusion(name = "...", using = "...", elements = [...])`
+                // — Phase 7.5 PR 7. Multiple `exclusion(...)` entries are
+                // valid; each one parses independently and appends to the
+                // accumulated Vec. Cross-entry duplicate-name detection
+                // runs after the loop completes (see
+                // `exclusion::validate_unique_names`).
+                Meta::List(list) if list.path.is_ident("exclusion") => {
+                    let decl = crate::model::exclusion::parse_exclusion_meta_list(list)?;
+                    exclusions.push(decl);
                 }
                 // `app = Vehicles` — Phase 7-Zero v3 T8. Value is a
                 // Rust type path (not a string) since apps are
@@ -525,6 +546,12 @@ impl ModelAttrs {
             }
         }
 
+        // Phase 7.5 PR 7 — cross-entry duplicate-name check on
+        // accumulated `exclusion(...)` declarations. Runs after the
+        // dispatch loop so a single span-precise error covers the
+        // collision rather than splitting into two diagnostics.
+        crate::model::exclusion::validate_unique_names(&exclusions)?;
+
         let table = table.ok_or_else(|| {
             syn::Error::new(
                 proc_macro2::Span::call_site(),
@@ -549,6 +576,7 @@ impl ModelAttrs {
             tenant_key,
             fts,
             indexes,
+            exclusions,
             app,
             moved_from_app,
             renamed_from,
@@ -968,6 +996,23 @@ pub struct FieldAttrs {
     /// the field level; the only valid surface is the list form.
     #[darling(skip)]
     pub protected: Option<crate::model::protected::ProtectedSpec>,
+
+    /// `#[field(generated = "<sql expr>")]` — Phase 7.5 PR 7.
+    ///
+    /// Marks this column as a Postgres generated column. Pg18 only
+    /// supports `STORED`, so the descriptor's
+    /// [`GeneratedColumnSpec::stored`](djogi::descriptor::GeneratedColumnSpec::stored)
+    /// flag is hard-coded to `true` at lowering time. Any explicit
+    /// `stored = ...` in the attribute syntax is rejected by
+    /// [`FieldAttrs::parse`] — one less knob to maintain until Pg19+
+    /// `VIRTUAL` support lands.
+    ///
+    /// Set via raw attribute walking in [`FieldAttrs::parse`] (not via
+    /// darling) so the parser can reject `stored = ...` co-occurring on
+    /// the same field with a span-precise diagnostic. Empty-string
+    /// expressions are likewise rejected at parse time.
+    #[darling(skip)]
+    pub generated: Option<syn::LitStr>,
 }
 
 /// Per-field visage exposure spec — parsed from `#[field(expose(...))]`.
@@ -1397,6 +1442,46 @@ impl FieldAttrs {
                             "`#[field(index)]` takes an optional string method (e.g. `index = \"gin\"`) or no value",
                         ));
                     }
+                    // Phase 7.5 PR 7 — `#[field(generated = "<expr>")]`.
+                    // Marks the column as `GENERATED ALWAYS AS (<expr>)
+                    // STORED`. The lit is stashed onto FieldAttrs so the
+                    // descriptor emitter can lower it to a
+                    // `GeneratedColumnSpec`. Empty strings are rejected
+                    // here so the diagnostic carries the offending
+                    // literal's span.
+                    Meta::NameValue(MetaNameValue {
+                        path,
+                        value:
+                            Expr::Lit(ExprLit {
+                                lit: Lit::Str(lit_str),
+                                ..
+                            }),
+                        ..
+                    }) if path.is_ident("generated") => {
+                        if attrs.generated.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `#[field(generated = \"...\")]` on the same field",
+                            ));
+                        }
+                        let val = lit_str.value();
+                        if val.trim().is_empty() {
+                            return Err(syn::Error::new_spanned(
+                                lit_str,
+                                "`#[field(generated = \"\")]` is not allowed — \
+                                 expression must be a non-empty SQL fragment",
+                            ));
+                        }
+                        attrs.generated = Some(lit_str.clone());
+                    }
+                    // Reject non-string values for `#[field(generated = X)]`.
+                    Meta::NameValue(mnv) if mnv.path.is_ident("generated") => {
+                        return Err(syn::Error::new_spanned(
+                            &mnv.value,
+                            "`#[field(generated = \"...\")]` requires a string literal SQL \
+                             expression (e.g. `generated = \"LOWER(email)\"`)",
+                        ));
+                    }
                     _ => {}
                 }
             }
@@ -1428,6 +1513,11 @@ impl FieldAttrs {
             "default",
             "default_volatility",
             "protected",
+            // Phase 7.5 PR 7 — `generated = "<expr>"` marks a Postgres
+            // generated column. `stored` is intentionally NOT in this
+            // list: the field-level redirect table below catches it
+            // with a dedicated "implicit STORED" diagnostic.
+            "generated",
         ];
         // Phase 7-Zero v3 T2 Q2/v2 #8 — `nulls_not_distinct` is deliberately
         // out of scope at the field level. The feature lives on the model-
@@ -1447,8 +1537,23 @@ impl FieldAttrs {
              into a model-level unique index: \
              `#[model(indexes(unique(fields = [{field_name_for_redirect}], nulls_not_distinct = true)))]`."
         );
-        let field_level_redirects: &[(&str, &str)] =
-            &[("nulls_not_distinct", nulls_not_distinct_redirect.as_str())];
+        // Phase 7.5 PR 7 — `stored = ...` is rejected as a field-level
+        // attribute. Pg18 only supports STORED generated columns, so
+        // the macro hard-codes `stored: true` at lowering time; an
+        // explicit `stored = ...` would imply user-controlled choice
+        // between STORED and VIRTUAL, which Pg18 does not offer. The
+        // redirect prevents the generic "unknown field attribute"
+        // diagnostic and instead points users at the implicit-STORED
+        // rule.
+        let stored_redirect = format!(
+            "`#[field(stored = ...)]` on `{field_name_for_redirect}`: `stored` is implicit \
+             on `#[field(generated = \"...\")]` (Pg18 supports only STORED generated columns). \
+             Drop the explicit `stored = ...` — the macro emits `STORED` automatically."
+        );
+        let field_level_redirects: &[(&str, &str)] = &[
+            ("nulls_not_distinct", nulls_not_distinct_redirect.as_str()),
+            ("stored", stored_redirect.as_str()),
+        ];
         for attr in &field.attrs {
             if !attr.path().is_ident("field") {
                 continue;
@@ -1726,6 +1831,28 @@ impl FieldAttrs {
             // when the override matches the static-table
             // classification. Until the lookup table exists we accept
             // the redundancy silently.
+        }
+
+        // PR 7 — `#[field(generated = "...")]` and `#[field(default
+        // = "...")]` are mutually exclusive. Postgres rejects a column
+        // declaration that carries both a DEFAULT clause and a
+        // GENERATED ALWAYS AS (...) STORED clause; we surface the
+        // conflict at macro time so the operator sees the rule before
+        // any DDL is emitted.
+        if attrs.generated.is_some() && attrs.default.is_some() {
+            let span = attrs
+                .generated
+                .as_ref()
+                .map(|s| s.span())
+                .unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(generated = \"...\")]` cannot be combined with \
+                 `#[field(default = \"...\")]`. Postgres rejects a column \
+                 declaration with both a DEFAULT and a GENERATED ALWAYS \
+                 AS (...) STORED clause — the generation expression is \
+                 the value source. Drop the `default` attribute.",
+            ));
         }
 
         Ok(attrs)

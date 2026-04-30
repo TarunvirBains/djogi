@@ -1,0 +1,5 @@
+error: exclusion(...) requires `name = ".."` — every EXCLUDE constraint must carry an explicit name
+  --> tests/compile_fail/phase7_5_pr7_exclusion_missing_name.rs:12:5
+   |
+12 |     exclusion(
+   |     ^^^^^^^^^

@@ -79,9 +79,9 @@ use super::diff::{
 };
 use super::projection::BucketKey;
 use super::schema::{
-    ColumnSchema, EnumSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema,
-    IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
-    OnDeleteSchema, PartitionSchema, PkKindSchema, TableSchema,
+    ColumnSchema, EnumSchema, ExclusionConstraintSchema, ForeignKeySchema, IndexColumnSchema,
+    IndexKindSchema, IndexNullsOrderSchema, IndexOrderSchema, IndexSchema, IndexTargetSchema,
+    IndexTypeSchema, OnDeleteSchema, PartitionSchema, PkKindSchema, TableSchema,
 };
 
 // ── Public output shapes ──────────────────────────────────────────────────
@@ -292,6 +292,14 @@ pub(crate) fn lower_operation(op: &SchemaOperation) -> Result<OperationSql, SqlE
         }
         SchemaOperation::AddIndex(idx) => Ok(emit_add_index(idx)),
         SchemaOperation::DropIndex(idx) => Ok(emit_drop_index(idx)),
+        SchemaOperation::AddExclusionConstraint { table, exclusion } => {
+            Ok(emit_add_exclusion_constraint(table, exclusion))
+        }
+        SchemaOperation::DropExclusionConstraint {
+            table,
+            name,
+            exclusion,
+        } => Ok(emit_drop_exclusion_constraint(table, name, exclusion)),
         SchemaOperation::AddEnum(e) => Ok(emit_add_enum(e)),
         SchemaOperation::DropEnum(name) => Ok(emit_drop_enum(name)),
         SchemaOperation::AddEnumVariant {
@@ -463,6 +471,22 @@ fn emit_add_table(t: &TableSchema) -> OperationSql {
     if let Some(pk_clause) = pk_table_clause(t) {
         up.push_str(",\n    ");
         up.push_str(&pk_clause);
+    }
+    // Phase 7.5 PR 7: inline `EXCLUDE` constraints. EXCLUDE-on-
+    // populated classifies as OfflineOnly, but a brand-new table
+    // necessarily has zero rows — declaring the constraint inline
+    // means Postgres registers it as part of the table create with no
+    // separate ALTER pass. Constraint name comes from the descriptor;
+    // emission order matches the projection's name-sorted slice for
+    // deterministic SQL. The standalone
+    // `AddExclusionConstraint` variant is reserved for "add EXCLUDE
+    // to an already-existing table" which never reaches the live
+    // runner (OfflineOnly verdict from the classifier).
+    for exclusion in &t.exclusion_constraints {
+        up.push_str(",\n    CONSTRAINT ");
+        up.push_str(&quote_ident(&exclusion.name));
+        up.push(' ');
+        up.push_str(&render_exclusion_body(exclusion));
     }
     up.push('\n');
     up.push(')');
@@ -694,6 +718,33 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             let down = format!("CREATE INDEX {qname} ON {qt} ({qc});");
             (up, down, "drop indexed", None)
         }
+        // Stored generated column transitions classify as
+        // OfflineOnly per the v3 plan — Postgres has no
+        // `ALTER COLUMN ADD GENERATED` for stored expressions, so the
+        // operator must hand-edit a DROP COLUMN + ADD COLUMN sequence.
+        // We emit a comment placeholder so the migration file
+        // documents the intent without producing executable SQL the
+        // runner would refuse anyway. The classifier (PR 7 task 3)
+        // ensures the live runner never reaches this path.
+        ColumnChange::SetGenerated { from: _, to } => {
+            let kind = if to.is_some() {
+                "set GENERATED"
+            } else {
+                "drop GENERATED"
+            };
+            let up = format!(
+                "-- OfflineOnly: stored generated column change for `{table}.{column}`\n\
+                 -- has no online ALTER form. Hand-edit the migration to DROP COLUMN +\n\
+                 -- ADD COLUMN with the new generation expression. See\n\
+                 -- `docs/spec/decisions.md` and the `generated_column_refusal` pattern."
+            );
+            let down = format!(
+                "-- OfflineOnly: revert requires reconstructing the original\n\
+                 -- generation state on `{table}.{column}` (DROP + ADD COLUMN).\n\
+                 -- Hand-edit before applying."
+            );
+            (up, down, kind, None)
+        }
     };
     OperationSql {
         label: format!("AlterColumn {table}.{column} ({label_suffix})"),
@@ -855,6 +906,71 @@ fn emit_drop_index(idx: &IndexSchema) -> OperationSql {
                 idx.name
             ),
         }),
+    }
+}
+
+/// Render the body of an `EXCLUDE` constraint clause — the part after
+/// `EXCLUDE` up to (but not including) the trailing semicolon.
+///
+/// Used by both [`emit_add_exclusion_constraint`] and the inline form
+/// inside `emit_add_table` (PR 7 task 4). Produces `USING <method>
+/// (<expr1> WITH <op1>, <expr2> WITH <op2>) [WHERE (<predicate>)]
+/// [DEFERRABLE [INITIALLY DEFERRED]]`. No leading whitespace and no
+/// trailing semicolon.
+fn render_exclusion_body(exclusion: &ExclusionConstraintSchema) -> String {
+    let mut body = String::with_capacity(64);
+    let _ = write!(body, "EXCLUDE USING {} (", exclusion.using);
+    for (idx, elem) in exclusion.elements.iter().enumerate() {
+        if idx > 0 {
+            body.push_str(", ");
+        }
+        let _ = write!(body, "{} WITH {}", elem.expr, elem.with_operator);
+    }
+    body.push(')');
+    if let Some(where_clause) = &exclusion.where_clause {
+        let _ = write!(body, " WHERE ({where_clause})");
+    }
+    if exclusion.deferrable {
+        body.push_str(" DEFERRABLE");
+        if exclusion.initially_deferred {
+            body.push_str(" INITIALLY DEFERRED");
+        }
+    }
+    body
+}
+
+fn emit_add_exclusion_constraint(
+    table: &str,
+    exclusion: &ExclusionConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(&exclusion.name);
+    let body = render_exclusion_body(exclusion);
+    let up = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    let down = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    OperationSql {
+        label: format!("AddExclusionConstraint {table}.{}", exclusion.name),
+        up,
+        down,
+        lossy: None,
+    }
+}
+
+fn emit_drop_exclusion_constraint(
+    table: &str,
+    name: &str,
+    exclusion: &ExclusionConstraintSchema,
+) -> OperationSql {
+    let qt = quote_ident(table);
+    let qname = quote_ident(name);
+    let up = format!("ALTER TABLE {qt} DROP CONSTRAINT {qname};");
+    let body = render_exclusion_body(exclusion);
+    let down = format!("ALTER TABLE {qt} ADD CONSTRAINT {qname} {body};");
+    OperationSql {
+        label: format!("DropExclusionConstraint {table}.{name}"),
+        up,
+        down,
+        lossy: None,
     }
 }
 
@@ -1095,7 +1211,21 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema) {
     if !col.nullable {
         out.push_str(" NOT NULL");
     }
-    if let Some(def) = &col.default_sql {
+    // Stored generated columns replace DEFAULT — Postgres rejects
+    // both clauses on the same column. The GENERATED clause carries
+    // the value source instead.
+    if let Some(generated) = &col.generated {
+        let stored_clause = if generated.stored {
+            "STORED"
+        } else {
+            "VIRTUAL"
+        };
+        let _ = write!(
+            out,
+            " GENERATED ALWAYS AS ({}) {stored_clause}",
+            generated.expression,
+        );
+    } else if let Some(def) = &col.default_sql {
         let _ = write!(out, " DEFAULT {def}");
     }
     if col.unique {
@@ -1265,6 +1395,7 @@ mod tests {
             check: None,
             default_sql: None,
             foreign_key: None,
+            generated: None,
             index_type: None,
             indexed: false,
             max_length: None,
@@ -1299,6 +1430,7 @@ mod tests {
         TableSchema {
             app: None,
             columns: vec![id_column_heerid(), col("name", "TEXT", true)],
+            exclusion_constraints: Vec::new(),
             fts: None,
             is_through: false,
             moved_from_app: None,
@@ -2124,5 +2256,139 @@ mod tests {
     fn truncate_constraint_passes_short_names_through() {
         let short = "users_email_check".to_string();
         assert_eq!(truncate_constraint(short.clone()), short);
+    }
+
+    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated emission ─────────
+
+    use crate::migrate::schema::{
+        ExclusionConstraintSchema, ExclusionElementSchema, GeneratedColumnSchema,
+    };
+
+    fn period_overlap_exclusion() -> ExclusionConstraintSchema {
+        ExclusionConstraintSchema {
+            deferrable: false,
+            elements: vec![
+                ExclusionElementSchema {
+                    expr: "room_id".to_string(),
+                    with_operator: "=".to_string(),
+                },
+                ExclusionElementSchema {
+                    expr: "period".to_string(),
+                    with_operator: "&&".to_string(),
+                },
+            ],
+            initially_deferred: false,
+            name: "no_overlap".to_string(),
+            using: "gist".to_string(),
+            where_clause: None,
+        }
+    }
+
+    #[test]
+    fn create_table_inlines_exclusion_constraint() {
+        let mut t = synth_table("bookings");
+        t.exclusion_constraints = vec![period_overlap_exclusion()];
+        let op = emit_add_table(&t);
+        assert!(op.up.contains(
+            "CONSTRAINT \"no_overlap\" EXCLUDE USING gist (room_id WITH =, period WITH &&)"
+        ));
+        // Ensure the constraint is inside the parens (precedes ');').
+        let close_paren = op.up.find(");").expect("expected closing paren");
+        let constraint_idx = op.up.find("CONSTRAINT \"no_overlap\"").unwrap();
+        assert!(constraint_idx < close_paren);
+    }
+
+    #[test]
+    fn create_table_emits_exclusion_with_where_and_deferrable() {
+        let mut t = synth_table("bookings");
+        let mut excl = period_overlap_exclusion();
+        excl.where_clause = Some("status = 'confirmed'".to_string());
+        excl.deferrable = true;
+        excl.initially_deferred = true;
+        t.exclusion_constraints = vec![excl];
+        let op = emit_add_table(&t);
+        assert!(
+            op.up.contains("WHERE (status = 'confirmed')"),
+            "missing WHERE clause: {}",
+            op.up
+        );
+        assert!(
+            op.up.contains("DEFERRABLE INITIALLY DEFERRED"),
+            "missing deferrable suffix: {}",
+            op.up
+        );
+    }
+
+    #[test]
+    fn alter_table_add_exclusion_emits_constraint() {
+        let op = emit_add_exclusion_constraint("bookings", &period_overlap_exclusion());
+        assert_eq!(
+            op.up,
+            "ALTER TABLE \"bookings\" ADD CONSTRAINT \"no_overlap\" \
+             EXCLUDE USING gist (room_id WITH =, period WITH &&);",
+        );
+        assert_eq!(
+            op.down,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"no_overlap\";",
+        );
+    }
+
+    #[test]
+    fn alter_table_drop_exclusion_round_trips_via_carried_schema() {
+        let op =
+            emit_drop_exclusion_constraint("bookings", "no_overlap", &period_overlap_exclusion());
+        assert_eq!(
+            op.up,
+            "ALTER TABLE \"bookings\" DROP CONSTRAINT \"no_overlap\";",
+        );
+        // Down side reconstructs the EXCLUDE clause from the carried
+        // schema — full round-trip without re-walking the descriptor.
+        assert!(op.down.contains(
+            "ADD CONSTRAINT \"no_overlap\" EXCLUDE USING gist (room_id WITH =, period WITH &&)"
+        ));
+    }
+
+    #[test]
+    fn add_column_with_generated_emits_stored_clause() {
+        let column = ColumnSchema {
+            generated: Some(GeneratedColumnSchema {
+                expression: "LOWER(email)".to_string(),
+                stored: true,
+            }),
+            ..col("email_lower", "TEXT", true)
+        };
+        let op = emit_add_column("users", &column);
+        assert!(
+            op.up.contains("GENERATED ALWAYS AS (LOWER(email)) STORED"),
+            "missing GENERATED clause: {}",
+            op.up
+        );
+        // Generated columns must NOT carry a DEFAULT clause —
+        // Postgres rejects both on the same column.
+        assert!(
+            !op.up.contains("DEFAULT"),
+            "generated column should not emit DEFAULT: {}",
+            op.up
+        );
+    }
+
+    #[test]
+    fn create_table_inlines_generated_column() {
+        let generated = ColumnSchema {
+            generated: Some(GeneratedColumnSchema {
+                expression: "LOWER(email)".to_string(),
+                stored: true,
+            }),
+            ..col("email_lower", "TEXT", true)
+        };
+        let mut t = synth_table("users");
+        t.columns.push(generated);
+        let op = emit_add_table(&t);
+        assert!(
+            op.up
+                .contains("\"email_lower\" TEXT GENERATED ALWAYS AS (LOWER(email)) STORED"),
+            "missing inline GENERATED: {}",
+            op.up
+        );
     }
 }

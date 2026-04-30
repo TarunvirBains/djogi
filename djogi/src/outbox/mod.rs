@@ -227,7 +227,9 @@ mod tests {
     //! is pure and lives here.
 
     use super::*;
-    use crate::descriptor::{FieldDescriptor, FieldSqlType, ModelDescriptor, PkType};
+    use crate::descriptor::{
+        FieldDescriptor, FieldSqlType, ModelDescriptor, PkType, field_descriptor, model_descriptor,
+    };
 
     fn minimal_descriptor_with_exclusions(exclusions: &'static [&'static str]) -> ModelDescriptor {
         // Build a descriptor whose fields match the serde output of the
@@ -240,42 +242,11 @@ mod tests {
         // `ModelDescriptor` can borrow them with `'static` lifetimes.
         static FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
-                name: "keep",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("keep", FieldSqlType::Text, false)
             },
             FieldDescriptor {
-                name: "secret",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
                 outbox_exclude: true,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("secret", FieldSqlType::Text, false)
             },
         ];
 
@@ -287,42 +258,10 @@ mod tests {
         // exclusion and a separate non-excluding slice otherwise.
         static FIELDS_NO_EXCLUDE: &[FieldDescriptor] = &[
             FieldDescriptor {
-                name: "keep",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("keep", FieldSqlType::Text, false)
             },
             FieldDescriptor {
-                name: "secret",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("secret", FieldSqlType::Text, false)
             },
         ];
 
@@ -333,22 +272,8 @@ mod tests {
         };
 
         ModelDescriptor {
-            type_name: "TestRow",
-            table_name: "test_rows",
-            pk_type: PkType::HeerId,
-            fields,
-            partition_by: None,
             has_outbox: true,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
-            indexes: &[],
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor("TestRow", "test_rows", PkType::HeerId, fields)
         }
     }
 

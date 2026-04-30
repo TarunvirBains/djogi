@@ -216,10 +216,33 @@ pub fn classify_operation(
         // (catalog-only; no data loss in the FK column itself).
         SchemaOperation::DropForeignKey { .. } => OnlineSafetyClassification::OnlineSafe,
 
+        // §7 (PR 7): "Add EXCLUDE constraint" — empty existing table
+        // (estimated_rows == Some(0)) routes through OnlineSafe; the
+        // ALTER TABLE inline form applies in a single transactional
+        // segment. Populated tables (Some(n) where n > 0) AND unknown
+        // row counts (None) classify OfflineOnly: Pg18 has no
+        // `NOT VALID` for `EXCLUDE`, so two-phase staging is
+        // structurally impossible — the constraint check runs under
+        // AccessExclusiveLock against every existing row. The
+        // unknown-row-count case takes the conservative offline path
+        // because the classifier cannot prove the table is empty.
+        SchemaOperation::AddExclusionConstraint { .. } => match ctx.estimated_rows {
+            Some(0) => OnlineSafetyClassification::OnlineSafe,
+            _ => OnlineSafetyClassification::OfflineOnly,
+        },
+
+        // Dropping an exclusion constraint is catalog-only — Postgres
+        // releases the underlying GiST/B-tree index without scanning
+        // rows. OnlineSafe.
+        SchemaOperation::DropExclusionConstraint { .. } => OnlineSafetyClassification::OnlineSafe,
+
         // §7: "Add index" — concurrently=true → OnlineSafe; otherwise
         // ExpandContract. The `requires_out_of_transaction` flag on
         // IndexSchema mirrors the `concurrently = true` model knob.
-        SchemaOperation::AddIndex(index) => classify_index_addition(index),
+        // Empty-table fast-path: estimated_rows == Some(0) routes
+        // non-concurrent non-unique adds to OnlineSafe (the
+        // AccessExclusiveLock is instant on a zero-row table).
+        SchemaOperation::AddIndex(index) => classify_index_addition(index, ctx),
 
         // §7: "Drop index" — catalog-only; OnlineSafe regardless of
         // concurrent flag because Postgres' DROP INDEX is fast and
@@ -384,6 +407,20 @@ fn classify_add_column(
     column: &ColumnSchema,
     ctx: &ClassifyContext<'_>,
 ) -> OnlineSafetyClassification {
+    // §7 (PR 7): "Add stored generated column" — empty existing table
+    // (estimated_rows == Some(0)) routes through OnlineSafe; the
+    // ALTER TABLE ADD COLUMN form applies in a single transactional
+    // segment. Populated tables (Some(n) where n > 0) and unknown
+    // row counts (None) classify OfflineOnly: Postgres rewrites every
+    // row under AccessExclusiveLock to materialise the stored
+    // expression. No `Pattern` exists for the populated case — see
+    // [`crate::live_migrate::patterns::generated_column_refusal`].
+    if column.generated.is_some() {
+        return match ctx.estimated_rows {
+            Some(0) => OnlineSafetyClassification::OnlineSafe,
+            _ => OnlineSafetyClassification::OfflineOnly,
+        };
+    }
     let Some(default) = column.default_sql.as_deref() else {
         // No default at all. Nullable → catalog-only fast-path.
         // Non-nullable without a default → backfill required because
@@ -476,6 +513,19 @@ fn classify_column_change(
                 OnlineSafetyClassification::OnlineSafe
             }
         }
+
+        // §7 (PR 7): "Change stored generated column expression on
+        // populated table" → OfflineOnly. Postgres re-evaluates the
+        // generation expression for every row under
+        // AccessExclusiveLock, which is structurally the same lock
+        // window that ExpandContract is meant to avoid — a shadow-
+        // column pattern offers no relief because the row rewrite
+        // still happens. See
+        // [`crate::live_migrate::patterns::generated_column_refusal`]
+        // for the no-`Pattern` rationale. Dropping the generation
+        // (to = None) routes the same way; the catalog-only path is
+        // not reachable for a generated column on a populated table.
+        ColumnChange::SetGenerated { .. } => OnlineSafetyClassification::OfflineOnly,
     }
 }
 
@@ -773,17 +823,21 @@ fn classify_validation_against_threshold(ctx: &ClassifyContext<'_>) -> OnlineSaf
 ///
 /// - `concurrently = true` → `OnlineSafe` (`CREATE INDEX CONCURRENTLY`
 ///   runs outside a transaction and does not block writes).
-/// - `concurrently = false` → `ExpandContract`. Catalog-only on an
-///   empty table, but on a populated table it holds an
-///   `AccessExclusiveLock` for the duration of the build. The
-///   classifier does not always know row count, so the conservative
-///   path applies (the empty-table fast-path stays hidden behind a
-///   later refinement that consults `estimated_rows`).
+/// - `concurrently = false`, `estimated_rows == Some(0)` → `OnlineSafe`
+///   (PR 7 empty-table fast-path: zero-row tables hold the
+///   AccessExclusiveLock for an instant; the build is structurally
+///   trivial).
+/// - `concurrently = false`, populated or unknown → `ExpandContract`.
+///   On a populated table the lock holds for the duration of the
+///   build; unknown-row-count takes the conservative path.
 ///
 /// Hash indexes without concurrent are refused at compose time (a
 /// separate validation entry point handles the refusal — out of T5
 /// scope).
-fn classify_index_addition(index: &IndexSchema) -> OnlineSafetyClassification {
+fn classify_index_addition(
+    index: &IndexSchema,
+    ctx: &ClassifyContext<'_>,
+) -> OnlineSafetyClassification {
     match index.kind {
         IndexKindSchema::UniqueConstraint | IndexKindSchema::UniqueIndex => {
             // Concurrency is required but not sufficient — the operator
@@ -792,6 +846,12 @@ fn classify_index_addition(index: &IndexSchema) -> OnlineSafetyClassification {
         }
         IndexKindSchema::NonUnique => {
             if index.requires_out_of_transaction {
+                OnlineSafetyClassification::OnlineSafe
+            } else if ctx.estimated_rows == Some(0) {
+                // Empty-table fast-path: zero-row tables hold the
+                // AccessExclusiveLock for an instant; the build is
+                // structurally trivial. Mirrors the PR 7 routing for
+                // EXCLUSION + stored-generated empty-table cases.
                 OnlineSafetyClassification::OnlineSafe
             } else {
                 OnlineSafetyClassification::ExpandContract
@@ -858,7 +918,8 @@ mod tests {
     use super::*;
     use crate::migrate::diff::{ColumnChange, SchemaOperation};
     use crate::migrate::schema::{
-        ColumnSchema, ForeignKeySchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
+        ColumnSchema, ExclusionConstraintSchema, ExclusionElementSchema, ForeignKeySchema,
+        GeneratedColumnSchema, IndexColumnSchema, IndexKindSchema, IndexNullsOrderSchema,
         IndexOrderSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema, OnDeleteSchema,
         PkKindSchema,
     };
@@ -868,6 +929,7 @@ mod tests {
             check: None,
             default_sql: None,
             foreign_key: None,
+            generated: None,
             index_type: None,
             indexed: false,
             max_length: None,
@@ -1519,8 +1581,35 @@ mod tests {
     }
 
     #[test]
-    fn add_non_concurrent_index_is_expand_contract() {
+    fn add_non_concurrent_index_on_populated_table_is_expand_contract() {
+        // Populated table holds AccessExclusiveLock for the duration
+        // of the build — escalate to ExpandContract.
+        let (_unused, ctx) = ctx_app(Some(50_000));
+        let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::ExpandContract
+        );
+    }
+
+    #[test]
+    fn add_non_concurrent_index_on_empty_table_is_online_safe() {
+        // Empty-table fast-path (PR 7 round-2 finding): zero-row
+        // tables hold the AccessExclusiveLock for an instant; the
+        // build is structurally trivial.
         let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe
+        );
+    }
+
+    #[test]
+    fn add_non_concurrent_index_with_unknown_row_count_is_expand_contract() {
+        // None takes the conservative ExpandContract path — the
+        // classifier cannot prove the table is empty.
+        let (_unused, ctx) = ctx_app(None);
         let op = SchemaOperation::AddIndex(index("ix_a", "users", false));
         assert_eq!(
             classify_operation(&op, &ctx),
@@ -2033,5 +2122,183 @@ mod tests {
             // per-op verdict (OnlineSafe for low-row tables).
             assert_eq!(*verdict, OnlineSafetyClassification::OnlineSafe);
         }
+    }
+
+    // ── Phase 7.5 PR 7: EXCLUSION + stored-generated classification ──
+
+    fn exclusion(name: &str) -> ExclusionConstraintSchema {
+        ExclusionConstraintSchema {
+            deferrable: false,
+            elements: vec![ExclusionElementSchema {
+                expr: "room_id".to_string(),
+                with_operator: "=".to_string(),
+            }],
+            initially_deferred: false,
+            name: name.to_string(),
+            using: "gist".to_string(),
+            where_clause: None,
+        }
+    }
+
+    fn generated_column(name: &str, expression: &str) -> ColumnSchema {
+        ColumnSchema {
+            generated: Some(GeneratedColumnSchema {
+                expression: expression.to_string(),
+                stored: true,
+            }),
+            ..nullable_column(name)
+        }
+    }
+
+    #[test]
+    fn add_exclusion_constraint_on_empty_table_is_online_safe() {
+        // Empty existing table (estimated_rows == Some(0)) →
+        // OnlineSafe. The ALTER TABLE inline form applies in a single
+        // transactional segment.
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddExclusionConstraint {
+            table: "bookings".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe,
+        );
+    }
+
+    #[test]
+    fn add_exclusion_constraint_on_populated_table_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(1_000_000));
+        let op = SchemaOperation::AddExclusionConstraint {
+            table: "bookings".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
+        // Populated tables: Pg18 has no `NOT VALID` for `EXCLUDE`, so
+        // the live-plan layer refuses; operator must hand-edit under
+        // a maintenance window per the v3 plan.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn add_exclusion_constraint_with_unknown_row_count_is_offline_only() {
+        // Unknown row count (None) takes the conservative OfflineOnly
+        // path — the classifier cannot prove the table is empty.
+        let (_unused, ctx) = ctx_app(None);
+        let op = SchemaOperation::AddExclusionConstraint {
+            table: "bookings".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn drop_exclusion_constraint_classifies_as_online_safe() {
+        let (_unused, ctx) = ctx_app(Some(1_000_000));
+        let op = SchemaOperation::DropExclusionConstraint {
+            table: "bookings".to_string(),
+            name: "no_overlap".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
+        // DROP CONSTRAINT releases the underlying GiST index; catalog-
+        // only operation regardless of row count.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe,
+        );
+    }
+
+    #[test]
+    fn add_stored_generated_column_on_empty_table_is_online_safe() {
+        let (_unused, ctx) = ctx_app(Some(0));
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: generated_column("email_lower", "LOWER(email)"),
+        };
+        // Empty existing table: the rewrite is a no-op data-wise; the
+        // ALTER TABLE ADD COLUMN form applies in a single
+        // transactional segment.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe,
+        );
+    }
+
+    #[test]
+    fn add_stored_generated_column_on_populated_table_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(50_000));
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: generated_column("email_lower", "LOWER(email)"),
+        };
+        // Populated tables: Postgres rewrites every row under
+        // AccessExclusiveLock to materialise the stored expression.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn add_stored_generated_column_with_unknown_row_count_is_offline_only() {
+        let (_unused, ctx) = ctx_app(None);
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: generated_column("email_lower", "LOWER(email)"),
+        };
+        // Unknown row count → conservative offline path.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn alter_column_set_generated_classifies_as_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(50));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "email_lower".to_string(),
+            change: ColumnChange::SetGenerated {
+                from: None,
+                to: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn alter_column_drop_generated_also_classifies_as_offline_only() {
+        // Even removing the generated expression is OfflineOnly: Pg
+        // re-evaluates the column's storage state under
+        // AccessExclusiveLock. There is no online path; the operator
+        // hand-edits a DROP+ADD COLUMN sequence.
+        let (_unused, ctx) = ctx_app(Some(50));
+        let op = SchemaOperation::AlterColumn {
+            table: "users".to_string(),
+            column: "email_lower".to_string(),
+            change: ColumnChange::SetGenerated {
+                from: Some(GeneratedColumnSchema {
+                    expression: "LOWER(email)".to_string(),
+                    stored: true,
+                }),
+                to: None,
+            },
+        };
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
     }
 }

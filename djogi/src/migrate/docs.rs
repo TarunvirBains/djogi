@@ -577,7 +577,8 @@ mod tests {
     use super::*;
     use crate::descriptor::{
         FieldDescriptor, FieldSqlType, IndexColumnSpec, IndexKind, IndexNullsOrder, IndexOrder,
-        IndexSpec, IndexTarget, IndexType, ModelDescriptor, PkType,
+        IndexSpec, IndexTarget, IndexType, ModelDescriptor, PkType, field_descriptor,
+        model_descriptor,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -596,42 +597,13 @@ mod tests {
     fn fixture_users() -> ModelDescriptor {
         static FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
-                name: "id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
                 rationale: Some("primary key"),
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
             },
             FieldDescriptor {
-                name: "email",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
                 unique: true,
-                indexed: false,
                 max_length: Some(254),
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("email", FieldSqlType::Text, false)
             },
         ];
         static INDEXES: &[IndexSpec] = &[IndexSpec {
@@ -651,62 +623,21 @@ mod tests {
             extension_dependency: None,
         }];
         ModelDescriptor {
-            type_name: "User",
-            table_name: "users",
-            pk_type: PkType::HeerIdDesc,
-            fields: FIELDS,
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
             tenant_key: Some("org_id"),
-            cache_ttl: None,
             rationale: Some("Application user accounts."),
             indexes: INDEXES,
-            is_through: false,
-            fts: None,
             app: Some("accounts"),
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor("User", "users", PkType::HeerIdDesc, FIELDS)
         }
     }
 
     fn fixture_global_post() -> ModelDescriptor {
         static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-            name: "id",
-            sql_type: FieldSqlType::BigInt,
-            nullable: false,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
         }];
         ModelDescriptor {
-            type_name: "Post",
-            table_name: "posts",
-            pk_type: PkType::HeerId,
-            fields: FIELDS,
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
-            indexes: &[],
-            is_through: false,
-            fts: None,
-            app: None, // → global bucket
-            moved_from_app: None,
-            renamed_from: None,
+            // app: None → global bucket
+            ..model_descriptor("Post", "posts", PkType::HeerId, FIELDS)
         }
     }
 

@@ -340,6 +340,82 @@ pub struct IndexSpec {
     pub extension_dependency: Option<&'static str>,
 }
 
+// ── EXCLUSION constraint metadata (Phase 7.5 PR 7) ────────────────────────
+
+/// One element of an `EXCLUDE` constraint — an expression and the
+/// operator used to compare it against other rows' values.
+///
+/// Each element corresponds to one entry in the `EXCLUDE USING method
+/// (expr WITH operator [, expr WITH operator …])` clause. Order is
+/// significant: it matches the textual source order, which is also the
+/// order Postgres records in `pg_constraint`. The migration differ uses
+/// positional comparison when classifying changes.
+///
+/// # Examples
+///
+/// `EXCLUDE USING gist (room_id WITH =, period WITH &&)` decomposes into:
+///
+/// ```ignore
+/// ExclusionElement { expr: "room_id", with_operator: "=" }
+/// ExclusionElement { expr: "period",  with_operator: "&&" }
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExclusionElement {
+    /// Column name or expression. Plain column references and arbitrary
+    /// expressions (e.g. `tstzrange(starts_at, ends_at)`) are both
+    /// emitted verbatim — the descriptor does not validate or rewrite
+    /// the SQL.
+    pub expr: &'static str,
+    /// Postgres operator class member used for the exclusion comparison.
+    /// Examples: `"="` for plain equality, `"&&"` for range overlap,
+    /// `"<>"` for inequality. Emitted verbatim after `WITH`; the
+    /// descriptor stores only the operator literal.
+    pub with_operator: &'static str,
+}
+
+/// `EXCLUDE` constraint declaration on a model.
+///
+/// Postgres `EXCLUDE` constraints prevent multiple rows from satisfying
+/// the same comparison relationship — most commonly used to prevent
+/// overlapping time ranges (`tstzrange WITH &&`) or to enforce
+/// uniqueness with non-equality operators. They are GiST-based by
+/// default; B-tree exclusion constraints use `=` operators.
+///
+/// # Phase 7.5 PR 7 — classification
+///
+/// Adding an `EXCLUDE` constraint to a **populated** table classifies
+/// as `OfflineOnly`: Postgres 18 does not accept `NOT VALID` for
+/// `EXCLUDE` constraints, so the live-migration two-phase staging
+/// pattern that works for `CHECK` / `NOT NULL` / FK is impossible
+/// here. The empty-table case (CREATE TABLE, or an existing table
+/// with zero rows) emits the constraint inline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExclusionConstraintSpec {
+    /// Constraint name. Emitted as `CONSTRAINT <name> EXCLUDE ...`.
+    pub name: &'static str,
+    /// Index method — typically `"gist"` for range overlap, or
+    /// `"btree"` for `=`-based exclusion. The string is emitted
+    /// verbatim into `EXCLUDE USING <method>`.
+    pub using: &'static str,
+    /// One element per exclusion column or expression. Order matches
+    /// the source `WITH` clause and is preserved verbatim during DDL
+    /// emission.
+    pub elements: &'static [ExclusionElement],
+    /// Optional `WHERE` predicate restricting which rows the exclusion
+    /// applies to. Raw SQL — emitted verbatim. `None` means the
+    /// constraint applies to every row in the table.
+    pub where_clause: Option<&'static str>,
+    /// `true` emits `DEFERRABLE` after the constraint body. Defaults to
+    /// `false` (the Postgres default). Pairs with
+    /// [`Self::initially_deferred`] for the full
+    /// `DEFERRABLE INITIALLY DEFERRED` form.
+    pub deferrable: bool,
+    /// `true` emits `INITIALLY DEFERRED`. Only meaningful when
+    /// [`Self::deferrable`] is also `true`; the macro enforces that
+    /// pairing at parse time.
+    pub initially_deferred: bool,
+}
+
 /// Which flavour of index is being named — drives the stem selection in
 /// [`index_name`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,7 +571,7 @@ impl IndexSpec {
 mod tests {
     use super::{
         FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec, IndexType, ModelDescriptor,
-        PkType, migration_shape::MigrationShape,
+        PkType, field_descriptor, migration_shape::MigrationShape, model_descriptor,
     };
 
     // ── T6: GeographySubtype Display ─────────────────────────────────────────
@@ -895,45 +971,16 @@ mod tests {
         use super::super::relation::{OnDelete, RelationKind};
 
         static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-            name: "id",
-            sql_type: FieldSqlType::BigInt,
-            nullable: false,
             unique: true,
             indexed: true,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
         }];
 
         let _ = (OnDelete::Restrict, RelationKind::ForeignKey);
 
         for pk in [PkType::HeerIdDesc, PkType::RanjIdDesc] {
             let desc = ModelDescriptor {
-                type_name: "Desc",
-                table_name: "descs",
-                pk_type: pk,
-                fields: FIELDS,
-                partition_by: None,
-                has_outbox: false,
-                idempotency_key: None,
-                tenant_key: None,
-                cache_ttl: None,
-                rationale: None,
-                indexes: &[],
-                is_through: false,
-                fts: None,
-                app: None,
-                moved_from_app: None,
-                renamed_from: None,
+                ..model_descriptor("Desc", "descs", pk, FIELDS)
             };
             assert_eq!(desc.pk_column(), Some("id"));
         }
@@ -953,42 +1000,12 @@ mod tests {
 
         static FIELDS: &[FieldDescriptor] = &[
             FieldDescriptor {
-                name: "id",
-                sql_type: FieldSqlType::BigInt,
-                nullable: false,
                 unique: true,
                 indexed: true,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("id", FieldSqlType::BigInt, false)
             },
             FieldDescriptor {
-                name: "label",
-                sql_type: FieldSqlType::Text,
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor("label", FieldSqlType::Text, false)
             },
         ];
 
@@ -999,22 +1016,7 @@ mod tests {
         let _ = (OnDelete::Restrict, RelationKind::ForeignKey);
 
         let desc = ModelDescriptor {
-            type_name: "Minimal",
-            table_name: "minimals",
-            pk_type: PkType::HeerId,
-            fields: FIELDS,
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
-            indexes: &[],
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor("Minimal", "minimals", PkType::HeerId, FIELDS)
         };
 
         let shape = MigrationShape::from_descriptor(&desc);
@@ -1047,46 +1049,18 @@ mod tests {
     // than local temporaries.
 
     static T11_GEO_FIELD: FieldDescriptor = FieldDescriptor {
-        name: "boundary",
-        sql_type: FieldSqlType::Geography {
-            subtype: GeographySubtype::Polygon,
-            srid: 4326,
-        },
-        nullable: false,
-        unique: false,
-        indexed: false,
-        max_length: None,
-        renamed_from: None,
-        rationale: None,
-        outbox_exclude: false,
-        sequence_within: None,
-        index_type: None,
-        relation_kind: None,
-        on_delete: None,
-        target_type_name: None,
-        visage_map: &[],
-        protected: None,
-        default_volatility_override: None,
+        ..field_descriptor(
+            "boundary",
+            FieldSqlType::Geography {
+                subtype: GeographySubtype::Polygon,
+                srid: 4326,
+            },
+            false,
+        )
     };
 
     static T11_TEXT_FIELD: FieldDescriptor = FieldDescriptor {
-        name: "label",
-        sql_type: FieldSqlType::Text,
-        nullable: false,
-        unique: false,
-        indexed: false,
-        max_length: None,
-        renamed_from: None,
-        rationale: None,
-        outbox_exclude: false,
-        sequence_within: None,
-        index_type: None,
-        relation_kind: None,
-        on_delete: None,
-        target_type_name: None,
-        visage_map: &[],
-        protected: None,
-        default_volatility_override: None,
+        ..field_descriptor("label", FieldSqlType::Text, false)
     };
 
     static T11_BOUNDARY_COLS: &[super::IndexColumnSpec] =
@@ -1133,22 +1107,13 @@ mod tests {
     #[test]
     fn has_gist_on_geography_returns_true_when_indexed() {
         let desc = ModelDescriptor {
-            type_name: "Region",
-            table_name: "regions",
-            pk_type: PkType::HeerId,
-            fields: std::slice::from_ref(&T11_GEO_FIELD),
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
             indexes: std::slice::from_ref(&T11_GIST_INDEX),
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor(
+                "Region",
+                "regions",
+                PkType::HeerId,
+                std::slice::from_ref(&T11_GEO_FIELD),
+            )
         };
         assert!(
             desc.has_gist_on_geography(),
@@ -1160,22 +1125,12 @@ mod tests {
     #[test]
     fn has_gist_on_geography_returns_false_when_no_indexes() {
         let desc = ModelDescriptor {
-            type_name: "Region",
-            table_name: "regions",
-            pk_type: PkType::HeerId,
-            fields: std::slice::from_ref(&T11_GEO_FIELD),
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
-            indexes: &[],
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor(
+                "Region",
+                "regions",
+                PkType::HeerId,
+                std::slice::from_ref(&T11_GEO_FIELD),
+            )
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1188,22 +1143,13 @@ mod tests {
     #[test]
     fn has_gist_on_geography_returns_false_for_btree_on_geography() {
         let desc = ModelDescriptor {
-            type_name: "Region",
-            table_name: "regions",
-            pk_type: PkType::HeerId,
-            fields: std::slice::from_ref(&T11_GEO_FIELD),
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
             indexes: std::slice::from_ref(&T11_BTREE_INDEX),
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor(
+                "Region",
+                "regions",
+                PkType::HeerId,
+                std::slice::from_ref(&T11_GEO_FIELD),
+            )
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1215,22 +1161,13 @@ mod tests {
     #[test]
     fn has_gist_on_geography_returns_false_for_gist_on_non_geo() {
         let desc = ModelDescriptor {
-            type_name: "Region",
-            table_name: "regions",
-            pk_type: PkType::HeerId,
-            fields: std::slice::from_ref(&T11_TEXT_FIELD),
-            partition_by: None,
-            has_outbox: false,
-            idempotency_key: None,
-            tenant_key: None,
-            cache_ttl: None,
-            rationale: None,
             indexes: std::slice::from_ref(&T11_GIST_ON_TEXT),
-            is_through: false,
-            fts: None,
-            app: None,
-            moved_from_app: None,
-            renamed_from: None,
+            ..model_descriptor(
+                "Region",
+                "regions",
+                PkType::HeerId,
+                std::slice::from_ref(&T11_TEXT_FIELD),
+            )
         };
         assert!(
             !desc.has_gist_on_geography(),
@@ -1243,7 +1180,7 @@ mod tests {
 mod protected_field_metadata_tests {
     use super::{
         FieldDescriptor, FieldSqlType, ProtectedFieldMetadata, RedactionPolicy, RetentionLabel,
-        Sensitivity,
+        Sensitivity, field_descriptor,
     };
 
     /// Constructing a `ProtectedFieldMetadata` with non-default variants of
@@ -1306,42 +1243,13 @@ mod protected_field_metadata_tests {
     #[test]
     fn field_descriptor_accepts_protected_none_and_some() {
         let none_desc = FieldDescriptor {
-            name: "ordinary",
-            sql_type: FieldSqlType::Text,
-            nullable: false,
-            unique: false,
-            indexed: false,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
-            protected: None,
-            default_volatility_override: None,
+            ..field_descriptor("ordinary", FieldSqlType::Text, false)
         };
         assert!(none_desc.protected.is_none());
 
         let some_desc = FieldDescriptor {
-            name: "email",
-            sql_type: FieldSqlType::Text,
-            nullable: false,
             unique: true,
             indexed: true,
-            max_length: None,
-            renamed_from: None,
-            rationale: None,
-            outbox_exclude: false,
-            sequence_within: None,
-            index_type: None,
-            relation_kind: None,
-            on_delete: None,
-            target_type_name: None,
-            visage_map: &[],
             protected: Some(ProtectedFieldMetadata {
                 sensitivity: Sensitivity::Pii,
                 rationale: "Notification delivery",
@@ -1349,7 +1257,7 @@ mod protected_field_metadata_tests {
                 codec: Some("aes256_gcm_v1"),
                 retention: RetentionLabel::Standard,
             }),
-            default_volatility_override: None,
+            ..field_descriptor("email", FieldSqlType::Text, false)
         };
         let pfm = some_desc.protected.expect("constructed with Some(...)");
         assert_eq!(pfm.sensitivity, Sensitivity::Pii);
@@ -1467,6 +1375,21 @@ pub struct FieldDescriptor {
     ///   `"volatile"`); unknown strings are rejected at macro-expansion
     ///   time.
     pub default_volatility_override: Option<DefaultVolatility>,
+
+    /// `#[field(generated = "<expr>", stored = true)]` stored generated
+    /// column metadata. Phase 7.5 PR 7 — Postgres 18 stored generated
+    /// columns. `None` for every regular column.
+    ///
+    /// When `Some`, the column emits as
+    /// `<name> <type> GENERATED ALWAYS AS (<expression>) STORED` and
+    /// the live-migration classifier routes add / change on populated
+    /// tables to `OfflineOnly`. The empty-table case emits inline.
+    ///
+    /// Distinct from the FTS-tsvector path on `ModelDescriptor::fts`:
+    /// FTS is a model-level convenience that emits a hardcoded
+    /// `GENERATED ALWAYS AS (to_tsvector(...)) STORED` column;
+    /// `generated` is the general-purpose adopter-controlled form.
+    pub generated: Option<GeneratedColumnSpec>,
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
@@ -1485,6 +1408,62 @@ pub struct FieldDescriptor {
 ///   each call (e.g. `clock_timestamp()`, `random()`). Triggers the
 ///   3-step ExpandContract pattern at compose time.
 ///
+/// Narrow constructor for [`FieldDescriptor`] — required identity
+/// fields at call site, every optional field defaulted.
+///
+/// # Why this exists
+///
+/// New `FieldDescriptor` fields land roughly once per phase. Without
+/// this constructor, every test fixture that constructs a literal
+/// must be updated whenever a new field appears — easy to forget a
+/// site, easy to copy-paste-update incorrectly. With this constructor,
+/// new fields plug in here once and every call site that uses
+/// `..field_descriptor(...)` spread absorbs the change for free.
+///
+/// # Why required args, not an `EMPTY` const
+///
+/// An `EMPTY` const with blank `name` and a placeholder `sql_type`
+/// would sanctify invalid descriptor identity — a fixture that forgets
+/// to override `name` would silently produce a bogus column. The
+/// required-args form forces semantic identity at call time and lets
+/// the compiler catch missing fields. (Phase 7.5 PR 7 design decision;
+/// see Codex BLOCK on the `EMPTY` const proposal.)
+///
+/// # Use site
+///
+/// ```ignore
+/// FieldDescriptor {
+///     unique: true,
+///     ..field_descriptor("email", FieldSqlType::Text, false)
+/// }
+/// ```
+pub const fn field_descriptor(
+    name: &'static str,
+    sql_type: FieldSqlType,
+    nullable: bool,
+) -> FieldDescriptor {
+    FieldDescriptor {
+        name,
+        sql_type,
+        nullable,
+        unique: false,
+        indexed: false,
+        max_length: None,
+        renamed_from: None,
+        rationale: None,
+        outbox_exclude: false,
+        sequence_within: None,
+        index_type: None,
+        relation_kind: None,
+        on_delete: None,
+        target_type_name: None,
+        visage_map: &[],
+        protected: None,
+        default_volatility_override: None,
+        generated: None,
+    }
+}
+
 /// `#[non_exhaustive]` so future Postgres categories (or Djogi-specific
 /// refinements) can land without breaking downstream matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1644,6 +1623,42 @@ impl Default for ProtectedFieldMetadata {
             retention: RetentionLabel::Standard,
         }
     }
+}
+
+/// `GENERATED ALWAYS AS (<expression>) STORED` column metadata.
+///
+/// Phase 7.5 PR 7 — Postgres 18 stored generated columns. Used by
+/// fields whose value is computed from other columns at write time
+/// rather than being supplied by the application. The expression is
+/// stored verbatim and emitted into the column DDL inside
+/// `GENERATED ALWAYS AS (<expression>) STORED`.
+///
+/// # Classification
+///
+/// Adding or changing a stored generated column's expression on a
+/// **populated** table classifies as `OfflineOnly`: the replacement
+/// column itself rewrites the table, so a shadow-column expand/
+/// contract pattern offers no relief. The empty-table case (CREATE
+/// TABLE, or an existing table with zero rows) emits the column
+/// inline.
+///
+/// # Pg version note
+///
+/// Pg18 only supports `STORED`. `VIRTUAL` columns land in Pg19+;
+/// `stored: false` is reserved for that future variant and currently
+/// rejected by the macro at parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GeneratedColumnSpec {
+    /// SQL expression used to compute the column value. Emitted
+    /// verbatim inside `GENERATED ALWAYS AS (<expression>) STORED`.
+    /// Plain column references like `"LOWER(email)"` and arbitrary
+    /// expressions are both supported — the descriptor does not
+    /// validate or rewrite the SQL.
+    pub expression: &'static str,
+    /// `true` emits `STORED`. Pg18 supports only stored generated
+    /// columns; `false` is reserved for the future Pg19+ `VIRTUAL`
+    /// variant and is rejected by the macro today.
+    pub stored: bool,
 }
 
 /// Sidecar FK-deferrability metadata emitted separately from
@@ -1852,6 +1867,15 @@ pub struct ModelDescriptor {
     /// `None` for every model that has not been renamed (the common
     /// case).
     pub renamed_from: Option<&'static str>,
+
+    // ── EXCLUDE constraints (Phase 7.5 PR 7) ────────────────────────────────
+    /// `EXCLUDE` constraint declarations on this model. Empty slice —
+    /// the default — means no exclusion constraints. Phase 7's
+    /// migration differ emits `ALTER TABLE … ADD CONSTRAINT …
+    /// EXCLUDE …` for each entry on table create / empty-table; on
+    /// populated tables the live-migration classifier routes
+    /// additions to `OfflineOnly`.
+    pub exclusion_constraints: &'static [ExclusionConstraintSpec],
 }
 
 impl ModelDescriptor {
@@ -1955,6 +1979,64 @@ impl ModelDescriptor {
     }
 }
 
+/// Narrow constructor for [`ModelDescriptor`] — required identity
+/// fields at call site, every optional field defaulted.
+///
+/// # Why this exists
+///
+/// `ModelDescriptor` accumulates one or two new fields per phase.
+/// Without this constructor, every test fixture and inline
+/// `impl Model for X` block that constructs a literal must be
+/// updated whenever a new field appears. With this constructor, new
+/// fields plug in here once and every call site that uses
+/// `..model_descriptor(...)` spread absorbs the change for free.
+///
+/// # Why required args, not an `EMPTY` const
+///
+/// An `EMPTY` const with blank `type_name` / `table_name` would
+/// sanctify invalid descriptor identity — a fixture that forgets to
+/// override `table_name` would silently produce a descriptor with
+/// an empty table reference, which `MigrationShape::from_descriptor`
+/// would then propagate into bogus DDL. The required-args form
+/// forces semantic identity at call time and lets the compiler catch
+/// missing fields. (Phase 7.5 PR 7 design decision; see Codex BLOCK
+/// on the `EMPTY` const proposal.)
+///
+/// # Use site
+///
+/// ```ignore
+/// ModelDescriptor {
+///     tenant_key: Some("org_id"),
+///     ..model_descriptor("Widget", "widgets", PkType::HeerId, FIELDS)
+/// }
+/// ```
+pub const fn model_descriptor(
+    type_name: &'static str,
+    table_name: &'static str,
+    pk_type: PkType,
+    fields: &'static [FieldDescriptor],
+) -> ModelDescriptor {
+    ModelDescriptor {
+        type_name,
+        table_name,
+        pk_type,
+        fields,
+        partition_by: None,
+        has_outbox: false,
+        idempotency_key: None,
+        tenant_key: None,
+        cache_ttl: None,
+        rationale: None,
+        indexes: &[],
+        is_through: false,
+        fts: None,
+        app: None,
+        moved_from_app: None,
+        renamed_from: None,
+        exclusion_constraints: &[],
+    }
+}
+
 inventory::collect!(ModelDescriptor);
 inventory::collect!(DeferrabilitySpec);
 
@@ -1979,7 +2061,10 @@ inventory::collect!(DeferrabilitySpec);
 pub mod migration_shape {
     use std::collections::BTreeSet;
 
-    use super::{FieldSqlType, IndexKind, IndexTarget, IndexType, ModelDescriptor};
+    use super::{
+        ExclusionConstraintSpec, FieldSqlType, GeneratedColumnSpec, IndexKind, IndexTarget,
+        IndexType, ModelDescriptor,
+    };
 
     // -----------------------------------------------------------------------
     // Public types
@@ -2006,6 +2091,13 @@ pub mod migration_shape {
         /// - every field whose `sql_type` is `FieldSqlType::Geography`
         ///   (even if no index exists — the column itself requires PostGIS)
         pub required_extensions: BTreeSet<&'static str>,
+        /// One entry per [`ExclusionConstraintSpec`] in
+        /// `ModelDescriptor::exclusion_constraints` (Phase 7.5 PR 7).
+        ///
+        /// The descriptor's exclusion specs are already small and
+        /// `Copy`-cheap, so the projection stores values directly
+        /// rather than references — same shape the IndexShape vec uses.
+        pub exclusion_constraints: Vec<ExclusionConstraintSpec>,
     }
 
     /// DDL-relevant metadata for a single column.
@@ -2029,6 +2121,10 @@ pub mod migration_shape {
         /// `true` when `FieldDescriptor::nullable` is `false` (the column is
         /// `NOT NULL` in SQL).
         pub not_null: bool,
+        /// Mirrors `FieldDescriptor::generated` — when `Some`, the
+        /// emitter appends `GENERATED ALWAYS AS (<expression>) STORED`
+        /// to the column DDL (Phase 7.5 PR 7).
+        pub generated: Option<GeneratedColumnSpec>,
     }
 
     /// DDL-relevant metadata for a single index, plus the SQL the emitter
@@ -2081,8 +2177,13 @@ pub mod migration_shape {
                     name: f.name,
                     sql_type_text: f.sql_type.to_string(),
                     not_null: !f.nullable,
+                    generated: f.generated,
                 })
                 .collect();
+
+            // ── Exclusion constraints (Phase 7.5 PR 7) ─────────────────────
+            let exclusion_constraints: Vec<ExclusionConstraintSpec> =
+                desc.exclusion_constraints.to_vec();
 
             // ── Required extensions from fields ────────────────────────────
             let mut required_extensions: BTreeSet<&'static str> = BTreeSet::new();
@@ -2155,6 +2256,7 @@ pub mod migration_shape {
                 columns,
                 indexes,
                 required_extensions,
+                exclusion_constraints,
             }
         }
     }

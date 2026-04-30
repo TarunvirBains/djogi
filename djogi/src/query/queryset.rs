@@ -1349,46 +1349,27 @@ mod tests {
             unreachable!()
         }
         fn descriptor() -> &'static ModelDescriptor {
-            use crate::descriptor::{FieldDescriptor, FieldSqlType, GeographySubtype, PkType};
+            use crate::descriptor::{
+                FieldDescriptor, FieldSqlType, GeographySubtype, PkType, field_descriptor,
+                model_descriptor,
+            };
             static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-                name: "boundary",
-                sql_type: FieldSqlType::Geography {
-                    subtype: GeographySubtype::Polygon,
-                    srid: 4326,
-                },
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor(
+                    "boundary",
+                    FieldSqlType::Geography {
+                        subtype: GeographySubtype::Polygon,
+                        srid: 4326,
+                    },
+                    false,
+                )
             }];
             static DESC: ModelDescriptor = ModelDescriptor {
-                type_name: "FakeUnindexedRegion",
-                table_name: "unindexed_regions",
-                pk_type: PkType::HeerId,
-                fields: FIELDS,
-                partition_by: None,
-                has_outbox: false,
-                idempotency_key: None,
-                tenant_key: None,
-                cache_ttl: None,
-                rationale: None,
-                indexes: &[],
-                is_through: false,
-                fts: None,
-                app: None,
-                moved_from_app: None,
-                renamed_from: None,
+                ..model_descriptor(
+                    "FakeUnindexedRegion",
+                    "unindexed_regions",
+                    PkType::HeerId,
+                    FIELDS,
+                )
             };
             &DESC
         }
@@ -1517,29 +1498,17 @@ mod tests {
         fn descriptor() -> &'static ModelDescriptor {
             use crate::descriptor::{
                 FieldDescriptor, FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind,
-                IndexSpec, IndexTarget, IndexType, PkType,
+                IndexSpec, IndexTarget, IndexType, PkType, field_descriptor, model_descriptor,
             };
             static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-                name: "boundary",
-                sql_type: FieldSqlType::Geography {
-                    subtype: GeographySubtype::Polygon,
-                    srid: 4326,
-                },
-                nullable: false,
-                unique: false,
-                indexed: false,
-                max_length: None,
-                renamed_from: None,
-                rationale: None,
-                outbox_exclude: false,
-                sequence_within: None,
-                index_type: None,
-                relation_kind: None,
-                on_delete: None,
-                target_type_name: None,
-                visage_map: &[],
-                protected: None,
-                default_volatility_override: None,
+                ..field_descriptor(
+                    "boundary",
+                    FieldSqlType::Geography {
+                        subtype: GeographySubtype::Polygon,
+                        srid: 4326,
+                    },
+                    false,
+                )
             }];
             static BOUNDARY_COLS: &[IndexColumnSpec] = &[IndexColumnSpec::simple("boundary")];
             static INDEXES: &[IndexSpec] = &[IndexSpec {
@@ -1554,22 +1523,13 @@ mod tests {
                 extension_dependency: Some("postgis"),
             }];
             static DESC: ModelDescriptor = ModelDescriptor {
-                type_name: "FakeIndexedRegion",
-                table_name: "indexed_regions",
-                pk_type: PkType::HeerId,
-                fields: FIELDS,
-                partition_by: None,
-                has_outbox: false,
-                idempotency_key: None,
-                tenant_key: None,
-                cache_ttl: None,
-                rationale: None,
                 indexes: INDEXES,
-                is_through: false,
-                fts: None,
-                app: None,
-                moved_from_app: None,
-                renamed_from: None,
+                ..model_descriptor(
+                    "FakeIndexedRegion",
+                    "indexed_regions",
+                    PkType::HeerId,
+                    FIELDS,
+                )
             };
             &DESC
         }
