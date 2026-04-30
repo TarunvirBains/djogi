@@ -82,7 +82,7 @@ Every workstream should review new public API against the idiomatic-Rust guardra
 - [ ] Initialize Cargo workspace with 4 crates: `djogi`, `djogi-macros`, `djogi-cli`, `djogi-shell`
 - [ ] Set up `Cargo.toml` workspace dependencies: `sqlx` (postgres, runtime-tokio-rustls), `tokio`, `serde`, `serde_json`, `time`, `heeranjid`
 - [ ] Set up CI (GitHub Actions): `cargo build`, `cargo test`, `cargo clippy`, `cargo fmt --check`
-- [ ] Add `docker-compose.yml` with Postgres 16 for local dev and CI test databases
+- [ ] Add `docker-compose.yml` with Postgres 18 for local dev and CI test databases
 - [ ] Create `Djogi.toml` config loader skeleton via `figment`
 - [ ] Establish integration test infrastructure: test database creation/teardown, `sqlx::test` macros
 

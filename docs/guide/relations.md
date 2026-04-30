@@ -87,8 +87,8 @@ match vehicle.owner_id.resolved() {
 ### `on_delete` behaviour
 
 Only valid on `ForeignKey<T>` / `OneToOneField<T>` fields. Recorded in
-`FieldDescriptor::on_delete`; consumed by the Phase 6 migration DDL
-emitter.
+`FieldDescriptor::on_delete`; consumed by the migration DDL emitter
+(Phase 7).
 
 | Value | SQL |
 |---|---|
@@ -188,7 +188,7 @@ shape, same `.fetch(&mut ctx)` / `.resolved()` / prefetch surface. The
 distinction exists so the macro can:
 
 - emit a singular reverse accessor (see below — one `Option<Profile>`, not a `Vec<Profile>`)
-- emit a `UNIQUE` constraint on the FK column in Phase 6 DDL
+- emit a `UNIQUE` constraint on the FK column in the migration DDL
 
 ---
 
