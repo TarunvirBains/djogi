@@ -678,9 +678,8 @@ impl<T: Model> QuerySet<T> {
     ///
     /// `pub(crate)` because it is an implementation detail of the terminal
     /// methods, not user-facing API; users who need "does this queryset
-    /// actually match rows?" should call `.exists()` (Task 6), which also
-    /// runs the real SQL.
-    #[allow(dead_code)] // consumed by Task 6's `query::terminal` module
+    /// actually match rows?" should call `.exists()`, which also runs
+    /// the real SQL.
     pub(crate) fn is_empty(&self) -> bool {
         self.is_empty
     }

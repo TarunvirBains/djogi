@@ -170,10 +170,10 @@ pub struct Leaf {
 }
 
 impl Leaf {
-    /// Test helper — not public API. Phase 2 users construct leaves via
-    /// `FieldRef` lookup methods.
-    #[doc(hidden)]
-    pub fn eq_raw(column: &'static str, value: FilterValue) -> Leaf {
+    /// Test helper — not public API. Production code constructs leaves
+    /// via `FieldRef` lookup methods.
+    #[cfg(test)]
+    pub(crate) fn eq_raw(column: &'static str, value: FilterValue) -> Leaf {
         Leaf {
             column,
             op: LookupOp::Eq,
@@ -182,8 +182,8 @@ impl Leaf {
     }
 }
 
-/// The operator half of a `Leaf`. Every Phase 2 lookup method maps to one
-/// of these variants. SQL emission (`query::sql`) pattern-matches on this
+/// The operator half of a `Leaf`. Every lookup method maps to one of
+/// these variants. SQL emission (`query::sql`) pattern-matches on this
 /// enum to produce the correct operator token.
 ///
 /// Marked `#[non_exhaustive]` — later phases (array ops, JSONB lookups,
