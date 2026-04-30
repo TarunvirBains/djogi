@@ -223,35 +223,44 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
 /// join-aware helpers that wrap `build_select_joined`. The non-joined
 /// [`build_select`] path passes `None` and emits bare column names
 /// unchanged — byte-for-byte identical to the Phase 2 output.
+/// Emit `{table}.{col}` if `parent_table` is `Some`, otherwise just `{col}`.
+///
+/// Used by every leaf-emitter and array-op arm in this file to handle the
+/// join-aware qualifier prefix uniformly. `col` is always macro-baked
+/// (`&'static str` from `FieldRef::column()`); `parent_table` is `&'static str`
+/// from `Model::table_name()`. Neither is user input, so direct `push_sql` is
+/// safe.
+fn push_qualified_col(
+    acc: &mut SqlAccumulator,
+    col: &'static str,
+    parent_table: Option<&'static str>,
+) {
+    if let Some(table) = parent_table {
+        acc.push_sql(table);
+        acc.push_sql(".");
+    }
+    acc.push_sql(col);
+}
+
 fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static str>) {
     let col = leaf.column;
-    // Helper: push the column reference, qualified with `{parent_table}.`
-    // when requested. Keeps the op-switch tidy — every arm that previously
-    // called `acc.push_sql(col)` now calls `push_col(acc, col, parent_table)`.
-    fn push_col(acc: &mut SqlAccumulator, col: &'static str, parent_table: Option<&'static str>) {
-        if let Some(table) = parent_table {
-            acc.push_sql(table);
-            acc.push_sql(".");
-        }
-        acc.push_sql(col);
-    }
     if let Some(tok) = leaf.op.binary_op_token() {
-        push_col(acc, col, parent_table);
+        push_qualified_col(acc, col, parent_table);
         acc.push_sql(tok);
         push_filter_value(acc, leaf.value);
         return;
     }
     match leaf.op {
         LookupOp::IsNull => {
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(" IS NULL");
         }
         LookupOp::IsNotNull => {
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(" IS NOT NULL");
         }
         LookupOp::IContains => {
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
@@ -260,7 +269,7 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
             acc.push_bind(format!("%{}%", escape_like(&s)));
         }
         LookupOp::IStartsWith => {
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
@@ -269,7 +278,7 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
             acc.push_bind(format!("{}%", escape_like(&s)));
         }
         LookupOp::IEndsWith => {
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(" ILIKE ");
             let s = match leaf.value {
                 FilterValue::String(s) => s,
@@ -279,7 +288,7 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
         }
         LookupOp::IExact => {
             acc.push_sql("LOWER(");
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(") = LOWER(");
             push_filter_value(acc, leaf.value);
             acc.push_sql(")");
@@ -289,7 +298,7 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
                 FilterValue::Pair(a, b) => (*a, *b),
                 _ => unreachable!("Between requires FilterValue::Pair"),
             };
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(" BETWEEN ");
             push_filter_value(acc, a);
             acc.push_sql(" AND ");
@@ -312,7 +321,7 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
                 }
                 return;
             }
-            push_col(acc, col, parent_table);
+            push_qualified_col(acc, col, parent_table);
             acc.push_sql(if matches!(leaf.op, LookupOp::In) {
                 " IN ("
             } else {
@@ -427,29 +436,17 @@ pub(crate) fn emit_condition(
         // `parent_table` prefix is cosmetic here — it matches the behaviour
         // of every other `Leaf` arm.
         Condition::ArrayContains(leaf) => {
-            if let Some(table) = parent_table {
-                acc.push_sql(table);
-                acc.push_sql(".");
-            }
-            acc.push_sql(leaf.column);
+            push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" @> ");
             push_filter_value(acc, leaf.values);
         }
         Condition::ArrayContainedBy(leaf) => {
-            if let Some(table) = parent_table {
-                acc.push_sql(table);
-                acc.push_sql(".");
-            }
-            acc.push_sql(leaf.column);
+            push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" <@ ");
             push_filter_value(acc, leaf.values);
         }
         Condition::ArrayOverlap(leaf) => {
-            if let Some(table) = parent_table {
-                acc.push_sql(table);
-                acc.push_sql(".");
-            }
-            acc.push_sql(leaf.column);
+            push_qualified_col(acc, leaf.column, parent_table);
             acc.push_sql(" && ");
             push_filter_value(acc, leaf.values);
         }
@@ -457,8 +454,8 @@ pub(crate) fn emit_condition(
         //
         // `JsonbPathLeaf` stores the column + path + cast as structured
         // parts so the emitter can qualify the column reference with the
-        // parent table name in joined-query contexts (same pattern as
-        // `emit_leaf`'s `push_col` helper). SQL is rendered here at
+        // parent table name in joined-query contexts (via the module-level
+        // `push_qualified_col` helper). SQL is rendered here at
         // emit time, never at condition-tree construction time.
         Condition::JsonbPath(leaf) => {
             emit_jsonb_path_leaf(acc, leaf, parent_table);
