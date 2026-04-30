@@ -40,6 +40,7 @@
 //! correct SQL for null-equality checks.
 
 use postgres_types::ToSql;
+use std::fmt::Write;
 
 /// A positional-parameter SQL accumulator for Postgres.
 ///
@@ -85,12 +86,10 @@ impl SqlAccumulator {
     where
         T: ToSql + Sync + Send + 'static,
     {
-        self.sql.push('$');
-        // Use itoa-style manual formatting to avoid heap allocation for the
-        // common single-digit case; for larger param counts the `to_string`
-        // allocation is unavoidable but negligible per-query.
-        let idx = self.next_param;
-        self.sql.push_str(&idx.to_string());
+        // `write!` against `String` writes the integer via `fmt::Write` —
+        // no intermediate `String` allocation per `$n` slot.
+        // `write!` into `String` cannot fail, so the result is discarded.
+        let _ = write!(self.sql, "${}", self.next_param);
         self.binds.push(Box::new(v));
         self.next_param += 1;
     }
