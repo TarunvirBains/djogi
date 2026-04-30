@@ -40,7 +40,7 @@
 //! Callbacks registered via `.on_commit()` fire after a successful `commit()`.
 //! They are useful for post-transaction side effects (cache invalidation,
 //! outbox polling, audit logging). Callback errors are logged but do not fail
-//! the commit itself (per Phase 4 v3 Q9 resolution). Callbacks are FIFO.
+//! the commit itself (per the spec resolution). Callbacks are FIFO.
 //!
 //! # Drain points
 //!
@@ -480,7 +480,7 @@ impl DjogiContext {
     /// # On-commit callbacks
     ///
     /// After the commit returns `Ok(())`, every callback registered via
-    /// [`on_commit`](Self::on_commit) fires in FIFO order. Per Phase 4 v3 Q9,
+    /// [`on_commit`](Self::on_commit) fires in FIFO order. ,
     /// callback errors are logged via `tracing::error!` but do NOT unwind the
     /// caller — a failing callback must not fail the commit, and subsequent
     /// callbacks still fire.
@@ -559,7 +559,7 @@ impl DjogiContext {
     ///
     /// Callbacks execute in FIFO order after the transaction commits.
     /// Callback errors are logged via `tracing::error!` but do not fail the
-    /// commit (per Phase 4 v3 Q9 resolution). Subsequent callbacks still
+    /// commit (per the spec resolution). Subsequent callbacks still
     /// fire even if an earlier callback fails.
     pub fn on_commit<F, Fut>(&mut self, callback: F)
     where
@@ -1001,34 +1001,25 @@ impl DjogiContext {
 /// the check minimal matches Postgres's actual identifier-acceptance
 /// gradient.
 fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiError> {
-    let bytes = value.as_bytes();
-    if bytes.is_empty() {
-        return Err(DjogiError::Db(crate::error::DbError::other(format!(
-            "{role} cannot be empty"
-        ))));
-    }
-    if bytes.len() > 63 {
-        return Err(DjogiError::Db(crate::error::DbError::other(format!(
-            "{role} {value:?} is {len} bytes; Postgres limits identifiers to 63 bytes (NAMEDATALEN - 1)",
-            len = bytes.len(),
-        ))));
-    }
-    let first = bytes[0];
-    if !(first.is_ascii_alphabetic() || first == b'_') {
-        return Err(DjogiError::Db(crate::error::DbError::other(format!(
-            "{role} {value:?} must start with an ASCII letter or underscore",
-        ))));
-    }
-    for &byte in &bytes[1..] {
-        if !(byte.is_ascii_alphanumeric() || byte == b'_') {
-            return Err(DjogiError::Db(crate::error::DbError::other(format!(
+    use crate::ident::IdentError;
+    crate::ident::check_plain_ident(value, false).map_err(|e| {
+        let msg = match e {
+            IdentError::Empty => format!("{role} cannot be empty"),
+            IdentError::TooLong { len } => format!(
+                "{role} {value:?} is {len} bytes; Postgres limits identifiers to 63 bytes (NAMEDATALEN - 1)"
+            ),
+            IdentError::BadFirst { .. } => {
+                format!("{role} {value:?} must start with an ASCII letter or underscore")
+            }
+            IdentError::BadByte { .. } => format!(
                 "{role} {value:?} contains a character that is not a valid \
                  unquoted Postgres identifier byte; only ASCII alphanumerics \
-                 and underscores are permitted after the first character",
-            ))));
-        }
-    }
-    Ok(())
+                 and underscores are permitted after the first character"
+            ),
+            IdentError::Reserved => unreachable!("check_plain_ident(reserved=false) cannot return Reserved"),
+        };
+        DjogiError::Db(crate::error::DbError::other(msg))
+    })
 }
 
 /// Drain a batch of on-commit callbacks panic-safely.
@@ -1036,7 +1027,7 @@ fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiErro
 /// Wraps each callback future in `AssertUnwindSafe(..).catch_unwind()`
 /// so a panicking callback is logged via `tracing::error!` without
 /// aborting the drain loop. Callback `Err` returns are likewise logged
-/// and ignored — per Phase 4 v3 Q9 a callback failure must not fail the
+/// and ignored — per the spec a callback failure must not fail the
 /// commit, and every subsequent callback still fires.
 pub(crate) async fn drain_on_commit(callbacks: Vec<OnCommitCallback>) {
     for cb in callbacks {

@@ -87,44 +87,27 @@ pub struct OutboxRow {
 
 /// Validate that `name` is safe to embed as an unquoted SQL identifier.
 ///
-/// Rules (plain English, no regex):
-/// - At least 1 byte, at most 63 bytes (Postgres identifier limit).
-/// - First byte must be an ASCII letter (`a`..`z` or `A`..`Z`) or underscore.
-/// - All subsequent bytes must be ASCII alphanumeric (`a`..`z`, `A`..`Z`,
-///   `0`..`9`) or underscore.
-///
-/// Returns `Ok(())` on success, `Err(...)` with a descriptive message on
-/// failure. The caller embeds the name in SQL only after this check passes.
+/// Validates the Postgres unquoted-identifier contract for the outbox
+/// table name. Routes through [`crate::ident::check_plain_ident`] so the
+/// rules stay in lock-step with every other runtime ident check.
 fn validate_table_ident(name: &str) -> Result<(), DjogiError> {
-    let bytes = name.as_bytes();
-
-    if bytes.is_empty() || bytes.len() > 63 {
-        return Err(DjogiError::Db(DbError::other(format!(
-            "invalid outbox table name {:?}: must be 1–63 bytes",
-            name
-        ))));
-    }
-
-    // First byte: ASCII letter or underscore.
-    let first = bytes[0];
-    if !first.is_ascii_alphabetic() && first != b'_' {
-        return Err(DjogiError::Db(DbError::other(format!(
-            "invalid outbox table name {:?}: first character must be an ASCII letter or underscore",
-            name
-        ))));
-    }
-
-    // Remaining bytes: ASCII alphanumeric or underscore.
-    for &b in &bytes[1..] {
-        if !b.is_ascii_alphanumeric() && b != b'_' {
-            return Err(DjogiError::Db(DbError::other(format!(
-                "invalid outbox table name {:?}: contains disallowed character '{}'",
-                name, b as char
-            ))));
-        }
-    }
-
-    Ok(())
+    use crate::ident::IdentError;
+    crate::ident::check_plain_ident(name, false).map_err(|e| {
+        let msg = match e {
+            IdentError::Empty | IdentError::TooLong { .. } => {
+                format!("invalid outbox table name {name:?}: must be 1–63 bytes")
+            }
+            IdentError::BadFirst { .. } => format!(
+                "invalid outbox table name {name:?}: first character must be an ASCII letter or underscore"
+            ),
+            IdentError::BadByte { byte, .. } => format!(
+                "invalid outbox table name {name:?}: contains disallowed character '{}'",
+                byte as char
+            ),
+            IdentError::Reserved => unreachable!("check_plain_ident(reserved=false) cannot return Reserved"),
+        };
+        DjogiError::Db(DbError::other(msg))
+    })
 }
 
 // ---------------------------------------------------------------------------

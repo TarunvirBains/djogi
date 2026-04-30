@@ -100,6 +100,29 @@ impl<Out> AggregateExpr<Out> {
         }
     }
 
+    /// Build an `AggregateExpr<Out>` for the unary `AGG(column)` shape.
+    ///
+    /// Eleven typed builders on `FieldRef` (`count`, `count_star`, `sum`,
+    /// `avg`, `min`, `max`, `array_agg`, `json_agg`, `bool_and`, `bool_or`)
+    /// constructed the same six-field `ExprNode::Aggregate { ... }`
+    /// literal that varied only in `op`, `column`, and `cast_to`. This
+    /// helper consolidates the construction; `string_agg` keeps its own
+    /// path because it carries a separator.
+    pub(crate) fn unary_agg(
+        op: AggOp,
+        column: &'static str,
+        cast_to: Option<&'static str>,
+    ) -> Self {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op,
+            arg: Box::new(ExprNode::Field { column }),
+            filter: None,
+            cast_to,
+            distinct: false,
+            window: None,
+        })
+    }
+
     /// Attach a `FILTER (WHERE <cond>)` clause to this aggregate.
     ///
     /// Postgres runs the filter inside the aggregate's per-row scan —
@@ -236,16 +259,7 @@ impl<M: Model, V> FieldRef<M, V> {
     /// directly into `i64` — no cast needed.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn count(self) -> AggregateExpr<i64> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::Count,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        AggregateExpr::unary_agg(AggOp::Count, self.column(), None)
     }
 
     /// `COUNT(*)` — returns `i64`.
@@ -265,20 +279,10 @@ impl<M: Model, V> FieldRef<M, V> {
     /// natural call site inside a field closure.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn count_star(self) -> AggregateExpr<i64> {
-        // `arg` is a placeholder — the emitter renders `COUNT(*)` and
-        // ignores this slot on the CountStar branch. We still carry a
-        // concrete `ExprNode` (not `Option<Box<ExprNode>>`) to keep
-        // the variant layout uniform across all AggOps.
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::CountStar,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        // `arg` is a placeholder for layout uniformity — the emitter
+        // renders `COUNT(*)` and ignores the field slot on the
+        // CountStar branch.
+        AggregateExpr::unary_agg(AggOp::CountStar, self.column(), None)
     }
 }
 
@@ -315,20 +319,10 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// framework-supported path for precision-critical sums.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn sum(self) -> AggregateExpr<V> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::Sum,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            // `V::SUM_CAST` — associated constant on the sealed
-            // `Numeric` trait. Each blessed numeric type names its
-            // own Postgres cast target there; see
-            // [`Numeric::SUM_CAST`] for the full rationale.
-            cast_to: Some(<V as Numeric>::SUM_CAST),
-            distinct: false,
-            window: None,
-        })
+        // `V::SUM_CAST` — associated constant on the sealed `Numeric`
+        // trait. Each blessed numeric type names its own Postgres cast
+        // target there.
+        AggregateExpr::unary_agg(AggOp::Sum, self.column(), Some(<V as Numeric>::SUM_CAST))
     }
 
     /// `AVG(column)` — returns `f64`.
@@ -342,19 +336,9 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// lands.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn avg(self) -> AggregateExpr<f64> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::Avg,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            // Always DOUBLE PRECISION regardless of the input numeric
-            // type — the typed surface's `Out = f64` promise holds
-            // uniformly.
-            cast_to: Some(<V as Numeric>::AVG_CAST),
-            distinct: false,
-            window: None,
-        })
+        // Always DOUBLE PRECISION regardless of the input numeric type
+        // — the typed surface's `Out = f64` promise holds uniformly.
+        AggregateExpr::unary_agg(AggOp::Avg, self.column(), Some(<V as Numeric>::AVG_CAST))
     }
 }
 
@@ -383,18 +367,8 @@ where
     /// introducing a parallel seal.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn min(self) -> AggregateExpr<V> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::Min,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            // MIN / MAX return the column's own type — no widening,
-            // no cast needed.
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        // MIN / MAX return the column's own type — no widening, no cast needed.
+        AggregateExpr::unary_agg(AggOp::Min, self.column(), None)
     }
 
     /// `MAX(column)` — returns `V`.
@@ -403,16 +377,7 @@ where
     /// rationale as [`FieldRef::min`].
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn max(self) -> AggregateExpr<V> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::Max,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        AggregateExpr::unary_agg(AggOp::Max, self.column(), None)
     }
 }
 
@@ -441,16 +406,7 @@ impl<M: Model, V> FieldRef<M, V> {
     /// The aggregate emits `ARRAY_AGG(column)` without any narrowing cast.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn array_agg(self) -> AggregateExpr<Vec<V>> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::ArrayAgg,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        AggregateExpr::unary_agg(AggOp::ArrayAgg, self.column(), None)
     }
 
     /// `JSONB_AGG(column)` — aggregates column values into a JSON array,
@@ -463,16 +419,7 @@ impl<M: Model, V> FieldRef<M, V> {
     /// pattern-match or call `.as_array()` to iterate.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn json_agg(self) -> AggregateExpr<serde_json::Value> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::JsonAgg,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        AggregateExpr::unary_agg(AggOp::JsonAgg, self.column(), None)
     }
 }
 
@@ -502,6 +449,7 @@ impl<M: Model> FieldRef<M, String> {
     /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn string_agg(self, sep: impl Into<String>) -> AggregateExpr<String> {
+        // StringAgg carries a separator, so it doesn't fit `unary_agg`.
         AggregateExpr::from_node(ExprNode::Aggregate {
             op: AggOp::StringAgg(sep.into()),
             arg: Box::new(ExprNode::Field {
@@ -534,16 +482,7 @@ impl<M: Model> FieldRef<M, bool> {
     /// true)`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bool_and(self) -> AggregateExpr<bool> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::BoolAnd,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        AggregateExpr::unary_agg(AggOp::BoolAnd, self.column(), None)
     }
 
     /// `BOOL_OR(column)` — returns `true` if at least one non-null value in
@@ -553,16 +492,7 @@ impl<M: Model> FieldRef<M, bool> {
     /// NULL which decodes as a runtime error on the non-`Option` surface.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bool_or(self) -> AggregateExpr<bool> {
-        AggregateExpr::from_node(ExprNode::Aggregate {
-            op: AggOp::BoolOr,
-            arg: Box::new(ExprNode::Field {
-                column: self.column(),
-            }),
-            filter: None,
-            cast_to: None,
-            distinct: false,
-            window: None,
-        })
+        AggregateExpr::unary_agg(AggOp::BoolOr, self.column(), None)
     }
 }
 

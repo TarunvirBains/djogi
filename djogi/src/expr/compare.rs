@@ -39,87 +39,53 @@ use crate::expr::Expr;
 use crate::expr::node::{CmpOp, ExprNode};
 
 impl<T> Expr<T> {
+    /// Build an `Expr<bool>` for `<lhs> <op> <rhs>` — used by every
+    /// public comparison method below.
+    fn cmp<R>(self, op: CmpOp, rhs: R) -> Expr<bool>
+    where
+        R: Into<Expr<T>>,
+    {
+        let rhs = rhs.into();
+        Expr::from_node(ExprNode::Cmp {
+            op,
+            lhs: Box::new(self.node),
+            rhs: Box::new(rhs.node),
+        })
+    }
+
     /// `lhs = rhs` — SQL equality as an expression.
     ///
     /// The returned `Expr<bool>` slots into
     /// [`crate::query::QuerySet::filter_expr`] via the
     /// [`crate::query::condition::Condition::Expr`] bridge, or into
-    /// nested boolean expressions once `Case` / logical ops land in
-    /// Task 5.
-    pub fn eq<R>(self, rhs: R) -> Expr<bool>
-    where
-        R: Into<Expr<T>>,
-    {
-        let rhs = rhs.into();
-        Expr::from_node(ExprNode::Cmp {
-            op: CmpOp::Eq,
-            lhs: Box::new(self.node),
-            rhs: Box::new(rhs.node),
-        })
+    /// nested boolean expressions composed via the typed `Expr<bool>`
+    /// surface.
+    pub fn eq<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::Eq, rhs)
     }
 
     /// `lhs <> rhs` — SQL inequality as an expression.
-    pub fn neq<R>(self, rhs: R) -> Expr<bool>
-    where
-        R: Into<Expr<T>>,
-    {
-        let rhs = rhs.into();
-        Expr::from_node(ExprNode::Cmp {
-            op: CmpOp::Neq,
-            lhs: Box::new(self.node),
-            rhs: Box::new(rhs.node),
-        })
+    pub fn neq<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::Neq, rhs)
     }
 
     /// `lhs > rhs`.
-    pub fn gt<R>(self, rhs: R) -> Expr<bool>
-    where
-        R: Into<Expr<T>>,
-    {
-        let rhs = rhs.into();
-        Expr::from_node(ExprNode::Cmp {
-            op: CmpOp::Gt,
-            lhs: Box::new(self.node),
-            rhs: Box::new(rhs.node),
-        })
+    pub fn gt<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::Gt, rhs)
     }
 
     /// `lhs >= rhs`.
-    pub fn gte<R>(self, rhs: R) -> Expr<bool>
-    where
-        R: Into<Expr<T>>,
-    {
-        let rhs = rhs.into();
-        Expr::from_node(ExprNode::Cmp {
-            op: CmpOp::Gte,
-            lhs: Box::new(self.node),
-            rhs: Box::new(rhs.node),
-        })
+    pub fn gte<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::Gte, rhs)
     }
 
     /// `lhs < rhs`.
-    pub fn lt<R>(self, rhs: R) -> Expr<bool>
-    where
-        R: Into<Expr<T>>,
-    {
-        let rhs = rhs.into();
-        Expr::from_node(ExprNode::Cmp {
-            op: CmpOp::Lt,
-            lhs: Box::new(self.node),
-            rhs: Box::new(rhs.node),
-        })
+    pub fn lt<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::Lt, rhs)
     }
 
     /// `lhs <= rhs`.
-    pub fn lte<R>(self, rhs: R) -> Expr<bool>
-    where
-        R: Into<Expr<T>>,
-    {
-        let rhs = rhs.into();
-        Expr::from_node(ExprNode::Cmp {
-            op: CmpOp::Lte,
-            lhs: Box::new(self.node),
-            rhs: Box::new(rhs.node),
-        })
+    pub fn lte<R: Into<Expr<T>>>(self, rhs: R) -> Expr<bool> {
+        self.cmp(CmpOp::Lte, rhs)
     }
 }

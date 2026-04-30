@@ -240,6 +240,74 @@ const fn const_eq_ignore_ascii_case(a: &[u8], b: &[u8]) -> bool {
     true
 }
 
+/// Why a single rule failed when [`check_plain_ident`] returns `Err`.
+///
+/// Each variant carries enough payload that the caller can render its
+/// preferred error shape (`DjogiError`, `String`, panic message)
+/// without re-walking the bytes. `Reserved` carries no payload because
+/// the caller already has the offending name; the lookup happened
+/// against the lowercased copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IdentError {
+    /// Empty input.
+    Empty,
+    /// Exceeded `MAX_IDENT_LEN` bytes — payload is the offending length.
+    TooLong { len: usize },
+    /// First byte is not an ASCII letter or underscore.
+    BadFirst { byte: u8 },
+    /// A byte after the first is not ASCII alphanumeric or underscore.
+    BadByte { idx: usize, byte: u8 },
+    /// Lowercased name is in the [`RESERVED_KEYWORDS`] table.
+    Reserved,
+}
+
+/// Fallible validator for runtime-supplied identifiers — the
+/// `Result`-returning twin of [`assert_plain_ident`]. Returns an
+/// [`IdentError`] describing which rule failed; the caller maps it
+/// onto its preferred error type.
+///
+/// `check_reserved` toggles the reserved-keyword lookup. Macro-time
+/// callers and SQL-emission paths set it to `true`; runtime-helper
+/// callers (where wrapping in a `DO`-block makes reserved words like
+/// `interval` legal) pass `false`.
+///
+/// Cluster 4 absorbed six near-duplicate inline validators (outbox /
+/// context / fts dictionary / fts source column / jsonb path) that
+/// each re-encoded these rules; this function is the single source of
+/// truth.
+pub(crate) fn check_plain_ident(value: &str, check_reserved: bool) -> Result<(), IdentError> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() {
+        return Err(IdentError::Empty);
+    }
+    if bytes.len() > MAX_IDENT_LEN {
+        return Err(IdentError::TooLong { len: bytes.len() });
+    }
+    let first = bytes[0];
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+        return Err(IdentError::BadFirst { byte: first });
+    }
+    for (i, &byte) in bytes.iter().enumerate().skip(1) {
+        if !(byte.is_ascii_alphanumeric() || byte == b'_') {
+            return Err(IdentError::BadByte { idx: i, byte });
+        }
+    }
+    if check_reserved {
+        // Stack-allocated lowercase for the reserved-keyword lookup —
+        // mirrors the buffer in `assert_plain_ident`.
+        let mut lower_buf = [0u8; MAX_IDENT_LEN + 1];
+        let len = bytes.len();
+        lower_buf[..len].copy_from_slice(bytes);
+        lower_buf[..len].make_ascii_lowercase();
+        let lower = std::str::from_utf8(&lower_buf[..len])
+            .expect("ASCII identifier must be valid UTF-8 after lowercasing");
+        if RESERVED_KEYWORDS.binary_search(&lower).is_ok() {
+            return Err(IdentError::Reserved);
+        }
+    }
+    Ok(())
+}
+
 /// Validate a macro-emitted identifier against the Postgres unquoted-
 /// identifier contract. Panics on the first rule violation. See the
 /// module-level doc for the four rules.

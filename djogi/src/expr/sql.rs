@@ -10,14 +10,13 @@
 //!
 //! # Why a separate emitter?
 //!
-//! The Phase 2 [`crate::query::sql::emit_leaf`] handles `column op
-//! literal` — the left side is always a bare column name, the right side
-//! always a literal. The expression IR generalises both sides: either
-//! can be a column, a literal, or a nested arithmetic expression. A
-//! recursive emitter is the natural fit; factoring it into its own
-//! function keeps the Phase 2 leaf path (with its `parent_table`
-//! qualification + `ILIKE` escape rules) un-entangled from the new
-//! recursive walk.
+//! [`crate::query::sql::emit_leaf`] handles `column op literal` — the
+//! left side is always a bare column name, the right side always a
+//! literal. The expression IR generalises both sides: either can be a
+//! column, a literal, or a nested arithmetic expression. A recursive
+//! emitter is the natural fit; factoring it into its own function
+//! keeps the leaf path (with its `parent_table` qualification + `ILIKE`
+//! escape rules) un-entangled from the recursive walk.
 //!
 //! # Column references vs bind parameters
 //!
@@ -33,23 +32,20 @@
 //!
 //! # `parent_table` qualification
 //!
-//! Phase 3 Task 5 added a `parent_table: Option<&'static str>` argument
-//! to [`crate::query::sql::emit_condition`] so that `select_related`
+//! [`crate::query::sql::emit_condition`] takes a
+//! `parent_table: Option<&'static str>` argument so `select_related`
 //! joined queries qualify bare column references as `{table}.{col}`.
-//! The expression IR does **not** carry that argument today. Phase 4
-//! Task 3a's scope is single-table expressions (field-vs-field, arithmetic,
-//! literal), and joined expressions need a separate design pass that
+//! The expression IR does **not** carry that argument: its scope is
+//! single-table expressions (field-vs-field, arithmetic, literal),
+//! and joined expressions would need a separate design pass that
 //! answers ownership questions (which table owns `OuterRef { column }`?
 //! which child table sources an aggregate over a joined collection?).
-//! When that design lands (Task 5 or later), `emit_expr` grows a
-//! `parent_table` parameter and `ExprNode::Field` arms qualify accordingly.
 //!
-//! For today, `Condition::Expr` inside a `select_related` filter will
-//! emit a bare column reference, which Postgres will flag as ambiguous
-//! if the child contributes a same-named column. Users can avoid this
-//! by staying on the Phase 2 `filter` closure when combining with
-//! `select_related`; `filter_expr` is aimed at non-joined predicates
-//! until Task 5.
+//! Concretely: `Condition::Expr` inside a `select_related` filter
+//! emits a bare column reference, which Postgres flags as ambiguous if
+//! the child contributes a same-named column. Stay on the basic
+//! `filter` closure when combining with `select_related`; `filter_expr`
+//! is aimed at non-joined predicates.
 
 use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
 use crate::pg::accumulator::SqlAccumulator;
@@ -63,8 +59,8 @@ use crate::pg::accumulator::SqlAccumulator;
 /// - `COUNT(*)` with `distinct = true` — `COUNT(DISTINCT *)` is not valid SQL.
 /// - `STRING_AGG(col, sep)` with `distinct = true` — Postgres requires an
 ///   explicit per-aggregate `ORDER BY` clause when DISTINCT is combined with
-///   `STRING_AGG`. Djogi's Phase 6.5 IR does not track per-aggregate ORDER BY;
-///   this restriction will be lifted in a future phase.
+///   `STRING_AGG`. The current IR does not track per-aggregate ORDER BY;
+///   this restriction may be lifted in a future release.
 ///
 /// All other `(op, distinct = true)` combinations are accepted and emitted as
 /// `AGG(DISTINCT col)`.
@@ -96,8 +92,8 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                         return Err(crate::DjogiError::UnsupportedAggregate {
                             op: "STRING_AGG",
                             reason: "STRING_AGG(DISTINCT col, sep) requires a per-aggregate \
-                                     ORDER BY clause, which Djogi's Phase 6.5 IR does not \
-                                     track — this restriction will be lifted in a future phase",
+                                     ORDER BY clause, which the current IR does not track — \
+                                     this restriction may be lifted in a future release",
                         });
                     }
                     _ => {}
@@ -208,8 +204,8 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // is used as a SELECT scalar (`(AGG(..))::TY`) or inside
             // the annotate SELECT list with a window function
             // (`(AGG(..) OVER ())::TY`). Keeping this arm bare means
-            // nested aggregates (Phase 5) don't accidentally pick up a
-            // cast they never asked for.
+            // nested aggregates don't accidentally pick up a cast
+            // they never asked for.
             //
             // `CountStar` is the only branch that emits a bare `*`
             // inside the parens and deliberately skips the recursive
@@ -224,87 +220,21 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // At the bare-emit level (unit tests, nested contexts) the
             // flag is still emitted verbatim so tests can verify the
             // flag round-trips correctly.
+            // CountStar is special — emits `COUNT(*)` with no DISTINCT
+            // hook (the legality check rejects DISTINCT + CountStar
+            // upstream of the emitter). StringAgg is special — takes a
+            // bound separator after the column expression.
+            // Every other variant emits `<KEYWORD>([DISTINCT] <expr>)`
+            // through `emit_unary_agg`.
             match op {
-                AggOp::Count => {
-                    acc.push_sql("COUNT(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
-                AggOp::CountStar => {
-                    // `distinct` on CountStar is rejected by
-                    // `check_aggregate_legality` before fetch time. At
-                    // the raw emit level (tests that bypass the terminal)
-                    // we emit `COUNT(*)` as normal — the legality check
-                    // is the enforcement point, not the emitter.
-                    acc.push_sql("COUNT(*)");
-                }
-                AggOp::Sum => {
-                    acc.push_sql("SUM(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
-                AggOp::Avg => {
-                    acc.push_sql("AVG(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
-                AggOp::Min => {
-                    acc.push_sql("MIN(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
-                AggOp::Max => {
-                    acc.push_sql("MAX(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
-                AggOp::ArrayAgg => {
-                    // ARRAY_AGG([DISTINCT] col) — collects non-null values
-                    // into a Postgres array. Decoded as Vec<V> at the Rust
-                    // level. ARRAY_AGG(DISTINCT col) is valid Postgres
-                    // syntax — duplicates are removed from the result array.
-                    acc.push_sql("ARRAY_AGG(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
-                AggOp::JsonAgg => {
-                    // JSONB_AGG([DISTINCT] col) — Djogi standardises on
-                    // JSONB for all JSON wire and storage formats, so
-                    // JSON_AGG is never emitted. See docs/spec/decisions.md.
-                    acc.push_sql("JSONB_AGG(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
+                AggOp::CountStar => acc.push_sql("COUNT(*)"),
                 AggOp::StringAgg(sep) => {
-                    // STRING_AGG([DISTINCT] col, $sep) — separator is bound
-                    // as a parameter. DISTINCT on STRING_AGG is rejected by
-                    // `check_aggregate_legality` at fetch time because
-                    // Postgres requires a per-aggregate ORDER BY clause
-                    // alongside DISTINCT, and Djogi's Phase 6.5 IR does not
-                    // track that. The clone is required because `sep` is
-                    // `&String` (borrowed from the ExprNode) and `push_bind`
-                    // takes owned values.
+                    // STRING_AGG with DISTINCT is rejected by
+                    // `check_aggregate_legality` at fetch time (Postgres
+                    // requires a per-aggregate ORDER BY alongside DISTINCT,
+                    // not yet tracked by the IR). The `sep.clone()` is
+                    // required because `sep` is `&String` here and
+                    // `push_bind` takes owned values.
                     acc.push_sql("STRING_AGG(");
                     if *distinct {
                         acc.push_sql("DISTINCT ");
@@ -314,28 +244,19 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc.push_bind(sep.clone());
                     acc.push_sql(")");
                 }
-                AggOp::BoolAnd => {
-                    // BOOL_AND([DISTINCT] col) — true if every non-null
-                    // value is true. DISTINCT is semantically a no-op for
-                    // boolean aggregation but Postgres accepts it.
-                    acc.push_sql("BOOL_AND(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
-                AggOp::BoolOr => {
-                    // BOOL_OR([DISTINCT] col) — true if at least one
-                    // non-null value is true. DISTINCT is semantically
-                    // a no-op but Postgres accepts it.
-                    acc.push_sql("BOOL_OR(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql(")");
-                }
+                AggOp::Count => emit_unary_agg(acc, "COUNT(", *distinct, arg),
+                AggOp::Sum => emit_unary_agg(acc, "SUM(", *distinct, arg),
+                AggOp::Avg => emit_unary_agg(acc, "AVG(", *distinct, arg),
+                AggOp::Min => emit_unary_agg(acc, "MIN(", *distinct, arg),
+                AggOp::Max => emit_unary_agg(acc, "MAX(", *distinct, arg),
+                AggOp::ArrayAgg => emit_unary_agg(acc, "ARRAY_AGG(", *distinct, arg),
+                // JSONB_AGG (not JSON_AGG) — Djogi standardises on JSONB
+                // for all JSON wire and storage. See docs/spec/decisions.md.
+                AggOp::JsonAgg => emit_unary_agg(acc, "JSONB_AGG(", *distinct, arg),
+                // BOOL_AND / BOOL_OR accept DISTINCT (no-op for booleans
+                // but valid Postgres syntax).
+                AggOp::BoolAnd => emit_unary_agg(acc, "BOOL_AND(", *distinct, arg),
+                AggOp::BoolOr => emit_unary_agg(acc, "BOOL_OR(", *distinct, arg),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
@@ -457,60 +378,39 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             dictionary,
             query_text,
         } => {
-            // `<col> @@ to_tsquery('<dictionary>', $n)`
-            //
-            // `column` is a `&'static str` validated at FtsFieldRef
-            // construction via `assert_plain_ident`; safe to push as raw SQL.
-            // `dictionary` is a Postgres identifier validated at macro parse
-            // time via byte-level checks; embedded literally (single-quoted)
-            // as `to_tsquery('<dictionary>', ...)`.
-            // `query_text` is user-supplied and therefore ALWAYS bound as a
-            // parameter — never interpolated into the SQL string.
-            acc.push_sql(column);
-            acc.push_sql(" @@ to_tsquery('");
-            acc.push_sql(dictionary);
-            acc.push_sql("', ");
-            acc.push_bind(query_text.clone());
-            acc.push_sql(")");
+            // `<col> @@ to_tsquery('<dictionary>', $n)`. Column and dictionary
+            // identifiers are validated at construction; query_text is user-
+            // supplied so it always rides as a bound parameter.
+            emit_ts(acc, "", column, dictionary, query_text, " @@ ", ")");
         }
-
         ExprNode::TsRank {
             column,
             dictionary,
             query_text,
         } => {
-            // `ts_rank(<col>, to_tsquery('<dictionary>', $n))`
-            //
-            // The `ts_rank` function scores each document against the query;
-            // higher score = more relevant. Bind the query text as a parameter.
-            acc.push_sql("ts_rank(");
-            acc.push_sql(column);
-            acc.push_sql(", to_tsquery('");
-            acc.push_sql(dictionary);
-            acc.push_sql("', ");
-            acc.push_bind(query_text.clone());
-            acc.push_sql("))");
+            // `ts_rank(<col>, to_tsquery('<dictionary>', $n))`. Standard
+            // relevance score — higher = more relevant.
+            emit_ts(acc, "ts_rank(", column, dictionary, query_text, ", ", "))");
         }
-
         ExprNode::TsRankCd {
             column,
             dictionary,
             query_text,
         } => {
-            // `ts_rank_cd(<col>, to_tsquery('<dictionary>', $n))`
-            //
-            // Cover-density ranking — weighs term proximity more heavily
-            // than the standard `ts_rank`. Same bind-parameter pattern.
-            acc.push_sql("ts_rank_cd(");
-            acc.push_sql(column);
-            acc.push_sql(", to_tsquery('");
-            acc.push_sql(dictionary);
-            acc.push_sql("', ");
-            acc.push_bind(query_text.clone());
-            acc.push_sql("))");
+            // `ts_rank_cd(...)`. Cover-density variant; weighs term proximity
+            // more heavily than `ts_rank`.
+            emit_ts(
+                acc,
+                "ts_rank_cd(",
+                column,
+                dictionary,
+                query_text,
+                ", ",
+                "))",
+            );
         }
 
-        // ── Spatial (Phase 6 `spatial` feature) ─────────────────────────────
+        // ── Spatial (gated on `spatial` feature) ───────────────────────────
         #[cfg(feature = "spatial")]
         ExprNode::Spatial(s) => {
             // Delegate entirely to `SpatialExpr::emit`, which handles all
@@ -518,6 +418,60 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             s.emit(acc);
         }
     }
+}
+
+/// Emit a Postgres FTS expression — `<prefix><col><sep>to_tsquery('<dictionary>', $n)<suffix>`.
+///
+/// Three [`ExprNode`] variants share this shape:
+///
+/// - `TsMatch` — `<col> @@ to_tsquery('<dict>', $n)` (`prefix=""`,
+///   `sep=" @@ "`, `suffix=")"`).
+/// - `TsRank` — `ts_rank(<col>, to_tsquery('<dict>', $n))` (`prefix="ts_rank("`,
+///   `sep=", "`, `suffix="))"`).
+/// - `TsRankCd` — same shape with `ts_rank_cd(`.
+///
+/// `column` is a `&'static str` macro-validated via `assert_plain_ident`.
+/// `dictionary` is byte-level validated at attribute parse time; embedded
+/// literally as a single-quoted string. `query_text` is user-supplied
+/// and always rides through `push_bind`.
+fn emit_ts(
+    acc: &mut SqlAccumulator,
+    prefix: &'static str,
+    column: &str,
+    dictionary: &str,
+    query_text: &str,
+    sep: &'static str,
+    suffix: &'static str,
+) {
+    acc.push_sql(prefix);
+    acc.push_sql(column);
+    acc.push_sql(sep);
+    acc.push_sql("to_tsquery('");
+    acc.push_sql(dictionary);
+    acc.push_sql("', ");
+    acc.push_bind(query_text.to_owned());
+    acc.push_sql(suffix);
+}
+
+/// Emit `<KEYWORD_OPENER>[DISTINCT ]<expr>)`.
+///
+/// `keyword_opener` is the SQL function name plus opening paren — e.g.
+/// `"SUM("`, `"ARRAY_AGG("`. Centralises the eight unary aggregate emit
+/// arms (`COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `ARRAY_AGG`, `JSONB_AGG`,
+/// `BOOL_AND`, `BOOL_OR`) so the `[DISTINCT]` placement and parens stay
+/// uniform. `STRING_AGG` and `COUNT(*)` are special-cased upstream.
+fn emit_unary_agg(
+    acc: &mut SqlAccumulator,
+    keyword_opener: &'static str,
+    distinct: bool,
+    arg: &ExprNode,
+) {
+    acc.push_sql(keyword_opener);
+    if distinct {
+        acc.push_sql("DISTINCT ");
+    }
+    emit_expr(acc, arg);
+    acc.push_sql(")");
 }
 
 /// Emit a [`SubqueryNode`] body — `SELECT <col or 1> FROM <table>
@@ -532,9 +486,9 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
 /// # Why `emit_condition` and not a second [`emit_expr`] walk?
 ///
 /// The subquery's `WHERE` clause is a [`Condition`] tree (not an
-/// [`ExprNode`]) because it was built through the Phase 2
+/// [`ExprNode`]) because it was built through
 /// [`crate::query::QuerySet::filter`] / [`crate::query::QuerySet::filter_expr`]
-/// path — those accumulate `Condition` with a full `LookupOp` vocabulary
+/// — those accumulate `Condition` with a full `LookupOp` vocabulary
 /// (ILIKE, BETWEEN, IS NULL, IN list, …). Reusing
 /// [`crate::query::sql::emit_condition`] lets every lookup op compose
 /// inside a subquery without a parallel `ExprNode`-side emitter, which
