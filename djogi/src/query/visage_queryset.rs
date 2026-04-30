@@ -243,12 +243,7 @@ fn run_all_sql<V>(qs: &VisageQuerySet<V>) -> (String, Vec<Box<dyn ToSql + Sync +
 pub(crate) fn build_visage_select<V>(qs: &VisageQuerySet<V>) -> SqlAccumulator {
     let mut acc = SqlAccumulator::new("");
     acc.push_sql("SELECT ");
-    for (i, col) in qs.columns.iter().enumerate() {
-        if i > 0 {
-            acc.push_sql(", ");
-        }
-        acc.push_sql(col);
-    }
+    acc.push_csv(qs.columns.iter().copied());
     acc.push_sql(" FROM ");
     acc.push_sql(qs.table);
     push_visage_tail(&mut acc, qs);

@@ -119,6 +119,25 @@ impl SqlAccumulator {
         }
     }
 
+    /// Push an iterator of string fragments separated by `, ` — for column
+    /// lists, GROUPING SETS, and any place an SQL emitter walks an iterator
+    /// of identifiers under a parenthesized comma-separated shape.
+    ///
+    /// Each item is `push_sql`'d directly; the caller is responsible for
+    /// ensuring items contain only trusted SQL text (column names baked by
+    /// `#[model]` / `FieldRef::column()` — `&'static str` either way).
+    /// Empty iterators are a no-op.
+    pub fn push_csv<'a, I: IntoIterator<Item = &'a str>>(&mut self, items: I) {
+        let mut first = true;
+        for s in items {
+            if !first {
+                self.sql.push_str(", ");
+            }
+            first = false;
+            self.sql.push_str(s);
+        }
+    }
+
     /// Push the literal token `NULL` — NOT a bind slot.
     ///
     /// Used for `IS NULL` / `IS NOT NULL` operator emission and for

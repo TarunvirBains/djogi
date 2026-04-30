@@ -718,12 +718,7 @@ pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumul
         }
         DistinctMode::On(cols) => {
             acc.push_sql("SELECT DISTINCT ON (");
-            for (i, c) in cols.iter().enumerate() {
-                if i > 0 {
-                    acc.push_sql(", ");
-                }
-                acc.push_sql(c);
-            }
+            acc.push_csv(cols.iter().copied());
             acc.push_sql(") ");
             acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
             acc.push_sql(" FROM ");
@@ -1071,12 +1066,7 @@ where
                     acc.push_sql(", ");
                 }
                 acc.push_sql("(");
-                for (j, col) in set.iter().enumerate() {
-                    if j > 0 {
-                        acc.push_sql(", ");
-                    }
-                    acc.push_sql(col);
-                }
+                acc.push_csv(set.iter().copied());
                 acc.push_sql(")");
             }
             acc.push_sql(")");
@@ -1416,22 +1406,12 @@ pub(crate) fn build_count<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator {
             // ordered by a distinct column) are harmless — Postgres ignores
             // repeated expressions in ORDER BY for ordering purposes.
             let mut acc = SqlAccumulator::new("SELECT COUNT(*) FROM (SELECT DISTINCT ON (");
-            for (i, c) in cols.iter().enumerate() {
-                if i > 0 {
-                    acc.push_sql(", ");
-                }
-                acc.push_sql(c);
-            }
+            acc.push_csv(cols.iter().copied());
             acc.push_sql(") * FROM ");
             acc.push_sql(T::table_name());
             push_where(&mut acc, qs);
             acc.push_sql(" ORDER BY ");
-            for (i, c) in cols.iter().enumerate() {
-                if i > 0 {
-                    acc.push_sql(", ");
-                }
-                acc.push_sql(c);
-            }
+            acc.push_csv(cols.iter().copied());
             // Append user ordering after the required prefix. Delegate to
             // OrderExpr::emit so Column and SpatialDistance variants both
             // render correctly. No parent_table qualifier — this is a
