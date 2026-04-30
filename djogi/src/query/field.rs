@@ -656,7 +656,25 @@ impl<M: Model> FieldRef<M, String> {
         self.ends_with(value)
     }
 
-    /// POSIX regex match — SQL `column ~ value`.
+    /// Filter rows where the column matches `value` under Postgres's
+    /// POSIX regex operator (`column ~ $1`, case-sensitive).
+    ///
+    /// `value` is a Postgres POSIX regex pattern — *not* a PCRE pattern,
+    /// and *not* a Rust regex pattern. The match is performed entirely
+    /// server-side; Djogi does not link a Rust regex engine, and the
+    /// `regex` rule in `docs/spec/decisions.md` deliberately carves out
+    /// Postgres-side `~` / `~*` because the operator is a Postgres
+    /// feature exposed through the typed query API.
+    ///
+    /// For literal-substring matching, prefer
+    /// [`contains`](Self::contains) — it escapes `%`, `_`, and `\` for
+    /// you. Reach for `regex` only when the predicate genuinely needs
+    /// alternation, anchors, or character classes.
+    ///
+    /// Postgres POSIX regex syntax is documented in the Postgres manual
+    /// (§ "Pattern Matching", "POSIX Regular Expressions"). It differs
+    /// from PCRE in several places (anchoring, lookaround support,
+    /// quoting); patterns from other engines may not transfer.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn regex(self, value: impl Into<String>) -> Condition {
         Condition::Leaf(Leaf::new(
@@ -666,7 +684,9 @@ impl<M: Model> FieldRef<M, String> {
         ))
     }
 
-    /// Case-insensitive POSIX regex — SQL `column ~* value`.
+    /// Case-insensitive sibling of [`regex`](Self::regex) — SQL
+    /// `column ~* $1`. Same Postgres-feature framing applies: no Rust
+    /// regex engine is involved, the match runs entirely server-side.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn iregex(self, value: impl Into<String>) -> Condition {
         Condition::Leaf(Leaf::new(
