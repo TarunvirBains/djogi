@@ -6,5 +6,5 @@
 
 pub mod cluster_sightings;
 pub mod cross_border_herds;
-pub mod lineage;
 pub mod herd_summaries;
+pub mod lineage;

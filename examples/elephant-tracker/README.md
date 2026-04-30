@@ -13,19 +13,18 @@ snippets.
 | Feature                          | Where you see it                                       |
 |----------------------------------|--------------------------------------------------------|
 | `#[model]` macro                 | every file in `src/models/`                            |
-| Foreign keys with `ForeignKey<T>`| `Elephant::herd`, `Sighting::elephant`                 |
+| Foreign keys with `ForeignKey<T>`| `Elephant::herd_id`, `Sighting::elephant_id`           |
 | M2M with explicit through model  | `Herd ↔ Country` via `HerdRange` (cross-border ranges) |
 | `Jsonb<T>` typed JSONB           | `Elephant::tags`                                       |
 | `GeoPoint` + EWKB                | `Sighting::location`                                   |
-| Spatial cluster grouping (DBSCAN)| `cluster_sightings` query in `src/main.rs`             |
-| `within_km` / `order_by_distance`| `nearby_sightings` query                               |
-| Full-text search (FTS)           | `Researcher` notes column                              |
-| Self-referential FK (lineage)    | `Elephant::parent` — recursive-CTE escape hatch demo   |
+| Spatial cluster grouping (DBSCAN)| `cluster_sightings` demo                               |
+| Full-text search (FTS)           | `Researcher::notes` and `Sighting::notes`              |
+| Self-referential FK (lineage)    | `Elephant::parent_id` — recursive-CTE escape hatch     |
 | Visages with side-query trait    | `HerdSummary` reports `herd_size` via aggregate, not row|
-| Transactional outbox             | `Sighting::create` enqueues `SightingRecorded` event   |
-| RLS via `tenant_key`             | Researchers scoped per-organization                    |
+| Transactional outbox             | `Sighting::create` enqueues an event in `sightings_outbox` |
+| RLS via `tenant_key`             | Researchers scoped per organisation                    |
 | Optimistic locking (`version`)   | `Elephant::tags` updates                               |
-| Tracked field changes            | `Elephant::name` audit                                 |
+| Tracked field changes            | `Elephant::name`, `Researcher::name` audit             |
 
 ## The domain
 
@@ -41,12 +40,13 @@ density the load-bearing story:
   seasonally.
 - **HerdRange** — the through model. Holds the season payload and the
   composite uniqueness constraint.
-- **Elephant** — individual elephants. `parent: Option<ForeignKey<Self>>`
+- **Elephant** — individual elephants. `parent_id: Option<ForeignKey<Self>>`
   for matriarchal lineage. `tags: Jsonb<ElephantTags>` for typed extra
   fields. `version: i32` for optimistic locking on tag updates.
-- **Sighting** — observation events. `location: GeoPoint`, `observed_by:
-  ForeignKey<Researcher>`, `notes: TEXT` (FTS-indexed). Records on
-  `Sighting::create` enqueue a `SightingRecorded` outbox event.
+- **Sighting** — observation events. `location: GeoPoint`, FK to
+  `Researcher` (`observed_by_id`), `notes: TEXT` (FTS-indexed). Records
+  on `Sighting::create` enqueue a row into `sightings_outbox` inside the
+  same transaction as the data write.
 
 ## Why this design
 
@@ -72,60 +72,87 @@ Specifically:
 
 ## Running it
 
+You need a running Postgres 18 with the PostGIS 3.x extension installed
+(Djogi targets PG 18+ exclusively). The connecting role must own the
+target database — the migrate step issues `ALTER DATABASE ... SET
+heer.node_id = '1'` so every pool connection inherits the
+HeeRanjID node id.
+
 ```bash
-# 1. Bring up Postgres 18 (Djogi targets PG 18+ exclusively)
-docker compose up -d postgres
+# 1. Postgres + PostGIS — for example via docker:
+docker run --rm -d --name elephant-pg \
+  -e POSTGRES_PASSWORD=djogi -e POSTGRES_USER=djogi \
+  -e POSTGRES_DB=djogi_test -p 5432:5432 \
+  postgis/postgis:18-3.6
 
-# 2. Apply migrations
-DATABASE_URL=postgres://djogi:djogi@localhost:5432/elephant_tracker \
-  cargo run -p elephant-tracker -- migrate
+# 2. Apply schema (drop + recreate; idempotent).
+export DATABASE_URL=postgres://djogi:djogi@localhost:5432/djogi_test
+cargo run -p elephant-tracker -- migrate
 
-# 3. Seed countries + a few herds + 200 sightings
+# 3. Seed countries + 4 herds + 120 elephants + 200 sightings.
 cargo run -p elephant-tracker -- seed
 
-# 4. Try the demos
-cargo run -p elephant-tracker -- demo cluster-sightings
-cargo run -p elephant-tracker -- demo cross-border-herds
-cargo run -p elephant-tracker -- demo lineage --matriarch=Wema
+# 4. Try the demos — each accepts `--format` and `--out`.
 cargo run -p elephant-tracker -- demo herd-summaries
+cargo run -p elephant-tracker -- demo herd-summaries --format markdown
+
+cargo run -p elephant-tracker -- demo cross-border-herds
+cargo run -p elephant-tracker -- demo cross-border-herds --format mermaid
+cargo run -p elephant-tracker -- demo cross-border-herds --format markdown
+
+cargo run -p elephant-tracker -- demo lineage --matriarch Wema
+cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format mermaid
+cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format markdown
+
+cargo run -p elephant-tracker -- demo cluster-sightings
+cargo run -p elephant-tracker -- demo cluster-sightings --format markdown
 ```
+
+Available format matrix:
+
+| Demo                | json | mermaid | markdown |
+|---------------------|:---:|:-------:|:--------:|
+| `herd-summaries`    |  ✓  |   —     |    ✓     |
+| `cross-border-herds`|  ✓  |   ✓     |    ✓     |
+| `lineage`           |  ✓  |   ✓     |    ✓     |
+| `cluster-sightings` |  ✓  |   —     |    ✓     |
 
 ## Status
 
 This example is part of pre-v0.1.0 publish prep. The model definitions
-target Djogi `0.1.0` and depend on the API surface as it stands after
-the Stage 1 cluster simplify-with-review passes merge to `main`. Until
-those PRs land, the example may not build against `main` — it builds
-against the post-merge state.
+target Djogi `0.1.0`. The example pre-dates the Phase 7 migration
+runner integration that adopters will eventually use; the `migrate`
+subcommand applies hand-written DDL via `ctx.raw_ddl` and
+`ctx.raw_execute` rather than the descriptor-driven differ.
 
 ## Layout
 
 ```
 elephant-tracker/
 ├── Cargo.toml
-├── Djogi.toml                  # adopter config (DATABASE_URL, log targets)
+├── Djogi.toml                  # adopter config
 ├── README.md                   # this file
-├── migrations/                 # generated by `djogi compose`
 ├── seeds/
-│   ├── countries.sql           # five countries, hand-written
-│   └── herds_and_sightings.rs  # programmatic seed (uses GeoPoint, JSONB)
+│   └── countries.sql           # five countries, hand-written
 └── src/
-    ├── main.rs                 # CLI dispatch — migrate / seed / demo subcommand
-    ├── lib.rs                  # re-exports for tests
+    ├── main.rs                 # CLI dispatch — migrate / seed / demo
+    ├── migrate.rs              # drop+recreate tables, install HeeRanjID + PostGIS
+    ├── seed.rs                 # programmatic seed wrapped in a single atomic()
+    ├── output.rs               # Format enum + JSON / Mermaid / Markdown writers
     ├── models/
-    │   ├── mod.rs
-    │   ├── country.rs          # serial PK, lookup table
+    │   ├── mod.rs              # re-exports + the `many_to_many!` invocation
+    │   ├── country.rs          # Serial PK, lookup table
     │   ├── researcher.rs       # tenant_key = "org_id"; FTS on notes
-    │   ├── herd.rs             # M2M to Country via HerdRange
+    │   ├── herd.rs             # source side of the M2M
     │   ├── herd_range.rs       # explicit through model with season payload
     │   ├── elephant.rs         # self-FK lineage; Jsonb<ElephantTags>; version
-    │   └── sighting.rs         # GeoPoint; outbox on create; FTS on notes
+    │   └── sighting.rs         # GeoPoint; events; FTS on notes
     ├── visages/
     │   ├── mod.rs
-    │   └── herd_summary.rs     # side-query trait pattern for herd_size
+    │   └── herd_summary.rs     # hand-rolled visage + side-query trait
     └── demos/
         ├── mod.rs
-        ├── cluster_sightings.rs   # DBSCAN over GeoPoint column
+        ├── cluster_sightings.rs   # ST_ClusterDBSCAN over GeoPoint
         ├── cross_border_herds.rs  # M2M traversal + season filter
         ├── lineage.rs             # recursive-CTE escape hatch
         └── herd_summaries.rs      # visage + side-query trait

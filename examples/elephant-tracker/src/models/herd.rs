@@ -1,34 +1,29 @@
 //! Herd — a named family group of elephants.
 //!
-//! Demonstrates:
-//! - M2M to `Country` through the explicit `HerdRange` model. Djogi
-//!   does not provide implicit M2M fields — every M2M is an explicit
-//!   through model with whatever payload the relationship needs.
-//! - `const RELATION` on the M2M relation — the method name comes from
-//!   here, not from auto-pluralization.
+//! ## What this demonstrates
 //!
-//! The herd's primary range — country it spends the most time in —
-//! is *not* on this model; it's derived from `HerdRange.season` rows
-//! and computed in the `cross_border_herds` demo.
+//! - The `Herd` side of a many-to-many relationship to `Country` through
+//!   the explicit `HerdRange` model. Djogi does not provide implicit M2M
+//!   fields — every M2M is an explicit through model with whatever
+//!   payload the relationship needs. The macro invocation lives in
+//!   `mod.rs` because `many_to_many!` takes bare type identifiers.
+//!
+//! Adopters write `herd.countries(ctx).await` for the M2M side; they
+//! construct `HerdSummary::from(&herd)` to get a hand-rolled projection
+//! that exposes a `herd_size` side-query (see `crate::visages`).
 
 use djogi::prelude::*;
 
-#[djogi::model(table = "herds")]
+#[model(table = "herds", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Herd {
     /// Display name. Unique within an organization in a real app;
-    /// for the example the schema is laxer.
+    /// the example keeps the schema laxer.
     #[field(unique)]
     pub name: String,
 
-    /// Estimated population at last census. The visage layer uses
-    /// `herd_size` (a side query against `Elephant`) to surface the
-    /// real-time count without baking it into this row.
+    /// Estimated population at last census. The `HerdSummary` visage's
+    /// `herd_size` side-query method surfaces the live count from
+    /// `Elephant` without denormalising it onto this row.
     pub estimated_population: i32,
-}
-
-impl Herd {
-    /// M2M relation method name comes from here, not from
-    /// auto-pluralization. `herd.countries(ctx).fetch_all()` or similar.
-    pub const COUNTRIES_RELATION: &'static str = "countries";
 }

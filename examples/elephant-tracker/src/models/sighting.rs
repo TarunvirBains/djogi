@@ -1,41 +1,51 @@
-//! Sighting — observation events.
+//! Sighting — observation events recorded by field researchers.
 //!
-//! Demonstrates:
-//! - `GeoPoint` — spatial type with EWKB codec. Indexed (GIST) so the
-//!   `nearby_sightings` and `cluster_sightings` demos run on real
-//!   index plans, not seq scans.
-//! - FTS on `notes`.
-//! - Transactional outbox — `Sighting::create` enqueues a
-//!   `SightingRecorded` event in the same transaction as the insert.
-//!   The outbox worker (running separately) drains the event into
-//!   whatever downstream consumer the operator wires up.
+//! ## What this demonstrates
 //!
-//! Why no `created_at` field shown — the `#[model]` macro injects
-//! `id`, `created_at`, `updated_at` for us. `observed_at` is the
-//! domain-meaningful timestamp (when the sighting happened, not when
-//! the row was inserted).
+//! - `GeoPoint` — spatial type with EWKB codec. The migration differ
+//!   emits a `GEOGRAPHY(Point, 4326)` column and a GiST index on it, so
+//!   the `cluster-sightings` and any `within_km` demos run on real index
+//!   plans rather than sequential scans.
+//! - Model-level FTS on `notes` — adopters get an `@@`-style match
+//!   accelerator and a typed `SightingFields::search()` accessor without
+//!   touching tsvector boilerplate by hand.
+//! - Transactional outbox — `#[model(... events)]` causes every
+//!   `Sighting::create` / `save` / `delete` to enqueue a row in
+//!   `sightings_outbox` inside the same transaction as the data write.
+//!   An external worker drains the queue into whatever downstream
+//!   consumer the operator wires up. The example does not run the worker.
+//! - `no_default` — both `ForeignKey` and `GeoPoint` lack `Default`, so
+//!   the macro's `Default` derivation is suppressed.
+//!
+//! Why no `created_at` field is declared explicitly — the `#[model]`
+//! macro injects `id`, `created_at`, and `updated_at` automatically.
+//! `observed_at` is the domain-meaningful timestamp (when the sighting
+//! happened, not when the row was inserted).
 
+use crate::models::{Elephant, Researcher};
 use djogi::prelude::*;
 use time::OffsetDateTime;
-use crate::models::{Elephant, Researcher};
 
-#[djogi::model(
+#[model(
     table = "sightings",
-    outbox(event = "SightingRecorded"),
+    pk = HeerId,
+    no_default,
+    events,
+    fts(source = "notes", dictionary = "english"),
 )]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Sighting {
-    pub elephant: ForeignKey<Elephant>,
+    pub elephant_id: ForeignKey<Elephant>,
 
-    pub observed_by: ForeignKey<Researcher>,
+    pub observed_by_id: ForeignKey<Researcher>,
 
-    /// EPSG:4326 point — longitude/latitude in WGS84.
-    #[field(srid = 4326)]
+    /// EPSG:4326 point — longitude/latitude in WGS84. Stored as a
+    /// PostGIS `GEOGRAPHY(Point, 4326)` column with a GiST index.
     pub location: GeoPoint,
 
     pub observed_at: OffsetDateTime,
 
-    /// FTS-indexed observation notes.
-    #[field(fts = "english")]
+    /// Observation notes. Concatenated into the model-level `search`
+    /// tsvector column by the FTS configuration above.
     pub notes: String,
 }
