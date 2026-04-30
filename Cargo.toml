@@ -9,7 +9,7 @@ license = "Apache-2.0"
 repository = "https://github.com/TarunvirBains/djogi"
 homepage = "https://github.com/TarunvirBains/djogi"
 authors = ["Tarunvir Bains"]
-rust-version = "1.85"
+rust-version = "1.95"
 
 [workspace.dependencies]
 # Core
