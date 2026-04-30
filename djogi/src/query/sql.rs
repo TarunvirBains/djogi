@@ -474,6 +474,18 @@ fn emit_jsonb_path_leaf(
         }
     }
 
+    // The typed `JsonbPathRef` surface only constructs eq/neq/gt/gte/lt/lte
+    // (plus IsNull/IsNotNull/In, handled below). `Regex` and `IRegex` slip
+    // through `binary_op_token` since it covers every binary operator,
+    // but they are not constructible for JSONB paths through the public
+    // API — reject explicitly here so a hand-built `JsonbPathLeaf` with
+    // `op: Regex` panics instead of silently emitting `(col->>...) ~ val`.
+    if matches!(leaf.op, LookupOp::Regex | LookupOp::IRegex) {
+        unreachable!(
+            "Regex / IRegex not supported on JsonbPathLeaf: {:?}",
+            leaf.op
+        );
+    }
     if let Some(tok) = leaf.op.binary_op_token() {
         build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
         acc.push_sql(tok);

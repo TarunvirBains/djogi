@@ -417,9 +417,10 @@ impl<M: Model, V> OuterRef<M, V> {
 fn condition_to_opt(
     cond: crate::query::condition::Condition,
 ) -> Option<crate::query::condition::Condition> {
-    match cond {
-        crate::query::condition::Condition::True => None,
-        other => Some(other),
+    if cond.is_vacuously_true() {
+        None
+    } else {
+        Some(cond)
     }
 }
 
