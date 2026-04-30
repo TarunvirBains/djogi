@@ -73,12 +73,12 @@
 use crate::DjogiError;
 use crate::context::DjogiContext;
 use crate::model::Model;
+use crate::pg::accumulator::as_params;
 use crate::query::condition::FilterValue;
 use crate::query::field::{FieldRef, IntoFilterValue};
 use crate::query::queryset::QuerySet;
 use crate::query::sql::{build_delete, build_update};
 use crate::query::terminal::auto_set_tenant;
-use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -329,10 +329,7 @@ impl<T: Model> UpdateStmt<T> {
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_update(&self.qs, &self.assignments);
             let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
             Ok(rows_affected)
         }
@@ -416,10 +413,7 @@ impl<T: Model> QuerySet<T> {
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_delete(&self);
             let (sql, binds) = acc.into_parts();
-            let params: Vec<&(dyn ToSql + Sync)> = binds
-                .iter()
-                .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-                .collect();
+            let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
             Ok(rows_affected)
         }

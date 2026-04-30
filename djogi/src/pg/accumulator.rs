@@ -135,13 +135,12 @@ impl SqlAccumulator {
     /// Consume the accumulator and return the `(sql_text, binds_vec)` pair.
     ///
     /// The binds vec is in positional order matching the `$1`, `$2`, ... slots
-    /// in the SQL text. The caller converts the boxed vec to a slice reference
-    /// for `tokio_postgres`:
+    /// in the SQL text. The caller uses [`as_params`] to reborrow the boxed
+    /// vec as the `&[&(dyn ToSql + Sync)]` slice `tokio_postgres` expects:
     ///
     /// ```ignore
     /// let (sql, binds) = acc.into_parts();
-    /// let params: Vec<&(dyn ToSql + Sync)> =
-    ///     binds.iter().map(|b| b.as_ref() as &(dyn ToSql + Sync)).collect();
+    /// let params = djogi::pg::accumulator::as_params(&binds);
     /// conn.query(&sql, &params).await?
     /// ```
     pub fn into_parts(self) -> (String, Vec<Box<dyn ToSql + Sync + Send>>) {
@@ -163,6 +162,19 @@ impl SqlAccumulator {
     pub fn bind_count(&self) -> u32 {
         self.next_param - 1
     }
+}
+
+/// Reborrow a `&[Box<dyn ToSql + Sync + Send>]` as a `Vec<&(dyn ToSql + Sync)>`.
+///
+/// The query layer accumulates bind values as `Box<dyn ToSql + Sync + Send>`
+/// for storage flexibility, but `tokio_postgres::Client::query` takes
+/// `&[&(dyn ToSql + Sync)]`. Every terminal in `query::*` performs the same
+/// reborrow; centralising it here keeps the call sites uniform.
+pub fn as_params(binds: &[Box<dyn ToSql + Sync + Send>]) -> Vec<&(dyn ToSql + Sync)> {
+    binds
+        .iter()
+        .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+        .collect()
 }
 
 #[cfg(test)]
