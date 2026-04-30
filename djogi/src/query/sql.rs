@@ -700,6 +700,46 @@ fn push_tail_qualified<T: Model>(
     qs.lock.push_tail(acc);
 }
 
+/// Emit the shared HAVING / ORDER BY / LIMIT / OFFSET tail for grouped-aggregate
+/// SELECTs. Four grouped builders (`build_grouped_annotated_select`,
+/// `build_spatial_join_grouped_select`, `build_cluster_grouped_select`,
+/// `build_geohash_grouped_select`) used to inline this 25-line block verbatim;
+/// extracting it here keeps their phase ordering visible and removes the copy.
+///
+/// `OrderExpr::emit` is called with `parent_table = None` because grouped
+/// queries reference their own outer projection, not a joined parent table.
+fn push_grouped_tail(
+    acc: &mut SqlAccumulator,
+    having: Option<&crate::expr::node::ExprNode>,
+    order: &[crate::query::order::OrderExpr],
+    limit: Option<u64>,
+    offset: Option<u64>,
+) {
+    if let Some(h) = having {
+        acc.push_sql(" HAVING ");
+        crate::expr::sql::emit_expr(acc, h);
+    }
+
+    if !order.is_empty() {
+        acc.push_sql(" ORDER BY ");
+        for (i, o) in order.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            o.emit(acc, None);
+        }
+    }
+
+    if let Some(n) = limit {
+        acc.push_sql(" LIMIT ");
+        acc.push_bind(n as i64);
+    }
+    if let Some(n) = offset {
+        acc.push_sql(" OFFSET ");
+        acc.push_bind(n as i64);
+    }
+}
+
 /// Build `SELECT [DISTINCT [ON (...)]] <COLUMN_LIST> FROM <table> [WHERE ...]
 /// [ORDER BY ...] [LIMIT $n] [OFFSET $n]`.
 ///
@@ -1093,32 +1133,13 @@ where
         }
     }
 
-    // HAVING
-    if let Some(h) = &gaq.having {
-        acc.push_sql(" HAVING ");
-        crate::expr::sql::emit_expr(&mut acc, h);
-    }
-
-    // ORDER BY
-    if !gaq.order.is_empty() {
-        acc.push_sql(" ORDER BY ");
-        for (i, o) in gaq.order.iter().enumerate() {
-            if i > 0 {
-                acc.push_sql(", ");
-            }
-            o.emit(&mut acc, None);
-        }
-    }
-
-    // LIMIT / OFFSET
-    if let Some(n) = gaq.limit {
-        acc.push_sql(" LIMIT ");
-        acc.push_bind(n as i64);
-    }
-    if let Some(n) = gaq.offset {
-        acc.push_sql(" OFFSET ");
-        acc.push_bind(n as i64);
-    }
+    push_grouped_tail(
+        &mut acc,
+        gaq.having.as_ref(),
+        &gaq.order,
+        gaq.limit,
+        gaq.offset,
+    );
 
     acc
 }
@@ -1225,32 +1246,13 @@ where
         }
     }
 
-    // HAVING
-    if let Some(h) = &gaq.having {
-        acc.push_sql(" HAVING ");
-        crate::expr::sql::emit_expr(&mut acc, h);
-    }
-
-    // ORDER BY
-    if !gaq.order.is_empty() {
-        acc.push_sql(" ORDER BY ");
-        for (i, o) in gaq.order.iter().enumerate() {
-            if i > 0 {
-                acc.push_sql(", ");
-            }
-            o.emit(&mut acc, None);
-        }
-    }
-
-    // LIMIT / OFFSET
-    if let Some(n) = gaq.limit {
-        acc.push_sql(" LIMIT ");
-        acc.push_bind(n as i64);
-    }
-    if let Some(n) = gaq.offset {
-        acc.push_sql(" OFFSET ");
-        acc.push_bind(n as i64);
-    }
+    push_grouped_tail(
+        &mut acc,
+        gaq.having.as_ref(),
+        &gaq.order,
+        gaq.limit,
+        gaq.offset,
+    );
 
     acc
 }
@@ -1344,32 +1346,15 @@ where
     // Outer GROUP BY on the materialised cluster_id column — now valid.
     acc.push_sql(" GROUP BY cluster_id");
 
-    // HAVING filters the aggregated groups (outer scope).
-    if let Some(h) = &gaq.having {
-        acc.push_sql(" HAVING ");
-        crate::expr::sql::emit_expr(&mut acc, h);
-    }
-
-    // ORDER BY (outer scope).
-    if !gaq.order.is_empty() {
-        acc.push_sql(" ORDER BY ");
-        for (i, o) in gaq.order.iter().enumerate() {
-            if i > 0 {
-                acc.push_sql(", ");
-            }
-            o.emit(&mut acc, None);
-        }
-    }
-
-    // LIMIT / OFFSET (outer scope).
-    if let Some(n) = gaq.limit {
-        acc.push_sql(" LIMIT ");
-        acc.push_bind(n as i64);
-    }
-    if let Some(n) = gaq.offset {
-        acc.push_sql(" OFFSET ");
-        acc.push_bind(n as i64);
-    }
+    // Outer-scope tail: HAVING / ORDER BY / LIMIT / OFFSET filter the
+    // aggregated groups, not the inner pre-cluster rows.
+    push_grouped_tail(
+        &mut acc,
+        gaq.having.as_ref(),
+        &gaq.order,
+        gaq.limit,
+        gaq.offset,
+    );
 
     acc
 }
@@ -1427,32 +1412,13 @@ where
     // GROUP BY geohash  (references the scalar-function alias)
     acc.push_sql(" GROUP BY geohash");
 
-    // HAVING
-    if let Some(h) = &gaq.having {
-        acc.push_sql(" HAVING ");
-        crate::expr::sql::emit_expr(&mut acc, h);
-    }
-
-    // ORDER BY
-    if !gaq.order.is_empty() {
-        acc.push_sql(" ORDER BY ");
-        for (i, o) in gaq.order.iter().enumerate() {
-            if i > 0 {
-                acc.push_sql(", ");
-            }
-            o.emit(&mut acc, None);
-        }
-    }
-
-    // LIMIT / OFFSET
-    if let Some(n) = gaq.limit {
-        acc.push_sql(" LIMIT ");
-        acc.push_bind(n as i64);
-    }
-    if let Some(n) = gaq.offset {
-        acc.push_sql(" OFFSET ");
-        acc.push_bind(n as i64);
-    }
+    push_grouped_tail(
+        &mut acc,
+        gaq.having.as_ref(),
+        &gaq.order,
+        gaq.limit,
+        gaq.offset,
+    );
 
     acc
 }
