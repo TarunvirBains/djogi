@@ -1725,11 +1725,7 @@ mod tests {
 
     #[test]
     fn in_empty_list_renders_false() {
-        let leaf = Leaf {
-            column: "id",
-            op: LookupOp::In,
-            value: FilterValue::List(Vec::new()),
-        };
+        let leaf = Leaf::new("id", LookupOp::In, FilterValue::List(Vec::new()));
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
         let acc = build_select(&qs);
         let sql = acc.sql();
@@ -1738,11 +1734,7 @@ mod tests {
 
     #[test]
     fn not_in_empty_list_renders_true() {
-        let leaf = Leaf {
-            column: "id",
-            op: LookupOp::NotIn,
-            value: FilterValue::List(Vec::new()),
-        };
+        let leaf = Leaf::new("id", LookupOp::NotIn, FilterValue::List(Vec::new()));
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
         let acc = build_select(&qs);
         let sql = acc.sql();
@@ -1751,15 +1743,15 @@ mod tests {
 
     #[test]
     fn in_list_emits_one_placeholder_per_element() {
-        let leaf = Leaf {
-            column: "id",
-            op: LookupOp::In,
-            value: FilterValue::List(vec![
+        let leaf = Leaf::new(
+            "id",
+            LookupOp::In,
+            FilterValue::List(vec![
                 FilterValue::I64(1),
                 FilterValue::I64(2),
                 FilterValue::I64(3),
             ]),
-        };
+        );
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
         let acc = build_select(&qs);
         let sql = acc.sql();
@@ -1768,14 +1760,14 @@ mod tests {
 
     #[test]
     fn between_emits_two_binds() {
-        let leaf = Leaf {
-            column: "age",
-            op: LookupOp::Between,
-            value: FilterValue::Pair(
+        let leaf = Leaf::new(
+            "age",
+            LookupOp::Between,
+            FilterValue::Pair(
                 Box::new(FilterValue::I32(10)),
                 Box::new(FilterValue::I32(20)),
             ),
-        };
+        );
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
         let acc = build_select(&qs);
         let sql = acc.sql();
@@ -1784,11 +1776,7 @@ mod tests {
 
     #[test]
     fn is_null_takes_no_bind() {
-        let leaf = Leaf {
-            column: "deleted_at",
-            op: LookupOp::IsNull,
-            value: FilterValue::Null,
-        };
+        let leaf = Leaf::new("deleted_at", LookupOp::IsNull, FilterValue::Null);
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
         let acc = build_select(&qs);
         let sql = acc.sql();
@@ -1858,11 +1846,11 @@ mod tests {
         // an `IContains` leaf manually — we cannot assert on the bind value
         // from `sql()` alone, but we CAN observe that it was a single bind
         // (not multiple).
-        let leaf = Leaf {
-            column: "title",
-            op: LookupOp::IContains,
-            value: FilterValue::String("50% off_sale\\".to_string()),
-        };
+        let leaf = Leaf::new(
+            "title",
+            LookupOp::IContains,
+            FilterValue::String("50% off_sale\\".to_string()),
+        );
         let qs: QuerySet<Fake> = QuerySet::new().filter(|_| Condition::Leaf(leaf));
         let acc = build_select(&qs);
         let sql = acc.sql();
