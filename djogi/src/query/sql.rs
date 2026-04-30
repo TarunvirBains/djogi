@@ -144,54 +144,15 @@ pub(crate) fn push_filter_value(acc: &mut SqlAccumulator, v: FilterValue) {
 }
 
 /// Emit a list element for `IN (...)` / `NOT IN (...)`.
-/// Factored out of `emit_leaf`'s `In`/`NotIn` arm.
+///
+/// Same binding behaviour as [`push_filter_value`] for scalar variants;
+/// rejects `Null`, `Array*`, `List`, and `Pair` (the typed `FieldRef::in_list`
+/// API prevents these by construction, so reaching them here is a framework
+/// bug). The reject branch is explicit so the caller cannot accidentally
+/// thread a `Null` through `IN ($1)` — Postgres `col IN (NULL)` is always
+/// `NULL`, never `TRUE`.
 fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
     match v {
-        FilterValue::String(s) => {
-            acc.push_bind(s);
-        }
-        FilterValue::I16(n) => {
-            acc.push_bind(n);
-        }
-        FilterValue::I32(n) => {
-            acc.push_bind(n);
-        }
-        FilterValue::I64(n) => {
-            acc.push_bind(n);
-        }
-        FilterValue::F32(n) => {
-            acc.push_bind(n);
-        }
-        FilterValue::F64(n) => {
-            acc.push_bind(n);
-        }
-        FilterValue::Bool(b) => {
-            acc.push_bind(b);
-        }
-        FilterValue::DateTime(d) => {
-            acc.push_bind(d);
-        }
-        FilterValue::Date(d) => {
-            acc.push_bind(d);
-        }
-        FilterValue::Uuid(u) => {
-            acc.push_bind(u);
-        }
-        FilterValue::HeerId(h) => {
-            acc.push_bind(h);
-        }
-        FilterValue::RanjId(r) => {
-            acc.push_bind(r);
-        }
-        FilterValue::HeerIdDesc(h) => {
-            acc.push_bind(h);
-        }
-        FilterValue::RanjIdDesc(r) => {
-            acc.push_bind(r);
-        }
-        FilterValue::Decimal(d) => {
-            acc.push_bind(d);
-        }
         FilterValue::Null
         | FilterValue::List(_)
         | FilterValue::Pair(_, _)
@@ -199,14 +160,11 @@ fn push_list_element(acc: &mut SqlAccumulator, v: FilterValue) {
         | FilterValue::ArrayI32(_)
         | FilterValue::ArrayI64(_)
         | FilterValue::ArrayBool(_) => {
-            // Same reasoning as `push_filter_value`: enum is
-            // `#[non_exhaustive]` at the crate boundary but exhaustive
-            // within this crate. Any new variant added to `FilterValue`
-            // must also be taught to bind here.
             unreachable!(
                 "nested/null/array FilterValue in IN list — typed FieldRef API prevents this"
             )
         }
+        scalar => push_filter_value(acc, scalar),
     }
 }
 
