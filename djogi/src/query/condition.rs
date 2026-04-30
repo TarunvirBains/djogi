@@ -219,6 +219,28 @@ pub enum LookupOp {
     IRegex,
 }
 
+impl LookupOp {
+    /// SQL operator token for the simple binary-comparison forms emitted as
+    /// `col OP value`. Returns `None` for variants whose emission shape
+    /// differs (`IS NULL`, `BETWEEN`, `IN`, `ILIKE`, `LOWER(col) = LOWER(v)`).
+    ///
+    /// Used by the leaf emitters in `query::sql` to collapse what was
+    /// previously eight near-identical match arms into one path.
+    pub(crate) fn binary_op_token(self) -> Option<&'static str> {
+        match self {
+            LookupOp::Eq => Some(" = "),
+            LookupOp::Neq => Some(" <> "),
+            LookupOp::Gt => Some(" > "),
+            LookupOp::Gte => Some(" >= "),
+            LookupOp::Lt => Some(" < "),
+            LookupOp::Lte => Some(" <= "),
+            LookupOp::Regex => Some(" ~ "),
+            LookupOp::IRegex => Some(" ~* "),
+            _ => None,
+        }
+    }
+}
+
 /// A concrete value to bind to a query parameter. One variant per
 /// SQL-bindable Rust type Djogi knows about. Implementers adding a new
 /// column type (e.g. `Decimal` in Phase 5) extend this enum here; `sql.rs`

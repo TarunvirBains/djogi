@@ -235,37 +235,13 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
         }
         acc.push_sql(col);
     }
+    if let Some(tok) = leaf.op.binary_op_token() {
+        push_col(acc, col, parent_table);
+        acc.push_sql(tok);
+        push_filter_value(acc, leaf.value);
+        return;
+    }
     match leaf.op {
-        LookupOp::Eq => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" = ");
-            push_filter_value(acc, leaf.value);
-        }
-        LookupOp::Neq => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" <> ");
-            push_filter_value(acc, leaf.value);
-        }
-        LookupOp::Gt => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" > ");
-            push_filter_value(acc, leaf.value);
-        }
-        LookupOp::Gte => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" >= ");
-            push_filter_value(acc, leaf.value);
-        }
-        LookupOp::Lt => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" < ");
-            push_filter_value(acc, leaf.value);
-        }
-        LookupOp::Lte => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" <= ");
-            push_filter_value(acc, leaf.value);
-        }
         LookupOp::IsNull => {
             push_col(acc, col, parent_table);
             acc.push_sql(" IS NULL");
@@ -307,16 +283,6 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
             acc.push_sql(") = LOWER(");
             push_filter_value(acc, leaf.value);
             acc.push_sql(")");
-        }
-        LookupOp::Regex => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" ~ ");
-            push_filter_value(acc, leaf.value);
-        }
-        LookupOp::IRegex => {
-            push_col(acc, col, parent_table);
-            acc.push_sql(" ~* ");
-            push_filter_value(acc, leaf.value);
         }
         LookupOp::Between => {
             let (a, b) = match leaf.value {
@@ -360,6 +326,17 @@ fn emit_leaf(acc: &mut SqlAccumulator, leaf: Leaf, parent_table: Option<&'static
             }
             acc.push_sql(")");
         }
+        // Binary-op variants are handled by the `binary_op_token` early return
+        // above; reaching them here would mean `binary_op_token` returned None
+        // for a variant it should have covered — a framework bug, not user error.
+        LookupOp::Eq
+        | LookupOp::Neq
+        | LookupOp::Gt
+        | LookupOp::Gte
+        | LookupOp::Lt
+        | LookupOp::Lte
+        | LookupOp::Regex
+        | LookupOp::IRegex => unreachable!("binary-op LookupOp routed past early return"),
     }
 }
 
@@ -505,7 +482,7 @@ fn emit_jsonb_path_leaf(
     leaf: crate::jsonb::path::JsonbPathLeaf,
     parent_table: Option<&'static str>,
 ) {
-    use LookupOp::{Eq, Gt, Gte, In, IsNotNull, IsNull, Lt, Lte, Neq};
+    use LookupOp::{In, IsNotNull, IsNull};
 
     /// Build the LHS expression from structured parts — `(col->'a'->>'b')::cast`.
     /// When `parent_table` is Some, the column reference is `{table}.{col}`.
@@ -542,37 +519,13 @@ fn emit_jsonb_path_leaf(
         }
     }
 
+    if let Some(tok) = leaf.op.binary_op_token() {
+        build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
+        acc.push_sql(tok);
+        push_filter_value(acc, leaf.value);
+        return;
+    }
     match leaf.op {
-        Eq => {
-            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
-            acc.push_sql(" = ");
-            push_filter_value(acc, leaf.value);
-        }
-        Neq => {
-            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
-            acc.push_sql(" <> ");
-            push_filter_value(acc, leaf.value);
-        }
-        Gt => {
-            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
-            acc.push_sql(" > ");
-            push_filter_value(acc, leaf.value);
-        }
-        Gte => {
-            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
-            acc.push_sql(" >= ");
-            push_filter_value(acc, leaf.value);
-        }
-        Lt => {
-            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
-            acc.push_sql(" < ");
-            push_filter_value(acc, leaf.value);
-        }
-        Lte => {
-            build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
-            acc.push_sql(" <= ");
-            push_filter_value(acc, leaf.value);
-        }
         IsNull => {
             build_lhs(acc, leaf.column, leaf.path, leaf.cast, parent_table);
             acc.push_sql(" IS NULL");
