@@ -2444,7 +2444,13 @@ fn severity_of(op: &SchemaOperation) -> Severity {
             }
         }
         SchemaOperation::AddColumn { column, .. } => {
-            if !column.nullable && column.default_sql.is_none() {
+            // A column is Lossy on add only if Postgres has no value
+            // source for existing rows. Three sources are recognised:
+            //   1. nullable column → NULL fills existing rows
+            //   2. default_sql → DEFAULT expression fills existing rows
+            //   3. generated → GENERATED ALWAYS expression fills rows
+            // Only when none of these are set is the add Lossy.
+            if !column.nullable && column.default_sql.is_none() && column.generated.is_none() {
                 Severity::Lossy
             } else {
                 Severity::Additive

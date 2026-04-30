@@ -1833,6 +1833,28 @@ impl FieldAttrs {
             // the redundancy silently.
         }
 
+        // PR 7 — `#[field(generated = "...")]` and `#[field(default
+        // = "...")]` are mutually exclusive. Postgres rejects a column
+        // declaration that carries both a DEFAULT clause and a
+        // GENERATED ALWAYS AS (...) STORED clause; we surface the
+        // conflict at macro time so the operator sees the rule before
+        // any DDL is emitted.
+        if attrs.generated.is_some() && attrs.default.is_some() {
+            let span = attrs
+                .generated
+                .as_ref()
+                .map(|s| s.span())
+                .unwrap_or_else(|| field.span());
+            return Err(syn::Error::new(
+                span,
+                "`#[field(generated = \"...\")]` cannot be combined with \
+                 `#[field(default = \"...\")]`. Postgres rejects a column \
+                 declaration with both a DEFAULT and a GENERATED ALWAYS \
+                 AS (...) STORED clause — the generation expression is \
+                 the value source. Drop the `default` attribute.",
+            ));
+        }
+
         Ok(attrs)
     }
 }

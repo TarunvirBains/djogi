@@ -216,14 +216,20 @@ pub fn classify_operation(
         // (catalog-only; no data loss in the FK column itself).
         SchemaOperation::DropForeignKey { .. } => OnlineSafetyClassification::OnlineSafe,
 
-        // §7 (PR 7): "Add EXCLUDE constraint to populated table" →
-        // OfflineOnly. Postgres 18 has no `NOT VALID` for `EXCLUDE`, so
-        // two-phase staging is structurally impossible — the constraint
-        // check runs under AccessExclusiveLock against every existing
-        // row. Empty-table additions still classify here; compose's
-        // empty-table fast-path emits the constraint inline before any
-        // rows exist (PR 7 task 4).
-        SchemaOperation::AddExclusionConstraint { .. } => OnlineSafetyClassification::OfflineOnly,
+        // §7 (PR 7): "Add EXCLUDE constraint" — empty existing table
+        // (estimated_rows == Some(0)) routes through OnlineSafe; the
+        // ALTER TABLE inline form applies in a single transactional
+        // segment. Populated tables (Some(n) where n > 0) AND unknown
+        // row counts (None) classify OfflineOnly: Pg18 has no
+        // `NOT VALID` for `EXCLUDE`, so two-phase staging is
+        // structurally impossible — the constraint check runs under
+        // AccessExclusiveLock against every existing row. The
+        // unknown-row-count case takes the conservative offline path
+        // because the classifier cannot prove the table is empty.
+        SchemaOperation::AddExclusionConstraint { .. } => match ctx.estimated_rows {
+            Some(0) => OnlineSafetyClassification::OnlineSafe,
+            _ => OnlineSafetyClassification::OfflineOnly,
+        },
 
         // Dropping an exclusion constraint is catalog-only — Postgres
         // releases the underlying GiST/B-tree index without scanning
@@ -398,15 +404,19 @@ fn classify_add_column(
     column: &ColumnSchema,
     ctx: &ClassifyContext<'_>,
 ) -> OnlineSafetyClassification {
-    // §7 (PR 7): "Add stored generated column to populated table" →
-    // OfflineOnly. Postgres rewrites every row under
-    // AccessExclusiveLock to materialise the stored expression. The
-    // empty-table case still routes here; compose's empty-table fast-
-    // path emits the column inline before any rows exist (PR 7 task 4).
-    // No `Pattern` exists for this — see
+    // §7 (PR 7): "Add stored generated column" — empty existing table
+    // (estimated_rows == Some(0)) routes through OnlineSafe; the
+    // ALTER TABLE ADD COLUMN form applies in a single transactional
+    // segment. Populated tables (Some(n) where n > 0) and unknown
+    // row counts (None) classify OfflineOnly: Postgres rewrites every
+    // row under AccessExclusiveLock to materialise the stored
+    // expression. No `Pattern` exists for the populated case — see
     // [`crate::live_migrate::patterns::generated_column_refusal`].
     if column.generated.is_some() {
-        return OnlineSafetyClassification::OfflineOnly;
+        return match ctx.estimated_rows {
+            Some(0) => OnlineSafetyClassification::OnlineSafe,
+            _ => OnlineSafetyClassification::OfflineOnly,
+        };
     }
     let Some(default) = column.default_sql.as_deref() else {
         // No default at all. Nullable → catalog-only fast-path.
@@ -2101,17 +2111,46 @@ mod tests {
     }
 
     #[test]
-    fn add_exclusion_constraint_classifies_as_offline_only() {
+    fn add_exclusion_constraint_on_empty_table_is_online_safe() {
+        // Empty existing table (estimated_rows == Some(0)) →
+        // OnlineSafe. The ALTER TABLE inline form applies in a single
+        // transactional segment.
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddExclusionConstraint {
             table: "bookings".to_string(),
             exclusion: exclusion("no_overlap"),
         };
-        // Even on an empty table the verdict is OfflineOnly — Pg18 has
-        // no `NOT VALID` for `EXCLUDE`, so the live-plan layer refuses.
-        // The empty-table case is handled by compose's fast-path
-        // (PR 7 task 4) which emits the constraint inline before any
-        // rows exist; that path bypasses the classifier entirely.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe,
+        );
+    }
+
+    #[test]
+    fn add_exclusion_constraint_on_populated_table_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(1_000_000));
+        let op = SchemaOperation::AddExclusionConstraint {
+            table: "bookings".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
+        // Populated tables: Pg18 has no `NOT VALID` for `EXCLUDE`, so
+        // the live-plan layer refuses; operator must hand-edit under
+        // a maintenance window per the v3 plan.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn add_exclusion_constraint_with_unknown_row_count_is_offline_only() {
+        // Unknown row count (None) takes the conservative OfflineOnly
+        // path — the classifier cannot prove the table is empty.
+        let (_unused, ctx) = ctx_app(None);
+        let op = SchemaOperation::AddExclusionConstraint {
+            table: "bookings".to_string(),
+            exclusion: exclusion("no_overlap"),
+        };
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::OfflineOnly,
@@ -2135,14 +2174,44 @@ mod tests {
     }
 
     #[test]
-    fn add_stored_generated_column_classifies_as_offline_only() {
+    fn add_stored_generated_column_on_empty_table_is_online_safe() {
         let (_unused, ctx) = ctx_app(Some(0));
         let op = SchemaOperation::AddColumn {
             table: "users".to_string(),
             column: generated_column("email_lower", "LOWER(email)"),
         };
-        // Empty-table case still routes here; compose's fast-path is
-        // what bypasses the classifier when no rows exist.
+        // Empty existing table: the rewrite is a no-op data-wise; the
+        // ALTER TABLE ADD COLUMN form applies in a single
+        // transactional segment.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OnlineSafe,
+        );
+    }
+
+    #[test]
+    fn add_stored_generated_column_on_populated_table_is_offline_only() {
+        let (_unused, ctx) = ctx_app(Some(50_000));
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: generated_column("email_lower", "LOWER(email)"),
+        };
+        // Populated tables: Postgres rewrites every row under
+        // AccessExclusiveLock to materialise the stored expression.
+        assert_eq!(
+            classify_operation(&op, &ctx),
+            OnlineSafetyClassification::OfflineOnly,
+        );
+    }
+
+    #[test]
+    fn add_stored_generated_column_with_unknown_row_count_is_offline_only() {
+        let (_unused, ctx) = ctx_app(None);
+        let op = SchemaOperation::AddColumn {
+            table: "users".to_string(),
+            column: generated_column("email_lower", "LOWER(email)"),
+        };
+        // Unknown row count → conservative offline path.
         assert_eq!(
             classify_operation(&op, &ctx),
             OnlineSafetyClassification::OfflineOnly,
