@@ -156,16 +156,13 @@ fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
     let updated_at_field: syn::Field = parse_quote! { pub updated_at: ::djogi::types::DateTime };
 
     if let syn::Fields::Named(named) = &mut struct_item.fields {
-        let existing: Vec<_> = named.named.iter().cloned().collect();
-        named.named.clear();
+        let user_fields = std::mem::take(&mut named.named);
         if let Some(id) = id_field {
             named.named.push(id);
         }
         named.named.push(created_at_field);
         named.named.push(updated_at_field);
-        for field in existing {
-            named.named.push(field);
-        }
+        named.named.extend(user_fields);
     }
 }
 
