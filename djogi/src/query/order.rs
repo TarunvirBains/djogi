@@ -268,9 +268,10 @@ impl OrderExpr {
     /// Build an `OrderExpr::SpatialDistance` for the given geography column and
     /// center point.
     ///
-    /// The `pk_column` is appended as a deterministic tiebreaker per RQ6 of the
-    /// Phase 6 plan. Pass `M::pk_column()` here; for all models Djogi ships with
-    /// a default PK this is `"id"`.
+    /// The `pk_column` is appended as a deterministic tiebreaker — same
+    /// distance buckets must yield the same row order across pages. Pass
+    /// `M::pk_column()` here; for models with the default primary key this
+    /// is `"id"`.
     ///
     /// Emits:
     /// ```sql

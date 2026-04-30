@@ -342,12 +342,15 @@ impl<T: Model> QuerySet<T> {
     /// `Fields` handle and returns one or more typed
     /// [`UpdateAssignment`]s (either a single assignment or a `Vec`).
     ///
-    /// Phase 2 supports literal assignments only — `f.col().set(value)`
-    /// where `value: V: IntoFilterValue`. Expression-backed SET
-    /// (`col = col + 1`, `col = NOW()`, `col = other_col`) lands in
-    /// Phase 4 alongside the rest of the expression layer; until then,
-    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute)
-    /// is the documented escape hatch.
+    /// Two assignment forms are accepted in the closure:
+    ///
+    /// - Literal: `f.col().set(value)` where `value: V: IntoFilterValue`.
+    /// - Expression IR: `f.col().set_expr(expr)` for `col = col + 1`,
+    ///   `col = NOW()`, `col = other_col`, and similar shapes the
+    ///   [`crate::expr`] builder supports.
+    ///
+    /// For SQL the expression builder cannot express, reach for
+    /// [`DjogiContext::raw_execute`](crate::DjogiContext::raw_execute).
     ///
     /// The returned [`UpdateStmt`] is inert — the actual SQL runs when
     /// the caller invokes [`UpdateStmt::execute`] with a

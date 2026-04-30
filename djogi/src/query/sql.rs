@@ -700,11 +700,11 @@ fn push_grouped_tail(
 pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumulator {
     let mut acc = SqlAccumulator::new("");
     // Emit the canonical `FromPgRow::COLUMN_LIST` rather than `*`. Ordinal
-    // decode (T3) relies on wire column order matching struct-field order;
+    // decode relies on wire column order matching struct-field order;
     // `SELECT *` leaks DDL column order into the decode path, which
-    // Phase 4 fixtures like `accounts` (user columns before framework
-    // columns) do not guarantee. Baking the canonical list pins the
-    // order regardless of migration shape.
+    // models with non-default column ordering (user-defined columns
+    // declared before framework columns) do not guarantee. Baking the
+    // canonical list pins the order regardless of migration shape.
     match &qs.distinct {
         DistinctMode::None => {
             acc.push_sql("SELECT ");
@@ -751,12 +751,10 @@ pub(crate) fn build_select<T: Model + FromPgRow>(qs: &QuerySet<T>) -> SqlAccumul
 ///
 /// # `DistinctMode` interaction
 ///
-/// Phase 3 Task 5 does not ship `DISTINCT` interaction with
-/// select_related — the parent's `DISTINCT` semantics depend on
-/// whether the joined columns should participate in the distinct
-/// tuple, which is a Phase 4+ design decision. If the queryset has a
-/// non-`None` `DistinctMode`, the emitter preserves it exactly: `SELECT
-/// DISTINCT {parent_cols}...`. Callers who combine `.distinct()` with
+/// Whether the joined columns should participate in the distinct tuple
+/// is left to the caller. If the queryset has a non-`None`
+/// `DistinctMode`, the emitter preserves it exactly: `SELECT DISTINCT
+/// {parent_cols}...`. Callers who combine `.distinct()` with
 /// `.select_related(...)` get consistent shape — distinct is applied
 /// to the full projection (parent + aliased children) — but they
 /// should verify the emitted SQL matches their intent.
@@ -1594,7 +1592,7 @@ pub(crate) fn assert_no_alias_collision(sql: &str) -> Result<(), crate::DjogiErr
 
 /// Split a SQL fragment on commas that are at the top parenthesis level.
 ///
-/// Phase 6.5's emitter output uses simple function-call args, so a single
+/// The grouped-emitter output uses simple function-call args, so a single
 /// paren counter suffices. No regex — depth is tracked byte by byte using
 /// `u8` comparison on `b'('` and `b')'`.
 fn split_top_level_commas(s: &str) -> Vec<&str> {
