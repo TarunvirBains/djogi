@@ -56,9 +56,21 @@ use syn::{ItemStruct, parse_quote, spanned::Spanned};
 
 use super::attrs::{ModelAttrs, PkStrategy};
 
-/// Reserved field names that the macro injects and users cannot redefine.
-/// `id` is conditionally reserved — see `reserved_for_pk`.
+/// Framework field names that always exist post-injection: `created_at`
+/// and `updated_at`. The `id` field is added on top of this list when the
+/// PK strategy injects one — see [`is_framework_column`].
 const ALWAYS_RESERVED: &[&str] = &["created_at", "updated_at"];
+
+/// `true` when `name` denotes a field that the macro injects under the
+/// current `model_attrs.pk` strategy.
+///
+/// Used by [`validate_field_names`] (to reject user fields whose names
+/// collide with framework columns) and by [`generate_default_impl`] (to
+/// skip framework columns in the user-field default loop, since they are
+/// initialised explicitly by the surrounding `id` / timestamp blocks).
+fn is_framework_column(name: &str, model_attrs: &ModelAttrs) -> bool {
+    ALWAYS_RESERVED.contains(&name) || (reserved_for_pk(model_attrs) && name == "id")
+}
 
 /// Prepend framework fields to the struct and return the modified struct
 /// definition plus a `Default` impl, concatenated into a single `TokenStream`.
@@ -111,14 +123,11 @@ fn validate_shape(struct_item: &ItemStruct) -> syn::Result<()> {
 /// for `pk = None`, where the user is expected to declare their own PK
 /// field (which may or may not be called `id`).
 fn validate_field_names(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<()> {
-    let id_is_reserved = reserved_for_pk(model_attrs);
     if let syn::Fields::Named(named) = &struct_item.fields {
         for field in &named.named {
             let Some(ident) = &field.ident else { continue };
             let name = ident.to_string();
-            let is_reserved =
-                ALWAYS_RESERVED.contains(&name.as_str()) || (id_is_reserved && name == "id");
-            if is_reserved {
+            if is_framework_column(&name, model_attrs) {
                 return Err(syn::Error::new(
                     field.span(),
                     format!(
@@ -187,18 +196,12 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
 
     // Names that were actually injected (and therefore must be excluded from
     // the user-field default loop because they're initialised explicitly below).
-    let skip_id = !matches!(model_attrs.pk, PkStrategy::None);
-
     let user_field_defaults: Vec<TokenStream> = struct_item
         .fields
         .iter()
         .filter(|f| {
             let n = f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
-            match n.as_str() {
-                "created_at" | "updated_at" => false,
-                "id" if skip_id => false,
-                _ => true,
-            }
+            !is_framework_column(&n, model_attrs)
         })
         .map(|f| {
             let fname = &f.ident;
