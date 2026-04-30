@@ -782,9 +782,19 @@ pub(crate) fn build_select_joined<T: Model>(qs: &QuerySet<T>) -> SqlAccumulator 
 /// is added when `window` is `None`: this path is used for both the
 /// scalar terminal and the grouped annotate SELECT list, neither of which
 /// should silently grow a window clause.
-pub(crate) fn emit_aggregate_with_cast(
+///
+/// `default_window` controls fallback behaviour when the aggregate carries
+/// no `.over(|w| ...)` window spec:
+/// - `None` — emit no window clause at all (scalar terminal + grouped
+///   annotate SELECT, neither of which should silently grow `OVER ()`).
+/// - `Some(s)` — emit `s` as the default (the ungrouped annotate path
+///   uses `Some(" OVER ()")` so SELECT-list-form aggregates are valid
+///   without a `GROUP BY` — see [`emit_aggregate_with_window_and_cast`]
+///   for the rationale).
+fn emit_aggregate_inner(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
+    default_window: Option<&'static str>,
 ) {
     let (cast_to, window) = match agg {
         crate::expr::node::ExprNode::Aggregate {
@@ -798,13 +808,25 @@ pub(crate) fn emit_aggregate_with_cast(
         acc.push_sql("(");
     }
     crate::expr::sql::emit_expr(acc, agg);
-    if let Some(ws) = window {
-        ws.emit(acc);
+    match window {
+        Some(ws) => ws.emit(acc),
+        None => {
+            if let Some(s) = default_window {
+                acc.push_sql(s);
+            }
+        }
     }
     if let Some(ty) = cast_to {
         acc.push_sql(")::");
         acc.push_sql(ty);
     }
+}
+
+pub(crate) fn emit_aggregate_with_cast(
+    acc: &mut SqlAccumulator,
+    agg: &crate::expr::node::ExprNode,
+) {
+    emit_aggregate_inner(acc, agg, None);
 }
 
 /// Emit `(AGG(..) OVER ())::CAST` for the annotate-SELECT-list path —
@@ -814,43 +836,21 @@ pub(crate) fn emit_aggregate_with_cast(
 ///
 /// # Why `OVER ()` rather than explicit `GROUP BY`
 ///
-/// `annotate(|f| f.col().sum())` on a Task 4 queryset has no natural
+/// `annotate(|f| f.col().sum())` on an ungrouped queryset has no natural
 /// grouping key — the main row's PK would give a one-row-per-group
 /// partition (every aggregate collapses to the per-row column value).
 /// An unbounded window function (`OVER ()`) produces the table-wide
 /// aggregate value on every returned row, which is the useful
-/// semantics Django users expect when annotating a non-reverse-
-/// relation column.
+/// per-row-with-table-aggregate semantics annotate users expect.
 ///
-/// Reverse-relation aggregates (`f.orders.count()` — Task 5 scope)
-/// may need `OVER (PARTITION BY parent.id)` after a LATERAL join;
-/// that is a deliberate scope boundary here. Task 4 aims for the
-/// simplest annotate shape that pairs with the self-column aggregate
-/// helpers already on `FieldRef`.
+/// Reverse-relation aggregates (`f.orders.count()`) may need `OVER
+/// (PARTITION BY parent.id)` after a LATERAL join; that is a deliberate
+/// scope boundary handled by the user-supplied `.over(|w| ...)` spec.
 pub(crate) fn emit_aggregate_with_window_and_cast(
     acc: &mut SqlAccumulator,
     agg: &crate::expr::node::ExprNode,
 ) {
-    let (cast, window) = match agg {
-        crate::expr::node::ExprNode::Aggregate {
-            cast_to, window, ..
-        } => (*cast_to, window.as_ref()),
-        _ => (None, None),
-    };
-    if cast.is_some() {
-        acc.push_sql("(");
-    }
-    crate::expr::sql::emit_expr(acc, agg);
-    // Use the user's window spec when present; fall back to the bare `OVER ()`
-    // default that all pre-T3 ungrouped annotate callers expect.
-    match window {
-        Some(ws) => ws.emit(acc),
-        None => acc.push_sql(" OVER ()"),
-    }
-    if let Some(ty) = cast {
-        acc.push_sql(")::");
-        acc.push_sql(ty);
-    }
+    emit_aggregate_inner(acc, agg, Some(" OVER ()"));
 }
 
 /// Build `SELECT <agg> FROM <table> [WHERE ...]` — the scalar-aggregate
