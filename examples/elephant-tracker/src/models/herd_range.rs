@@ -13,7 +13,7 @@
 use djogi::prelude::*;
 use crate::models::{Herd, Country};
 
-#[djogi::model(
+#[model(
     table = "herd_ranges",
     unique_together = [("herd_id", "country_id", "season")]
 )]

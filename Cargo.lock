@@ -558,6 +558,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "elephant-tracker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "djogi",
+ "heeranjid",
+ "postgres-types",
+ "serde",
+ "serde_json",
+ "time",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

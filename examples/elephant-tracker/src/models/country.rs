@@ -9,7 +9,7 @@
 
 use djogi::prelude::*;
 
-#[djogi::model(table = "countries", pk = "serial")]
+#[model(table = "countries", pk = "serial")]
 #[derive(Debug, Clone)]
 pub struct Country {
     /// ISO 3166-1 alpha-3 code. Unique per row.

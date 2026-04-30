@@ -14,7 +14,7 @@
 
 use djogi::prelude::*;
 
-#[djogi::model(table = "researchers", tenant_key = "org_id")]
+#[model(table = "researchers", tenant_key = "org_id")]
 #[derive(Debug, Clone)]
 pub struct Researcher {
     /// Tenant scope. RLS uses `current_setting('app.tenant_id')::bigint`.

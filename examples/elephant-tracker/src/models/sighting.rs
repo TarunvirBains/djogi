@@ -19,7 +19,7 @@ use djogi::prelude::*;
 use time::OffsetDateTime;
 use crate::models::{Elephant, Researcher};
 
-#[djogi::model(
+#[model(
     table = "sightings",
     outbox(event = "SightingRecorded"),
 )]

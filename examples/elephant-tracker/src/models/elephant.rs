@@ -16,7 +16,7 @@ use djogi::prelude::*;
 use serde::{Deserialize, Serialize};
 use crate::models::Herd;
 
-#[djogi::model(table = "elephants")]
+#[model(table = "elephants")]
 #[derive(Debug, Clone)]
 pub struct Elephant {
     pub name: Tracked<String>,

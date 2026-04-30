@@ -1,5 +1,5 @@
 [workspace]
-members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell"]
+members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "examples/elephant-tracker"]
 resolver = "2"
 
 [workspace.package]

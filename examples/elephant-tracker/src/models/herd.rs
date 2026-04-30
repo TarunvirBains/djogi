@@ -13,7 +13,7 @@
 
 use djogi::prelude::*;
 
-#[djogi::model(table = "herds")]
+#[model(table = "herds")]
 #[derive(Debug, Clone)]
 pub struct Herd {
     /// Display name. Unique within an organization in a real app;
