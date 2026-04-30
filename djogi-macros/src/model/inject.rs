@@ -149,19 +149,8 @@ fn reserved_for_pk(model_attrs: &ModelAttrs) -> bool {
 /// error — `djogi` re-exports `HeerId`, `RanjId`, `DateTime`, etc. via its
 /// `types` module, so a single dependency is all the user ever needs.
 fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
-    let id_field: Option<syn::Field> = match &model_attrs.pk {
-        PkStrategy::HeerId => Some(parse_quote! { pub id: ::djogi::types::HeerId }),
-        PkStrategy::RanjId => Some(parse_quote! { pub id: ::djogi::types::RanjId }),
-        PkStrategy::HeerIdDesc => Some(parse_quote! { pub id: ::djogi::types::HeerIdDesc }),
-        PkStrategy::RanjIdDesc => Some(parse_quote! { pub id: ::djogi::types::RanjIdDesc }),
-        PkStrategy::Serial => Some(parse_quote! { pub id: i32 }),
-        PkStrategy::None => None,
-        // Custom PK: inject the user-provided path verbatim. The macro's
-        // downstream trait impls (`PrimaryKey::sentinel`, `ToSql`/`FromSql`
-        // delegation) are emitted by `djogi::primary_key!` at the path's
-        // definition site.
-        PkStrategy::Custom(path) => Some(parse_quote! { pub id: #path }),
-    };
+    let id_field: Option<syn::Field> = pk_type_tokens(&model_attrs.pk)
+        .map(|ty| parse_quote! { pub id: #ty });
 
     let created_at_field: syn::Field = parse_quote! { pub created_at: ::djogi::types::DateTime };
     let updated_at_field: syn::Field = parse_quote! { pub updated_at: ::djogi::types::DateTime };
@@ -241,27 +230,9 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
         })
         .collect();
 
-    let id_part = match &model_attrs.pk {
-        PkStrategy::HeerId => quote! {
-            id: <::djogi::types::HeerId as ::djogi::primary_key::PrimaryKey>::sentinel(),
-        },
-        PkStrategy::RanjId => quote! {
-            id: <::djogi::types::RanjId as ::djogi::primary_key::PrimaryKey>::sentinel(),
-        },
-        PkStrategy::HeerIdDesc => quote! {
-            id: <::djogi::types::HeerIdDesc as ::djogi::primary_key::PrimaryKey>::sentinel(),
-        },
-        PkStrategy::RanjIdDesc => quote! {
-            id: <::djogi::types::RanjIdDesc as ::djogi::primary_key::PrimaryKey>::sentinel(),
-        },
-        PkStrategy::Serial => quote! {
-            id: <i32 as ::djogi::primary_key::PrimaryKey>::sentinel(),
-        },
-        PkStrategy::None => quote! {},
-        PkStrategy::Custom(path) => quote! {
-            id: <#path as ::djogi::primary_key::PrimaryKey>::sentinel(),
-        },
-    };
+    let id_part = pk_type_tokens(&model_attrs.pk)
+        .map(|ty| quote! { id: <#ty as ::djogi::primary_key::PrimaryKey>::sentinel(), })
+        .unwrap_or_default();
 
     let timestamp_defaults = quote! {
         created_at: ::djogi::types::DateTime::UNIX_EPOCH,
@@ -279,6 +250,26 @@ fn generate_default_impl(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> 
             }
         }
     }
+}
+
+/// Tokens for the `id` field's type under each PK strategy, or `None` when
+/// the macro should not inject an `id` field at all (`pk = None`).
+///
+/// Used by both `inject_fields` (to build the field declaration) and
+/// `generate_default_impl` (to build the `<T as PrimaryKey>::sentinel()`
+/// expression). Custom PK paths are interpolated verbatim — the macro
+/// `djogi::primary_key!` ships the matching trait impls at the path's
+/// definition site.
+fn pk_type_tokens(pk: &PkStrategy) -> Option<TokenStream> {
+    Some(match pk {
+        PkStrategy::HeerId => quote! { ::djogi::types::HeerId },
+        PkStrategy::RanjId => quote! { ::djogi::types::RanjId },
+        PkStrategy::HeerIdDesc => quote! { ::djogi::types::HeerIdDesc },
+        PkStrategy::RanjIdDesc => quote! { ::djogi::types::RanjIdDesc },
+        PkStrategy::Serial => quote! { i32 },
+        PkStrategy::None => return None,
+        PkStrategy::Custom(path) => quote! { #path },
+    })
 }
 
 /// Phase 7-Zero-2 T4 — recognise the built-in PK-shaped types (HeerId
