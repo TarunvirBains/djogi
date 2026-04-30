@@ -382,57 +382,36 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             dictionary,
             query_text,
         } => {
-            // `<col> @@ to_tsquery('<dictionary>', $n)`
-            //
-            // `column` is a `&'static str` validated at FtsFieldRef
-            // construction via `assert_plain_ident`; safe to push as raw SQL.
-            // `dictionary` is a Postgres identifier validated at macro parse
-            // time via byte-level checks; embedded literally (single-quoted)
-            // as `to_tsquery('<dictionary>', ...)`.
-            // `query_text` is user-supplied and therefore ALWAYS bound as a
-            // parameter — never interpolated into the SQL string.
-            acc.push_sql(column);
-            acc.push_sql(" @@ to_tsquery('");
-            acc.push_sql(dictionary);
-            acc.push_sql("', ");
-            acc.push_bind(query_text.clone());
-            acc.push_sql(")");
+            // `<col> @@ to_tsquery('<dictionary>', $n)`. Column and dictionary
+            // identifiers are validated at construction; query_text is user-
+            // supplied so it always rides as a bound parameter.
+            emit_ts(acc, "", column, dictionary, query_text, " @@ ", ")");
         }
-
         ExprNode::TsRank {
             column,
             dictionary,
             query_text,
         } => {
-            // `ts_rank(<col>, to_tsquery('<dictionary>', $n))`
-            //
-            // The `ts_rank` function scores each document against the query;
-            // higher score = more relevant. Bind the query text as a parameter.
-            acc.push_sql("ts_rank(");
-            acc.push_sql(column);
-            acc.push_sql(", to_tsquery('");
-            acc.push_sql(dictionary);
-            acc.push_sql("', ");
-            acc.push_bind(query_text.clone());
-            acc.push_sql("))");
+            // `ts_rank(<col>, to_tsquery('<dictionary>', $n))`. Standard
+            // relevance score — higher = more relevant.
+            emit_ts(acc, "ts_rank(", column, dictionary, query_text, ", ", "))");
         }
-
         ExprNode::TsRankCd {
             column,
             dictionary,
             query_text,
         } => {
-            // `ts_rank_cd(<col>, to_tsquery('<dictionary>', $n))`
-            //
-            // Cover-density ranking — weighs term proximity more heavily
-            // than the standard `ts_rank`. Same bind-parameter pattern.
-            acc.push_sql("ts_rank_cd(");
-            acc.push_sql(column);
-            acc.push_sql(", to_tsquery('");
-            acc.push_sql(dictionary);
-            acc.push_sql("', ");
-            acc.push_bind(query_text.clone());
-            acc.push_sql("))");
+            // `ts_rank_cd(...)`. Cover-density variant; weighs term proximity
+            // more heavily than `ts_rank`.
+            emit_ts(
+                acc,
+                "ts_rank_cd(",
+                column,
+                dictionary,
+                query_text,
+                ", ",
+                "))",
+            );
         }
 
         // ── Spatial (Phase 6 `spatial` feature) ─────────────────────────────
@@ -443,6 +422,39 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             s.emit(acc);
         }
     }
+}
+
+/// Emit a Postgres FTS expression — `<prefix><col><sep>to_tsquery('<dictionary>', $n)<suffix>`.
+///
+/// Three [`ExprNode`] variants share this shape:
+///
+/// - `TsMatch` — `<col> @@ to_tsquery('<dict>', $n)` (`prefix=""`,
+///   `sep=" @@ "`, `suffix=")"`).
+/// - `TsRank` — `ts_rank(<col>, to_tsquery('<dict>', $n))` (`prefix="ts_rank("`,
+///   `sep=", "`, `suffix="))"`).
+/// - `TsRankCd` — same shape with `ts_rank_cd(`.
+///
+/// `column` is a `&'static str` macro-validated via `assert_plain_ident`.
+/// `dictionary` is byte-level validated at attribute parse time; embedded
+/// literally as a single-quoted string. `query_text` is user-supplied
+/// and always rides through `push_bind`.
+fn emit_ts(
+    acc: &mut SqlAccumulator,
+    prefix: &'static str,
+    column: &str,
+    dictionary: &str,
+    query_text: &str,
+    sep: &'static str,
+    suffix: &'static str,
+) {
+    acc.push_sql(prefix);
+    acc.push_sql(column);
+    acc.push_sql(sep);
+    acc.push_sql("to_tsquery('");
+    acc.push_sql(dictionary);
+    acc.push_sql("', ");
+    acc.push_bind(query_text.to_owned());
+    acc.push_sql(suffix);
 }
 
 /// Emit `<KEYWORD_OPENER>[DISTINCT ]<expr>)`.
