@@ -170,10 +170,7 @@ pub fn expand(
     let user_field_descriptors: Vec<TokenStream> = user_fields
         .iter()
         .map(|(field, fa)| {
-            let raw_name = field.ident.as_ref().unwrap().to_string();
-            // Raw identifiers (`r#type`) must serialize to the bare SQL
-            // column name — matches the stripping pattern in `stubs.rs`.
-            let name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            let name = crate::syn_util::column_name_from_field(field);
             // Phase 4 Task 6 — `#[field(outbox = "ignore")]` marks the
             // column as excluded from the transactional outbox payload.
             // `FieldAttrs::parse` has already validated the string value,
@@ -363,8 +360,7 @@ pub fn expand(
     let deferrability_submits: Vec<TokenStream> = user_fields
         .iter()
         .filter_map(|(field, fa)| {
-            let raw_name = field.ident.as_ref().unwrap().to_string();
-            let name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            let name = crate::syn_util::column_name_from_field(field);
             let relation = detect_relation(&field.ty);
             match relation {
                 Some(_) => {
@@ -458,8 +454,7 @@ pub fn expand(
         if !is_geography_field_type(&field.ty) {
             continue;
         }
-        let raw_name = field.ident.as_ref().unwrap().to_string();
-        let col = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+        let col = crate::syn_util::column_name_from_field(field);
         let index_name = format!("{table_name}_{col}_gix");
         reserved_generated_names.push(index_name.clone());
         let col_str = col.as_str();
@@ -488,10 +483,7 @@ pub fn expand(
     // lowerer so users cannot silently shadow framework-emitted indexes.
     let mut declared_columns: Vec<String> = user_fields
         .iter()
-        .map(|(field, _fa)| {
-            let raw = field.ident.as_ref().unwrap().to_string();
-            raw.strip_prefix("r#").unwrap_or(&raw).to_string()
-        })
+        .map(|(field, _fa)| crate::syn_util::column_name_from_field(field))
         .collect();
     // Framework-injected columns (`id` when pk != none, plus `created_at`
     // and `updated_at`) are valid index targets too — include them in the
@@ -670,9 +662,7 @@ fn emit_rls_side_channel(
     // its SQL type for the cast expression. Field names are raw-ident stripped
     // to bare names (matching the SQL column name) before comparison.
     let tenant_field_ty: Option<&syn::Type> = user_fields.iter().find_map(|(field, _)| {
-        let raw = field.ident.as_ref()?.to_string();
-        let name = raw.strip_prefix("r#").unwrap_or(&raw);
-        if name == tenant_col {
+        if crate::syn_util::column_name_from_field(field) == tenant_col {
             Some(&field.ty)
         } else {
             None

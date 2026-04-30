@@ -243,10 +243,7 @@ pub fn expand(
     let framework_cols: [&str; 3] = ["id", "created_at", "updated_at"];
     let user_col_names: Vec<String> = user_fields
         .iter()
-        .map(|i| {
-            let raw = i.to_string();
-            raw.strip_prefix("r#").unwrap_or(&raw).to_string()
-        })
+        .map(crate::syn_util::column_name_from_ident)
         .collect();
     let column_list: String = framework_cols
         .iter()
@@ -342,8 +339,7 @@ pub fn expand(
         field_attrs.iter().enumerate().find_map(|(i, fa)| {
             if fa.version {
                 let f = &user_fields[i];
-                let col_name = f.to_string();
-                let col_str = col_name.strip_prefix("r#").unwrap_or(&col_name).to_string();
+                let col_str = crate::syn_util::column_name_from_ident(f);
                 Some((f.clone(), col_str))
             } else {
                 None
@@ -362,8 +358,7 @@ pub fn expand(
             if fa.version {
                 return None;
             }
-            let col_name = f.to_string();
-            let col_str = col_name.strip_prefix("r#").unwrap_or(&col_name).to_string();
+            let col_str = crate::syn_util::column_name_from_ident(f);
             let col_eq = format!("{col_str} = ");
             if is_tracked(ty) {
                 // Tracked<T>: emit only when dirty.

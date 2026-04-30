@@ -184,24 +184,27 @@ impl<V> VisageQuerySet<V> {
     }
 
     /// Apply SQL `LIMIT n`. Replaces any prior `limit` value.
+    ///
+    /// Panics if `n > i64::MAX` — Postgres bind type for `LIMIT` is `BIGINT`,
+    /// so values above `i64::MAX` cannot round-trip. The check uses
+    /// `try_from` (not `debug_assert!`) so release builds also panic
+    /// rather than silently truncate.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn limit(mut self, n: u64) -> Self {
-        debug_assert!(
-            n <= i64::MAX as u64,
-            "VisageQuerySet::limit(n = {n}) overflows i64 — Postgres bind type is BIGINT"
-        );
-        self.limit = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("VisageQuerySet::limit(n = {n}) overflows i64"));
+        self.limit = Some(n);
         self
     }
 
     /// Apply SQL `OFFSET n`. Replaces any prior `offset` value.
+    ///
+    /// Panics if `n > i64::MAX` — see [`Self::limit`] for the rationale.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn offset(mut self, n: u64) -> Self {
-        debug_assert!(
-            n <= i64::MAX as u64,
-            "VisageQuerySet::offset(n = {n}) overflows i64 — Postgres bind type is BIGINT"
-        );
-        self.offset = Some(n as i64);
+        let n = i64::try_from(n)
+            .unwrap_or_else(|_| panic!("VisageQuerySet::offset(n = {n}) overflows i64"));
+        self.offset = Some(n);
         self
     }
 

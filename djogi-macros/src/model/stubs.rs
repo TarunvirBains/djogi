@@ -95,13 +95,9 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
             .iter()
             .filter_map(|field| {
                 let ident = field.ident.as_ref()?;
-                // `Ident::to_string()` on a raw identifier returns the `r#`
-                // prefix verbatim (e.g. `r#type` → `"r#type"`). SQL column
-                // names must never carry that prefix — strip it so a field
-                // named `r#type` maps to column `type`, matching the
-                // behaviour users expect from any raw-ident-aware ORM.
-                let raw = ident.to_string();
-                let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
+                // SQL column names must strip the `r#` prefix raw identifiers
+                // carry so a field named `r#type` maps to column `type`.
+                let column = crate::syn_util::column_name_from_field(field);
                 let ty = &field.ty;
                 Some(quote! {
                     /// Typed handle for this column.

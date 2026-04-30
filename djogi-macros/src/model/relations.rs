@@ -84,11 +84,8 @@ pub fn expand(struct_item: &ItemStruct) -> TokenStream {
             let ident = field.ident.as_ref()?;
             let info = detect_relation(&field.ty)?;
 
-            // Column literal: raw identifiers (`r#type`) must strip the
-            // `r#` prefix, matching the treatment in `stubs.rs` and
-            // `descriptor.rs`.
-            let raw_name = ident.to_string();
-            let column_name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            // Column literal: raw identifiers (`r#type`) strip the prefix.
+            let column_name = crate::syn_util::column_name_from_ident(ident);
 
             // Method name: strip one trailing `_id` segment by convention so
             // `owner_id: ForeignKey<Owner>` → `VehicleRelated::owner()`.

@@ -88,23 +88,15 @@ impl PkSealToken {
 }
 
 /// Convert a batch size to the Postgres `INTEGER` parameter used by
-/// bulk primary-key allocation helpers.
+/// bulk primary-key allocation helpers. Returns an error when `n`
+/// exceeds `i32::MAX` (the database `generate_ids` / `generate_ranjids`
+/// functions take an `INTEGER` count).
 pub fn checked_count(n: usize) -> Result<i32, DjogiError> {
-    i32::try_from(n).map_err(|_| bulk_count_overflow_err(n))
-}
-
-/// Error used when a bulk primary-key allocation request cannot fit in
-/// the database function's `INTEGER` count parameter.
-///
-/// Visibility note: this helper is consumed only by [`checked_count`]
-/// in this module. Macro-emitted code never calls it directly — it
-/// reaches the same error path via `checked_count(...)`. Kept
-/// `pub(crate)` to match the original `builtins.rs`-local helper that
-/// preceded the simplify pass.
-pub(crate) fn bulk_count_overflow_err(n: usize) -> DjogiError {
-    DjogiError::Db(DbError::other(format!(
-        "djogi::primary_key!: bulk generate rejected — count {n} exceeds i32::MAX"
-    )))
+    i32::try_from(n).map_err(|_| {
+        DjogiError::Db(DbError::other(format!(
+            "djogi::primary_key!: bulk generate rejected — count {n} exceeds i32::MAX"
+        )))
+    })
 }
 
 /// Error used when a bulk primary-key allocation query returns a

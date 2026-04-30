@@ -28,19 +28,14 @@ use crate::primary_key::{PrimaryKey, PrimaryKeyDbGen, checked_count};
 use crate::types::{HeerId, HeerIdDesc, RanjId, RanjIdDesc};
 
 macro_rules! impl_heeranjid_pk {
-    ($ty:ty, HeerId, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
-        impl_heeranjid_pk!(@impl $ty, HeerId, "BIGINT", $default_sql, $single_sql, $batch_sql);
-    };
-    ($ty:ty, HeerIdDesc, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
-        impl_heeranjid_pk!(@impl $ty, HeerIdDesc, "BIGINT", $default_sql, $single_sql, $batch_sql);
-    };
-    ($ty:ty, RanjId, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
-        impl_heeranjid_pk!(@impl $ty, RanjId, "UUID", $default_sql, $single_sql, $batch_sql);
-    };
-    ($ty:ty, RanjIdDesc, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
-        impl_heeranjid_pk!(@impl $ty, RanjIdDesc, "UUID", $default_sql, $single_sql, $batch_sql);
-    };
-    (@impl $ty:ty, $kind_tag:ident, $sql_type:literal, $default_sql:literal, $single_sql:literal, $batch_sql:literal) => {
+    (
+        $ty:ty,
+        $kind_tag:ident,
+        $sql_type:literal,
+        $default_sql:literal,
+        $single_sql:literal,
+        $batch_sql:literal $(,)?
+    ) => {
         impl PrimaryKey for $ty {
             const __DJOGI_PK_SEAL: crate::primary_key::PkSealToken =
                 crate::__private::pk_seal::TOKEN;
@@ -59,7 +54,10 @@ macro_rules! impl_heeranjid_pk {
                 Ok(row.try_get::<_, $ty>(0)?)
             }
 
-            async fn generate_many(ctx: &mut DjogiContext, n: usize) -> Result<Vec<Self>, DjogiError> {
+            async fn generate_many(
+                ctx: &mut DjogiContext,
+                n: usize,
+            ) -> Result<Vec<Self>, DjogiError> {
                 let count = checked_count(n)?;
                 if count == 0 {
                     return Ok(Vec::new());
@@ -76,9 +74,10 @@ macro_rules! impl_heeranjid_pk {
 impl_heeranjid_pk!(
     HeerId,
     HeerId,
+    "BIGINT",
     "heerid_next()",
     "SELECT heerid_next()",
-    "SELECT id FROM generate_ids(current_heer_node_id(), $1::integer, true)"
+    "SELECT id FROM generate_ids(current_heer_node_id(), $1::integer, true)",
 );
 
 // NOTE: no inherent `impl HeerId { fn generate(...) }` block.
@@ -90,27 +89,30 @@ impl_heeranjid_pk!(
 impl_heeranjid_pk!(
     HeerIdDesc,
     HeerIdDesc,
+    "BIGINT",
     "heerid_next_desc()",
     "SELECT heerid_next_desc()",
     "SELECT heerid_to_desc(id) \
-     FROM generate_ids(current_heer_node_id(), $1::integer, true)"
+     FROM generate_ids(current_heer_node_id(), $1::integer, true)",
 );
 
 impl_heeranjid_pk!(
     RanjId,
     RanjId,
+    "UUID",
     "ranjid_next()",
     "SELECT ranjid_next()",
-    "SELECT id FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)"
+    "SELECT id FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)",
 );
 
 impl_heeranjid_pk!(
     RanjIdDesc,
     RanjIdDesc,
+    "UUID",
     "ranjid_next_desc()",
     "SELECT ranjid_next_desc()",
     "SELECT ranjid_to_desc(id) \
-     FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)"
+     FROM generate_ranjids(current_heer_ranj_node_id(), $1::integer, true)",
 );
 
 // ── Serial (i32) ───────────────────────────────────────────────────────

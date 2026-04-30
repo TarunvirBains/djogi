@@ -164,12 +164,11 @@ pub fn validate_field_column_names(struct_item: &syn::ItemStruct) -> syn::Result
     };
 
     for field in &named.named {
-        let Some(ident) = field.ident.as_ref() else {
+        if field.ident.is_none() {
             continue;
-        };
-        let raw = ident.to_string();
-        let column = raw.strip_prefix("r#").unwrap_or(&raw);
-        check_one(column, field.span())?;
+        }
+        let column = crate::syn_util::column_name_from_field(field);
+        check_one(&column, field.span())?;
     }
     Ok(())
 }
