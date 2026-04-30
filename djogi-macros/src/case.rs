@@ -162,7 +162,8 @@ pub(crate) fn pascal_to_snake(name: &str) -> String {
     let bytes = name.as_bytes();
     let mut out = Vec::with_capacity(bytes.len() + 4);
     for (i, &b) in bytes.iter().enumerate() {
-        if b.is_ascii_uppercase() && i > 0 {
+        let is_upper = b.is_ascii_uppercase();
+        if is_upper && i > 0 {
             let prev_is_lower = bytes[i - 1].is_ascii_lowercase();
             let next_is_lower = i + 1 < bytes.len() && bytes[i + 1].is_ascii_lowercase();
             // Boundary rule: preceded by lowercase (standard camel boundary)
@@ -172,11 +173,7 @@ pub(crate) fn pascal_to_snake(name: &str) -> String {
                 out.push(b'_');
             }
         }
-        if b.is_ascii_uppercase() {
-            out.push(b.to_ascii_lowercase());
-        } else {
-            out.push(b);
-        }
+        out.push(if is_upper { b.to_ascii_lowercase() } else { b });
     }
     String::from_utf8(out).expect("ASCII-only conversion cannot produce invalid UTF-8")
 }

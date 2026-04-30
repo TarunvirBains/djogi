@@ -254,13 +254,18 @@ fn check_ident(kind: &str, value: &str, span: proc_macro2::Span) -> syn::Result<
         }
     }
 
-    // Case-insensitive keyword lookup. Every byte at this point is
-    // ASCII alnum or `_`, so an in-place lowercase and a sorted
-    // `binary_search` suffice. Heap allocation for the lowercased
-    // form is acceptable at macro-expansion time — this runs once
-    // per identifier at compile time.
-    let lowered = value.to_ascii_lowercase();
-    if RESERVED_KEYWORDS.binary_search(&lowered.as_str()).is_ok() {
+    // Case-insensitive keyword lookup. The reserved-keyword table is
+    // sorted lowercase; if `value` is already all-lowercase (the common
+    // case for snake_case Rust idents) we search it directly, otherwise
+    // we lowercase once and search the owned form.
+    let is_already_lowercase = bytes.iter().all(|b| !b.is_ascii_uppercase());
+    let is_reserved = if is_already_lowercase {
+        RESERVED_KEYWORDS.binary_search(&value).is_ok()
+    } else {
+        let lowered = value.to_ascii_lowercase();
+        RESERVED_KEYWORDS.binary_search(&lowered.as_str()).is_ok()
+    };
+    if is_reserved {
         let rename_hint = match kind {
             "field name" => {
                 "Rename the field, or use `#[field(renamed_from = \"…\")]` to map to a non-reserved column name."
