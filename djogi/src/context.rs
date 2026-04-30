@@ -1001,34 +1001,25 @@ impl DjogiContext {
 /// the check minimal matches Postgres's actual identifier-acceptance
 /// gradient.
 fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiError> {
-    let bytes = value.as_bytes();
-    if bytes.is_empty() {
-        return Err(DjogiError::Db(crate::error::DbError::other(format!(
-            "{role} cannot be empty"
-        ))));
-    }
-    if bytes.len() > 63 {
-        return Err(DjogiError::Db(crate::error::DbError::other(format!(
-            "{role} {value:?} is {len} bytes; Postgres limits identifiers to 63 bytes (NAMEDATALEN - 1)",
-            len = bytes.len(),
-        ))));
-    }
-    let first = bytes[0];
-    if !(first.is_ascii_alphabetic() || first == b'_') {
-        return Err(DjogiError::Db(crate::error::DbError::other(format!(
-            "{role} {value:?} must start with an ASCII letter or underscore",
-        ))));
-    }
-    for &byte in &bytes[1..] {
-        if !(byte.is_ascii_alphanumeric() || byte == b'_') {
-            return Err(DjogiError::Db(crate::error::DbError::other(format!(
+    use crate::ident::IdentError;
+    crate::ident::check_plain_ident(value, false).map_err(|e| {
+        let msg = match e {
+            IdentError::Empty => format!("{role} cannot be empty"),
+            IdentError::TooLong { len } => format!(
+                "{role} {value:?} is {len} bytes; Postgres limits identifiers to 63 bytes (NAMEDATALEN - 1)"
+            ),
+            IdentError::BadFirst { .. } => {
+                format!("{role} {value:?} must start with an ASCII letter or underscore")
+            }
+            IdentError::BadByte { .. } => format!(
                 "{role} {value:?} contains a character that is not a valid \
                  unquoted Postgres identifier byte; only ASCII alphanumerics \
-                 and underscores are permitted after the first character",
-            ))));
-        }
-    }
-    Ok(())
+                 and underscores are permitted after the first character"
+            ),
+            IdentError::Reserved => unreachable!("check_plain_ident(reserved=false) cannot return Reserved"),
+        };
+        DjogiError::Db(crate::error::DbError::other(msg))
+    })
 }
 
 /// Drain a batch of on-commit callbacks panic-safely.

@@ -241,40 +241,24 @@ impl<'a> FromSql<'a> for TsQuery {
 /// underscores only, no quotes or special characters) ensures this is safe
 /// without additional escaping.
 pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
-    let bytes = name.as_bytes();
-
-    if bytes.is_empty() {
-        return Err("dictionary name must not be empty".to_owned());
-    }
-
-    // Postgres caps identifier length at NAMEDATALEN - 1 = 63 bytes.
-    if bytes.len() > 63 {
-        return Err(format!(
-            "dictionary name `{name}` is {} bytes; Postgres caps identifiers at 63 bytes",
-            bytes.len()
-        ));
-    }
-
-    // First byte: ASCII letter or underscore.
-    // Byte-level check — no regex per `feedback_no_regex_in_djogi`.
-    if !bytes[0].is_ascii_alphabetic() && bytes[0] != b'_' {
-        return Err(format!(
-            "dictionary name `{name}` must start with an ASCII letter or underscore"
-        ));
-    }
-
-    // Remaining bytes: ASCII letters, digits, or underscores.
-    for (i, &b) in bytes.iter().enumerate().skip(1) {
-        if !b.is_ascii_alphanumeric() && b != b'_' {
-            return Err(format!(
-                "dictionary name `{name}` contains invalid character `{}` at position {i} — \
-                 only ASCII letters, digits, and underscores are allowed",
-                b as char
-            ));
+    use crate::ident::IdentError;
+    crate::ident::check_plain_ident(name, false).map_err(|e| match e {
+        IdentError::Empty => "dictionary name must not be empty".to_owned(),
+        IdentError::TooLong { len } => format!(
+            "dictionary name `{name}` is {len} bytes; Postgres caps identifiers at 63 bytes"
+        ),
+        IdentError::BadFirst { .. } => {
+            format!("dictionary name `{name}` must start with an ASCII letter or underscore")
         }
-    }
-
-    Ok(())
+        IdentError::BadByte { idx, byte } => format!(
+            "dictionary name `{name}` contains invalid character `{}` at position {idx} — \
+             only ASCII letters, digits, and underscores are allowed",
+            byte as char
+        ),
+        IdentError::Reserved => {
+            unreachable!("check_plain_ident(reserved=false) cannot return Reserved")
+        }
+    })
 }
 
 /// Validate a column name for use in a `source = "col1, col2"` list.
@@ -284,35 +268,23 @@ pub fn validate_dictionary_name(name: &str) -> Result<(), String> {
 /// max 63 bytes). The same rules as [`validate_dictionary_name`] apply, since
 /// both feed into `to_tsvector(...)` SQL without further quoting.
 pub fn validate_source_column(col: &str) -> Result<(), String> {
-    let bytes = col.as_bytes();
-
-    if bytes.is_empty() {
-        return Err("source column name must not be empty".to_owned());
-    }
-
-    if bytes.len() > 63 {
-        return Err(format!(
-            "source column `{col}` is {} bytes; Postgres caps identifiers at 63 bytes",
-            bytes.len()
-        ));
-    }
-
-    if !bytes[0].is_ascii_alphabetic() && bytes[0] != b'_' {
-        return Err(format!(
-            "source column `{col}` must start with an ASCII letter or underscore"
-        ));
-    }
-
-    for (i, &b) in bytes.iter().enumerate().skip(1) {
-        if !b.is_ascii_alphanumeric() && b != b'_' {
-            return Err(format!(
-                "source column `{col}` contains invalid character `{}` at position {i}",
-                b as char
-            ));
+    use crate::ident::IdentError;
+    crate::ident::check_plain_ident(col, false).map_err(|e| match e {
+        IdentError::Empty => "source column name must not be empty".to_owned(),
+        IdentError::TooLong { len } => {
+            format!("source column `{col}` is {len} bytes; Postgres caps identifiers at 63 bytes")
         }
-    }
-
-    Ok(())
+        IdentError::BadFirst { .. } => {
+            format!("source column `{col}` must start with an ASCII letter or underscore")
+        }
+        IdentError::BadByte { idx, byte } => format!(
+            "source column `{col}` contains invalid character `{}` at position {idx}",
+            byte as char
+        ),
+        IdentError::Reserved => {
+            unreachable!("check_plain_ident(reserved=false) cannot return Reserved")
+        }
+    })
 }
 
 /// Parse a comma-separated `source = "col1, col2"` string into a list of
