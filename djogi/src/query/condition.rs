@@ -162,11 +162,20 @@ impl Condition {
 }
 
 /// A single column-level comparison: `column op value`.
+///
+/// Fields are `pub(crate)` so the only construction path is through the
+/// typed `FieldRef` lookup methods (`eq`, `neq`, `gt`, `ilike`, etc.).
+/// The emitter assumes those methods for the `(op, value)` pairing —
+/// e.g. `IContains` carries `FilterValue::String`, `Between` carries
+/// `FilterValue::Pair` — so widening the fields would let downstream
+/// code construct ill-formed leaves that hit emitter `unreachable!`
+/// arms or render incorrect SQL. Same defensive boundary as
+/// [`crate::jsonb::path::JsonbPathLeaf`].
 #[derive(Debug, Clone)]
 pub struct Leaf {
-    pub column: &'static str,
-    pub op: LookupOp,
-    pub value: FilterValue,
+    pub(crate) column: &'static str,
+    pub(crate) op: LookupOp,
+    pub(crate) value: FilterValue,
 }
 
 impl Leaf {
@@ -179,6 +188,24 @@ impl Leaf {
             op: LookupOp::Eq,
             value,
         }
+    }
+
+    /// Read-only accessors — external code can inspect leaves it received
+    /// from QuerySet introspection (e.g. visage traversal tests verifying
+    /// a generated condition tree) but cannot construct one. The
+    /// constructor side stays sealed via `pub(crate)` fields.
+    pub fn column(&self) -> &'static str {
+        self.column
+    }
+
+    /// SQL operator on this leaf.
+    pub fn op(&self) -> LookupOp {
+        self.op
+    }
+
+    /// Bound value on the right-hand side of the comparison.
+    pub fn value(&self) -> &FilterValue {
+        &self.value
     }
 }
 
