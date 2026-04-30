@@ -63,8 +63,7 @@ pub fn expand(
             let fname = f.ident.as_ref().expect("only named structs supported");
             // Raw identifiers (`r#type`) must strip the `r#` prefix to match
             // the SQL column name — same rule as `from_row::expand`.
-            let raw_name = fname.to_string();
-            let col_name = raw_name.strip_prefix("r#").unwrap_or(&raw_name).to_string();
+            let col_name = crate::syn_util::column_name_from_field(f);
             quote! {
                 #fname: row.try_get::<_, _>(&::std::format!("{}{}", prefix, #col_name) as &str)?
             }

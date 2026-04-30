@@ -73,11 +73,7 @@ pub fn expand(
     let col_names: Vec<String> = struct_item
         .fields
         .iter()
-        .map(|f| {
-            let ident = f.ident.as_ref().expect("only named structs supported");
-            let raw = ident.to_string();
-            raw.strip_prefix("r#").unwrap_or(&raw).to_string()
-        })
+        .map(crate::syn_util::column_name_from_field)
         .collect();
 
     let n_cols = col_names.len();
