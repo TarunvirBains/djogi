@@ -66,7 +66,7 @@ jobs:
           df -h /
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@stable
         with:
           # rust-src is required for trybuild compile-fail fixtures that
           # capture const-eval panics originating in stdlib — rustc inlines
@@ -187,7 +187,7 @@ jobs:
           df -h /
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt, rust-src
 
