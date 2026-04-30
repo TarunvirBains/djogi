@@ -289,34 +289,36 @@ fn pk_type_tokens(pk: &PkStrategy) -> Option<TokenStream> {
 /// match here — any user type with `Default` is handled by the default
 /// branch in `generate_default_impl`.
 ///
-/// Path forms accepted: bare ident, `djogi::types::T`, and `djogi::T`. The
-/// match strips whitespace so token-tree spacing never foils the lookup.
+/// Path forms accepted: bare ident, `djogi::T`, and `djogi::types::T` —
+/// each with or without a leading `::`. Generic arguments anywhere in the
+/// path disqualify the match (PK types are nullary).
 fn is_builtin_pk_type(ty: &syn::Type) -> bool {
-    // Normalise the type-token string: strip whitespace, and strip a leading
-    // `::` if the user wrote the absolute path form (`::djogi::types::HeerId`).
-    // Both `djogi::types::HeerId` and `::djogi::types::HeerId` name the same
-    // type; the match table stores the non-prefixed form.
-    let s = quote::quote!(#ty).to_string().replace(' ', "");
-    let normalised = s.strip_prefix("::").unwrap_or(&s);
-    matches!(
-        normalised,
-        "HeerId"
-            | "HeerIdDesc"
-            | "HeerIdRecencyBiased"
-            | "djogi::types::HeerId"
-            | "djogi::types::HeerIdDesc"
-            | "djogi::types::HeerIdRecencyBiased"
-            | "djogi::HeerId"
-            | "djogi::HeerIdDesc"
-            | "djogi::HeerIdRecencyBiased"
-            | "RanjId"
-            | "RanjIdDesc"
-            | "RanjIdRecencyBiased"
-            | "djogi::types::RanjId"
-            | "djogi::types::RanjIdDesc"
-            | "djogi::types::RanjIdRecencyBiased"
-            | "djogi::RanjId"
-            | "djogi::RanjIdDesc"
-            | "djogi::RanjIdRecencyBiased"
-    )
+    let syn::Type::Path(syn::TypePath { path, qself: None }) = ty else {
+        return false;
+    };
+    let segs = &path.segments;
+    let Some(last) = segs.last() else { return false };
+
+    let is_pk_alias = last.ident == "HeerId"
+        || last.ident == "HeerIdDesc"
+        || last.ident == "HeerIdRecencyBiased"
+        || last.ident == "RanjId"
+        || last.ident == "RanjIdDesc"
+        || last.ident == "RanjIdRecencyBiased";
+    if !is_pk_alias {
+        return false;
+    }
+    if segs
+        .iter()
+        .any(|seg| !matches!(seg.arguments, syn::PathArguments::None))
+    {
+        return false;
+    }
+
+    match segs.len() {
+        1 => true,
+        2 => segs[0].ident == "djogi",
+        3 => segs[0].ident == "djogi" && segs[1].ident == "types",
+        _ => false,
+    }
 }
