@@ -250,11 +250,7 @@ impl FilterClause {
     ///
     /// [`QuerySet::filter_struct`]: crate::query::QuerySet::filter_struct
     pub fn into_condition(self) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: self.op,
-            value: self.value,
-        })
+        Condition::Leaf(Leaf::new(self.column, self.op, self.value))
     }
 }
 

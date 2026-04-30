@@ -179,15 +179,19 @@ pub struct Leaf {
 }
 
 impl Leaf {
+    /// Single same-module constructor. The crate-internal typed
+    /// builders (`FieldRef::eq`, `FieldRef::between`, etc.) all funnel
+    /// through here so adding a new `Leaf` field forces every site to
+    /// update; downstream code reaches `Leaf` only via the typed surface.
+    pub(crate) fn new(column: &'static str, op: LookupOp, value: FilterValue) -> Self {
+        Leaf { column, op, value }
+    }
+
     /// Test helper — not public API. Production code constructs leaves
     /// via `FieldRef` lookup methods.
     #[cfg(test)]
     pub(crate) fn eq_raw(column: &'static str, value: FilterValue) -> Leaf {
-        Leaf {
-            column,
-            op: LookupOp::Eq,
-            value,
-        }
+        Leaf::new(column, LookupOp::Eq, value)
     }
 
     /// Read-only accessors — external code can inspect leaves it received

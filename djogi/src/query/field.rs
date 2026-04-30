@@ -480,84 +480,84 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
     /// `column = value` — SQL equality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn eq(self, value: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Eq,
-            value: value.into_filter_value(),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Eq,
+            value.into_filter_value(),
+        ))
     }
 
     /// `column <> value` — SQL inequality.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn neq(self, value: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Neq,
-            value: value.into_filter_value(),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Neq,
+            value.into_filter_value(),
+        ))
     }
 
     /// `column > value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn gt(self, value: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Gt,
-            value: value.into_filter_value(),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Gt,
+            value.into_filter_value(),
+        ))
     }
 
     /// `column >= value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn gte(self, value: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Gte,
-            value: value.into_filter_value(),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Gte,
+            value.into_filter_value(),
+        ))
     }
 
     /// `column < value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn lt(self, value: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Lt,
-            value: value.into_filter_value(),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Lt,
+            value.into_filter_value(),
+        ))
     }
 
     /// `column <= value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn lte(self, value: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Lte,
-            value: value.into_filter_value(),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Lte,
+            value.into_filter_value(),
+        ))
     }
 
     /// `column BETWEEN a AND b` (inclusive on both ends per SQL spec).
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn between(self, a: V, b: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Between,
-            value: FilterValue::Pair(
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Between,
+            FilterValue::Pair(
                 Box::new(a.into_filter_value()),
                 Box::new(b.into_filter_value()),
             ),
-        })
+        ))
     }
 
     /// Case-insensitive equality — `LOWER(column) = LOWER(value)`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn iexact(self, value: V) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::IExact,
-            value: value.into_filter_value(),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::IExact,
+            value.into_filter_value(),
+        ))
     }
 }
 
@@ -582,11 +582,7 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
                 .map(IntoFilterValue::into_filter_value)
                 .collect::<Vec<_>>(),
         );
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::In,
-            value: list,
-        })
+        Condition::Leaf(Leaf::new(self.column, LookupOp::In, list))
     }
 
     /// `column NOT IN (v1, v2, …)`. An empty iterator is allowed and renders
@@ -599,11 +595,7 @@ impl<M: Model, V: IntoFilterValue> FieldRef<M, V> {
                 .map(IntoFilterValue::into_filter_value)
                 .collect::<Vec<_>>(),
         );
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::NotIn,
-            value: list,
-        })
+        Condition::Leaf(Leaf::new(self.column, LookupOp::NotIn, list))
     }
 }
 
@@ -619,11 +611,11 @@ impl<M: Model> FieldRef<M, String> {
     /// Aliased as `icontains` for Django naming parity.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn contains(self, value: impl Into<String>) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::IContains,
-            value: FilterValue::String(value.into()),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::IContains,
+            FilterValue::String(value.into()),
+        ))
     }
 
     /// Alias for `contains` — matches Django's `icontains` lookup name.
@@ -635,11 +627,11 @@ impl<M: Model> FieldRef<M, String> {
     /// Case-insensitive prefix match — SQL `ILIKE 'value%'`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn starts_with(self, value: impl Into<String>) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::IStartsWith,
-            value: FilterValue::String(value.into()),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::IStartsWith,
+            FilterValue::String(value.into()),
+        ))
     }
 
     /// Alias for `starts_with` — matches Django's `istartswith` lookup name.
@@ -651,11 +643,11 @@ impl<M: Model> FieldRef<M, String> {
     /// Case-insensitive suffix match — SQL `ILIKE '%value'`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn ends_with(self, value: impl Into<String>) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::IEndsWith,
-            value: FilterValue::String(value.into()),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::IEndsWith,
+            FilterValue::String(value.into()),
+        ))
     }
 
     /// Alias for `ends_with` — matches Django's `iendswith` lookup name.
@@ -667,21 +659,21 @@ impl<M: Model> FieldRef<M, String> {
     /// POSIX regex match — SQL `column ~ value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn regex(self, value: impl Into<String>) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::Regex,
-            value: FilterValue::String(value.into()),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::Regex,
+            FilterValue::String(value.into()),
+        ))
     }
 
     /// Case-insensitive POSIX regex — SQL `column ~* value`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn iregex(self, value: impl Into<String>) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::IRegex,
-            value: FilterValue::String(value.into()),
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::IRegex,
+            FilterValue::String(value.into()),
+        ))
     }
 }
 
@@ -704,11 +696,7 @@ impl<M: Model, V> FieldRef<M, V> {
     /// type system deliberately does not gate this on `V = Option<T>`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn is_null(self) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::IsNull,
-            value: FilterValue::Null,
-        })
+        Condition::Leaf(Leaf::new(self.column, LookupOp::IsNull, FilterValue::Null))
     }
 
     /// `column IS NOT NULL`.
@@ -723,11 +711,11 @@ impl<M: Model, V> FieldRef<M, V> {
     /// `V = Option<T>`.
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn is_not_null(self) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.column,
-            op: LookupOp::IsNotNull,
-            value: FilterValue::Null,
-        })
+        Condition::Leaf(Leaf::new(
+            self.column,
+            LookupOp::IsNotNull,
+            FilterValue::Null,
+        ))
     }
 }
 
@@ -1449,11 +1437,11 @@ impl<V> OptionalRelationRef<V> {
         F: FnOnce(V) -> Condition,
     {
         let inner = f(self.peer_fields);
-        let not_null = Condition::Leaf(Leaf {
-            column: self.fk_column,
-            op: LookupOp::IsNotNull,
-            value: FilterValue::Null,
-        });
+        let not_null = Condition::Leaf(Leaf::new(
+            self.fk_column,
+            LookupOp::IsNotNull,
+            FilterValue::Null,
+        ));
         Condition::and(not_null, inner)
     }
 
@@ -1462,22 +1450,22 @@ impl<V> OptionalRelationRef<V> {
     /// where the FK is absent".
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn is_none(self) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.fk_column,
-            op: LookupOp::IsNull,
-            value: FilterValue::Null,
-        })
+        Condition::Leaf(Leaf::new(
+            self.fk_column,
+            LookupOp::IsNull,
+            FilterValue::Null,
+        ))
     }
 
     /// Emit a standalone `fk_column IS NOT NULL` predicate. The
     /// complement of [`is_none`](Self::is_none).
     #[must_use = "conditions are lazy — dropping one silently omits the filter"]
     pub fn is_some(self) -> Condition {
-        Condition::Leaf(Leaf {
-            column: self.fk_column,
-            op: LookupOp::IsNotNull,
-            value: FilterValue::Null,
-        })
+        Condition::Leaf(Leaf::new(
+            self.fk_column,
+            LookupOp::IsNotNull,
+            FilterValue::Null,
+        ))
     }
 }
 
