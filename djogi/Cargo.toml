@@ -4,9 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
+rust-version.workspace = true
 description = "Model-first web framework for Rust — web-framework-agnostic core; Axum integration opt-in via the `axum` feature flag"
-build = "build.rs"
+documentation = "https://docs.rs/djogi"
+readme = "../ReadMe.MD"
+keywords = ["orm", "postgres", "web-framework", "model", "migrations"]
+categories = ["database", "web-programming", "asynchronous"]
 
 [features]
 # auth-argon2 — enables PasswordHash::hash (Argon2id hashing) and the

@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
-description = "CLI for the Djogi framework — cargo djogi"
+rust-version.workspace = true
+description = "CLI for the Djogi framework — migrations, shell, db reset, status"
+documentation = "https://docs.rs/djogi-cli"
+readme = "../ReadMe.MD"
+keywords = ["djogi", "cli", "migrate", "orm"]
+categories = ["command-line-utilities", "database"]
 
 [[bin]]
 name = "djogi"

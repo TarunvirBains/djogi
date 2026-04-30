@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
-description = "Proc macros for the Djogi framework"
+rust-version.workspace = true
+description = "Proc macros for the Djogi framework — derive(Model), field attributes, descriptor emission"
+documentation = "https://docs.rs/djogi-macros"
+readme = "../ReadMe.MD"
+keywords = ["djogi", "proc-macro", "derive", "model", "orm"]
+categories = ["database", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
@@ -33,7 +39,10 @@ trybuild.workspace = true
 # dev-deps are excluded from the published / runtime dependency graph — they
 # only participate when compiling this crate's own tests. Required so trybuild
 # compile_pass/*.rs fixtures can `use djogi::prelude::*` to reach `#[model]`.
-djogi.workspace = true
+# Path-only override (no `version`) so `cargo publish -p djogi-macros` succeeds
+# without a publish-order cycle: djogi-macros publishes first, before djogi
+# exists on crates.io, so a versioned dev-dep would fail the index lookup.
+djogi = { path = "../djogi" }
 # serde — needed by JsonbSchema compile_pass fixtures that derive Serialize +
 # Deserialize on schema structs. The trybuild process compiles each fixture
 # as a standalone crate with the same dev-deps as djogi-macros.

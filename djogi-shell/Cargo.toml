@@ -4,8 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
 authors.workspace = true
-description = "Interactive Rhai shell for the Djogi framework"
+rust-version.workspace = true
+description = "Interactive Rhai shell for the Djogi framework — model bindings, transaction control, REPL"
+documentation = "https://docs.rs/djogi-shell"
+readme = "../ReadMe.MD"
+keywords = ["djogi", "rhai", "shell", "repl", "orm"]
+categories = ["command-line-utilities", "database"]
 
 [dependencies]
 djogi.workspace = true
