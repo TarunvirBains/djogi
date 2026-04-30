@@ -2,12 +2,14 @@
 
 # CLI Reference — `cargo djogi`
 
-> **Warning: Roadmap document — not a shipped feature.**
->
-> The API described in this document does not exist in the current release.
-> It is committed as a design target for a future phase and will move into
-> `docs/guide/` when that phase ships. Code snippets in this document will
-> NOT compile against the current crate.
+> **Status: PARTIALLY SHIPPED.** Phase 7 ships
+> `djogi migrations compose / status / attune` and `djogi db reset / seed`
+> plus `djogi docs`. The `apply / rollback / fake / baseline / repair /
+> verify` dispatchers are deferred to a Phase 7 follow-up — adopters who
+> need them today call the public library entry points directly. The
+> authoritative current CLI surface lives in
+> [`docs/guide/migrations.md`](../guide/migrations.md). This roadmap
+> document is preserved as design history.
 
 `cargo djogi` is the Djogi command-line interface. Install it once:
 

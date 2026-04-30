@@ -2,21 +2,33 @@
 
 # Djogi Roadmap
 
-These documents describe **planned** features — the APIs they reference do
-not exist in the current release. They are committed now so the framework's
-design target is visible, reviewable, and agent-readable, but none of the
-code snippets here will compile today.
+> **Status as of v0.1.0:** the bulk of the original roadmap has shipped.
+> The documents in this directory remain as design history — they capture
+> the framework's planning target before each subsystem landed. For the
+> live, authoritative API surface always go to the corresponding **user
+> guide** under [`docs/guide/`](../guide/index.md). The snippets in
+> roadmap docs may not compile against today's framework.
 
-For features that currently ship, see [the user guides](../guide/index.md).
+## What shipped, where it lives now
 
-| Document | Phase | Covers |
+| Roadmap doc | Status | Authoritative guide |
 |---|---|---|
-| [Models (roadmap)](./models.md) | Phases 3–8 | Aspirational `#[model]` attributes, field types, relations |
-| [Querying (roadmap)](./querying.md) | Phase 2 | QuerySet filter closures, terminal fetchers, programmatic filter API |
-| [Security (roadmap)](./security.md) | Phase 5+ | Row-Level Security, `TenantScoped<T>`, `_insecurely()`, intent persistence |
-| [CLI (roadmap)](./cli.md) | Phase 6–8 | `cargo djogi migrate / docs / check / analyze / stats / prepare` |
-| [Future work (roadmap)](./future-work.md) | Mixed | Scope expansions to existing phases (online migrations, observability, ops tooling, streaming, FTS) + unscheduled items (version floor, multi-tenancy patterns, benchmarks) + phase-independent ideas (request pipelining exploitation, compile-time SQL validation macro) |
+| [Models](./models.md) | Shipped (Phases 3–7.5) | [Models](../guide/models.md), [Relations](../guide/relations.md), [Spatial](../guide/spatial.md), [JSONB](../guide/jsonb.md) |
+| [Querying](./querying.md) | Shipped (Phase 2 + 4 + 6.5) | [Queries](../guide/queries.md), [Expressions](../guide/expressions.md), [Aggregation](../guide/query-aggregation.md) |
+| [Security](./security.md) | Shipped (Phases 5 + 5.5) | [Auth](../guide/auth.md), [Tenancy](../guide/tenancy.md) |
+| [CLI](./cli.md) | Shipped (Phase 7) — except `apply` / `rollback` / `fake` / `baseline` / `repair` / `verify` dispatchers, deferred post-Phase-7 | [Migrations](../guide/migrations.md) |
+| [Future work](./future-work.md) | Mixed — some items shipped, some still future | Cross-reference per item; this doc still useful for not-yet-shipped scope expansions |
 
-Each document is dated and revision-controlled; when a phase ships, the
-corresponding roadmap doc merges into `docs/guide/` with phase-accurate
-wording.
+## Why the roadmap docs are kept
+
+Each document captured the framework's design intent at a specific
+point in time. Reading them alongside the corresponding guide is a
+fast way to see *why* a subsystem looks the way it does — what the
+target shape was before implementation, what got compromised, what
+got expanded. They also serve as a historical record for the next
+round of API discussions.
+
+When a follow-up phase ships scope that the roadmap document
+explicitly anticipated (e.g. the Phase 7 follow-up CLI dispatchers),
+the corresponding bullet here will move from the "Status" column to
+the authoritative guide.

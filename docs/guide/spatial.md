@@ -656,11 +656,11 @@ The following are candidates for a future spatial phase — not committed:
   operator for index-accelerated nearest-neighbor queries.
 - **Raster and topology types** — `RASTER`, PostGIS topology, `pgRouting`
   integration. Out of scope for the typed surface.
-- **Automatic DDL emission for spatial tables** — Phase 7 will consume the
+- **Automatic DDL emission for spatial tables** — Phase 7 consumes the
   `IndexSpec` metadata (`requires_out_of_transaction`,
   `extension_dependency`) to split GiST index DDL into
-  `CREATE INDEX CONCURRENTLY` steps. Until then apply the DDL by hand
-  (see the "Migration expectations" section).
+  `CREATE INDEX CONCURRENTLY` steps. The differ emits the split DDL
+  automatically; adopters do not apply spatial index DDL by hand.
 
 Shipped in Phase 6.5 (previously deferred):
 

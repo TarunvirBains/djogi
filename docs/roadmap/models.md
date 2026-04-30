@@ -2,12 +2,16 @@
 
 # Models (roadmap)
 
-> **⚠️ Roadmap document — not a shipped feature.**
->
-> Attributes and field types documented here are **not parsed by the current
-> release**. Using them produces a compile error. They are committed now as
-> the Djogi design target and will move into `docs/guide/models.md` as each
-> phase lands. Code snippets here will NOT compile against the current crate.
+> **Status: SHIPPED.** Phases 3 through 7.5 delivered the model surface
+> this document was designed against — relations (`ForeignKey<T>`,
+> `OneToOneField<T>`, explicit-through M2M), eager loading, typed JSONB,
+> typed enums, arrays, GeoPoint + spatial geometries, full-text search,
+> RLS via `tenant_key`, partitioned tables (`partition_by`), and
+> protected-data attrs. The authoritative current API lives in
+> [`docs/guide/models.md`](../guide/models.md) and the
+> feature-specific guides ([Relations](../guide/relations.md),
+> [JSONB](../guide/jsonb.md), [Spatial](../guide/spatial.md), etc.).
+> This roadmap document is preserved as design history.
 
 This document is the design reference for model-level attributes that the
 `#[model]` macro does not yet support. Each section states the phase that
