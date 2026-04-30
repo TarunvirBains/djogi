@@ -94,8 +94,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
             .iter()
             .filter_map(|field| {
                 let ident = field.ident.as_ref()?;
-                let raw = ident.to_string();
-                let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
+                let column = crate::syn_util::column_name_from_field(field);
                 let ty = &field.ty;
                 Some(quote! {
                     /// Typed outer-scope handle for this column — use

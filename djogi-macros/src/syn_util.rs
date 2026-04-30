@@ -27,6 +27,14 @@ pub(crate) fn require_string_lit(value: &Expr, key: &str) -> syn::Result<LitStr>
     }
 }
 
+/// SQL column name for a Rust identifier — strips the `r#` prefix that
+/// `Ident::to_string()` carries on raw identifiers (e.g. `r#type` → `type`).
+/// Plain idents pass through unchanged.
+pub(crate) fn column_name_from_ident(ident: &syn::Ident) -> String {
+    let raw = ident.to_string();
+    raw.strip_prefix("r#").unwrap_or(&raw).to_string()
+}
+
 /// SQL column name for a named-struct field.
 ///
 /// The macro convention: a Rust raw-identifier field (`r#type`) maps to the
@@ -36,8 +44,7 @@ pub(crate) fn require_string_lit(value: &Expr, key: &str) -> syn::Result<LitStr>
 /// emission path.
 pub(crate) fn column_name_from_field(field: &Field) -> String {
     let ident = field.ident.as_ref().expect("only named structs supported");
-    let raw = ident.to_string();
-    raw.strip_prefix("r#").unwrap_or(&raw).to_string()
+    column_name_from_ident(ident)
 }
 
 /// Require a boolean literal at the right-hand side of `key = …`.

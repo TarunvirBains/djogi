@@ -98,9 +98,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
 
             // Scalar form on scalar field — flatten into the column list.
             ScopeMembership::Scalar => {
-                let raw = fname.to_string();
-                let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
-                columns.push(column);
+                columns.push(crate::syn_util::column_name_from_ident(fname));
             }
 
             // Relation entry on a visage — this emitter does not yet
@@ -161,8 +159,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         ) {
             continue;
         }
-        let raw = fname.to_string();
-        let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
+        let column = crate::syn_util::column_name_from_ident(fname);
         decode_assignments.push(emit_decode_assignment(fname, &column, idx));
         idx += 1;
     }

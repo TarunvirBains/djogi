@@ -232,12 +232,10 @@ pub fn expand(
         .skip(n_framework)
         .filter_map(|field| {
             let ident = field.ident.as_ref()?;
-            // Raw identifiers: `Ident::to_string` returns `"r#type"` for
-            // `r#type`. Strip the prefix for the SQL column literal (same
-            // rationale as `stubs.rs`) but keep the raw ident for the
-            // method name so users can still call `.r#type(...)`.
-            let raw = ident.to_string();
-            let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
+            // Strip the `r#` prefix for the SQL column literal but keep
+            // the raw ident for the method name so users can still call
+            // `.r#type(...)` on the filter struct.
+            let column = crate::syn_util::column_name_from_ident(ident);
             // Read the field type verbatim — `Option<T>` / `Jsonb<T>` /
             // user newtypes propagate without a translation table,
             // same as `stubs.rs` emits into `FieldRef<M, V>`.

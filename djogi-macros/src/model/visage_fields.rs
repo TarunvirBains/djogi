@@ -134,9 +134,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
         };
         let fty = &field.ty;
 
-        // Raw identifiers strip `r#` for the SQL column literal.
-        let raw = fname.to_string();
-        let column = raw.strip_prefix("r#").unwrap_or(&raw).to_string();
+        let column = crate::syn_util::column_name_from_ident(fname);
 
         match classify_field_for_scope(field, attrs, scope) {
             ScopeMembership::Absent | ScopeMembership::Reject { .. } => continue,
