@@ -7,6 +7,21 @@
 use super::AuthContext;
 use crate::{DjogiContext, DjogiError};
 
+/// Emit the standard "auth guard bypassed via X" warning. Captured here so
+/// the consuming-builder and mutating bypass methods both emit a consistent
+/// message — log scrapers can grep for the specific method name on either
+/// site, and the user's call site is recorded via the caller's
+/// `#[track_caller]` attribute (which the helper preserves by being marked
+/// `#[track_caller]` itself).
+#[track_caller]
+fn warn_auth_bypass(auth: &AuthContext, method: &'static str) {
+    tracing::warn!(
+        user_id = ?auth.user_id,
+        caller = %std::panic::Location::caller(),
+        "auth guard bypassed via {method}",
+    );
+}
+
 impl DjogiContext {
     /// Attach an [`AuthContext`] to this context (consuming builder).
     ///
@@ -33,17 +48,9 @@ impl DjogiContext {
     /// service-account flows). Calling this inside a request handler is a
     /// design smell.
     ///
-    /// Inlines the warn (rather than delegating to
-    /// [`Self::set_auth_insecurely`]) so the message names this method
-    /// specifically — log scrapers grepping for `with_auth_insecurely` see
-    /// the consuming-builder bypass site distinctly from the mutating one.
     #[track_caller]
     pub fn with_auth_insecurely(mut self, auth: AuthContext) -> Self {
-        tracing::warn!(
-            user_id = ?auth.user_id,
-            caller = %std::panic::Location::caller(),
-            "auth guard bypassed via with_auth_insecurely",
-        );
+        warn_auth_bypass(&auth, "with_auth_insecurely");
         self.auth = Some(auth);
         self
     }
@@ -69,11 +76,7 @@ impl DjogiContext {
     /// the user's call site, not this wrapper.
     #[track_caller]
     pub fn set_auth_insecurely(&mut self, auth: AuthContext) {
-        tracing::warn!(
-            user_id = ?auth.user_id,
-            caller = %std::panic::Location::caller(),
-            "auth guard bypassed via set_auth_insecurely",
-        );
+        warn_auth_bypass(&auth, "set_auth_insecurely");
         self.auth = Some(auth);
     }
 
