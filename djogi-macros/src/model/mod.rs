@@ -210,20 +210,10 @@ fn emit_rationale_advisories(
     let mut ts = TokenStream::new();
     let struct_name = &struct_item.ident;
 
-    let Fields::Named(named) = &struct_item.fields else {
+    let Fields::Named(_) = &struct_item.fields else {
         // Tuple / unit structs are rejected upstream; nothing to do here.
         return ts;
     };
-
-    // Only iterate user-declared fields. `field_attrs` was captured before
-    // `inject::expand` added framework columns, so indices stay aligned.
-    let user_field_count = named.named.len().saturating_sub(
-        // inject::expand prepends 3 framework fields (id, created_at,
-        // updated_at) after we snapshot field_attrs, so we need the
-        // original user count, which IS field_attrs.len().
-        0, // field_attrs.len() == user field count; no subtraction needed.
-    );
-    let _ = user_field_count; // suppress lint — we iterate field_attrs directly.
 
     for fa in field_attrs {
         // Only fire when `outbox = "ignore"` is present AND `rationale` is absent.
@@ -352,14 +342,6 @@ fn validate_version_fields(
 /// Every other shape returns `false`, including `my_mod::i32` and other
 /// user-module paths that happen to end in `i32` / `i64`.
 fn is_version_primitive_path(path: &syn::Path) -> bool {
-    // Reject absolute paths that start with `::` unless the allowlist shape
-    // below applies (handled uniformly via segment count + idents).
-    let segments: Vec<String> = path
-        .segments
-        .iter()
-        .map(|seg| seg.ident.to_string())
-        .collect();
-
     // Reject any segment that carries angle-bracketed or parenthesized args
     // (e.g. a typo like `i32<()>`). Version fields must be exactly the
     // bare primitive type.
@@ -371,12 +353,13 @@ fn is_version_primitive_path(path: &syn::Path) -> bool {
         return false;
     }
 
-    match segments.len() {
-        1 => segments[0] == "i32" || segments[0] == "i64",
+    let segs = &path.segments;
+    match segs.len() {
+        1 => segs[0].ident == "i32" || segs[0].ident == "i64",
         3 => {
-            (segments[0] == "std" || segments[0] == "core")
-                && segments[1] == "primitive"
-                && (segments[2] == "i32" || segments[2] == "i64")
+            (segs[0].ident == "std" || segs[0].ident == "core")
+                && segs[1].ident == "primitive"
+                && (segs[2].ident == "i32" || segs[2].ident == "i64")
         }
         _ => false,
     }
