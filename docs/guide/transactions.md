@@ -7,11 +7,10 @@ nesting, `on_commit` callbacks, row locks, and `retry_on_conflict`.
 
 ## Contract
 
-Every Phase 1/2/3 CRUD and `QuerySet` terminal takes
-`&mut DjogiContext`. A `DjogiContext` holds either a pool handle
-(auto-commit per statement) or an active `sqlx::Transaction` (all
-writes commit together on `atomic()`'s success return, or roll back on
-`Err` / panic).
+Every CRUD and `QuerySet` terminal takes `&mut DjogiContext`. A
+`DjogiContext` holds either a pool handle (auto-commit per statement)
+or an active `tokio_postgres::Transaction` (all writes commit together
+on `atomic()`'s success return, or roll back on `Err` / panic).
 
 - `atomic(executor, closure)` — enters a transactional scope. Passes
   `&mut DjogiContext` to the closure.
@@ -71,7 +70,7 @@ transaction closes — no protection against concurrent writers.
 
 `DjogiError::is_transient()` / `is_terminal()` classify whether a
 retry of the same closure may succeed. `LockConflict` and raw
-`Sqlx(e)` with SQLSTATE `40001` / `40P01` / `55P03` are transient;
+`Db(DbError)` with SQLSTATE `40001` / `40P01` / `55P03` are transient;
 everything else is terminal. `retry_on_conflict(ctx, attempts,
 closure)` drives retry using the same predicate.
 

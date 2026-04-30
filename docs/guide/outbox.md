@@ -61,9 +61,11 @@ alongside your own migrations.)
   pre-delete snapshot.
 - Rollback of `ctx`'s enclosing `atomic()` scope removes both the
   main row change and the outbox row — no half-emitted events.
-- Raw sqlx writes (e.g. `sqlx::query(...).execute(&mut *tx).await?`)
-  skip the outbox path entirely. The outbox is tied to `DjogiContext`,
-  not to the transaction.
+- Raw writes that bypass `DjogiContext` (e.g. running a statement
+  directly against an underlying `tokio_postgres::Client`) skip the
+  outbox path entirely. The outbox is tied to `DjogiContext`, not to
+  the transaction. `ctx.raw_execute(...)` does NOT bypass — it routes
+  through the same context plumbing.
 
 ## Consumer pattern
 

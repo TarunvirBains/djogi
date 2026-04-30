@@ -6,13 +6,14 @@ This guide walks through setting up a Djogi project from scratch, defining
 your first model, creating the table, and performing CRUD operations — from
 a blank directory to a passing integration test.
 
-Djogi is Postgres-only. The framework fields (`id`, `created_at`,
-`updated_at`) are injected by the proc macro — you define only the fields
-you own.
+Djogi targets PostgreSQL 18 and later, exclusively. The framework fields
+(`id`, `created_at`, `updated_at`) are injected by the proc macro — you
+define only the fields you own.
 
-> **Phase 1 scope:** The CLI (`cargo djogi`) and the migration differ do not
-> exist yet. Tables are created manually for now. The `QuerySet` filter API
-> is a Phase 2 deliverable. This guide covers everything that ships in Phase 1.
+The data-layer substrate is `tokio-postgres` + `deadpool-postgres` +
+`postgres-types`. You do not interact with those crates directly in
+typical app code; Djogi exposes a single `DjogiContext` surface that
+covers connection pooling, transactions, and the raw-SQL escape hatch.
 
 ---
 
@@ -57,31 +58,23 @@ export DATABASE_URL="postgres://djogi:djogi@localhost/myapp"
 
 ```toml
 [dependencies]
-djogi = { path = "../../djogi" }  # path dep until published
-
-sqlx = { version = "0.8", default-features = false, features = [
-    "postgres",
-    "runtime-tokio-rustls",
-    "macros",
-    "time",
-    "uuid",
-    "json",
-] }
+djogi = "0.1"
 
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
-uuid = { version = "1", features = ["serde"] }
-
 heeranjid = "0.1"
-heeranjid-sqlx = "0.1"
 ```
 
 > **Note:** Djogi uses the `time` crate for all datetime types — not
 > `chrono`. Do not add `chrono` as a dependency.
+
+You do not need to add `tokio-postgres`, `deadpool-postgres`, or
+`postgres-types` directly — Djogi re-exports the types you need
+(`DjogiPool`, `DjogiContext`, `FromPgRow`) and pulls the underlying
+crates as transitive deps.
 
 ---
 
@@ -125,44 +118,46 @@ pub struct Article {
 The macro also generates:
 
 - `impl Model for Article` — `create`, `get`, `save`, `delete`, `refresh_from_db`
-- `impl FromRow for Article` — SQLx row deserialization
+- `impl FromPgRow for Article` — `tokio-postgres::Row` → `Article` decode
 - `Article::descriptor()` — submitted via `inventory` for app registration
 
 ---
 
-## 3. Install HeeRanjId Schema
+## 3. Connect and Install HeeRanjId Schema
 
 HeeRanjId provides the `generate_id()` Postgres function used by the `id`
 column default. Install it once per database before creating any tables:
 
 ```rust
-use sqlx::PgPool;
+use djogi::prelude::*;
 
-async fn prepare_db(pool: &PgPool) -> Result<(), sqlx::Error> {
-    // Install the generate_id() and related functions
-    heeranjid_sqlx::install_schema(pool).await?;
-    // Seed node 1 — required for ID generation to work
-    heeranjid_sqlx::seed_default_node(pool).await?;
+async fn prepare_db(ctx: &mut DjogiContext) -> djogi::Result<()> {
+    // Install the generate_id() and related functions.
+    heeranjid::install_schema(ctx).await?;
+    // Seed node 1 — required for ID generation to work.
+    heeranjid::seed_default_node(ctx).await?;
     Ok(())
 }
 ```
 
-In integration tests, this is handled by the `setup_*` helper functions
-that call both before creating any table. See the pattern used in
-`tests/integration/phase1_model.rs`.
+In integration tests, this is handled by the `#[djogi::djogi_test]`
+harness — you don't call `install_schema` or `seed_default_node` from
+test code yourself.
 
 ---
 
 ## 4. Create the Table
 
-In Phase 1, tables are created manually. Match the column list to the model
-definition, including the injected framework columns:
+In Phase 1, tables are created manually. Phase 7 ships a descriptor-driven
+migration differ that emits the same DDL automatically (`djogi
+migrations compose`); for the getting-started flow we keep the SQL
+visible.
 
 ```rust
-use sqlx::PgPool;
+use djogi::prelude::*;
 
-async fn create_articles_table(pool: &PgPool) -> Result<(), sqlx::Error> {
-    sqlx::query(
+async fn create_articles_table(ctx: &mut DjogiContext) -> djogi::Result<()> {
+    ctx.raw_execute(
         "CREATE TABLE articles (
             id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
             created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
@@ -172,33 +167,34 @@ async fn create_articles_table(pool: &PgPool) -> Result<(), sqlx::Error> {
             body        TEXT        NOT NULL,
             published   BOOLEAN     NOT NULL,
             view_count  INTEGER     NOT NULL
-        )"
-    )
-    .execute(pool)
-    .await?;
+        )",
+        &[],
+    ).await?;
     Ok(())
 }
 ```
 
-The column order does not matter — `FromRow` matches by name.
+The column order does not matter for `FromPgRow` decode — Djogi's
+canonical SELECT projection is baked at macro time and the wire shape
+matches the struct-field order, so positional decode is sound and
+fast.
 
 ---
 
 ## 5. CRUD
 
-With the table created, use the generated Model trait methods:
+With the table created, use the generated `Model` trait methods:
 
 ### Create
 
 ```rust
 use djogi::prelude::*;
-use sqlx::PgPool;
 
 async fn create_article(ctx: &mut DjogiContext) -> djogi::Result<Article> {
     let article = Article::create(ctx, Article {
         title: "Getting Started with Djogi".into(),
         slug: "getting-started".into(),
-        body: "Djogi is a Model-first ORM for Rust...".into(),
+        body: "Djogi is a Model-first framework for Rust...".into(),
         published: false,
         view_count: 0,
         // Framework fields — use ..Default::default().
@@ -269,105 +265,92 @@ async fn reload(ctx: &mut DjogiContext, article: Article) -> djogi::Result<Artic
 
 ## 6. Raw SQL Escape Hatch
 
-For queries the Model trait doesn't cover — aggregates, joins, custom
-visages — use `djogi::raw::*`:
+For queries the `Model` trait and `QuerySet` API don't cover — bespoke
+joins, recursive CTEs, set-returning functions — use the raw helpers
+on `DjogiContext`:
 
 ```rust
 use djogi::prelude::*;
 
-// query_as — returns a Vec of typed rows
-let articles: Vec<Article> = djogi::raw::query_as(
-    &mut ctx,
-    "SELECT * FROM articles WHERE published = $1",
-    |q| q.bind(true),
+// raw_query — returns Vec<T> for any T: FromPgRow
+let articles: Vec<Article> = ctx.raw_query(
+    "SELECT id, created_at, updated_at, title, slug, body, published, view_count
+     FROM articles WHERE published = $1",
+    &[&true],
 ).await?;
 
-// query_scalar — returns a single scalar value
-let count: i64 = djogi::raw::query_scalar(
-    &mut ctx,
+// raw_scalar — returns a single scalar value
+let count: i64 = ctx.raw_scalar(
     "SELECT COUNT(*) FROM articles",
-    |q| q,
+    &[],
 ).await?;
 
-// execute — runs a statement without returning rows
-djogi::raw::execute(
-    &mut ctx,
+// raw_execute — runs a statement without returning rows; returns rows-affected
+let updated = ctx.raw_execute(
     "UPDATE articles SET view_count = view_count + 1 WHERE id = $1",
-    |q| q.bind(article_id.as_i64()),
+    &[&article_id],
 ).await?;
 ```
 
-All three functions take `&mut DjogiContext` — the same call site works
-against a pool-backed context or a transaction-backed one:
-
-```rust
-let mut ctx = DjogiContext::from_pool(pool.clone());
-let count: i64 = djogi::raw::query_scalar(
-    &mut ctx,
-    "SELECT COUNT(*) FROM articles",
-    |q| q,
-).await?;
-```
+All three methods take `&mut DjogiContext` — the same call site works
+against a pool-backed context or a transaction-backed one. Parameters
+go in `&[&dyn ToSql]` form using `postgres-types::ToSql` (re-exported as
+`djogi::ToSql`).
 
 ---
 
 ## 7. Transactions
 
-Model CRUD methods take `&mut DjogiContext`. For a transaction, construct
-a tx-backed context and call `.commit()` / `.rollback()` when done:
+Model CRUD methods take `&mut DjogiContext`. Use `ctx.atomic(|tx| async
+{ ... })` to run a closure inside a transaction with savepoint nesting
+and on-commit callbacks:
 
 ```rust
-async fn transfer_views(pool: &PgPool, from_id: HeerId, to_id: HeerId) -> djogi::Result<()> {
-    let tx = pool.begin().await?;
-    let mut tx_ctx = DjogiContext::from_transaction(tx);
+use djogi::prelude::*;
 
-    let mut source = Article::get(&mut tx_ctx, from_id).await?;
-    let mut dest = Article::get(&mut tx_ctx, to_id).await?;
+async fn transfer_views(ctx: &mut DjogiContext, from_id: HeerId, to_id: HeerId)
+    -> djogi::Result<()>
+{
+    ctx.atomic(|tx| async move {
+        let mut source = Article::get(tx, from_id).await?;
+        let mut dest = Article::get(tx, to_id).await?;
 
-    dest.view_count += source.view_count;
-    source.view_count = 0;
+        dest.view_count += source.view_count;
+        source.view_count = 0;
 
-    source.save(&mut tx_ctx).await?;
-    dest.save(&mut tx_ctx).await?;
+        source.save(tx).await?;
+        dest.save(tx).await?;
 
-    tx_ctx.commit().await?;
-    Ok(())
+        Ok(())
+    }).await
 }
 ```
 
-If either `save()` fails, drop `tx_ctx` (or call `tx_ctx.rollback().await?`)
-and neither row is modified in the DB. Phase 4 Task 1's `atomic()` wrapper
-will layer on top of this to also manage on-commit callbacks and savepoint
-nesting automatically.
+If either `save()` returns an error inside the closure, the transaction
+rolls back and neither row is modified. `atomic()` also handles
+savepoint nesting (calling `atomic` inside another `atomic` opens a
+SAVEPOINT) and dispatches `on_commit` callbacks only after the
+outermost transaction commits.
+
+For low-level cases where you need to hand-manage a transaction, use
+`DjogiContext::from_connection(conn)` — see `djogi::DjogiContext`
+docs for the full surface.
 
 ---
 
 ## 8. First Test
 
-Use `#[sqlx::test]` for integration tests. Each test gets an isolated
-throwaway database — no shared state, no teardown ceremony.
+Use `#[djogi::djogi_test]` for integration tests. Each test gets an
+isolated throwaway database, with `install_schema` and
+`seed_default_node` applied automatically — no shared state, no teardown
+ceremony, no per-test setup helper.
 
 ```rust
 // tests/integration/articles.rs
 use djogi::prelude::*;
-use sqlx::PgPool;
 
-// Reuse this pattern for every test module that needs articles
-async fn setup(pool: &PgPool) {
-    heeranjid_sqlx::install_schema(pool).await.unwrap();
-    heeranjid_sqlx::seed_default_node(pool).await.unwrap();
-
-    // Persist the node ID at the DB level so all pool connections inherit it
-    let db_name: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(pool).await.unwrap();
-    sqlx::query(&format!(
-        "ALTER DATABASE \"{db_name}\" SET heer.node_id = '1'"
-    ))
-    .execute(pool).await.unwrap();
-    sqlx::query("SELECT set_heer_node_id(1)")
-        .execute(pool).await.unwrap();
-
-    sqlx::query(
+async fn create_articles_table(ctx: &mut DjogiContext) -> djogi::Result<()> {
+    ctx.raw_execute(
         "CREATE TABLE articles (
             id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
             created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
@@ -377,17 +360,17 @@ async fn setup(pool: &PgPool) {
             body        TEXT        NOT NULL,
             published   BOOLEAN     NOT NULL,
             view_count  INTEGER     NOT NULL
-        )"
-    )
-    .execute(pool).await.unwrap();
+        )",
+        &[],
+    ).await?;
+    Ok(())
 }
 
-#[sqlx::test]
-async fn create_and_get(pool: PgPool) {
-    setup(&pool).await;
-    let mut ctx = DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn create_and_get(ctx: &mut DjogiContext) {
+    create_articles_table(ctx).await.unwrap();
 
-    let article = Article::create(&mut ctx, Article {
+    let article = Article::create(ctx, Article {
         title: "Test Article".into(),
         slug: "test".into(),
         body: "Body text".into(),
@@ -404,16 +387,15 @@ async fn create_and_get(pool: PgPool) {
     assert!(!article.published);
 
     // Fetch back by PK
-    let fetched = Article::get(&mut ctx, article.id).await.unwrap();
+    let fetched = Article::get(ctx, article.id).await.unwrap();
     assert_eq!(fetched.slug, "test");
 }
 
-#[sqlx::test]
-async fn save_updates_fields(pool: PgPool) {
-    setup(&pool).await;
-    let mut ctx = DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn save_updates_fields(ctx: &mut DjogiContext) {
+    create_articles_table(ctx).await.unwrap();
 
-    let mut article = Article::create(&mut ctx, Article {
+    let mut article = Article::create(ctx, Article {
         title: "Draft".into(),
         slug: "draft".into(),
         body: "".into(),
@@ -426,19 +408,18 @@ async fn save_updates_fields(pool: PgPool) {
 
     article.published = true;
     article.title = "Published".into();
-    article.save(&mut ctx).await.unwrap();
+    article.save(ctx).await.unwrap();
 
-    let reloaded = Article::get(&mut ctx, article.id).await.unwrap();
+    let reloaded = Article::get(ctx, article.id).await.unwrap();
     assert!(reloaded.published);
     assert_eq!(reloaded.title, "Published");
 }
 
-#[sqlx::test]
-async fn delete_removes_row(pool: PgPool) {
-    setup(&pool).await;
-    let mut ctx = DjogiContext::from_pool(pool.clone());
+#[djogi::djogi_test]
+async fn delete_removes_row(ctx: &mut DjogiContext) {
+    create_articles_table(ctx).await.unwrap();
 
-    let article = Article::create(&mut ctx, Article {
+    let article = Article::create(ctx, Article {
         title: "To Delete".into(),
         slug: "to-delete".into(),
         body: "".into(),
@@ -450,10 +431,10 @@ async fn delete_removes_row(pool: PgPool) {
     .unwrap();
 
     let id = article.id;
-    article.delete(&mut ctx).await.unwrap();
+    article.delete(ctx).await.unwrap();
 
     assert!(matches!(
-        Article::get(&mut ctx, id).await,
+        Article::get(ctx, id).await,
         Err(DjogiError::NotFound)
     ));
 }
@@ -462,24 +443,30 @@ async fn delete_removes_row(pool: PgPool) {
 Run the tests:
 
 ```bash
-# Requires DATABASE_URL set to a Postgres 18 instance
-cargo test -p djogi --test phase1_model -- --test-threads=1
+# Requires DATABASE_URL pointing to a Postgres 18 instance the harness
+# can create throwaway databases against.
+cargo test --test articles -- --test-threads=1
 ```
 
-The `--test-threads=1` flag is required when tests share a Postgres instance
-to avoid conflicting `ALTER DATABASE` calls across simultaneous test runs.
-When each test gets a fully isolated database (the default with `#[sqlx::test]`
-and a fresh pool), parallel execution is safe.
+The `--test-threads=1` flag is the safe default while integration tests
+share a Postgres instance. The `#[djogi_test]` harness makes parallel
+runs safe in principle (each test gets its own DB), but tests that
+poke at session-level state — e.g. `set_tenant`, `SET LOCAL`,
+node-id config — should keep the serialized flag.
 
 ---
 
 ## What's Next
 
-- [Models guide](./models.md) — all `#[model(...)]` and `#[field(...)]`
-  attributes available in Phase 1, including alternate PK types (`serial`,
-  `ranjid`) and rich field types (`Decimal`, `Vec<T>`, `time::Date`).
+- [Models guide](./models.md) — every `#[model(...)]` and `#[field(...)]`
+  attribute, including alternate PK types (`serial`, `ranjid`,
+  `ranjid_recency_biased`, custom via `djogi::primary_key!`) and the rich
+  field types (`Decimal`, `Vec<T>`, `time::Date`, `Jsonb<T>`, `GeoPoint`).
+- [Queries guide](./queries.md) — the lazy `QuerySet<T>` API: typed
+  filters via `FieldRef`, eager loading via `prefetch` /
+  `select_related`, aggregates and annotations, raw-SQL escape hatch.
+- [Migrations guide](./migrations.md) — the descriptor-driven differ,
+  `djogi migrations compose / status / attune`, online-safety
+  classification, and the `djogi live` backfill orchestrator.
 - [Agent guide](./agent-guide.md) — if you are an AI coding agent working
   in a Djogi codebase, start here.
-- [Roadmap](../roadmap/index.md) — planned features including QuerySet
-  filters (Phase 2), RLS / tenant isolation (Phase 5+), and the
-  `cargo djogi` CLI (Phase 6–8).

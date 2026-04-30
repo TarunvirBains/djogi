@@ -55,9 +55,9 @@ pub struct Vehicle {
 ```
 
 `ForeignKey<T>` stores the target model's primary key **only** — not an
-eagerly-loaded row. `sqlx::Encode` / `Decode` route it through
-`T::Pk`, so the on-disk column matches the target's PK column type
-(`BIGINT` for HeerId, `UUID` for RanjId, `INTEGER` for serial).
+eagerly-loaded row. `postgres-types::ToSql` / `FromSql` route it
+through `T::Pk`, so the on-disk column matches the target's PK column
+type (`BIGINT` for HeerId, `UUID` for RanjId, `INTEGER` for serial).
 
 Use `Option<ForeignKey<T>>` for nullable FK columns — the migration
 system emits the `NULL` constraint from the `Option<_>` wrapper, not
