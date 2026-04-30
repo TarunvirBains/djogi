@@ -40,7 +40,7 @@
 //! Callbacks registered via `.on_commit()` fire after a successful `commit()`.
 //! They are useful for post-transaction side effects (cache invalidation,
 //! outbox polling, audit logging). Callback errors are logged but do not fail
-//! the commit itself (per Phase 4 v3 Q9 resolution). Callbacks are FIFO.
+//! the commit itself (per the spec resolution). Callbacks are FIFO.
 //!
 //! # Drain points
 //!
@@ -480,7 +480,7 @@ impl DjogiContext {
     /// # On-commit callbacks
     ///
     /// After the commit returns `Ok(())`, every callback registered via
-    /// [`on_commit`](Self::on_commit) fires in FIFO order. Per Phase 4 v3 Q9,
+    /// [`on_commit`](Self::on_commit) fires in FIFO order. ,
     /// callback errors are logged via `tracing::error!` but do NOT unwind the
     /// caller — a failing callback must not fail the commit, and subsequent
     /// callbacks still fire.
@@ -559,7 +559,7 @@ impl DjogiContext {
     ///
     /// Callbacks execute in FIFO order after the transaction commits.
     /// Callback errors are logged via `tracing::error!` but do not fail the
-    /// commit (per Phase 4 v3 Q9 resolution). Subsequent callbacks still
+    /// commit (per the spec resolution). Subsequent callbacks still
     /// fire even if an earlier callback fails.
     pub fn on_commit<F, Fut>(&mut self, callback: F)
     where
@@ -1027,7 +1027,7 @@ fn validate_runtime_plain_ident(value: &str, role: &str) -> Result<(), DjogiErro
 /// Wraps each callback future in `AssertUnwindSafe(..).catch_unwind()`
 /// so a panicking callback is logged via `tracing::error!` without
 /// aborting the drain loop. Callback `Err` returns are likewise logged
-/// and ignored — per Phase 4 v3 Q9 a callback failure must not fail the
+/// and ignored — per the spec a callback failure must not fail the
 /// commit, and every subsequent callback still fires.
 pub(crate) async fn drain_on_commit(callbacks: Vec<OnCommitCallback>) {
     for cb in callbacks {

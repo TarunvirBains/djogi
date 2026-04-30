@@ -10,14 +10,13 @@
 //!
 //! # Why a separate emitter?
 //!
-//! The Phase 2 [`crate::query::sql::emit_leaf`] handles `column op
-//! literal` — the left side is always a bare column name, the right side
-//! always a literal. The expression IR generalises both sides: either
-//! can be a column, a literal, or a nested arithmetic expression. A
-//! recursive emitter is the natural fit; factoring it into its own
-//! function keeps the Phase 2 leaf path (with its `parent_table`
-//! qualification + `ILIKE` escape rules) un-entangled from the new
-//! recursive walk.
+//! [`crate::query::sql::emit_leaf`] handles `column op literal` — the
+//! left side is always a bare column name, the right side always a
+//! literal. The expression IR generalises both sides: either can be a
+//! column, a literal, or a nested arithmetic expression. A recursive
+//! emitter is the natural fit; factoring it into its own function
+//! keeps the leaf path (with its `parent_table` qualification + `ILIKE`
+//! escape rules) un-entangled from the recursive walk.
 //!
 //! # Column references vs bind parameters
 //!
@@ -33,23 +32,20 @@
 //!
 //! # `parent_table` qualification
 //!
-//! Phase 3 Task 5 added a `parent_table: Option<&'static str>` argument
-//! to [`crate::query::sql::emit_condition`] so that `select_related`
+//! [`crate::query::sql::emit_condition`] takes a
+//! `parent_table: Option<&'static str>` argument so `select_related`
 //! joined queries qualify bare column references as `{table}.{col}`.
-//! The expression IR does **not** carry that argument today. Phase 4
-//! Task 3a's scope is single-table expressions (field-vs-field, arithmetic,
-//! literal), and joined expressions need a separate design pass that
+//! The expression IR does **not** carry that argument: its scope is
+//! single-table expressions (field-vs-field, arithmetic, literal),
+//! and joined expressions would need a separate design pass that
 //! answers ownership questions (which table owns `OuterRef { column }`?
 //! which child table sources an aggregate over a joined collection?).
-//! When that design lands (Task 5 or later), `emit_expr` grows a
-//! `parent_table` parameter and `ExprNode::Field` arms qualify accordingly.
 //!
-//! For today, `Condition::Expr` inside a `select_related` filter will
-//! emit a bare column reference, which Postgres will flag as ambiguous
-//! if the child contributes a same-named column. Users can avoid this
-//! by staying on the Phase 2 `filter` closure when combining with
-//! `select_related`; `filter_expr` is aimed at non-joined predicates
-//! until Task 5.
+//! Concretely: `Condition::Expr` inside a `select_related` filter
+//! emits a bare column reference, which Postgres flags as ambiguous if
+//! the child contributes a same-named column. Stay on the basic
+//! `filter` closure when combining with `select_related`; `filter_expr`
+//! is aimed at non-joined predicates.
 
 use crate::expr::node::{AggOp, CmpOp, ExprNode, SubqueryNode};
 use crate::pg::accumulator::SqlAccumulator;
@@ -63,8 +59,8 @@ use crate::pg::accumulator::SqlAccumulator;
 /// - `COUNT(*)` with `distinct = true` — `COUNT(DISTINCT *)` is not valid SQL.
 /// - `STRING_AGG(col, sep)` with `distinct = true` — Postgres requires an
 ///   explicit per-aggregate `ORDER BY` clause when DISTINCT is combined with
-///   `STRING_AGG`. Djogi's Phase 6.5 IR does not track per-aggregate ORDER BY;
-///   this restriction will be lifted in a future phase.
+///   `STRING_AGG`. The current IR does not track per-aggregate ORDER BY;
+///   this restriction may be lifted in a future release.
 ///
 /// All other `(op, distinct = true)` combinations are accepted and emitted as
 /// `AGG(DISTINCT col)`.
@@ -96,8 +92,8 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                         return Err(crate::DjogiError::UnsupportedAggregate {
                             op: "STRING_AGG",
                             reason: "STRING_AGG(DISTINCT col, sep) requires a per-aggregate \
-                                     ORDER BY clause, which Djogi's Phase 6.5 IR does not \
-                                     track — this restriction will be lifted in a future phase",
+                                     ORDER BY clause, which the current IR does not track — \
+                                     this restriction may be lifted in a future release",
                         });
                     }
                     _ => {}
@@ -208,8 +204,8 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // is used as a SELECT scalar (`(AGG(..))::TY`) or inside
             // the annotate SELECT list with a window function
             // (`(AGG(..) OVER ())::TY`). Keeping this arm bare means
-            // nested aggregates (Phase 5) don't accidentally pick up a
-            // cast they never asked for.
+            // nested aggregates don't accidentally pick up a cast
+            // they never asked for.
             //
             // `CountStar` is the only branch that emits a bare `*`
             // inside the parens and deliberately skips the recursive
@@ -414,7 +410,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             );
         }
 
-        // ── Spatial (Phase 6 `spatial` feature) ─────────────────────────────
+        // ── Spatial (gated on `spatial` feature) ───────────────────────────
         #[cfg(feature = "spatial")]
         ExprNode::Spatial(s) => {
             // Delegate entirely to `SpatialExpr::emit`, which handles all
@@ -490,9 +486,9 @@ fn emit_unary_agg(
 /// # Why `emit_condition` and not a second [`emit_expr`] walk?
 ///
 /// The subquery's `WHERE` clause is a [`Condition`] tree (not an
-/// [`ExprNode`]) because it was built through the Phase 2
+/// [`ExprNode`]) because it was built through
 /// [`crate::query::QuerySet::filter`] / [`crate::query::QuerySet::filter_expr`]
-/// path — those accumulate `Condition` with a full `LookupOp` vocabulary
+/// — those accumulate `Condition` with a full `LookupOp` vocabulary
 /// (ILIKE, BETWEEN, IS NULL, IN list, …). Reusing
 /// [`crate::query::sql::emit_condition`] lets every lookup op compose
 /// inside a subquery without a parallel `ExprNode`-side emitter, which
