@@ -410,6 +410,38 @@ pub enum DjogiError {
         /// The alias string that appears more than once in the SELECT list.
         alias: String,
     },
+
+    /// A pool checkout exceeded its configured wait / create / recycle
+    /// timeout. Phase 8-Zero introduces this variant alongside
+    /// [`DjogiPoolBuilder::timeout`](crate::pg::pool::DjogiPoolBuilder::timeout)
+    /// so callers can branch on saturation explicitly without inspecting
+    /// the underlying `deadpool_postgres::PoolError`.
+    ///
+    /// `phase` distinguishes the deadpool timeout type:
+    ///
+    /// - `"wait"` — the pool is at `max_size` and no slot freed within the
+    ///   configured wait window. Tune `max_size` upward or stop holding
+    ///   connections across awaits unrelated to the database.
+    /// - `"create"` — `Manager::create` (opening a fresh socket) timed out.
+    ///   Network or DB-side problem, not pool sizing.
+    /// - `"recycle"` — recycling an existing object on the checkout path
+    ///   timed out. Same root cause as `"create"` for `Verified`/`Clean`
+    ///   recycling methods that issue queries.
+    ///
+    /// All three are usually transient. The variant is **not** marked
+    /// transient by [`DjogiError::is_transient`] today because deadpool's
+    /// timeout is itself the retry signal — re-entering the same
+    /// `pool.get()` immediately would loop. Callers that want to retry
+    /// should add their own backoff.
+    #[error("pool timeout ({phase})")]
+    #[non_exhaustive]
+    PoolTimeout {
+        /// Which deadpool timeout fired — `"wait"`, `"create"`, or
+        /// `"recycle"`. A `&'static str` because the set of phases is
+        /// closed and tracking the exact variant lets callers match on it
+        /// in tracing without depending on deadpool's enum.
+        phase: &'static str,
+    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -687,6 +719,10 @@ mod tests {
         assert!(
             DjogiError::gone_aggregate("M", "42".into(), "deleted").is_terminal(),
             "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"
+        );
+        assert!(
+            DjogiError::PoolTimeout { phase: "wait" }.is_terminal(),
+            "PoolTimeout must be terminal — deadpool's timeout is itself the retry signal"
         );
     }
 }
