@@ -35,10 +35,7 @@ pub(crate) fn require_string_lit(value: &Expr, key: &str) -> syn::Result<LitStr>
 /// guard with `validate_shape` upstream so this is unreachable from the
 /// emission path.
 pub(crate) fn column_name_from_field(field: &Field) -> String {
-    let ident = field
-        .ident
-        .as_ref()
-        .expect("only named structs supported");
+    let ident = field.ident.as_ref().expect("only named structs supported");
     let raw = ident.to_string();
     raw.strip_prefix("r#").unwrap_or(&raw).to_string()
 }

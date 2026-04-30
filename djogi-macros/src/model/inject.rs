@@ -158,8 +158,8 @@ fn reserved_for_pk(model_attrs: &ModelAttrs) -> bool {
 /// error — `djogi` re-exports `HeerId`, `RanjId`, `DateTime`, etc. via its
 /// `types` module, so a single dependency is all the user ever needs.
 fn inject_fields(struct_item: &mut ItemStruct, model_attrs: &ModelAttrs) {
-    let id_field: Option<syn::Field> = pk_type_tokens(&model_attrs.pk)
-        .map(|ty| parse_quote! { pub id: #ty });
+    let id_field: Option<syn::Field> =
+        pk_type_tokens(&model_attrs.pk).map(|ty| parse_quote! { pub id: #ty });
 
     let created_at_field: syn::Field = parse_quote! { pub created_at: ::djogi::types::DateTime };
     let updated_at_field: syn::Field = parse_quote! { pub updated_at: ::djogi::types::DateTime };
@@ -284,7 +284,9 @@ fn is_builtin_pk_type(ty: &syn::Type) -> bool {
         return false;
     };
     let segs = &path.segments;
-    let Some(last) = segs.last() else { return false };
+    let Some(last) = segs.last() else {
+        return false;
+    };
 
     let is_pk_alias = last.ident == "HeerId"
         || last.ident == "HeerIdDesc"
