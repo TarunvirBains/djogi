@@ -51,15 +51,13 @@ use std::future::Future;
 /// that skips `#[derive(Model)]` fails to compile because the sealed
 /// supertrait is unsatisfied — so hostile downstream code cannot
 /// fabricate a `Model` whose `table_name()` or `descriptor().fields[].name`
-/// smuggles SQL into the emitter's `SqlAccumulator::push_sql` sites
-/// (per Codex review on de42874). The module is `#[doc(hidden)] pub`
-/// because `djogi-macros` emits a cross-crate path through it; the
-/// `__` prefix plus the seal-marker doc comment are the social signal
-/// that downstream code must never reach into it directly. A truly
-/// adversarial downstream crate could still name the path, but the
-/// threat model the seal defends against is accidental hand-impls
-/// and well-meaning-but-broken macro forks, not deliberate
-/// framework subversion (which has simpler routes via `unsafe`).
+/// smuggles SQL into the emitter's `SqlAccumulator::push_sql` sites.
+/// The module is `#[doc(hidden)] pub` because `djogi-macros` emits a
+/// cross-crate path through it; the `__` prefix plus the seal-marker
+/// doc comment are the social signal that downstream code must never
+/// reach into it directly. The threat model defends against accidental
+/// hand-impls, not deliberate framework subversion (which has simpler
+/// routes via `unsafe`).
 #[doc(hidden)]
 pub mod __sealed {
     pub trait Sealed {}

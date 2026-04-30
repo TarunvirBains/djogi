@@ -74,77 +74,61 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         }
     }
 
-    // 1. Inject framework fields (`id`, `created_at`, `updated_at`) and emit the
-    //    `Default` impl — both are concatenated into a single TokenStream by
-    //    `inject::expand`. Returns `syn::Error` for tuple/unit structs and for
-    //    user fields that collide with reserved framework names.
+    // 1. Inject framework fields (`id`, `created_at`, `updated_at`) and emit
+    //    the `Default` impl. Returns `syn::Error` for tuple/unit structs and
+    //    for user fields that collide with reserved framework names.
     let expanded = inject::expand(&mut struct_item, &model_attrs)?;
 
-    // 2. FromRow impl — Task 5 wires this up.
+    // 2. FromPgRow — positional ordinal decode against the canonical projection.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 2b. FromJoinedPgRow impl — Phase 3 Task 5. Sibling to `from_row` that
-    //     accepts a `prefix` parameter; used by `QuerySet::select_related`
-    //     to decode both parent (empty prefix) and child
-    //     (`"rel_{source_column}."`) from a single joined row. Emitted
-    //     for every model so `.select_related(path)` never fails at
-    //     compile time for lack of a decoder.
+    // 2b. FromJoinedPgRow — sibling decoder that accepts a `prefix` parameter,
+    //     used by `QuerySet::select_related` to decode both parent (empty
+    //     prefix) and child (`"rel_{source_column}."`) from a single joined
+    //     row. Emitted for every model so `.select_related(path)` never fails
+    //     at compile time for lack of a decoder.
     let from_joined_row = from_joined_row::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 3. Model trait impl (CRUD) — Tasks 7–9 wire this up.
+    // 3. Model trait impl (CRUD).
     let model_impl = crud::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 4. ModelDescriptor + inventory::submit! — Task 6 wires this up.
+    // 4. ModelDescriptor + inventory::submit! for migration-differ consumption.
     let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 5. {Model}Fields — typed closure-API accessors. `stubs::expand` emits
-    //    per-column `FieldRef` accessors (Phase 2 Task 4); it needs
-    //    `model_attrs` for pk-aware framework-field gating and reads the
-    //    field types directly off the post-injection `struct_item`.
+    // 5. {Model}Fields — ZST with one `FieldRef<Self, V>` accessor per
+    //    column. Reads field types off the post-injection `struct_item`;
+    //    needs `model_attrs` for pk-aware framework-field gating.
     let stubs = stubs::expand(&struct_item, &model_attrs);
 
-    // 6. {Model}Filter — programmatic (closure-free) filter builder.
-    //    Separate codegen path: emits a runtime struct carrying a
-    //    Vec<FilterClause> with one setter per user field. See
-    //    `filter::expand`'s module docs for the typed-vs-erased rationale.
+    // 6. {Model}Filter — runtime struct carrying `Vec<FilterClause>` with one
+    //    setter per user field. Separate codegen path from `{Model}Fields`;
+    //    see `filter::expand`'s module docs for the typed-vs-erased rationale.
     let filter = filter::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 7. {Model}Related — typed relation-path constructors (Phase 3 Task 2).
-    //    Independent of ModelAttrs/FieldAttrs: the emitter inspects field
-    //    types directly via `detect_relation`. Emits a ZST `{Model}Related`
-    //    with one method per FK / O2O field — consumed by QuerySet's
-    //    prefetch / select_related in Phase 3 Tasks 4 + 5.
+    // 7. {Model}Related — typed relation-path constructors. Inspects field
+    //    types directly via `detect_relation`; emits a ZST with one method
+    //    per FK / O2O field, consumed by QuerySet `prefetch` / `select_related`.
     let related = relations::expand(&struct_item);
 
-    // 8. {Model}OuterRef — typed outer-scope column references for
-    //    correlated subqueries (Phase 4 Task 5). Same shape as
-    //    `{Model}Fields` but the accessors are associated functions
-    //    (no receiver) returning `OuterRef<Self, V>` instead of
-    //    `FieldRef<Self, V>`. Consumed by `Subquery::new` / `Exists::new`
-    //    when building EXISTS / scalar-subquery predicates.
+    // 8. {Model}OuterRef — typed outer-scope column references for correlated
+    //    subqueries. Same shape as `{Model}Fields` but the accessors are
+    //    associated functions (no receiver) returning `OuterRef<Self, V>`
+    //    instead of `FieldRef<Self, V>`. Consumed by `Subquery::new` /
+    //    `Exists::new` when building EXISTS / scalar-subquery predicates.
     let outer = outer_ref::expand(&struct_item, &model_attrs);
 
-    // 9. Visage structs + conversion impls (Phase 4.5). Emits
-    //    {Model}Public / SelfView / Admin / Export plus scalar `From<&Self>`
-    //    (Task 3) / relation-nesting `TryFrom<&Self>` (Task 5) impls.
-    //    Reads `FieldAttrs.expose` for scope membership; framework columns
-    //    (id / created_at / updated_at) default into every visage (Q13).
+    // 9. Visage structs + conversion impls. Emits `{Model}Public` / `SelfView`
+    //    / `Admin` / `Export` plus scalar `From<&Self>` and relation-nesting
+    //    `TryFrom<&Self>` impls. Reads `FieldAttrs.expose` for scope
+    //    membership; framework columns default into every visage.
     let projections_ts = visages::expand(&struct_item, &model_attrs, &field_attrs);
 
-    // 10. Advisory warnings — Phase 5 Task 11.
-    //     Emit a `#[deprecated]` const for each field that carries
-    //     `outbox = "ignore"` without a matching `rationale = "..."`.
-    //     Stable Rust does not expose `proc_macro::Diagnostic` at warn
-    //     level; the idiomatic stable trick is emitting a deprecated const
-    //     and immediately referencing it so the compiler fires the
-    //     deprecated-use lint at the call site.
-    //
-    //     `lazy` and `partition_by` advisories are deferred here because
-    //     `lazy` has no struct field today and `partition_by` has no
-    //     attribute-level parsing. Adding parsers purely to support an
-    //     advisory warning would be cart-before-horse — those advisories
-    //     land when the attributes become functional features.
-    //     (Phase 5 Task 11 — see the Phase 5 implementation plan.)
+    // 10. Advisory warnings — emit a `#[deprecated]` const for each field
+    //     that carries `outbox = "ignore"` without a matching `rationale`.
+    //     Stable Rust does not expose `proc_macro::Diagnostic` at warn level;
+    //     the idiomatic stable trick is emitting a deprecated const and
+    //     immediately referencing it so the deprecated-use lint fires at the
+    //     reference site, surfacing as a build-time warning.
     let rationale_advisories = emit_rationale_advisories(
         &struct_item,
         // field_attrs was collected before inject::expand mutated
