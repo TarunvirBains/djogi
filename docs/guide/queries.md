@@ -104,13 +104,24 @@ require `V = String`.
 | `.contains(s)` / `.icontains(s)` | `col ILIKE '%…%'` | `V = String` only |
 | `.starts_with(s)` / `.istarts_with(s)` | `col ILIKE '…%'` | `V = String` only |
 | `.ends_with(s)` / `.iends_with(s)` | `col ILIKE '%…'` | `V = String` only |
-| `.regex(s)` | `col ~ $1` (case-sensitive POSIX) | `V = String` only |
-| `.iregex(s)` | `col ~* $1` (case-insensitive POSIX) | `V = String` only |
+| `.regex(s)` | `col ~ $1` — Postgres POSIX regex operator | `V = String` only |
+| `.iregex(s)` | `col ~* $1` — case-insensitive Postgres POSIX regex | `V = String` only |
 
 `contains` / `starts_with` / `ends_with` escape `%`, `_`, and `\` in the
 user input before wrapping with the appropriate prefix/suffix `%` — a
 search for `"50%"` matches the literal sequence, not "50 followed by
 anything".
+
+`regex` and `iregex` are Postgres features, not Rust ones — `s` is a
+Postgres POSIX regex pattern (the same syntax accepted by the `~` and
+`~*` SQL operators), evaluated entirely server-side. Djogi never
+links a Rust regex engine; the `regex` rule in
+[`docs/spec/decisions.md`](../spec/decisions.md) carves out the
+Postgres-side `~` / `~*` operators because they are SQL operators
+exposed through the typed query API. For literal-substring matching,
+prefer `contains` — it escapes `%`, `_`, and `\` and is cheaper to
+plan. Reach for `regex` only when the predicate genuinely needs
+alternation, anchors, or character classes.
 
 Non-string columns do not resolve the string-only methods — calling
 `age.contains(...)` on an `i64` column is a compile error with a localized
@@ -292,8 +303,12 @@ let rows = Post::objects()
 `StartsWith(String)`, `EndsWith(String)`, `Between(V, V)`,
 `Regex(String)`. `Contains` / `StartsWith` / `EndsWith` map to the
 case-insensitive `ILIKE` operators, matching the closure API's default.
-`Regex` is case-sensitive POSIX (`~`); the closure API's `.iregex`
-(case-insensitive `~*`) does not currently have a `Lookup` equivalent.
+`Regex(String)` routes to the Postgres `~` operator (case-sensitive
+POSIX regex, server-side — see the closure-API `.regex` notes above
+for the Postgres-feature framing); the closure API's `.iregex` (`~*`)
+does not currently have a `Lookup` equivalent because no caller has
+needed the runtime-decided form. Adding `Lookup::IRegex(String)` is
+non-breaking when needed.
 
 `Lookup` is `#[non_exhaustive]` — future phases add variants without a
 breaking change.

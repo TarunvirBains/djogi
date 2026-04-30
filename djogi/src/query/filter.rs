@@ -111,8 +111,16 @@ pub enum Lookup<V> {
     EndsWith(String),
     /// `column BETWEEN a AND b` (inclusive on both ends per SQL spec).
     Between(V, V),
-    /// POSIX regex match — `column ~ value` (case-sensitive; Postgres-specific).
-    /// Use the closure API's `.iregex` for the case-insensitive variant.
+    /// Postgres POSIX regex match — `column ~ value` (case-sensitive).
+    ///
+    /// Routes to the same operator as [`FieldRef::regex`](crate::query::field::FieldRef::regex);
+    /// `value` is a Postgres POSIX regex pattern, evaluated entirely
+    /// server-side. Djogi does not link a Rust regex engine — this
+    /// variant exists because the match itself is a Postgres feature
+    /// (the `~` operator). Use the closure API's `.iregex` for the
+    /// case-insensitive variant; the programmatic builder does not
+    /// currently expose a `Lookup::IRegex` because no caller has needed
+    /// the runtime-decided form. Adding it is non-breaking when needed.
     Regex(String),
 }
 
