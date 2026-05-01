@@ -262,6 +262,12 @@ jobs:
       - name: T10 spatial sync_models live test
         run: cargo test -p djogi --test phase7_t10_sync_models_live --all-features -- --test-threads=1
 
+      - name: Phase 6 spatial live test (GeoPoint, within_km, order_by_distance)
+        run: cargo test -p djogi --test phase6_spatial --all-features -- --test-threads=1
+
+      - name: Phase 6.5 spatial polish live test (LineString, Polygon, MultiPoint, contains/intersects)
+        run: cargo test -p djogi --test phase6_5_spatial_polish --all-features -- --test-threads=1
+
       - name: Cluster C spatial live test (T16/T17 — convex_hull, intersection, area)
         run: cargo test -p djogi --test phase8_zero_cluster_c_spatial_live --all-features -- --test-threads=1
 
