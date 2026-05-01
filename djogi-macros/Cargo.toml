@@ -42,7 +42,7 @@ trybuild.workspace = true
 # Path-only override (no `version`) so `cargo publish -p djogi-macros` succeeds
 # without a publish-order cycle: djogi-macros publishes first, before djogi
 # exists on crates.io, so a versioned dev-dep would fail the index lookup.
-djogi = { path = "../djogi", features = ["spatial"] }
+djogi = { path = "../djogi" }
 # serde — needed by JsonbSchema compile_pass fixtures that derive Serialize +
 # Deserialize on schema structs. The trybuild process compiles each fixture
 # as a standalone crate with the same dev-deps as djogi-macros.
