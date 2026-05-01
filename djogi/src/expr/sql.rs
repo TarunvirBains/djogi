@@ -324,6 +324,14 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             acc.push_sql(column);
             acc.push_sql(", 1)");
         }
+        ExprNode::CurrentYear => {
+            // EXTRACT(YEAR FROM CURRENT_DATE) returns Postgres `numeric`; the
+            // typed `Expr<i32>` wrapper at the public surface promises an
+            // `i32` decode, so the explicit `::INTEGER` cast narrows the
+            // result here. No bind parameter — the year is read from the
+            // server clock, never user-supplied.
+            acc.push_sql("EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER");
+        }
         ExprNode::OuterRef { column } => {
             // Outer-scope column reference — emitted unqualified.
             // Postgres resolves the name against the enclosing query
@@ -734,5 +742,90 @@ mod tests {
         emit_expr(&mut acc, &expr.node);
         let sql = acc.sql();
         assert_eq!(sql.trim(), "(a + b) + c", "got: {sql}");
+    }
+
+    // ── T20: Expr::current_year() — Cluster C C2 ──────────────────────────────
+
+    /// `Expr::current_year()` emits the bare
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` token stream with no
+    /// bind parameters — the year is read from the server clock, never
+    /// supplied by the caller.
+    #[test]
+    fn emit_current_year_no_binds() {
+        let expr = Expr::current_year();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
+        assert_eq!(
+            sql.trim(),
+            "EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER",
+            "got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            0,
+            "current_year takes no user input — must bind zero params; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// `Expr::current_year() - field.as_expr()` — the canonical age
+    /// expression — must lower to
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER - <col>` via the existing
+    /// `Expr<i32>` arithmetic IR. The arithmetic emitter wraps each side
+    /// in parens because `CurrentYear` is a non-trivial expression token
+    /// (it contains its own `::` cast operator), so the canonical SQL
+    /// shape includes the structural parens that pin the operator
+    /// precedence.
+    #[test]
+    fn emit_current_year_minus_field_age_expression() {
+        let f: FieldRef<Post, i32> = FieldRef::new("estimated_birth_year");
+        let age = Expr::current_year() - f.as_expr();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &age.node);
+        let sql = acc.sql();
+        // The token stream must reference both halves and the subtraction
+        // operator. Existing arithmetic emitter wraps each side in parens
+        // when it is itself an expression token; the bare column on the
+        // RHS does not get wrapped, but the LHS's `EXTRACT(...)::INTEGER`
+        // form contains an arithmetic-adjacent `::` cast so the emitter's
+        // structural-parens contract makes the layout deterministic.
+        assert!(
+            sql.contains("EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER"),
+            "expected current_year token, got: {sql}"
+        );
+        assert!(
+            sql.contains(" - estimated_birth_year"),
+            "expected subtraction with column on RHS, got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            0,
+            "neither side binds a parameter; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// The age expression composes with comparisons — `(year - col).gte(15)`
+    /// must yield a bound RHS literal alongside the year/column tokens.
+    #[test]
+    fn emit_current_year_age_with_gte_threshold() {
+        let f: FieldRef<Post, i32> = FieldRef::new("estimated_birth_year");
+        let predicate = (Expr::current_year() - f.as_expr()).gte(Expr::literal(15i32));
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &predicate.node);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER"),
+            "got: {sql}"
+        );
+        assert!(sql.contains("estimated_birth_year"), "got: {sql}");
+        assert!(sql.contains(" >= $1"), "got: {sql}");
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "exactly one bind for the threshold; got {}",
+            acc.bind_count()
+        );
     }
 }

@@ -132,6 +132,47 @@ where
     }
 }
 
+impl Expr<i32> {
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — the current calendar year
+    /// as an `Expr<i32>`, evaluated server-side per query.
+    ///
+    /// Composes with the rest of the `Expr<i32>` arithmetic IR. The canonical
+    /// use is age-from-birth-year:
+    ///
+    /// ```ignore
+    /// // SQL: (EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER - estimated_birth_year)
+    /// let age_years = Expr::current_year() - f.estimated_birth_year().as_expr();
+    /// Elephant::objects()
+    ///     .filter_expr(|f| age_years.gte(Expr::literal(15i32)))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Why an associated `Expr<i32>` constructor?
+    ///
+    /// `current_year()` takes no arguments and is conceptually a constant for
+    /// the duration of a single query. Routing it through the typed `Expr`
+    /// surface — rather than a `FieldRef` method — keeps the call site
+    /// independent of any specific column, the same way `Expr::literal(...)`
+    /// is column-independent.
+    ///
+    /// # Volatility
+    ///
+    /// `CURRENT_DATE` is `STABLE` per Postgres semantics — it returns a
+    /// fresh value per statement, but stays constant within one transaction.
+    /// Callers who need a frozen snapshot of "now" across a long-running
+    /// transaction should bind a literal `i32` (`Expr::literal(2026i32)`)
+    /// rather than calling this helper.
+    ///
+    /// # Where
+    ///
+    /// - [`ExprNode::CurrentYear`] is the underlying IR variant.
+    /// - [`sql::emit_expr`] renders the SQL token stream.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn current_year() -> Expr<i32> {
+        Expr::from_node(ExprNode::CurrentYear)
+    }
+}
+
 impl<T> Expr<T> {
     /// Package an already-constructed `ExprNode` into `Expr<T>`. Crate-
     /// private so downstream code cannot fabricate an arbitrarily-typed

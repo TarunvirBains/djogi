@@ -220,6 +220,33 @@ pub(crate) enum ExprNode {
     /// [`crate::query::field::FieldRef::new`] construction time.
     ArrayLength { column: &'static str },
 
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — the current calendar year
+    /// as an `i32`, evaluated server-side per query.
+    ///
+    /// Produced by [`super::Expr::current_year`]. Composes with the existing
+    /// `Expr<i32>` arithmetic IR so e.g.
+    /// `Expr::current_year() - f.estimated_birth_year().as_expr()` yields the
+    /// row's age as an `Expr<i32>`.
+    ///
+    /// # SQL emission
+    ///
+    /// The emitter renders the literal token stream
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — no bind parameter is
+    /// taken because there is no user-supplied value (the year is read from
+    /// the Postgres server clock at query time). The explicit `::INTEGER`
+    /// cast narrows Postgres's native `numeric` return from `EXTRACT` back
+    /// to a Rust-decodable `i32` so the typed surface's `Expr<i32>` promise
+    /// holds end-to-end.
+    ///
+    /// # Volatility note
+    ///
+    /// `CURRENT_DATE` is `STABLE` (not `IMMUTABLE`) per Postgres semantics —
+    /// it changes by calendar day, not within a single transaction. The
+    /// IR does not annotate volatility on `ExprNode` variants today; callers
+    /// who need a deterministic snapshot of "now" inside a long-running
+    /// transaction should bind a literal `i32` instead of using this helper.
+    CurrentYear,
+
     /// Outer-scope column reference inside a correlated subquery.
     ///
     /// Emits the column name unqualified — Postgres resolves the name
