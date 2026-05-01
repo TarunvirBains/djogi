@@ -24,6 +24,11 @@
 //! 3. **A raw-client escape hatch.** `COPY`, server-side cursors,
 //!    `CREATE EXTENSION`, and third-party crates that take a
 //!    `&tokio_postgres::Client` cannot route through `DjogiContext`.
+//!    [`DjogiPool::with_client`] is dirty-by-default: a closure that
+//!    returns `Err`, panics, or is cancelled detaches the connection
+//!    from the pool so a poisoned session (open transaction,
+//!    uncommitted `SET ROLE`, advisory lock) cannot leak to the next
+//!    checkout.
 //!
 //! Phase 8-Zero introduces [`DjogiPool::builder`] (T1+T2: `.max_size`,
 //! `.timeout`; T3: `.post_connect`) and [`DjogiPool::with_client`] (T4)
@@ -203,29 +208,47 @@ impl DjogiPool {
     /// participates in the same transaction as the surrounding model
     /// operations).
     ///
-    /// # Connection lifecycle
+    /// # Connection lifecycle — clean exit returns, dirty exit detaches
     ///
-    /// The connection is checked out before the closure runs and
-    /// returned to the pool when the closure's future resolves — on
-    /// success **or** when the closure panics. The owning `Object` is
-    /// dropped at the end of `with_client`, so deadpool's drop-side
-    /// return-to-pool path runs regardless of how the closure exits.
-    /// A panic during the closure unwinds through the `with_client`
-    /// frame, drops the `Object`, and leaves the pool in a consistent
-    /// state.
+    /// The connection is checked out before the closure runs. The
+    /// outcome path determines what happens to it on the way out:
+    ///
+    /// - **Clean exit (`Ok`).** The `Object` drops normally and
+    ///   deadpool returns the connection to the pool. The next
+    ///   checkout reuses the same physical connection.
+    /// - **Dirty exit (`Err`, panic, future cancellation).** The
+    ///   `Object` is detached via `deadpool::managed::Object::take`,
+    ///   which removes it from the pool's tracker; the underlying
+    ///   `ClientWrapper` is dropped immediately, closing the
+    ///   `tokio_postgres::Client` and the underlying socket. The
+    ///   pool will create a fresh physical connection on the next
+    ///   demand. This is the safe-by-default semantic — the closure
+    ///   cannot leak a poisoned session (open transaction,
+    ///   uncommitted `SET ROLE`, advisory lock, half-finished `COPY`
+    ///   protocol stream) into the next checkout.
+    ///
+    /// The dirty-exit detach is important because Djogi's pool runs
+    /// `deadpool_postgres::RecyclingMethod::Fast`, which only checks
+    /// `is_closed()` on return — it does NOT run `ROLLBACK`,
+    /// `RESET ALL`, or `DISCARD ALL`. Without the dirty-exit detach
+    /// here, an `Err`/panic during a `BEGIN` block or a `SET ROLE`
+    /// would silently hand the next request a backend with the wrong
+    /// role/transaction state. The trade-off is one extra physical
+    /// connection per dirty exit, which is the right cost to pay for
+    /// the safety guarantee.
     ///
     /// # Session-affecting commands
     ///
-    /// Session-level state set inside the closure (`SET ROLE`,
-    /// `SET search_path`, advisory locks, prepared statements outside the
-    /// statement cache) leaves the connection in a non-default state when
-    /// it returns to the pool. Prefer transaction-local settings
-    /// (`SET LOCAL ...`, `set_config(name, value, true)`,
-    /// `BEGIN; ... COMMIT;`) or reset what you set before the closure
-    /// resolves. The pool's recycler does NOT issue `DISCARD ALL` on
-    /// return — that is a deliberate trade-off (recycler latency cost
-    /// vs cleanliness) inherited from `deadpool_postgres`'s default
-    /// `RecyclingMethod::Fast`.
+    /// Even on the **clean-exit path**, session-level state set inside
+    /// the closure (`SET ROLE`, `SET search_path`, advisory locks,
+    /// prepared statements outside the statement cache) leaves the
+    /// connection in a non-default state when it returns to the pool.
+    /// Prefer transaction-local settings (`SET LOCAL ...`,
+    /// `set_config(name, value, true)`, `BEGIN; ... COMMIT;`) or
+    /// reset what you set before the closure resolves. The recycler
+    /// does NOT issue `DISCARD ALL` on return — that is a deliberate
+    /// trade-off (recycler latency cost vs cleanliness) inherited
+    /// from `deadpool_postgres`'s default `RecyclingMethod::Fast`.
     ///
     /// # Example
     ///
@@ -243,17 +266,97 @@ impl DjogiPool {
     where
         F: for<'a> FnOnce(&'a mut tokio_postgres::Client) -> ClientFuture<'a, R>,
     {
-        // `Object` derefs to `ClientWrapper`, which derefs to
-        // `tokio_postgres::Client`. Take a `&mut Client` borrow that
-        // lives for exactly the closure's body.
-        let mut obj = self.inner.get().await.map_err(map_pool_err)?;
-        let client: &mut tokio_postgres::Client = &mut obj;
-        let result = f(client).await;
-        // `obj` drops here — deadpool returns the connection to the
-        // pool whether `result` is `Ok` or `Err`. If the closure
-        // panicked, the unwind also drops `obj`, returning the
-        // connection to the pool.
+        // The guard holds the deadpool `Object` and starts in the
+        // "dirty" state. Only after the closure returns `Ok` do we
+        // clear the dirty flag and let the guard's `Drop` return
+        // the connection to the pool normally. Any other exit path
+        // (closure returns `Err`, closure panics during the await,
+        // the future is dropped before completing) triggers the
+        // detach branch in `Drop` and the connection is discarded.
+        let obj = self.inner.get().await.map_err(map_pool_err)?;
+        let mut guard = WithClientGuard {
+            obj: Some(obj),
+            committed: false,
+        };
+
+        // SAFETY: `obj` lives in `guard.obj` for the entire `f(client).await`.
+        // We borrow `&mut tokio_postgres::Client` through deref-mut from the
+        // `Object` for the closure's lifetime. The borrow ends before
+        // `guard` is committed/dropped.
+        let result = {
+            let obj_ref = guard
+                .obj
+                .as_mut()
+                .expect("guard.obj is Some until commit/drop");
+            let client: &mut tokio_postgres::Client = obj_ref;
+            f(client).await
+        };
+
+        if result.is_ok() {
+            guard.committed = true;
+        }
+        // Drop the guard here — Drop runs the detach path if not
+        // committed, or the normal return-to-pool path if committed.
+        drop(guard);
+
         result
+    }
+}
+
+// ---------------------------------------------------------------------------
+// `with_client` lifecycle guard
+// ---------------------------------------------------------------------------
+
+/// RAII guard around a checked-out deadpool `Object` for the duration of
+/// a [`DjogiPool::with_client`] call.
+///
+/// The guard is **dirty-by-default**: only an explicit `committed = true`
+/// flip (set after the closure returns `Ok`) lets the connection return
+/// to the pool. Any other exit path — closure `Err`, panic during the
+/// `await`, future cancellation that drops the `with_client` frame
+/// before completion — leaves `committed = false` and the `Drop` impl
+/// detaches the `Object` from the pool, dropping the underlying client
+/// and forcing a fresh physical connection on the next demand.
+///
+/// This is the only way to make `with_client` safe given Djogi's
+/// `RecyclingMethod::Fast` recycler, which only checks `is_closed()` and
+/// does NOT issue `ROLLBACK` / `RESET ALL` / `DISCARD ALL`. Without the
+/// dirty-exit detach a closure that starts a transaction or runs `SET
+/// ROLE` / `SET search_path` / an advisory lock and then errors or
+/// panics would leak its session state to the next checkout — a real
+/// auth/tenant/session-state hazard.
+struct WithClientGuard {
+    /// The checked-out object. Always `Some` until the guard is
+    /// dropped — the `Option` exists only so `Drop` can move out of it
+    /// and either let it drop normally (clean) or hand it to
+    /// `Object::take` (detach).
+    obj: Option<deadpool_postgres::Object>,
+    /// Set to `true` only after the closure returns `Ok`. Defaults to
+    /// `false` so every non-clean exit path detaches.
+    committed: bool,
+}
+
+impl Drop for WithClientGuard {
+    fn drop(&mut self) {
+        if let Some(obj) = self.obj.take() {
+            if self.committed {
+                // Clean exit — drop the Object normally so deadpool
+                // returns the connection to the pool. (The destructor
+                // is `Object::drop`, which calls `pool.return_object`.)
+                drop(obj);
+            } else {
+                // Dirty exit — detach from the pool. `Object::take`
+                // consumes the Object and returns the underlying
+                // ClientWrapper detached from the pool's tracker;
+                // dropping it here closes the underlying
+                // `tokio_postgres::Client` and the socket. The pool
+                // will create a fresh physical connection on next
+                // demand.
+                let _client_wrapper = deadpool_postgres::Object::take(obj);
+                // `_client_wrapper` drops at end of scope, closing
+                // the connection.
+            }
+        }
     }
 }
 
