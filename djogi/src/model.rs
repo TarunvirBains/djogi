@@ -218,6 +218,65 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
             )
         })
     }
+
+    /// Walk **every** self-FK edge declared on this model upward —
+    /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
+    /// 8-Zero Cluster B3 (T13a).
+    ///
+    /// `full_ancestors` is the right shape for kinship / pedigree
+    /// queries where a node has more than one parent edge (e.g.
+    /// `mother_id` + `father_id` on an animal model). The recursive
+    /// CTE emits one `UNION ALL` branch per edge, so a single call
+    /// returns ancestors reachable via any combination of those
+    /// edges. Path multiplicity is preserved — an ancestor reachable
+    /// by two distinct edge sequences appears twice, which is
+    /// load-bearing for Wright-style kinship coefficient sums.
+    ///
+    /// Combine with
+    /// [`fetch_all_with_paths`](crate::query::RecursiveQuerySet::fetch_all_with_paths)
+    /// to recover which edge sequence reached each ancestor — that is
+    /// the only terminal that distinguishes
+    /// `["mother_id", "father_id"]` from `["father_id", "mother_id"]`
+    /// when both lead to the same row.
+    ///
+    /// # Edge cases
+    ///
+    /// - `self_fk_count() == 0` — the returned `RecursiveQuerySet`
+    ///   carries an empty `edges` Vec. Builder methods chain
+    ///   normally; the **terminal** fails with
+    ///   [`DjogiError::Validation`] naming the model. Errors at
+    ///   terminal time (not construction time) keep the return type
+    ///   uniform — callers can write `Model::full_ancestors(id)
+    ///   .with_max_depth(5).fetch_all(ctx).await?` without an extra
+    ///   `?` for `self_fk_count() == 0`.
+    /// - `self_fk_count() == 1` — degenerates to
+    ///   [`Model::tree_ancestors`] over the lone edge. Same SQL
+    ///   shape, same single bind for the root id.
+    /// - `self_fk_count() >= 2` — every declared self-FK becomes its
+    ///   own `UNION ALL` branch in the recursive term. No
+    ///   `tree_edge` requirement: `full_ancestors` is the disambiguation
+    ///   strategy, not single-edge selection.
+    fn full_ancestors(node_id: Self::Pk) -> crate::query::RecursiveQuerySet<Self>
+    where
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        let descriptor = Self::descriptor();
+        let edges: Vec<crate::relation::RelationPath<Self, Self>> = descriptor
+            .self_fk_columns()
+            .map(|col| {
+                crate::relation::__macro_support::__make_relation_path::<Self, Self>(
+                    col,
+                    Self::table_name(),
+                    crate::relation::RelationKind::ForeignKey,
+                )
+            })
+            .collect();
+        crate::query::RecursiveQuerySet::from_paths(
+            edges,
+            node_id,
+            crate::query::RecursiveDirection::Ancestors,
+        )
+    }
 }
 
 /// Look up `M`'s declared `tree_edge` and synthesise a

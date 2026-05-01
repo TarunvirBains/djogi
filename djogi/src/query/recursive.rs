@@ -1,5 +1,6 @@
 //! `RecursiveQuerySet<T>` — typed recursive-CTE query builder for
-//! tree-shaped models. Phase 8-Zero Cluster B2 (T9 + T10 + T11 + T11b).
+//! tree-shaped models. Phase 8-Zero Cluster B2 (T9 + T10 + T11 + T11b)
+//! and Cluster B3 (T13 + T13a).
 //!
 //! # What
 //!
@@ -48,19 +49,20 @@
 //! The emitter produces one of:
 //!
 //! ```sql
-//! -- DESCENDANTS
-//! WITH RECURSIVE __djogi_tree (depth, <cols...>) AS (
-//!     SELECT 0, <cols...>
+//! -- DESCENDANTS (one edge)
+//! WITH RECURSIVE __djogi_tree (depth, path, <cols...>) AS (
+//!     SELECT 0, ARRAY[]::text[], <cols...>
 //!     FROM <table>
 //!     WHERE id = $1
 //!   UNION ALL
-//!     SELECT parent.depth + 1, <child.cols...>
+//!     SELECT parent.depth + 1, parent.path || ARRAY['<edge_col>'],
+//!            <child.cols...>
 //!     FROM <table> child
 //!     JOIN __djogi_tree parent ON child.<edge_col> = parent.id
 //!     [WHERE <user_filter>]
 //!     [AND parent.depth < $n]
 //! ) [SEARCH BREADTH FIRST BY <col> SET _djogi_search_seq]
-//!   CYCLE id SET is_cycle USING path
+//!   CYCLE id SET is_cycle USING cycle_path
 //! SELECT <cols...> FROM __djogi_tree
 //! WHERE NOT is_cycle
 //! [ORDER BY <_djogi_search_seq,> <user_order>]
@@ -70,16 +72,28 @@
 //! `parent.<edge_col> = child.id` — child walks up, parent has the FK
 //! pointing at child.
 //!
+//! For `full_ancestors` (B3 — T13a) the recursive term emits one
+//! `UNION ALL` branch per self-FK edge — each branch carries its own
+//! edge name into the `path` accumulator so callers can distinguish
+//! `["mother_id", "father_id"]` (maternal grandfather) from
+//! `["father_id", "mother_id"]` (paternal grandmother).
+//!
 //! # SQL invariants
 //!
-//! - **`UNION ALL`**, never `UNION` — multiplicity preservation matters
-//!   for B3's `full_ancestors` Wright-correctness path; using `ALL`
-//!   keeps the codepath identical even though B2 only does single-edge
-//!   walks.
-//! - **`CYCLE id SET is_cycle USING path`** is mandatory. Postgres
-//!   manages both `is_cycle` and `path` automatically — they do not
-//!   appear in our manual column list. The outer `WHERE NOT is_cycle`
-//!   strips the cycle-detection sentinel rows from output.
+//! - **`UNION ALL`**, never `UNION` — multiplicity preservation is
+//!   load-bearing for `full_ancestors`. Wright-style kinship
+//!   coefficients sum independent connecting paths through common
+//!   ancestors, so the same ancestor reached by two distinct edge
+//!   sequences must appear twice. `UNION` would dedup and silently
+//!   drop those rows.
+//! - **`CYCLE id SET is_cycle USING cycle_path`** is mandatory. Postgres
+//!   manages both `is_cycle` and the cycle-detection `cycle_path`
+//!   array automatically — they do not appear in our manual column
+//!   list. The outer `WHERE NOT is_cycle` strips the cycle-detection
+//!   sentinel rows from output. The cycle-detection column is named
+//!   `cycle_path` (not `path`) so it does not collide with our user-
+//!   visible `path: text[]` column that records the edge-name
+//!   sequence from root to the current node.
 //! - **`SEARCH ... BY <col> SET _djogi_search_seq`** emits only when
 //!   the caller invoked
 //!   [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
@@ -183,11 +197,26 @@ impl SearchMode {
 /// rationale, and the auto-tenant contract.
 pub struct RecursiveQuerySet<T: Model> {
     pub(crate) direction: RecursiveDirection,
-    /// Self-FK column on `T`'s table — `&'static str` from
-    /// `RelationPath::source_column()`. Identifier-validated at the
-    /// macro-emission site (`__make_relation_path`), so direct
-    /// `push_sql` is safe.
-    pub(crate) edge_column: &'static str,
+    /// Self-FK edges this walk traverses. Single-edge constructors
+    /// ([`from_path`](Self::from_path) — used by
+    /// [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants)
+    /// and [`Model::tree_descendants`]) populate exactly one edge.
+    /// Multi-edge constructors
+    /// ([`from_paths`](Self::from_paths) — used by
+    /// [`Model::full_ancestors`](crate::model::Model::full_ancestors))
+    /// populate one entry per self-FK declared on `T`. The recursive
+    /// term emits one `UNION ALL` branch per edge — single-edge walks
+    /// degenerate to one branch (zero `UNION ALL` keywords inside the
+    /// recursive term) and behave exactly as the B2 single-edge form.
+    ///
+    /// An empty `edges` Vec is invalid — every constructor enforces
+    /// `!edges.is_empty()` either at debug-assert time (the typed
+    /// `from_path` / `from_paths` callers) or at terminal time
+    /// (`Model::full_ancestors` on a model with `self_fk_count() == 0`).
+    /// Each `RelationPath`'s identifier strings are validated at
+    /// macro-emission via `__make_relation_path`, so pushing the
+    /// `source_column` directly into emitted SQL is safe.
+    pub(crate) edges: Vec<RelationPath<T, T>>,
     /// Root identifier — the row the walk starts from. Boxed `dyn ToSql`
     /// so the field type is independent of `T::Pk`'s concrete shape;
     /// the builder methods are themselves generic over `T::Pk`.
@@ -211,10 +240,16 @@ pub struct RecursiveQuerySet<T: Model> {
 
 impl<T: Model> std::fmt::Debug for RecursiveQuerySet<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `RelationPath` is `Debug`, but we render only the column
+        // names — which is the load-bearing field for SQL emission
+        // and matches the pre-B3 `edge_column: &'static str` debug
+        // shape callers may rely on in test output.
+        let edge_columns: Vec<&'static str> =
+            self.edges.iter().map(|e| e.source_column()).collect();
         f.debug_struct("RecursiveQuerySet")
             .field("table", &T::table_name())
             .field("direction", &self.direction)
-            .field("edge_column", &self.edge_column)
+            .field("edge_columns", &edge_columns)
             .field("condition", &self.condition)
             .field("ordering", &self.ordering)
             .field("max_depth", &self.max_depth)
@@ -261,7 +296,52 @@ impl<T: Model> RecursiveQuerySet<T> {
 
         Self {
             direction,
-            edge_column: path.source_column(),
+            edges: vec![path],
+            root_id: Box::new(root_id),
+            condition: Condition::True,
+            ordering: Vec::new(),
+            max_depth: None,
+            search_mode: None,
+            _model: PhantomData,
+        }
+    }
+
+    /// Multi-edge constructor — the
+    /// [`Model::full_ancestors`](crate::model::Model::full_ancestors)
+    /// entry point. Phase 8-Zero Cluster B3 (T13a).
+    ///
+    /// One [`RelationPath<T, T>`] per self-FK edge declared on `T`;
+    /// the SQL emitter then produces one `UNION ALL` branch per edge
+    /// in the recursive term so the walk fans out across every
+    /// declared parent edge in a single CTE pass. `edges.len() == 1`
+    /// degenerates to the same SQL the single-edge constructor
+    /// produces.
+    ///
+    /// Accepts an empty `edges` Vec — terminals fail with a
+    /// descriptive [`DjogiError::Query`] at execution time. Carrying
+    /// the empty-edge state through the builder keeps the
+    /// `Model::full_ancestors` return type uniform (always
+    /// `RecursiveQuerySet<T>`, never `Result<RecursiveQuerySet<T>, _>`)
+    /// so callers can compose `.with_max_depth(...)` /
+    /// `.fetch_all(...)` chains uniformly across `self_fk_count()`
+    /// values 0 / 1 / 2+.
+    pub(crate) fn from_paths(
+        paths: Vec<RelationPath<T, T>>,
+        root_id: T::Pk,
+        direction: RecursiveDirection,
+    ) -> Self
+    where
+        T::Pk: ToSql + Sync + Send + 'static,
+    {
+        debug_assert!(
+            paths
+                .iter()
+                .all(|p| matches!(p.kind(), RelationKind::ForeignKey | RelationKind::OneToOne)),
+            "RecursiveQuerySet requires ForeignKey / OneToOne self-FKs only",
+        );
+        Self {
+            direction,
+            edges: paths,
             root_id: Box::new(root_id),
             condition: Condition::True,
             ordering: Vec::new(),
@@ -448,17 +528,33 @@ pub(crate) fn build_recursive_exists<T: Model + FromPgRow>(
     build_recursive_inner::<T>(qs, RecursiveProjection::Exists)
 }
 
+/// Same recursive-CTE shape as [`build_recursive_select`], with the
+/// outer SELECT extended to project the CTE's `depth` and `path`
+/// columns alongside `T`'s own column list. Phase 8-Zero Cluster B3
+/// (T13).
+pub(crate) fn build_recursive_select_with_paths<T: Model + FromPgRow>(
+    qs: RecursiveQuerySet<T>,
+) -> SqlAccumulator {
+    build_recursive_inner::<T>(qs, RecursiveProjection::RowsWithDepthAndPath)
+}
+
 /// Outer projection mode for the shared recursive-CTE emitter.
 ///
-/// Three terminals share the recursive-CTE shape (anchor + recursive
+/// Four terminals share the recursive-CTE shape (anchor + recursive
 /// term + CYCLE + optional SEARCH); only the outer SELECT differs.
 /// Routing through this enum keeps the CTE definition emitted exactly
-/// once across `fetch_all` / `count` / `exists`, avoiding the
-/// drift-by-copy hazard a three-way function split would introduce.
+/// once across `fetch_all` / `fetch_all_with_paths` / `count` /
+/// `exists`, avoiding the drift-by-copy hazard a four-way function
+/// split would introduce.
 #[derive(Debug, Clone, Copy)]
 enum RecursiveProjection {
     /// Outer `SELECT <cols...>` — the row terminal.
     Rows,
+    /// Outer `SELECT <cols...>, depth, path` — the
+    /// `fetch_all_with_paths` terminal (B3 T13). Adds two trailing
+    /// columns the row decoder pulls out by name (`depth`, `path`)
+    /// without touching `T`'s own `FromPgRow` impl.
+    RowsWithDepthAndPath,
     /// Outer `SELECT COUNT(*)` — wraps the row form in a subquery.
     Count,
     /// Outer `SELECT EXISTS (... LIMIT 1)` — wraps the row form.
@@ -475,18 +571,29 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // SELECT. Open the wrap before the WITH so bind ordering stays
     // stable (the WITH's binds are still $1.. counted from the start).
     match projection {
-        RecursiveProjection::Rows => {}
+        RecursiveProjection::Rows | RecursiveProjection::RowsWithDepthAndPath => {}
         RecursiveProjection::Count => acc.push_sql("SELECT COUNT(*) FROM ("),
         RecursiveProjection::Exists => acc.push_sql("SELECT EXISTS ("),
     }
 
-    // ── WITH RECURSIVE __djogi_tree (depth, <cols...>) AS ( ──────────────
-    acc.push_sql("WITH RECURSIVE __djogi_tree (depth, ");
+    // ── WITH RECURSIVE __djogi_tree (depth, path, <cols...>) AS ( ────────
+    //
+    // The CTE column list orders `depth` and `path` first — the
+    // anchor's `SELECT 0, ARRAY[]::text[], <cols...>` and the
+    // recursive's `SELECT parent.depth + 1, parent.path ||
+    // ARRAY['<edge>'], <child.cols...>` line up by ordinal, which
+    // Postgres validates on every recursive iteration.
+    acc.push_sql("WITH RECURSIVE __djogi_tree (depth, path, ");
     acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
     acc.push_sql(") AS (");
 
-    // ── Anchor: SELECT 0, <cols...> FROM <table> WHERE id = $1 ───────────
-    acc.push_sql("SELECT 0, ");
+    // ── Anchor: SELECT 0, ARRAY[]::text[], <cols...> FROM <table> WHERE id = $1
+    //
+    // The anchor's `path` is the empty `text[]` — every recursive
+    // step appends one edge name, so the path length on a row equals
+    // the number of edges traversed from the root, which is exactly
+    // the row's `depth`.
+    acc.push_sql("SELECT 0, ARRAY[]::text[], ");
     push_qualified_columns::<T>(&mut acc, T::table_name());
     acc.push_sql(" FROM ");
     acc.push_sql(T::table_name());
@@ -499,80 +606,125 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // `to_sql_checked`. One allocation per terminal, no unsafe.
     acc.push_bind(DynBind(qs.root_id));
 
-    // ── UNION ALL — recursive term ───────────────────────────────────────
+    // ── UNION ALL — recursive term, one branch per edge ──────────────────
     //
-    // `UNION ALL` (not `UNION`) is load-bearing for B3's full_ancestors
-    // multiplicity-preservation path. Even though B2 only does single-
-    // edge walks, using `ALL` here means the codepath stays identical
-    // when B3 lands and avoids a silent semantic change at that boundary.
-    acc.push_sql(" UNION ALL SELECT parent.depth + 1, ");
-    push_qualified_columns::<T>(&mut acc, "child");
-    acc.push_sql(" FROM ");
-    acc.push_sql(T::table_name());
-    acc.push_sql(" child JOIN __djogi_tree parent ON ");
-    match qs.direction {
-        // Descendants: walk down. Parent's id matches child's edge column.
-        RecursiveDirection::Descendants => {
-            acc.push_sql("child.");
-            acc.push_sql(qs.edge_column);
-            acc.push_sql(" = parent.id");
-        }
-        // Ancestors: walk up. Parent's edge column points at child's id.
-        RecursiveDirection::Ancestors => {
-            acc.push_sql("parent.");
-            acc.push_sql(qs.edge_column);
-            acc.push_sql(" = child.id");
-        }
-    }
+    // `UNION ALL` (not `UNION`) is load-bearing for `full_ancestors`
+    // multiplicity preservation. With multiple edges, the same
+    // ancestor reached by two distinct edge sequences (e.g. a common
+    // ancestor on both maternal and paternal sides of a pedigree)
+    // must surface twice; `UNION` would dedup and silently break
+    // Wright-style kinship coefficient computations.
+    //
+    // Single-edge walks emit one branch (no inner `UNION ALL`); the
+    // outer `UNION ALL` between anchor and recursive term is
+    // identical. Multi-edge `full_ancestors` walks emit one branch
+    // per edge separated by additional `UNION ALL` keywords inside
+    // the recursive term.
+    let direction = qs.direction;
+    let max_depth = qs.max_depth;
+    let condition = qs.condition.clone();
+    let ordering = qs.ordering.clone();
+    let search_mode = qs.search_mode;
+    let edges = qs.edges;
 
-    // Recursive-term WHERE — user filter and / or depth cap. We open
-    // the WHERE only when at least one predicate fires so the emitted
-    // SQL stays minimal in the common no-filter case.
-    let has_user_filter = !qs.condition.is_vacuously_true();
-    let has_depth_cap = qs.max_depth.is_some();
-    if has_user_filter || has_depth_cap {
-        acc.push_sql(" WHERE ");
-        if has_user_filter {
-            // The user filter references `T::Fields` columns, which
-            // emit as bare names. The recursive term aliases the
-            // model's table as `child` — qualifying the user's
-            // predicate as `child.<col>` keeps Postgres from raising
-            // `42702 column reference ambiguous` against the
-            // `__djogi_tree parent` side of the JOIN, which exposes
-            // the same column names through the same alias scope.
-            emit_condition(&mut acc, qs.condition.clone(), Some("child"));
-        }
-        if has_depth_cap {
-            if has_user_filter {
-                acc.push_sql(" AND ");
+    let has_user_filter = !condition.is_vacuously_true();
+    let has_depth_cap = max_depth.is_some();
+
+    for edge in edges.iter() {
+        // Open this branch — anchor's "UNION ALL" precedes the first
+        // branch; later branches add their own "UNION ALL" so each
+        // branch contributes one row-set to the recursive term.
+        acc.push_sql(" UNION ALL SELECT parent.depth + 1, parent.path || ARRAY['");
+        // `source_column` was identifier-validated at
+        // `__make_relation_path` — ASCII alphanumeric + underscores
+        // only, so embedding it inside a single-quoted SQL literal is
+        // safe (no quote characters can appear inside the value).
+        acc.push_sql(edge.source_column());
+        acc.push_sql("'], ");
+        push_qualified_columns::<T>(&mut acc, "child");
+        acc.push_sql(" FROM ");
+        acc.push_sql(T::table_name());
+        acc.push_sql(" child JOIN __djogi_tree parent ON ");
+        match direction {
+            // Descendants: walk down. Parent's id matches child's
+            // edge column.
+            RecursiveDirection::Descendants => {
+                acc.push_sql("child.");
+                acc.push_sql(edge.source_column());
+                acc.push_sql(" = parent.id");
             }
-            acc.push_sql("parent.depth < ");
-            // Bind `n` as `i64` — Postgres has no unsigned types and
-            // the column type for `parent.depth` is INTEGER (driven by
-            // `0` in the anchor). Going through `i64` is over-wide but
-            // keeps the bind shape consistent across `with_max_depth`
-            // call sites that may be plumbed `u32` from upstream
-            // configuration.
-            let n = qs.max_depth.expect("max_depth set above");
-            acc.push_bind(n as i64);
+            // Ancestors: walk up. Parent's edge column points at
+            // child's id.
+            RecursiveDirection::Ancestors => {
+                acc.push_sql("parent.");
+                acc.push_sql(edge.source_column());
+                acc.push_sql(" = child.id");
+            }
+        }
+
+        // Recursive-term WHERE — user filter and / or depth cap.
+        // Each branch carries its own copy because the predicates
+        // reference `child` / `parent` aliases that are scoped to
+        // this branch's SELECT. Opens only when at least one
+        // predicate fires so the emitted SQL stays minimal in the
+        // common no-filter case.
+        if has_user_filter || has_depth_cap {
+            acc.push_sql(" WHERE ");
+            if has_user_filter {
+                // The user filter references `T::Fields` columns,
+                // which emit as bare names. The recursive term
+                // aliases the model's table as `child` — qualifying
+                // the user's predicate as `child.<col>` keeps
+                // Postgres from raising `42702 column reference
+                // ambiguous` against the `__djogi_tree parent` side
+                // of the JOIN, which exposes the same column names
+                // through the same alias scope.
+                emit_condition(&mut acc, condition.clone(), Some("child"));
+            }
+            if has_depth_cap {
+                if has_user_filter {
+                    acc.push_sql(" AND ");
+                }
+                acc.push_sql("parent.depth < ");
+                // Bind `n` per branch — multi-edge `full_ancestors`
+                // walks emit one bind slot per branch even though
+                // the value is identical. Reusing a single `$n` slot
+                // across branches would require splicing bind text
+                // into pre-formatted SQL, which `SqlAccumulator`
+                // does not expose; the redundant binds are cheap
+                // (2 → 4 bytes per branch) and keep the bind-vector
+                // ordering aligned with the SQL text. Bound as
+                // `i64` — Postgres has no unsigned types and
+                // `parent.depth` is INTEGER (driven by `0` in the
+                // anchor); going through `i64` is over-wide but
+                // keeps the bind shape consistent across
+                // `with_max_depth` call sites that may be plumbed
+                // `u32` from upstream configuration.
+                let n = max_depth.expect("has_depth_cap implies max_depth is Some");
+                acc.push_bind(n as i64);
+            }
         }
     }
 
-    // ── ) [SEARCH ...] CYCLE id SET is_cycle USING path ──────────────────
+    // ── ) [SEARCH ...] CYCLE id SET is_cycle USING cycle_path ────────────
     acc.push_sql(")");
-    if let Some(mode) = qs.search_mode {
+    if let Some(mode) = search_mode {
         acc.push_sql(mode.keyword());
         acc.push_sql(mode.column());
         acc.push_sql(" SET _djogi_search_seq");
     }
-    // CYCLE: Postgres detects cycles using `path`, marks them in
-    // `is_cycle`, and stops recursion at the marked row. Without this
-    // clause, a malformed self-FK chain (cycle introduced by buggy
-    // application code or a manual SQL edit) would loop forever. The
-    // `id` column-name + the synthetic `path` / `is_cycle` columns are
-    // managed entirely by Postgres — they do not appear in our column
-    // list and cannot collide with user fields.
-    acc.push_sql(" CYCLE id SET is_cycle USING path");
+    // CYCLE: Postgres detects cycles using `cycle_path`, marks them
+    // in `is_cycle`, and stops recursion at the marked row. Without
+    // this clause, a malformed self-FK chain (cycle introduced by
+    // buggy application code or a manual SQL edit) would loop
+    // forever. The `id` column name + the synthetic `cycle_path` /
+    // `is_cycle` columns are managed entirely by Postgres — they do
+    // not appear in our column list and cannot collide with user
+    // fields. We name the cycle-detection array `cycle_path` (not
+    // `path`) to avoid collision with our user-visible `path: text[]`
+    // column that records the edge-name sequence from root to the
+    // current node.
+    acc.push_sql(" CYCLE id SET is_cycle USING cycle_path");
 
     // ── Outer SELECT ──────────────────────────────────────────────────────
     match projection {
@@ -580,41 +732,25 @@ fn build_recursive_inner<T: Model + FromPgRow>(
             acc.push_sql(" SELECT ");
             acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
             acc.push_sql(" FROM __djogi_tree WHERE NOT is_cycle");
-            // ORDER BY: SEARCH-ordering first (so BFS / DFS works
-            // without an explicit `order_by`), then the user's
-            // ordering as tiebreakers. Either alone is valid; both
-            // together is valid SQL and matches Django's
-            // append-tiebreakers convention.
-            let has_search_order = qs.search_mode.is_some();
-            let has_user_order = !qs.ordering.is_empty();
-            if has_search_order || has_user_order {
-                acc.push_sql(" ORDER BY ");
-                if has_search_order {
-                    acc.push_sql("_djogi_search_seq");
-                }
-                if has_user_order {
-                    if has_search_order {
-                        acc.push_sql(", ");
-                    }
-                    for (i, o) in qs.ordering.iter().enumerate() {
-                        if i > 0 {
-                            acc.push_sql(", ");
-                        }
-                        // Outer SELECT runs against `__djogi_tree`,
-                        // which exposes T's columns under their bare
-                        // names — same shape as the plain `QuerySet`
-                        // ordering emit, so `parent_table = None`.
-                        o.emit(&mut acc, None);
-                    }
-                }
-            }
+            push_outer_order_by(&mut acc, search_mode.is_some(), &ordering);
+        }
+        RecursiveProjection::RowsWithDepthAndPath => {
+            // Outer SELECT projects T's columns first (so the row's
+            // ordinals 0..N still match `T::COLUMNS`), then `depth`
+            // and `path` as trailing columns the terminal reads by
+            // name. Reading by name (not ordinal) avoids the
+            // off-by-one hazard if `T::COLUMNS` ever grows.
+            acc.push_sql(" SELECT ");
+            acc.push_sql(<T as FromPgRow>::COLUMN_LIST);
+            acc.push_sql(", depth, path FROM __djogi_tree WHERE NOT is_cycle");
+            push_outer_order_by(&mut acc, search_mode.is_some(), &ordering);
         }
         RecursiveProjection::Count => {
             // Inner SELECT inside the COUNT subquery — projects only
-            // `1` since we just need rows to count. ORDER BY would be
-            // discarded by the COUNT wrap; SEARCH-ordering likewise
-            // has no observable effect on COUNT, so we omit both for
-            // a minimal-shape inner query.
+            // `1` since we just need rows to count. ORDER BY would
+            // be discarded by the COUNT wrap; SEARCH-ordering
+            // likewise has no observable effect on COUNT, so we
+            // omit both for a minimal-shape inner query.
             acc.push_sql(" SELECT 1 FROM __djogi_tree WHERE NOT is_cycle) AS sub");
         }
         RecursiveProjection::Exists => {
@@ -625,6 +761,41 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     }
 
     acc
+}
+
+/// Emit the outer `ORDER BY` clause shared by [`RecursiveProjection::Rows`]
+/// and [`RecursiveProjection::RowsWithDepthAndPath`].
+///
+/// SEARCH-ordering first (so BFS / DFS works without an explicit
+/// `order_by`), then the user's ordering as tiebreakers. Either alone
+/// is valid; both together is valid SQL and matches Django's
+/// append-tiebreakers convention. Extracted into a helper so the two
+/// row projections share the exact same ordering shape — adding a new
+/// row terminal in B4 will not have to re-derive the rule.
+fn push_outer_order_by(acc: &mut SqlAccumulator, has_search_order: bool, ordering: &[OrderExpr]) {
+    let has_user_order = !ordering.is_empty();
+    if !has_search_order && !has_user_order {
+        return;
+    }
+    acc.push_sql(" ORDER BY ");
+    if has_search_order {
+        acc.push_sql("_djogi_search_seq");
+    }
+    if has_user_order {
+        if has_search_order {
+            acc.push_sql(", ");
+        }
+        for (i, o) in ordering.iter().enumerate() {
+            if i > 0 {
+                acc.push_sql(", ");
+            }
+            // Outer SELECT runs against `__djogi_tree`, which
+            // exposes T's columns under their bare names — same
+            // shape as the plain `QuerySet` ordering emit, so
+            // `parent_table = None`.
+            o.emit(acc, None);
+        }
+    }
 }
 
 // ── Terminals ──────────────────────────────────────────────────────────────
@@ -650,6 +821,7 @@ where
         T: 'ctx,
     {
         async move {
+            check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_recursive_select(self);
             let (sql, binds) = acc.into_parts();
@@ -658,6 +830,66 @@ where
             rows.iter()
                 .map(|r| T::from_pg_row(r))
                 .collect::<Result<Vec<T>, _>>()
+        }
+    }
+
+    /// Materialise every reachable row paired with its **depth** and
+    /// **path** — the edge-name sequence from the root to that row.
+    /// Phase 8-Zero Cluster B3 (T13).
+    ///
+    /// `depth` is the `i32` count of recursive hops from the anchor;
+    /// `path` is the `Vec<String>` of edge column names appended one
+    /// per recursive step. For a single-edge `tree_descendants` walk
+    /// every row's `path` is `["<edge_col>"; depth]` — uniform but
+    /// useful when the caller needs the edge name without re-deriving
+    /// it from the queryset shape.
+    ///
+    /// For a multi-edge
+    /// [`Model::full_ancestors`](crate::model::Model::full_ancestors)
+    /// walk every step independently picks which edge it followed, so
+    /// `path` becomes the load-bearing distinguisher: `["mother_id",
+    /// "father_id"]` is "follow the mother edge from the root, then
+    /// the father edge from there" — the maternal grandfather. The
+    /// reverse — `["father_id", "mother_id"]` — is the paternal
+    /// grandmother. Wright kinship calculations sum coefficients
+    /// across `path` permutations, so multiplicity is preserved
+    /// (every distinct path materialises a separate row even when it
+    /// reaches the same ancestor twice).
+    ///
+    /// The tuple shape `(T, i32, Vec<String>)` is intentional —
+    /// pre-1.0 we keep the surface narrow; a typed wrapper struct
+    /// would lock in field names that benchmark callers may want
+    /// renamed once shell ergonomics surface real usage. The
+    /// projection is `<cols...>, depth, path` so the row decoder
+    /// reads `depth` / `path` by name (not ordinal), insulating
+    /// callers from `T::COLUMNS` length drift.
+    pub fn fetch_all_with_paths<'ctx>(
+        self,
+        ctx: &'ctx mut DjogiContext,
+    ) -> impl Future<Output = Result<Vec<(T, i32, Vec<String>)>, DjogiError>> + Send + 'ctx
+    where
+        T: 'ctx,
+    {
+        async move {
+            check_edges_present::<T>(&self.edges)?;
+            auto_set_tenant::<T>(ctx).await?;
+            let acc = build_recursive_select_with_paths(self);
+            let (sql, binds) = acc.into_parts();
+            let params = as_params(&binds);
+            let rows = ctx.query_all(&sql, &params).await?;
+            rows.iter()
+                .map(|r| {
+                    // `T::from_pg_row` reads ordinals 0..N over
+                    // `T::COLUMNS`. The CTE's `depth` and `path`
+                    // are the trailing two columns — read them by
+                    // name to stay decoupled from `T::COLUMNS`'
+                    // exact length.
+                    let model = T::from_pg_row(r)?;
+                    let depth: i32 = r.try_get("depth").map_err(DjogiError::from)?;
+                    let path: Vec<String> = r.try_get("path").map_err(DjogiError::from)?;
+                    Ok((model, depth, path))
+                })
+                .collect::<Result<Vec<_>, DjogiError>>()
         }
     }
 
@@ -680,6 +912,7 @@ where
         T: 'ctx,
     {
         async move {
+            check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_recursive_select(self);
             let (sql, binds) = acc.into_parts();
@@ -707,6 +940,7 @@ where
         T: 'ctx,
     {
         async move {
+            check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_recursive_count(self);
             let (sql, binds) = acc.into_parts();
@@ -727,6 +961,7 @@ where
         T: 'ctx,
     {
         async move {
+            check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
             let acc = build_recursive_exists(self);
             let (sql, binds) = acc.into_parts();
@@ -735,6 +970,31 @@ where
             try_get_scalar::<bool>(&row, 0)
         }
     }
+}
+
+// ── Empty-edges guard ──────────────────────────────────────────────────────
+
+/// Guard every terminal against an empty `edges` Vec — the
+/// [`Model::full_ancestors`](crate::model::Model::full_ancestors)
+/// constructor on a model with `self_fk_count() == 0` carries
+/// `edges: vec![]` through the builder so the caller's
+/// `.with_max_depth(...)` / `.fetch_all(...)` chain still type-checks.
+/// At terminal time we surface the misuse as a descriptive
+/// [`DjogiError::Query`] before any SQL is built. Phase 8-Zero
+/// Cluster B3 (T13a).
+///
+/// The error message names the model and points at the requirement —
+/// callers either declare a self-FK or fall back to
+/// [`Model::tree_descendants`] / [`Model::tree_ancestors`] which
+/// already communicate the requirement at construction time.
+fn check_edges_present<T: Model>(edges: &[RelationPath<T, T>]) -> Result<(), DjogiError> {
+    if edges.is_empty() {
+        return Err(DjogiError::Validation(format!(
+            "model '{}' has no self-FK; full_ancestors requires at least one",
+            T::table_name(),
+        )));
+    }
+    Ok(())
 }
 
 // ── DynBind: type-erased ToSql carrier ─────────────────────────────────────
@@ -934,12 +1194,15 @@ mod tests {
     fn cycle_clause_is_always_emitted() {
         // CYCLE detection is mandatory — a malformed self-FK chain
         // must not loop forever even when the caller forgets
-        // `with_max_depth`.
+        // `with_max_depth`. B3 renames the cycle-detection array
+        // column from `path` to `cycle_path` so it cannot collide
+        // with our user-visible `path: text[]` column that records
+        // edge-name sequences.
         let qs = root();
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
         assert!(
-            sql.contains("CYCLE id SET is_cycle USING path"),
+            sql.contains("CYCLE id SET is_cycle USING cycle_path"),
             "CYCLE clause must always be emitted: {sql}"
         );
         assert!(
@@ -952,8 +1215,10 @@ mod tests {
     fn outer_projection_uses_canonical_column_list() {
         // The outer SELECT reads from `__djogi_tree`, which exposes
         // T's columns under their bare names — so projection is
-        // simply `<T as FromPgRow>::COLUMN_LIST`. No `_djogi_*`
-        // internal columns leak.
+        // simply `<T as FromPgRow>::COLUMN_LIST`. The plain `Rows`
+        // projection does NOT include `depth` / `path`; those are
+        // exclusive to the `RowsWithDepthAndPath` projection that
+        // backs `fetch_all_with_paths`.
         let qs = root();
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
@@ -962,8 +1227,8 @@ mod tests {
             "outer SELECT must project canonical columns: {sql}"
         );
         assert!(
-            !sql.contains("depth FROM __djogi_tree"),
-            "depth column must not leak into outer projection: {sql}"
+            !sql.contains(", depth, path FROM __djogi_tree"),
+            "depth/path columns must not leak into the plain Rows projection: {sql}"
         );
         assert!(
             !sql.contains("_djogi_search_seq FROM __djogi_tree"),
@@ -1099,18 +1364,190 @@ mod tests {
     }
 
     #[test]
-    fn cte_column_list_includes_depth_followed_by_model_columns() {
-        // The CTE column list must order `depth` first so the
-        // anchor's `SELECT 0, <cols...>` and the recursive's
-        // `SELECT parent.depth + 1, <child.cols...>` line up by
-        // ordinal — Postgres validates the SET shape on every
-        // recursive iteration.
+    fn cte_column_list_includes_depth_then_path_then_model_columns() {
+        // The CTE column list must order `depth` and `path` first
+        // so the anchor's `SELECT 0, ARRAY[]::text[], <cols...>` and
+        // the recursive's
+        // `SELECT parent.depth + 1, parent.path || ARRAY['<edge>'],
+        // <child.cols...>` line up by ordinal — Postgres validates
+        // the SET shape on every recursive iteration. B3 adds the
+        // user-visible `path: text[]` column.
         let qs = root();
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
         assert!(
-            sql.contains("__djogi_tree (depth, id, parent_id, label)"),
-            "CTE column list must be (depth, <model cols...>): {sql}"
+            sql.contains("__djogi_tree (depth, path, id, parent_id, label)"),
+            "CTE column list must be (depth, path, <model cols...>): {sql}"
+        );
+    }
+
+    #[test]
+    fn anchor_initialises_path_as_empty_text_array() {
+        // The anchor row has `depth = 0` and `path = ARRAY[]::text[]`
+        // — the empty path the recursive term then accumulates one
+        // edge name into per step.
+        let qs = root();
+        let acc = build_recursive_select(qs);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("SELECT 0, ARRAY[]::text[], "),
+            "anchor must initialise depth=0 and path=ARRAY[]::text[]: {sql}"
+        );
+    }
+
+    #[test]
+    fn recursive_term_appends_edge_name_to_path() {
+        // The recursive term emits
+        // `parent.path || ARRAY['<edge_col>']` so each step records
+        // which edge was followed. B3 changes this from B2's
+        // placeholder `child.id::text` to the semantic edge-name
+        // literal — callers can now filter on edge sequences (e.g.
+        // `path == ["mother_id", "father_id"]`).
+        let qs = root();
+        let acc = build_recursive_select(qs);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("parent.path || ARRAY['parent_id']"),
+            "recursive term must append the edge name (not child.id): {sql}"
+        );
+        assert!(
+            !sql.contains("child.id::text"),
+            "B2's placeholder `child.id::text` must be gone: {sql}"
+        );
+    }
+
+    #[test]
+    fn fetch_all_with_paths_projects_depth_and_path_columns() {
+        // The B3 `fetch_all_with_paths` terminal extends the outer
+        // SELECT to project `<cols...>, depth, path` so the row
+        // decoder reads the trailing two columns by name.
+        let qs = root();
+        let acc = build_recursive_select_with_paths(qs);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("SELECT id, parent_id, label, depth, path FROM __djogi_tree"),
+            "with-paths projection must trail depth and path columns: {sql}"
+        );
+    }
+
+    // ── full_ancestors / multi-edge tests ────────────────────────────────
+
+    /// Construct a multi-edge ancestor walker over two synthetic
+    /// self-FKs `mother_id` + `father_id`. Models like this aren't
+    /// expressible through the descriptor-derived `Model::full_ancestors`
+    /// path in the test crate (no `#[model]` macro available here), so
+    /// we exercise `from_paths` directly with hand-built relation paths.
+    fn full_ancestors_two_edges() -> RecursiveQuerySet<MiniTree> {
+        let edges = vec![
+            crate::relation::__macro_support::__make_relation_path::<MiniTree, MiniTree>(
+                "mother_id",
+                "mini_trees",
+                RelationKind::ForeignKey,
+            ),
+            crate::relation::__macro_support::__make_relation_path::<MiniTree, MiniTree>(
+                "father_id",
+                "mini_trees",
+                RelationKind::ForeignKey,
+            ),
+        ];
+        RecursiveQuerySet::<MiniTree>::from_paths(
+            edges,
+            HeerId::from_i64(1).unwrap(),
+            RecursiveDirection::Ancestors,
+        )
+    }
+
+    #[test]
+    fn full_ancestors_two_edges_emits_two_union_all_branches() {
+        // Two self-FKs → two `UNION ALL` branches in the recursive
+        // term. The first `UNION ALL` is between anchor and first
+        // branch; the second is between the two branches. So the
+        // total `UNION ALL` count equals the edge count.
+        let qs = full_ancestors_two_edges();
+        let acc = build_recursive_select(qs);
+        let sql = acc.sql();
+        let union_count = sql.matches("UNION ALL").count();
+        assert_eq!(
+            union_count, 2,
+            "two-edge full_ancestors must emit 2 UNION ALL keywords (one per edge): {sql}"
+        );
+        assert!(
+            sql.contains("parent.mother_id = child.id"),
+            "first ancestor branch must JOIN on mother_id: {sql}"
+        );
+        assert!(
+            sql.contains("parent.father_id = child.id"),
+            "second ancestor branch must JOIN on father_id: {sql}"
+        );
+        assert!(
+            sql.contains("ARRAY['mother_id']"),
+            "first branch must append `mother_id` to path: {sql}"
+        );
+        assert!(
+            sql.contains("ARRAY['father_id']"),
+            "second branch must append `father_id` to path: {sql}"
+        );
+    }
+
+    #[test]
+    fn single_edge_emits_one_union_all_branch() {
+        // Single-edge degenerate case — exactly one `UNION ALL`
+        // (between anchor and the lone recursive branch). Confirms
+        // the multi-edge refactor preserves single-edge SQL shape.
+        let qs = root();
+        let acc = build_recursive_select(qs);
+        let sql = acc.sql();
+        let union_count = sql.matches("UNION ALL").count();
+        assert_eq!(
+            union_count, 1,
+            "single-edge walk must emit exactly 1 UNION ALL keyword: {sql}"
+        );
+    }
+
+    #[test]
+    fn empty_edges_errors_at_terminal_time() {
+        // `Model::full_ancestors` on a model with `self_fk_count() == 0`
+        // returns a `RecursiveQuerySet` with empty edges. Builder
+        // chains type-check, but the terminal returns
+        // `DjogiError::Validation` before any SQL is emitted.
+        // Here we exercise the guard directly on `check_edges_present`
+        // since reaching a real terminal needs a live DB context.
+        let edges: Vec<RelationPath<MiniTree, MiniTree>> = Vec::new();
+        let result = check_edges_present::<MiniTree>(&edges);
+        let err = result.expect_err("empty edges must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mini_trees"),
+            "error must name the model's table: {msg}"
+        );
+        assert!(
+            msg.contains("full_ancestors") && msg.contains("self-FK"),
+            "error must point at full_ancestors and the self-FK requirement: {msg}"
+        );
+    }
+
+    #[test]
+    fn full_ancestors_two_edges_with_max_depth_binds_per_branch() {
+        // `with_max_depth` is bound once per branch — multi-edge
+        // walks emit redundant binds rather than splicing a shared
+        // `$n` slot. Total binds = 1 root id + N branches when a
+        // depth cap is set.
+        let qs = full_ancestors_two_edges().with_max_depth(3);
+        let acc = build_recursive_select(qs);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("parent.depth < $2"),
+            "first branch's depth bind is $2: {sql}"
+        );
+        assert!(
+            sql.contains("parent.depth < $3"),
+            "second branch's depth bind is $3: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            3,
+            "expected 3 binds (root + 2 depth caps), got {}",
+            acc.bind_count()
         );
     }
 }

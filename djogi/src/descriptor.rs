@@ -1985,6 +1985,27 @@ impl ModelDescriptor {
             .count()
     }
 
+    /// Iterate the column names of every self-FK edge declared on this
+    /// model — every field whose `relation_kind` is `Some(_)` and whose
+    /// `is_self_fk` flag is `true`. Phase 8-Zero Cluster B3 (T13a).
+    ///
+    /// Used by [`Model::full_ancestors`](crate::model::Model::full_ancestors)
+    /// to discover every parent edge to walk in one recursive CTE — each
+    /// returned column name becomes the source-column of a synthesised
+    /// `RelationPath<T, T>` and a `UNION ALL` branch in the recursive
+    /// term.
+    ///
+    /// Returns an empty iterator when `self_fk_count() == 0`. Order
+    /// matches descriptor field-injection order, which equals struct
+    /// declaration order for user-defined columns — so emitted SQL is
+    /// stable across builds for a fixed source.
+    pub fn self_fk_columns(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.fields
+            .iter()
+            .filter(|f| f.relation_kind.is_some() && f.is_self_fk)
+            .map(|f| f.name)
+    }
+
     /// The primary key column name for this model.
     ///
     /// Returns `Some("id")` for the five standard PK types (`HeerId`,
