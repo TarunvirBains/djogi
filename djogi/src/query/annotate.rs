@@ -578,7 +578,7 @@ mod tests {
 
     use super::*;
     use crate::descriptor::ModelDescriptor;
-    use crate::expr::{DenseRank, Expr, Rank, RowNumber, WindowRanking};
+    use crate::expr::{DenseRank, Expr, Rank, RowNumber};
     use crate::query::field::FieldRef;
     use crate::query::sql::build_select_with_annotations;
 

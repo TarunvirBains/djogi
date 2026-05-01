@@ -344,6 +344,36 @@ macro_rules! define_window_rank_fn {
                         .expect("window function annotations are checked before SQL emission"),
                 );
             }
+
+            // Inherent comparison wrappers — keep `use djogi::RowNumber; w.lte(3)`
+            // working without forcing callers to also import [`WindowRanking`].
+            // Each one-liner delegates to the trait's default body so the actual
+            // qualify-lowering logic is written exactly once (in the trait).
+
+            /// `<alias> < value` — see [`WindowRanking::lt`].
+            pub fn lt(&self, value: i64) -> QualifyCondition {
+                <Self as WindowRanking>::lt(self, value)
+            }
+
+            /// `<alias> <= value` — see [`WindowRanking::lte`].
+            pub fn lte(&self, value: i64) -> QualifyCondition {
+                <Self as WindowRanking>::lte(self, value)
+            }
+
+            /// `<alias> = value` — see [`WindowRanking::eq`].
+            pub fn eq(&self, value: i64) -> QualifyCondition {
+                <Self as WindowRanking>::eq(self, value)
+            }
+
+            /// `<alias> >= value` — see [`WindowRanking::gte`].
+            pub fn gte(&self, value: i64) -> QualifyCondition {
+                <Self as WindowRanking>::gte(self, value)
+            }
+
+            /// `<alias> > value` — see [`WindowRanking::gt`].
+            pub fn gt(&self, value: i64) -> QualifyCondition {
+                <Self as WindowRanking>::gt(self, value)
+            }
         }
 
         impl sealed_ranking::Sealed for $type_name {}

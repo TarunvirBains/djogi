@@ -183,10 +183,14 @@ impl SqlAccumulator {
             self.sql.push_str(&other_sql);
         } else {
             // Reserve up front so multiple realloc-doublings don't kick in
-            // for long inner SQL — renumbering grows by at most 1 byte per
-            // placeholder ($9 -> $19 etc.), so `other_sql.len() +
-            // other_binds.len()` is a safe upper bound.
-            self.sql.reserve(other_sql.len() + other_binds.len());
+            // for long inner SQL. Strict upper bound: renumbering grows each
+            // placeholder by up to 9 bytes (when offset spans many digit-count
+            // brackets — e.g. `$1` becoming `$4294967295` at the u32::MAX
+            // worst case); `+ 9 * other_binds.len()` covers it. In typical
+            // qualify-lowering cases the offset is small (offset < 1000) so
+            // growth is at most 3 bytes per placeholder; the looser reserve
+            // is the cost of an honest upper bound.
+            self.sql.reserve(other_sql.len() + 9 * other_binds.len());
 
             // Slice-based flush: walk byte indices, and whenever a
             // `$<digits>` run starts, push the contiguous run BEFORE it as

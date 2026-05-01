@@ -563,9 +563,9 @@ fn emit_binary_predicate(
     let use_geometry = predicate.needs_geometry_cast();
     let col_cast = if use_geometry { "::geometry" } else { "" };
     let bind_cast = if use_geometry {
-        "::bytea::geometry"
+        EwkbCast::Geometry
     } else {
-        "::bytea::geography"
+        EwkbCast::Geography
     };
 
     acc.push_sql(predicate.function_name());
@@ -573,8 +573,7 @@ fn emit_binary_predicate(
     acc.push_sql(field_column);
     acc.push_sql(col_cast);
     acc.push_sql(", ");
-    acc.push_bind(other_ewkb.to_vec());
-    acc.push_sql(bind_cast);
+    push_ewkb_arg(acc, other_ewkb, bind_cast);
     acc.push_sql(")");
 }
 

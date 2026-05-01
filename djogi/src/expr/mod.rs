@@ -249,9 +249,11 @@ impl Expr<f64> {
     ///
     /// - [`crate::expr::spatial::SpatialExpr::AreaOfIntersection`] — IR variant.
     /// - [`Self::area_of`] — denominator of the demo's overlap-pct ratio.
-    /// - [`Self::intersection_of`] — the geometry-only sibling, exposed
-    ///   for callers who want the raw intersecting geometry rather than
-    ///   its area.
+    /// - A standalone `intersection_of` constructor that returns the raw
+    ///   intersecting geometry (rather than its area) is deferred — the IR
+    ///   variant exists at [`crate::expr::spatial::SpatialExpr::Intersection`]
+    ///   but no public typed constructor mints it today; see issue #72 for
+    ///   the prerequisites (typed geometry-valued `Expr` intermediates).
     #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
     pub fn area_of_intersection<A, B>(a: &A, b: &B) -> Expr<f64>
     where
