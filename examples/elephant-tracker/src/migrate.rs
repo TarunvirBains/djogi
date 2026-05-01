@@ -25,10 +25,10 @@
 //! `tokio_postgres::connect` because the framework's pool's `get()`
 //! was `pub(crate)` — there was no way to reach the underlying
 //! `tokio_postgres::Client` for `heeranjid::install_schema` /
-//! `CREATE EXTENSION postgis`. Phase 8-Zero T4 adds
-//! `DjogiPool::with_client`, which is exactly that escape hatch.
-//! The migrate path now uses the same pool the rest of the example
-//! uses — no one-shot connections, no manual driver-task spawn.
+//! `CREATE EXTENSION postgis`. `DjogiPool::with_client` is exactly
+//! that escape hatch. The migrate path now uses the same pool the
+//! rest of the example uses — no one-shot connections, no manual
+//! driver-task spawn.
 
 use anyhow::{Context, Result};
 use djogi::{DjogiContext, DjogiError};
@@ -74,12 +74,12 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
 ///
 /// `heeranjid::postgres_schema::install_*` and `seed_default_node`
 /// take a bare `&tokio_postgres::Client` — they pre-date Djogi and
-/// know nothing about `DjogiContext`. Phase 8-Zero T4 introduced
-/// `DjogiPool::with_client` as the explicit escape hatch for exactly
-/// this case: hand the closure a `&mut Client` for the duration of
-/// its body, then return the connection to the pool when the closure
-/// resolves cleanly (or detach it on `Err` / panic / cancel — see
-/// the `with_client` rustdoc for the full lifecycle).
+/// know nothing about `DjogiContext`. `DjogiPool::with_client` is the
+/// explicit escape hatch for exactly this case: hand the closure a
+/// `&mut Client` for the duration of its body, then return the
+/// connection to the pool when the closure resolves cleanly (or
+/// detach it on `Err` / panic / cancel — see the `with_client`
+/// rustdoc for the full lifecycle).
 ///
 /// We use `with_client` here rather than opening a side-channel
 /// `tokio_postgres::connect`. The benefit is that the migrate path
