@@ -106,6 +106,24 @@ async fn provision_test_db() -> (TestDbCleanup, String) {
     (cleanup, url)
 }
 
+/// Standard "healthy checkout" probe: borrow a raw client via
+/// `with_client` and run `SELECT 1`. Encapsulates the `Box::pin` +
+/// closure-shape boilerplate so the tests above only need to spell the
+/// pool reference. Tests that need to exercise the closure body
+/// directly (panic, error, custom SQL) keep the inline form.
+async fn select_one_via_with_client(pool: &DjogiPool) -> Result<(), DjogiError> {
+    pool.with_client(|client| {
+        Box::pin(async move {
+            let _ = client
+                .query_one("SELECT 1", &[])
+                .await
+                .map_err(djogi::DjogiError::from)?;
+            Ok::<_, DjogiError>(())
+        })
+    })
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // post_connect — fires once per physical connection
 // ---------------------------------------------------------------------------
@@ -147,17 +165,9 @@ async fn pool_post_connect_fires_once_per_physical_connection() {
     // Issue three sequential checkouts. With `max_size = 1` deadpool is
     // forced to reuse the same physical connection for all three.
     for _ in 0..3 {
-        pool.with_client(|client| {
-            Box::pin(async move {
-                let _ = client
-                    .query_one("SELECT 1", &[])
-                    .await
-                    .map_err(djogi::DjogiError::from)?;
-                Ok::<_, DjogiError>(())
-            })
-        })
-        .await
-        .expect("checkout succeeds");
+        select_one_via_with_client(&pool)
+            .await
+            .expect("checkout succeeds");
     }
 
     assert_eq!(
@@ -340,17 +350,7 @@ async fn pool_with_client_returns_connection_on_ok() {
         .await
         .expect("pool builds");
 
-    pool.with_client(|client| {
-        Box::pin(async move {
-            let _ = client
-                .query_one("SELECT 1", &[])
-                .await
-                .map_err(djogi::DjogiError::from)?;
-            Ok::<_, DjogiError>(())
-        })
-    })
-    .await
-    .expect("clean exit");
+    select_one_via_with_client(&pool).await.expect("clean exit");
 
     let status = pool.status();
     assert_eq!(status.available, 1, "one connection should be idle");
@@ -396,17 +396,9 @@ async fn pool_with_client_detaches_on_err() {
     // Next checkout creates a fresh connection — this is the
     // recovery-path assertion. If detach were broken we'd hand back a
     // poisoned client.
-    pool.with_client(|client| {
-        Box::pin(async move {
-            let _ = client
-                .query_one("SELECT 1", &[])
-                .await
-                .map_err(djogi::DjogiError::from)?;
-            Ok::<_, DjogiError>(())
-        })
-    })
-    .await
-    .expect("recovery checkout opens a fresh physical connection");
+    select_one_via_with_client(&pool)
+        .await
+        .expect("recovery checkout opens a fresh physical connection");
 
     teardown_test_db(cleanup).await;
 }
