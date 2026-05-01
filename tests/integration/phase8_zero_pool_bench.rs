@@ -1,7 +1,7 @@
-//! Phase 8-Zero Cluster A T6b — DjogiPool smoke benchmarks.
+//! DjogiPool smoke benchmarks.
 //!
 //! These are *not* perf guarantees. They are smoke bounds that protect
-//! three [UNVERIFIED] perf-claim areas the v3 plan called out:
+//! three perf-claim areas:
 //!
 //! 1. `max_size` actually delivers concurrency — saturating 64 workers
 //!    against a 64-slot pool is faster wall-clock than running the same
@@ -13,8 +13,8 @@
 //!    100× slower" regression class.
 //! 3. `with_client`'s acquire+release-per-op cost is bounded relative
 //!    to holding one client across N ops. The dirty-by-default RAII
-//!    guard documented in T4 (commit `b97d932`) carries a per-op cost;
-//!    this bench prints the ratio so it's grep-able from CI logs.
+//!    guard carries a per-op cost; this bench prints the ratio so it's
+//!    grep-able from CI logs.
 //!
 //! ## Running
 //!
@@ -335,9 +335,9 @@ async fn bench_post_connect_overhead() {
 
 /// Compares `with_client` (acquire + release per op) against holding a
 /// single client across N ops. The ratio quantifies the price the
-/// dirty-by-default RAII guard charges per op — that price is the
-/// safety guarantee documented in T4's commit `b97d932` (panic /
-/// `Err` => detach so a poisoned client never re-enters the pool).
+/// dirty-by-default RAII guard charges per op — the safety guarantee
+/// being that a panic / `Err` detaches a poisoned client so it never
+/// re-enters the pool.
 ///
 /// We do not assert a tight ratio: the absolute cost depends entirely
 /// on connection-checkout machinery vs direct-call dispatch and is
@@ -404,10 +404,7 @@ async fn bench_with_client_vs_persistent() {
     println!("with_client total = {with_client_total:?} (per-op: {with_client_per_op:?})");
     println!("persistent total  = {persistent_total:?} (per-op: {persistent_per_op:?})");
     println!("overhead ratio with_client / persistent = {overhead_ratio:.2}×");
-    println!(
-        "this ratio is the price for the dirty-by-default with_client \
-         RAII guard documented in T4 (commit b97d932)"
-    );
+    println!("this ratio is the price for the dirty-by-default with_client RAII guard");
 
     // Sanity floor: with_client should not be faster than the
     // persistent path. If it were, the bench is measuring noise and

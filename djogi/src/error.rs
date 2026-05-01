@@ -412,7 +412,7 @@ pub enum DjogiError {
     },
 
     /// A pool checkout exceeded its configured wait / create / recycle
-    /// timeout. Phase 8-Zero introduces this variant alongside
+    /// timeout. Pairs with
     /// [`DjogiPoolBuilder::timeout`](crate::pg::pool::DjogiPoolBuilder::timeout)
     /// so callers can branch on saturation explicitly without inspecting
     /// the underlying `deadpool_postgres::PoolError`.

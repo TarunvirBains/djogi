@@ -472,7 +472,7 @@ async fn from_database_config_honours_toml_max_connections() {
 
     let cfg = djogi::config::DatabaseConfig {
         url: url.clone(),
-        max_connections: 13,
+        max_connections: Some(13),
         dev_mode: false,
     };
     let pool = DjogiPool::from_database_config(&cfg)
@@ -504,7 +504,7 @@ async fn from_database_config_env_overrides_toml() {
 
     let cfg = djogi::config::DatabaseConfig {
         url: url.clone(),
-        max_connections: 13,
+        max_connections: Some(13),
         dev_mode: false,
     };
     let pool = DjogiPool::from_database_config(&cfg)

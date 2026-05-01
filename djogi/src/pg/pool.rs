@@ -30,10 +30,9 @@
 //!    uncommitted `SET ROLE`, advisory lock) cannot leak to the next
 //!    checkout.
 //!
-//! Phase 8-Zero introduces [`DjogiPool::builder`] (T1+T2: `.max_size`,
-//! `.timeout`; T3: `.post_connect`) and [`DjogiPool::with_client`] (T4)
-//! to cover all three. `connect(url)` is preserved as sugar for
-//! `DjogiPool::builder(url).build().await`.
+//! [`DjogiPool::builder`] (`.max_size`, `.timeout`, `.post_connect`) and
+//! [`DjogiPool::with_client`] cover all three. `connect(url)` is preserved
+//! as sugar for `DjogiPool::builder(url).build().await`.
 //!
 //! # Where the `post_connect` hook fits in deadpool's lifecycle
 //!
@@ -104,20 +103,18 @@ pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 /// reused across multiple pools).
 pub type ClientFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>> + Send + 'a>>;
 
-/// Type alias for the boxed `post_connect` closure stored on the builder.
+/// Public alias for a `post_connect` closure's returned future.
 ///
-/// The closure receives `&mut tokio_postgres::Client` and may run any
-/// setup SQL it needs. It is invoked from inside deadpool's `post_create`
-/// hook, so returning an error fails the pool checkout that triggered the
-/// create — the closure runs in the cold path of physical-connection
-/// creation, never on the per-request checkout path.
-type PostConnectFn = Arc<
-    dyn for<'a> Fn(
-            &'a mut tokio_postgres::Client,
-        ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>
-        + Send
-        + Sync,
->;
+/// Mirrors [`ClientFuture`] but pins the result type to `()`, since
+/// `post_connect` runs setup-only SQL and has no return value beyond
+/// "succeeded" or "failed".
+pub type PostConnectFuture<'a> = ClientFuture<'a, ()>;
+
+/// Boxed `post_connect` closure stored on the builder. Invoked from
+/// deadpool's `post_create` hook — runs once per physical connection
+/// creation, never on the per-checkout path.
+type PostConnectFn =
+    Arc<dyn for<'a> Fn(&'a mut tokio_postgres::Client) -> PostConnectFuture<'a> + Send + Sync>;
 
 /// The framework's Postgres connection pool.
 ///
@@ -390,10 +387,6 @@ impl DjogiPool {
             committed: false,
         };
 
-        // SAFETY: `obj` lives in `guard.obj` for the entire `f(client).await`.
-        // We borrow `&mut tokio_postgres::Client` through deref-mut from the
-        // `Object` for the closure's lifetime. The borrow ends before
-        // `guard` is committed/dropped.
         let result = {
             let obj_ref = guard
                 .obj
@@ -406,8 +399,6 @@ impl DjogiPool {
         if result.is_ok() {
             guard.committed = true;
         }
-        // Drop the guard here — Drop runs the detach path if not
-        // committed, or the normal return-to-pool path if committed.
         drop(guard);
 
         result
@@ -597,10 +588,7 @@ impl DjogiPoolBuilder {
     /// deadpool's `Hook::async_fn` requires it.
     pub fn post_connect<F>(mut self, hook: F) -> Self
     where
-        F: for<'a> Fn(
-                &'a mut tokio_postgres::Client,
-            )
-                -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>
+        F: for<'a> Fn(&'a mut tokio_postgres::Client) -> PostConnectFuture<'a>
             + Send
             + Sync
             + 'static,
