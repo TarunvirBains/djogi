@@ -118,18 +118,23 @@ async fn bench_convex_hull_aggregate_1000_points(mut ctx: djogi::DjogiContext) {
     .expect("DDL must succeed");
 
     // Seed in a single round-trip via generate_series. Each herd `h` gets
-    // `per_herd` points distributed in a small grid around its center —
-    // small enough that hulls remain non-degenerate and the planner sees
-    // one cluster per group. lat is shifted into a safe band well inside
-    // [-90, 90]; lon stays inside [-180, 180] for any reasonable n_herds.
+    // `per_herd` points distributed in a real 2D grid around its center —
+    // `k` is split into x/y offsets via `k % 5` and `k / 5` so the per-herd
+    // points span both axes (5×2 grid for per_herd=10). A 1D arrangement
+    // would collapse to a LineString under ST_ConvexHull and the typed
+    // FieldRef::convex_hull() would fail EWKB decode — convex_hull is
+    // typed as AggregateExpr<Polygon> and needs a non-degenerate hull.
+    //
+    // lat is shifted into a safe band well inside [-90, 90]; lon stays
+    // inside [-180, 180] for any reasonable n_herds.
     ctx.raw_execute(
         "INSERT INTO phase8c_bench_points (herd_id, location)
          SELECT
              (h - 1)::bigint AS herd_id,
              ST_SetSRID(
                  ST_MakePoint(
-                     (h * 0.5)  + (k * 0.05),
-                     (h * 0.3)  + (k * 0.05) - 30.0
+                     (h * 0.5) + ((k % 5) * 0.05),
+                     (h * 0.3) + ((k / 5) * 0.05) - 30.0
                  ),
                  4326
              )::geography
@@ -245,14 +250,18 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
         .expect("framework qualify query must execute");
     let framework_elapsed = start_fw.elapsed();
 
-    // (b) Hand-written equivalent — same shape, in raw SQL. Counts only;
-    //     no row decode, so this isolates the planner cost, not the row
-    //     materialisation cost. The ratio bound below leaves headroom
-    //     for the framework path's row-decode overhead.
+    // (b) Hand-written equivalent — same shape, in raw SQL. Returns the
+    //     same column set (id, herd_id, score, label) so row transfer +
+    //     decode happens on both sides. This is apples-to-apples with
+    //     `fetch_all` above; comparing against `COUNT(*)` would let the
+    //     planner prune subquery columns and would isolate planner cost
+    //     only, masking projection regressions in the derived-table
+    //     lowering.
     let start_hw = Instant::now();
-    let hand_count: i64 = ctx
-        .raw_scalar(
-            "SELECT COUNT(*)::bigint FROM (
+    let hand_rows: Vec<(i64, i64, i64, String, i64)> = ctx
+        .raw_rows(
+            "SELECT id, herd_id, score, label, rn
+             FROM (
                  SELECT id, herd_id, score, label,
                         ROW_NUMBER() OVER (PARTITION BY herd_id ORDER BY score DESC) AS rn
                  FROM phase8c_bench_window
@@ -261,7 +270,18 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
             &[],
         )
         .await
-        .expect("hand-written equivalent must run");
+        .expect("hand-written equivalent must run")
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<_, i64>("id"),
+                row.get::<_, i64>("herd_id"),
+                row.get::<_, i64>("score"),
+                row.get::<_, String>("label"),
+                row.get::<_, i64>("rn"),
+            )
+        })
+        .collect();
     let hand_elapsed = start_hw.elapsed();
 
     println!(
@@ -271,13 +291,14 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
     );
     println!(
         "[bench] qualify hand-written path: {hand_elapsed:?} \
-         ({hand_count} rows counted)",
+         ({} rows decoded)",
+        hand_rows.len(),
     );
 
     // Sanity — both paths must agree on the row count.
     assert_eq!(
-        framework_rows.len() as i64,
-        hand_count,
+        framework_rows.len(),
+        hand_rows.len(),
         "framework and hand-written paths must agree on row count"
     );
     assert_eq!(
