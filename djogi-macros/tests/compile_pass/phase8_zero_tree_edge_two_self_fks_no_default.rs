@@ -36,7 +36,11 @@ fn main() {
     // The model compiles. Confirm at type-level that the explicit-path
     // API and the multi-edge `full_ancestors` sugar are reachable on
     // the descriptor — both routes exist regardless of `tree_edge`.
-    let id = <HeerId as PrimaryKey>::sentinel();
+    // Use the model's own `Pk` associated type — Phase 7-Zero-2 flipped
+    // the default from `HeerId` to `HeerIdDesc`, so `Pedigree::Pk` is
+    // `HeerIdDesc` here. Resolving through the trait keeps this fixture
+    // robust to future PK-default churn.
+    let id = <<Pedigree as Model>::Pk as PrimaryKey>::sentinel();
     let _by_mother = Pedigree::objects().tree_descendants(PedigreeRelated::mother(), id);
     let _by_father = Pedigree::objects().tree_ancestors(PedigreeRelated::father(), id);
     let _all = Pedigree::full_ancestors(id);
