@@ -1315,17 +1315,21 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 
 // ── Phase 8-Zero Cluster C T16 — convex_hull spatial aggregate ──────────────
 //
-// `ST_ConvexHull(ST_Collect(<col>::geometry))` folds a per-group set of
-// geographies into the smallest convex polygon enclosing them. Mirrors the
-// shape of the existing `count_by_region` / `cluster_by_proximity` / etc.
+// `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` folds a per-group
+// set of geographies into the smallest convex polygon enclosing them. Mirrors
+// the shape of the existing `count_by_region` / `cluster_by_proximity` / etc.
 // spatial aggregates from Phase 6.5 — sits on `FieldRef<M, G: GeographyValue>`
-// so it is callable from the same field-closure context.
+// so it is callable from the same field-closure context. The outer
+// `::geography` cast on the emit side is required for the typed `Polygon`
+// decode (see `SpatialExpr::ConvexHull` emit body for the rationale).
 
 #[cfg(feature = "spatial")]
 impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
-    /// `ST_ConvexHull(ST_Collect(<col>::geometry))` — per-group convex-hull
-    /// aggregate. Returns the smallest convex polygon that encloses every
-    /// non-null geometry value in the group.
+    /// `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` — per-group
+    /// convex-hull aggregate. Returns the smallest convex polygon that
+    /// encloses every non-null geometry value in the group, cast back to
+    /// `geography` so the typed `Polygon` decode in `fetch_all` accepts
+    /// the column.
     ///
     /// # Why an aggregate
     ///
@@ -1334,8 +1338,8 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     /// `ST_Collect` is the actual aggregate (folding the per-row geometries
     /// into a single multi-geometry) and `ST_ConvexHull` is a scalar
     /// wrapper applied to the collected set. This method emits the fused
-    /// form; the typed surface presents it as a single
-    /// [`AggregateExpr<Polygon>`].
+    /// form with an outer `::geography` cast; the typed surface presents
+    /// it as a single [`AggregateExpr<Polygon>`].
     ///
     /// # Composition
     ///

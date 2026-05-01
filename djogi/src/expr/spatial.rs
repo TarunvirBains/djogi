@@ -262,7 +262,7 @@ pub enum SpatialExpr {
     },
 
     // ── Phase 8-Zero Cluster C T16 — convex_hull aggregate ──────────────────
-    /// `ST_ConvexHull(ST_Collect(<field>::geometry))`
+    /// `ST_ConvexHull(ST_Collect(<field>::geometry))::geography`
     ///
     /// Per-group convex-hull aggregate — folds a set of geometries into the
     /// smallest convex polygon enclosing them. PostGIS does not ship a
@@ -451,12 +451,17 @@ impl SpatialExpr {
             }
             // ── Phase 8-Zero Cluster C T16 ────────────────────────────────────
             SpatialExpr::ConvexHull { field_column } => {
-                // ST_ConvexHull(ST_Collect(<col>::geometry)) — ST_Collect is
-                // the actual aggregate; ST_ConvexHull is a scalar wrapper
-                // applied to the collected geometry set per group.
+                // ST_ConvexHull(ST_Collect(<col>::geometry))::geography —
+                // ST_Collect is the actual aggregate; ST_ConvexHull is a
+                // scalar wrapper applied to the collected geometry set per
+                // group. The outer `::geography` cast is load-bearing:
+                // `Polygon::FromSql::accepts` only accepts the `"geography"`
+                // type (`accepts_geography` in `crate::geo`); without this
+                // cast the typed decode in `fetch_all` rejects the column
+                // as type-incompatible and panics at row read time.
                 acc.push_sql("ST_ConvexHull(ST_Collect(");
                 acc.push_sql(field_column);
-                acc.push_sql("::geometry))");
+                acc.push_sql("::geometry))::geography");
             }
         }
     }
@@ -1166,11 +1171,14 @@ mod tests {
     }
 
     /// `ConvexHull { field_column }` emits the canonical PostGIS aggregate
-    /// pattern `ST_ConvexHull(ST_Collect(<col>::geometry))`. The `::geometry`
-    /// cast on the column matches the geometry-only discipline of
-    /// `ST_Collect` (no native `geography` overload).
+    /// pattern `ST_ConvexHull(ST_Collect(<col>::geometry))::geography`.
+    /// The inner `::geometry` cast on the column matches the geometry-only
+    /// discipline of `ST_Collect` (no native `geography` overload). The
+    /// outer `::geography` cast is load-bearing: `Polygon::FromSql::accepts`
+    /// only matches the `"geography"` type, so without it the typed decode
+    /// in `fetch_all` rejects the column at row-read time.
     #[test]
-    fn convex_hull_emits_st_convexhull_st_collect_with_geometry_cast() {
+    fn convex_hull_emits_st_convexhull_st_collect_with_outer_geography_cast() {
         let expr = SpatialExpr::ConvexHull {
             field_column: "location",
         };
@@ -1178,8 +1186,9 @@ mod tests {
         expr.emit(&mut acc);
         let sql = acc.sql();
         assert!(
-            sql.contains("ST_ConvexHull(ST_Collect(location::geometry))"),
-            "expected fused ST_ConvexHull(ST_Collect(<col>::geometry)) shape; got: {sql}"
+            sql.contains("ST_ConvexHull(ST_Collect(location::geometry))::geography"),
+            "expected fused ST_ConvexHull(ST_Collect(<col>::geometry))::geography \
+             shape; got: {sql}"
         );
         // Pure aggregate over a column — no binds.
         assert_eq!(

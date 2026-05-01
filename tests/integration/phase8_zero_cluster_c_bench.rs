@@ -257,12 +257,20 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
     //     planner prune subquery columns and would isolate planner cost
     //     only, masking projection regressions in the derived-table
     //     lowering.
+    // Hand-written path selects the SAME column set the framework path
+    // moves over the wire — every canonical model column emitted by
+    // `FromPgRow::COLUMNS` (id, created_at, updated_at, herd_id, score,
+    // label) plus the rank. Selecting only the user-visible subset would
+    // let the planner prune the timestamp columns and skip both wire
+    // transfer and decode, masking projection regressions in the
+    // derived-table lowering — the framework path can NOT skip the
+    // timestamps because they are mandatory model fields.
     let start_hw = Instant::now();
-    let hand_rows: Vec<(i64, i64, i64, String, i64)> = ctx
+    let hand_rows: Vec<(i64, djogi::DateTime, djogi::DateTime, i64, i64, String, i64)> = ctx
         .raw_rows(
-            "SELECT id, herd_id, score, label, rn
+            "SELECT id, created_at, updated_at, herd_id, score, label, rn
              FROM (
-                 SELECT id, herd_id, score, label,
+                 SELECT id, created_at, updated_at, herd_id, score, label,
                         ROW_NUMBER() OVER (PARTITION BY herd_id ORDER BY score DESC) AS rn
                  FROM phase8c_bench_window
              ) AS sub
@@ -275,6 +283,8 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
         .map(|row| {
             (
                 row.get::<_, i64>("id"),
+                row.get::<_, djogi::DateTime>("created_at"),
+                row.get::<_, djogi::DateTime>("updated_at"),
                 row.get::<_, i64>("herd_id"),
                 row.get::<_, i64>("score"),
                 row.get::<_, String>("label"),
