@@ -277,6 +277,107 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
             crate::query::RecursiveDirection::Ancestors,
         )
     }
+
+    // ── Materialised transitive closure (Phase 8-Zero Cluster B4 — T13b) ─────
+    //
+    // [`materialize_closure`](Model::materialize_closure) populates a
+    // closure-table sibling of this model. Per the scalability lens
+    // (Risk 10), materialised transitive closure is the production-
+    // scale answer for tree queries: every adopter doing tree
+    // queries at non-trivial scale eventually reaches for one, and
+    // shipping a framework helper means the framework *supports* the
+    // production pattern rather than just *demonstrating* the
+    // recursive-CTE one.
+    //
+    // The macro-side wiring (`#[model(closure_for = T)]`) that would
+    // generate the [`ClosureModel`] impl from a single attribute is
+    // explicitly out of scope for B4 — adopters hand-write the impl
+    // for now. Runtime contract is fixed; macro sugar can land later
+    // without changing this method signature.
+
+    /// Populate a transitive-closure table for this model's self-FK
+    /// graph. Phase 8-Zero Cluster B4 (T13b).
+    ///
+    /// `C` is an adopter-supplied [`ClosureModel`] whose `Source =
+    /// Self` — the type-level binding pins the closure table to the
+    /// source model so wrong-source closure tables fail at compile
+    /// time. Reach for this helper when:
+    ///
+    /// - The source table has more than a handful of rows and tree
+    ///   queries against it have become hot. Closure-table lookups
+    ///   are indexed point-reads; recursive-CTE walks are O(subtree
+    ///   size) every time.
+    /// - The application needs Wright-style kinship coefficients.
+    ///   The closure table records `path_count` per
+    ///   `(source, ancestor, depth)` triple, which is the input to
+    ///   coefficient sums.
+    ///
+    /// # Behaviour
+    ///
+    /// - **`opts.roots = None`** — walks every row in the source
+    ///   table. Right shape for the initial population.
+    /// - **`opts.roots = Some(ids)`** — walks only those source rows.
+    ///   Right shape for incremental updates after inserts (call with
+    ///   the newly-inserted ids).
+    /// - **`opts.max_depth = Some(n)`** — bounds the recursive walk
+    ///   at `n` hops. `None` runs to natural exhaustion (the `CYCLE`
+    ///   clause prevents infinite recursion regardless).
+    /// - **`ON CONFLICT … DO UPDATE`** — re-running the helper merges
+    ///   new paths into existing `path_count` values rather than
+    ///   double-counting. Adopters who want a clean rebuild should
+    ///   `TRUNCATE` the closure table first.
+    ///
+    /// # Required closure-table schema
+    ///
+    /// The closure table **must** carry a unique constraint on
+    /// `(source_column, ancestor_column, depth_column)` — Postgres
+    /// rejects `ON CONFLICT (...)` against missing constraints with
+    /// `42P10`. See [`crate::query::closure`] module docs for the
+    /// canonical CREATE TABLE shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DjogiError::Validation`] when:
+    ///
+    /// - `Self::descriptor().self_fk_count() == 0` — there are no
+    ///   self-FK edges to walk.
+    /// - Any [`ClosureModel`] column-name accessor returns an invalid
+    ///   identifier (non-ASCII, reserved keyword, > 63 bytes, etc.).
+    ///
+    /// Returns the underlying database error wrapped in
+    /// [`DjogiError`] for query failures (typically a missing unique
+    /// constraint surfaces as `42P10` here).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Initial population — walk every row.
+    /// let report = Elephant::materialize_closure::<ElephantAncestry>(
+    ///     &mut ctx,
+    ///     MaterializeClosureOptions::default(),
+    /// ).await?;
+    /// println!("populated {} triples across {} elephants",
+    ///          report.rows_written, report.sources_visited);
+    ///
+    /// // Incremental update for newly-inserted elephants.
+    /// let new_ids: Vec<HeerId> = /* ... */;
+    /// let report = Elephant::materialize_closure::<ElephantAncestry>(
+    ///     &mut ctx,
+    ///     MaterializeClosureOptions::default()
+    ///         .with_roots(new_ids)
+    ///         .with_max_depth(20),
+    /// ).await?;
+    /// ```
+    fn materialize_closure<'ctx, C>(
+        ctx: &'ctx mut DjogiContext,
+        opts: crate::query::MaterializeClosureOptions<Self::Pk>,
+    ) -> impl Future<Output = Result<crate::query::MaterializeClosureReport, DjogiError>> + Send + 'ctx
+    where
+        C: crate::query::ClosureModel<Source = Self> + 'ctx,
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        crate::query::closure::materialize_closure_impl::<Self, C>(ctx, opts)
+    }
 }
 
 /// Look up `M`'s declared `tree_edge` and synthesise a

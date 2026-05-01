@@ -233,8 +233,9 @@ pub use field_codec::is_registered as is_codec_registered;
 pub use fts::{FtsDescriptor, TsQuery, TsVector};
 pub use fts_query::FtsFieldRef;
 pub use query::{
-    AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
-    IntoFilterValue, Lookup, ModelCursorStream, ModelFilter, OrderExpr, QuerySet, RawCursorStream,
+    AggregateQuery, AnnotatedQuerySet, ClosureModel, Condition, FieldRef, FilterClause,
+    IntoAggregateTuple, IntoFilterValue, Lookup, MaterializeClosureOptions,
+    MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, QuerySet, RawCursorStream,
     RecursiveDirection, RecursiveQuerySet, UpdateAssignment, UpdateStmt, VisageQuerySet,
 };
 pub use relation::{
@@ -278,8 +279,9 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};
     pub use crate::query::{
-        AggregateQuery, AnnotatedQuerySet, Condition, FieldRef, FilterClause, IntoAggregateTuple,
-        IntoFilterValue, Lookup, ModelFilter, OrderExpr, QuerySet, RecursiveDirection,
+        AggregateQuery, AnnotatedQuerySet, ClosureModel, Condition, FieldRef, FilterClause,
+        IntoAggregateTuple, IntoFilterValue, Lookup, MaterializeClosureOptions,
+        MaterializeClosureReport, ModelFilter, OrderExpr, QuerySet, RecursiveDirection,
         RecursiveQuerySet, VisageQuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical

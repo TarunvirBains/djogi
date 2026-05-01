@@ -24,6 +24,7 @@
 
 pub mod aggregate;
 pub mod annotate;
+pub mod closure;
 pub mod condition;
 pub mod field;
 pub mod filter;
@@ -42,6 +43,7 @@ pub mod visage_queryset;
 
 pub use aggregate::AggregateQuery;
 pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
+pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureReport};
 pub use condition::Condition;
 pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
 pub use filter::{FilterClause, Lookup, ModelFilter};
