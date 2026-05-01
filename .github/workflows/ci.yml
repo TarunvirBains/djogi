@@ -126,7 +126,23 @@ jobs:
         run: cargo build --workspace
 
       - name: Test
-        run: cargo test --workspace -- --test-threads=1
+        # Excluding `elephant-tracker` here is load-bearing. Its
+        # `Cargo.toml` activates djogi's `spatial` + `outbox` features,
+        # and under cargo's resolver-2 workspace feature unification a
+        # `cargo test --workspace` would cascade those activations onto
+        # djogi globally — forcing spatial-gated integration tests in
+        # djogi (e.g., `phase6_5_spatial_polish`) to compile with the
+        # spatial cfg active and then panic at runtime trying to
+        # `CREATE EXTENSION postgis` against the default-features test
+        # container, which has no PostGIS. The Spatial (PostGIS) job
+        # below runs those tests intentionally with `--all-features`
+        # against a postgis-enabled image; here we keep
+        # elephant-tracker out of the unified feature graph so the
+        # default-features sweep stays default-features. The Build
+        # step above still covers `--workspace` (build, not test —
+        # PostGIS is a runtime dep, not a compile dep). Tracked in
+        # issue #80.
+        run: cargo test --workspace --exclude elephant-tracker -- --test-threads=1
 
   # MSRV gate — verifies the code still compiles on the toolchain
   # declared in `workspace.package.rust-version`. The main `check`
