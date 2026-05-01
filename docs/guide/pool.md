@@ -335,3 +335,20 @@ concurrency budget.
 - `djogi::pg::pool::DEFAULT_MAX_SIZE` — `5`
 - `djogi::DjogiError::PoolTimeout { phase }` — saturation error
   variant; `phase` is `"wait"`, `"create"`, or `"recycle"`
+
+---
+
+## Performance reference
+
+djogi ships smoke benchmarks at `tests/integration/phase8_zero_pool_bench.rs`.
+Run
+
+```bash
+cargo test --test phase8_zero_pool_bench -p djogi --all-features --release \
+    -- --test-threads=1 --nocapture
+```
+
+to see throughput on your hardware. The benchmarks are not perf
+guarantees — they verify the pool delivers concurrency, the
+`post_connect` hook doesn't catastrophically tax connection setup, and
+`with_client` overhead is bounded relative to a held-client baseline.

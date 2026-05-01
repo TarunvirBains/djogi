@@ -284,6 +284,11 @@ path = "../tests/integration/phase7_5_t111_rls_fk_tenant_key_live.rs"
 harness = true
 
 [[test]]
+name = "phase8_zero_pool_bench"
+path = "../tests/integration/phase8_zero_pool_bench.rs"
+harness = true
+
+[[test]]
 name = "phase8_zero_pool_live"
 path = "../tests/integration/phase8_zero_pool_live.rs"
 harness = true
