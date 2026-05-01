@@ -816,4 +816,22 @@ mod tests {
         assert!(!sql.contains("QUALIFY"), "got: {sql}");
         assert!(!sql.contains("qualify"), "got: {sql}");
     }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn alias_rejects_framework_reserved_djogi_q_prefix() {
+        // `__djogi_q` is the derived-table alias the qualify emitter wraps
+        // the inner select with. Allowing a user alias of `__djogi_q` would
+        // produce ambiguous outer SQL.
+        let _ = RowNumber::new().alias("__djogi_q");
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn alias_rejects_framework_reserved_agg_slot_prefix() {
+        // `__djogi_agg_N` is the aggregate-tuple slot alias used by row
+        // decode. A user alias matching that namespace would silently
+        // route window output to the wrong decode slot.
+        let _ = Rank::new().alias("__djogi_agg_0");
+    }
 }

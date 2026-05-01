@@ -102,7 +102,7 @@ macro_rules! define_window_rank_fn {
             "        .partition_by(e.herd_id())\n",
             "        .order_by(e.score().desc())\n",
             "        .alias(\"", $example_name, "\"))\n",
-            "    .qualify(|q| q.rank().lte(3))\n",
+            "    .qualify(|w| w.lte(3))\n",
             "    .fetch_all(&mut ctx)\n",
             "    .await?;\n",
             "# Ok::<_, djogi::DjogiError>(())\n",
@@ -255,10 +255,25 @@ macro_rules! define_window_rank_fn {
             ///
             /// Panics when `alias` is empty, longer than PostgreSQL's usable
             /// identifier length, starts with an invalid byte, contains an
-            /// invalid byte, or is a reserved PostgreSQL keyword.
+            /// invalid byte, or is a reserved PostgreSQL keyword. Also panics
+            /// when the alias starts with the `__djogi_` framework-reserved
+            /// prefix (e.g. `__djogi_q` would shadow the derived-table name
+            /// used by qualify lowering; `__djogi_agg_N` would collide with
+            /// the aggregate-tuple slot aliases used by row decode).
+            ///
+            /// User-chosen aliases SHOULD also avoid colliding with the
+            /// model's own column names — the outer `WHERE <alias>` would
+            /// then reference the underlying column instead of the window
+            /// output. The framework cannot enforce this here because
+            /// [`alias`](Self::alias) does not know the eventual `T`; it is
+            /// the caller's responsibility to pick a non-colliding alias.
             #[must_use = "window functions are immutable builders - use the returned value"]
             pub fn alias(mut self, alias: &'static str) -> Self {
                 crate::ident::assert_plain_ident(alias, "window_alias");
+                assert!(
+                    !alias.starts_with("__djogi_"),
+                    "window alias \"{alias}\" is reserved (the `__djogi_` prefix is used for framework-internal identifiers like the qualify derived-table alias `__djogi_q` and the aggregate-tuple slot aliases `__djogi_agg_N`)"
+                );
                 self.alias = Some(alias);
                 self
             }
