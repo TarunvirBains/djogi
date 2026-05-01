@@ -31,9 +31,8 @@ use tokio_postgres::NoTls;
 ///
 /// Five matches the original Phase-1 hard-coded value and keeps every
 /// existing test/callsite that uses [`DjogiPool::connect`] running against
-/// the same pool size as before. Production deployments routinely override
-/// this through [`DjogiPoolBuilder::max_size`] or `[database].max_connections`
-/// in `Djogi.toml`.
+/// the same pool size as before. Production deployments override this
+/// through [`DjogiPoolBuilder::max_size`].
 pub const DEFAULT_MAX_SIZE: usize = 5;
 
 /// The framework's Postgres connection pool.
@@ -140,6 +139,13 @@ impl DjogiPoolBuilder {
     ///
     /// Default: [`DEFAULT_MAX_SIZE`].
     ///
+    /// `value` must be `>= 1`. Passing `0` would build a pool whose
+    /// internal semaphore has zero permits, so every `pool.get()` would
+    /// block forever (or until the wait timeout fires). The check runs
+    /// in [`Self::build`] so the failure surfaces at construction time
+    /// with a clear error rather than as a mysterious hang at first
+    /// query.
+    ///
     /// Sizing guidance: pick `max_size` to match your service's expected
     /// concurrent database-touching tasks, NOT your CPU count. A web
     /// server handling 200 concurrent requests that each issue 2-3
@@ -172,7 +178,21 @@ impl DjogiPoolBuilder {
     /// This constructs the deadpool pool eagerly — the `tokio` runtime
     /// must be available when `build` is awaited. The pool itself opens
     /// connections lazily on first checkout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DjogiError::Db`] with a `Validation`-style message if
+    /// `max_size` is `0` (a zero-permit pool would hang every `get` call
+    /// forever) or if the underlying `deadpool` config fails to build.
     pub async fn build(self) -> Result<DjogiPool, DjogiError> {
+        if self.max_size == 0 {
+            return Err(DjogiError::Validation(
+                "DjogiPoolBuilder::max_size must be >= 1; \
+                 a zero-permit pool would block every checkout indefinitely"
+                    .to_owned(),
+            ));
+        }
+
         let mut cfg = Config::new();
         cfg.url = Some(self.url);
         cfg.manager = Some(ManagerConfig {
@@ -281,5 +301,55 @@ mod tests {
             dbg.contains("max_size: 7"),
             "Debug output should reflect max_size, got: {dbg}"
         );
+    }
+
+    /// A zero `max_size` would build a pool whose semaphore has no
+    /// permits, hanging every checkout forever. Reject at `build` time.
+    #[tokio::test]
+    async fn builder_rejects_zero_max_size() {
+        let err = DjogiPool::builder("postgres://localhost/_djogi_unreachable")
+            .max_size(0)
+            .build()
+            .await
+            .expect_err("max_size(0) must be rejected");
+        match err {
+            DjogiError::Validation(msg) => {
+                assert!(
+                    msg.contains("max_size") && msg.contains(">= 1"),
+                    "Validation message should mention max_size and >= 1; got: {msg}"
+                );
+            }
+            other => panic!("expected DjogiError::Validation, got: {other:?}"),
+        }
+    }
+
+    /// `map_pool_err` lowers each deadpool timeout variant into the
+    /// matching `DjogiError::PoolTimeout { phase }`.
+    #[test]
+    fn map_pool_err_lowers_timeouts() {
+        use deadpool_postgres::{PoolError, TimeoutType};
+
+        match map_pool_err(PoolError::Timeout(TimeoutType::Wait)) {
+            DjogiError::PoolTimeout { phase } => assert_eq!(phase, "wait"),
+            other => panic!("expected PoolTimeout(wait), got: {other:?}"),
+        }
+        match map_pool_err(PoolError::Timeout(TimeoutType::Create)) {
+            DjogiError::PoolTimeout { phase } => assert_eq!(phase, "create"),
+            other => panic!("expected PoolTimeout(create), got: {other:?}"),
+        }
+        match map_pool_err(PoolError::Timeout(TimeoutType::Recycle)) {
+            DjogiError::PoolTimeout { phase } => assert_eq!(phase, "recycle"),
+            other => panic!("expected PoolTimeout(recycle), got: {other:?}"),
+        }
+    }
+
+    /// PoolTimeout is classified as transient — generic retry helpers
+    /// must treat it as a back-off-and-retry condition, not a permanent
+    /// failure.
+    #[test]
+    fn pool_timeout_is_transient() {
+        let err = DjogiError::PoolTimeout { phase: "wait" };
+        assert!(err.is_transient(), "PoolTimeout must be transient");
+        assert!(!err.is_terminal(), "PoolTimeout must NOT be terminal");
     }
 }

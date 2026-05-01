@@ -428,11 +428,23 @@ pub enum DjogiError {
     ///   timed out. Same root cause as `"create"` for `Verified`/`Clean`
     ///   recycling methods that issue queries.
     ///
-    /// All three are usually transient. The variant is **not** marked
-    /// transient by [`DjogiError::is_transient`] today because deadpool's
-    /// timeout is itself the retry signal — re-entering the same
-    /// `pool.get()` immediately would loop. Callers that want to retry
-    /// should add their own backoff.
+    /// All three are saturation / slow-recovery signals: the right
+    /// response is to back off and retry, not to fail the operation
+    /// permanently. [`DjogiError::is_transient`] returns `true` for
+    /// `PoolTimeout` so generic retry helpers that branch on
+    /// `is_transient` (or its inverse `is_terminal`) treat pool
+    /// timeouts as retryable rather than dead-lettering them as
+    /// permanent business failures.
+    ///
+    /// Note that the framework's `retry_on_conflict` helper today
+    /// retries on every transient classification, which would mean
+    /// retrying pool timeouts immediately and likely tripping the
+    /// timeout again. Callers that wrap their work in
+    /// `retry_on_conflict` and want a different policy for
+    /// `PoolTimeout` should match on it explicitly and add their own
+    /// backoff. This is an honest classification — `PoolTimeout`
+    /// genuinely is transient — paired with caller-side policy where
+    /// finer-grained behaviour matters.
     #[error("pool timeout ({phase})")]
     #[non_exhaustive]
     PoolTimeout {
@@ -543,6 +555,7 @@ impl DjogiError {
     /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
     /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
     /// | [`StreamOutsideTransaction`](Self::StreamOutsideTransaction) | terminal |
+    /// | [`PoolTimeout`](Self::PoolTimeout) | transient |
     ///
     /// The Db row reflects the existing `is_lock_error`
     /// classifier: Postgres SQLSTATEs `40001` (serialization
@@ -556,6 +569,13 @@ impl DjogiError {
         match self {
             DjogiError::LockConflict(_) => true,
             DjogiError::Db(e) => is_lock_error(e),
+            // Pool saturation / slow connection creation / slow recycle
+            // are all retry-with-backoff conditions, not permanent
+            // failures. Generic retry helpers branching on
+            // `is_transient` should treat these as transient; callers
+            // wanting bespoke `PoolTimeout`-vs-`LockConflict` policy
+            // should match on the variant explicitly.
+            DjogiError::PoolTimeout { .. } => true,
             _ => false,
         }
     }
@@ -721,8 +741,12 @@ mod tests {
             "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"
         );
         assert!(
-            DjogiError::PoolTimeout { phase: "wait" }.is_terminal(),
-            "PoolTimeout must be terminal — deadpool's timeout is itself the retry signal"
+            DjogiError::PoolTimeout { phase: "wait" }.is_transient(),
+            "PoolTimeout must be transient — saturation is a retry-with-backoff condition"
+        );
+        assert!(
+            !DjogiError::PoolTimeout { phase: "wait" }.is_terminal(),
+            "PoolTimeout must NOT be terminal — generic retry helpers must not dead-letter it"
         );
     }
 }
