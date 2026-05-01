@@ -48,8 +48,7 @@
 //!     WHERE NOT is_cycle
 //!     GROUP BY source_id, ancestor_id, depth
 //!     ON CONFLICT (<source_col>, <ancestor_col>, <depth_col>)
-//!     DO UPDATE SET <path_count_col> =
-//!         <closure_table>.<path_count_col> + EXCLUDED.<path_count_col>
+//!     DO UPDATE SET <path_count_col> = EXCLUDED.<path_count_col>
 //!     RETURNING <source_col>
 //! )
 //! SELECT COUNT(*) AS rows_written,
@@ -73,11 +72,19 @@
 //!   `path_count = 2`.
 //! - **Cycle column is `cycle_path`** (not `path`) so it does not
 //!   collide with our user-visible edge-name accumulator.
-//! - **`ON CONFLICT … DO UPDATE` is additive** (`<col> + EXCLUDED.<col>`)
-//!   so re-running the helper on a closure that already has rows
-//!   merges new paths in rather than double-counting existing ones.
-//!   Adopters who want a clean rebuild should `TRUNCATE` the closure
-//!   table first.
+//! - **`ON CONFLICT … DO UPDATE` replaces, it does not add.** Each
+//!   helper invocation walks the current graph from scratch via the
+//!   recursive CTE, so EXCLUDED's `path_count` is already the correct
+//!   total of distinct paths between every `(source, ancestor, depth)`
+//!   triple in the present graph state. The pre-existing closure row's
+//!   value is the previous (possibly stale) total; replacing it with
+//!   EXCLUDED keeps the closure aligned with whatever lives in the
+//!   source table now. Re-running the helper twice in a row is therefore
+//!   idempotent — the second run computes the same totals and writes
+//!   them on top of themselves. An `additive` merge would double on
+//!   straight rerun and over-count on every incremental rerun (because
+//!   the recursive walk re-derives existing paths on top of new ones),
+//!   so it is wrong on every callsite that matters.
 //! - **`RETURNING <source_col>`** plus the outer `COUNT` /
 //!   `COUNT(DISTINCT)` lets the helper report both `rows_written`
 //!   (unique `(source, ancestor, depth)` triples touched) and
@@ -202,9 +209,9 @@ impl<Pk: ToSql + Sync + Send + 'static> MaterializeClosureOptions<Pk> {
 pub struct MaterializeClosureReport {
     /// Number of `(source, ancestor, depth)` triples the `INSERT` /
     /// `ON CONFLICT DO UPDATE` touched. New triples count once;
-    /// existing triples whose `path_count` was incremented also count
-    /// once (Postgres returns the same set of rows from `RETURNING`
-    /// for both branches).
+    /// existing triples whose `path_count` was replaced from EXCLUDED
+    /// also count once (Postgres returns the same set of rows from
+    /// `RETURNING` for both branches).
     pub rows_written: u64,
     /// Number of distinct source rows whose ancestor chain was walked
     /// — equivalent to the size of the anchor's row set after the
@@ -518,12 +525,26 @@ where
          GROUP BY source_id, ancestor_id, depth",
     );
 
-    // ── ON CONFLICT (...) DO UPDATE SET <col> = <table>.<col> + EXCLUDED.<col>
+    // ── ON CONFLICT (...) DO UPDATE SET <col> = EXCLUDED.<col> ──────────
     //
-    // Idempotent and additive. Re-running the helper merges new
-    // paths into existing path counts rather than double-counting.
-    // The unique constraint `(source, ancestor, depth)` is required
-    // on the closure table — see module docs.
+    // Replace, not add. Each `materialize_closure` invocation walks the
+    // current graph from scratch via the recursive CTE, so EXCLUDED's
+    // `path_count` is already the *correct, current* total of distinct
+    // paths between every `(source, ancestor, depth)` triple in the
+    // present graph state. The pre-existing closure row's value is the
+    // previous (possibly stale) total; replacing it with EXCLUDED keeps
+    // the closure aligned with whatever is in the source table now.
+    //
+    // Additive merge would be wrong on every callsite that matters: a
+    // straight rerun would double, an incremental rerun (after new edges
+    // are added in the source table) would over-count because the
+    // recursive walk re-derives every existing path on top of the new
+    // ones. The `additive` shape only makes sense when the closure is
+    // updated by some external partial-write process that hands djogi
+    // a delta — that is not djogi's design.
+    //
+    // The unique constraint `(source, ancestor, depth)` is required on
+    // the closure table — see module docs.
     acc.push_sql(" ON CONFLICT (");
     acc.push_sql(C::source_column());
     acc.push_sql(", ");
@@ -532,11 +553,7 @@ where
     acc.push_sql(C::depth_column());
     acc.push_sql(") DO UPDATE SET ");
     acc.push_sql(C::path_count_column());
-    acc.push_sql(" = ");
-    acc.push_sql(C::table());
-    acc.push_sql(".");
-    acc.push_sql(C::path_count_column());
-    acc.push_sql(" + EXCLUDED.");
+    acc.push_sql(" = EXCLUDED.");
     acc.push_sql(C::path_count_column());
     acc.push_sql(" RETURNING ");
     acc.push_sql(C::source_column());
@@ -946,17 +963,23 @@ mod tests {
     }
 
     #[test]
-    fn on_conflict_clause_is_additive() {
-        // ON CONFLICT (...) DO UPDATE SET path_count = table.path_count
-        // + EXCLUDED.path_count — idempotent re-runs merge new paths
-        // into existing path counts rather than double-counting.
+    fn on_conflict_clause_replaces_path_count() {
+        // ON CONFLICT (...) DO UPDATE SET path_count = EXCLUDED.path_count
+        // — replace, not add. Each invocation walks the current graph
+        // from scratch via the recursive CTE, so EXCLUDED's path_count
+        // is already the correct total. Additive merge would double on
+        // straight rerun and over-count on incremental rerun.
         let acc = build_materialize_closure_sql::<MiniTree, MiniClosure>(opts_default());
         let sql = acc.sql();
         assert!(
             sql.contains(
-                "ON CONFLICT (mini_tree_id, ancestor_id, depth) DO UPDATE SET path_count = mini_tree_closures.path_count + EXCLUDED.path_count"
+                "ON CONFLICT (mini_tree_id, ancestor_id, depth) DO UPDATE SET path_count = EXCLUDED.path_count"
             ),
-            "ON CONFLICT clause must be additive on path_count: {sql}"
+            "ON CONFLICT clause must replace path_count from EXCLUDED: {sql}"
+        );
+        assert!(
+            !sql.contains("mini_tree_closures.path_count + EXCLUDED.path_count"),
+            "additive merge must not appear (would double on rerun): {sql}"
         );
     }
 
