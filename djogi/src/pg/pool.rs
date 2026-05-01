@@ -706,46 +706,35 @@ impl std::fmt::Debug for DjogiPoolBuilder {
 ///
 /// Reading order (highest priority first):
 ///
-/// 1. `DJOGI_DATABASE_MAX_CONNECTIONS` env var, if set and parseable as a
-///    positive integer.
-/// 2. `[database].max_connections` from the config, if non-zero.
+/// 1. `DJOGI_DATABASE_MAX_CONNECTIONS` env var.
+/// 2. `[database].max_connections` from the config.
 /// 3. `None` — caller falls back to the builder default
 ///    ([`DEFAULT_MAX_SIZE`]).
 ///
-/// Returning `None` rather than `Some(DEFAULT_MAX_SIZE)` for the
-/// no-override case lets the caller distinguish "use whatever the
-/// builder defaults to today" from "use exactly 5". Future builder
-/// defaults change in one place.
+/// Returning `None` rather than `Some(DEFAULT_MAX_SIZE)` lets the caller
+/// distinguish "use whatever the builder defaults to today" from "use
+/// exactly 5".
 ///
-/// Empty / unparseable / `0` env values fall through to layer 2 (and
-/// then to `None` if config also reads `0`) — a typo in the env var
-/// must NOT silently zero the pool.
+/// Zero / empty / unparseable values at any layer fall through — a typo
+/// must not silently zero the pool.
 pub fn resolve_max_connections(cfg: &crate::config::DatabaseConfig) -> Option<usize> {
-    if let Some(env_size) = read_env_max_connections() {
-        return Some(env_size);
-    }
-    if cfg.max_connections > 0 {
-        // `as usize` is safe — `max_connections` is `u32` and `usize`
-        // is at least 32 bits on every platform Djogi targets.
-        return Some(cfg.max_connections as usize);
-    }
-    None
+    read_env_max_connections().or_else(|| cfg.max_connections.and_then(non_zero_size))
 }
 
-/// Read [`ENV_DATABASE_MAX_CONNECTIONS`] and parse it as a `usize`.
-///
-/// Returns `None` if the variable is unset, empty, parses to `0`, or
-/// fails to parse. Empty / unparsed / `0` all fall through to the next
-/// layer in the resolution chain so a user typo does not silently zero
-/// out the pool.
+/// Treat zero as "absent". `as usize` is safe — `usize` is ≥ 32 bits on
+/// every platform Djogi targets.
+fn non_zero_size(n: u32) -> Option<usize> {
+    if n > 0 { Some(n as usize) } else { None }
+}
+
+/// Read [`ENV_DATABASE_MAX_CONNECTIONS`] and parse it as a positive `usize`.
 fn read_env_max_connections() -> Option<usize> {
-    let raw = std::env::var(ENV_DATABASE_MAX_CONNECTIONS).ok()?;
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let parsed: usize = trimmed.parse().ok()?;
-    if parsed == 0 { None } else { Some(parsed) }
+    std::env::var(ENV_DATABASE_MAX_CONNECTIONS)
+        .ok()?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .and_then(non_zero_size)
 }
 
 /// Lower a `deadpool_postgres::PoolError` into a `DjogiError`, mapping
@@ -886,7 +875,7 @@ mod tests {
         clear_env();
         let cfg = DatabaseConfig {
             url: String::new(),
-            max_connections: 0,
+            max_connections: None,
             dev_mode: false,
         };
         assert_eq!(resolve_max_connections(&cfg), None);
@@ -895,7 +884,7 @@ mod tests {
         clear_env();
         let cfg = DatabaseConfig {
             url: String::new(),
-            max_connections: 25,
+            max_connections: Some(25),
             dev_mode: false,
         };
         assert_eq!(resolve_max_connections(&cfg), Some(25));
@@ -904,7 +893,7 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "42") };
         let cfg = DatabaseConfig {
             url: String::new(),
-            max_connections: 25,
+            max_connections: Some(25),
             dev_mode: false,
         };
         assert_eq!(resolve_max_connections(&cfg), Some(42));
@@ -913,7 +902,7 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "  ") };
         let cfg = DatabaseConfig {
             url: String::new(),
-            max_connections: 25,
+            max_connections: Some(25),
             dev_mode: false,
         };
         assert_eq!(resolve_max_connections(&cfg), Some(25));
@@ -922,7 +911,7 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "not-a-number") };
         let cfg = DatabaseConfig {
             url: String::new(),
-            max_connections: 25,
+            max_connections: Some(25),
             dev_mode: false,
         };
         assert_eq!(resolve_max_connections(&cfg), Some(25));
@@ -932,7 +921,7 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "0") };
         let cfg = DatabaseConfig {
             url: String::new(),
-            max_connections: 25,
+            max_connections: Some(25),
             dev_mode: false,
         };
         assert_eq!(resolve_max_connections(&cfg), Some(25));
@@ -941,7 +930,7 @@ mod tests {
         unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "0") };
         let cfg = DatabaseConfig {
             url: String::new(),
-            max_connections: 0,
+            max_connections: None,
             dev_mode: false,
         };
         assert_eq!(resolve_max_connections(&cfg), None);
@@ -961,7 +950,7 @@ mod tests {
 
         let cfg = DatabaseConfig {
             url: "postgres://localhost/_djogi_unreachable".to_string(),
-            max_connections: 11,
+            max_connections: Some(11),
             dev_mode: false,
         };
         let pool = DjogiPool::from_database_config(&cfg)
