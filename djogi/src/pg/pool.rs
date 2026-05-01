@@ -156,8 +156,11 @@ pub struct DjogiPoolStatus {
     pub waiting: usize,
 }
 
-impl From<deadpool_postgres::Status> for DjogiPoolStatus {
-    fn from(s: deadpool_postgres::Status) -> Self {
+impl DjogiPoolStatus {
+    /// Build a snapshot from the underlying deadpool status. Crate-private
+    /// so the conversion does not surface deadpool's type on Djogi's
+    /// public API; adopters reach a snapshot only via [`DjogiPool::status`].
+    pub(crate) fn from_deadpool(s: deadpool_postgres::Status) -> Self {
         Self {
             max_size: s.max_size,
             size: s.size,
@@ -271,7 +274,7 @@ impl DjogiPool {
     /// cheap snapshot read — it does not lock the pool or block on
     /// in-flight checkouts.
     pub fn status(&self) -> DjogiPoolStatus {
-        DjogiPoolStatus::from(self.inner.status())
+        DjogiPoolStatus::from_deadpool(self.inner.status())
     }
 
     /// Acquire a `PgConnection` from the pool.
@@ -716,13 +719,15 @@ fn non_zero_size(n: u32) -> Option<usize> {
 }
 
 /// Read [`ENV_DATABASE_MAX_CONNECTIONS`] and parse it as a positive `usize`.
+/// Empty / unparseable / `0` values fall through; the parse uses `usize` so
+/// values up to `usize::MAX` are honoured rather than narrowed at `u32::MAX`.
 fn read_env_max_connections() -> Option<usize> {
-    std::env::var(ENV_DATABASE_MAX_CONNECTIONS)
+    let n = std::env::var(ENV_DATABASE_MAX_CONNECTIONS)
         .ok()?
         .trim()
-        .parse::<u32>()
-        .ok()
-        .and_then(non_zero_size)
+        .parse::<usize>()
+        .ok()?;
+    if n == 0 { None } else { Some(n) }
 }
 
 /// Lower a `deadpool_postgres::PoolError` into a `DjogiError`, mapping
@@ -953,9 +958,9 @@ mod tests {
 
     /// `with_client` accepts the documented closure shape. Live
     /// execution (closure body actually running against a checked-out
-    /// connection) requires a reachable Postgres and lives in the T6
-    /// integration tests (`pool_with_client_returns_connection` /
-    /// `pool_with_client_returns_connection_on_panic`).
+    /// connection) requires a reachable Postgres and lives in the
+    /// integration tests (`pool_with_client_returns_connection_on_ok` /
+    /// `pool_with_client_detaches_on_panic`).
     #[allow(dead_code)] // type-check only — body never runs
     fn with_client_accepts_documented_closure_shape() {
         fn _check(
@@ -979,7 +984,7 @@ mod tests {
     /// shape and surfaces its presence in `Debug` output. The hook only
     /// fires when deadpool calls `Manager::create`, which requires a
     /// reachable Postgres — the live invocation-count assertion lives in
-    /// the T6 integration test (`pool_post_connect_fires_once_per_physical`).
+    /// `pool_post_connect_fires_once_per_physical_connection`.
     #[tokio::test]
     async fn builder_accepts_post_connect_closure() {
         let pool = DjogiPool::builder("postgres://localhost/_djogi_unreachable")

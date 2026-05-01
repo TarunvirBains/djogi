@@ -1,4 +1,4 @@
-//! Phase 8-Zero Cluster A T6 — DjogiPool live integration tests.
+//! DjogiPool live integration tests.
 //!
 //! These tests need a reachable Postgres at `DATABASE_URL` because the
 //! invariants under test are deadpool lifecycle behaviours that only
