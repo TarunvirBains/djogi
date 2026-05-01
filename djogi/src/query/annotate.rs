@@ -62,12 +62,12 @@
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
-use crate::expr::AggregateExpr;
+use crate::expr::{AggregateExpr, DenseRank, Rank, RowNumber};
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
 use crate::query::queryset::QuerySet;
-use crate::query::sql::{build_select_with_annotations, emit_aggregate_with_window_and_cast};
+use crate::query::sql::{build_annotated_select_for_fetch, emit_aggregate_with_window_and_cast};
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -80,6 +80,51 @@ mod sealed {
     pub trait Sealed {}
 }
 
+mod annotation_slot_sealed {
+    pub trait Sealed {}
+}
+
+const AGG_ALIASES: [&str; 4] = [
+    "__djogi_agg_0",
+    "__djogi_agg_1",
+    "__djogi_agg_2",
+    "__djogi_agg_3",
+];
+
+fn aggregate_alias(slot: usize) -> &'static str {
+    AGG_ALIASES[slot]
+}
+
+/// A single annotation expression that can occupy one SELECT-list slot.
+///
+/// This is a hidden extension point used by Djogi's own annotation tuple
+/// bridge. It is sealed, so downstream crates cannot inject custom SQL into
+/// the annotation emitter. Public code normally names
+/// [`IntoAggregateTuple`], not this trait.
+#[doc(hidden)]
+pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
+    /// Rust value decoded from this annotation's SELECT-list slot.
+    type Decoded;
+
+    /// Push this annotation as `, <expr> AS <alias>` for ungrouped annotate.
+    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize);
+
+    /// Push this annotation in grouped annotate contexts.
+    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize);
+
+    /// Decode this annotation from `row`.
+    fn decode_column(
+        &self,
+        row: &tokio_postgres::Row,
+        slot: usize,
+    ) -> Result<Self::Decoded, tokio_postgres::Error>;
+
+    /// Validate runtime invariants before SQL emission.
+    fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
+}
+
 /// Type-level bridge from the closure return type of
 /// [`QuerySet::annotate`] to the SELECT-list + row-decode logic.
 ///
@@ -89,14 +134,15 @@ mod sealed {
 /// SELECT-list shape and decode ordering in lockstep across all
 /// supported arities.
 ///
-/// `Decoded` is the tuple type users receive at fetch time: the
-/// scalar for arity 1, a Rust tuple for arities 2..=4.
+/// `Decoded` is the tuple type users receive at fetch time: the scalar
+/// for arity 1, a Rust tuple for arities 2..=4, or `()` for the explicitly
+/// empty annotation edge case.
 pub trait IntoAggregateTuple: sealed::Sealed {
     /// Rust tuple type returned inside `Vec<(T, Decoded)>`.
     type Decoded;
 
-    /// Push the aggregate SELECT-list columns onto `acc`, each prefixed
-    /// with `, ` and aliased as `__djogi_agg_{N}`.
+    /// Push annotation SELECT-list columns onto `acc`, each prefixed with
+    /// `, ` and aliased for row decode.
     ///
     /// Indexing starts at 0; callers already pushed `SELECT t.*` so
     /// every push here begins with a comma.
@@ -111,14 +157,20 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// columns as the leading SELECT columns.
     fn push_columns_bare(&self, acc: &mut SqlAccumulator);
 
-    /// Decode the aggregate columns from `row` into [`Self::Decoded`].
+    /// Decode the annotation columns from `row` into [`Self::Decoded`].
     ///
     /// The aliases are fixed (`__djogi_agg_0`, `__djogi_agg_1`, ...)
     /// so the impl reads each slot by name. Offset-based decoding is
     /// not used because `row.try_get` by name is more robust to
     /// column-ordering surprises (though the framework never reorders
     /// the SELECT list in practice).
-    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error>;
+    fn decode_tuple(
+        &self,
+        row: &tokio_postgres::Row,
+    ) -> Result<Self::Decoded, tokio_postgres::Error>;
+
+    /// Number of SELECT-list annotation slots this value contributes.
+    fn annotation_count(&self) -> usize;
 
     /// Validate all aggregate nodes in this tuple for unsupported
     /// DISTINCT modifier combinations before building SQL.
@@ -136,7 +188,7 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     }
 }
 
-// ── Arity 1: single AggregateExpr<V> ─────────────────────────────────
+// ── Single annotation slots ──────────────────────────────────────────
 
 // Each aggregate is emitted with `OVER ()` so the annotate SELECT-list
 // stays valid without a `GROUP BY` clause. For self-column aggregates
@@ -148,27 +200,33 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 // window-function form here is deliberately the simplest that works
 // for the Task 4 scope without requiring GROUP BY semantics.
 
-impl<V> sealed::Sealed for AggregateExpr<V> {}
-impl<V> IntoAggregateTuple for AggregateExpr<V>
+impl<V> annotation_slot_sealed::Sealed for AggregateExpr<V> {}
+impl<V> AnnotationSlot for AggregateExpr<V>
 where
     V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     type Decoded = V;
 
-    fn push_columns(&self, acc: &mut SqlAccumulator) {
+    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
         emit_aggregate_with_window_and_cast(acc, &self.node);
-        acc.push_sql(" AS __djogi_agg_0");
+        acc.push_sql(" AS ");
+        acc.push_sql(aggregate_alias(slot));
     }
 
-    fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
+    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
         crate::query::sql::emit_aggregate_with_cast(acc, &self.node);
-        acc.push_sql(" AS __djogi_agg_0");
+        acc.push_sql(" AS ");
+        acc.push_sql(aggregate_alias(slot));
     }
 
-    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-        row.try_get::<_, V>("__djogi_agg_0")
+    fn decode_column(
+        &self,
+        row: &tokio_postgres::Row,
+        slot: usize,
+    ) -> Result<Self::Decoded, tokio_postgres::Error> {
+        row.try_get::<_, V>(aggregate_alias(slot))
     }
 
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
@@ -176,7 +234,105 @@ where
     }
 }
 
-// ── Arity 2..=4: tuples of AggregateExpr<V_i> ────────────────────────
+macro_rules! impl_window_annotation_slot {
+    ($type_name:ty, $display:literal) => {
+        impl annotation_slot_sealed::Sealed for $type_name {}
+
+        impl AnnotationSlot for $type_name {
+            type Decoded = i64;
+
+            fn push_column(&self, acc: &mut SqlAccumulator, _slot: usize) {
+                acc.push_sql(", ");
+                self.push_annotated_column(acc);
+            }
+
+            fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
+                self.push_column(acc, slot);
+            }
+
+            fn decode_column(
+                &self,
+                row: &tokio_postgres::Row,
+                _slot: usize,
+            ) -> Result<Self::Decoded, tokio_postgres::Error> {
+                row.try_get::<_, i64>(
+                    self.alias_name()
+                        .expect("window function annotations are checked before row decode"),
+                )
+            }
+
+            fn check_legality(&self) -> Result<(), crate::DjogiError> {
+                if self.alias_name().is_some() {
+                    Ok(())
+                } else {
+                    Err(crate::DjogiError::Validation(format!(
+                        "{} window annotation requires .alias(\"name\") before annotate",
+                        $display
+                    )))
+                }
+            }
+        }
+    };
+}
+
+impl_window_annotation_slot!(RowNumber, "RowNumber");
+impl_window_annotation_slot!(Rank, "Rank");
+impl_window_annotation_slot!(DenseRank, "DenseRank");
+
+impl<S> sealed::Sealed for S where S: AnnotationSlot {}
+
+impl<S> IntoAggregateTuple for S
+where
+    S: AnnotationSlot,
+{
+    type Decoded = <S as AnnotationSlot>::Decoded;
+
+    fn push_columns(&self, acc: &mut SqlAccumulator) {
+        self.push_column(acc, 0);
+    }
+
+    fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
+        self.push_column_bare(acc, 0);
+    }
+
+    fn decode_tuple(
+        &self,
+        row: &tokio_postgres::Row,
+    ) -> Result<Self::Decoded, tokio_postgres::Error> {
+        self.decode_column(row, 0)
+    }
+
+    fn annotation_count(&self) -> usize {
+        1
+    }
+
+    fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        AnnotationSlot::check_legality(self)
+    }
+}
+
+impl sealed::Sealed for () {}
+
+impl IntoAggregateTuple for () {
+    type Decoded = ();
+
+    fn push_columns(&self, _acc: &mut SqlAccumulator) {}
+
+    fn push_columns_bare(&self, _acc: &mut SqlAccumulator) {}
+
+    fn decode_tuple(
+        &self,
+        _row: &tokio_postgres::Row,
+    ) -> Result<Self::Decoded, tokio_postgres::Error> {
+        Ok(())
+    }
+
+    fn annotation_count(&self) -> usize {
+        0
+    }
+}
+
+// ── Arity 2..=4: tuples of annotation slots ──────────────────────────
 //
 // One macro invocation per arity. The macro generates the sealed
 // marker, the `push_columns` body that walks the tuple emitting each
@@ -188,48 +344,46 @@ where
 macro_rules! impl_into_aggregate_tuple {
     (
         arity = $arity:tt,
-        types = [ $( ($ty:ident, $slot:tt, $alias:literal) ),+ $(,)? ]
+        types = [ $( ($ty:ident, $slot:tt) ),+ $(,)? ]
     ) => {
-        impl<$($ty),+> sealed::Sealed for ( $(AggregateExpr<$ty>,)+ ) {}
-
-        impl<$($ty),+> IntoAggregateTuple for ( $(AggregateExpr<$ty>,)+ )
+        impl<$($ty),+> sealed::Sealed for ( $($ty,)+ )
         where
-            $(
-                $ty: for<'a> postgres_types::FromSql<'a>
-                    + Send
-                    + Unpin
-                    + 'static,
-            )+
+            $($ty: AnnotationSlot,)+
+        {}
+
+        impl<$($ty),+> IntoAggregateTuple for ( $($ty,)+ )
+        where
+            $($ty: AnnotationSlot,)+
         {
-            type Decoded = ( $($ty,)+ );
+            type Decoded = ( $(<$ty as AnnotationSlot>::Decoded,)+ );
 
             fn push_columns(&self, acc: &mut SqlAccumulator) {
                 $(
-                    acc.push_sql(", ");
-                    emit_aggregate_with_window_and_cast(acc, &self.$slot.node);
-                    acc.push_sql(concat!(" AS ", $alias));
+                    self.$slot.push_column(acc, $slot);
                 )+
             }
 
             fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
                 $(
-                    acc.push_sql(", ");
-                    crate::query::sql::emit_aggregate_with_cast(acc, &self.$slot.node);
-                    acc.push_sql(concat!(" AS ", $alias));
+                    self.$slot.push_column_bare(acc, $slot);
                 )+
             }
 
-            fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+            fn decode_tuple(&self, row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
                 Ok((
                     $(
-                        row.try_get::<_, $ty>($alias)?,
+                        self.$slot.decode_column(row, $slot)?,
                     )+
                 ))
             }
 
+            fn annotation_count(&self) -> usize {
+                $arity
+            }
+
             fn check_legality(&self) -> Result<(), crate::DjogiError> {
                 $(
-                    crate::expr::sql::check_aggregate_legality(&self.$slot.node)?;
+                    self.$slot.check_legality()?;
                 )+
                 Ok(())
             }
@@ -237,29 +391,11 @@ macro_rules! impl_into_aggregate_tuple {
     };
 }
 
-impl_into_aggregate_tuple!(
-    arity = 2,
-    types = [(A, 0, "__djogi_agg_0"), (B, 1, "__djogi_agg_1"),]
-);
+impl_into_aggregate_tuple!(arity = 2, types = [(A, 0), (B, 1),]);
 
-impl_into_aggregate_tuple!(
-    arity = 3,
-    types = [
-        (A, 0, "__djogi_agg_0"),
-        (B, 1, "__djogi_agg_1"),
-        (C, 2, "__djogi_agg_2"),
-    ]
-);
+impl_into_aggregate_tuple!(arity = 3, types = [(A, 0), (B, 1), (C, 2),]);
 
-impl_into_aggregate_tuple!(
-    arity = 4,
-    types = [
-        (A, 0, "__djogi_agg_0"),
-        (B, 1, "__djogi_agg_1"),
-        (C, 2, "__djogi_agg_2"),
-        (D, 3, "__djogi_agg_3"),
-    ]
-);
+impl_into_aggregate_tuple!(arity = 4, types = [(A, 0), (B, 1), (C, 2), (D, 3),]);
 
 // ── Pending annotated queryset + terminal ────────────────────────────
 
@@ -277,7 +413,46 @@ impl_into_aggregate_tuple!(
 pub struct AnnotatedQuerySet<T: Model, A: IntoAggregateTuple> {
     pub(crate) qs: QuerySet<T>,
     pub(crate) aggregates: A,
+    pub(crate) qualify: Option<crate::expr::QualifyCondition>,
     pub(crate) _a: PhantomData<fn() -> A>,
+}
+
+impl<T: Model, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
+    /// Filter rows by an annotated window-function output.
+    ///
+    /// PostgreSQL 18 has no `QUALIFY` clause, so the predicate lowers to
+    /// an outer `WHERE` over a derived table that wraps this annotated
+    /// select. Reading the SQL: `SELECT * FROM (<inner annotated select>)
+    /// AS __djogi_q WHERE <alias> <op> $N`.
+    ///
+    /// The closure receives `&A` — the same annotation value the user
+    /// passed to [`QuerySet::annotate`]. Calling `.lt(...)` / `.lte(...)`
+    /// / `.eq(...)` / `.gte(...)` / `.gt(...)` on a window function
+    /// produces a [`QualifyCondition`](crate::QualifyCondition) bound to
+    /// that function's `.alias("…")`, so there is no string lookup and
+    /// no way to reference an alias that was not registered.
+    ///
+    /// ```ignore
+    /// use djogi::prelude::*;
+    ///
+    /// let rows: Vec<(Elephant, i64)> = Elephant::objects()
+    ///     .annotate(|e| RowNumber::new()
+    ///         .partition_by(e.herd_id())
+    ///         .order_by(e.score().desc())
+    ///         .alias("rank"))
+    ///     .qualify(|w| w.lte(3))
+    ///     .fetch_all(&mut ctx)
+    ///     .await?;
+    /// ```
+    #[must_use = "annotated queries are lazy — dropping one silently omits the query"]
+    pub fn qualify<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&A) -> crate::expr::QualifyCondition,
+    {
+        let cond = f(&self.aggregates);
+        self.qualify = Some(cond);
+        self
+    }
 }
 
 impl<T: Model, A: IntoAggregateTuple + Send> AnnotatedQuerySet<T, A>
@@ -299,7 +474,12 @@ where
         A::Decoded: Send + 'ctx,
     {
         async move {
-            let AnnotatedQuerySet { qs, aggregates, .. } = self;
+            let AnnotatedQuerySet {
+                qs,
+                aggregates,
+                qualify,
+                ..
+            } = self;
             // Short-circuit: `QuerySet::none()` yields an empty result
             // with no SQL round trip — same contract as `fetch_all`.
             if qs.is_empty() {
@@ -310,9 +490,13 @@ where
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             aggregates.check_legality()?;
 
-            let acc = build_select_with_annotations(&qs, |acc| {
-                aggregates.push_columns(acc);
-            });
+            let acc = build_annotated_select_for_fetch(
+                &qs,
+                |acc| {
+                    aggregates.push_columns(acc);
+                },
+                qualify.as_ref(),
+            );
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -324,7 +508,7 @@ where
             let mut out: Vec<(T, A::Decoded)> = Vec::with_capacity(rows.len());
             for row in &rows {
                 let model = T::from_pg_row(row)?;
-                let agg = A::decode_tuple(row).map_err(DjogiError::from)?;
+                let agg = aggregates.decode_tuple(row).map_err(DjogiError::from)?;
                 out.push((model, agg));
             }
             Ok(out)
@@ -373,6 +557,7 @@ impl<T: Model> QuerySet<T> {
         AnnotatedQuerySet {
             qs: self,
             aggregates,
+            qualify: None,
             _a: PhantomData,
         }
     }
@@ -385,8 +570,9 @@ mod tests {
 
     use super::*;
     use crate::descriptor::ModelDescriptor;
-    use crate::expr::Expr;
+    use crate::expr::{DenseRank, Expr, Rank, RowNumber};
     use crate::query::field::FieldRef;
+    use crate::query::sql::build_select_with_annotations;
 
     struct Acc;
     impl crate::model::__sealed::Sealed for Acc {}
@@ -520,5 +706,114 @@ mod tests {
             sql.contains("COUNT(balance) FILTER (WHERE balance < $1)"),
             "got: {sql}"
         );
+    }
+
+    #[test]
+    fn row_number_window_annotation_emits_required_over_and_alias() {
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let row_number = RowNumber::new()
+            .partition_by(herd)
+            .order_by(score.desc())
+            .alias("rank");
+
+        let acc = build_select_with_annotations(&qs, |acc| {
+            row_number.push_columns(acc);
+        });
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("ROW_NUMBER() OVER (PARTITION BY herd_id ORDER BY score DESC) AS rank"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn rank_window_annotation_emits_required_over_and_alias() {
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let rank = Rank::new()
+            .partition_by(herd)
+            .order_by(score.desc())
+            .alias("rank");
+
+        let acc = build_select_with_annotations(&qs, |acc| {
+            rank.push_columns(acc);
+        });
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("RANK() OVER (PARTITION BY herd_id ORDER BY score DESC) AS rank"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn dense_rank_window_annotation_emits_required_over_and_alias() {
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let dense_rank = DenseRank::new()
+            .partition_by(herd)
+            .order_by(score.desc())
+            .alias("dense_rank");
+
+        let acc = build_select_with_annotations(&qs, |acc| {
+            dense_rank.push_columns(acc);
+        });
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains(
+                "DENSE_RANK() OVER (PARTITION BY herd_id ORDER BY score DESC) AS dense_rank"
+            ),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn qualify_lowers_to_derived_table_where() {
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| RowNumber::new().order_by(score.desc()).alias("rank"))
+            .qualify(|w| w.lte(3));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        );
+        let sql = acc.sql();
+
+        assert!(
+            sql.starts_with(
+                "SELECT * FROM (SELECT t.id, ROW_NUMBER() OVER (ORDER BY score DESC) AS rank FROM accs AS t"
+            ),
+            "got: {sql}"
+        );
+        assert!(
+            sql.contains(") AS __djogi_q WHERE rank <= $1"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn qualify_lowering_never_emits_qualify_clause_token() {
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| RowNumber::new().order_by(score.desc()).alias("rank"))
+            .qualify(|w| w.lte(3));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        );
+        let sql = acc.sql();
+
+        assert!(!sql.contains("QUALIFY"), "got: {sql}");
+        assert!(!sql.contains("qualify"), "got: {sql}");
     }
 }

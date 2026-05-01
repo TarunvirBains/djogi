@@ -404,7 +404,10 @@ where
             let mut out = Vec::with_capacity(rows.len());
             for row in &rows {
                 let k = K::decode_tuple(row).map_err(crate::DjogiError::from)?;
-                let a = A::decode_tuple(row).map_err(crate::DjogiError::from)?;
+                let a = self
+                    .aggregates
+                    .decode_tuple(row)
+                    .map_err(crate::DjogiError::from)?;
                 out.push((k, a));
             }
             Ok(out)

@@ -220,7 +220,10 @@ pub use primary_key::{PrimaryKey, PrimaryKeyClientGen, PrimaryKeyDbGen};
 // in test or feature-enabled builds.
 pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
-pub use expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+pub use expr::{
+    AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
+    QualifyOp, Rank, RowNumber, Subquery,
+};
 // Field-level codec public surface. `FieldCodec` is the trait adopters
 // implement for at-rest column transformations.
 pub use field_codec::FieldCodec;
@@ -261,7 +264,10 @@ pub mod prelude {
         RedactionPolicy, RetentionLabel, Sensitivity,
     };
     pub use crate::error::{DbError, DjogiError};
-    pub use crate::expr::{AggregateExpr, Case, CaseBuilder, Exists, Expr, OuterRef, Subquery};
+    pub use crate::expr::{
+        AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
+        QualifyOp, Rank, RowNumber, Subquery,
+    };
     // `FieldCodec` is the trait adopters implement when declaring a
     // codec — belongs in the prelude because protected-field
     // declarations live in adopter model files. `is_codec_registered`

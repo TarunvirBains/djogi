@@ -947,6 +947,39 @@ where
     acc
 }
 
+/// Build the annotated SELECT, optionally wrapping in a derived table so
+/// an outer `WHERE` can filter on a window-function alias.
+///
+/// PostgreSQL 18 has no `QUALIFY` clause, so a window-output filter has
+/// to live in an outer scope where the alias is in scope as a column
+/// reference. When `qualify` is `Some`, this emits:
+/// `SELECT * FROM (<inner annotated select>) AS __djogi_q WHERE
+/// <alias> <op> $N`. Bind ordering: inner-query binds first, qualify
+/// bind appended last.
+///
+/// When `qualify` is `None`, this is identical in output to
+/// [`build_select_with_annotations`] — no derived-table indirection.
+pub(crate) fn build_annotated_select_for_fetch<T, F>(
+    qs: &QuerySet<T>,
+    push_columns: F,
+    qualify: Option<&crate::expr::QualifyCondition>,
+) -> SqlAccumulator
+where
+    T: Model + FromPgRow,
+    F: FnOnce(&mut SqlAccumulator),
+{
+    let inner = build_select_with_annotations(qs, push_columns);
+    let Some(qualify) = qualify else {
+        return inner;
+    };
+
+    let mut wrapped = SqlAccumulator::new("SELECT * FROM (");
+    wrapped.extend_with(inner);
+    wrapped.push_sql(") AS __djogi_q WHERE ");
+    qualify.push_outer_where(&mut wrapped);
+    wrapped
+}
+
 /// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys
 /// [HAVING ...] [ORDER BY ...] [LIMIT $n] [OFFSET $n]` — the terminal for
 /// [`crate::query::grouped::GroupedAnnotatedQuerySet::fetch_all`].

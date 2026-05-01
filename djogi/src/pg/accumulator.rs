@@ -158,6 +158,54 @@ impl SqlAccumulator {
         self.sql.push_str("NULL");
     }
 
+    /// Splice another accumulator's accumulated SQL and binds into this one.
+    ///
+    /// The other accumulator's `$1`, `$2`, ... placeholders are renumbered to
+    /// continue this accumulator's `next_param` sequence so the merged SQL
+    /// stays positional. Used by emitters that wrap an inner-built SQL in an
+    /// outer scope (e.g. derived-table qualify lowering — see
+    /// `build_annotated_select_for_fetch`).
+    ///
+    /// Renumbering is a textual rewrite over `$N` runs in `other`'s SQL — `$N`
+    /// only appears in trusted positional-bind sites because every emitter
+    /// routes user data through `push_bind`, never `push_sql`. ASCII `$`
+    /// outside that role does not occur in any current emitter; if a future
+    /// emitter introduces literal `$` text it must use `push_bind` (no
+    /// scenario for a literal `$` in trusted SQL today).
+    pub fn extend_with(&mut self, other: SqlAccumulator) {
+        let SqlAccumulator {
+            sql: other_sql,
+            binds: other_binds,
+            next_param: _,
+        } = other;
+        let offset = self.next_param - 1;
+        if offset == 0 {
+            self.sql.push_str(&other_sql);
+        } else {
+            // Walk bytes, copying through; whenever a `$<digits>` run is
+            // seen, parse the integer and write back `$<n + offset>`.
+            let bytes = other_sql.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                    let mut j = i + 1;
+                    let mut n: u32 = 0;
+                    while j < bytes.len() && bytes[j].is_ascii_digit() {
+                        n = n * 10 + (bytes[j] - b'0') as u32;
+                        j += 1;
+                    }
+                    let _ = write!(self.sql, "${}", n + offset);
+                    i = j;
+                } else {
+                    self.sql.push(bytes[i] as char);
+                    i += 1;
+                }
+            }
+        }
+        self.next_param += other_binds.len() as u32;
+        self.binds.extend(other_binds);
+    }
+
     /// Consume the accumulator and return the `(sql_text, binds_vec)` pair.
     ///
     /// The binds vec is in positional order matching the `$1`, `$2`, ... slots
@@ -268,6 +316,45 @@ mod tests {
         let (sql, binds) = acc.into_parts();
         assert_eq!(sql, "SELECT * FROM t WHERE id = $1");
         assert_eq!(binds.len(), 1);
+    }
+
+    #[test]
+    fn extend_with_renumbers_inner_dollar_n_relative_to_outer_offset() {
+        let mut inner = SqlAccumulator::new("SELECT * FROM t WHERE id = ");
+        inner.push_bind(7_i64);
+        inner.push_sql(" AND name = ");
+        inner.push_bind("alice");
+
+        let mut outer = SqlAccumulator::new("SELECT * FROM (");
+        outer.push_sql("inline ");
+        outer.push_bind(99_i32);
+        outer.push_sql(", ");
+        outer.extend_with(inner);
+        outer.push_sql(") WHERE rank <= ");
+        outer.push_bind(3_i32);
+
+        let (sql, binds) = outer.into_parts();
+        assert!(
+            sql.starts_with("SELECT * FROM (inline $1, SELECT * FROM t WHERE id = $2"),
+            "got: {sql}"
+        );
+        assert!(sql.contains("AND name = $3"), "got: {sql}");
+        assert!(sql.ends_with("WHERE rank <= $4"), "got: {sql}");
+        assert_eq!(binds.len(), 4);
+    }
+
+    #[test]
+    fn extend_with_at_offset_zero_preserves_inner_dollar_numbers() {
+        let mut inner = SqlAccumulator::new("SELECT a = ");
+        inner.push_bind(1_i64);
+        inner.push_sql(", b = ");
+        inner.push_bind(2_i64);
+
+        let mut outer = SqlAccumulator::new("");
+        outer.extend_with(inner);
+        let (sql, binds) = outer.into_parts();
+        assert_eq!(sql, "SELECT a = $1, b = $2");
+        assert_eq!(binds.len(), 2);
     }
 
     #[test]

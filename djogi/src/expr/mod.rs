@@ -78,12 +78,14 @@ pub(crate) mod spatial;
 pub(crate) mod sql;
 pub mod subquery;
 pub mod window;
+pub mod window_fn;
 
 pub use aggregate::AggregateExpr;
 pub use case::{Case, CaseBuilder};
 use node::ExprNode;
 pub use subquery::{Exists, OuterRef, Subquery};
 pub use window::{FrameBound, FrameExclude, FrameKind, WindowBuilder, WindowSpec};
+pub use window_fn::{DenseRank, QualifyCondition, QualifyOp, Rank, RowNumber};
 
 /// Typed expression handle — the public entry point for the IR.
 ///

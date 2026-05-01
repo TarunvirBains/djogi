@@ -312,3 +312,8 @@ harness = true
 name = "phase8_zero_cluster_c_spatial_live"
 path = "../tests/integration/phase8_zero_cluster_c_spatial_live.rs"
 harness = true
+
+[[test]]
+name = "phase8_zero_cluster_c_window_live"
+path = "../tests/integration/phase8_zero_cluster_c_window_live.rs"
+harness = true
