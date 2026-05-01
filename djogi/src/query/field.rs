@@ -1313,6 +1313,77 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     }
 }
 
+// ── Phase 8-Zero Cluster C T16 — convex_hull spatial aggregate ──────────────
+//
+// `ST_ConvexHull(ST_Collect(<col>::geometry))` folds a per-group set of
+// geographies into the smallest convex polygon enclosing them. Mirrors the
+// shape of the existing `count_by_region` / `cluster_by_proximity` / etc.
+// spatial aggregates from Phase 6.5 — sits on `FieldRef<M, G: GeographyValue>`
+// so it is callable from the same field-closure context.
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
+    /// `ST_ConvexHull(ST_Collect(<col>::geometry))` — per-group convex-hull
+    /// aggregate. Returns the smallest convex polygon that encloses every
+    /// non-null geometry value in the group.
+    ///
+    /// # Why an aggregate
+    ///
+    /// PostGIS does not ship a one-shot convex-hull aggregate. The
+    /// canonical pattern is `ST_ConvexHull(ST_Collect(...))` where
+    /// `ST_Collect` is the actual aggregate (folding the per-row geometries
+    /// into a single multi-geometry) and `ST_ConvexHull` is a scalar
+    /// wrapper applied to the collected set. This method emits the fused
+    /// form; the typed surface presents it as a single
+    /// [`AggregateExpr<Polygon>`].
+    ///
+    /// # Composition
+    ///
+    /// Use it inside `GroupedQuerySet::annotate(...)` like any other
+    /// aggregate — typically alongside a per-group key from
+    /// `QuerySet::group_by(|f| f.herd_id())`:
+    ///
+    /// ```ignore
+    /// // Per-herd territory hulls — feeds the mating-pairs territory-overlap
+    /// // scoring in the elephant-tracker demo.
+    /// let hulls: Vec<(i64, Polygon)> = Elephant::objects()
+    ///     .group_by(|f| f.herd_id())
+    ///     .annotate(|f| f.location().convex_hull())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Return type
+    ///
+    /// Pinned to `AggregateExpr<Polygon>` because the typical multi-point
+    /// input always yields a `Polygon`. Degenerate inputs (a single point,
+    /// or two collinear points) yield `Point` / `LineString` respectively;
+    /// callers feeding such inputs see a runtime EWKB-decode error and
+    /// should bind a stricter input set or use `ctx.raw_scalar` with an
+    /// untyped JSON / WKT decode path.
+    ///
+    /// # Where
+    ///
+    /// - [`crate::expr::spatial::SpatialExpr::ConvexHull`] — IR variant
+    ///   that the typed surface stores inside the `AggregateExpr` envelope.
+    /// - [`crate::query::QuerySet::group_by`] — produces the
+    ///   `GroupedQuerySet` that consumes this aggregate via `.annotate(...)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn convex_hull(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
+        // The convex-hull SQL token stream lives in the SpatialExpr family,
+        // not the ordinary AggOp set — `ST_ConvexHull(ST_Collect(<col>))`
+        // is a fused two-call shape that doesn't fit the
+        // `<KEYWORD>([DISTINCT] <expr>)` template `emit_unary_agg` uses.
+        // Wrap it in `AggregateExpr` directly so the annotate plumbing
+        // (which only inspects the `cast_to` / `window` slots on the
+        // outer node) treats it as any other aggregate.
+        crate::expr::AggregateExpr::from_node(crate::expr::node::ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::ConvexHull {
+                field_column: self.column(),
+            },
+        ))
+    }
+}
+
 #[cfg(feature = "spatial")]
 impl<M: crate::model::Model> FieldRef<M, crate::geo::GeoPoint> {
     /// Emits `ST_Distance(<col>, ST_Point($lon, $lat)::geography)` — returns
@@ -2167,9 +2238,23 @@ mod distance_tests {
     use super::*;
     use crate::expr::node::ExprNode;
     use crate::expr::spatial::SpatialExpr;
-    use crate::geo::GeoPoint;
+    use crate::geo::{GeoPoint, Polygon};
     use crate::pg::accumulator::SqlAccumulator;
     use std::future::Future;
+
+    // Minimal closed Polygon — used by the Cluster C T17 typed-surface tests
+    // below. Mirrors the helper in `bbox_tests`; duplicated locally because
+    // each `#[cfg(test)] mod` is its own item scope.
+    fn make_polygon() -> Polygon {
+        let ring = [
+            GeoPoint::new(0.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 0.0).unwrap(),
+            GeoPoint::new(1.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 1.0).unwrap(),
+            GeoPoint::new(0.0, 0.0).unwrap(),
+        ];
+        Polygon::closed(&ring).unwrap()
+    }
 
     // Minimal `Model` stub for distance_to tests.
     struct Fake;
@@ -2288,6 +2373,109 @@ mod distance_tests {
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("loc");
         // Type annotation is the compile-time assertion.
         let _expr: crate::expr::Expr<f64> = field.distance_to(&center);
+    }
+
+    // ── Phase 8-Zero Cluster C T16 — convex_hull typed surface tests ─────────
+
+    /// `FieldRef<M, GeoPoint>::convex_hull()` must produce an
+    /// `AggregateExpr<Polygon>` whose underlying node is the
+    /// `SpatialExpr::ConvexHull { field_column }` IR variant. The typed
+    /// return is a compile-time assertion; the runtime check pins the
+    /// stored field column.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn convex_hull_on_geopoint_field_produces_aggregate_polygon() {
+        use crate::expr::AggregateExpr;
+        use crate::geo::Polygon as PolygonTy;
+
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        // Compile-time check on the return type.
+        let agg: AggregateExpr<PolygonTy> = field.convex_hull();
+        // Runtime check — the IR node carries the column name.
+        if let ExprNode::Spatial(SpatialExpr::ConvexHull { field_column }) = agg.node {
+            assert_eq!(field_column, "location");
+            return;
+        }
+        panic!("expected ExprNode::Spatial(SpatialExpr::ConvexHull {{..}})");
+    }
+
+    /// `convex_hull` is generic over `GeographyValue` — verify it dispatches
+    /// from a `Polygon` field as well as a `GeoPoint` field. The mating-pairs
+    /// demo uses it on point columns; spec keeps the generic surface so
+    /// callers with polygonal range columns can fold those into a hull too.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn convex_hull_dispatches_from_polygon_field_too() {
+        use crate::expr::AggregateExpr;
+        use crate::geo::Polygon as PolygonTy;
+
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg: AggregateExpr<PolygonTy> = field.convex_hull();
+        if let ExprNode::Spatial(SpatialExpr::ConvexHull { field_column }) = agg.node {
+            assert_eq!(field_column, "territory");
+            return;
+        }
+        panic!("expected ConvexHull on Polygon field");
+    }
+
+    // ── Phase 8-Zero Cluster C T17 — area_of / area_of_intersection typed ────
+
+    /// `Expr::area_of(&geom)` must produce an `Expr<f64>` wrapping the
+    /// `SpatialExpr::Area` IR variant with the EWKB bytes captured.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn area_of_produces_f64_expr_with_area_node() {
+        let poly = make_polygon();
+        // Compile-time return-type check.
+        let expr: crate::expr::Expr<f64> = crate::expr::Expr::area_of(&poly);
+        if let ExprNode::Spatial(SpatialExpr::Area { geom_ewkb }) = expr.node {
+            // EWKB encoding must be non-empty — captured from the GeographyValue.
+            assert!(!geom_ewkb.is_empty(), "Area must capture EWKB bytes");
+            return;
+        }
+        panic!("expected ExprNode::Spatial(SpatialExpr::Area {{..}})");
+    }
+
+    /// `Expr::area_of_intersection(&a, &b)` must produce the fused
+    /// `SpatialExpr::AreaOfIntersection` IR variant. Composes with arithmetic
+    /// for the territory-overlap-percentage demo (`area(intersection(a, b)) /
+    /// area(a)` → ratio in `[0.0, 1.0]`).
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn area_of_intersection_produces_f64_expr_with_fused_node() {
+        let a = make_polygon();
+        let b = make_polygon();
+        let expr: crate::expr::Expr<f64> = crate::expr::Expr::area_of_intersection(&a, &b);
+        if let ExprNode::Spatial(SpatialExpr::AreaOfIntersection { a_ewkb, b_ewkb }) = expr.node {
+            assert!(!a_ewkb.is_empty(), "a EWKB captured");
+            assert!(!b_ewkb.is_empty(), "b EWKB captured");
+            return;
+        }
+        panic!("expected ExprNode::Spatial(SpatialExpr::AreaOfIntersection {{..}})");
+    }
+
+    /// The composed ratio `area_of_intersection(a, b) / area_of(a)` lowers to
+    /// an `Expr::Div(Spatial(AreaOfIntersection), Spatial(Area))` shape via the
+    /// existing `Numeric` arithmetic IR — verifies the demo's
+    /// territory-overlap-percentage call site type-checks end-to-end.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn area_of_intersection_divides_by_area_of_for_overlap_pct() {
+        use crate::expr::Expr;
+        let a = make_polygon();
+        let b = make_polygon();
+        let ratio: Expr<f64> = Expr::area_of_intersection(&a, &b) / Expr::area_of(&a);
+        // The outer node must be Div; both operands must wrap Spatial nodes.
+        if let ExprNode::Div(lhs, rhs) = ratio.node
+            && matches!(
+                *lhs,
+                ExprNode::Spatial(SpatialExpr::AreaOfIntersection { .. })
+            )
+            && matches!(*rhs, ExprNode::Spatial(SpatialExpr::Area { .. }))
+        {
+            return;
+        }
+        panic!("expected Div(Spatial(AreaOfIntersection), Spatial(Area))");
     }
 
     // Narrow-integer IntoFilterValue widening (Phase 7-Zero-2 polish,

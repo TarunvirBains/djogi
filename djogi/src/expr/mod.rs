@@ -173,6 +173,98 @@ impl Expr<i32> {
     }
 }
 
+#[cfg(feature = "spatial")]
+impl Expr<f64> {
+    /// `ST_Area($1::bytea::geography)` — area of the bound geometry in
+    /// **square meters** (geography overload — meters, not square degrees).
+    ///
+    /// Returns `Expr<f64>` so it composes with the existing arithmetic IR
+    /// for ratios such as `Expr::area_of_intersection(a, b) / Expr::area_of(a)`
+    /// — the canonical territory-overlap-percentage shape from the
+    /// elephant-tracker mating-pairs demo (Phase 8-Zero T17).
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Area($n::bytea::geography)` — the `::bytea::geography`
+    /// double cast matches the bind discipline of the geometry-only shape
+    /// predicates (see [`crate::expr::spatial::SpatialExpr`]). The
+    /// `geography` overload yields square meters; the `geometry` overload
+    /// would yield square degrees, which is the wrong unit.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Mating-pairs scoring — territory overlap as a ratio of areas.
+    /// // hull_a / hull_b are convex-hull polygons fetched in an earlier query.
+    /// let overlap_pct: f64 = ctx.raw_scalar(
+    ///     "SELECT ($1) / ($2)",
+    ///     &[/* bound subexpressions, illustrative */],
+    /// ).await?;
+    /// // Or compose typed inside an annotate / select:
+    /// let ratio = Expr::area_of_intersection(&hull_a, &hull_b) / Expr::area_of(&hull_a);
+    /// ```
+    ///
+    /// # Where
+    ///
+    /// - [`crate::expr::spatial::SpatialExpr::Area`] — IR variant.
+    /// - [`Self::area_of_intersection`] — composed shape for the demo.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn area_of<G>(geom: &G) -> Expr<f64>
+    where
+        G: crate::geo::GeographyValue,
+    {
+        Expr::from_node(ExprNode::Spatial(crate::expr::spatial::SpatialExpr::Area {
+            geom_ewkb: geom.to_ewkb_bytes(),
+        }))
+    }
+
+    /// `ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)`
+    /// — area in square meters of the intersection of two bound geometries.
+    ///
+    /// The composed shape powers the territory-overlap-percentage scoring in
+    /// the elephant-tracker mating-pairs demo:
+    ///
+    /// ```ignore
+    /// // overlap_pct = area(intersection(a, b)) / area(a)
+    /// let pct = Expr::area_of_intersection(&hull_a, &hull_b)
+    ///     / Expr::area_of(&hull_a);
+    /// ```
+    ///
+    /// Emitted as a single inline form rather than nesting two separate
+    /// IR nodes — the framework does not yet model geometry-typed
+    /// intermediate `Expr` nodes (that would require a phantom-typed
+    /// geometry codec on `Expr<G>`), so the composed call site is a
+    /// dedicated SpatialExpr variant.
+    ///
+    /// # Empty intersection
+    ///
+    /// When the two geometries do not overlap, `ST_Intersection` returns
+    /// an empty geometry and `ST_Area` over an empty geometry returns
+    /// `0.0`. The ratio path therefore yields `0.0` for non-overlapping
+    /// pairs without any explicit guard.
+    ///
+    /// # Where
+    ///
+    /// - [`crate::expr::spatial::SpatialExpr::AreaOfIntersection`] — IR variant.
+    /// - [`Self::area_of`] — denominator of the demo's overlap-pct ratio.
+    /// - [`Self::intersection_of`] — the geometry-only sibling, exposed
+    ///   for callers who want the raw intersecting geometry rather than
+    ///   its area.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn area_of_intersection<A, B>(a: &A, b: &B) -> Expr<f64>
+    where
+        A: crate::geo::GeographyValue,
+        B: crate::geo::GeographyValue,
+    {
+        Expr::from_node(ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::AreaOfIntersection {
+                a_ewkb: a.to_ewkb_bytes(),
+                b_ewkb: b.to_ewkb_bytes(),
+            },
+        ))
+    }
+}
+
 impl<T> Expr<T> {
     /// Package an already-constructed `ExprNode` into `Expr<T>`. Crate-
     /// private so downstream code cannot fabricate an arbitrarily-typed
