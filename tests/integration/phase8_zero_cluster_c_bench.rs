@@ -250,23 +250,31 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
         .expect("framework qualify query must execute");
     let framework_elapsed = start_fw.elapsed();
 
-    // (b) Hand-written equivalent — same shape, in raw SQL. Returns the
-    //     same column set (id, herd_id, score, label) so row transfer +
-    //     decode happens on both sides. This is apples-to-apples with
-    //     `fetch_all` above; comparing against `COUNT(*)` would let the
-    //     planner prune subquery columns and would isolate planner cost
-    //     only, masking projection regressions in the derived-table
-    //     lowering.
-    // Hand-written path selects the SAME column set the framework path
-    // moves over the wire — every canonical model column emitted by
-    // `FromPgRow::COLUMNS` (id, created_at, updated_at, herd_id, score,
-    // label) plus the rank. Selecting only the user-visible subset would
-    // let the planner prune the timestamp columns and skip both wire
-    // transfer and decode, masking projection regressions in the
-    // derived-table lowering — the framework path can NOT skip the
-    // timestamps because they are mandatory model fields.
+    // Hand-written path selects the SAME column set AND decodes each
+    // column into the SAME Rust type as the framework path. Per
+    // `BenchWindowRow`'s macro emission, the canonical column set is
+    // (id: HeerId, created_at: DateTime, updated_at: DateTime,
+    // herd_id: i64, score: i64, label: String) — id is a `djogi::HeerId`,
+    // not a bare `i64`, because `pk = HeerId` injects the typed wrapper.
+    // The raw tuple decodes id as HeerId so the wire-level codec
+    // invocation is symmetric — bare `i64` decode would route through a
+    // different postgres-types FromSql impl and skew the comparison.
+    //
+    // The framework path can NOT skip created_at / updated_at because
+    // they are mandatory model fields; selecting only the user-visible
+    // subset on the raw side would let the planner prune them and skip
+    // both wire transfer and decode, masking projection regressions in
+    // the derived-table lowering.
     let start_hw = Instant::now();
-    let hand_rows: Vec<(i64, djogi::DateTime, djogi::DateTime, i64, i64, String, i64)> = ctx
+    let hand_rows: Vec<(
+        djogi::HeerId,
+        djogi::DateTime,
+        djogi::DateTime,
+        i64,
+        i64,
+        String,
+        i64,
+    )> = ctx
         .raw_rows(
             "SELECT id, created_at, updated_at, herd_id, score, label, rn
              FROM (
@@ -282,7 +290,7 @@ async fn bench_qualify_top_n_10000_rows_100_partitions(mut ctx: djogi::DjogiCont
         .into_iter()
         .map(|row| {
             (
-                row.get::<_, i64>("id"),
+                row.get::<_, djogi::HeerId>("id"),
                 row.get::<_, djogi::DateTime>("created_at"),
                 row.get::<_, djogi::DateTime>("updated_at"),
                 row.get::<_, i64>("herd_id"),

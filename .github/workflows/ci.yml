@@ -171,9 +171,15 @@ jobs:
   # feature, and without this dedicated job the proof never runs in
   # CI).
   #
-  # Currently runs only `phase7_t10_sync_models_live --all-features`.
-  # Future spatial-feature tests that are not part of that target will
-  # need to be added explicitly to the test step.
+  # Runs `phase7_t10_sync_models_live` plus every Phase 8-Zero
+  # Cluster C live spatial harness (`phase8_zero_cluster_c_spatial_live`,
+  # `phase8_zero_cluster_c_bench`). Future spatial-feature tests that
+  # are not part of these targets must be added explicitly to the test
+  # steps below — without an entry here the test silently does not run
+  # in CI even when authored, as the C1 convex_hull geography-cast bug
+  # demonstrated (it shipped at commit 5ec0da5 because the C1 spatial
+  # live test was never wired in here, and only surfaced once the C4
+  # bench was about to actually run live in this job).
   #
   # Kept as a separate job rather than a feature toggle inside `check`
   # so the spatial dependency footprint (PostGIS image pull, GEOS
@@ -255,3 +261,12 @@ jobs:
       # CREATE/DROP DATABASE.
       - name: T10 spatial sync_models live test
         run: cargo test -p djogi --test phase7_t10_sync_models_live --all-features -- --test-threads=1
+
+      - name: Cluster C spatial live test (T16/T17 — convex_hull, intersection, area)
+        run: cargo test -p djogi --test phase8_zero_cluster_c_spatial_live --all-features -- --test-threads=1
+
+      - name: Cluster C window live test (T18 — RowNumber/Rank/DenseRank, qualify lowering)
+        run: cargo test -p djogi --test phase8_zero_cluster_c_window_live --all-features -- --test-threads=1
+
+      - name: Cluster C smoke benchmarks (T20b — convex_hull + qualify lowering)
+        run: cargo test -p djogi --test phase8_zero_cluster_c_bench --all-features -- --test-threads=1
