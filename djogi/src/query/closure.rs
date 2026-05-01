@@ -824,7 +824,10 @@ mod tests {
     }
 
     /// Closure model for `MiniPedigree` — distinct table to verify
-    /// per-edge UNION ALL emission with the real two-edge descriptor.
+    /// the consolidated single-recursive-term emission against a
+    /// real two-edge descriptor (both edges fan out via the
+    /// `CROSS JOIN LATERAL VALUES` clause inside one recursive
+    /// SELECT).
     struct MiniPedigreeClosure;
     impl crate::model::__sealed::Sealed for MiniPedigreeClosure {}
     impl crate::model::Model for MiniPedigreeClosure {
@@ -1164,9 +1167,10 @@ mod tests {
 
     #[test]
     fn with_roots_and_max_depth_binds_after_roots() {
-        // Bind ordering: roots first, then max_depth (one per branch).
-        // `$1..$3` are the three roots; `$4` is the depth cap on the
-        // single edge.
+        // Bind ordering: roots first, then `max_depth` (one bind
+        // total — attached to the WHERE on the consolidated single
+        // recursive SELECT, regardless of edge count). `$1..$3` are
+        // the three roots; `$4` is the depth cap.
         let ids = vec![
             HeerId::from_i64(1).unwrap(),
             HeerId::from_i64(2).unwrap(),
