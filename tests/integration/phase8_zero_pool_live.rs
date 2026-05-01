@@ -150,7 +150,7 @@ async fn pool_post_connect_fires_once_per_physical_connection() {
                     // test pins the round-trip from build → first
                     // checkout → hook → SQL.
                     client
-                        .batch_execute("SET application_name = 'djogi-t6-test'")
+                        .batch_execute("SET application_name = 'djogi-pool-test'")
                         .await
                         .map_err(djogi::DjogiError::from)?;
                     counter.fetch_add(1, Ordering::SeqCst);
@@ -199,7 +199,7 @@ async fn pool_post_connect_error_aborts_checkout() {
     // Sentinel chosen so it cannot accidentally satisfy the
     // `post_connect` prefix assertion below — any contains("post_connect")
     // hit must come from the lowering, not from the hook body.
-    const HOOK_SENTINEL: &str = "djogi-cluster-a-t6-hook-failure-sentinel";
+    const HOOK_SENTINEL: &str = "djogi-cluster-a-hook-failure-sentinel";
 
     let pool = DjogiPool::builder(&url)
         .max_size(1)
