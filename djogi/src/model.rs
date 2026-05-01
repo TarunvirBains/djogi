@@ -226,7 +226,9 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// `full_ancestors` is the right shape for kinship / pedigree
     /// queries where a node has more than one parent edge (e.g.
     /// `mother_id` + `father_id` on an animal model). The recursive
-    /// CTE emits one `UNION ALL` branch per edge, so a single call
+    /// CTE emits a single recursive SELECT that fans the per-edge
+    /// alternatives out through a non-recursive `JOIN LATERAL (...
+    /// UNION ALL ...) child ON TRUE` subquery, so a single call
     /// returns ancestors reachable via any combination of those
     /// edges. Path multiplicity is preserved — an ancestor reachable
     /// by two distinct edge sequences appears twice, which is
@@ -253,9 +255,12 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     ///   [`Model::tree_ancestors`] over the lone edge. Same SQL
     ///   shape, same single bind for the root id.
     /// - `self_fk_count() >= 2` — every declared self-FK becomes its
-    ///   own `UNION ALL` branch in the recursive term. No
-    ///   `tree_edge` requirement: `full_ancestors` is the disambiguation
-    ///   strategy, not single-edge selection.
+    ///   own alternative inside the lateral `UNION ALL` subquery the
+    ///   recursive term joins to (Postgres restricts recursive CTEs
+    ///   to one self-reference, so the per-edge fan-out lives in a
+    ///   non-recursive lateral). No `tree_edge` requirement:
+    ///   `full_ancestors` is the disambiguation strategy, not
+    ///   single-edge selection.
     fn full_ancestors(node_id: Self::Pk) -> crate::query::RecursiveQuerySet<Self>
     where
         Self::Pk: postgres_types::ToSql + Sync + Send + 'static,

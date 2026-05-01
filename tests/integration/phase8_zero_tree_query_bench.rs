@@ -139,14 +139,14 @@ async fn bench_1000_node_tree_descendants(mut ctx: DjogiContext) {
     .await
     .expect("create index");
 
-    // Seed with a single round-trip via generate_series. The fan-out
-    // shape: every row has parent_id = (id - 1) // 4 in label space —
-    // a classic 4-ary tree — assigning the root explicitly.
-    //
-    // We INSERT in two passes: first the root row, then a series that
-    // computes parent_id by joining back into the seeded rows. Doing
-    // it via a recursive INSERT keeps the seed work entirely on the
-    // server side (one round trip).
+    // Seed via three round trips — fan-out shape: every non-root row
+    // has `parent_id = parent.id WHERE parent.label = child.label / 4`
+    // in label space, the classic 4-ary tree. Step 1 inserts the root
+    // (`label = 0`); step 2 inserts every other label with
+    // `parent_id = NULL`; step 3 resolves parents via a single
+    // UPDATE/JOIN over the now-committed labels. See the rationale
+    // below the root insert for why the parent resolution is split
+    // into its own statement.
     let root: i64 = ctx
         .raw_scalar(
             "INSERT INTO phase8_bench_tree (label) VALUES (0) RETURNING id",

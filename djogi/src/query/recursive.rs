@@ -72,11 +72,17 @@
 //! `parent.<edge_col> = child.id` — child walks up, parent has the FK
 //! pointing at child.
 //!
-//! For `full_ancestors` (B3 — T13a) the recursive term emits one
-//! `UNION ALL` branch per self-FK edge — each branch carries its own
-//! edge name into the `path` accumulator so callers can distinguish
-//! `["mother_id", "father_id"]` (maternal grandfather) from
-//! `["father_id", "mother_id"]` (paternal grandmother).
+//! For `full_ancestors` (B3 — T13a) the recursive term consolidates
+//! every self-FK edge into a single recursive SELECT and fans the
+//! per-edge alternatives out through a non-recursive
+//! `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery. Each
+//! lateral alternative tags its T-row with a synthetic
+//! `__djogi_edge_label` text column, which the outer SELECT splices
+//! into `path` so callers can distinguish `["mother_id",
+//! "father_id"]` (maternal grandfather) from `["father_id",
+//! "mother_id"]` (paternal grandmother). This shape satisfies
+//! Postgres's "exactly one self-reference in the recursive term"
+//! rule for multi-edge models.
 //!
 //! # SQL invariants
 //!
@@ -234,9 +240,11 @@ pub struct RecursiveQuerySet<T: Model> {
     /// ([`from_paths`](Self::from_paths) — used by
     /// [`Model::full_ancestors`](crate::model::Model::full_ancestors))
     /// populate one entry per self-FK declared on `T`. The recursive
-    /// term emits one `UNION ALL` branch per edge — single-edge walks
-    /// degenerate to one branch (zero `UNION ALL` keywords inside the
-    /// recursive term) and behave exactly as the B2 single-edge form.
+    /// term emits a single recursive SELECT and fans the per-edge
+    /// alternatives out through a non-recursive `JOIN LATERAL (...
+    /// UNION ALL ...) child ON TRUE` subquery — single-edge walks
+    /// degenerate to one alternative (no inner `UNION ALL` inside the
+    /// lateral) and behave exactly as the B2 single-edge form.
     ///
     /// An empty `edges` Vec is invalid — every constructor enforces
     /// `!edges.is_empty()` either at debug-assert time (the typed
@@ -340,11 +348,13 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// entry point. Phase 8-Zero Cluster B3 (T13a).
     ///
     /// One [`RelationPath<T, T>`] per self-FK edge declared on `T`;
-    /// the SQL emitter then produces one `UNION ALL` branch per edge
-    /// in the recursive term so the walk fans out across every
-    /// declared parent edge in a single CTE pass. `edges.len() == 1`
-    /// degenerates to the same SQL the single-edge constructor
-    /// produces.
+    /// the SQL emitter then produces a single recursive SELECT that
+    /// fans the per-edge alternatives out through a non-recursive
+    /// `JOIN LATERAL (... UNION ALL ...) child ON TRUE` subquery —
+    /// satisfying Postgres's "exactly one self-reference in the
+    /// recursive term" rule while still walking every declared parent
+    /// edge in a single CTE pass. `edges.len() == 1` degenerates to
+    /// the same SQL the single-edge constructor produces.
     ///
     /// Accepts an empty `edges` Vec — terminals fail with a
     /// descriptive [`DjogiError::Query`] at execution time. Carrying

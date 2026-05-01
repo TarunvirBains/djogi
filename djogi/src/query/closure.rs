@@ -403,8 +403,13 @@ where
 ///
 /// 1. `roots` ids (when `Some(ids)` with non-empty `ids`) —
 ///    one bind slot per id, in caller-supplied order.
-/// 2. `max_depth` — one bind slot per recursive-term branch (one
-///    branch per self-FK edge), bound as `i64`.
+/// 2. `max_depth` — one bind slot total, attached to the WHERE on
+///    the consolidated single recursive SELECT. Bound as `i32` to
+///    match `closure.depth` (INTEGER / int4); `tokio_postgres`
+///    requires exact bind/column type match. Edge count does not
+///    affect this — every self-FK edge fans out through one
+///    `CROSS JOIN LATERAL VALUES` clause, not per-edge UNION ALL
+///    branches.
 ///
 /// `tokio_postgres` re-receives bind values in the order the helper
 /// pushes them; downstream readers should not assume `$1` is always
