@@ -44,6 +44,16 @@ fn default_profile() -> String {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DatabaseConfig {
     pub url: String,
+    /// Connection-pool size for `[database]`. **Zero means "absent"**:
+    /// Phase 8-Zero T5's
+    /// [`crate::pg::pool::resolve_max_connections`] treats a zero
+    /// value as a fall-through signal so the env > Djogi.toml >
+    /// builder-default chain can actually reach the builder default
+    /// when no TOML override is set.
+    ///
+    /// `DjogiConfig::default()` therefore initialises this field to
+    /// `0`, NOT to a sample sizing like 10 — the absence sentinel is
+    /// load-bearing for the documented resolution chain.
     pub max_connections: u32,
     pub dev_mode: bool,
 }
@@ -155,7 +165,12 @@ impl Default for DjogiConfig {
         Self {
             database: DatabaseConfig {
                 url: String::new(),
-                max_connections: 10,
+                // Zero is the absence sentinel — see `DatabaseConfig::max_connections`.
+                // The pool layer's `resolve_max_connections` walks
+                // env > Djogi.toml > builder default, and that walk
+                // requires `0` to mean "no TOML override set" so
+                // the third tier (builder default) is reachable.
+                max_connections: 0,
                 dev_mode: false,
             },
             server: ServerConfig {
@@ -261,6 +276,46 @@ mod tests {
         assert!(!with_profile("staging").is_production());
         assert!(!with_profile("test").is_production());
         assert!(!with_profile("").is_production());
+    }
+
+    /// `max_connections` defaults to `0` (the absence sentinel). Phase
+    /// 8-Zero T5's resolver relies on this so the documented
+    /// env > Djogi.toml > builder-default chain can reach the builder
+    /// default when no TOML override is set.
+    #[test]
+    fn database_max_connections_default_is_absence_sentinel() {
+        let cfg = DjogiConfig::default();
+        assert_eq!(cfg.database.max_connections, 0);
+    }
+
+    /// Loading a TOML that omits `[database].max_connections` keeps
+    /// the `0` sentinel value rather than silently substituting a
+    /// non-zero default — the `from_database_config` path must be
+    /// able to fall through to the builder default.
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail returns figment::Error
+    fn loaded_config_without_max_connections_keeps_zero_sentinel() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "Djogi.toml",
+                r#"
+                [database]
+                url = "postgres://localhost/test"
+                dev_mode = false
+
+                [server]
+                host = "0.0.0.0"
+                port = 8000
+                "#,
+            )?;
+            // No DATABASE_URL or DJOGI_DATABASE_MAX_CONNECTIONS in jail.
+            let cfg = DjogiConfig::load().expect("load should succeed");
+            assert_eq!(
+                cfg.database.max_connections, 0,
+                "TOML without max_connections must keep the absence sentinel"
+            );
+            Ok(())
+        });
     }
 
     #[test]
