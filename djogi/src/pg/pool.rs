@@ -63,8 +63,20 @@ use tokio_postgres::NoTls;
 /// Five matches the original Phase-1 hard-coded value and keeps every
 /// existing test/callsite that uses [`DjogiPool::connect`] running against
 /// the same pool size as before. Production deployments override this
-/// through [`DjogiPoolBuilder::max_size`].
+/// through [`DjogiPoolBuilder::max_size`] or by reading
+/// `[database].max_connections` from `Djogi.toml` via
+/// [`DjogiPool::from_database_config`].
 pub const DEFAULT_MAX_SIZE: usize = 5;
+
+/// Environment-variable name read by [`DjogiPool::from_database_config`].
+///
+/// When set to a positive integer, it overrides `[database].max_connections`
+/// from `Djogi.toml` and the builder default — i.e. it sits at the top of
+/// the resolution chain (env > Djogi.toml > builder default).
+///
+/// Empty / unparseable / `0` values fall through to the next layer rather
+/// than zeroing the pool — a typo must not silently disable the database.
+pub const ENV_DATABASE_MAX_CONNECTIONS: &str = "DJOGI_DATABASE_MAX_CONNECTIONS";
 
 /// Boxed future returned by closures handed to [`DjogiPool::with_client`].
 ///
@@ -164,6 +176,67 @@ impl DjogiPool {
     /// ```
     pub fn builder(url: impl Into<String>) -> DjogiPoolBuilder {
         DjogiPoolBuilder::new(url.into())
+    }
+
+    /// Build a `DjogiPool` from a loaded
+    /// [`DatabaseConfig`](crate::config::DatabaseConfig) applying the
+    /// standard env > Djogi.toml > builder-default precedence.
+    ///
+    /// The resolution chain for `max_size` is:
+    ///
+    /// 1. The `DJOGI_DATABASE_MAX_CONNECTIONS` environment variable
+    ///    ([`ENV_DATABASE_MAX_CONNECTIONS`]), if set and parseable as a
+    ///    positive integer. Wins over everything.
+    /// 2. `[database].max_connections` from the loaded config, if non-zero.
+    /// 3. Builder default ([`DEFAULT_MAX_SIZE`]).
+    ///
+    /// `database.url` from the loaded config supplies the URL. Note that
+    /// [`DjogiConfig::load`](crate::config::DjogiConfig::load) already lifts
+    /// the `DATABASE_URL` env var into `database.url`, so the URL
+    /// resolution chain is handled at the config layer — this method
+    /// only owns the `max_size` chain.
+    ///
+    /// Callers that want to override the URL specifically (without going
+    /// through `DjogiConfig::load`) should use [`DjogiPool::builder`]
+    /// directly.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let cfg = djogi::DjogiConfig::load()?;
+    /// let pool = djogi::pg::pool::DjogiPool::from_database_config(&cfg.database).await?;
+    /// ```
+    ///
+    /// # No `post_connect` hook is attached
+    ///
+    /// `from_database_config` is the config-driven entry point — it does
+    /// not register a [`DjogiPoolBuilder::post_connect`] hook. Adopters
+    /// that need a hook should chain through [`DjogiPool::builder`] and
+    /// merge the env / config resolution into their own builder
+    /// invocation, e.g.:
+    ///
+    /// ```ignore
+    /// let cfg = djogi::DjogiConfig::load()?;
+    /// let mut b = djogi::pg::pool::DjogiPool::builder(&cfg.database.url);
+    /// if let Some(n) = djogi::pg::pool::resolve_max_connections(&cfg.database) {
+    ///     b = b.max_size(n);
+    /// }
+    /// let pool = b
+    ///     .post_connect(|client| Box::pin(async move {
+    ///         client.batch_execute("SET application_name = 'web'").await?;
+    ///         Ok(())
+    ///     }))
+    ///     .build()
+    ///     .await?;
+    /// ```
+    pub async fn from_database_config(
+        cfg: &crate::config::DatabaseConfig,
+    ) -> Result<Self, DjogiError> {
+        let mut builder = Self::builder(&cfg.url);
+        if let Some(n) = resolve_max_connections(cfg) {
+            builder = builder.max_size(n);
+        }
+        builder.build().await
     }
 
     /// Acquire a `PgConnection` from the pool.
@@ -590,6 +663,53 @@ impl std::fmt::Debug for DjogiPoolBuilder {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Resolve the effective `max_size` for a [`DjogiPool`] from a loaded
+/// [`DatabaseConfig`](crate::config::DatabaseConfig).
+///
+/// Reading order (highest priority first):
+///
+/// 1. `DJOGI_DATABASE_MAX_CONNECTIONS` env var, if set and parseable as a
+///    positive integer.
+/// 2. `[database].max_connections` from the config, if non-zero.
+/// 3. `None` — caller falls back to the builder default
+///    ([`DEFAULT_MAX_SIZE`]).
+///
+/// Returning `None` rather than `Some(DEFAULT_MAX_SIZE)` for the
+/// no-override case lets the caller distinguish "use whatever the
+/// builder defaults to today" from "use exactly 5". Future builder
+/// defaults change in one place.
+///
+/// Empty / unparseable / `0` env values fall through to layer 2 (and
+/// then to `None` if config also reads `0`) — a typo in the env var
+/// must NOT silently zero the pool.
+pub fn resolve_max_connections(cfg: &crate::config::DatabaseConfig) -> Option<usize> {
+    if let Some(env_size) = read_env_max_connections() {
+        return Some(env_size);
+    }
+    if cfg.max_connections > 0 {
+        // `as usize` is safe — `max_connections` is `u32` and `usize`
+        // is at least 32 bits on every platform Djogi targets.
+        return Some(cfg.max_connections as usize);
+    }
+    None
+}
+
+/// Read [`ENV_DATABASE_MAX_CONNECTIONS`] and parse it as a `usize`.
+///
+/// Returns `None` if the variable is unset, empty, parses to `0`, or
+/// fails to parse. Empty / unparsed / `0` all fall through to the next
+/// layer in the resolution chain so a user typo does not silently zero
+/// out the pool.
+fn read_env_max_connections() -> Option<usize> {
+    let raw = std::env::var(ENV_DATABASE_MAX_CONNECTIONS).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed: usize = trimmed.parse().ok()?;
+    if parsed == 0 { None } else { Some(parsed) }
+}
+
 /// Lower a `deadpool_postgres::PoolError` into a `DjogiError`, mapping
 /// the timeout variants to [`DjogiError::PoolTimeout`] so callers can
 /// match on them without inspecting the deadpool error type.
@@ -704,6 +824,116 @@ mod tests {
         let err = DjogiError::PoolTimeout { phase: "wait" };
         assert!(err.is_transient(), "PoolTimeout must be transient");
         assert!(!err.is_terminal(), "PoolTimeout must NOT be terminal");
+    }
+
+    /// `resolve_max_connections` walks env > config > None in the
+    /// documented order and rejects degenerate env values without
+    /// zeroing the pool. The lib test sweep runs single-threaded, so
+    /// the env-var mutation is safe — the test resets the variable
+    /// after every assertion.
+    #[test]
+    fn resolve_max_connections_walks_env_then_config() {
+        use crate::config::DatabaseConfig;
+
+        // Helper: clear the env var before each branch so previous
+        // sub-cases don't leak in.
+        let clear_env = || {
+            // Safety: process-global mutation; the test runs
+            // single-threaded under the project's `--test-threads=1`
+            // policy and resets the variable before each branch.
+            unsafe { std::env::remove_var(ENV_DATABASE_MAX_CONNECTIONS) };
+        };
+
+        // Layer 3: no env, config zero → None (fall back to default).
+        clear_env();
+        let cfg = DatabaseConfig {
+            url: String::new(),
+            max_connections: 0,
+            dev_mode: false,
+        };
+        assert_eq!(resolve_max_connections(&cfg), None);
+
+        // Layer 2: no env, config non-zero → Some(config).
+        clear_env();
+        let cfg = DatabaseConfig {
+            url: String::new(),
+            max_connections: 25,
+            dev_mode: false,
+        };
+        assert_eq!(resolve_max_connections(&cfg), Some(25));
+
+        // Layer 1: env wins over config.
+        unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "42") };
+        let cfg = DatabaseConfig {
+            url: String::new(),
+            max_connections: 25,
+            dev_mode: false,
+        };
+        assert_eq!(resolve_max_connections(&cfg), Some(42));
+
+        // Layer 1 → 2 fall-through: empty env value → use config.
+        unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "  ") };
+        let cfg = DatabaseConfig {
+            url: String::new(),
+            max_connections: 25,
+            dev_mode: false,
+        };
+        assert_eq!(resolve_max_connections(&cfg), Some(25));
+
+        // Layer 1 → 2 fall-through: bogus env value → use config.
+        unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "not-a-number") };
+        let cfg = DatabaseConfig {
+            url: String::new(),
+            max_connections: 25,
+            dev_mode: false,
+        };
+        assert_eq!(resolve_max_connections(&cfg), Some(25));
+
+        // Layer 1 → 2 fall-through: zero env → use config (never zero
+        // the pool from a typoed env var).
+        unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "0") };
+        let cfg = DatabaseConfig {
+            url: String::new(),
+            max_connections: 25,
+            dev_mode: false,
+        };
+        assert_eq!(resolve_max_connections(&cfg), Some(25));
+
+        // Layer 1 → 2 → 3 fall-through: zero env, zero config → None.
+        unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "0") };
+        let cfg = DatabaseConfig {
+            url: String::new(),
+            max_connections: 0,
+            dev_mode: false,
+        };
+        assert_eq!(resolve_max_connections(&cfg), None);
+
+        clear_env();
+    }
+
+    /// `from_database_config` smoke-test: builds a pool against an
+    /// obviously-bogus URL with config-driven max_size and asserts the
+    /// max_size flows through to the pool's status output.
+    #[tokio::test]
+    async fn from_database_config_applies_max_size() {
+        use crate::config::DatabaseConfig;
+
+        // Make sure the env doesn't bleed in from another test.
+        unsafe { std::env::remove_var(ENV_DATABASE_MAX_CONNECTIONS) };
+
+        let cfg = DatabaseConfig {
+            url: "postgres://localhost/_djogi_unreachable".to_string(),
+            max_connections: 11,
+            dev_mode: false,
+        };
+        let pool = DjogiPool::from_database_config(&cfg)
+            .await
+            .expect("from_database_config should construct pool");
+        let dbg = format!("{pool:?}");
+        assert!(
+            dbg.contains("max_size: 11"),
+            "Debug output should reflect config max_size, got: {dbg}"
+        );
     }
 
     /// `with_client` accepts the documented closure shape. Live
