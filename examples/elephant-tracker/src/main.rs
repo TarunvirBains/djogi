@@ -112,30 +112,27 @@ async fn main() -> Result<()> {
          postgres://djogi:djogi@localhost:5432/djogi_test",
     )?;
 
-    // Pick the HeeRanjID node id from `HEER_NODE_ID`, defaulting to
-    // `1` so the example runs out of the box. Validate with byte-level
-    // checks (no regex per CLAUDE.md) — the value is interpolated into
-    // a `SET` literal and must be non-empty ASCII digits.
-    let node_id = std::env::var("HEER_NODE_ID").unwrap_or_else(|_| "1".to_string());
-    if node_id.is_empty() || !node_id.bytes().all(|b| b.is_ascii_digit()) {
-        anyhow::bail!("HEER_NODE_ID must be a non-empty ASCII-digit string (got: {node_id:?})");
-    }
-
     // Build the pool through the Phase 8-Zero builder. The
-    // `post_connect` hook runs once per physical connection and
-    // pins `heer.node_id` for the session — the same value that
-    // the migrate path persists at the database level via
-    // `ALTER DATABASE`. Setting it here at the session level means
-    // the example also runs against a database the connecting role
-    // does not own (where ALTER DATABASE would fail) — useful for
-    // CI sandboxes.
+    // `post_connect` hook runs once per physical connection and pins
+    // `heer.node_id = '1'` for the session — node 1 is the default
+    // seeded by `heeranjid::postgres_schema::seed_default_node` in the
+    // migrate path. Setting it here at the session level means the
+    // example also runs against a database the connecting role does
+    // not own (where ALTER DATABASE would fail) — useful for CI
+    // sandboxes.
+    //
+    // The example pins to `"1"` deliberately — supporting an
+    // arbitrary `HEER_NODE_ID` would require also seeding the
+    // requested node row before persisting the GUC, otherwise
+    // `current_heer_node_id()` would later refuse to mint IDs for an
+    // unregistered node. Production deployments register their nodes
+    // through HeeRanjID's own provisioning path, not through this
+    // example.
     let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
-        .post_connect(move |client| {
-            let node_id = node_id.clone();
+        .post_connect(|client| {
             Box::pin(async move {
-                let sql = format!("SET heer.node_id = '{node_id}'");
                 client
-                    .batch_execute(&sql)
+                    .batch_execute("SET heer.node_id = '1'")
                     .await
                     .map_err(djogi::DjogiError::from)
             })

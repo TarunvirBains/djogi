@@ -113,26 +113,29 @@ async fn install_heeranjid(ctx: &mut DjogiContext) -> Result<()> {
     .await
     .context("heeranjid install via pool.with_client")?;
 
-    // Belt-and-braces: pin `heer.node_id` at the database level too,
-    // when we have permission. Combined with the session-level set
-    // from `main.rs`'s `post_connect` hook this means a freshly-opened
-    // pool connection sees the node id even before any
-    // application-level SET runs (some heeranjid functions read the
-    // GUC during their first invocation rather than via SET-LOCAL).
+    // Belt-and-braces: pin `heer.node_id = '1'` at the database
+    // level too, when we have permission. Combined with the
+    // session-level set from `main.rs`'s `post_connect` hook this
+    // means a freshly-opened pool connection sees the node id even
+    // before any application-level SET runs (some heeranjid
+    // functions read the GUC during their first invocation rather
+    // than via SET-LOCAL).
     //
-    // Requires the connecting role to own the database; the example's
-    // dev setup (`djogi:djogi@localhost`) satisfies that. CI / shared
-    // databases without ownership rely on the session-level
-    // `post_connect` set instead.
+    // Pinned to `'1'` deliberately — that is the node row
+    // `seed_default_node` registered above. Persisting any other
+    // value here would create a configuration-poisoning risk:
+    // future connections would resolve `current_heer_node_id()` to
+    // an unregistered node and fail to mint IDs.
+    //
+    // Requires the connecting role to own the database; the
+    // example's dev setup (`djogi:djogi@localhost`) satisfies that.
+    // CI / shared databases without ownership rely on the
+    // session-level `post_connect` set instead.
     let database_url =
         std::env::var("DATABASE_URL").context("DATABASE_URL must be set for migrate")?;
     let dbname = parse_database_name(&database_url)
         .context("could not parse database name from DATABASE_URL")?;
-    let node_id = std::env::var("HEER_NODE_ID").unwrap_or_else(|_| "1".to_string());
-    let alter = format!(
-        "ALTER DATABASE \"{}\" SET heer.node_id = '{}'",
-        dbname, node_id
-    );
+    let alter = format!("ALTER DATABASE \"{}\" SET heer.node_id = '1'", dbname);
     if let Err(e) = ctx.raw_ddl(&alter).await {
         // Soft-warn: the example runs fine without the database-level
         // pin as long as the session-level `post_connect` ran. This
