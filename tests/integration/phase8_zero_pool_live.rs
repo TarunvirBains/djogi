@@ -199,7 +199,7 @@ async fn pool_post_connect_error_aborts_checkout() {
     // Sentinel chosen so it cannot accidentally satisfy the
     // `post_connect` prefix assertion below — any contains("post_connect")
     // hit must come from the lowering, not from the hook body.
-    const HOOK_SENTINEL: &str = "djogi-cluster-a-hook-failure-sentinel";
+    const HOOK_SENTINEL: &str = "djogi-pool-hook-failure-sentinel";
 
     let pool = DjogiPool::builder(&url)
         .max_size(1)

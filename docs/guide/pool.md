@@ -9,8 +9,10 @@
 route through `DjogiContext`, and a config-driven entry point that
 walks `env > Djogi.toml > builder default` for sizing.
 
-This guide covers the public surface introduced in Phase 8-Zero.
-For the broader context — `DjogiContext`, transactions, raw queries —
+This guide covers the `DjogiPool` public surface — the builder API,
+the `post_connect` hook for per-physical-connection setup, and the
+`with_client` raw-driver escape hatch. For the broader context —
+`DjogiContext`, transactions, raw queries —
 see the [Transactions guide](./transactions.md) and the
 [Getting Started guide](./getting-started.md).
 

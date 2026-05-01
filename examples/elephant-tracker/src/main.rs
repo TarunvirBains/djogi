@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
          postgres://djogi:djogi@localhost:5432/djogi_test",
     )?;
 
-    // Build the pool through the Phase 8-Zero builder. The
+    // Build the pool through the `DjogiPool` builder. The
     // `post_connect` hook runs once per physical connection and pins
     // `heer.node_id = '1'` for the session — node 1 is the default
     // seeded by `heeranjid::postgres_schema::seed_default_node` in the

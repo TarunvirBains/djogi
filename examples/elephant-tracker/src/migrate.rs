@@ -19,16 +19,17 @@
 //! The function is idempotent — running `migrate` twice is safe and
 //! leaves the database in the same state.
 //!
-//! # Phase 8-Zero adoption
+//! # Why `with_client` is the right hammer here
 //!
-//! The pre-Phase-8 version of this file opened a side-channel
-//! `tokio_postgres::connect` because the framework's pool's `get()`
-//! was `pub(crate)` — there was no way to reach the underlying
-//! `tokio_postgres::Client` for `heeranjid::install_schema` /
-//! `CREATE EXTENSION postgis`. `DjogiPool::with_client` is exactly
-//! that escape hatch. The migrate path now uses the same pool the
-//! rest of the example uses — no one-shot connections, no manual
-//! driver-task spawn.
+//! `heeranjid::postgres_schema::install_*` and `seed_default_node`
+//! take a bare `&tokio_postgres::Client`, and `CREATE EXTENSION
+//! postgis` is bootstrapping that runs before any model context exists.
+//! `DjogiPool::with_client` is the documented escape hatch for raw-driver
+//! operations — it borrows a `&mut tokio_postgres::Client` for the
+//! closure's duration and returns the connection to the pool on `Ok`
+//! (or detaches on `Err`/panic to prevent session-state leakage).
+//! The migrate path uses the same pool the rest of the example uses —
+//! no one-shot connections, no manual driver-task spawn.
 
 use anyhow::{Context, Result};
 use djogi::{DjogiContext, DjogiError};
