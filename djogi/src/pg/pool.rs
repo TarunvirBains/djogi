@@ -17,13 +17,30 @@
 //! point for non-default construction. `connect(url)` is preserved as
 //! sugar for `DjogiPool::builder(url).build().await`.
 //!
-//! Subsequent tasks in this cluster add a `post_connect` setup hook (T3)
-//! and a `with_client` raw-borrow helper (T4); this file lands the
-//! foundational builder shape first.
+//! Phase 8-Zero T3 adds a `post_connect` setup hook on the builder; T4 will
+//! follow with `with_client`, the raw-borrow escape hatch for `COPY` and
+//! similar operations that cannot route through `DjogiContext`.
+//!
+//! # Where the `post_connect` hook fits in deadpool's lifecycle
+//!
+//! The hook is wired through deadpool's `PoolBuilder::post_create`, which
+//! fires only after `Manager::create` materialises a new physical
+//! connection — i.e. on initial pool fill, after a recycle failure that
+//! discards a stale connection, or whenever pool growth opens a fresh
+//! slot. It does **not** fire on the checkout path that reuses an existing
+//! physical connection. Per-checkout reset is a separate concern that a
+//! future release may expose; the v0.1.0 API is deliberately limited to
+//! create-time setup so it composes cleanly with transaction-local GUCs
+//! (notably `DjogiContext::set_tenant`, which uses
+//! `set_config('app.tenant_id', $1, true)` and expects a clean session at
+//! the start of every transaction).
 
 use crate::pg::connection::PgConnection;
 use crate::{DbError, DjogiError};
 use deadpool_postgres::{Config, ManagerConfig, PoolConfig, RecyclingMethod, Runtime};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_postgres::NoTls;
 
@@ -34,6 +51,21 @@ use tokio_postgres::NoTls;
 /// the same pool size as before. Production deployments override this
 /// through [`DjogiPoolBuilder::max_size`].
 pub const DEFAULT_MAX_SIZE: usize = 5;
+
+/// Type alias for the boxed `post_connect` closure stored on the builder.
+///
+/// The closure receives `&mut tokio_postgres::Client` and may run any
+/// setup SQL it needs. It is invoked from inside deadpool's `post_create`
+/// hook, so returning an error fails the pool checkout that triggered the
+/// create — the closure runs in the cold path of physical-connection
+/// creation, never on the per-request checkout path.
+type PostConnectFn = Arc<
+    dyn for<'a> Fn(
+            &'a mut tokio_postgres::Client,
+        ) -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>
+        + Send
+        + Sync,
+>;
 
 /// The framework's Postgres connection pool.
 ///
@@ -67,8 +99,10 @@ impl DjogiPool {
     ///
     /// - `max_size` = [`DEFAULT_MAX_SIZE`] (5)
     /// - no wait timeout (callers block until a slot is available)
+    /// - no `post_connect` hook
     ///
-    /// For tunable size or timeouts use [`DjogiPool::builder`] instead.
+    /// For tunable size, timeouts, or per-physical-connection setup use
+    /// [`DjogiPool::builder`] instead.
     pub async fn connect(url: &str) -> Result<Self, DjogiError> {
         Self::builder(url).build().await
     }
@@ -117,6 +151,7 @@ pub struct DjogiPoolBuilder {
     url: String,
     max_size: usize,
     wait_timeout: Option<Duration>,
+    post_connect: Option<PostConnectFn>,
 }
 
 impl DjogiPoolBuilder {
@@ -127,6 +162,7 @@ impl DjogiPoolBuilder {
             url,
             max_size: DEFAULT_MAX_SIZE,
             wait_timeout: None,
+            post_connect: None,
         }
     }
 
@@ -173,6 +209,74 @@ impl DjogiPoolBuilder {
         self
     }
 
+    /// Register a closure that runs on every freshly-created physical
+    /// connection.
+    ///
+    /// The closure receives `&mut tokio_postgres::Client` and may issue
+    /// any setup SQL it needs:
+    ///
+    /// ```ignore
+    /// use std::pin::Pin;
+    ///
+    /// let pool = DjogiPool::builder("postgres://localhost/app")
+    ///     .post_connect(|client| Box::pin(async move {
+    ///         client.batch_execute("SET statement_timeout = '5s'").await?;
+    ///         client.batch_execute("SET application_name = 'web'").await?;
+    ///         Ok(())
+    ///     }))
+    ///     .build()
+    ///     .await?;
+    /// ```
+    ///
+    /// # Lifecycle (per-physical-connection, not per-checkout)
+    ///
+    /// The hook fires **once per physical connection**, immediately after
+    /// `Manager::create` returns a freshly-opened socket. It does NOT
+    /// fire on the per-checkout path that reuses an existing physical
+    /// connection. This is the correct semantic for one-time setup like
+    /// `SET heer.node_id` (HeeRanjID's id-generation salt) or
+    /// `SET application_name`.
+    ///
+    /// Lowering: the closure is wrapped into a deadpool
+    /// `Hook::async_fn(...)` and attached to the pool builder via
+    /// `PoolBuilder::post_create`. The deadpool docs are explicit that
+    /// `post_create` runs after `Manager::create` (the physical-connection
+    /// path) and is distinct from `pre_recycle` / `post_recycle`, which
+    /// fire on the checkout-path validation/reuse cycle. Per-checkout
+    /// reset is intentionally NOT exposed in v0.1.0 — running session-
+    /// level `SET`s on every checkout would conflict with the
+    /// transaction-local `set_config('app.tenant_id', $1, true)` that
+    /// [`DjogiContext::set_tenant`](crate::context::DjogiContext::set_tenant)
+    /// already issues at the start of every tenant-scoped transaction.
+    ///
+    /// # Errors
+    ///
+    /// If the closure returns `Err`, the underlying `Manager::create` is
+    /// considered failed: deadpool discards the connection and the
+    /// originating `pool.get()` (or terminal query) returns the error
+    /// wrapped in [`DjogiError`]. The hook can return `Err` to abort
+    /// startup when a required GUC fails to apply.
+    ///
+    /// # Sharing the closure
+    ///
+    /// The boxed closure is kept behind an `Arc`, so a single hook is
+    /// shared across all physical connections without per-create
+    /// allocation. The hook bound is `Send + Sync + 'static` because
+    /// deadpool's `Hook::async_fn` requires it.
+    pub fn post_connect<F>(mut self, hook: F) -> Self
+    where
+        F: for<'a> Fn(
+                &'a mut tokio_postgres::Client,
+            )
+                -> Pin<Box<dyn Future<Output = Result<(), DjogiError>> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.post_connect = Some(Arc::new(hook));
+        self
+    }
+
     /// Finalise the builder into a usable [`DjogiPool`].
     ///
     /// This constructs the deadpool pool eagerly — the `tokio` runtime
@@ -214,6 +318,33 @@ impl DjogiPoolBuilder {
             pool_builder = pool_builder.wait_timeout(Some(d));
         }
 
+        if let Some(hook) = self.post_connect {
+            // Wrap the user closure into deadpool's `Hook::async_fn` shape.
+            // `Manager::Type` for `deadpool_postgres::Manager` is
+            // `ClientWrapper`, which derefs to `tokio_postgres::Client` —
+            // so `&mut wrapper` coerces to `&mut Client` via deref-mut.
+            //
+            // `Hook::async_fn` requires `Sync + Send + 'static`, hence the
+            // `Arc` clone-into-the-future pattern: the outer `move`
+            // closure (called by deadpool per create) clones the Arc into
+            // the boxed future, then `await`s the user closure on a
+            // distinct &mut borrow of the same `wrapper`.
+            pool_builder = pool_builder.post_create(deadpool_postgres::Hook::async_fn(
+                move |wrapper, _metrics| {
+                    let hook = hook.clone();
+                    Box::pin(async move {
+                        let client: &mut tokio_postgres::Client = &mut *wrapper;
+                        match hook(client).await {
+                            Ok(()) => Ok(()),
+                            Err(e) => Err(deadpool_postgres::HookError::message(format!(
+                                "post_connect: {e}"
+                            ))),
+                        }
+                    })
+                },
+            ));
+        }
+
         let pool = pool_builder.build().map_err(|e| {
             DjogiError::Db(DbError::other(format!(
                 "DjogiPool::build: pool creation failed: {e}"
@@ -229,6 +360,7 @@ impl std::fmt::Debug for DjogiPoolBuilder {
         f.debug_struct("DjogiPoolBuilder")
             .field("max_size", &self.max_size)
             .field("wait_timeout", &self.wait_timeout)
+            .field("post_connect", &self.post_connect.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -351,5 +483,30 @@ mod tests {
         let err = DjogiError::PoolTimeout { phase: "wait" };
         assert!(err.is_transient(), "PoolTimeout must be transient");
         assert!(!err.is_terminal(), "PoolTimeout must NOT be terminal");
+    }
+
+    /// The builder accepts a `post_connect` closure with the documented
+    /// shape and surfaces its presence in `Debug` output. The hook only
+    /// fires when deadpool calls `Manager::create`, which requires a
+    /// reachable Postgres — the live invocation-count assertion lives in
+    /// the T6 integration test (`pool_post_connect_fires_once_per_physical`).
+    #[tokio::test]
+    async fn builder_accepts_post_connect_closure() {
+        let pool = DjogiPool::builder("postgres://localhost/_djogi_unreachable")
+            .post_connect(|client| {
+                Box::pin(async move {
+                    // Closure body never runs in this unit test — no
+                    // physical connection is opened. We just type-check
+                    // the closure signature.
+                    let _ = client;
+                    Ok(())
+                })
+            })
+            .build()
+            .await
+            .expect("builder should accept post_connect closure");
+        // Build succeeded — pool is unused but its presence pins the
+        // type-system shape against future drift.
+        let _ = pool;
     }
 }
