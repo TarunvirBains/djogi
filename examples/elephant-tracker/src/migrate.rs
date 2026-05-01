@@ -6,18 +6,32 @@
 //! `migrate` subcommand that:
 //!
 //! 1. Installs the HeeRanjID schema (`generate_id`, the node table)
-//!    if missing.
+//!    if missing — via `pool.with_client(...)` because `heeranjid`'s
+//!    installers take a bare `&tokio_postgres::Client`.
 //! 2. Seeds node id 1 if missing.
-//! 3. Sets `heer.node_id = '1'` at the database level so every new
-//!    pool connection inherits it without a per-connection SET.
-//! 4. Installs the PostGIS extension.
-//! 5. Drops + recreates every example table.
+//! 3. Sets `heer.node_id = '1'` at the database level when the
+//!    connecting role owns the database. Belt-and-braces alongside
+//!    the pool's `post_connect` hook (in `main.rs`), which sets the
+//!    same GUC at the session level.
+//! 4. Installs the PostGIS extension via the same `with_client` borrow.
+//! 5. Drops + recreates every example table through `ctx.raw_*`.
 //!
 //! The function is idempotent — running `migrate` twice is safe and
 //! leaves the database in the same state.
+//!
+//! # Phase 8-Zero adoption
+//!
+//! The pre-Phase-8 version of this file opened a side-channel
+//! `tokio_postgres::connect` because the framework's pool's `get()`
+//! was `pub(crate)` — there was no way to reach the underlying
+//! `tokio_postgres::Client` for `heeranjid::install_schema` /
+//! `CREATE EXTENSION postgis`. Phase 8-Zero T4 adds
+//! `DjogiPool::with_client`, which is exactly that escape hatch.
+//! The migrate path now uses the same pool the rest of the example
+//! uses — no one-shot connections, no manual driver-task spawn.
 
 use anyhow::{Context, Result};
-use djogi::DjogiContext;
+use djogi::{DjogiContext, DjogiError};
 
 /// All DDL the example needs, in dependency order.
 ///
@@ -39,10 +53,8 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
     tracing::info!("installing HeeRanjID schema (idempotent)");
     install_heeranjid(ctx).await?;
 
-    tracing::info!("installing PostGIS extension (idempotent)");
-    ctx.raw_ddl("CREATE EXTENSION IF NOT EXISTS postgis")
-        .await
-        .context("install postgis extension")?;
+    tracing::info!("installing PostGIS extension (idempotent) via with_client");
+    install_postgis(ctx).await?;
 
     tracing::info!("dropping existing tables");
     for stmt in DROP_ORDER {
@@ -58,52 +70,102 @@ pub async fn run(ctx: &mut DjogiContext) -> Result<()> {
     Ok(())
 }
 
-/// Install the HeeRanjID schema if absent.
+/// Install the HeeRanjID schema and seed node id 1.
 ///
-/// `heeranjid` exposes its installers against a bare
-/// `tokio_postgres::Client`, so we open a one-shot connection here
-/// rather than reaching through the Djogi pool (whose `get()` is
-/// `pub(crate)`). The connection is dropped at the end of the helper.
+/// `heeranjid::postgres_schema::install_*` and `seed_default_node`
+/// take a bare `&tokio_postgres::Client` — they pre-date Djogi and
+/// know nothing about `DjogiContext`. Phase 8-Zero T4 introduced
+/// `DjogiPool::with_client` as the explicit escape hatch for exactly
+/// this case: hand the closure a `&mut Client` for the duration of
+/// its body, then return the connection to the pool when the closure
+/// resolves cleanly (or detach it on `Err` / panic / cancel — see
+/// the `with_client` rustdoc for the full lifecycle).
+///
+/// We use `with_client` here rather than opening a side-channel
+/// `tokio_postgres::connect`. The benefit is that the migrate path
+/// participates in the same pool as the rest of the example (a single
+/// physical connection serves the whole migrate run on the default
+/// `max_size = 5` pool), and the pool's `post_connect` hook (set in
+/// `main.rs`) has already pinned `heer.node_id` on the session before
+/// `heeranjid::install_schema` runs.
 async fn install_heeranjid(ctx: &mut DjogiContext) -> Result<()> {
+    let pool = ctx
+        .pool()
+        .ok_or_else(|| anyhow::anyhow!("migrate must be invoked against a pool-backed context"))?
+        .clone();
+
+    pool.with_client(|client| {
+        Box::pin(async move {
+            heeranjid::postgres_schema::install_schema(client)
+                .await
+                .map_err(|e| DjogiError::Validation(format!("heeranjid install_schema: {e}")))?;
+            heeranjid::postgres_schema::install_all_desc_support(client)
+                .await
+                .map_err(|e| {
+                    DjogiError::Validation(format!("heeranjid install_all_desc_support: {e}"))
+                })?;
+            heeranjid::postgres_schema::seed_default_node(client)
+                .await
+                .map_err(|e| DjogiError::Validation(format!("heeranjid seed_default_node: {e}")))?;
+            Ok(())
+        })
+    })
+    .await
+    .context("heeranjid install via pool.with_client")?;
+
+    // Belt-and-braces: pin `heer.node_id` at the database level too,
+    // when we have permission. Combined with the session-level set
+    // from `main.rs`'s `post_connect` hook this means a freshly-opened
+    // pool connection sees the node id even before any
+    // application-level SET runs (some heeranjid functions read the
+    // GUC during their first invocation rather than via SET-LOCAL).
+    //
+    // Requires the connecting role to own the database; the example's
+    // dev setup (`djogi:djogi@localhost`) satisfies that. CI / shared
+    // databases without ownership rely on the session-level
+    // `post_connect` set instead.
     let database_url =
         std::env::var("DATABASE_URL").context("DATABASE_URL must be set for migrate")?;
-    let (client, conn) = tokio_postgres::connect(&database_url, tokio_postgres::NoTls)
-        .await
-        .context("heeranjid setup connect")?;
-    let conn_handle = tokio::spawn(async move {
-        if let Err(e) = conn.await {
-            tracing::warn!("heeranjid setup connection error: {e}");
-        }
-    });
-
-    heeranjid::postgres_schema::install_schema(&client)
-        .await
-        .map_err(|e| anyhow::anyhow!("heeranjid install_schema: {e}"))?;
-    heeranjid::postgres_schema::install_all_desc_support(&client)
-        .await
-        .map_err(|e| anyhow::anyhow!("heeranjid install_all_desc_support: {e}"))?;
-    heeranjid::postgres_schema::seed_default_node(&client)
-        .await
-        .map_err(|e| anyhow::anyhow!("heeranjid seed_default_node: {e}"))?;
-
-    drop(client);
-    let _ = conn_handle.await;
-
-    // Pin `heer.node_id` at the database level so every new pool
-    // connection inherits it. This requires the connecting role to
-    // own the database; the example assumes a development setup
-    // (`djogi:djogi@localhost`) where that holds.
-    //
-    // We extract the database name from `DATABASE_URL` rather than
-    // hard-coding it; standard URL syntax has the dbname as the first
-    // path component.
     let dbname = parse_database_name(&database_url)
         .context("could not parse database name from DATABASE_URL")?;
-    let alter = format!("ALTER DATABASE \"{}\" SET heer.node_id = '1'", dbname);
-    ctx.raw_ddl(&alter)
-        .await
-        .context("ALTER DATABASE SET heer.node_id")?;
+    let node_id = std::env::var("HEER_NODE_ID").unwrap_or_else(|_| "1".to_string());
+    let alter = format!(
+        "ALTER DATABASE \"{}\" SET heer.node_id = '{}'",
+        dbname, node_id
+    );
+    if let Err(e) = ctx.raw_ddl(&alter).await {
+        // Soft-warn: the example runs fine without the database-level
+        // pin as long as the session-level `post_connect` ran. This
+        // is the path a CI sandbox without `OWNER` will take.
+        tracing::warn!(
+            "skipped database-level `heer.node_id` pin (likely missing OWNER privilege): {e}"
+        );
+    }
 
+    Ok(())
+}
+
+/// Install PostGIS via `pool.with_client`. PostGIS' `CREATE EXTENSION`
+/// works through Djogi's `ctx.raw_ddl` too, but we route it through
+/// `with_client` here as a small worked example of the escape hatch
+/// — the rustdoc on `DjogiPool::with_client` calls out
+/// `CREATE EXTENSION` specifically as a use case alongside `COPY` and
+/// server-side cursors.
+async fn install_postgis(ctx: &mut DjogiContext) -> Result<()> {
+    let pool = ctx
+        .pool()
+        .ok_or_else(|| anyhow::anyhow!("migrate must be invoked against a pool-backed context"))?
+        .clone();
+    pool.with_client(|client| {
+        Box::pin(async move {
+            client
+                .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
+                .await
+                .map_err(DjogiError::from)
+        })
+    })
+    .await
+    .context("install postgis extension via with_client")?;
     Ok(())
 }
 

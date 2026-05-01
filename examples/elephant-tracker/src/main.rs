@@ -111,9 +111,38 @@ async fn main() -> Result<()> {
         "DATABASE_URL must be set, e.g. \
          postgres://djogi:djogi@localhost:5432/djogi_test",
     )?;
-    let pool = djogi::pg::pool::DjogiPool::connect(&database_url)
+
+    // Pick the HeeRanjID node id from `HEER_NODE_ID`, defaulting to
+    // `1` so the example runs out of the box. Validate with byte-level
+    // checks (no regex per CLAUDE.md) — the value is interpolated into
+    // a `SET` literal and must be non-empty ASCII digits.
+    let node_id = std::env::var("HEER_NODE_ID").unwrap_or_else(|_| "1".to_string());
+    if node_id.is_empty() || !node_id.bytes().all(|b| b.is_ascii_digit()) {
+        anyhow::bail!("HEER_NODE_ID must be a non-empty ASCII-digit string (got: {node_id:?})");
+    }
+
+    // Build the pool through the Phase 8-Zero builder. The
+    // `post_connect` hook runs once per physical connection and
+    // pins `heer.node_id` for the session — the same value that
+    // the migrate path persists at the database level via
+    // `ALTER DATABASE`. Setting it here at the session level means
+    // the example also runs against a database the connecting role
+    // does not own (where ALTER DATABASE would fail) — useful for
+    // CI sandboxes.
+    let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
+        .post_connect(move |client| {
+            let node_id = node_id.clone();
+            Box::pin(async move {
+                let sql = format!("SET heer.node_id = '{node_id}'");
+                client
+                    .batch_execute(&sql)
+                    .await
+                    .map_err(djogi::DjogiError::from)
+            })
+        })
+        .build()
         .await
-        .context("failed to connect to Postgres")?;
+        .context("failed to construct DjogiPool")?;
     let mut ctx = djogi::DjogiContext::from_pool(pool);
 
     match cli.cmd {
