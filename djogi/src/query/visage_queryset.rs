@@ -85,6 +85,13 @@ use std::marker::PhantomData;
 /// state at construction time.
 ///
 /// [`QuerySet`]: crate::query::QuerySet
+//
+// Phase 8-Zero T14b: visages do not implement tree-query traits.
+// `VisageQuerySet<V>` intentionally has no `tree_descendants` /
+// `tree_ancestors` / `full_ancestors` methods — recursive walks need
+// the full row materialised at every step, which is the column set
+// a visage narrows away. See `crate::query::recursive` module docs
+// for the full rationale and the future-work pointer.
 pub struct VisageQuerySet<V> {
     /// Source-model SQL table name. Captured from the macro at
     /// construction time so the queryset has no `T: Model` bound.

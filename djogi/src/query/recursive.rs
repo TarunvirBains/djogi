@@ -119,6 +119,24 @@
 //! Tokio runtimes (e.g. inside an Axum handler). The lint fires on
 //! every such method; allowing it at the module level matches the
 //! same allowance in [`crate::query::terminal`].
+//!
+//! # Visages do not implement tree queries (Phase 8-Zero T14b)
+//!
+//! [`VisageQuerySet`](crate::query::VisageQuerySet) intentionally does
+//! NOT carry `tree_descendants` / `tree_ancestors` / `full_ancestors` in
+//! v0.1.0. Recursive walks need the full row materialised at every step
+//! (to follow the self-FK column from one row to the next), which is
+//! exactly the column set a visage *narrows away*. A visage that drops
+//! the self-FK column has no edge to walk; one that keeps the self-FK
+//! but drops every other column is no different from a plain
+//! `RecursiveQuerySet<T>` filtered through a SELECT projection — the
+//! latter is what callers should reach for today.
+//!
+//! Future work could surface a `VisageRecursiveQuerySet` variant that
+//! validates self-FK presence at the boundary and projects the visage's
+//! column set onto the outer SELECT after the CTE materialises. Out of
+//! scope for v0.1.0; the recursive-CTE surface stays exclusively on
+//! `Model` and `QuerySet`.
 #![allow(clippy::manual_async_fn)]
 
 use crate::DjogiError;
