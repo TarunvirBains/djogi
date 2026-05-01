@@ -138,8 +138,35 @@ pub struct DjogiPool {
 impl std::fmt::Debug for DjogiPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DjogiPool")
-            .field("status", &self.inner.status())
+            .field("status", &self.status())
             .finish_non_exhaustive()
+    }
+}
+
+/// Snapshot of a [`DjogiPool`]'s counters.
+///
+/// Returned by [`DjogiPool::status`]. Wraps the deadpool-postgres status so
+/// adopters depend on Djogi's surface, not the underlying pool crate.
+#[derive(Debug, Clone, Copy)]
+pub struct DjogiPoolStatus {
+    /// Configured upper bound on physical connections.
+    pub max_size: usize,
+    /// Physical connections opened so far (idle + in-use).
+    pub size: usize,
+    /// Idle connections ready for immediate checkout.
+    pub available: usize,
+    /// Tasks currently waiting for a checkout slot.
+    pub waiting: usize,
+}
+
+impl From<deadpool_postgres::Status> for DjogiPoolStatus {
+    fn from(s: deadpool_postgres::Status) -> Self {
+        Self {
+            max_size: s.max_size,
+            size: s.size,
+            available: s.available,
+            waiting: s.waiting,
+        }
     }
 }
 
@@ -239,18 +266,15 @@ impl DjogiPool {
         builder.build().await
     }
 
-    /// Return a snapshot of the pool's deadpool counters.
+    /// Return a snapshot of the pool's counters.
     ///
-    /// The returned [`deadpool_postgres::Status`] carries the configured
-    /// `max_size`, the current `size` (physical connections opened), and
-    /// the `available` count (idle connections ready for checkout).
-    /// Tests assert pool-state invariants by reading this; production
-    /// code rarely needs it but is welcome to use it for diagnostics.
-    ///
-    /// `Status` is `Copy`, so the call is a cheap snapshot read — it
-    /// does not lock the pool or block on in-flight checkouts.
-    pub fn status(&self) -> deadpool_postgres::Status {
-        self.inner.status()
+    /// The returned [`DjogiPoolStatus`] carries `max_size` (configured
+    /// upper bound), `size` (physical connections opened), and
+    /// `available` (idle connections ready for checkout). The call is a
+    /// cheap snapshot read — it does not lock the pool or block on
+    /// in-flight checkouts.
+    pub fn status(&self) -> DjogiPoolStatus {
+        DjogiPoolStatus::from(self.inner.status())
     }
 
     /// Acquire a `PgConnection` from the pool.
