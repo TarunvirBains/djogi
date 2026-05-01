@@ -32,12 +32,17 @@
 //!         FROM <source_table> s
 //!         WHERE <root_predicate or TRUE>
 //!         UNION ALL
-//!         -- recursive: walk every self-FK edge
-//!         SELECT closure.source_id, parent.id, closure.depth + 1,
+//!         -- recursive: walk every self-FK edge. The closure CTE only
+//!         -- carries `(source_id, ancestor_id, depth, path)` — it does
+//!         -- not project T's self-FK columns — so each branch double-
+//!         -- joins the source table: first to resolve the current
+//!         -- ancestor row (`a`) by `closure.ancestor_id`, then to
+//!         -- follow `a.<edge_col>` up to its parent row (`p`).
+//!         SELECT closure.source_id, p.id, closure.depth + 1,
 //!                closure.path || ARRAY['<edge_col>']
 //!         FROM __djogi_closure closure
-//!         JOIN <source_table> parent
-//!           ON parent.id = closure.<edge_col>
+//!         JOIN <source_table> a ON a.id = closure.ancestor_id
+//!         JOIN <source_table> p ON p.id = a.<edge_col>
 //!         WHERE closure.depth < <max_depth>?
 //!         -- one UNION ALL branch per self-FK edge
 //!     ) CYCLE source_id, ancestor_id SET is_cycle USING cycle_path
@@ -467,7 +472,15 @@ where
 
     // ── UNION ALL — recursive term, one branch per self-FK edge ─────────
     //
-    // Walks ANCESTORS direction: `parent.id = closure.<edge_col>`.
+    // Walks ANCESTORS direction. The closure CTE only carries
+    // `(source_id, ancestor_id, depth, path)` — it does NOT carry the
+    // self-FK columns of `T`. So to step from "current ancestor" to
+    // "ancestor's parent", we join the source table twice: first to
+    // resolve the current `ancestor_id` back to its full row (`a`),
+    // then to follow `a.<edge_col>` up to the next ancestor (`p`).
+    //
+    // `p.id` becomes the new `ancestor_id` for the next layer.
+    //
     // Each branch carries its own depth-cap bind because branches
     // share no SQL scope and `SqlAccumulator` does not splice
     // pre-allocated `$n` slots. Multi-edge models pay one extra bind
@@ -475,7 +488,7 @@ where
     // ordering stable.
     let edges: Vec<&'static str> = T::descriptor().self_fk_columns().collect();
     for edge in edges.iter() {
-        acc.push_sql(" UNION ALL SELECT closure.source_id, parent.id, closure.depth + 1, ");
+        acc.push_sql(" UNION ALL SELECT closure.source_id, p.id, closure.depth + 1, ");
         acc.push_sql("closure.path || ARRAY['");
         // `edge` came from `descriptor.self_fk_columns()` which
         // surfaces the field name verbatim — already
@@ -483,7 +496,9 @@ where
         acc.push_sql(edge);
         acc.push_sql("'] FROM __djogi_closure closure JOIN ");
         acc.push_sql(T::table_name());
-        acc.push_sql(" parent ON parent.id = closure.");
+        acc.push_sql(" a ON a.id = closure.ancestor_id JOIN ");
+        acc.push_sql(T::table_name());
+        acc.push_sql(" p ON p.id = a.");
         acc.push_sql(edge);
         if let Some(n) = max_depth {
             acc.push_sql(" WHERE closure.depth < ");
@@ -895,9 +910,25 @@ mod tests {
             union_count, 1,
             "single-edge closure must emit exactly 1 UNION ALL keyword: {sql}"
         );
+        // ANCESTORS direction: closure CTE only carries `(source_id,
+        // ancestor_id, depth, path)`, so we double-join the source
+        // table — once to resolve the current ancestor row (`a`),
+        // once to step up via `a.<edge_col>` to the new ancestor (`p`).
         assert!(
-            sql.contains("parent.id = closure.parent_id"),
-            "ANCESTORS direction: parent.id = closure.<edge_col>: {sql}"
+            sql.contains("a ON a.id = closure.ancestor_id"),
+            "must resolve ancestor row via closure.ancestor_id: {sql}"
+        );
+        assert!(
+            sql.contains("p ON p.id = a.parent_id"),
+            "must step from ancestor row to parent via self-FK column: {sql}"
+        );
+        // Regression guard against the original BLOCK shape (B4 round-2
+        // fixup): joining directly on `closure.<edge_col>` would
+        // reference a column the CTE does not project.
+        assert!(
+            !sql.contains("parent.id = closure.parent_id"),
+            "must NOT join on closure.<edge_col> — closure CTE only \
+             projects (source_id, ancestor_id, depth, path): {sql}"
         );
     }
 
@@ -912,12 +943,12 @@ mod tests {
             "two-edge closure must emit 2 UNION ALL keywords (one per edge): {sql}"
         );
         assert!(
-            sql.contains("parent.id = closure.mother_id"),
-            "first branch must JOIN on mother_id: {sql}"
+            sql.contains("p ON p.id = a.mother_id"),
+            "first branch must step from ancestor row to parent via mother_id: {sql}"
         );
         assert!(
-            sql.contains("parent.id = closure.father_id"),
-            "second branch must JOIN on father_id: {sql}"
+            sql.contains("p ON p.id = a.father_id"),
+            "second branch must step from ancestor row to parent via father_id: {sql}"
         );
         assert!(
             sql.contains("ARRAY['mother_id']"),
