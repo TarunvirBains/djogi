@@ -10,16 +10,25 @@
 //! # Why a public ergonomic surface
 //!
 //! `DjogiPool::connect(url)` is fine for development, but production
-//! services need to size the pool against their concurrency budget and
-//! bound the wait for a slot so a saturated pool fails fast instead of
-//! queueing forever. Phase 8-Zero introduces [`DjogiPool::builder`], which
-//! exposes `.max_size` and `.timeout` knobs and is the canonical entry
-//! point for non-default construction. `connect(url)` is preserved as
-//! sugar for `DjogiPool::builder(url).build().await`.
+//! services need three things on top:
 //!
-//! Phase 8-Zero T3 adds a `post_connect` setup hook on the builder; T4 will
-//! follow with `with_client`, the raw-borrow escape hatch for `COPY` and
-//! similar operations that cannot route through `DjogiContext`.
+//! 1. **Tunable size and timeout.** The default `max_size = 5` is fine
+//!    for development; production sizes the pool against expected
+//!    concurrent database-touching tasks and bounds the wait for a slot
+//!    so saturated pools fail fast.
+//! 2. **A per-physical-connection setup hook.** `SET heer.node_id`,
+//!    `SET application_name`, `SET statement_timeout` belong on every
+//!    fresh connection; running them on every checkout would conflict
+//!    with [`DjogiContext::set_tenant`](crate::context::DjogiContext::set_tenant)'s
+//!    transaction-local `set_config('app.tenant_id', $1, true)`.
+//! 3. **A raw-client escape hatch.** `COPY`, server-side cursors,
+//!    `CREATE EXTENSION`, and third-party crates that take a
+//!    `&tokio_postgres::Client` cannot route through `DjogiContext`.
+//!
+//! Phase 8-Zero introduces [`DjogiPool::builder`] (T1+T2: `.max_size`,
+//! `.timeout`; T3: `.post_connect`) and [`DjogiPool::with_client`] (T4)
+//! to cover all three. `connect(url)` is preserved as sugar for
+//! `DjogiPool::builder(url).build().await`.
 //!
 //! # Where the `post_connect` hook fits in deadpool's lifecycle
 //!
@@ -51,6 +60,32 @@ use tokio_postgres::NoTls;
 /// the same pool size as before. Production deployments override this
 /// through [`DjogiPoolBuilder::max_size`].
 pub const DEFAULT_MAX_SIZE: usize = 5;
+
+/// Boxed future returned by closures handed to [`DjogiPool::with_client`].
+///
+/// Exposed at module scope so adopters can spell the lifetime explicitly
+/// when factoring a closure body into a named function:
+///
+/// ```ignore
+/// fn install_extension<'a>(
+///     client: &'a mut tokio_postgres::Client,
+/// ) -> ClientFuture<'a, ()> {
+///     Box::pin(async move {
+///         client
+///             .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
+///             .await
+///             .map_err(djogi::DjogiError::from)
+///     })
+/// }
+/// ```
+///
+/// Adopters that already use inline `Box::pin(async move { ... })` blocks
+/// rarely need to spell this alias themselves — the existential `Future`
+/// produced by an `async` block satisfies the bound directly. The alias
+/// exists for the cases where adopters factor the closure body out into a
+/// named function (helpful for long migrations or when the same setup is
+/// reused across multiple pools).
+pub type ClientFuture<'a, R> = Pin<Box<dyn Future<Output = Result<R, DjogiError>> + Send + 'a>>;
 
 /// Type alias for the boxed `post_connect` closure stored on the builder.
 ///
@@ -136,6 +171,89 @@ impl DjogiPool {
     pub(crate) async fn get(&self) -> Result<PgConnection, DjogiError> {
         let obj = self.inner.get().await.map_err(map_pool_err)?;
         Ok(PgConnection::new(obj))
+    }
+
+    /// Borrow a raw `tokio_postgres::Client` for the duration of a
+    /// closure.
+    ///
+    /// # When to reach for this
+    ///
+    /// `with_client` is the explicit escape hatch for operations that
+    /// **cannot** route through [`DjogiContext`](crate::context::DjogiContext):
+    ///
+    /// - `COPY FROM STDIN` / `COPY TO STDOUT` and other binary-protocol
+    ///   features that need direct driver access.
+    /// - Server-side cursors that streaming consumers drive via the
+    ///   driver API rather than through `QuerySet::stream`.
+    /// - `CREATE EXTENSION` and other DDL that runs once at cold-start
+    ///   migration time, before any model context exists.
+    /// - Bridging into third-party crates (e.g.
+    ///   `heeranjid::postgres_schema::install_schema`) that take a
+    ///   `&tokio_postgres::Client`.
+    ///
+    /// # When NOT to reach for this
+    ///
+    /// **`with_client` is NOT for raw `SELECT` queries.** Adopter code
+    /// that needs a raw query should use
+    /// [`DjogiContext::raw_query`](crate::context::DjogiContext::raw_query) /
+    /// [`DjogiContext::raw_execute`](crate::context::DjogiContext::raw_execute),
+    /// which keep the call inside the framework's pool / transaction
+    /// substrate, surface decode helpers, and compose with
+    /// [`atomic`](crate::transaction::atomic) scopes (so the raw query
+    /// participates in the same transaction as the surrounding model
+    /// operations).
+    ///
+    /// # Connection lifecycle
+    ///
+    /// The connection is checked out before the closure runs and
+    /// returned to the pool when the closure's future resolves — on
+    /// success **or** when the closure panics. The owning `Object` is
+    /// dropped at the end of `with_client`, so deadpool's drop-side
+    /// return-to-pool path runs regardless of how the closure exits.
+    /// A panic during the closure unwinds through the `with_client`
+    /// frame, drops the `Object`, and leaves the pool in a consistent
+    /// state.
+    ///
+    /// # Session-affecting commands
+    ///
+    /// Session-level state set inside the closure (`SET ROLE`,
+    /// `SET search_path`, advisory locks, prepared statements outside the
+    /// statement cache) leaves the connection in a non-default state when
+    /// it returns to the pool. Prefer transaction-local settings
+    /// (`SET LOCAL ...`, `set_config(name, value, true)`,
+    /// `BEGIN; ... COMMIT;`) or reset what you set before the closure
+    /// resolves. The pool's recycler does NOT issue `DISCARD ALL` on
+    /// return — that is a deliberate trade-off (recycler latency cost
+    /// vs cleanliness) inherited from `deadpool_postgres`'s default
+    /// `RecyclingMethod::Fast`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// pool.with_client(|client| {
+    ///     Box::pin(async move {
+    ///         client
+    ///             .batch_execute("CREATE EXTENSION IF NOT EXISTS postgis")
+    ///             .await
+    ///             .map_err(djogi::DjogiError::from)
+    ///     })
+    /// }).await?;
+    /// ```
+    pub async fn with_client<F, R>(&self, f: F) -> Result<R, DjogiError>
+    where
+        F: for<'a> FnOnce(&'a mut tokio_postgres::Client) -> ClientFuture<'a, R>,
+    {
+        // `Object` derefs to `ClientWrapper`, which derefs to
+        // `tokio_postgres::Client`. Take a `&mut Client` borrow that
+        // lives for exactly the closure's body.
+        let mut obj = self.inner.get().await.map_err(map_pool_err)?;
+        let client: &mut tokio_postgres::Client = &mut obj;
+        let result = f(client).await;
+        // `obj` drops here — deadpool returns the connection to the
+        // pool whether `result` is `Ok` or `Err`. If the closure
+        // panicked, the unwind also drops `obj`, returning the
+        // connection to the pool.
+        result
     }
 }
 
@@ -483,6 +601,30 @@ mod tests {
         let err = DjogiError::PoolTimeout { phase: "wait" };
         assert!(err.is_transient(), "PoolTimeout must be transient");
         assert!(!err.is_terminal(), "PoolTimeout must NOT be terminal");
+    }
+
+    /// `with_client` accepts the documented closure shape. Live
+    /// execution (closure body actually running against a checked-out
+    /// connection) requires a reachable Postgres and lives in the T6
+    /// integration tests (`pool_with_client_returns_connection` /
+    /// `pool_with_client_returns_connection_on_panic`).
+    #[allow(dead_code)] // type-check only — body never runs
+    fn with_client_accepts_documented_closure_shape() {
+        fn _check(
+            pool: &DjogiPool,
+        ) -> impl std::future::Future<Output = Result<i32, DjogiError>> + '_ {
+            pool.with_client(|client| {
+                Box::pin(async move {
+                    // Body never runs in this static type-check;
+                    // suppress the unused-variable warning by binding
+                    // and dropping. The compile-time assertion is that
+                    // a `&mut tokio_postgres::Client` body returning
+                    // `Result<i32, DjogiError>` satisfies the bound.
+                    let _ = client;
+                    Ok(42)
+                })
+            })
+        }
     }
 
     /// The builder accepts a `post_connect` closure with the documented
