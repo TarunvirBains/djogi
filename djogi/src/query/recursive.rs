@@ -896,14 +896,12 @@ where
     /// Return the first reachable row, or `None` if the walk yields
     /// no rows.
     ///
-    /// Internally piggy-backs on [`fetch_all`](Self::fetch_all) +
-    /// `take(1)` rather than a tailored `LIMIT 1` because applying
-    /// `LIMIT` to the outer SELECT after the CYCLE / SEARCH machinery
-    /// has run is the same physical work as fetching one row — the
-    /// CTE materialises lazily under Postgres's recursive planner and
-    /// stops as soon as the outer cursor is closed. Pre-1.0 we keep
-    /// the implementation simple; if profiling shows the redundant
-    /// allocation matters, a dedicated emitter is a one-line change.
+    /// Emits the same recursive CTE as `fetch_all` with a tailored
+    /// outer `LIMIT 1`. The `LIMIT` lives on the outer SELECT — after
+    /// CYCLE filtering and SEARCH / user ORDER BY — so callers get
+    /// the *first* row by their declared traversal order, not an
+    /// arbitrary planner choice. Without `LIMIT 1` the underlying
+    /// `query_opt` errors when the walk yields more than one row.
     pub fn first<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -914,7 +912,8 @@ where
         async move {
             check_edges_present::<T>(&self.edges)?;
             auto_set_tenant::<T>(ctx).await?;
-            let acc = build_recursive_select(self);
+            let mut acc = build_recursive_select(self);
+            acc.push_sql(" LIMIT 1");
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let opt = ctx.query_opt(&sql, &params).await?;
@@ -1344,6 +1343,23 @@ mod tests {
         assert!(
             sql.contains("LIMIT 1)"),
             "exists subquery must include LIMIT 1: {sql}"
+        );
+    }
+
+    #[test]
+    fn first_terminal_appends_outer_limit_one() {
+        let qs = root();
+        let mut acc = build_recursive_select(qs);
+        acc.push_sql(" LIMIT 1");
+        let sql = acc.sql();
+        assert!(
+            sql.trim_end().ends_with(" LIMIT 1"),
+            "first terminal must append outer LIMIT 1 so query_opt does not \
+             error on multi-row recursive walks: {sql}"
+        );
+        assert!(
+            !sql.contains("EXISTS"),
+            "first must use the row projection (not the EXISTS wrap): {sql}"
         );
     }
 
