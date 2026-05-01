@@ -21,12 +21,73 @@
 //! Postgres. This file owns the rest.
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use djogi::DjogiError;
 use djogi::pg::pool::{DjogiPool, ENV_DATABASE_MAX_CONNECTIONS};
 use djogi::testing::{TestDbCleanup, setup_test_db, teardown_test_db};
+use tokio::sync::{Mutex, MutexGuard, oneshot};
+
+/// Process-global async lock for tests that mutate the
+/// `DJOGI_DATABASE_MAX_CONNECTIONS` env var.
+///
+/// `cargo test --tests` runs integration tests in this binary
+/// concurrently by default — the lib-test `--test-threads=1` flag does
+/// NOT propagate to integration targets. The env-driven tests below
+/// would race each other (one test's mutation observed by the other,
+/// or one test's cleanup observed before the other reads) without
+/// serialization. We use `tokio::sync::Mutex` (not `std::sync::Mutex`)
+/// because the test body holds the guard across `.await` points —
+/// `std::sync::MutexGuard` is `!Send` and clippy rightly rejects
+/// holding it across an await.
+///
+/// The guard does not need to wrap any state — its sole job is to
+/// serialize entry. Each test pairs the lock with [`EnvGuard`] which
+/// restores the prior env value on drop, so a panic mid-test cannot
+/// poison the rest of the process.
+async fn env_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(())).lock().await
+}
+
+/// RAII guard around an env-var mutation. Records the prior value at
+/// construction; restores it (or removes the variable) on drop, even
+/// if the test panics.
+struct EnvGuard {
+    name: &'static str,
+    prior: Option<String>,
+}
+
+impl EnvGuard {
+    fn set(name: &'static str, value: &str) -> Self {
+        // Safety: process-global mutation; the surrounding test holds
+        // `env_lock()` so no other env-mutating test runs concurrently.
+        let prior = std::env::var(name).ok();
+        unsafe { std::env::set_var(name, value) };
+        Self { name, prior }
+    }
+
+    fn unset(name: &'static str) -> Self {
+        let prior = std::env::var(name).ok();
+        unsafe { std::env::remove_var(name) };
+        Self { name, prior }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        // Safety: same as `set`/`unset` above — caller holds
+        // `env_lock()`.
+        unsafe {
+            match self.prior.take() {
+                Some(v) => std::env::set_var(self.name, v),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+}
 
 /// Helper: provision a per-test Postgres database via the standard
 /// `#[djogi_test]` harness and return the per-test URL alongside the
@@ -110,22 +171,30 @@ async fn pool_post_connect_fires_once_per_physical_connection() {
 }
 
 /// A `post_connect` hook that returns `Err` aborts the originating
-/// `pool.get()` (or `with_client` checkout). The error surfaces as a
-/// `DjogiError::Db` whose message carries the `post_connect:` prefix
-/// added by the lowering, so adopters can grep server-side logs for
-/// the failed-startup case.
+/// `pool.get()` (or `with_client` checkout). The lowering inside
+/// `DjogiPoolBuilder::build` prepends a `post_connect:` prefix so
+/// caller-side log lines / tracing spans can grep for the
+/// failed-startup case explicitly.
+///
+/// To prove the **lowering** (not just that the hook ran), the hook's
+/// own error message uses a sentinel string that does NOT itself
+/// contain `post_connect`. The post-checkout error message must
+/// nevertheless contain `post_connect:` — that is the lowering
+/// contract. If a future refactor stops adding the prefix this test
+/// will break.
 #[tokio::test]
 async fn pool_post_connect_error_aborts_checkout() {
     let (cleanup, url) = provision_test_db().await;
 
+    // Sentinel chosen so it cannot accidentally satisfy the
+    // `post_connect` prefix assertion below — any contains("post_connect")
+    // hit must come from the lowering, not from the hook body.
+    const HOOK_SENTINEL: &str = "djogi-cluster-a-t6-hook-failure-sentinel";
+
     let pool = DjogiPool::builder(&url)
         .max_size(1)
         .post_connect(|_client| {
-            Box::pin(async {
-                Err(DjogiError::Validation(
-                    "intentional post_connect failure for the test".into(),
-                ))
-            })
+            Box::pin(async { Err(DjogiError::Validation(HOOK_SENTINEL.into())) })
         })
         .build()
         .await
@@ -142,9 +211,15 @@ async fn pool_post_connect_error_aborts_checkout() {
 
     let err = result.expect_err("post_connect Err must abort the checkout");
     let msg = format!("{err}");
+    // The lowering adds `post_connect:`; the hook body's sentinel must
+    // also be present so the prefix-assertion is non-tautological.
     assert!(
         msg.contains("post_connect"),
-        "error must carry the post_connect lowering prefix; got: {msg}"
+        "error message must carry the post_connect lowering prefix; got: {msg}"
+    );
+    assert!(
+        msg.contains(HOOK_SENTINEL),
+        "error message must preserve the hook's own message body; got: {msg}"
     );
 
     teardown_test_db(cleanup).await;
@@ -160,6 +235,14 @@ async fn pool_post_connect_error_aborts_checkout() {
 ///
 /// This is the v3 spec's PR-exit assertion ("`max_size(2)` blocks third
 /// concurrent acquire" + "Timeout error mapping to `DjogiError::PoolTimeout`").
+///
+/// Synchronisation: each holder task signals via a `oneshot` channel
+/// once `with_client` has handed it the client and the `SELECT 1` that
+/// proves the connection is alive has completed. The third checkout
+/// runs only after both signals have been received, so the test never
+/// races on a sleep-based scheduling guess (CI hosts and slow
+/// connection-create paths would otherwise let the third checkout slip
+/// through before saturation).
 #[tokio::test]
 async fn pool_max_size_saturation_surfaces_pool_timeout() {
     let (cleanup, url) = provision_test_db().await;
@@ -171,40 +254,51 @@ async fn pool_max_size_saturation_surfaces_pool_timeout() {
         .await
         .expect("pool builds");
 
-    // Hold two long-running checkouts so the pool is saturated. Each
-    // closure parks its connection on a `pg_sleep` for far longer than
-    // the wait timeout — the third checkout must fail before they
-    // finish.
+    // Each holder has two channels: `ready_tx` reports back to the
+    // test that its connection is in-hand, and `release_rx` blocks the
+    // holder until the test allows it to exit. Without `release_rx`
+    // the holder might exit before the third checkout starts and
+    // contradict the saturation invariant.
+    let (ready_a_tx, ready_a_rx) = oneshot::channel::<()>();
+    let (ready_b_tx, ready_b_rx) = oneshot::channel::<()>();
+    let (release_a_tx, release_a_rx) = oneshot::channel::<()>();
+    let (release_b_tx, release_b_rx) = oneshot::channel::<()>();
+
     let p1 = pool.clone();
-    let p2 = pool.clone();
     let hold_a = tokio::spawn(async move {
         p1.with_client(|client| {
             Box::pin(async move {
                 let _ = client
-                    .query_one("SELECT pg_sleep(0.5)", &[])
+                    .query_one("SELECT 1", &[])
                     .await
                     .map_err(djogi::DjogiError::from)?;
+                let _ = ready_a_tx.send(());
+                let _ = release_a_rx.await;
                 Ok::<_, DjogiError>(())
             })
         })
         .await
     });
+    let p2 = pool.clone();
     let hold_b = tokio::spawn(async move {
         p2.with_client(|client| {
             Box::pin(async move {
                 let _ = client
-                    .query_one("SELECT pg_sleep(0.5)", &[])
+                    .query_one("SELECT 1", &[])
                     .await
                     .map_err(djogi::DjogiError::from)?;
+                let _ = ready_b_tx.send(());
+                let _ = release_b_rx.await;
                 Ok::<_, DjogiError>(())
             })
         })
         .await
     });
 
-    // Yield once so the two holders enter their pg_sleep before we try
-    // the saturating third checkout.
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Wait for both holders to confirm they own a checked-out client.
+    // After both channels close the pool is provably saturated.
+    ready_a_rx.await.expect("holder A reports ready");
+    ready_b_rx.await.expect("holder B reports ready");
 
     let third = pool
         .with_client(|client| {
@@ -221,8 +315,10 @@ async fn pool_max_size_saturation_surfaces_pool_timeout() {
         other => panic!("expected PoolTimeout(wait), got: {other:?}"),
     }
 
-    // Drain holders before tearing down so the cleanup path has live
-    // connections to recycle.
+    // Release the holders so they can return their connections; we
+    // need live connections to teardown.
+    let _ = release_a_tx.send(());
+    let _ = release_b_tx.send(());
     let _ = hold_a.await.expect("join holder a");
     let _ = hold_b.await.expect("join holder b");
 
@@ -362,14 +458,17 @@ async fn pool_with_client_detaches_on_panic() {
 
 /// `from_database_config` honours `[database].max_connections` when env
 /// is unset.
+///
+/// Serialised via [`env_lock`] so the env-var mutation cannot race with
+/// the `from_database_config_env_overrides_toml` sibling. The
+/// [`EnvGuard`] restores the prior value on drop, even if the test
+/// panics.
 #[tokio::test]
 async fn from_database_config_honours_toml_max_connections() {
+    let _lock = env_lock().await;
+    let _guard = EnvGuard::unset(ENV_DATABASE_MAX_CONNECTIONS);
+
     let (cleanup, url) = provision_test_db().await;
-    // Make sure a stale env variable from another test doesn't bleed
-    // into this one.
-    // Safety: process-global mutation; lib tests run single-threaded
-    // under `--test-threads=1`.
-    unsafe { std::env::remove_var(ENV_DATABASE_MAX_CONNECTIONS) };
 
     let cfg = djogi::config::DatabaseConfig {
         url: url.clone(),
@@ -391,11 +490,17 @@ async fn from_database_config_honours_toml_max_connections() {
 
 /// `DJOGI_DATABASE_MAX_CONNECTIONS` overrides the TOML field — env wins
 /// in the resolution chain.
+///
+/// Serialised via [`env_lock`] so the env-var mutation cannot race with
+/// the `from_database_config_honours_toml_max_connections` sibling. The
+/// [`EnvGuard`] restores the prior value on drop so a panic mid-test
+/// cannot leak the override into the rest of the process.
 #[tokio::test]
 async fn from_database_config_env_overrides_toml() {
+    let _lock = env_lock().await;
+    let _guard = EnvGuard::set(ENV_DATABASE_MAX_CONNECTIONS, "21");
+
     let (cleanup, url) = provision_test_db().await;
-    // Safety: process-global mutation; lib tests run single-threaded.
-    unsafe { std::env::set_var(ENV_DATABASE_MAX_CONNECTIONS, "21") };
 
     let cfg = djogi::config::DatabaseConfig {
         url: url.clone(),
@@ -411,10 +516,6 @@ async fn from_database_config_env_overrides_toml() {
         21,
         "env var must beat [database].max_connections in resolution"
     );
-
-    // Clean up so subsequent tests in the same process don't see this
-    // value.
-    unsafe { std::env::remove_var(ENV_DATABASE_MAX_CONNECTIONS) };
 
     teardown_test_db(cleanup).await;
 }
