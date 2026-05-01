@@ -410,6 +410,50 @@ pub enum DjogiError {
         /// The alias string that appears more than once in the SELECT list.
         alias: String,
     },
+
+    /// A pool checkout exceeded its configured wait / create / recycle
+    /// timeout. Pairs with
+    /// [`DjogiPoolBuilder::timeout`](crate::pg::pool::DjogiPoolBuilder::timeout)
+    /// so callers can branch on saturation explicitly without inspecting
+    /// the underlying `deadpool_postgres::PoolError`.
+    ///
+    /// `phase` distinguishes the deadpool timeout type:
+    ///
+    /// - `"wait"` — the pool is at `max_size` and no slot freed within the
+    ///   configured wait window. Tune `max_size` upward or stop holding
+    ///   connections across awaits unrelated to the database.
+    /// - `"create"` — `Manager::create` (opening a fresh socket) timed out.
+    ///   Network or DB-side problem, not pool sizing.
+    /// - `"recycle"` — recycling an existing object on the checkout path
+    ///   timed out. Same root cause as `"create"` for `Verified`/`Clean`
+    ///   recycling methods that issue queries.
+    ///
+    /// All three are saturation / slow-recovery signals: the right
+    /// response is to back off and retry, not to fail the operation
+    /// permanently. [`DjogiError::is_transient`] returns `true` for
+    /// `PoolTimeout` so generic retry helpers that branch on
+    /// `is_transient` (or its inverse `is_terminal`) treat pool
+    /// timeouts as retryable rather than dead-lettering them as
+    /// permanent business failures.
+    ///
+    /// Note that the framework's `retry_on_conflict` helper today
+    /// retries on every transient classification, which would mean
+    /// retrying pool timeouts immediately and likely tripping the
+    /// timeout again. Callers that wrap their work in
+    /// `retry_on_conflict` and want a different policy for
+    /// `PoolTimeout` should match on it explicitly and add their own
+    /// backoff. This is an honest classification — `PoolTimeout`
+    /// genuinely is transient — paired with caller-side policy where
+    /// finer-grained behaviour matters.
+    #[error("pool timeout ({phase})")]
+    #[non_exhaustive]
+    PoolTimeout {
+        /// Which deadpool timeout fired — `"wait"`, `"create"`, or
+        /// `"recycle"`. A `&'static str` because the set of phases is
+        /// closed and tracking the exact variant lets callers match on it
+        /// in tracing without depending on deadpool's enum.
+        phase: &'static str,
+    },
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -511,6 +555,7 @@ impl DjogiError {
     /// | [`MissingIdempotencyKey`](Self::MissingIdempotencyKey) | terminal |
     /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
     /// | [`StreamOutsideTransaction`](Self::StreamOutsideTransaction) | terminal |
+    /// | [`PoolTimeout`](Self::PoolTimeout) | transient |
     ///
     /// The Db row reflects the existing `is_lock_error`
     /// classifier: Postgres SQLSTATEs `40001` (serialization
@@ -524,6 +569,13 @@ impl DjogiError {
         match self {
             DjogiError::LockConflict(_) => true,
             DjogiError::Db(e) => is_lock_error(e),
+            // Pool saturation / slow connection creation / slow recycle
+            // are all retry-with-backoff conditions, not permanent
+            // failures. Generic retry helpers branching on
+            // `is_transient` should treat these as transient; callers
+            // wanting bespoke `PoolTimeout`-vs-`LockConflict` policy
+            // should match on the variant explicitly.
+            DjogiError::PoolTimeout { .. } => true,
             _ => false,
         }
     }
@@ -687,6 +739,14 @@ mod tests {
         assert!(
             DjogiError::gone_aggregate("M", "42".into(), "deleted").is_terminal(),
             "GoneAggregate must be terminal — retry cannot resurrect a deleted aggregate"
+        );
+        assert!(
+            DjogiError::PoolTimeout { phase: "wait" }.is_transient(),
+            "PoolTimeout must be transient — saturation is a retry-with-backoff condition"
+        );
+        assert!(
+            !DjogiError::PoolTimeout { phase: "wait" }.is_terminal(),
+            "PoolTimeout must NOT be terminal — generic retry helpers must not dead-letter it"
         );
     }
 }

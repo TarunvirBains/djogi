@@ -35,7 +35,7 @@ fn default_config_has_sensible_defaults() {
     figment::Jail::expect_with(|jail| {
         jail.set_env("DATABASE_URL", "postgres://localhost/test");
         let config = DjogiConfig::load()?;
-        assert_eq!(config.database.max_connections, 10);
+        assert!(config.database.max_connections.is_none());
         assert!(!config.database.dev_mode);
         assert_eq!(config.server.port, 8000);
         Ok(())

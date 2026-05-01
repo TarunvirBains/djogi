@@ -81,6 +81,31 @@ pub struct TestDbCleanup {
     db_name: String,
 }
 
+impl TestDbCleanup {
+    /// The per-test database name — ASCII alphanumeric + underscore.
+    ///
+    /// Tests that need to open their own [`DjogiPool`] against the
+    /// per-test database (rather than reusing the one inside
+    /// [`DjogiContext`]) combine this with [`Self::test_url`] to build
+    /// a URL pointing at the same DB the harness provisioned. Useful
+    /// for verifying pool-level invariants — `post_connect`
+    /// invocation count across multiple checkouts, `max_size`
+    /// saturation, `with_client` lifecycle assertions — that need a
+    /// pool whose size and hooks are under the test's control.
+    pub fn db_name(&self) -> &str {
+        &self.db_name
+    }
+
+    /// Build a Postgres URL pointing at the per-test database.
+    ///
+    /// Substitutes [`Self::db_name`] for the admin URL's path
+    /// component. Equivalent to the URL the harness used internally
+    /// to open the [`DjogiPool`] backing the returned `DjogiContext`.
+    pub fn test_url(&self) -> Result<String, DjogiError> {
+        replace_db_in_url(&self.admin_url, &self.db_name)
+    }
+}
+
 /// Set up a fresh per-test database and return the cleanup token + context.
 ///
 /// Convenience wrapper over [`setup_test_db_with_extensions`] for callers

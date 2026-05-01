@@ -111,9 +111,35 @@ async fn main() -> Result<()> {
         "DATABASE_URL must be set, e.g. \
          postgres://djogi:djogi@localhost:5432/djogi_test",
     )?;
-    let pool = djogi::pg::pool::DjogiPool::connect(&database_url)
+
+    // Build the pool through the `DjogiPool` builder. The
+    // `post_connect` hook runs once per physical connection and pins
+    // `heer.node_id = '1'` for the session — node 1 is the default
+    // seeded by `heeranjid::postgres_schema::seed_default_node` in the
+    // migrate path. Setting it here at the session level means the
+    // example also runs against a database the connecting role does
+    // not own (where ALTER DATABASE would fail) — useful for CI
+    // sandboxes.
+    //
+    // The example pins to `"1"` deliberately — supporting an
+    // arbitrary `HEER_NODE_ID` would require also seeding the
+    // requested node row before persisting the GUC, otherwise
+    // `current_heer_node_id()` would later refuse to mint IDs for an
+    // unregistered node. Production deployments register their nodes
+    // through HeeRanjID's own provisioning path, not through this
+    // example.
+    let pool = djogi::pg::pool::DjogiPool::builder(&database_url)
+        .post_connect(|client| {
+            Box::pin(async move {
+                client
+                    .batch_execute("SET heer.node_id = '1'")
+                    .await
+                    .map_err(djogi::DjogiError::from)
+            })
+        })
+        .build()
         .await
-        .context("failed to connect to Postgres")?;
+        .context("failed to construct DjogiPool")?;
     let mut ctx = djogi::DjogiContext::from_pool(pool);
 
     match cli.cmd {

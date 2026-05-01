@@ -44,7 +44,13 @@ fn default_profile() -> String {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct DatabaseConfig {
     pub url: String,
-    pub max_connections: u32,
+    /// Connection-pool size override. `None` (or absent in TOML) means
+    /// the env > Djogi.toml > builder-default chain falls through to
+    /// the builder default; an explicit non-zero value here overrides
+    /// the default. Zero is treated identically to `None` so a user
+    /// typo cannot silently zero the pool.
+    #[serde(default)]
+    pub max_connections: Option<u32>,
     pub dev_mode: bool,
 }
 
@@ -155,7 +161,7 @@ impl Default for DjogiConfig {
         Self {
             database: DatabaseConfig {
                 url: String::new(),
-                max_connections: 10,
+                max_connections: None,
                 dev_mode: false,
             },
             server: ServerConfig {
@@ -261,6 +267,42 @@ mod tests {
         assert!(!with_profile("staging").is_production());
         assert!(!with_profile("test").is_production());
         assert!(!with_profile("").is_production());
+    }
+
+    #[test]
+    fn database_max_connections_default_is_none() {
+        let cfg = DjogiConfig::default();
+        assert!(cfg.database.max_connections.is_none());
+    }
+
+    /// Loading a TOML that omits `[database].max_connections` keeps
+    /// `None` rather than silently substituting a non-zero default —
+    /// the `from_database_config` path must be able to fall through to
+    /// the builder default.
+    #[test]
+    #[allow(clippy::result_large_err)] // Jail returns figment::Error
+    fn loaded_config_without_max_connections_is_none() {
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "Djogi.toml",
+                r#"
+                [database]
+                url = "postgres://localhost/test"
+                dev_mode = false
+
+                [server]
+                host = "0.0.0.0"
+                port = 8000
+                "#,
+            )?;
+            // No DATABASE_URL or DJOGI_DATABASE_MAX_CONNECTIONS in jail.
+            let cfg = DjogiConfig::load().expect("load should succeed");
+            assert!(
+                cfg.database.max_connections.is_none(),
+                "TOML without max_connections must remain None"
+            );
+            Ok(())
+        });
     }
 
     #[test]
