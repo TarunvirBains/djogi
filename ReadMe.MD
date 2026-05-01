@@ -4,7 +4,7 @@
 
 ---
 
-Most Rust data libraries solve one slice — a query builder, or migrations, or an audit log. Djogi treats the data tier as the primary derivation target: every concern that touches your model definition (typed queries, schema evolution, change tracking, RLS, in-memory cache, cross-runtime predicate algebra) lives in one integrated stack rather than a dozen disjoint crates you wire together yourself.
+Most Rust data libraries solve one slice — a query builder, or migrations, or an audit log. Djogi treats the data tier as the primary derivation target: every concern that touches your model definition (typed queries, schema evolution, change tracking, RLS, model projections via visages, in-memory cache, cross-runtime predicate algebra) lives in one integrated stack rather than a dozen disjoint crates you wire together yourself.
 
 Define your data schema as Rust structs, and Djogi derives the surrounding data machinery — ORM, migrations, admin UI, audit trail, shell bindings, JSONB schema handling. One definition, one data-layer derivation chain.
 
