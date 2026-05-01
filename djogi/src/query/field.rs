@@ -1313,7 +1313,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     }
 }
 
-// ── Phase 8-Zero Cluster C T16 — convex_hull spatial aggregate ──────────────
+// Convex_hull spatial aggregate
 //
 // `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` folds a per-group
 // set of geographies into the smallest convex polygon enclosing them. Mirrors
@@ -2379,7 +2379,7 @@ mod distance_tests {
         let _expr: crate::expr::Expr<f64> = field.distance_to(&center);
     }
 
-    // ── Phase 8-Zero Cluster C T16 — convex_hull typed surface tests ─────────
+    // Convex_hull typed surface tests
 
     /// `FieldRef<M, GeoPoint>::convex_hull()` must produce an
     /// `AggregateExpr<Polygon>` whose underlying node is the
@@ -2422,7 +2422,7 @@ mod distance_tests {
         panic!("expected ConvexHull on Polygon field");
     }
 
-    // ── Phase 8-Zero Cluster C T17 — area_of / area_of_intersection typed ────
+    // area_of / area_of_intersection typed surface tests
 
     /// `Expr::area_of(&geom)` must produce an `Expr<f64>` wrapping the
     /// `SpatialExpr::Area` IR variant with the EWKB bytes captured.

@@ -84,15 +84,23 @@ mod annotation_slot_sealed {
     pub trait Sealed {}
 }
 
-const AGG_ALIASES: [&str; 4] = [
-    "__djogi_agg_0",
-    "__djogi_agg_1",
-    "__djogi_agg_2",
-    "__djogi_agg_3",
-];
-
+/// Framework-reserved column alias for the Nth slot in an annotate-tuple
+/// emission. Bounded to slot < 4 by the four `impl_into_aggregate_tuple!`
+/// invocations in this module — exceeding that bound is a framework-internal
+/// invariant break, surfaced through the explicit `unreachable!` panic so a
+/// future regression has a self-explaining diagnostic instead of an
+/// `index out of bounds` error.
 fn aggregate_alias(slot: usize) -> &'static str {
-    AGG_ALIASES[slot]
+    match slot {
+        0 => "__djogi_agg_0",
+        1 => "__djogi_agg_1",
+        2 => "__djogi_agg_2",
+        3 => "__djogi_agg_3",
+        _ => unreachable!(
+            "djogi annotate arity max is 4 — slot {slot} not reachable. \
+             A new impl_into_aggregate_tuple! arity must extend this match."
+        ),
+    }
 }
 
 /// A single annotation expression that can occupy one SELECT-list slot.
@@ -570,7 +578,7 @@ mod tests {
 
     use super::*;
     use crate::descriptor::ModelDescriptor;
-    use crate::expr::{DenseRank, Expr, Rank, RowNumber};
+    use crate::expr::{DenseRank, Expr, Rank, RowNumber, WindowRanking};
     use crate::query::field::FieldRef;
     use crate::query::sql::build_select_with_annotations;
 

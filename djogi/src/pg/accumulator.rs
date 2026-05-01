@@ -182,12 +182,25 @@ impl SqlAccumulator {
         if offset == 0 {
             self.sql.push_str(&other_sql);
         } else {
-            // Walk bytes, copying through; whenever a `$<digits>` run is
-            // seen, parse the integer and write back `$<n + offset>`.
+            // Reserve up front so multiple realloc-doublings don't kick in
+            // for long inner SQL — renumbering grows by at most 1 byte per
+            // placeholder ($9 -> $19 etc.), so `other_sql.len() +
+            // other_binds.len()` is a safe upper bound.
+            self.sql.reserve(other_sql.len() + other_binds.len());
+
+            // Slice-based flush: walk byte indices, and whenever a
+            // `$<digits>` run starts, push the contiguous run BEFORE it as
+            // one `push_str`, then write the renumbered placeholder, then
+            // resume from after the digits. Avoids per-byte `push(c as
+            // char)` while keeping the renumbering logic single-pass.
             let bytes = other_sql.as_bytes();
+            let mut start = 0;
             let mut i = 0;
             while i < bytes.len() {
                 if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                    if start < i {
+                        self.sql.push_str(&other_sql[start..i]);
+                    }
                     let mut j = i + 1;
                     let mut n: u32 = 0;
                     while j < bytes.len() && bytes[j].is_ascii_digit() {
@@ -196,10 +209,13 @@ impl SqlAccumulator {
                     }
                     let _ = write!(self.sql, "${}", n + offset);
                     i = j;
+                    start = j;
                 } else {
-                    self.sql.push(bytes[i] as char);
                     i += 1;
                 }
+            }
+            if start < bytes.len() {
+                self.sql.push_str(&other_sql[start..]);
             }
         }
         self.next_param += other_binds.len() as u32;

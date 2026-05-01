@@ -222,7 +222,7 @@ pub use djogi_macros::djogi_test;
 pub use error::{DbError, DjogiError};
 pub use expr::{
     AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
-    QualifyOp, Rank, RowNumber, Subquery,
+    QualifyOp, Rank, RowNumber, Subquery, WindowRanking,
 };
 // Field-level codec public surface. `FieldCodec` is the trait adopters
 // implement for at-rest column transformations.
@@ -266,7 +266,7 @@ pub mod prelude {
     pub use crate::error::{DbError, DjogiError};
     pub use crate::expr::{
         AggregateExpr, Case, CaseBuilder, DenseRank, Exists, Expr, OuterRef, QualifyCondition,
-        QualifyOp, Rank, RowNumber, Subquery,
+        QualifyOp, Rank, RowNumber, Subquery, WindowRanking,
     };
     // `FieldCodec` is the trait adopters implement when declaring a
     // codec — belongs in the prelude because protected-field

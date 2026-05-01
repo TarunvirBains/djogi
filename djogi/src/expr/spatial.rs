@@ -188,7 +188,7 @@ pub enum SpatialExpr {
         max_lon: f64,
     },
 
-    // ── Phase 8-Zero Cluster C T17 — scalar geometry/area helpers ───────────
+    // Scalar geometry/area helpers
     /// `ST_Area($1::bytea::geography)`
     ///
     /// Returns `f64` — the area in **square meters** of the bound geometry,
@@ -230,10 +230,6 @@ pub enum SpatialExpr {
     /// out is a future-phase amendment once geometry-typed `Expr` lands;
     /// the variant exists today so the SpatialExpr family is structurally
     /// complete and tests can pin its emission shape.
-    // Reserved for the future `Expr::intersection_of` typed constructor;
-    // reached via the unit test that pins its emission shape, but no
-    // public API constructs it yet (see rustdoc above for the framework
-    // limitation that motivates the deferral).
     #[allow(dead_code)]
     Intersection {
         /// EWKB encoding of the first geometry argument.
@@ -261,7 +257,7 @@ pub enum SpatialExpr {
         b_ewkb: Vec<u8>,
     },
 
-    // ── Phase 8-Zero Cluster C T16 — convex_hull aggregate ──────────────────
+    // Convex_hull aggregate
     /// `ST_ConvexHull(ST_Collect(<field>::geometry))::geography`
     ///
     /// Per-group convex-hull aggregate — folds a set of geometries into the
@@ -417,14 +413,14 @@ impl SpatialExpr {
                 acc.push_sql(", 4326)::geography && ");
                 acc.push_sql(field_column);
             }
-            // ── Phase 8-Zero Cluster C T17 ────────────────────────────────────
+            // T17 scalar geometry / area helpers
             SpatialExpr::Area { geom_ewkb } => {
                 // ST_Area($n::bytea::geography) — geography overload returns
                 // square meters; the geometry overload returns square degrees
                 // and is the wrong unit for the demo use case.
                 acc.push_sql("ST_Area(");
-                acc.push_bind(geom_ewkb.clone());
-                acc.push_sql("::bytea::geography)");
+                push_ewkb_arg(acc, geom_ewkb, EwkbCast::Geography);
+                acc.push_sql(")");
             }
             SpatialExpr::Intersection { a_ewkb, b_ewkb } => {
                 // ST_Intersection($1::bytea::geometry, $2::bytea::geometry) —
@@ -433,10 +429,10 @@ impl SpatialExpr {
                 // the discipline of `emit_binary_predicate` for non-Intersects
                 // shape predicates).
                 acc.push_sql("ST_Intersection(");
-                acc.push_bind(a_ewkb.clone());
-                acc.push_sql("::bytea::geometry, ");
-                acc.push_bind(b_ewkb.clone());
-                acc.push_sql("::bytea::geometry)");
+                push_ewkb_arg(acc, a_ewkb, EwkbCast::Geometry);
+                acc.push_sql(", ");
+                push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
+                acc.push_sql(")");
             }
             SpatialExpr::AreaOfIntersection { a_ewkb, b_ewkb } => {
                 // ST_Area(ST_Intersection(..)::geography) — composed inline
@@ -444,12 +440,12 @@ impl SpatialExpr {
                 // intermediates. The outer `::geography` cast keeps the
                 // meters-units invariant from `Area` end-to-end.
                 acc.push_sql("ST_Area(ST_Intersection(");
-                acc.push_bind(a_ewkb.clone());
-                acc.push_sql("::bytea::geometry, ");
-                acc.push_bind(b_ewkb.clone());
-                acc.push_sql("::bytea::geometry)::geography)");
+                push_ewkb_arg(acc, a_ewkb, EwkbCast::Geometry);
+                acc.push_sql(", ");
+                push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
+                acc.push_sql(")::geography)");
             }
-            // ── Phase 8-Zero Cluster C T16 ────────────────────────────────────
+            // T16 convex_hull aggregate
             SpatialExpr::ConvexHull { field_column } => {
                 // ST_ConvexHull(ST_Collect(<col>::geometry))::geography —
                 // ST_Collect is the actual aggregate; ST_ConvexHull is a
@@ -465,6 +461,32 @@ impl SpatialExpr {
             }
         }
     }
+}
+
+/// PostGIS cast target for an EWKB bind argument.
+///
+/// Used by [`push_ewkb_arg`] to keep the per-arm emit bodies free of
+/// stringly-typed `"::bytea::geometry"` / `"::bytea::geography"` literals —
+/// the variants are the only two PostGIS overload directions a binary EWKB
+/// blob can flow into.
+#[cfg(feature = "spatial")]
+#[derive(Clone, Copy)]
+enum EwkbCast {
+    Geometry,
+    Geography,
+}
+
+/// Push `$N::bytea::<cast>` for an EWKB bind. Centralises the 3-step splice
+/// (`push_bind` + `::bytea` + `::geometry`/`::geography`) that every T17 arm
+/// repeats — without the helper, each emit body is `acc.push_bind(...);
+/// acc.push_sql("::bytea::geometry")` which a 4th arm would faithfully copy.
+#[cfg(feature = "spatial")]
+fn push_ewkb_arg(acc: &mut SqlAccumulator, ewkb: &[u8], cast: EwkbCast) {
+    acc.push_bind(ewkb.to_vec());
+    acc.push_sql(match cast {
+        EwkbCast::Geometry => "::bytea::geometry",
+        EwkbCast::Geography => "::bytea::geography",
+    });
 }
 
 /// Which PostGIS shape predicate `emit_binary_predicate` should emit.

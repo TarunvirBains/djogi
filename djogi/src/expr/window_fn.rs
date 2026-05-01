@@ -74,6 +74,58 @@ fn build_qualify(alias: Option<&'static str>, op: QualifyOp, value: i64) -> Qual
     }
 }
 
+/// Sealing module — `Sealed` is private so adopters cannot implement
+/// [`WindowRanking`] for their own types.
+mod sealed_ranking {
+    pub trait Sealed {}
+}
+
+/// Comparison helpers shared by every typed window-only ranking function.
+///
+/// `RowNumber`, `Rank`, and `DenseRank` all return `BIGINT`, so the typed
+/// `lt` / `lte` / `eq` / `gte` / `gt` lowering helpers are identical across
+/// the three types — only the underlying SQL keyword differs. This trait
+/// captures that shared surface as default methods so the per-type macro
+/// expansion is a 3-line `impl WindowRanking` rather than 5 × 3 = 15
+/// duplicate method bodies.
+///
+/// Sealed: only the `RowNumber` / `Rank` / `DenseRank` types in this module
+/// implement it.
+pub trait WindowRanking: sealed_ranking::Sealed {
+    /// The output alias registered with [`alias`](#tymethod.alias)-equivalent
+    /// builder methods. Returns `None` until an alias has been set; calling a
+    /// comparison helper before `.alias("…")` panics with the same diagnostic
+    /// across all three rank types.
+    fn alias_name(&self) -> Option<&'static str>;
+
+    /// `<alias> < value` — outer `WHERE` predicate over the derived table
+    /// that wraps the annotated select. Lowering target for
+    /// `.qualify(|w| w.lt(...))`.
+    fn lt(&self, value: i64) -> QualifyCondition {
+        build_qualify(self.alias_name(), QualifyOp::Lt, value)
+    }
+
+    /// `<alias> <= value` — see [`lt`](Self::lt) for lowering shape.
+    fn lte(&self, value: i64) -> QualifyCondition {
+        build_qualify(self.alias_name(), QualifyOp::Lte, value)
+    }
+
+    /// `<alias> = value` — see [`lt`](Self::lt) for lowering shape.
+    fn eq(&self, value: i64) -> QualifyCondition {
+        build_qualify(self.alias_name(), QualifyOp::Eq, value)
+    }
+
+    /// `<alias> >= value` — see [`lt`](Self::lt) for lowering shape.
+    fn gte(&self, value: i64) -> QualifyCondition {
+        build_qualify(self.alias_name(), QualifyOp::Gte, value)
+    }
+
+    /// `<alias> > value` — see [`lt`](Self::lt) for lowering shape.
+    fn gt(&self, value: i64) -> QualifyCondition {
+        build_qualify(self.alias_name(), QualifyOp::Gt, value)
+    }
+}
+
 macro_rules! define_window_rank_fn {
     ($type_name:ident, $sql_name:literal, $example_name:literal) => {
         #[doc = concat!(
@@ -292,32 +344,13 @@ macro_rules! define_window_rank_fn {
                         .expect("window function annotations are checked before SQL emission"),
                 );
             }
+        }
 
-            /// `<alias> < value` — outer `WHERE` predicate over the derived
-            /// table that wraps the annotated select. Lowering target for
-            /// `.qualify(|w| w.lt(...))`.
-            pub fn lt(&self, value: i64) -> QualifyCondition {
-                build_qualify(self.alias, QualifyOp::Lt, value)
-            }
+        impl sealed_ranking::Sealed for $type_name {}
 
-            /// `<alias> <= value` — see [`lt`](Self::lt) for lowering shape.
-            pub fn lte(&self, value: i64) -> QualifyCondition {
-                build_qualify(self.alias, QualifyOp::Lte, value)
-            }
-
-            /// `<alias> = value` — see [`lt`](Self::lt) for lowering shape.
-            pub fn eq(&self, value: i64) -> QualifyCondition {
-                build_qualify(self.alias, QualifyOp::Eq, value)
-            }
-
-            /// `<alias> >= value` — see [`lt`](Self::lt) for lowering shape.
-            pub fn gte(&self, value: i64) -> QualifyCondition {
-                build_qualify(self.alias, QualifyOp::Gte, value)
-            }
-
-            /// `<alias> > value` — see [`lt`](Self::lt) for lowering shape.
-            pub fn gt(&self, value: i64) -> QualifyCondition {
-                build_qualify(self.alias, QualifyOp::Gt, value)
+        impl WindowRanking for $type_name {
+            fn alias_name(&self) -> Option<&'static str> {
+                self.alias
             }
         }
     };

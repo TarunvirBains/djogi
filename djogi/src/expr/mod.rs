@@ -85,7 +85,7 @@ pub use case::{Case, CaseBuilder};
 use node::ExprNode;
 pub use subquery::{Exists, OuterRef, Subquery};
 pub use window::{FrameBound, FrameExclude, FrameKind, WindowBuilder, WindowSpec};
-pub use window_fn::{DenseRank, QualifyCondition, QualifyOp, Rank, RowNumber};
+pub use window_fn::{DenseRank, QualifyCondition, QualifyOp, Rank, RowNumber, WindowRanking};
 
 /// Typed expression handle — the public entry point for the IR.
 ///
