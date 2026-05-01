@@ -191,6 +191,31 @@ pub struct ModelAttrs {
     /// uses (ASCII letter/underscore start, ASCII alphanumerics/
     /// underscores after, ≤63 bytes).
     pub renamed_from: Option<String>,
+
+    /// Default self-FK column for tree-recursive queries — Phase 8-Zero
+    /// Cluster B1 (T12).
+    ///
+    /// Set via `#[model(tree_edge = "parent_id")]`. The named column
+    /// must exist on the user's struct AND must resolve to a self-FK
+    /// (a `ForeignKey<Self>` / `OneToOneField<Self>` field, optionally
+    /// `Option<…>`-wrapped). Cross-checks against the user-field list
+    /// and the T8 self-FK detector run at descriptor-emit time —
+    /// failures surface as span-precise compile errors pointing at the
+    /// `"…"` literal.
+    ///
+    /// Stored as `Option<syn::LitStr>` rather than `Option<String>`
+    /// so the descriptor-side validator can attach the original literal's
+    /// span to its diagnostic — same `.value() -> String` accessor as
+    /// every other span-bearing string attr in this file (e.g.
+    /// `FieldAttrs::generated`). The grammar enforced at parse time is
+    /// the standard Djogi identifier rule (ASCII letter or underscore
+    /// first byte; ASCII alphanumerics or underscores thereafter;
+    /// ≤ 63 bytes — the Postgres unquoted-identifier cap).
+    ///
+    /// `None` means the model declares no default tree edge. Models with
+    /// 2+ self-FK edges must set this *or* every caller passes
+    /// `RelationPath` explicitly to the recursive-query builder.
+    pub tree_edge: Option<syn::LitStr>,
 }
 
 /// Parsed `pk = X` value.
@@ -272,6 +297,7 @@ impl ModelAttrs {
         let mut app: Option<syn::Path> = Option::None;
         let mut moved_from_app: Option<syn::Path> = Option::None;
         let mut renamed_from: Option<String> = Option::None;
+        let mut tree_edge: Option<syn::LitStr> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -437,13 +463,51 @@ impl ModelAttrs {
                         }
                         crate::ident::check_table_name(&s.value(), s.span())?;
                         renamed_from = Some(s.value());
+                    } else if path.is_ident("tree_edge") {
+                        // Phase 8-Zero Cluster B1 (T12) —
+                        // `#[model(tree_edge = "parent_id")]` default
+                        // self-FK column for tree-recursive queries.
+                        // Field-existence + self-FK validation lives
+                        // at descriptor-emit time (where the user
+                        // field list is in scope); here we only enforce
+                        // the standard Djogi identifier grammar so the
+                        // value can flow safely into the descriptor.
+                        if tree_edge.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `tree_edge` key in #[model(...)]",
+                            ));
+                        }
+                        let key_val = s.value();
+                        let bytes = key_val.as_bytes();
+                        // Standard Djogi identifier rule, byte-level
+                        // per `feedback_no_regex_in_djogi`: ASCII letter
+                        // or underscore first byte, alphanumerics or
+                        // underscores after, ≤ 63 bytes.
+                        let ident_ok = !bytes.is_empty()
+                            && bytes.len() <= 63
+                            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                            && bytes
+                                .iter()
+                                .skip(1)
+                                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+                        if !ident_ok {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "`tree_edge` value must be a plain ASCII identifier \
+                                 (letter or underscore, then alphanumerics/underscores; \
+                                 max 63 bytes)",
+                            ));
+                        }
+                        tree_edge = Some(s.clone());
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
-                                 `idempotency_key`, `tenant_key`, `renamed_from`, `fts`, \
-                                 `indexes`, `exclusion`, `no_default`, `through`, or `events`",
+                                 `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
+                                 `fts`, `indexes`, `exclusion`, `no_default`, `through`, or \
+                                 `events`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -580,6 +644,7 @@ impl ModelAttrs {
             app,
             moved_from_app,
             renamed_from,
+            tree_edge,
         })
     }
 }
@@ -2587,5 +2652,104 @@ mod tests {
         assert_eq!(rust_type_to_sql(&djogi), Some("DATE"));
         assert_eq!(rust_type_to_sql(&djogi_types), Some("DATE"));
         assert_eq!(rust_type_to_sql(&absolute), Some("DATE"));
+    }
+
+    // ── Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "...")]` ──
+    //
+    // Parser-side coverage. Field-existence + self-FK validation runs
+    // at descriptor-emit time (where the user-field list is in scope)
+    // and is exercised by Cluster B5's trybuild fixtures — the parser
+    // itself only enforces the standard Djogi identifier grammar.
+    use super::ModelAttrs;
+    use proc_macro2::TokenStream;
+    use std::str::FromStr;
+
+    fn parse_attrs(src: &str) -> syn::Result<ModelAttrs> {
+        let ts = TokenStream::from_str(src).expect("token stream parses");
+        ModelAttrs::parse(ts)
+    }
+
+    #[test]
+    fn tree_edge_accepts_plain_identifier() {
+        let attrs = parse_attrs(r#"table = "nodes", tree_edge = "parent_id""#)
+            .expect("valid identifier accepted");
+        let lit = attrs.tree_edge.expect("tree_edge populated");
+        assert_eq!(lit.value(), "parent_id");
+    }
+
+    #[test]
+    fn tree_edge_accepts_underscore_prefix() {
+        let attrs = parse_attrs(r#"table = "nodes", tree_edge = "_parent""#)
+            .expect("leading underscore accepted");
+        assert_eq!(attrs.tree_edge.expect("populated").value(), "_parent");
+    }
+
+    #[test]
+    fn tree_edge_default_is_none() {
+        let attrs = parse_attrs(r#"table = "nodes""#).expect("default is fine");
+        assert!(attrs.tree_edge.is_none());
+    }
+
+    #[test]
+    fn tree_edge_rejects_empty_string() {
+        let err =
+            parse_attrs(r#"table = "nodes", tree_edge = """#).expect_err("empty value rejected");
+        assert!(
+            err.to_string().contains("tree_edge"),
+            "diagnostic mentions the attribute name: {err}"
+        );
+    }
+
+    #[test]
+    fn tree_edge_rejects_leading_digit() {
+        let err = parse_attrs(r#"table = "nodes", tree_edge = "1col""#)
+            .expect_err("leading digit rejected");
+        assert!(err.to_string().contains("ASCII identifier"));
+    }
+
+    #[test]
+    fn tree_edge_rejects_hyphen() {
+        let err = parse_attrs(r#"table = "nodes", tree_edge = "parent-id""#)
+            .expect_err("hyphen rejected");
+        assert!(err.to_string().contains("ASCII identifier"));
+    }
+
+    #[test]
+    fn tree_edge_rejects_overlength() {
+        // 64 chars — one over the Postgres unquoted-identifier cap.
+        let oversize = "a".repeat(64);
+        let src = format!(r#"table = "nodes", tree_edge = "{oversize}""#);
+        let err = parse_attrs(&src).expect_err("64-byte value rejected");
+        assert!(err.to_string().contains("63 bytes"));
+    }
+
+    #[test]
+    fn tree_edge_accepts_max_length() {
+        // 63 chars — exactly at the cap.
+        let max = "a".repeat(63);
+        let src = format!(r#"table = "nodes", tree_edge = "{max}""#);
+        let attrs = parse_attrs(&src).expect("63-byte value accepted");
+        assert_eq!(attrs.tree_edge.expect("populated").value().len(), 63);
+    }
+
+    #[test]
+    fn tree_edge_rejects_duplicate_keys() {
+        let err =
+            parse_attrs(r#"table = "nodes", tree_edge = "parent_id", tree_edge = "manager_id""#)
+                .expect_err("duplicate keys rejected");
+        assert!(err.to_string().contains("duplicate `tree_edge`"));
+    }
+
+    #[test]
+    fn unknown_attribute_diagnostic_lists_tree_edge() {
+        // Verifies the unknown-key error message advertises `tree_edge`
+        // alongside the other model-level keys, so users discover the
+        // attribute via natural error-driven exploration.
+        let err =
+            parse_attrs(r#"table = "nodes", widget = "x""#).expect_err("unknown key surfaced");
+        assert!(
+            err.to_string().contains("tree_edge"),
+            "diagnostic enumerates known keys including tree_edge: {err}"
+        );
     }
 }

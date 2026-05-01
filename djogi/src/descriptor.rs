@@ -1336,6 +1336,19 @@ pub struct FieldDescriptor {
     /// `ModelDescriptor::type_name` without re-deriving the identifier.
     pub target_type_name: Option<&'static str>,
 
+    /// `true` when this column's `ForeignKey<T>` / `OneToOneField<T>` target
+    /// is the same model the field belongs to — i.e. a *self-FK* edge.
+    /// Phase 8-Zero Cluster B1 (T8) — metadata-only flag the recursive-query
+    /// builder (B2) reads to validate `RelationPath<T, T>` use at compile
+    /// time and to surface multi-edge ambiguity at runtime.
+    ///
+    /// Always `false` for non-relation columns and for FK/O2O columns whose
+    /// target type's last-segment ident differs from the source model's
+    /// short name. The check is name-based — same heuristic the descriptor
+    /// already uses for `target_type_name` lookup against
+    /// `ModelDescriptor::type_name`.
+    pub is_self_fk: bool,
+
     /// Forward-declared visage-per-scope mapping. Phase 3 emits an
     /// empty slice; Phase 4.5 extends `#[field(expose(scope = "column"))]`
     /// parsing to populate this without reshaping the descriptor. The
@@ -1457,6 +1470,7 @@ pub const fn field_descriptor(
         relation_kind: None,
         on_delete: None,
         target_type_name: None,
+        is_self_fk: false,
         visage_map: &[],
         protected: None,
         default_volatility_override: None,
@@ -1876,6 +1890,25 @@ pub struct ModelDescriptor {
     /// populated tables the live-migration classifier routes
     /// additions to `OfflineOnly`.
     pub exclusion_constraints: &'static [ExclusionConstraintSpec],
+
+    // ── Tree queries (Phase 8-Zero Cluster B1 — T12) ────────────────────────
+    /// Default self-FK column for tree-recursive queries. Set via
+    /// `#[model(tree_edge = "parent_id")]`.
+    ///
+    /// When `Some(col)`, B2's `T::tree_descendants(root_id)` inherent
+    /// uses this column as the parent edge without requiring an
+    /// explicit `RelationPath` argument. The macro validates at
+    /// expand time that the named field exists on the struct AND
+    /// resolves to a self-FK via [`FieldDescriptor::is_self_fk`];
+    /// failures surface as span-precise compile errors.
+    ///
+    /// `None` means the model has no default tree edge — callers
+    /// must pass `RelationPath` explicitly to the recursive-query
+    /// builder. Models with two or more self-FK edges and no
+    /// `tree_edge` annotation are valid descriptors but force the
+    /// caller into the explicit-path form (B5 covers the trybuild
+    /// fixture).
+    pub tree_edge: Option<&'static str>,
 }
 
 impl ModelDescriptor {
@@ -1930,6 +1963,26 @@ impl ModelDescriptor {
             }
         }
         false
+    }
+
+    /// Count of self-FK edges on this model — the number of fields
+    /// whose `relation_kind` is `Some(_)` and whose `is_self_fk`
+    /// flag is `true`. Phase 8-Zero Cluster B1 (T8).
+    ///
+    /// Used by Phase 8-Zero Cluster B2's recursive-query builder:
+    ///
+    /// - `0` — `T::tree_descendants(...)` is unavailable; caller must
+    ///   declare a self-FK before reaching for the tree-query API.
+    /// - `1` — exactly one parent edge; the inherent sugar resolves
+    ///   the column without ambiguity.
+    /// - `2+` — multiple self-FK edges; the model must declare
+    ///   `#[model(tree_edge = "...")]` to disambiguate, or the
+    ///   caller must pass an explicit `RelationPath<T, T>` argument.
+    pub fn self_fk_count(&self) -> usize {
+        self.fields
+            .iter()
+            .filter(|f| f.relation_kind.is_some() && f.is_self_fk)
+            .count()
     }
 
     /// The primary key column name for this model.
@@ -2034,6 +2087,7 @@ pub const fn model_descriptor(
         moved_from_app: None,
         renamed_from: None,
         exclusion_constraints: &[],
+        tree_edge: None,
     }
 }
 
