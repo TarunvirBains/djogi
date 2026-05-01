@@ -24,6 +24,18 @@ proc-macro = true
 # `cargo test -p djogi-macros --test compile_pass`. The macro crate
 # itself has no spatial-specific code paths — the flag exists purely
 # so trybuild fixtures using cfg gates compile cleanly.
+#
+# The spatial-feature activation on djogi happens through the dev-dep
+# declaration below (`djogi = { ..., features = ["spatial"] }`), NOT
+# via cargo's feature-pass-through (`spatial = ["djogi/spatial"]`).
+# The pass-through doesn't work in trybuild's compilation model because
+# trybuild generates a synthetic test crate whose djogi dependency is
+# copied from djogi-macros's manifest verbatim, but djogi-macros's
+# dev-dep edge to djogi is invisible to that synthetic crate (dev-deps
+# are not traversed when a crate is used as a regular dep). Putting
+# `features = ["spatial"]` on the dev-dep makes the synthetic crate's
+# djogi dependency carry it, and cargo unifies djogi's features across
+# the build.
 spatial = []
 
 [dependencies]
