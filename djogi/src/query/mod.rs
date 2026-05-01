@@ -24,6 +24,7 @@
 
 pub mod aggregate;
 pub mod annotate;
+pub mod closure;
 pub mod condition;
 pub mod field;
 pub mod filter;
@@ -31,6 +32,7 @@ pub mod grouped;
 pub(crate) mod lock;
 pub mod order;
 pub mod queryset;
+pub mod recursive;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
 pub(crate) mod sql;
@@ -41,11 +43,13 @@ pub mod visage_queryset;
 
 pub use aggregate::AggregateQuery;
 pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
+pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureReport};
 pub use condition::Condition;
 pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
+pub use recursive::{RecursiveDirection, RecursiveQuerySet};
 #[cfg(feature = "spatial")]
 pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};

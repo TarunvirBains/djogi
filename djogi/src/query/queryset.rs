@@ -827,6 +827,78 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
+    // ── Tree-recursive transitions (Phase 8-Zero Cluster B2 — T9) ───────────
+    //
+    // `tree_descendants` / `tree_ancestors` consume the queryset and
+    // return a [`RecursiveQuerySet<T>`], which has its own filter /
+    // ordering / search-mode builders and its own terminals. The
+    // accumulated `condition` / `ordering` / `limit` / etc. on `self`
+    // are intentionally **discarded**: a recursive walk is anchored
+    // by `id = $root`, and additional filters / orderings only make
+    // sense when re-applied through `RecursiveQuerySet`'s builder
+    // surface (where the emitter knows whether a predicate goes into
+    // the recursive term's `WHERE` or the outer projection's `ORDER
+    // BY`). The `let _ = self;` makes the discard explicit.
+
+    /// Walk the self-FK chain downward — every row whose ancestor
+    /// chain reaches `root_id`. Returns a typed [`RecursiveQuerySet<T>`]
+    /// that carries `tree_descendants` semantics (recursive term:
+    /// `child.<edge_col> = parent.id`).
+    ///
+    /// Works for **any** model `T` with at least one self-FK edge,
+    /// without requiring `#[model(tree_edge = "...")]`. The caller
+    /// supplies a typed [`RelationPath<T, T>`] picked from the
+    /// macro-emitted `{T}Related::<edge>()` accessor — the type-level
+    /// pinning means a `RelationPath<Vehicle, Vehicle>` cannot be
+    /// passed where the queryset is over `Post`.
+    ///
+    /// For models that declare `#[model(tree_edge = "...")]`, prefer
+    /// the inherent sugar [`Model::tree_descendants`] which resolves
+    /// the column from the descriptor automatically.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn tree_descendants(
+        self,
+        edge: crate::relation::RelationPath<T, T>,
+        root_id: T::Pk,
+    ) -> crate::query::recursive::RecursiveQuerySet<T>
+    where
+        T::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        // Discard accumulated state — a recursive walk is anchored by
+        // root_id and rebuilds its own filter / ordering pipeline.
+        let _ = self;
+        crate::query::recursive::RecursiveQuerySet::from_path(
+            edge,
+            root_id,
+            crate::query::recursive::RecursiveDirection::Descendants,
+        )
+    }
+
+    /// Walk the self-FK chain upward — every row reached by following
+    /// the FK from `node_id` toward the root. Sibling of
+    /// [`tree_descendants`](Self::tree_descendants) with the recursive
+    /// term flipped to `parent.<edge_col> = child.id`.
+    ///
+    /// Same descriptor / typed-path requirements as `tree_descendants`;
+    /// the inherent sugar [`Model::tree_ancestors`] is the
+    /// `tree_edge`-declared shortcut.
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn tree_ancestors(
+        self,
+        edge: crate::relation::RelationPath<T, T>,
+        node_id: T::Pk,
+    ) -> crate::query::recursive::RecursiveQuerySet<T>
+    where
+        T::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        let _ = self;
+        crate::query::recursive::RecursiveQuerySet::from_path(
+            edge,
+            node_id,
+            crate::query::recursive::RecursiveDirection::Ancestors,
+        )
+    }
+
     /// Spatial LEFT JOIN GROUP BY: group rows by which region of `R` contains
     /// them.
     ///

@@ -152,4 +152,270 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         &'ctx self,
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
+
+    // ── Tree-recursive sugar (Phase 8-Zero Cluster B2 — T9) ─────────────────
+    //
+    // These default methods provide a `tree_edge`-aware shorthand for
+    // [`crate::query::QuerySet::tree_descendants`] /
+    // [`crate::query::QuerySet::tree_ancestors`]. They resolve the
+    // self-FK column at runtime from
+    // [`ModelDescriptor::tree_edge`](crate::descriptor::ModelDescriptor)
+    // and fail with [`DjogiError::Validation`] if the model has not
+    // declared `#[model(tree_edge = "...")]`.
+    //
+    // The runtime check is the deliberate trade-off: a compile-time
+    // gate would require either an extra trait the macro implements
+    // only when `tree_edge` is set, or generic-bounded specialization
+    // (unstable). Pre-1.0 we ship the runtime gate; B5's trybuild
+    // covers the type-level error case for the explicit-path API
+    // (`QuerySet::tree_descendants` with a mismatched `RelationPath`).
+
+    /// `tree_edge`-aware shorthand for
+    /// [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants).
+    ///
+    /// Resolves the self-FK column from this model's
+    /// `#[model(tree_edge = "...")]` declaration and constructs a
+    /// [`RecursiveQuerySet`](crate::query::RecursiveQuerySet)
+    /// pre-anchored at `root_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DjogiError::Validation`] when the model has not
+    /// declared a default `tree_edge`. The error message names the
+    /// model and instructs the caller to either add
+    /// `#[model(tree_edge = "...")]` or use the explicit-path
+    /// [`QuerySet::tree_descendants`] form.
+    fn tree_descendants(
+        root_id: Self::Pk,
+    ) -> Result<crate::query::RecursiveQuerySet<Self>, DjogiError>
+    where
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        resolve_tree_edge::<Self>().map(|edge| {
+            crate::query::RecursiveQuerySet::from_path(
+                edge,
+                root_id,
+                crate::query::RecursiveDirection::Descendants,
+            )
+        })
+    }
+
+    /// `tree_edge`-aware shorthand for
+    /// [`QuerySet::tree_ancestors`](crate::query::QuerySet::tree_ancestors).
+    /// Same descriptor lookup + error contract as
+    /// [`Model::tree_descendants`].
+    fn tree_ancestors(
+        node_id: Self::Pk,
+    ) -> Result<crate::query::RecursiveQuerySet<Self>, DjogiError>
+    where
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        resolve_tree_edge::<Self>().map(|edge| {
+            crate::query::RecursiveQuerySet::from_path(
+                edge,
+                node_id,
+                crate::query::RecursiveDirection::Ancestors,
+            )
+        })
+    }
+
+    /// Walk **every** self-FK edge declared on this model upward —
+    /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
+    /// 8-Zero Cluster B3 (T13a).
+    ///
+    /// `full_ancestors` is the right shape for kinship / pedigree
+    /// queries where a node has more than one parent edge (e.g.
+    /// `mother_id` + `father_id` on an animal model). The recursive
+    /// CTE emits one `UNION ALL` branch per edge, so a single call
+    /// returns ancestors reachable via any combination of those
+    /// edges. Path multiplicity is preserved — an ancestor reachable
+    /// by two distinct edge sequences appears twice, which is
+    /// load-bearing for Wright-style kinship coefficient sums.
+    ///
+    /// Combine with
+    /// [`fetch_all_with_paths`](crate::query::RecursiveQuerySet::fetch_all_with_paths)
+    /// to recover which edge sequence reached each ancestor — that is
+    /// the only terminal that distinguishes
+    /// `["mother_id", "father_id"]` from `["father_id", "mother_id"]`
+    /// when both lead to the same row.
+    ///
+    /// # Edge cases
+    ///
+    /// - `self_fk_count() == 0` — the returned `RecursiveQuerySet`
+    ///   carries an empty `edges` Vec. Builder methods chain
+    ///   normally; the **terminal** fails with
+    ///   [`DjogiError::Validation`] naming the model. Errors at
+    ///   terminal time (not construction time) keep the return type
+    ///   uniform — callers can write `Model::full_ancestors(id)
+    ///   .with_max_depth(5).fetch_all(ctx).await?` without an extra
+    ///   `?` for `self_fk_count() == 0`.
+    /// - `self_fk_count() == 1` — degenerates to
+    ///   [`Model::tree_ancestors`] over the lone edge. Same SQL
+    ///   shape, same single bind for the root id.
+    /// - `self_fk_count() >= 2` — every declared self-FK becomes its
+    ///   own `UNION ALL` branch in the recursive term. No
+    ///   `tree_edge` requirement: `full_ancestors` is the disambiguation
+    ///   strategy, not single-edge selection.
+    fn full_ancestors(node_id: Self::Pk) -> crate::query::RecursiveQuerySet<Self>
+    where
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        let descriptor = Self::descriptor();
+        let edges: Vec<crate::relation::RelationPath<Self, Self>> = descriptor
+            .self_fk_columns()
+            .map(|col| {
+                crate::relation::__macro_support::__make_relation_path::<Self, Self>(
+                    col,
+                    Self::table_name(),
+                    crate::relation::RelationKind::ForeignKey,
+                )
+            })
+            .collect();
+        crate::query::RecursiveQuerySet::from_paths(
+            edges,
+            node_id,
+            crate::query::RecursiveDirection::Ancestors,
+        )
+    }
+
+    // ── Materialised transitive closure (Phase 8-Zero Cluster B4 — T13b) ─────
+    //
+    // [`materialize_closure`](Model::materialize_closure) populates a
+    // closure-table sibling of this model. Per the scalability lens
+    // (Risk 10), materialised transitive closure is the production-
+    // scale answer for tree queries: every adopter doing tree
+    // queries at non-trivial scale eventually reaches for one, and
+    // shipping a framework helper means the framework *supports* the
+    // production pattern rather than just *demonstrating* the
+    // recursive-CTE one.
+    //
+    // The macro-side wiring (`#[model(closure_for = T)]`) that would
+    // generate the [`ClosureModel`] impl from a single attribute is
+    // explicitly out of scope for B4 — adopters hand-write the impl
+    // for now. Runtime contract is fixed; macro sugar can land later
+    // without changing this method signature.
+
+    /// Populate a transitive-closure table for this model's self-FK
+    /// graph. Phase 8-Zero Cluster B4 (T13b).
+    ///
+    /// `C` is an adopter-supplied [`ClosureModel`] whose `Source =
+    /// Self` — the type-level binding pins the closure table to the
+    /// source model so wrong-source closure tables fail at compile
+    /// time. Reach for this helper when:
+    ///
+    /// - The source table has more than a handful of rows and tree
+    ///   queries against it have become hot. Closure-table lookups
+    ///   are indexed point-reads; recursive-CTE walks are O(subtree
+    ///   size) every time.
+    /// - The application needs Wright-style kinship coefficients.
+    ///   The closure table records `path_count` per
+    ///   `(source, ancestor, depth)` triple, which is the input to
+    ///   coefficient sums.
+    ///
+    /// # Behaviour
+    ///
+    /// - **`opts.roots = None`** — walks every row in the source
+    ///   table. Right shape for the initial population.
+    /// - **`opts.roots = Some(ids)`** — walks only those source rows.
+    ///   Right shape for incremental updates after inserts (call with
+    ///   the newly-inserted ids).
+    /// - **`opts.max_depth = Some(n)`** — bounds the recursive walk
+    ///   at `n` hops. `None` runs to natural exhaustion (the `CYCLE`
+    ///   clause prevents infinite recursion regardless).
+    /// - **`ON CONFLICT … DO UPDATE`** — replaces `path_count` with
+    ///   the recomputed recursive-walk total, so re-running the helper
+    ///   is genuinely idempotent: each invocation walks the current
+    ///   graph from scratch, so EXCLUDED's count is already the
+    ///   correct total. `TRUNCATE` the closure table first only when
+    ///   stale rows for *deleted* edges must be purged (the helper
+    ///   does not garbage-collect rows whose path no longer exists).
+    ///
+    /// # Required closure-table schema
+    ///
+    /// The closure table **must** carry a unique constraint on
+    /// `(source_column, ancestor_column, depth_column)` — Postgres
+    /// rejects `ON CONFLICT (...)` against missing constraints with
+    /// `42P10`. See [`crate::query::closure`] module docs for the
+    /// canonical CREATE TABLE shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DjogiError::Validation`] when:
+    ///
+    /// - `Self::descriptor().self_fk_count() == 0` — there are no
+    ///   self-FK edges to walk.
+    /// - Any [`ClosureModel`] column-name accessor returns an invalid
+    ///   identifier (non-ASCII, reserved keyword, > 63 bytes, etc.).
+    ///
+    /// Returns the underlying database error wrapped in
+    /// [`DjogiError`] for query failures (typically a missing unique
+    /// constraint surfaces as `42P10` here).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Initial population — walk every row.
+    /// let report = Elephant::materialize_closure::<ElephantAncestry>(
+    ///     &mut ctx,
+    ///     MaterializeClosureOptions::default(),
+    /// ).await?;
+    /// println!("populated {} triples across {} elephants",
+    ///          report.rows_written, report.sources_visited);
+    ///
+    /// // Incremental update for newly-inserted elephants.
+    /// let new_ids: Vec<HeerId> = /* ... */;
+    /// let report = Elephant::materialize_closure::<ElephantAncestry>(
+    ///     &mut ctx,
+    ///     MaterializeClosureOptions::default()
+    ///         .with_roots(new_ids)
+    ///         .with_max_depth(20),
+    /// ).await?;
+    /// ```
+    fn materialize_closure<'ctx, C>(
+        ctx: &'ctx mut DjogiContext,
+        opts: crate::query::MaterializeClosureOptions<Self::Pk>,
+    ) -> impl Future<Output = Result<crate::query::MaterializeClosureReport, DjogiError>> + Send + 'ctx
+    where
+        C: crate::query::ClosureModel<Source = Self> + 'ctx,
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        crate::query::closure::materialize_closure_impl::<Self, C>(ctx, opts)
+    }
+}
+
+/// Look up `M`'s declared `tree_edge` and synthesise a
+/// `RelationPath<M, M>` that targets the same model's table.
+///
+/// The descriptor's `tree_edge` is the field NAME (which equals the
+/// column name in Djogi); the macro's compile-time validation in B1
+/// (T12) already proved both that the named field exists on the
+/// struct and that it is a self-FK, so the lookup here is a pure
+/// metadata read with no fallible step beyond the
+/// `tree_edge.is_some()` check.
+///
+/// `target_table = M::table_name()` because a self-FK by definition
+/// targets the same model. `RelationKind::ForeignKey` is the
+/// canonical kind for self-FK edges; if a future phase adds
+/// `OneToOne` self-FKs the descriptor's `relation_kind` field would
+/// carry the right discriminant and a richer lookup could thread it
+/// through, but for B2 the kind is informational only — the SQL
+/// emitter treats both kinds identically (single FK column → one
+/// recursive walk).
+fn resolve_tree_edge<M: Model>() -> Result<crate::relation::RelationPath<M, M>, DjogiError> {
+    let descriptor = M::descriptor();
+    let edge_name = descriptor.tree_edge.ok_or_else(|| {
+        DjogiError::Validation(format!(
+            "model '{}' has no #[model(tree_edge = \"...\")] declared; \
+             either add the attribute or use QuerySet::tree_descendants / \
+             QuerySet::tree_ancestors with an explicit RelationPath",
+            descriptor.type_name,
+        ))
+    })?;
+    Ok(
+        crate::relation::__macro_support::__make_relation_path::<M, M>(
+            edge_name,
+            M::table_name(),
+            crate::relation::RelationKind::ForeignKey,
+        ),
+    )
 }

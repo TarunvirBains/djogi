@@ -58,6 +58,11 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             relation_kind: None,
             on_delete: None,
             target_type_name: None,
+            // Framework-injected columns (`id`, `created_at`,
+            // `updated_at`) are never relation fields, so the
+            // self-FK flag is always `false`. Phase 8-Zero
+            // Cluster B1 (T8).
+            is_self_fk: false,
             visage_map: &[
                 ("admin", #name),
                 ("export", #name),
@@ -76,7 +81,31 @@ pub fn expand(
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
 ) -> TokenStream {
-    let type_name = struct_item.ident.to_string();
+    match try_expand(struct_item, model_attrs, field_attrs) {
+        Ok(tokens) => tokens,
+        Err(err) => err.to_compile_error(),
+    }
+}
+
+/// Inner emission entry point — returns `syn::Result` so the new
+/// `#[model(tree_edge = "...")]` validation (T12) can surface a
+/// span-precise compile error pointing at the offending literal.
+///
+/// Pre-T12 the descriptor emitter was infallible, but `tree_edge`
+/// requires cross-checking the named field against the struct's
+/// declared user fields and their detected relation shape — a
+/// validation that can fail when the column does not exist or is
+/// not a self-FK. Routing the entire emitter through `Result` keeps
+/// the error path unified and lets later attribute additions reuse
+/// the same fallible shape without another wrapper layer.
+fn try_expand(
+    struct_item: &ItemStruct,
+    model_attrs: &ModelAttrs,
+    field_attrs: &[FieldAttrs],
+) -> syn::Result<TokenStream> {
+    let source_ident = &struct_item.ident;
+    let source_name_string = source_ident.to_string();
+    let type_name = source_name_string.clone();
     let table_name = &model_attrs.table;
 
     // Exhaustive over `PkStrategy`. `Custom(path)` reads the user type's
@@ -109,6 +138,70 @@ pub fn expand(
         .skip(n_framework)
         .zip(field_attrs.iter())
         .collect();
+
+    // ── Self-FK metadata (Phase 8-Zero Cluster B1 — T8) ─────────────────────
+    //
+    // For each user field that resolves to a `ForeignKey<T>` /
+    // `OneToOneField<T>` (or its nullable form), compare the detected
+    // target's last-segment ident to the source struct's short name.
+    // A match marks the field as a *self-FK* — an edge from the model
+    // to itself — which Phase 8-Zero Cluster B2's recursive-query
+    // builder uses to validate `RelationPath<T, T>` and to disambiguate
+    // multi-edge tree models.
+    //
+    // The check is name-based on purpose: the descriptor's
+    // `target_type_name` is also the short ident, and Phase 6's
+    // migration differ already matches relations through that string.
+    // Re-using the same heuristic keeps every descriptor consumer on
+    // the same lookup key.
+    //
+    // T12 (`#[model(tree_edge = "...")]`) reads this set to validate
+    // that the named column is a self-FK before emitting the
+    // descriptor's `tree_edge` slot.
+    let self_fk_field_names: std::collections::BTreeSet<String> = user_fields
+        .iter()
+        .filter_map(|(field, _fa)| {
+            let info = detect_relation(&field.ty)?;
+            (info.target_name == source_name_string)
+                .then(|| crate::syn_util::column_name_from_field(field))
+        })
+        .collect();
+
+    // ── #[model(tree_edge = "...")] validation (T12) ────────────────────────
+    //
+    // The named column must exist on the user's struct AND must be a
+    // self-FK per the set computed above. Any mismatch surfaces a
+    // span-precise compile error pointing at the literal so the
+    // underline isolates the offender.
+    if let Some(lit) = &model_attrs.tree_edge {
+        let edge_name = lit.value();
+        let user_field_names: std::collections::BTreeSet<String> = user_fields
+            .iter()
+            .map(|(field, _)| crate::syn_util::column_name_from_field(field))
+            .collect();
+        if !user_field_names.contains(&edge_name) {
+            return Err(syn::Error::new_spanned(
+                lit,
+                format!(
+                    "`tree_edge = \"{edge_name}\"` does not match any field on `{source_name_string}`; \
+                     declare a `ForeignKey<{source_name_string}>` (or its `Option<…>` form) field \
+                     with that name first",
+                ),
+            ));
+        }
+        if !self_fk_field_names.contains(&edge_name) {
+            return Err(syn::Error::new_spanned(
+                lit,
+                format!(
+                    "`tree_edge = \"{edge_name}\"` must name a self-FK field; the column exists \
+                     on `{source_name_string}` but its target type is not `{source_name_string}`. \
+                     Tree-recursive queries walk a self-referential parent edge — point \
+                     `tree_edge` at a `ForeignKey<{source_name_string}>` or \
+                     `Option<ForeignKey<{source_name_string}>>` field on the same struct",
+                ),
+            ));
+        }
+    }
 
     // ── Framework-field FieldDescriptors ─────────────────────────────────────
     // Phase 1.5: framework columns are emitted FIRST so `descriptor.fields` is
@@ -255,29 +348,42 @@ pub fn expand(
             // than the full `info.target_type`. The full type path is only
             // needed by codegen sites that emit the target in type position
             // (see `relations::expand`).
-            let (relation_kind_tokens, on_delete_tokens, target_type_name_tokens) = match &relation
-            {
-                Some(info) => {
-                    let kind_tokens = match info.kind {
-                        MacroRelationKind::ForeignKey => {
-                            quote! { Some(::djogi::descriptor::RelationKind::ForeignKey) }
-                        }
-                        MacroRelationKind::OneToOne => {
-                            quote! { Some(::djogi::descriptor::RelationKind::OneToOne) }
-                        }
-                    };
-                    let on_delete = match &fa.on_delete {
-                        Some(s) => {
-                            let variant = on_delete_str_to_tokens(s);
-                            quote! { Some(#variant) }
-                        }
-                        None => quote! { None },
-                    };
-                    let target_lit = info.target_name.as_str();
-                    (kind_tokens, on_delete, quote! { Some(#target_lit) })
-                }
-                None => (quote! { None }, quote! { None }, quote! { None }),
-            };
+            let (relation_kind_tokens, on_delete_tokens, target_type_name_tokens, is_self_fk_lit) =
+                match &relation {
+                    Some(info) => {
+                        let kind_tokens = match info.kind {
+                            MacroRelationKind::ForeignKey => {
+                                quote! { Some(::djogi::descriptor::RelationKind::ForeignKey) }
+                            }
+                            MacroRelationKind::OneToOne => {
+                                quote! { Some(::djogi::descriptor::RelationKind::OneToOne) }
+                            }
+                        };
+                        let on_delete = match &fa.on_delete {
+                            Some(s) => {
+                                let variant = on_delete_str_to_tokens(s);
+                                quote! { Some(#variant) }
+                            }
+                            None => quote! { None },
+                        };
+                        let target_lit = info.target_name.as_str();
+                        // Phase 8-Zero Cluster B1 (T8): name-based self-FK
+                        // detection. Matches the detector's `target_name`
+                        // (last-segment ident of the inner type) against the
+                        // source struct's short name. Same heuristic Phase 6's
+                        // migration differ uses to resolve relations across
+                        // descriptors, so the descriptor consumers stay on a
+                        // single lookup key.
+                        let is_self_fk = info.target_name == source_name_string;
+                        (
+                            kind_tokens,
+                            on_delete,
+                            quote! { Some(#target_lit) },
+                            is_self_fk,
+                        )
+                    }
+                    None => (quote! { None }, quote! { None }, quote! { None }, false),
+                };
 
             // `#[field(protected(...))]` lowers to
             // `Some(::djogi::ProtectedFieldMetadata { ... })`; absent
@@ -345,6 +451,12 @@ pub fn expand(
                     relation_kind: #relation_kind_tokens,
                     on_delete: #on_delete_tokens,
                     target_type_name: #target_type_name_tokens,
+                    // Phase 8-Zero Cluster B1 (T8) — true when the
+                    // FK / O2O target is the same model the field
+                    // belongs to. Always `false` for scalar columns
+                    // and for relation fields whose target is a
+                    // different model.
+                    is_self_fk: #is_self_fk_lit,
                     visage_map: #projection_map_tokens,
                     protected: #protected_tokens,
                     default_volatility_override: #default_volatility_tokens,
@@ -499,13 +611,12 @@ pub fn expand(
         reserved_generated_names: &reserved_generated_names,
     };
     for decl in &model_attrs.indexes {
-        match crate::model::indexes::emit_index_spec_tokens(decl, &lowering_ctx) {
-            Ok((name, tokens)) => named_index_specs.push((name, tokens)),
-            Err(e) => {
-                let err_tokens = e.to_compile_error();
-                return quote! { #err_tokens };
-            }
-        }
+        // Pre-T12 the descriptor emitter was infallible and lowered
+        // index-emission errors to inline `compile_error!` tokens; now
+        // that `try_expand` returns `syn::Result`, propagate the error
+        // through the existing failure channel for a single error path.
+        let (name, tokens) = crate::model::indexes::emit_index_spec_tokens(decl, &lowering_ctx)?;
+        named_index_specs.push((name, tokens));
     }
 
     // Alphabetise by generated name — deterministic emission means minor
@@ -583,7 +694,18 @@ pub fn expand(
         quote! { &[ #(#entries,)* ] }
     };
 
-    quote! {
+    // Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "col")]`.
+    // The string was validated above (field-existence + self-FK
+    // resolution) before reaching here, so emission is unconditional.
+    let tree_edge_tokens = match &model_attrs.tree_edge {
+        Some(lit) => {
+            let value = lit.value();
+            quote! { ::core::option::Option::Some(#value) }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
+
+    Ok(quote! {
         #tombstone_guard_tokens
 
         ::djogi::__private::inventory::submit! {
@@ -623,10 +745,16 @@ pub fn expand(
                 // entries on `model_attrs.exclusions`. Empty slice when
                 // no `exclusion(...)` group is present.
                 exclusion_constraints: #exclusion_constraints_tokens,
+                // Phase 8-Zero Cluster B1 (T12) — `#[model(tree_edge = "col")]`
+                // default self-FK column for tree-recursive queries. Validated
+                // at the top of `try_expand` against the user-field list and
+                // the self-FK detector (T8); reaches here only when the named
+                // column resolves to a self-FK on this model.
+                tree_edge: #tree_edge_tokens,
             }
         }
         #(#deferrability_submits)*
-    }
+    })
 }
 
 /// Emit a side-channel `target/djogi_rls/{table}_rls.sql` file when the model

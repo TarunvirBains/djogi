@@ -25,6 +25,12 @@
 //! macro samples, etc.). Those are stable and rarely touched, so they
 //! get one bucket.
 //!
+//! Phase 8-Zero (`phase8_zero_*`) covers tree-recursive query surface —
+//! `#[model(tree_edge = "...")]` validation (compile_fail), the
+//! `RelationPath<T, T>` self-edge type guard on `tree_descendants` /
+//! `tree_ancestors` (compile_fail), and the multi-self-FK no-default
+//! shape (compile_pass).
+//!
 //! Note on globs: trybuild uses the `glob` crate, which does NOT support
 //! brace expansion (`{a,b}`). Multiple `t.pass(...)` / `t.compile_fail(...)`
 //! calls within the same `TestCases` accumulate the fixture list, so
@@ -142,6 +148,11 @@ fn compile_pass_phase7_5() {
 }
 
 #[test]
+fn compile_pass_phase8_zero() {
+    TestCases::new().pass("tests/compile_pass/phase8_zero_*.rs");
+}
+
+#[test]
 fn compile_pass_unphased() {
     let t = TestCases::new();
     // Pre-phased fixtures — stable and rarely touched.
@@ -186,6 +197,11 @@ fn compile_fail_phase7_zero2() {
 #[test]
 fn compile_fail_phase7_5() {
     TestCases::new().compile_fail("tests/compile_fail/phase7_5_*.rs");
+}
+
+#[test]
+fn compile_fail_phase8_zero() {
+    TestCases::new().compile_fail("tests/compile_fail/phase8_zero_*.rs");
 }
 
 #[test]

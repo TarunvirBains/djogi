@@ -1,0 +1,5 @@
+error: `tree_edge = "nonexistent_field"` does not match any field on `InvalidEdgeNode`; declare a `ForeignKey<InvalidEdgeNode>` (or its `Option<…>` form) field with that name first
+  --> tests/compile_fail/phase8_zero_tree_edge_invalid_field.rs:15:59
+   |
+15 | #[model(table = "phase8_invalid_field_nodes", tree_edge = "nonexistent_field")]
+   |                                                           ^^^^^^^^^^^^^^^^^^^
