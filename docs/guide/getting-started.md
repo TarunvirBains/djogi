@@ -144,6 +144,12 @@ In integration tests, this is handled by the `#[djogi::djogi_test]`
 harness — you don't call `install_schema` or `seed_default_node` from
 test code yourself.
 
+For production sizing of the connection pool — `max_size`, wait
+timeout, per-connection setup hook, raw-client escape hatch — see the
+[Connection Pool guide](./pool.md). `DjogiPool::connect(url)` here is
+fine for the getting-started flow; production services tune through
+`DjogiPool::builder(url)` or `DjogiPool::from_database_config(&cfg.database)`.
+
 ---
 
 ## 4. Create the Table

@@ -239,6 +239,20 @@ impl DjogiPool {
         builder.build().await
     }
 
+    /// Return a snapshot of the pool's deadpool counters.
+    ///
+    /// The returned [`deadpool_postgres::Status`] carries the configured
+    /// `max_size`, the current `size` (physical connections opened), and
+    /// the `available` count (idle connections ready for checkout).
+    /// Tests assert pool-state invariants by reading this; production
+    /// code rarely needs it but is welcome to use it for diagnostics.
+    ///
+    /// `Status` is `Copy`, so the call is a cheap snapshot read — it
+    /// does not lock the pool or block on in-flight checkouts.
+    pub fn status(&self) -> deadpool_postgres::Status {
+        self.inner.status()
+    }
+
     /// Acquire a `PgConnection` from the pool.
     ///
     /// The returned `PgConnection` holds the connection for the caller's
