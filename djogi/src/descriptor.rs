@@ -1965,6 +1965,17 @@ impl ModelDescriptor {
         false
     }
 
+    /// Iterate every self-FK [`FieldDescriptor`] on this model — the
+    /// shared filter predicate behind [`Self::self_fk_count`] and
+    /// [`Self::self_fk_columns`]. Single source of truth for "what
+    /// counts as a self-FK edge" in case a future field rename or
+    /// the migration differ acquires a third consumer.
+    fn self_fk_fields(&self) -> impl Iterator<Item = &FieldDescriptor> + '_ {
+        self.fields
+            .iter()
+            .filter(|f| f.relation_kind.is_some() && f.is_self_fk)
+    }
+
     /// Count of self-FK edges on this model — the number of fields
     /// whose `relation_kind` is `Some(_)` and whose `is_self_fk`
     /// flag is `true`. Phase 8-Zero Cluster B1 (T8).
@@ -1979,10 +1990,7 @@ impl ModelDescriptor {
     ///   `#[model(tree_edge = "...")]` to disambiguate, or the
     ///   caller must pass an explicit `RelationPath<T, T>` argument.
     pub fn self_fk_count(&self) -> usize {
-        self.fields
-            .iter()
-            .filter(|f| f.relation_kind.is_some() && f.is_self_fk)
-            .count()
+        self.self_fk_fields().count()
     }
 
     /// Iterate the column names of every self-FK edge declared on this
@@ -2000,10 +2008,7 @@ impl ModelDescriptor {
     /// declaration order for user-defined columns — so emitted SQL is
     /// stable across builds for a fixed source.
     pub fn self_fk_columns(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.fields
-            .iter()
-            .filter(|f| f.relation_kind.is_some() && f.is_self_fk)
-            .map(|f| f.name)
+        self.self_fk_fields().map(|f| f.name)
     }
 
     /// The primary key column name for this model.

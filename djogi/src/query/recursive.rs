@@ -154,6 +154,17 @@ use postgres_types::ToSql;
 use std::future::Future;
 use std::marker::PhantomData;
 
+/// Internal sequence column the `SEARCH BREADTH FIRST BY` /
+/// `SEARCH DEPTH FIRST BY` clauses populate. Postgres assigns this
+/// column on the recursive CTE; the outer `ORDER BY` then sorts on
+/// it to surface BFS / DFS order to the caller. Macro-internal — the
+/// `_djogi_` prefix is forbidden as a user column name by the macro
+/// identifier validators, so the constant is grep-able and shared
+/// between the SEARCH-clause emit site and the outer ORDER BY emit
+/// site (a typo at either would otherwise produce a `42703 column
+/// undefined` Postgres error at runtime, not at compile time).
+const SEARCH_SEQ_COL: &str = "_djogi_search_seq";
+
 /// Direction of the recursive walk.
 ///
 /// `Descendants` walks downward — given a root row, accumulate every row
@@ -638,10 +649,16 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // identical. Multi-edge `full_ancestors` walks emit one branch
     // per edge separated by additional `UNION ALL` keywords inside
     // the recursive term.
+    // `qs` is consumed by value here, so each field can be moved out
+    // directly — `condition` (a `Condition` enum tree) and `ordering`
+    // (a `Vec<OrderExpr>`) used to be cloned out of historical caution,
+    // but neither is reused after this point and `qs` itself is dropped
+    // at function return. Moving avoids one heap allocation per
+    // terminal call for non-trivial filter trees.
     let direction = qs.direction;
     let max_depth = qs.max_depth;
-    let condition = qs.condition.clone();
-    let ordering = qs.ordering.clone();
+    let condition = qs.condition;
+    let ordering = qs.ordering;
     let search_mode = qs.search_mode;
     let edges = qs.edges;
 
@@ -729,7 +746,8 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     if let Some(mode) = search_mode {
         acc.push_sql(mode.keyword());
         acc.push_sql(mode.column());
-        acc.push_sql(" SET _djogi_search_seq");
+        acc.push_sql(" SET ");
+        acc.push_sql(SEARCH_SEQ_COL);
     }
     // CYCLE: Postgres detects cycles using `cycle_path`, marks them
     // in `is_cycle`, and stops recursion at the marked row. Without
@@ -797,7 +815,7 @@ fn push_outer_order_by(acc: &mut SqlAccumulator, has_search_order: bool, orderin
     }
     acc.push_sql(" ORDER BY ");
     if has_search_order {
-        acc.push_sql("_djogi_search_seq");
+        acc.push_sql(SEARCH_SEQ_COL);
     }
     if has_user_order {
         if has_search_order {

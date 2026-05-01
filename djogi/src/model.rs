@@ -322,10 +322,13 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// - **`opts.max_depth = Some(n)`** — bounds the recursive walk
     ///   at `n` hops. `None` runs to natural exhaustion (the `CYCLE`
     ///   clause prevents infinite recursion regardless).
-    /// - **`ON CONFLICT … DO UPDATE`** — re-running the helper merges
-    ///   new paths into existing `path_count` values rather than
-    ///   double-counting. Adopters who want a clean rebuild should
-    ///   `TRUNCATE` the closure table first.
+    /// - **`ON CONFLICT … DO UPDATE`** — replaces `path_count` with
+    ///   the recomputed recursive-walk total, so re-running the helper
+    ///   is genuinely idempotent: each invocation walks the current
+    ///   graph from scratch, so EXCLUDED's count is already the
+    ///   correct total. `TRUNCATE` the closure table first only when
+    ///   stale rows for *deleted* edges must be purged (the helper
+    ///   does not garbage-collect rows whose path no longer exists).
     ///
     /// # Required closure-table schema
     ///
