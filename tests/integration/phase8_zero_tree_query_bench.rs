@@ -155,37 +155,33 @@ async fn bench_1000_node_tree_descendants(mut ctx: DjogiContext) {
         .await
         .expect("seed root");
 
-    // Use a CTE: generate label 1..=n-1, parent = label/4 (rounded).
-    // Then translate label-space parent → id-space via a self-join on
-    // the seeded rows. The seed uses two separate INSERTs because the
-    // seeded rows must already be visible for the join.
-    //
-    // Simpler approach: seed depth-by-depth in a loop. With n=1000 and
-    // 4-ary fanout the depth is ceil(log_4(1000)) ≈ 5, so 5 round trips.
+    // Two-phase seed: insert every label with `parent_id = NULL` in one
+    // round trip, then a single UPDATE/JOIN resolves every non-root
+    // row's parent via label arithmetic. Splitting INSERT and UPDATE
+    // is load-bearing — a single `INSERT...SELECT` with a self-
+    // referential `(SELECT id FROM phase8_bench_tree WHERE label = g/4)`
+    // would only see rows committed *before* the statement, leaving
+    // every batch's first label-arithmetic-collision orphaned (and
+    // its entire subtree unreachable from the root). Two phases cost
+    // two round trips instead of `ceil(log_4(n))` and produce a
+    // correctly connected 4-ary tree without depth-by-depth fragility.
     let _ = root;
-    let mut next_label: i32 = 1;
-    let mut depth: i32 = 0;
-    while (next_label as usize) < n {
-        // Insert all children at this depth that have a parent at the
-        // previous depth in label space — `label/4` translates label
-        // into the parent label.
-        let upper = std::cmp::min(n as i32, next_label * 4 + 1);
-        if upper > next_label {
-            ctx.raw_execute(
-                "INSERT INTO phase8_bench_tree (label, parent_id) \
-                 SELECT g, (SELECT id FROM phase8_bench_tree WHERE label = (g / 4)) \
-                 FROM generate_series($1::int, $2::int) AS g",
-                &[&next_label, &(upper - 1)],
-            )
-            .await
-            .expect("seed depth");
-            next_label = upper;
-        }
-        depth += 1;
-        if depth > 20 {
-            break;
-        }
-    }
+    ctx.raw_execute(
+        "INSERT INTO phase8_bench_tree (label) \
+         SELECT g FROM generate_series(1::int, $1::int - 1) AS g",
+        &[&(n as i32)],
+    )
+    .await
+    .expect("seed labels");
+    ctx.raw_execute(
+        "UPDATE phase8_bench_tree AS child \
+         SET parent_id = parent.id \
+         FROM phase8_bench_tree AS parent \
+         WHERE child.label > 0 AND parent.label = child.label / 4",
+        &[],
+    )
+    .await
+    .expect("set parent_id from label arithmetic");
 
     let total: i64 = ctx
         .raw_scalar("SELECT COUNT(*)::bigint FROM phase8_bench_tree", &[])

@@ -635,7 +635,7 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // `to_sql_checked`. One allocation per terminal, no unsafe.
     acc.push_bind(DynBind(qs.root_id));
 
-    // ── UNION ALL — recursive term, one branch per edge ──────────────────
+    // ── UNION ALL — single recursive term, all edges fanned out ──────────
     //
     // `UNION ALL` (not `UNION`) is load-bearing for `full_ancestors`
     // multiplicity preservation. With multiple edges, the same
@@ -644,11 +644,23 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     // must surface twice; `UNION` would dedup and silently break
     // Wright-style kinship coefficient computations.
     //
-    // Single-edge walks emit one branch (no inner `UNION ALL`); the
-    // outer `UNION ALL` between anchor and recursive term is
-    // identical. Multi-edge `full_ancestors` walks emit one branch
-    // per edge separated by additional `UNION ALL` keywords inside
-    // the recursive term.
+    // **Single recursive reference invariant.** Postgres rejects
+    // recursive CTEs whose recursive term contains the CTE name more
+    // than once ("recursive reference must not appear more than
+    // once") AND those whose first-from-the-left UNION-ALL operand
+    // already contains a recursive reference ("recursive reference
+    // ... must not appear within its non-recursive term"). Multi-edge
+    // walks therefore consolidate every edge into a single recursive
+    // SELECT that joins `__djogi_tree parent` once and threads edge
+    // selection through a non-recursive `LATERAL` subquery whose
+    // `UNION ALL` enumerates per-edge candidates over `T`. Each
+    // alternative inside the lateral picks T-rows reachable through
+    // exactly one edge (`mother_id` or `father_id` etc.) and tags
+    // them with a synthetic `__djogi_edge_label` text column the
+    // outer SELECT splices into `path`. Multi-path arrivals are
+    // preserved because each lateral alternative emits its own row
+    // — UNION ALL never deduplicates.
+    //
     // `qs` is consumed by value here, so each field can be moved out
     // directly — `condition` (a `Condition` enum tree) and `ordering`
     // (a `Vec<OrderExpr>`) used to be cloned out of historical caution,
@@ -665,26 +677,36 @@ fn build_recursive_inner<T: Model + FromPgRow>(
     let has_user_filter = !condition.is_vacuously_true();
     let has_depth_cap = max_depth.is_some();
 
-    for edge in edges.iter() {
-        // Open this branch — anchor's "UNION ALL" precedes the first
-        // branch; later branches add their own "UNION ALL" so each
-        // branch contributes one row-set to the recursive term.
-        acc.push_sql(" UNION ALL SELECT parent.depth + 1, parent.path || ARRAY['");
+    acc.push_sql(
+        " UNION ALL SELECT parent.depth + 1, parent.path || ARRAY[child.__djogi_edge_label], ",
+    );
+    push_qualified_columns::<T>(&mut acc, "child");
+    acc.push_sql(" FROM __djogi_tree parent JOIN LATERAL (");
+    for (i, edge) in edges.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(" UNION ALL ");
+        }
+        // Per-edge alternative — pick T-rows reachable from `parent`
+        // through exactly this edge column. `t` is the lateral
+        // alias; the outer SELECT exposes it as `child` so user
+        // filters / column projection remain stable across the
+        // single-edge and multi-edge paths.
+        acc.push_sql("SELECT ");
+        push_qualified_columns::<T>(&mut acc, "t");
+        acc.push_sql(", '");
         // `source_column` was identifier-validated at
         // `__make_relation_path` — ASCII alphanumeric + underscores
         // only, so embedding it inside a single-quoted SQL literal is
         // safe (no quote characters can appear inside the value).
         acc.push_sql(edge.source_column());
-        acc.push_sql("'], ");
-        push_qualified_columns::<T>(&mut acc, "child");
-        acc.push_sql(" FROM ");
+        acc.push_sql("'::text AS __djogi_edge_label FROM ");
         acc.push_sql(T::table_name());
-        acc.push_sql(" child JOIN __djogi_tree parent ON ");
+        acc.push_sql(" t WHERE ");
         match direction {
             // Descendants: walk down. Parent's id matches child's
             // edge column.
             RecursiveDirection::Descendants => {
-                acc.push_sql("child.");
+                acc.push_sql("t.");
                 acc.push_sql(edge.source_column());
                 acc.push_sql(" = parent.id");
             }
@@ -693,51 +715,44 @@ fn build_recursive_inner<T: Model + FromPgRow>(
             RecursiveDirection::Ancestors => {
                 acc.push_sql("parent.");
                 acc.push_sql(edge.source_column());
-                acc.push_sql(" = child.id");
+                acc.push_sql(" = t.id");
             }
         }
+    }
+    acc.push_sql(") child ON TRUE");
 
-        // Recursive-term WHERE — user filter and / or depth cap.
-        // Each branch carries its own copy because the predicates
-        // reference `child` / `parent` aliases that are scoped to
-        // this branch's SELECT. Opens only when at least one
-        // predicate fires so the emitted SQL stays minimal in the
-        // common no-filter case.
-        if has_user_filter || has_depth_cap {
-            acc.push_sql(" WHERE ");
+    // Recursive-term WHERE — user filter and / or depth cap.
+    // Attaches once to the single consolidated SELECT (not per-edge
+    // as the historical multi-branch shape did).
+    if has_user_filter || has_depth_cap {
+        acc.push_sql(" WHERE ");
+        if has_user_filter {
+            // The user filter references `T::Fields` columns,
+            // which emit as bare names. The lateral exposes T's
+            // columns via the `child` alias — qualifying the
+            // user's predicate as `child.<col>` keeps Postgres
+            // from raising `42702 column reference ambiguous`
+            // against the `__djogi_tree parent` side of the JOIN,
+            // which exposes the same column names through the
+            // same alias scope.
+            emit_condition(&mut acc, condition, Some("child"));
+        }
+        if has_depth_cap {
             if has_user_filter {
-                // The user filter references `T::Fields` columns,
-                // which emit as bare names. The recursive term
-                // aliases the model's table as `child` — qualifying
-                // the user's predicate as `child.<col>` keeps
-                // Postgres from raising `42702 column reference
-                // ambiguous` against the `__djogi_tree parent` side
-                // of the JOIN, which exposes the same column names
-                // through the same alias scope.
-                emit_condition(&mut acc, condition.clone(), Some("child"));
+                acc.push_sql(" AND ");
             }
-            if has_depth_cap {
-                if has_user_filter {
-                    acc.push_sql(" AND ");
-                }
-                acc.push_sql("parent.depth < ");
-                // Bind `n` per branch — multi-edge `full_ancestors`
-                // walks emit one bind slot per branch even though
-                // the value is identical. Reusing a single `$n` slot
-                // across branches would require splicing bind text
-                // into pre-formatted SQL, which `SqlAccumulator`
-                // does not expose; the redundant binds are cheap
-                // (2 → 4 bytes per branch) and keep the bind-vector
-                // ordering aligned with the SQL text. Bound as
-                // `i64` — Postgres has no unsigned types and
-                // `parent.depth` is INTEGER (driven by `0` in the
-                // anchor); going through `i64` is over-wide but
-                // keeps the bind shape consistent across
-                // `with_max_depth` call sites that may be plumbed
-                // `u32` from upstream configuration.
-                let n = max_depth.expect("has_depth_cap implies max_depth is Some");
-                acc.push_bind(n as i64);
-            }
+            acc.push_sql("parent.depth < ");
+            // `parent.depth` is INTEGER (int4) in Postgres — bind
+            // as `i32` (not `i64`) so `tokio_postgres` accepts the
+            // encoding. `WrongType { postgres: Int4, rust: "i64" }`
+            // is a hard protocol-level failure, not a coercion
+            // warning. `u32 → i32` is well-defined for u32 ≤
+            // i32::MAX (saturating clamp for the unrealistic case
+            // of u32 > i32::MAX, which would mean a recursion-depth
+            // cap above ~2 billion — far past any sensible value).
+            let n = max_depth.expect("has_depth_cap implies max_depth is Some");
+            let n_i32 = i32::try_from(n).unwrap_or(i32::MAX);
+            acc.push_bind(n_i32);
         }
     }
 
@@ -1208,9 +1223,12 @@ mod tests {
             !sql.contains(" UNION SELECT"),
             "recursive term must not use plain UNION (multiplicity loss): {sql}"
         );
+        // Descendants direction: the per-edge alternative inside the
+        // lateral matches `t.<edge_col> = parent.id` (single self-FK
+        // here is `parent_id`).
         assert!(
-            sql.contains("child.parent_id = parent.id"),
-            "descendants JOIN must walk child.parent_id = parent.id: {sql}"
+            sql.contains("t.parent_id = parent.id"),
+            "descendants lateral alternative must filter t.parent_id = parent.id: {sql}"
         );
     }
 
@@ -1219,9 +1237,11 @@ mod tests {
         let qs = ancestors_root();
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
+        // Ancestors direction: the per-edge alternative inside the
+        // lateral matches `parent.<edge_col> = t.id`.
         assert!(
-            sql.contains("parent.parent_id = child.id"),
-            "ancestors JOIN must walk parent.parent_id = child.id: {sql}"
+            sql.contains("parent.parent_id = t.id"),
+            "ancestors lateral alternative must filter parent.parent_id = t.id: {sql}"
         );
     }
 
@@ -1450,17 +1470,21 @@ mod tests {
     #[test]
     fn recursive_term_appends_edge_name_to_path() {
         // The recursive term emits
-        // `parent.path || ARRAY['<edge_col>']` so each step records
-        // which edge was followed. B3 changes this from B2's
-        // placeholder `child.id::text` to the semantic edge-name
-        // literal — callers can now filter on edge sequences (e.g.
-        // `path == ["mother_id", "father_id"]`).
+        // `parent.path || ARRAY[child.__djogi_edge_label]` where the
+        // synthetic `__djogi_edge_label` carries the edge-column
+        // name as a text literal from inside the lateral. Each step
+        // records which edge was followed, so callers can filter on
+        // edge sequences (e.g. `path == ["mother_id", "father_id"]`).
         let qs = root();
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
         assert!(
-            sql.contains("parent.path || ARRAY['parent_id']"),
-            "recursive term must append the edge name (not child.id): {sql}"
+            sql.contains("parent.path || ARRAY[child.__djogi_edge_label]"),
+            "recursive term must append the lateral's edge label: {sql}"
+        );
+        assert!(
+            sql.contains("'parent_id'::text AS __djogi_edge_label"),
+            "lateral must tag rows with the edge name as __djogi_edge_label: {sql}"
         );
         assert!(
             !sql.contains("child.id::text"),
@@ -1510,34 +1534,43 @@ mod tests {
     }
 
     #[test]
-    fn full_ancestors_two_edges_emits_two_union_all_branches() {
-        // Two self-FKs → two `UNION ALL` branches in the recursive
-        // term. The first `UNION ALL` is between anchor and first
-        // branch; the second is between the two branches. So the
-        // total `UNION ALL` count equals the edge count.
+    fn full_ancestors_two_edges_consolidates_into_single_recursive_term() {
+        // Postgres restricts recursive CTEs to ONE self-reference in
+        // the recursive term. Multi-edge walks therefore consolidate
+        // every edge into a single recursive SELECT and enumerate
+        // edge alternatives via a non-recursive `LATERAL (... UNION
+        // ALL ...)` subquery. (B5 round-2 fixup — the original
+        // per-edge UNION ALL form failed live with "recursive
+        // reference must not appear more than once".)
+        //
+        // Total `UNION ALL` count is `1 + (N - 1)` for N edges:
+        // - 1 between anchor and the consolidated recursive term
+        // - N - 1 inside the LATERAL between the per-edge SELECTs
         let qs = full_ancestors_two_edges();
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
         let union_count = sql.matches("UNION ALL").count();
         assert_eq!(
             union_count, 2,
-            "two-edge full_ancestors must emit 2 UNION ALL keywords (one per edge): {sql}"
+            "two-edge ancestors: 1 UNION ALL between anchor + recursive term, \
+             plus 1 inside the LATERAL between the two per-edge SELECTs: {sql}"
+        );
+        // Both edges live inside the LATERAL as separate SELECTs.
+        assert!(
+            sql.contains("parent.mother_id = t.id"),
+            "first edge alternative must filter parent.mother_id = t.id: {sql}"
         );
         assert!(
-            sql.contains("parent.mother_id = child.id"),
-            "first ancestor branch must JOIN on mother_id: {sql}"
+            sql.contains("parent.father_id = t.id"),
+            "second edge alternative must filter parent.father_id = t.id: {sql}"
         );
         assert!(
-            sql.contains("parent.father_id = child.id"),
-            "second ancestor branch must JOIN on father_id: {sql}"
+            sql.contains("'mother_id'::text AS __djogi_edge_label"),
+            "first edge alternative must tag with mother_id label: {sql}"
         );
         assert!(
-            sql.contains("ARRAY['mother_id']"),
-            "first branch must append `mother_id` to path: {sql}"
-        );
-        assert!(
-            sql.contains("ARRAY['father_id']"),
-            "second branch must append `father_id` to path: {sql}"
+            sql.contains("'father_id'::text AS __djogi_edge_label"),
+            "second edge alternative must tag with father_id label: {sql}"
         );
     }
 
@@ -1579,26 +1612,26 @@ mod tests {
     }
 
     #[test]
-    fn full_ancestors_two_edges_with_max_depth_binds_per_branch() {
-        // `with_max_depth` is bound once per branch — multi-edge
-        // walks emit redundant binds rather than splicing a shared
-        // `$n` slot. Total binds = 1 root id + N branches when a
-        // depth cap is set.
+    fn full_ancestors_two_edges_with_max_depth_binds_once() {
+        // `with_max_depth` attaches once to the consolidated
+        // recursive term (not per-edge as the historical multi-branch
+        // shape did). Total binds = 1 root id + 1 depth cap = 2,
+        // regardless of edge count. (B5 round-2 fixup.)
         let qs = full_ancestors_two_edges().with_max_depth(3);
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
         assert!(
             sql.contains("parent.depth < $2"),
-            "first branch's depth bind is $2: {sql}"
+            "single recursive term => single depth bind at $2: {sql}"
         );
         assert!(
-            sql.contains("parent.depth < $3"),
-            "second branch's depth bind is $3: {sql}"
+            !sql.contains("parent.depth < $3"),
+            "second depth bind must not appear — only one recursive term: {sql}"
         );
         assert_eq!(
             acc.bind_count(),
-            3,
-            "expected 3 binds (root + 2 depth caps), got {}",
+            2,
+            "expected 2 binds (root + 1 depth cap), got {}",
             acc.bind_count()
         );
     }

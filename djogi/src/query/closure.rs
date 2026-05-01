@@ -32,19 +32,28 @@
 //!         FROM <source_table> s
 //!         WHERE <root_predicate or TRUE>
 //!         UNION ALL
-//!         -- recursive: walk every self-FK edge. The closure CTE only
-//!         -- carries `(source_id, ancestor_id, depth, path)` — it does
-//!         -- not project T's self-FK columns — so each branch double-
-//!         -- joins the source table: first to resolve the current
-//!         -- ancestor row (`a`) by `closure.ancestor_id`, then to
-//!         -- follow `a.<edge_col>` up to its parent row (`p`).
+//!         -- recursive: walk every self-FK edge inside ONE recursive
+//!         -- term. The closure CTE only carries
+//!         -- `(source_id, ancestor_id, depth, path)` — it does not
+//!         -- project T's self-FK columns — so we double-join the
+//!         -- source table: first to resolve the current ancestor row
+//!         -- (`a`) by `closure.ancestor_id`, then to follow each edge
+//!         -- column up to its parent row (`p`). A `CROSS JOIN LATERAL
+//!         -- VALUES (...)` enumerates every self-FK edge of `T` in
+//!         -- one fan-out so multi-edge models still satisfy
+//!         -- Postgres's "exactly one self-reference" rule for
+//!         -- recursive terms.
 //!         SELECT closure.source_id, p.id, closure.depth + 1,
-//!                closure.path || ARRAY['<edge_col>']
+//!                closure.path || ARRAY[step.label]
 //!         FROM __djogi_closure closure
 //!         JOIN <source_table> a ON a.id = closure.ancestor_id
-//!         JOIN <source_table> p ON p.id = a.<edge_col>
+//!         CROSS JOIN LATERAL (VALUES
+//!             (a.<edge_col_1>, '<edge_col_1>'::text),
+//!             (a.<edge_col_2>, '<edge_col_2>'::text),
+//!             ...
+//!         ) AS step(pid, label)
+//!         JOIN <source_table> p ON p.id = step.pid
 //!         WHERE closure.depth < <max_depth>?
-//!         -- one UNION ALL branch per self-FK edge
 //!     ) CYCLE source_id, ancestor_id SET is_cycle USING cycle_path
 //!     SELECT
 //!         source_id, ancestor_id, depth,
@@ -67,14 +76,19 @@
 //!   source row to its transitive ancestors. The named driver for this
 //!   helper is kinship / pedigree analysis, where the "every ancestor of
 //!   every source row" frame is the natural shape.
-//! - **`UNION ALL` per edge.** Multi-edge models (e.g.
-//!   `mother_id` + `father_id` on an animal model) emit one branch per
-//!   edge in the recursive term — every distinct edge-sequence path
-//!   surfaces as its own CTE row, then the outer `GROUP BY` collapses
+//! - **Single recursive reference + `CROSS JOIN LATERAL VALUES`.**
+//!   Postgres rejects recursive CTEs whose recursive term references
+//!   the CTE name more than once. Multi-edge models (e.g.
+//!   `mother_id` + `father_id` on an animal model) therefore enumerate
+//!   self-FK edges via a `CROSS JOIN LATERAL (VALUES …) AS step(pid,
+//!   label)` clause that fans every edge column out into its own
+//!   row pair — every distinct edge-sequence path still surfaces as
+//!   its own CTE row, then the outer `GROUP BY` collapses
 //!   `(source, ancestor, depth)` triples while surfacing the count as
 //!   `path_count`. This preserves Wright-style multiplicity: an
 //!   ancestor reachable by two distinct edge sequences shows up with
-//!   `path_count = 2`.
+//!   `path_count = 2`. NULL-valued edge columns get filtered by the
+//!   inner `JOIN T p ON p.id = step.pid` (NULL = anything is unknown).
 //! - **Cycle column is `cycle_path`** (not `path`) so it does not
 //!   collide with our user-visible edge-name accumulator.
 //! - **`ON CONFLICT … DO UPDATE` replaces, it does not add.** Each
@@ -470,7 +484,7 @@ where
         }
     }
 
-    // ── UNION ALL — recursive term, one branch per self-FK edge ─────────
+    // ── UNION ALL — single recursive term, all self-FK edges fanned out ──
     //
     // Walks ANCESTORS direction. The closure CTE only carries
     // `(source_id, ancestor_id, depth, path)` — it does NOT carry the
@@ -481,34 +495,55 @@ where
     //
     // `p.id` becomes the new `ancestor_id` for the next layer.
     //
-    // Each branch carries its own depth-cap bind because branches
-    // share no SQL scope and `SqlAccumulator` does not splice
-    // pre-allocated `$n` slots. Multi-edge models pay one extra bind
-    // per branch — cheap (≤ 4 bytes wire format) and keeps the bind
-    // ordering stable.
+    // **Single recursive reference invariant.** Postgres restricts
+    // recursive CTEs to ONE self-reference in the recursive term
+    // (rejecting both "non-recursive term contains a recursive
+    // reference" and "recursive reference must not appear more than
+    // once" forms). For multi-edge models we therefore enumerate
+    // edges via `CROSS JOIN LATERAL (VALUES ...) AS step(pid, label)`
+    // and join `p` against `step.pid` once — fanning out one row per
+    // (closure-row, edge) pair while keeping the SELF-reference
+    // count at exactly 1. NULL-valued edge columns get filtered out
+    // by the inner `JOIN T p ON p.id = step.pid` since `NULL = ...`
+    // is unknown. Multi-path multiplicity is preserved because each
+    // edge that fires emits its own row, which the outer
+    // `GROUP BY (source, ancestor, depth)` collapses to
+    // `path_count = COUNT(*)`.
     let edges: Vec<&'static str> = T::descriptor().self_fk_columns().collect();
-    for edge in edges.iter() {
-        acc.push_sql(" UNION ALL SELECT closure.source_id, p.id, closure.depth + 1, ");
-        acc.push_sql("closure.path || ARRAY['");
+    acc.push_sql(
+        " UNION ALL SELECT closure.source_id, p.id, closure.depth + 1, \
+         closure.path || ARRAY[step.label] FROM __djogi_closure closure JOIN ",
+    );
+    acc.push_sql(T::table_name());
+    acc.push_sql(" a ON a.id = closure.ancestor_id CROSS JOIN LATERAL (VALUES ");
+    for (i, edge) in edges.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        acc.push_sql("(a.");
         // `edge` came from `descriptor.self_fk_columns()` which
         // surfaces the field name verbatim — already
         // identifier-validated at macro emission.
         acc.push_sql(edge);
-        acc.push_sql("'] FROM __djogi_closure closure JOIN ");
-        acc.push_sql(T::table_name());
-        acc.push_sql(" a ON a.id = closure.ancestor_id JOIN ");
-        acc.push_sql(T::table_name());
-        acc.push_sql(" p ON p.id = a.");
+        acc.push_sql(", '");
         acc.push_sql(edge);
-        if let Some(n) = max_depth {
-            acc.push_sql(" WHERE closure.depth < ");
-            // `parent.depth` is `INTEGER` in Postgres; binding as
-            // `i64` is over-wide but matches B2's recursive emitter
-            // and side-steps the `u32 → i32` narrowing-conversion
-            // question for callers plumbed `u32` from upstream
-            // configuration. The cast is safe (`u32::MAX` < `i64::MAX`).
-            acc.push_bind(n as i64);
-        }
+        acc.push_sql("'::text)");
+    }
+    acc.push_sql(") AS step(pid, label) JOIN ");
+    acc.push_sql(T::table_name());
+    acc.push_sql(" p ON p.id = step.pid");
+    if let Some(n) = max_depth {
+        acc.push_sql(" WHERE closure.depth < ");
+        // `closure.depth` is INTEGER (int4) in Postgres — bind as
+        // `i32` (not `i64`) so `tokio_postgres` accepts the encoding.
+        // `WrongType { postgres: Int4, rust: "i64" }` is a hard
+        // protocol-level failure, not a coercion warning. `u32 →
+        // i32` is well-defined for u32 ≤ i32::MAX (saturating clamp
+        // for the unrealistic case of u32 > i32::MAX, which would
+        // mean a recursion-depth cap above ~2 billion — far past
+        // any sensible value).
+        let n_i32 = i32::try_from(n).unwrap_or(i32::MAX);
+        acc.push_bind(n_i32);
     }
 
     // ── ) CYCLE source_id, ancestor_id SET is_cycle USING cycle_path ────
@@ -902,61 +937,57 @@ mod tests {
     }
 
     #[test]
-    fn one_edge_emits_one_union_all_branch() {
+    fn one_edge_emits_single_recursive_term() {
         let acc = build_materialize_closure_sql::<MiniTree, MiniClosure>(opts_default());
         let sql = acc.sql();
+        // anchor + one recursive term = exactly one UNION ALL.
         let union_count = sql.matches("UNION ALL").count();
         assert_eq!(
             union_count, 1,
-            "single-edge closure must emit exactly 1 UNION ALL keyword: {sql}"
+            "single-edge closure: exactly 1 UNION ALL (anchor + recursive): {sql}"
         );
         // ANCESTORS direction: closure CTE only carries `(source_id,
         // ancestor_id, depth, path)`, so we double-join the source
         // table — once to resolve the current ancestor row (`a`),
-        // once to step up via `a.<edge_col>` to the new ancestor (`p`).
+        // once via `step.pid` to the new ancestor (`p`).
         assert!(
             sql.contains("a ON a.id = closure.ancestor_id"),
             "must resolve ancestor row via closure.ancestor_id: {sql}"
         );
         assert!(
-            sql.contains("p ON p.id = a.parent_id"),
-            "must step from ancestor row to parent via self-FK column: {sql}"
+            sql.contains("(a.parent_id, 'parent_id'::text)"),
+            "single-edge LATERAL VALUES tuple must contain (a.parent_id, 'parent_id'::text): {sql}"
         );
-        // Regression guard against the original BLOCK shape (B4 round-2
-        // fixup): joining directly on `closure.<edge_col>` would
-        // reference a column the CTE does not project.
         assert!(
-            !sql.contains("parent.id = closure.parent_id"),
-            "must NOT join on closure.<edge_col> — closure CTE only \
-             projects (source_id, ancestor_id, depth, path): {sql}"
+            sql.contains("p ON p.id = step.pid"),
+            "must step to parent via the LATERAL `step.pid`: {sql}"
         );
     }
 
     #[test]
-    fn two_edges_emit_two_union_all_branches() {
+    fn two_edges_collapse_into_single_recursive_term() {
+        // Postgres restricts recursive CTEs to ONE self-reference in
+        // the recursive term. Multi-edge models therefore enumerate
+        // edges via CROSS JOIN LATERAL VALUES rather than per-edge
+        // UNION ALL branches. (B4 round-3 fixup — the original
+        // per-edge form failed live with "recursive reference must
+        // not appear more than once".)
         let opts = MaterializeClosureOptions::<HeerId>::default();
         let acc = build_materialize_closure_sql::<MiniPedigree, MiniPedigreeClosure>(opts);
         let sql = acc.sql();
         let union_count = sql.matches("UNION ALL").count();
         assert_eq!(
-            union_count, 2,
-            "two-edge closure must emit 2 UNION ALL keywords (one per edge): {sql}"
+            union_count, 1,
+            "two-edge closure: exactly 1 UNION ALL even with N edges (anchor + single recursive term): {sql}"
+        );
+        // Both edges live inside the single LATERAL VALUES tuple.
+        assert!(
+            sql.contains("(a.mother_id, 'mother_id'::text), (a.father_id, 'father_id'::text)"),
+            "LATERAL VALUES must enumerate both edges as (a.<col>, '<col>'::text) tuples: {sql}"
         );
         assert!(
-            sql.contains("p ON p.id = a.mother_id"),
-            "first branch must step from ancestor row to parent via mother_id: {sql}"
-        );
-        assert!(
-            sql.contains("p ON p.id = a.father_id"),
-            "second branch must step from ancestor row to parent via father_id: {sql}"
-        );
-        assert!(
-            sql.contains("ARRAY['mother_id']"),
-            "first branch must append `mother_id` to path: {sql}"
-        );
-        assert!(
-            sql.contains("ARRAY['father_id']"),
-            "second branch must append `father_id` to path: {sql}"
+            sql.contains("p ON p.id = step.pid"),
+            "must step to parent via LATERAL `step.pid` — single JOIN, not per-edge: {sql}"
         );
     }
 
@@ -1064,24 +1095,27 @@ mod tests {
     }
 
     #[test]
-    fn two_edges_max_depth_binds_per_branch() {
-        // One depth-cap bind per UNION ALL branch — same shape as
-        // the B3 multi-edge full_ancestors emitter.
+    fn two_edges_max_depth_binds_once() {
+        // The recursive term is now a single SELECT (per Postgres's
+        // "exactly one self-reference" rule) that fans edges out via
+        // CROSS JOIN LATERAL VALUES. The depth-cap WHERE attaches to
+        // that single SELECT, so multi-edge models emit one
+        // max_depth bind regardless of edge count.
         let opts = MaterializeClosureOptions::<HeerId>::default().with_max_depth(3);
         let acc = build_materialize_closure_sql::<MiniPedigree, MiniPedigreeClosure>(opts);
         let sql = acc.sql();
         assert!(
             sql.contains("closure.depth < $1"),
-            "first branch's depth bind is $1: {sql}"
+            "single recursive term => single depth bind at $1: {sql}"
         );
         assert!(
-            sql.contains("closure.depth < $2"),
-            "second branch's depth bind is $2: {sql}"
+            !sql.contains("closure.depth < $2"),
+            "second depth bind must not appear — only one recursive term: {sql}"
         );
         assert_eq!(
             acc.bind_count(),
-            2,
-            "two edges + max_depth = 2 binds (one per branch), got {}",
+            1,
+            "consolidated recursive term => 1 max_depth bind regardless of edge count, got {}",
             acc.bind_count()
         );
     }
