@@ -152,4 +152,107 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         &'ctx self,
         ctx: &'ctx mut DjogiContext,
     ) -> impl Future<Output = Result<Self, DjogiError>> + Send + 'ctx;
+
+    // ── Tree-recursive sugar (Phase 8-Zero Cluster B2 — T9) ─────────────────
+    //
+    // These default methods provide a `tree_edge`-aware shorthand for
+    // [`crate::query::QuerySet::tree_descendants`] /
+    // [`crate::query::QuerySet::tree_ancestors`]. They resolve the
+    // self-FK column at runtime from
+    // [`ModelDescriptor::tree_edge`](crate::descriptor::ModelDescriptor)
+    // and fail with [`DjogiError::Validation`] if the model has not
+    // declared `#[model(tree_edge = "...")]`.
+    //
+    // The runtime check is the deliberate trade-off: a compile-time
+    // gate would require either an extra trait the macro implements
+    // only when `tree_edge` is set, or generic-bounded specialization
+    // (unstable). Pre-1.0 we ship the runtime gate; B5's trybuild
+    // covers the type-level error case for the explicit-path API
+    // (`QuerySet::tree_descendants` with a mismatched `RelationPath`).
+
+    /// `tree_edge`-aware shorthand for
+    /// [`QuerySet::tree_descendants`](crate::query::QuerySet::tree_descendants).
+    ///
+    /// Resolves the self-FK column from this model's
+    /// `#[model(tree_edge = "...")]` declaration and constructs a
+    /// [`RecursiveQuerySet`](crate::query::RecursiveQuerySet)
+    /// pre-anchored at `root_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DjogiError::Validation`] when the model has not
+    /// declared a default `tree_edge`. The error message names the
+    /// model and instructs the caller to either add
+    /// `#[model(tree_edge = "...")]` or use the explicit-path
+    /// [`QuerySet::tree_descendants`] form.
+    fn tree_descendants(
+        root_id: Self::Pk,
+    ) -> Result<crate::query::RecursiveQuerySet<Self>, DjogiError>
+    where
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        resolve_tree_edge::<Self>().map(|edge| {
+            crate::query::RecursiveQuerySet::from_path(
+                edge,
+                root_id,
+                crate::query::RecursiveDirection::Descendants,
+            )
+        })
+    }
+
+    /// `tree_edge`-aware shorthand for
+    /// [`QuerySet::tree_ancestors`](crate::query::QuerySet::tree_ancestors).
+    /// Same descriptor lookup + error contract as
+    /// [`Model::tree_descendants`].
+    fn tree_ancestors(
+        node_id: Self::Pk,
+    ) -> Result<crate::query::RecursiveQuerySet<Self>, DjogiError>
+    where
+        Self::Pk: postgres_types::ToSql + Sync + Send + 'static,
+    {
+        resolve_tree_edge::<Self>().map(|edge| {
+            crate::query::RecursiveQuerySet::from_path(
+                edge,
+                node_id,
+                crate::query::RecursiveDirection::Ancestors,
+            )
+        })
+    }
+}
+
+/// Look up `M`'s declared `tree_edge` and synthesise a
+/// `RelationPath<M, M>` that targets the same model's table.
+///
+/// The descriptor's `tree_edge` is the field NAME (which equals the
+/// column name in Djogi); the macro's compile-time validation in B1
+/// (T12) already proved both that the named field exists on the
+/// struct and that it is a self-FK, so the lookup here is a pure
+/// metadata read with no fallible step beyond the
+/// `tree_edge.is_some()` check.
+///
+/// `target_table = M::table_name()` because a self-FK by definition
+/// targets the same model. `RelationKind::ForeignKey` is the
+/// canonical kind for self-FK edges; if a future phase adds
+/// `OneToOne` self-FKs the descriptor's `relation_kind` field would
+/// carry the right discriminant and a richer lookup could thread it
+/// through, but for B2 the kind is informational only — the SQL
+/// emitter treats both kinds identically (single FK column → one
+/// recursive walk).
+fn resolve_tree_edge<M: Model>() -> Result<crate::relation::RelationPath<M, M>, DjogiError> {
+    let descriptor = M::descriptor();
+    let edge_name = descriptor.tree_edge.ok_or_else(|| {
+        DjogiError::Validation(format!(
+            "model '{}' has no #[model(tree_edge = \"...\")] declared; \
+             either add the attribute or use QuerySet::tree_descendants / \
+             QuerySet::tree_ancestors with an explicit RelationPath",
+            descriptor.type_name,
+        ))
+    })?;
+    Ok(
+        crate::relation::__macro_support::__make_relation_path::<M, M>(
+            edge_name,
+            M::table_name(),
+            crate::relation::RelationKind::ForeignKey,
+        ),
+    )
 }

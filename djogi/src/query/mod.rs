@@ -31,6 +31,7 @@ pub mod grouped;
 pub(crate) mod lock;
 pub mod order;
 pub mod queryset;
+pub mod recursive;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
 pub(crate) mod sql;
@@ -46,6 +47,7 @@ pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
+pub use recursive::{RecursiveDirection, RecursiveQuerySet};
 #[cfg(feature = "spatial")]
 pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
