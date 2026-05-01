@@ -1,13 +1,5 @@
 error: `tree_edge = "owner_id"` must name a self-FK field; the column exists on `NonSelfFkNode` but its target type is not `NonSelfFkNode`. Tree-recursive queries walk a self-referential parent edge — point `tree_edge` at a `ForeignKey<NonSelfFkNode>` or `Option<ForeignKey<NonSelfFkNode>>` field on the same struct
-  --> tests/compile_fail/phase8_zero_tree_edge_non_self_fk.rs:19:57
+  --> tests/compile_fail/phase8_zero_tree_edge_non_self_fk.rs:28:17
    |
-19 | #[model(table = "phase8_non_self_fk_nodes", tree_edge = "owner_id")]
-   |                                                         ^^^^^^^^^^
-
-error[E0277]: the trait bound `djogi::ForeignKey<Owner>: std::default::Default` is not satisfied
-  --> tests/compile_fail/phase8_zero_tree_edge_non_self_fk.rs:19:1
-   |
-19 | #[model(table = "phase8_non_self_fk_nodes", tree_edge = "owner_id")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `std::default::Default` is not implemented for `djogi::ForeignKey<Owner>`
-   |
-   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+28 |     tree_edge = "owner_id",
+   |                 ^^^^^^^^^^

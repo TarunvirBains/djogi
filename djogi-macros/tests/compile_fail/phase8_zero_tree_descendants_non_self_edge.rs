@@ -30,6 +30,13 @@ fn main() {
     // `QuerySet::<NodeB5>::tree_descendants` requires
     // `RelationPath<NodeB5, NodeB5>`. The mismatch on the second type
     // parameter (`OwnerB5` vs `NodeB5`) surfaces as E0308.
-    let id = <HeerId as PrimaryKey>::sentinel();
+    //
+    // Resolve `id` through the model's own `Pk` associated type — Phase
+    // 7-Zero-2 (T2) flipped the default from `HeerId` to `HeerIdDesc`,
+    // so hard-coding `<HeerId as PrimaryKey>::sentinel()` would also
+    // produce a SECOND unrelated `expected HeerIdDesc, found HeerId`
+    // error and pollute the test signal. Going through the trait keeps
+    // this fixture asserting *only* the `RelationPath<T, T>` mismatch.
+    let id = <<NodeB5 as Model>::Pk as PrimaryKey>::sentinel();
     let _qs = NodeB5::objects().tree_descendants(NodeB5Related::owner(), id);
 }
