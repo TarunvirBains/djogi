@@ -83,6 +83,20 @@ enum DemoCmd {
         /// Maximum descent depth to traverse (default 8).
         #[arg(long, default_value_t = 8)]
         max_depth: i32,
+        /// Switch from raw recursive-CTE SQL to the typed
+        /// `tree_descendants(ElephantRelated::mother(), id)` builder
+        /// from Phase 8-Zero Cluster B. Compose with `--order` to
+        /// pick BFS / DFS traversal.
+        #[arg(long, default_value_t = false)]
+        typed: bool,
+        /// Traversal order for `--typed` mode. `default` lets
+        /// Postgres pick (typically depth-first per-recursion-step);
+        /// `bfs` adds `SEARCH BREADTH FIRST BY estimated_birth_year`
+        /// for clean top-down generation bands; `dfs` uses
+        /// `SEARCH DEPTH FIRST BY estimated_birth_year` to walk one
+        /// matriline chain at a time. Ignored unless `--typed` is set.
+        #[arg(long, value_enum, default_value_t = demos::lineage::Order::Default)]
+        order: demos::lineage::Order,
         #[arg(long)]
         out: Option<PathBuf>,
         /// Output format. `json` (default), `mermaid`, `markdown`.
@@ -166,10 +180,21 @@ async fn main() -> Result<()> {
             DemoCmd::Lineage {
                 matriarch,
                 max_depth,
+                typed,
+                order,
                 out,
                 format,
             } => {
-                demos::lineage::run(&mut ctx, &matriarch, max_depth, format, out.as_deref()).await?
+                demos::lineage::run(
+                    &mut ctx,
+                    &matriarch,
+                    max_depth,
+                    typed,
+                    order,
+                    format,
+                    out.as_deref(),
+                )
+                .await?
             }
             DemoCmd::HerdSummaries { out, format } => {
                 demos::herd_summaries::run(&mut ctx, format, out.as_deref()).await?
