@@ -391,6 +391,7 @@ async fn seed_one_herd(
     let mut rng = Lcg::new(spec.name);
     let cluster_offsets = [(0.0, 0.0), (0.05, 0.04), (-0.04, 0.03)];
     let now = OffsetDateTime::now_utc();
+    let mut sightings: Vec<Sighting> = Vec::with_capacity(50);
     for s in 0..50 {
         let cluster = cluster_offsets[s % cluster_offsets.len()];
         let lat = spec.center_lat + cluster.0 + rng.jitter(0.05);
@@ -398,23 +399,24 @@ async fn seed_one_herd(
         let days_back = (rng.next_u32() % 90) as i64;
         let observed_at = now - time::Duration::days(days_back);
         let notes = sighting_note(s);
-        let _ = Sighting::create(
-            ctx,
-            Sighting {
-                id: <djogi::HeerId as djogi::PrimaryKey>::sentinel(),
-                created_at: djogi::DateTime::UNIX_EPOCH,
-                updated_at: djogi::DateTime::UNIX_EPOCH,
-                elephant_id: ForeignKey::new(matriarch.id),
-                observed_by_id: ForeignKey::new(researcher.id),
-                location: GeoPoint::new(lat, lon).map_err(|e| {
-                    DjogiError::Db(djogi::DbError::other(format!("GeoPoint::new: {e}")))
-                })?,
-                observed_at,
-                notes: notes.to_string(),
-            },
-        )
-        .await?;
+        sightings.push(Sighting {
+            id: <djogi::HeerId as djogi::PrimaryKey>::sentinel(),
+            created_at: djogi::DateTime::UNIX_EPOCH,
+            updated_at: djogi::DateTime::UNIX_EPOCH,
+            elephant_id: ForeignKey::new(matriarch.id),
+            herd_id: ForeignKey::new(herd.id),
+            observed_by_id: ForeignKey::new(researcher.id),
+            location: GeoPoint::new(lat, lon).map_err(|e| {
+                DjogiError::Db(djogi::DbError::other(format!("GeoPoint::new: {e}")))
+            })?,
+            observed_at,
+            notes: notes.to_string(),
+        });
     }
+    // Bulk insert — one round trip per herd instead of 50 per-row
+    // INSERTs. `bulk_create` runs inside the caller's transaction, so
+    // it composes with the surrounding `atomic()` scope unchanged.
+    Sighting::bulk_create(ctx, sightings).await?;
 
     Ok(())
 }

@@ -48,27 +48,23 @@
 //!   `materialize_closure` call + indexed self-join), not shipping
 //!   a kinship library.
 //!
-//! - **Top-N per partition via window functions.** The candidate-pair
-//!   scoring is wrapped in a `ROW_NUMBER() OVER (PARTITION BY
-//!   female_id ORDER BY score DESC)` and outer-filtered to
-//!   `rank <= 3`. Postgres has no `QUALIFY` keyword (Phase 8-Zero
-//!   Cluster C T18 documents this); the framework's typed
-//!   `RowNumber().qualify(...)` lowering produces the equivalent
-//!   `SELECT * FROM (<inner>) AS __djogi_q WHERE rank <= $1` shape.
+//! - **Top-N per partition via window functions.** Step 3's SQL
+//!   wraps the scored pairs in `ROW_NUMBER() OVER (PARTITION BY
+//!   female_id ORDER BY score DESC)` and filters to `rank <= $1` in
+//!   an outer SELECT against the `scored` CTE. Postgres has no
+//!   `QUALIFY` keyword (Phase 8-Zero Cluster C T18 documents this);
+//!   the framework's typed `RowNumber().qualify(...)` lowering
+//!   produces this same outer-WHERE shape for single-Model queries.
 //!
-//!   **Why this demo emits via `ctx.raw_rows` instead of the typed
-//!   builder:** Cluster C's typed `RowNumber().qualify(...)`
-//!   surface is bolted to `AnnotatedQuerySet<T, A>` over a single
-//!   `Model T`. The mating-pairs ranking surface is a multi-CTE
-//!   pair shape (`(female, male)` rows derived from a
-//!   `WITH mature → candidate_pairs → pair_kinship` chain over
-//!   `elephant_ancestries` self-joined) — there is no single
-//!   `T = Model` that fits. The emitted SQL nonetheless mirrors the
-//!   exact shape the typed builder produces (same `__djogi_q`
-//!   alias, same outer-WHERE), so adopters reading this demo
-//!   alongside Cluster C's typed-surface tests see end-to-end
-//!   continuity. Bridging the typed surface to multi-CTE shapes
-//!   is tracked as **issue #84** for follow-up framework work.
+//!   **Why Step 3 stays raw:** the typed
+//!   `RowNumber().qualify(...)` surface is bolted to
+//!   `AnnotatedQuerySet<T, A>` over a single `Model T`, but Step 3's
+//!   ranked rows are `(female, male)` pair tuples — there is no
+//!   single `T = Model` that fits. Bridging the typed surface to
+//!   multi-CTE pair shapes is tracked as **issue #84**; once
+//!   `djqry` ships in Phase 9c, Step 3's SQL is the canonical
+//!   override candidate (see `docs/spec/implementation-plan.md`
+//!   §9c "Retrofit existing examples to use djqry once available").
 //!
 //! ## Composite score
 //!
@@ -127,10 +123,12 @@
 
 use anyhow::Result;
 use djogi::DjogiContext;
+use djogi::prelude::*;
 use postgres_types::ToSql;
 use serde::Serialize;
 use std::path::Path;
 
+use crate::models::{Elephant, Sighting};
 use crate::output::{self, Format};
 
 /// Maturity threshold (years). Wild African elephants reach sexual
@@ -167,74 +165,122 @@ struct MatingPair {
 }
 
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
-    // Wright-F-over-closure SQL with row-number-partition-by-female
-    // top-N filter. The `__djogi_q` derived-table alias mirrors the
-    // shape Cluster C T18's typed `qualify(...)` lowering produces;
-    // a follow-up commit will rewrite this in terms of the typed
-    // `RowNumber` / `qualify` builders so the demo exercises that
-    // surface as well.
+    // ── Step 1 (typed Djogi) — per-herd convex hull aggregate ─────
     //
-    // The current-year integer is computed in Rust and passed as a
-    // bind so the demo is reproducible across runs (Postgres
-    // `EXTRACT(YEAR FROM CURRENT_DATE)` would drift annually,
-    // making the deterministic seed's mature-elephant set vary).
+    // Demonstrates Cluster C T16/T17's typed
+    // `FieldRef::convex_hull()` aggregate composed with the typed
+    // `group_by(...).annotate(...)` surface. Returns one (herd_id,
+    // hull-Polygon) per herd that has any recorded sightings.
+    //
+    // The denormalized `Sighting.herd_id` column (added alongside
+    // this restructure) is what makes the typed `group_by(|s|
+    // s.herd_id())` shape fit — without it, grouping by herd would
+    // require relation traversal (`s.elephant().herd_id()`) which
+    // the framework's grouped-aggregate surface doesn't model.
+    let herd_hulls: Vec<(djogi::ForeignKey<crate::models::Herd>, djogi::geo::Polygon)> =
+        Sighting::objects()
+            .group_by(|s| s.herd_id())
+            .annotate(|s| s.location().convex_hull())
+            .fetch_all(ctx)
+            .await?;
+
+    // ── Step 2 (typed Djogi + Rust) — mature elephants by sex ─────
+    //
+    // Step 2a uses the typed `Elephant::objects().filter(...)` surface
+    // to fetch every elephant with a known birth year — typed query,
+    // composes with the rest of the demo as `Vec<Elephant>`. Step 2b
+    // categorizes the results by `tags.sex` + `MATURITY_YEARS` in
+    // Rust because the JSONB-tags surface (`tags->>'sex'`) isn't
+    // typed-filterable today and the surrounding business logic
+    // (cohort cutoff, sex split) is naturally in-memory.
+    let now_year: i16 = 2026;
+    let mature_cutoff: i16 = now_year - MATURITY_YEARS as i16;
+    // Typed filter: only elephants with a recorded birth year. The
+    // surrounding cohort cutoff + sex split runs in Rust because
+    // (a) the JSONB tags surface (`tags.data.sex`) isn't typed-
+    // filterable today, and (b) splitting one fetch into two
+    // partitions is more idiomatic in Rust than two near-identical
+    // typed queries.
+    let all_elephants: Vec<Elephant> = Elephant::objects()
+        .filter(|e| e.estimated_birth_year().is_not_null())
+        .fetch_all(ctx)
+        .await?;
+    let mature: Vec<&Elephant> = all_elephants
+        .iter()
+        .filter(|e| {
+            e.estimated_birth_year
+                .map(|y| y <= mature_cutoff)
+                .unwrap_or(false)
+        })
+        .collect();
+    let female_ids: Vec<i64> = mature
+        .iter()
+        .filter(|e| e.tags.data.sex.as_deref() == Some("f"))
+        .map(|e| e.id.as_i64())
+        .collect();
+    let male_ids: Vec<i64> = mature
+        .iter()
+        .filter(|e| e.tags.data.sex.as_deref() == Some("m"))
+        .map(|e| e.id.as_i64())
+        .collect();
+
+    // Convert hulls to parallel (herd_id, ewkb_bytes) arrays so the
+    // raw query's `unnest($4::bigint[], $5::bytea[])` reconstructs
+    // them as a join-able relation. The framework's
+    // `GeographyValue::to_ewkb_bytes` is the same encoding the typed
+    // `Expr::area_of_intersection` would use internally; passing
+    // EWKB through Rust here mirrors what djqry will do once the
+    // SQL is extracted into `djqry/elephant_mating_pairs.sql` (the
+    // generated method's `@binds` will accept the same shape).
+    let (herd_ids_for_hulls, hull_ewkbs): (Vec<i64>, Vec<Vec<u8>>) = herd_hulls
+        .iter()
+        .map(|(herd_fk, polygon)| (herd_fk.key().as_i64(), polygon.to_ewkb_bytes()))
+        .unzip();
+
+    // ── Step 3 (raw `ctx.raw_rows`) — closure self-join + ranking ─
+    //
+    // This is the demo's `raw_rows` escape hatch — the ONE step
+    // that doesn't fit the typed surface today, because:
+    //   - The pair shape `(female, male)` isn't a single Model `T`,
+    //     so `AnnotatedQuerySet<T, A>` over `Elephant` doesn't reach.
+    //   - The closure self-join (`elephant_ancestries la`/`ra`) is
+    //     the framework SUBSTRATE this demo exists to showcase —
+    //     making it raw is the right level of explicitness here.
+    //   - The window-function ranking (`ROW_NUMBER() OVER (PARTITION
+    //     BY ... ORDER BY score)` + outer `WHERE rank <= $1`) is
+    //     what Cluster C T18's typed `qualify(...)` lowering would
+    //     emit for a single-Model query; we emit it inline here for
+    //     the pair-shape variant.
+    //
+    // Self-contained djqry-fit shape: 5 typed binds, columns
+    // aliased to a struct-friendly schema, no Rust-side string
+    // interpolation. When `djqry` lands in Phase 9c the SQL below
+    // moves verbatim into `djqry/elephant_mating_pairs.sql` with
+    // frontmatter:
+    //
+    //   @name        mating_pairs
+    //   @on          Elephant
+    //   @returns     MatingPair  (with #[derive(FromPgRow)])
+    //   @binds       (i64, Vec<i64>, Vec<i64>, Vec<i64>, Vec<Vec<u8>>)
+    //
+    // and the call site becomes
+    //   ElephantDjqry::mating_pairs(&mut ctx, top_n, female_ids,
+    //                                male_ids, hull_herds, hull_bytes).await?
+    //
+    // Cross-reference: `docs/spec/implementation-plan.md` §9c
+    // "Retrofit existing examples to use djqry once available."
     const SQL: &str = "
-        WITH mature AS (
+        WITH herd_hulls AS (
+            -- Reconstruct the per-herd hull relation from parallel
+            -- arrays passed by Rust (Step 1's typed convex_hull
+            -- aggregate output). `unnest` with two arrays produces
+            -- one row per index pair.
             SELECT
-                e.id,
-                e.name,
-                e.herd_id,
-                e.tags->>'sex' AS sex
-            FROM elephants e
-            WHERE e.estimated_birth_year IS NOT NULL
-              AND ($1::integer - e.estimated_birth_year::integer) >= $2
-        ),
-        herd_hulls AS (
-            -- Per-herd convex-hull aggregate over recorded sightings.
-            -- `ST_Collect` rolls all `Sighting.location` GeoPoints
-            -- into a single MultiPoint per herd, then `ST_ConvexHull`
-            -- produces the smallest enclosing polygon. The outer
-            -- `::geography` cast preserves the meters-units invariant
-            -- the rest of the framework's spatial surface uses
-            -- (Cluster C T17). Mirrors the SQL the framework's typed
-            -- `FieldRef::convex_hull()` aggregate emits — but expressed
-            -- inline here because the typed aggregate surface is
-            -- bolted to `AnnotatedQuerySet<T, A>` over a single Model
-            -- (see #84), and the mating-pairs query is a multi-CTE
-            -- pair shape that doesn't fit `T = Model`.
-            --
-            -- **Precondition.** Herds with zero recorded sightings
-            -- are absent from this CTE; the inner JOIN below means
-            -- mature elephants from such herds disappear from
-            -- candidate_pairs. The framework seeds 50
-            -- sightings/herd, so this is never observed in the
-            -- example, but adopters running the demo against a
-            -- subset of herds that lack sightings will see no
-            -- candidates surface for those herds. The empty-output
-            -- diagnostic flags this case explicitly.
-            SELECT
-                s.elephant_id_to_herd                     AS herd_id,
-                ST_ConvexHull(ST_Collect(s.location::geometry))::geography AS hull
-            FROM (
-                SELECT e.herd_id AS elephant_id_to_herd, s.location
-                FROM sightings s
-                JOIN elephants e ON e.id = s.elephant_id
-            ) s
-            GROUP BY s.elephant_id_to_herd
+                h.herd_id,
+                h.hull::geography AS hull
+            FROM unnest($4::bigint[], $5::bytea[]) AS h(herd_id, hull)
         ),
         candidate_pairs AS (
-            -- Cross-product of mature (female, male) pairs filtered to
-            -- non-zero spatial overlap between their herd territories.
-            -- The same-herd self-overlap case (`fh.hull = mh.hull`)
-            -- produces overlap_pct = 1.0; cross-herd pairs whose hulls
-            -- don't intersect produce 0 — which the kinship-scored
-            -- composite would multiply out anyway, but filtering at
-            -- this stage keeps the closure self-join in `pair_kinship`
-            -- bounded to spatially-plausible candidates.
-            --
-            -- Mirrors the framework's `Expr::area_of_intersection` /
-            -- `Expr::area_of` SpatialExpr surface (Cluster C T16/T17)
-            -- inline here for the same multi-CTE reason as above.
             SELECT
                 f.id          AS female_id,
                 f.name        AS female_name,
@@ -243,33 +289,39 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
                 m.name        AS male_name,
                 m.herd_id     AS male_herd_id,
                 CASE
-                    WHEN ST_Area(fh.hull) = 0 THEN 0::float8
                     -- Same-herd self-overlap is mathematically 1.0 but
                     -- the geometry-vs-geography overlay can drift in
-                    -- floating point. Short-circuit explicitly so the
-                    -- JSON surface guarantees exact 1.0 for adopters.
+                    -- floating point. Short-circuit so the JSON
+                    -- surface guarantees exact 1.0 for adopters.
                     WHEN f.herd_id = m.herd_id THEN 1.0::float8
-                    -- LEAST/GREATEST clamps the ratio to [0, 1] in
-                    -- case the geometry/geography overlay rounds the
-                    -- intersection slightly larger than the source
-                    -- hull (within numeric tolerance). Mathematically
-                    -- impossible for exact inputs; in practice
-                    -- defensive against PostGIS overlay tolerances on
-                    -- highly-clustered point sets.
+                    WHEN ST_Area(fh.hull) = 0 THEN 0::float8
+                    -- LEAST/GREATEST clamps the cross-herd ratio to
+                    -- [0, 1] defensively against PostGIS overlay
+                    -- tolerances on highly-clustered point sets.
                     ELSE LEAST(1.0::float8, GREATEST(0.0::float8, (
                         ST_Area(
                             ST_Intersection(fh.hull::geometry, mh.hull::geometry)::geography
                         ) / ST_Area(fh.hull)
                     )::float8))
                 END           AS territory_overlap_pct
-            FROM mature f
-            CROSS JOIN mature m
+            FROM elephants f
+            CROSS JOIN elephants m
             JOIN herd_hulls fh ON fh.herd_id = f.herd_id
             JOIN herd_hulls mh ON mh.herd_id = m.herd_id
-            WHERE f.sex = 'f' AND m.sex = 'm'
+            WHERE f.id  = ANY($2::bigint[])
+              AND m.id  = ANY($3::bigint[])
               AND f.id <> m.id
         ),
         pair_kinship AS (
+            -- The closure self-join — this is the framework
+            -- substrate the demo exists to showcase.
+            -- `elephant_ancestries` was populated at seed time by
+            -- `Elephant::materialize_closure::<ElephantAncestry>(...)`;
+            -- joining it to itself on `ancestor_id` finds every
+            -- shared ancestor between a female's line and a male's
+            -- line. Wright F sums the term `path_count_left ×
+            -- path_count_right × 0.5^(d_left + d_right + 1)` across
+            -- those shared ancestors.
             SELECT
                 cp.female_id,
                 cp.female_name,
@@ -319,16 +371,18 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
         FROM scored
         JOIN herds fh ON fh.id = scored.female_herd_id
         JOIN herds mh ON mh.id = scored.male_herd_id
-        WHERE scored.rank <= $3
+        WHERE scored.rank <= $1
         ORDER BY scored.female_name ASC, scored.rank ASC";
 
-    let now_year: i32 = 2026;
-    let maturity = MATURITY_YEARS;
-    // `ROW_NUMBER() OVER (...)` returns `bigint` in Postgres; bind
-    // the rank threshold as `i64` to satisfy tokio_postgres's exact
-    // bind/column type-match requirement.
+    // `ROW_NUMBER() OVER (...)` returns `bigint`; bind top_n as i64.
     let top_n: i64 = TOP_N_PER_FEMALE as i64;
-    let binds: &[&(dyn ToSql + Sync)] = &[&now_year, &maturity, &top_n];
+    let binds: &[&(dyn ToSql + Sync)] = &[
+        &top_n,
+        &female_ids,
+        &male_ids,
+        &herd_ids_for_hulls,
+        &hull_ewkbs,
+    ];
     let rows = ctx.raw_rows(SQL, binds).await?;
 
     let pairs: Vec<MatingPair> = rows
@@ -376,8 +430,8 @@ fn render_mermaid(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> Re
     // elephants can never collide on a node label.
     let mut nodes: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for p in pairs {
-        let f_node = output::mermaid_node_id(p.female_id.parse::<i64>().unwrap_or(0));
-        let m_node = output::mermaid_node_id(p.male_id.parse::<i64>().unwrap_or(0));
+        let f_node = output::mermaid_node_id_from_str(&p.female_id);
+        let m_node = output::mermaid_node_id_from_str(&p.male_id);
         nodes.entry(f_node).or_insert_with(|| {
             output::escape_label(&format!("{} ({})", p.female_name, p.female_herd))
         });
@@ -389,8 +443,8 @@ fn render_mermaid(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> Re
         output::write_line(target, &format!("    {id}[\"{label}\"]"))?;
     }
     for p in pairs {
-        let f_node = output::mermaid_node_id(p.female_id.parse::<i64>().unwrap_or(0));
-        let m_node = output::mermaid_node_id(p.male_id.parse::<i64>().unwrap_or(0));
+        let f_node = output::mermaid_node_id_from_str(&p.female_id);
+        let m_node = output::mermaid_node_id_from_str(&p.male_id);
         output::write_line(
             target,
             &format!(

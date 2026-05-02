@@ -55,8 +55,7 @@ use postgres_types::ToSql;
 use serde::Serialize;
 use std::path::Path;
 
-use crate::models::Elephant;
-use crate::models::elephant::{ElephantFields, ElephantRelated};
+use crate::models::{Elephant, ElephantFields, ElephantRelated};
 use crate::output::{self, Format};
 
 /// Traversal order for `lineage --typed` mode. Maps onto the
@@ -185,14 +184,14 @@ fn render_mermaid(
         return Ok(());
     }
     for r in rows {
-        let id = output::mermaid_node_id(r.id.parse::<i64>().unwrap_or(0));
+        let id = output::mermaid_node_id_from_str(&r.id);
         let label = output::escape_label(&r.name);
         output::write_line(target, &format!("    {id}[\"{label}\"]"))?;
     }
     for r in rows {
-        let id = output::mermaid_node_id(r.id.parse::<i64>().unwrap_or(0));
+        let id = output::mermaid_node_id_from_str(&r.id);
         if let Some(mid) = &r.mother_id {
-            let mid_node = output::mermaid_node_id(mid.parse::<i64>().unwrap_or(0));
+            let mid_node = output::mermaid_node_id_from_str(mid);
             output::write_line(target, &format!("    {mid_node} --> {id}"))?;
         }
     }

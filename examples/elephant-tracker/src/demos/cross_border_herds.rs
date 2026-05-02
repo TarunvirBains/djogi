@@ -78,7 +78,7 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
 fn render_mermaid(target: &mut output::OutputTarget, entries: &[CrossBorderEntry]) -> Result<()> {
     output::write_line(target, "graph LR")?;
     for e in entries {
-        let herd_node = output::mermaid_node_id(e.herd_id.parse::<i64>().unwrap_or(0));
+        let herd_node = output::mermaid_node_id_from_str(&e.herd_id);
         let herd_label = output::escape_label(&e.herd_name);
         for country in &e.countries {
             // Country nodes use a hash of the country name so the same

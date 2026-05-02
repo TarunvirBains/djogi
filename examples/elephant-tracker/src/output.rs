@@ -121,3 +121,13 @@ pub fn escape_label(s: &str) -> String {
 pub fn mermaid_node_id(id: i64) -> String {
     format!("n{id}")
 }
+
+/// Sibling of [`mermaid_node_id`] for callers whose id is already a
+/// String (typical because the demo DTOs serialize HeerId as String
+/// for JSON-precision reasons). An unparseable id silently collapses
+/// to `n0` rather than panicking — the input always comes from
+/// `HeerId::as_i64().to_string()` upstream so the parse is never
+/// expected to fail; the fallback is defensive only.
+pub fn mermaid_node_id_from_str(id: &str) -> String {
+    mermaid_node_id(id.parse::<i64>().unwrap_or(0))
+}

@@ -315,13 +315,19 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     .await
     .context("create elephant_ancestries")?;
 
-    // Sightings — spatial point + FTS notes + outbox.
+    // Sightings — spatial point + FTS notes + outbox. `herd_id` is a
+    // denormalization of `elephant.herd_id` so the mating-pairs demo's
+    // typed `group_by(s.herd_id())` aggregate fits Djogi's grouped-
+    // aggregate surface (which groups by columns, not relation
+    // traversals). See `models/sighting.rs` field comment for
+    // rationale.
     ctx.raw_ddl(
         "CREATE TABLE sightings (
             id              BIGINT      PRIMARY KEY DEFAULT generate_id(),
             created_at      TIMESTAMPTZ NOT NULL    DEFAULT now(),
             updated_at      TIMESTAMPTZ NOT NULL    DEFAULT now(),
             elephant_id     BIGINT      NOT NULL    REFERENCES elephants(id),
+            herd_id         BIGINT      NOT NULL    REFERENCES herds(id),
             observed_by_id  BIGINT      NOT NULL    REFERENCES researchers(id),
             location        GEOGRAPHY(Point, 4326) NOT NULL,
             observed_at     TIMESTAMPTZ NOT NULL,
@@ -332,7 +338,8 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
         );
         CREATE INDEX sightings_location_gix    ON sightings USING GIST (location);
         CREATE INDEX sightings_search_gin      ON sightings USING GIN (search);
-        CREATE INDEX sightings_elephant_id_idx ON sightings (elephant_id);",
+        CREATE INDEX sightings_elephant_id_idx ON sightings (elephant_id);
+        CREATE INDEX sightings_herd_id_idx     ON sightings (herd_id);",
     )
     .await
     .context("create sightings")?;
