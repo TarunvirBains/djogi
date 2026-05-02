@@ -611,6 +611,22 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc.push_sql(")::geography");
                 }
                 #[cfg(feature = "spatial")]
+                AggOp::SpatialLineAgg => {
+                    // Cluster E T14b — collects per-row LineStrings into a
+                    // MultiLineString. Cast chain matches the rest of the
+                    // PostGIS aggregate family (inner ::geometry to feed
+                    // PostGIS's geometry-only ST_LineAgg, outer ::geography
+                    // for round-trip into the typed MultiLineString).
+                    acc.push_sql("ST_LineAgg(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography");
+                }
+                #[cfg(feature = "spatial")]
                 AggOp::SpatialPolygonAgg => {
                     // Portable fallback for ST_PolygonAgg (PostGIS 3.5+);
                     // ST_Collect produces an equivalent MultiPolygon for

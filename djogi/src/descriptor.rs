@@ -49,6 +49,7 @@ pub enum GeographySubtype {
     LineString,
     Polygon,
     MultiPoint,
+    MultiLineString,
     MultiPolygon,
 }
 
@@ -59,6 +60,7 @@ impl std::fmt::Display for GeographySubtype {
             Self::LineString => "LineString",
             Self::Polygon => "Polygon",
             Self::MultiPoint => "MultiPoint",
+            Self::MultiLineString => "MultiLineString",
             Self::MultiPolygon => "MultiPolygon",
         })
     }

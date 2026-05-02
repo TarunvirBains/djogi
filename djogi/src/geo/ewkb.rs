@@ -53,6 +53,8 @@ const TYPE_LINESTRING: [u8; 4] = [0x02, 0x00, 0x00, 0x20];
 const TYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x20];
 /// MultiPoint | SRID_FLAG → `0x20000004` LE.
 const TYPE_MULTIPOINT: [u8; 4] = [0x04, 0x00, 0x00, 0x20];
+/// MultiLineString | SRID_FLAG → `0x20000005` LE.
+const TYPE_MULTILINESTRING: [u8; 4] = [0x05, 0x00, 0x00, 0x20];
 /// MultiPolygon | SRID_FLAG → `0x20000006` LE.
 const TYPE_MULTIPOLYGON: [u8; 4] = [0x06, 0x00, 0x00, 0x20];
 
@@ -61,6 +63,9 @@ const TYPE_MULTIPOLYGON: [u8; 4] = [0x06, 0x00, 0x00, 0x20];
 /// Point base type word (no SRID flag) → `0x00000001` LE. Used by every
 /// headerless sub-point inside a `MultiPoint` envelope.
 const SUBTYPE_POINT: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+/// LineString base type word (no SRID flag) → `0x00000002` LE. Used by every
+/// headerless sub-linestring inside a `MultiLineString` envelope.
+const SUBTYPE_LINESTRING: [u8; 4] = [0x02, 0x00, 0x00, 0x00];
 /// Polygon base type word (no SRID flag) → `0x00000003` LE. Used by every
 /// headerless sub-polygon inside a `MultiPolygon` envelope.
 const SUBTYPE_POLYGON: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
@@ -349,6 +354,93 @@ pub(crate) fn decode_multipoint(bytes: &[u8]) -> Result<super::MultiPoint, GeoEr
     }
     super::MultiPoint::new(&points)
         .map_err(|e| GeoError::MalformedEwkb(format!("decoded MultiPoint failed validation: {e}")))
+}
+
+// ── MultiLineString codec ─────────────────────────────────────────────────────
+
+/// Encode a `MultiLineString` as an EWKB buffer for
+/// `GEOGRAPHY(MultiLineString, 4326)`.
+///
+/// Each sub-linestring is encoded as a headerless EWKB linestring:
+/// `[endian_byte(1), ls_type_no_srid(4), point_count(4), points...]`
+/// — 9 bytes of header + 16 bytes per coord pair. The SRID is carried only by
+/// the outer envelope.
+pub(crate) fn encode_multilinestring_into<B: BufMut + ?Sized>(
+    mls: &super::MultiLineString,
+    buf: &mut B,
+) {
+    push_outer_header(buf, TYPE_MULTILINESTRING);
+    buf.put_slice(&(mls.lines.len() as u32).to_le_bytes());
+    for ls in &mls.lines {
+        buf.put_u8(ENDIAN_BYTE);
+        buf.put_slice(&SUBTYPE_LINESTRING);
+        buf.put_slice(&(ls.points.len() as u32).to_le_bytes());
+        for p in &ls.points {
+            push_coord_pair(buf, p.lon, p.lat);
+        }
+    }
+}
+
+/// Compute the exact EWKB byte length for a `MultiLineString`. Each
+/// sub-linestring header is 9 bytes (endian + type word + point count, no SRID).
+pub(crate) fn multilinestring_byte_len(mls: &super::MultiLineString) -> usize {
+    let mut len = 9 + 4;
+    for ls in &mls.lines {
+        len += 5 + 4 + ls.points.len() * 16;
+    }
+    len
+}
+
+/// Decode an EWKB buffer into a `MultiLineString`.
+pub(crate) fn decode_multilinestring(bytes: &[u8]) -> Result<super::MultiLineString, GeoError> {
+    let pos = read_outer_header(bytes, TYPE_MULTILINESTRING)?;
+    let line_count = read_u32(bytes, pos)? as usize;
+    let mut pos = pos + 4;
+    let mut lines = Vec::with_capacity(line_count);
+    for li in 0..line_count {
+        // Sub-linestring header: endian(1) + type_word(4) = 5 bytes.
+        if pos + 5 > bytes.len() {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiLineString sub-linestring {li} header truncated at offset {pos}"
+            )));
+        }
+        if bytes[pos] != ENDIAN_BYTE {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiLineString sub-linestring {li}: expected little-endian marker, got 0x{:02X}",
+                bytes[pos]
+            )));
+        }
+        if bytes[pos + 1..pos + 5] != SUBTYPE_LINESTRING {
+            return Err(GeoError::MalformedEwkb(format!(
+                "MultiLineString sub-linestring {li}: unexpected type word {:?}",
+                &bytes[pos + 1..pos + 5]
+            )));
+        }
+        pos += 5;
+        // Point count + coords for this sub-linestring.
+        let n = read_u32(bytes, pos)? as usize;
+        pos += 4;
+        let mut points = Vec::with_capacity(n);
+        for pi in 0..n {
+            let (lon, lat, next) = read_coord_pair(bytes, pos)?;
+            let p = super::GeoPoint::new(lat, lon).map_err(|e| {
+                GeoError::MalformedEwkb(format!(
+                    "invalid coordinate in MultiLineString sub-linestring {li} point {pi}: {e}"
+                ))
+            })?;
+            points.push(p);
+            pos = next;
+        }
+        let ls = super::LineString::new(&points).map_err(|e| {
+            GeoError::MalformedEwkb(format!(
+                "MultiLineString sub-linestring {li} failed validation: {e}"
+            ))
+        })?;
+        lines.push(ls);
+    }
+    super::MultiLineString::new(lines).map_err(|e| {
+        GeoError::MalformedEwkb(format!("decoded MultiLineString failed validation: {e}"))
+    })
 }
 
 // ── MultiPolygon codec ────────────────────────────────────────────────────────

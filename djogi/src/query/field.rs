@@ -1886,6 +1886,59 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
             None,
         )
     }
+
+    /// `ST_LineAgg(<col>::geometry)::geography` — per-group
+    /// `MultiLineString` builder. Collects per-row `LineString` values
+    /// into a single `MultiLineString`.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_LineAgg(<col>::geometry)::geography
+    /// ```
+    ///
+    /// Inner `::geometry` cast feeds PostGIS's geometry-only
+    /// `ST_LineAgg`; outer `::geography` cast moves the result back to
+    /// the geography substrate so the typed `MultiLineString` decode
+    /// works.
+    ///
+    /// # Sibling: `make_line()` vs `line_agg()`
+    ///
+    /// - [`FieldRef<M, GeoPoint>::make_line`] takes per-row **points**
+    ///   and joins them into a single `LineString`. Use when each row
+    ///   contributes one vertex.
+    /// - This method takes per-row **LineStrings** and collects them
+    ///   into a `MultiLineString`. Use when each row already carries a
+    ///   path (GPS sub-tracks per device, route segments per leg, etc.)
+    ///   and the per-group output should be the parallel multi-shape.
+    ///
+    /// # Composition
+    ///
+    /// ```ignore
+    /// // Per-route MultiLineString of all logged sub-tracks
+    /// let multi_tracks: Vec<(RouteId, MultiLineString)> = SubTrack::objects()
+    ///     .group_by(|f| f.route_id())
+    ///     .annotate(|f| f.path().line_agg())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — wrap `Out = Option<MultiLineString>`
+    /// at the call site if your dataset has known empty groups.
+    ///
+    /// # PostGIS version
+    ///
+    /// `ST_LineAgg` is PostgreSQL 17+ / PostGIS 3.5+. Djogi targets
+    /// PG 18 + PostGIS 3.5 so the canonical keyword is the safe choice.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn line_agg(self) -> crate::expr::AggregateExpr<crate::geo::MultiLineString> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialLineAgg,
+            self.column(),
+            None,
+        )
+    }
 }
 
 #[cfg(feature = "spatial")]
@@ -3574,6 +3627,78 @@ mod distance_tests {
         assert_eq!(
             acc.sql(),
             "ST_Polygonize(DISTINCT edge::geometry)::geography"
+        );
+    }
+
+    // ── line_agg — T14b retroactive completion ───────────────────────────────
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn line_agg_on_linestring_field_produces_aggregate_multilinestring() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::{LineString, MultiLineString};
+
+        let field: FieldRef<Fake, LineString> = FieldRef::new("path");
+        let agg: AggregateExpr<MultiLineString> = field.line_agg();
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialLineAgg));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "path");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialLineAgg)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn line_agg_emits_st_lineagg_with_geography_cast() {
+        use crate::geo::LineString;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, LineString> = FieldRef::new("path");
+        let agg = field.line_agg();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "ST_LineAgg(path::geometry)::geography");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn line_agg_with_distinct_emits_distinct_inside_st_lineagg() {
+        use crate::geo::LineString;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, LineString> = FieldRef::new("path");
+        let agg = field.line_agg().distinct();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "ST_LineAgg(DISTINCT path::geometry)::geography");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn line_agg_with_filter_attaches_after_close_paren() {
+        // FILTER (WHERE ...) attaches after the outer aggregate close —
+        // outside the whole ST_LineAgg(...)::geography expression.
+        use crate::expr::Expr;
+        use crate::geo::LineString;
+        use crate::pg::accumulator::SqlAccumulator;
+        let path: FieldRef<Fake, LineString> = FieldRef::new("path");
+        let len_m: FieldRef<Fake, f64> = FieldRef::new("length_m");
+        let agg = path
+            .line_agg()
+            .filter(len_m.as_expr().gt(Expr::literal(100.0_f64)));
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("ST_LineAgg(path::geometry)::geography"),
+            "line_agg expression must precede FILTER, got: {sql}"
+        );
+        assert!(
+            sql.contains(" FILTER (WHERE length_m > "),
+            "FILTER clause must attach after line_agg expression, got: {sql}"
         );
     }
 

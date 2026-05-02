@@ -711,12 +711,29 @@ pub(crate) enum AggOp {
     /// clause lands inside the `ST_MakeLine` parens to control
     /// vertex sequence at the aggregate level.
     ///
-    /// `line_agg()` (Postgres `ST_LineAgg` / `ST_LineFromMultiPoint`)
-    /// is deferred until Djogi's geo surface gains a `MultiLineString`
-    /// type — `ST_LineAgg` returns a MultiLineString and Djogi's
-    /// geography family does not currently include that shape.
+    /// Sibling [`AggOp::SpatialLineAgg`] (Cluster E T14b) handles the
+    /// "collect already-existing LineStrings into a MultiLineString"
+    /// use case once the `MultiLineString` geo type lands.
     #[cfg(feature = "spatial")]
     SpatialMakeLine,
+    /// `ST_LineAgg(<col>::geometry)::geography` — per-group
+    /// `MultiLineString` builder. Collects per-row `LineString` values
+    /// into a single `MultiLineString`. Returns `MultiLineString`.
+    /// Gated on `feature = "spatial"`.
+    ///
+    /// `ST_LineAgg` is PostgreSQL 17+ / PostGIS 3.5+; on earlier
+    /// installations the equivalent shape is
+    /// `ST_LineFromMultiPoint(ST_Collect(<col>))` for a multipoint
+    /// input. Djogi targets PG 18 + PostGIS 3.5, so the canonical
+    /// `ST_LineAgg` keyword is the safe choice. If a future
+    /// installation drift surfaces, the emitter arm is the single
+    /// migration site.
+    ///
+    /// Cluster E T14b retroactively shipped this aggregate after
+    /// Track A's initial deferral — no arbitrary deferrals per
+    /// `feedback_no_arbitrary_deferrals.md`.
+    #[cfg(feature = "spatial")]
+    SpatialLineAgg,
     /// `ST_Collect(<col>::geometry)::geography` — per-group polygon
     /// collection (portable fallback for `ST_PolygonAgg`). Returns
     /// `MultiPolygon`. Gated on `feature = "spatial"`.
