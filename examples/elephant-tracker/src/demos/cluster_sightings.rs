@@ -9,25 +9,24 @@
 //! density-based clustering pass should produce a small handful of
 //! clusters per herd plus a noise bucket for outliers.
 //!
-//! ## Djogi typed surface and current gap
+//! ## Djogi typed surface
 //!
-//! Djogi ships a typed `QuerySet::cluster_by_proximity(|f| f.location(),
-//! ClusterRadius::meters(...).min_points(...))` builder that produces a
-//! `GroupedQuerySet<T, ClusterId>`. Cluster id + per-cluster `count_star`
-//! + per-cluster `array_agg(id)` annotations are all typed today.
+//! This demo runs entirely through Djogi's typed surface — zero raw
+//! SQL. The clustering uses `QuerySet::cluster_by_proximity` (Phase
+//! 6.5), which produces a `GroupedQuerySet<Sighting, ClusterId>`
+//! keyed by DBSCAN's cluster id (`ClusterId(None)` is the noise
+//! bucket). Per-cluster reductions chain through `.annotate(...)`
+//! using three typed aggregates from Cluster E:
 //!
-//! What this demo additionally needs — per-cluster centroid latitude and
-//! longitude — currently has no typed annotation surface (no
-//! `geo_centroid_aggregate` / `st_collect_aggregate` on `FieldRef<T,
-//! GeoPoint>`). Retrofitting to two passes (typed clustering, then a
-//! second raw query for centroids) would cost more raw SQL than the
-//! single window-function pass below, so the demo stays as one raw
-//! `ST_ClusterDBSCAN` query until the missing aggregates land.
+//! - `f.id().count_star()` → per-cluster sighting count.
+//! - `f.location().centroid()` → per-cluster `GeoPoint` centroid,
+//!   emitted as `ST_Centroid(ST_Collect(<col>::geometry))::geography`.
+//! - `f.id().array_agg().order_by(f.id().asc())` → deterministic
+//!   list of contributing sighting ids.
 //!
-//! Tracked as v0.1.0 framework gap #88 (typed `centroid` / `collect`
-//! aggregates on `FieldRef<T, GeoPoint>`); once those land the demo
-//! retrofits to a single typed `cluster_by_proximity().annotate(...)`
-//! chain.
+//! Aggregation runs server-side in a single round trip; the Rust
+//! side only decomposes the typed tuple `(ClusterId, i64, GeoPoint,
+//! Vec<HeerId>)` into the demo's row shape.
 //!
 //! ## Output formats
 //!
@@ -38,10 +37,12 @@
 
 use anyhow::Result;
 use djogi::DjogiContext;
-use postgres_types::ToSql;
+use djogi::prelude::*;
+use djogi::query::ClusterRadius;
 use serde::Serialize;
 use std::path::Path;
 
+use crate::models::Sighting;
 use crate::output::{self, Format};
 
 #[derive(Serialize, Clone)]
@@ -54,49 +55,50 @@ struct ClusterRow {
 }
 
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
-    // ST_ClusterDBSCAN runs as a window function and assigns each row
-    // a cluster id (NULL = noise). The outer query aggregates per
-    // cluster id, computes the centroid, and gathers the contributing
-    // sighting ids.
+    // DBSCAN with `eps = 50_000` metres (`ClusterRadius::meters`
+    // routes through `ST_Transform(..., 3857)` so the radius is
+    // interpreted in metres rather than degrees). `min_points = 3`
+    // keeps isolated sightings in the noise bucket (`ClusterId(None)`).
     //
-    // The geography column is reprojected to EPSG:3857 (Web Mercator)
-    // before clustering so DBSCAN's `eps` parameter is interpreted in
-    // metres rather than degrees. 50_000 m is wide enough to merge
-    // sightings around the same water source but tight enough to keep
-    // herds on different continents in separate clusters.
-    const SQL: &str = "WITH clustered AS (
-            SELECT
-                id,
-                location::geometry AS geom,
-                ST_ClusterDBSCAN(
-                    ST_Transform(location::geometry, 3857),
-                    eps := 50000,
-                    minpoints := 3
-                ) OVER () AS cluster_id
-            FROM sightings
+    // The radius is wide enough to merge sightings around the same
+    // water source but tight enough to keep herds on different
+    // continents in separate clusters.
+    let mut rows = Sighting::objects()
+        .cluster_by_proximity(
+            |f| f.location(),
+            ClusterRadius::meters(50_000.0).min_points(3),
         )
-        SELECT
-            cluster_id,
-            COUNT(*)::BIGINT                   AS count,
-            ST_Y(ST_Centroid(ST_Collect(geom))) AS centroid_lat,
-            ST_X(ST_Centroid(ST_Collect(geom))) AS centroid_lon,
-            ARRAY_AGG(id ORDER BY id)          AS sighting_ids
-        FROM clustered
-        GROUP BY cluster_id
-        ORDER BY cluster_id NULLS LAST";
+        .annotate(|f| {
+            (
+                f.id().count_star(),
+                f.location().centroid(),
+                f.id().array_agg().order_by(f.id().asc()),
+            )
+        })
+        .fetch_all(ctx)
+        .await?;
 
-    let rows = ctx.raw_rows(SQL, &[] as &[&(dyn ToSql + Sync)]).await?;
+    // `cluster_by_proximity` does not pin the noise bucket
+    // (`ClusterId(None)`) to the end of the result set — sort
+    // here so output ordering matches the previous raw-SQL
+    // `ORDER BY cluster_id NULLS LAST` shape.
+    rows.sort_by(|a, b| match (a.0.0, b.0.0) {
+        (Some(x), Some(y)) => x.cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
     let clusters: Vec<ClusterRow> = rows
-        .iter()
-        .map(|row| ClusterRow {
-            cluster_id: row.get::<_, Option<i32>>("cluster_id"),
-            count: row.get::<_, i64>("count"),
-            centroid_lat: row.get::<_, f64>("centroid_lat"),
-            centroid_lon: row.get::<_, f64>("centroid_lon"),
-            sighting_ids: row
-                .get::<_, Vec<i64>>("sighting_ids")
-                .into_iter()
-                .map(|i| i.to_string())
+        .into_iter()
+        .map(|(cluster_id, (count, centroid, sighting_ids))| ClusterRow {
+            cluster_id: cluster_id.0,
+            count,
+            centroid_lat: centroid.lat,
+            centroid_lon: centroid.lon,
+            sighting_ids: sighting_ids
+                .iter()
+                .map(|h| h.as_i64().to_string())
                 .collect(),
         })
         .collect();

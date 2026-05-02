@@ -190,7 +190,7 @@ elephant-tracker/
     │   └── herd_summary.rs     # hand-rolled visage + side-query trait
     └── demos/
         ├── mod.rs
-        ├── cluster_sightings.rs   # ST_ClusterDBSCAN over GeoPoint
+        ├── cluster_sightings.rs   # cluster_by_proximity + centroid (typed)
         ├── cross_border_herds.rs  # M2M traversal + season filter
         ├── lineage.rs             # recursive-CTE escape hatch
         └── herd_summaries.rs      # visage + side-query trait
