@@ -29,10 +29,13 @@ const COUNTRIES_SQL: &str = include_str!("../seeds/countries.sql");
 
 const ORG_ID: i64 = 1;
 
-/// Per-herd seed data. The matriarch + 5 daughters + each daughter's
-/// 1-2 grandkids gives 1 + 5 + ~7 = ~13 elephants per herd through the
-/// programmatic generator below; the helper rounds to 30 by adding
-/// 17 unrelated elephants flagged with `parent_id = None`.
+/// Per-herd seed data. The matriarch + 3 unrelated bulls + 5
+/// daughters + each daughter's 1-2 grandkids gives ~16 elephants per
+/// herd through the programmatic generator below; the helper rounds
+/// to 30 with a tail of `Calf-NN` joiners whose mother / father may
+/// or may not be known. Mother / father / sex are assigned via
+/// deterministic LCG so successive runs against a fresh DB produce
+/// identical population graphs.
 struct HerdSeed {
     name: &'static str,
     matriarch: &'static str,
@@ -246,10 +249,17 @@ async fn seed_one_herd(
     // selection produces realistic father-coverage rates without a
     // combinatorial seed-data explosion.
     //
-    // Wild-herd realism (population-wide): ~70% known mother, ~40%
-    // known father. Mothers are tightly observed (calves nurse, herds
-    // are matrilineal); fathers are inferred from herd-overlap
-    // observations but rarely confirmed.
+    // Wild-herd realism (population-wide). Mothers are tightly
+    // observed (calves nurse, herds are matrilineal); fathers are
+    // inferred from herd-overlap observations but rarely confirmed.
+    // Realized coverage on the deterministic 120-elephant seed:
+    // **63.3% known mother, 41.7% known father** (4 herds × 30
+    // elephants). Bumping these closer to the v3 plan's aspirational
+    // `~70% / ~40%` target would require either expanding the bull
+    // pool or skewing the per-elephant probability dials further;
+    // the current dials produce a graph rich enough for Wright F
+    // values across a meaningful slice of the population without
+    // over-saturating known parentage past biological realism.
     let mut rng_lineage = Lcg::new(spec.name);
     let matriarch = Elephant::create(
         ctx,

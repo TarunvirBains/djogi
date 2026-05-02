@@ -19,7 +19,7 @@ snippets.
 | `GeoPoint` + EWKB                | `Sighting::location`                                   |
 | Spatial cluster grouping (DBSCAN)| `cluster_sightings` demo                               |
 | Full-text search (FTS)           | `Researcher::notes` and `Sighting::notes`              |
-| Self-referential FK (lineage)    | `Elephant::parent_id` — recursive-CTE escape hatch     |
+| Multi-edge self-FKs (pedigree)   | `Elephant::mother_id` + `father_id` — single-edge typed `tree_descendants` for matrilineal lineage; multi-edge `Model::full_ancestors` for Wright kinship in `mating-pairs` demo |
 | Visages with side-query trait    | `HerdSummary` reports `herd_size` via aggregate, not row|
 | Transactional outbox             | `Sighting::create` enqueues an event in `sightings_outbox` |
 | RLS via `tenant_key`             | Researchers scoped per organisation                    |
@@ -40,9 +40,15 @@ density the load-bearing story:
   seasonally.
 - **HerdRange** — the through model. Holds the season payload and the
   composite uniqueness constraint.
-- **Elephant** — individual elephants. `parent_id: Option<ForeignKey<Self>>`
-  for matriarchal lineage. `tags: Jsonb<ElephantTags>` for typed extra
-  fields. `version: i32` for optimistic locking on tag updates.
+- **Elephant** — individual elephants. `mother_id` + `father_id`,
+  both `Option<ForeignKey<Self>>`, model biological pedigree (each
+  individual has at most one of each, either potentially unknown).
+  Matrilineal lineage walks `mother_id` only (single-edge
+  `tree_descendants` / raw recursive CTE in the `lineage` demo);
+  Wright kinship walks both edges with multiplicity preservation
+  (`Model::full_ancestors` in the `mating-pairs` demo).
+  `tags: Jsonb<ElephantTags>` for typed extra fields including sex.
+  `version: i32` for optimistic locking on tag updates.
 - **Sighting** — observation events. `location: GeoPoint`, FK to
   `Researcher` (`observed_by_id`), `notes: TEXT` (FTS-indexed). Records
   on `Sighting::create` enqueue a row into `sightings_outbox` inside the
@@ -62,9 +68,17 @@ Specifically:
   because explicit-through M2M is a deliberate Djogi choice (no
   implicit M2M fields) and the cross-border story makes the season
   payload feel earned rather than synthetic.
-- We kept `Elephant::parent` as a self-FK because it gives us a place
-  to demonstrate the raw recursive-CTE escape hatch — Djogi doesn't
-  ship a tree-query API, and the example is honest about that.
+- We split `Elephant.parent_id` into `mother_id` + `father_id`
+  because biological pedigree has two edges, both potentially
+  unknown, and elephant-research data captures matrilineal and
+  patrilineal kinship distinctly. The split unlocks Wright
+  kinship-coefficient calculation across the population (the
+  framework's multi-edge `full_ancestors` walks both edges with
+  path-multiplicity preservation in a single recursive CTE; the
+  `mating-pairs` demo consumes that substrate). We kept the raw
+  recursive-CTE form in the `lineage` demo for matrilineal descent
+  because that path is naturally single-edge and the inline SQL is
+  the right level of explicitness for the herd-society narrative.
 - We chose visages with a side-query trait (rather than embedding
   `herd_size` in `HerdRange`) because that's the realistic shape:
   aggregates that are too expensive to denormalize into rows but cheap
