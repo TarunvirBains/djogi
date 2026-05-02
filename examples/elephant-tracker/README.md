@@ -70,7 +70,8 @@ story:
 ## Why this design
 
 We considered a wider model graph (separate `Sanctuary`, `Patrol`,
-`PoachingIncident`, etc.) but trimmed to six. The bar each model has
+`PoachingIncident`, etc.) but trimmed to seven (six core models +
+`ElephantAncestry` as the materialized closure). The bar each model has
 to clear: it must be the **simplest** model that demonstrates a
 distinct framework feature. Adding more models past that just dilutes
 attention.

@@ -306,7 +306,7 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
             elephant_id  BIGINT      NOT NULL    REFERENCES elephants(id) ON DELETE CASCADE,
             ancestor_id  BIGINT      NOT NULL    REFERENCES elephants(id) ON DELETE CASCADE,
             depth        INTEGER     NOT NULL,
-            path_count   BIGINT      NOT NULL    DEFAULT 1,
+            path_count   BIGINT      NOT NULL,
             UNIQUE (elephant_id, ancestor_id, depth)
         );
         CREATE INDEX elephant_ancestries_elephant_id_idx ON elephant_ancestries (elephant_id);
