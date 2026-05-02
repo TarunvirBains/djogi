@@ -224,6 +224,32 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                              instead, or chain ORDER BY at the QuerySet level",
                     });
                 }
+            } else if !within_group_order_by.is_empty() {
+                // Codex T22 BLOCK-2: `.within_group_order_by(...)` is a
+                // public modifier on every `AggregateExpr<Out>`, but
+                // WITHIN GROUP is only valid Postgres syntax for
+                // ordered-set / hypothetical-set aggregates. Calling
+                // it on a regular value aggregate (`sum`, `array_agg`,
+                // `count`, etc.) is silently dropped by the emitter
+                // because no emitter arm renders WITHIN GROUP for
+                // those ops.
+                //
+                // Reject at fetch time so adopters see a typed error
+                // rather than mysteriously-missing modifier behavior.
+                // The type-state migration (#89) will make this a
+                // compile-time error by gating .within_group_order_by
+                // on the OrderedSetAgg / HypotheticalSetAgg Kinds; the
+                // runtime check covers v0.1.0.
+                return Err(crate::DjogiError::UnsupportedAggregate {
+                    op: "<value aggregate>",
+                    reason: "WITHIN GROUP (ORDER BY ...) is only valid for ordered-set \
+                             aggregates (PERCENTILE_CONT / PERCENTILE_DISC / MODE) and \
+                             hypothetical-set aggregates (RANK / DENSE_RANK / PERCENT_RANK \
+                             / CUME_DIST as args). Regular value aggregates (SUM, COUNT, \
+                             ARRAY_AGG, etc.) do not accept WITHIN GROUP — use the \
+                             in-paren ORDER BY modifier (.order_by(...)) for ARRAY_AGG / \
+                             STRING_AGG / JSONB_AGG instead",
+                });
             }
 
             // Recurse into arg, arg2, and filter sub-trees in case there
@@ -644,24 +670,26 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 // clause uniformly so future PostGIS aggregates with
                 // order-sensitive outer wrappers can reuse the slot).
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialCentroid => {
-                    acc.push_sql("ST_Centroid(ST_Collect(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql("))::geography");
-                }
+                AggOp::SpatialCentroid => emit_spatial_unary_agg(
+                    acc,
+                    "ST_Collect(",
+                    "ST_Centroid(",
+                    "::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                    filter.as_deref(),
+                ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialCollect => emit_spatial_unary_agg(
                     acc,
                     "ST_Collect(",
-                    ")::geography",
+                    "",
+                    "::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 // T13 — region / bounding-box aggregates. `ST_Extent` /
                 // `ST_3DExtent` return `box2d` / `box3d` respectively,
@@ -674,28 +702,34 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 AggOp::SpatialUnion => emit_spatial_unary_agg(
                     acc,
                     "ST_Union(",
-                    ")::geography",
+                    "",
+                    "::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialExtent => emit_spatial_unary_agg(
                     acc,
                     "ST_Extent(",
-                    ")::geometry::geography",
+                    "",
+                    "::geometry::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialExtent3D => emit_spatial_unary_agg(
                     acc,
                     "ST_3DExtent(",
-                    ")::geometry::geography",
+                    "",
+                    "::geometry::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 // T14 — line / polygon aggregates. `ST_MakeLine` is
                 // order-sensitive (the per-aggregate ORDER BY controls
@@ -708,19 +742,23 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 AggOp::SpatialMakeLine => emit_spatial_unary_agg(
                     acc,
                     "ST_MakeLine(",
-                    ")::geography",
+                    "",
+                    "::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialLineAgg => emit_spatial_unary_agg(
                     acc,
                     "ST_LineAgg(",
-                    ")::geography",
+                    "",
+                    "::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialPolygonAgg => emit_spatial_unary_agg(
@@ -731,10 +769,12 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     // "ST_PolygonAgg("; the surrounding shape stays.
                     acc,
                     "ST_Collect(",
-                    ")::geography",
+                    "",
+                    "::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 // T15 — clustering aggregates. Both return `geometry[]`
                 // at the Postgres level; the trailing `::geography[]`
@@ -746,28 +786,43 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 AggOp::SpatialClusterIntersecting => emit_spatial_unary_agg(
                     acc,
                     "ST_ClusterIntersecting(",
-                    ")::geography[]",
+                    "",
+                    "::geography[]",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialClusterWithin(distance) => {
                     // Hand-rolled — binary signature with bound distance.
                     // The unary helper doesn't fit because the second
                     // arg is a parameter-bound f64, not a column ref or
-                    // a fixed token.
+                    // a fixed token. Codex T22 BLOCK-1: FILTER attaches
+                    // to the inner ST_ClusterWithin aggregate before
+                    // the outer ::geography[] cast.
+                    let needs_filter_paren = filter.is_some();
+                    if needs_filter_paren {
+                        acc.push_sql("(");
+                    }
                     acc.push_sql("ST_ClusterWithin(");
                     if *distinct {
                         acc.push_sql("DISTINCT ");
                     }
                     emit_expr(acc, arg);
                     acc.push_sql("::geometry, ");
-                    // Bind the distance as a parameter — never inline a
-                    // runtime-computed f64 into the SQL text.
                     acc.push_bind(*distance);
                     push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography[]");
+                    acc.push_sql(")");
+                    if let Some(cond) = filter.as_deref() {
+                        acc.push_sql(" FILTER (WHERE ");
+                        emit_expr(acc, cond);
+                        acc.push_sql(")");
+                    }
+                    if needs_filter_paren {
+                        acc.push_sql(")");
+                    }
+                    acc.push_sql("::geography[]");
                 }
                 // T16 — mem_union / polygonize. Same `<col>::geometry`
                 // → `geography` cast discipline.
@@ -775,19 +830,23 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 AggOp::SpatialMemUnion => emit_spatial_unary_agg(
                     acc,
                     "ST_MemUnion(",
-                    ")::geography",
+                    "",
+                    "::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialPolygonize => emit_spatial_unary_agg(
                     acc,
                     "ST_Polygonize(",
-                    ")::geography",
+                    "",
+                    "::geography",
                     *distinct,
                     arg,
                     order_by,
+                    filter.as_deref(),
                 ),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
@@ -799,7 +858,16 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // Note: STRING_AGG with FILTER is valid Postgres syntax and
             // works here because the FILTER clause attaches to the whole
             // aggregate function expression after the closing paren.
-            if let Some(cond) = filter {
+            //
+            // Codex T22 BLOCK-1: spatial aggregates that emit an outer
+            // cast (e.g. `::geography`) must place FILTER *before* the
+            // cast. The per-aggregate spatial arms above handle FILTER
+            // inline via `emit_spatial_unary_agg`; this generic
+            // post-arm block fires only for non-spatial aggregates
+            // where the FILTER suffix attaches to the bare aggregate.
+            if !op_emits_outer_cast(op)
+                && let Some(cond) = filter
+            {
                 acc.push_sql(" FILTER (WHERE ");
                 emit_expr(acc, cond);
                 acc.push_sql(")");
@@ -1090,49 +1158,130 @@ fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::o
     }
 }
 
-/// Emit the canonical PostGIS-aggregate emission shape:
+/// Emit the canonical PostGIS-aggregate emission shape with correct
+/// FILTER placement. `FILTER (WHERE ...)` attaches to the *inner*
+/// aggregate (`ST_Collect` / `ST_Union` / `ST_Extent` / etc.) before
+/// any outer wrapper (`ST_Centroid`) or outer cast (`::geography`),
+/// matching Postgres syntax for aggregate-with-FILTER expressions.
 ///
-/// ```text
-/// <keyword_opener>[DISTINCT ]<arg>::geometry[ ORDER BY ...]<outer_cast>
-/// ```
+/// Codex T22 BLOCK-1: the previous shape emitted `ST_Collect(arg)::geography
+/// FILTER (WHERE ...)` which is invalid Postgres. Postgres aggregate
+/// syntax requires `(<aggregate-call> FILTER (WHERE <cond>))::cast`
+/// or `<wrapper>(<aggregate-call> FILTER (WHERE <cond>))::cast` for
+/// double-wrap shapes like `ST_Centroid(ST_Collect(...))`.
 ///
-/// Used by the Cluster E PostGIS aggregate family
-/// (T12 `centroid` / `collect`, T13 `union` / `extent` / `extent_3d`,
-/// T14 `make_line` / `polygon_agg`, T14b `line_agg`, T15
-/// `cluster_intersecting`, T16 `mem_union` / `polygonize`). Eleven of
-/// the twelve typed PostGIS aggregates share this exact shape; only
-/// `SpatialCentroid` (double-wrap with inner `ST_Collect`) and
-/// `SpatialClusterWithin` (binary signature with bound distance) are
-/// hand-rolled because their structure differs.
+/// # Parameters
 ///
-/// The inner `::geometry` cast is required because PostGIS's aggregate
-/// signatures (`ST_Union(geometry)`, `ST_Extent(geometry)`, …) are
-/// geometry-only — Djogi's geography columns get cast in for the call
-/// then cast back via `outer_cast`. Two-step cast chains
-/// (`)::geometry::geography` for `ST_Extent` / `ST_3DExtent`, which
-/// return `box2d` / `box3d`) are expressed by passing the multi-token
-/// suffix as the `outer_cast` parameter.
+/// - `inner_keyword` — the actual aggregate function call's opening,
+///   e.g. `"ST_Collect("` / `"ST_Union("` / `"ST_Extent("`. The FILTER
+///   clause attaches to this call's close paren, before any outer
+///   wrapper.
+/// - `outer_wrap_open` — empty for single-wrap aggregates;
+///   `"ST_Centroid("` for the double-wrap centroid case where
+///   `ST_Centroid` is a scalar post-aggregate wrapper around
+///   `ST_Collect`. The wrapper's close paren is emitted after FILTER.
+/// - `outer_close_and_cast` — the cast suffix without leading close
+///   paren, e.g. `"::geography"` / `"::geometry::geography"` /
+///   `"::geography[]"`. The helper inserts the necessary close
+///   parens (for outer_wrap or for the FILTER-paren) before this
+///   suffix.
+/// - `filter` — FILTER (WHERE ...) clause from the aggregate's typed
+///   surface. Emitted between the inner-aggregate close paren and the
+///   outer-wrapper close paren (or before the outer cast for unary
+///   aggregates).
 ///
-/// `order_by` is the per-aggregate ORDER BY slot (T1) — order-sensitive
-/// PostGIS aggregates like `ST_MakeLine` honour it; commutative ones
-/// (`ST_Union` / `ST_Centroid`) accept it as a no-op for IR uniformity.
+/// # Emission shapes
+///
+/// - **Unary, no filter:** `ST_Union(arg::geometry)::geography`
+/// - **Unary, with filter:**
+///   `(ST_Union(arg::geometry) FILTER (WHERE ...))::geography`
+/// - **Double-wrap (Centroid), no filter:**
+///   `ST_Centroid(ST_Collect(arg::geometry))::geography`
+/// - **Double-wrap with filter:**
+///   `ST_Centroid(ST_Collect(arg::geometry) FILTER (WHERE ...))::geography`
+///
+/// The outer FILTER block in the `emit_expr` Aggregate arm is gated on
+/// `op_emits_outer_cast(op)` so spatial aggregates handle FILTER inline
+/// here; the post-arm block fires only for non-cast-wrapping aggregates
+/// (the standard SUM/COUNT/etc. family that lives at the bare-emission
+/// boundary).
 #[cfg(feature = "spatial")]
+#[allow(clippy::too_many_arguments)]
 fn emit_spatial_unary_agg(
     acc: &mut SqlAccumulator,
-    keyword_opener: &'static str,
-    outer_cast: &'static str,
+    inner_keyword: &'static str,
+    outer_wrap_open: &'static str,
+    outer_close_and_cast: &'static str,
     distinct: bool,
     arg: &ExprNode,
     order_by: &[crate::query::order::OrderExpr],
+    filter: Option<&ExprNode>,
 ) {
-    acc.push_sql(keyword_opener);
+    let has_outer_wrap = !outer_wrap_open.is_empty();
+    // Parens needed for FILTER attachment ONLY when there's no outer
+    // wrapper (which already provides the binding context). Centroid's
+    // ST_Centroid(...) wrapper makes the outer parens redundant.
+    let needs_filter_paren = filter.is_some() && !has_outer_wrap;
+
+    if needs_filter_paren {
+        acc.push_sql("(");
+    }
+    acc.push_sql(outer_wrap_open);
+    acc.push_sql(inner_keyword);
     if distinct {
         acc.push_sql("DISTINCT ");
     }
     emit_expr(acc, arg);
     acc.push_sql("::geometry");
     push_aggregate_order_by(acc, order_by);
-    acc.push_sql(outer_cast);
+    acc.push_sql(")"); // close inner aggregate (ST_Collect / ST_Union / etc.)
+
+    if let Some(cond) = filter {
+        acc.push_sql(" FILTER (WHERE ");
+        emit_expr(acc, cond);
+        acc.push_sql(")");
+    }
+
+    if has_outer_wrap {
+        acc.push_sql(")"); // close outer wrap (e.g., ST_Centroid)
+    }
+    if needs_filter_paren {
+        acc.push_sql(")"); // close the parens around aggregate-with-FILTER
+    }
+
+    acc.push_sql(outer_close_and_cast);
+}
+
+/// Returns true for AggOps whose emission already includes an outer
+/// cast (or scalar wrapper) AND handles FILTER inline. The outer
+/// FILTER attachment in `emit_expr` skips these AggOps because the
+/// per-aggregate emitter already placed FILTER in the right structural
+/// position (between inner-aggregate close and outer cast).
+///
+/// Currently fires for the PostGIS aggregate family. Future aggregates
+/// with outer casts must opt in here.
+#[cfg(feature = "spatial")]
+fn op_emits_outer_cast(op: &AggOp) -> bool {
+    matches!(
+        op,
+        AggOp::SpatialCentroid
+            | AggOp::SpatialCollect
+            | AggOp::SpatialUnion
+            | AggOp::SpatialExtent
+            | AggOp::SpatialExtent3D
+            | AggOp::SpatialMakeLine
+            | AggOp::SpatialLineAgg
+            | AggOp::SpatialPolygonAgg
+            | AggOp::SpatialClusterIntersecting
+            | AggOp::SpatialClusterWithin(_)
+            | AggOp::SpatialMemUnion
+            | AggOp::SpatialPolygonize
+    )
+}
+
+#[cfg(not(feature = "spatial"))]
+fn op_emits_outer_cast(_op: &AggOp) -> bool {
+    false
 }
 
 /// Emit a [`SubqueryNode`] body — `SELECT <col or 1> FROM <table>

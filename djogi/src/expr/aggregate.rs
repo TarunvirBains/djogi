@@ -2950,6 +2950,42 @@ mod tests {
     }
 
     #[test]
+    fn within_group_order_by_on_regular_aggregate_rejected_at_fetch() {
+        // Codex T22 BLOCK-2: `.within_group_order_by(...)` is a public
+        // method on every `AggregateExpr<Out>`, but WITHIN GROUP is
+        // only valid Postgres syntax for ordered-set / hypothetical-set
+        // aggregates. Calling it on a regular value aggregate (sum,
+        // count, array_agg, etc.) silently dropped the modifier
+        // pre-fix; now rejected at fetch time with a typed error.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.sum().within_group_order_by(f.asc());
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "WITHIN GROUP must be rejected on regular aggregates (SUM); got: {result:?}"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::DjogiError::UnsupportedAggregate { .. }),
+            "expected UnsupportedAggregate variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn within_group_order_by_on_array_agg_rejected_at_fetch() {
+        // Same rule for ARRAY_AGG — adopters wanting an ordered
+        // array_agg should use `.order_by(...)` (the in-paren ORDER BY
+        // modifier from T1), not WITHIN GROUP.
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let agg = f.array_agg().within_group_order_by(f.asc());
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "WITHIN GROUP must be rejected on ARRAY_AGG; got: {result:?}"
+        );
+    }
+
+    #[test]
     fn percentile_cont_with_distinct_rejected_at_fetch() {
         // DISTINCT is invalid on ordered-set aggregates per Postgres.
         let f: FieldRef<Txn, f64> = FieldRef::new("ms");

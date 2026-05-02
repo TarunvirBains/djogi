@@ -526,6 +526,15 @@ fn classify_column_change(
         // (to = None) routes the same way; the catalog-only path is
         // not reachable for a generated column on a populated table.
         ColumnChange::SetGenerated { .. } => OnlineSafetyClassification::OfflineOnly,
+
+        // Codex T22 BLOCK-3: identity-column transitions.
+        // `ALTER COLUMN ADD GENERATED ... AS IDENTITY` is catalog-only
+        // — Postgres allocates the sequence, no row rewrite. The
+        // sequence's start value is set after MAX(c) for existing rows
+        // automatically. Same for DROP IDENTITY (catalog-only) and
+        // SET GENERATED kind change (catalog-only). All three route to
+        // OnlineSafe.
+        ColumnChange::SetIdentity { .. } => OnlineSafetyClassification::OnlineSafe,
     }
 }
 

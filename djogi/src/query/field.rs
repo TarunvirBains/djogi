@@ -3164,10 +3164,17 @@ mod distance_tests {
 
     #[cfg(feature = "spatial")]
     #[test]
-    fn centroid_with_filter_emits_filter_after_close_paren() {
-        // FILTER (WHERE ...) attaches after the outer aggregate close —
-        // outside the whole ST_Centroid(ST_Collect(...))::geography
-        // expression. Mirrors how FILTER attaches to any other aggregate.
+    fn centroid_with_filter_attaches_to_inner_st_collect() {
+        // Codex T22 BLOCK-1: FILTER (WHERE ...) must attach to the
+        // inner ST_Collect aggregate, BEFORE the outer ST_Centroid
+        // wrapper and the ::geography cast. Postgres rejects FILTER
+        // after a cast.
+        //
+        // Correct shape:
+        //   ST_Centroid(ST_Collect(<col>::geometry) FILTER (WHERE <cond>))::geography
+        //
+        // ST_Centroid is a scalar wrapper, not an aggregate; FILTER
+        // attaches to ST_Collect (the actual aggregate).
         use crate::expr::Expr;
         use crate::pg::accumulator::SqlAccumulator;
         let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
@@ -3179,12 +3186,25 @@ mod distance_tests {
         crate::expr::sql::emit_expr(&mut acc, &agg.node);
         let sql = acc.sql().to_string();
         assert!(
-            sql.starts_with("ST_Centroid(ST_Collect(location::geometry))::geography"),
-            "centroid expression must precede FILTER, got: {sql}"
+            sql.starts_with("ST_Centroid(ST_Collect(location::geometry)"),
+            "must start with ST_Centroid(ST_Collect(...), got: {sql}"
         );
         assert!(
             sql.contains(" FILTER (WHERE confidence > "),
-            "FILTER clause must attach after centroid expression, got: {sql}"
+            "FILTER clause must be present, got: {sql}"
+        );
+        assert!(
+            sql.ends_with(")::geography"),
+            "must end with )::geography (cast outside ST_Centroid), got: {sql}"
+        );
+        // Critical invariant: ::geography appears AFTER the FILTER
+        // clause closes, not before. Verify FILTER index < geography
+        // index.
+        let filter_idx = sql.find(" FILTER (WHERE").unwrap();
+        let cast_idx = sql.rfind("::geography").unwrap();
+        assert!(
+            filter_idx < cast_idx,
+            "FILTER must precede ::geography cast for valid Postgres syntax; got: {sql}"
         );
     }
 
@@ -3316,10 +3336,10 @@ mod distance_tests {
 
     #[cfg(feature = "spatial")]
     #[test]
-    fn extent_with_filter_emits_filter_after_close() {
-        // FILTER (WHERE ...) attaches after the whole cast chain — outside
-        // the box2d::geometry::geography projection. Verifies modifier
-        // composition through the AggOp envelope.
+    fn extent_with_filter_attaches_to_inner_aggregate_before_cast() {
+        // Codex T22 BLOCK-1: FILTER must precede the cast chain.
+        // Correct shape:
+        //   (ST_Extent(<col>::geometry) FILTER (WHERE <cond>))::geometry::geography
         use crate::expr::Expr;
         use crate::pg::accumulator::SqlAccumulator;
         let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
@@ -3331,12 +3351,22 @@ mod distance_tests {
         crate::expr::sql::emit_expr(&mut acc, &agg.node);
         let sql = acc.sql().to_string();
         assert!(
-            sql.starts_with("ST_Extent(location::geometry)::geometry::geography"),
-            "extent expression must precede FILTER, got: {sql}"
+            sql.starts_with("(ST_Extent(location::geometry)"),
+            "must start with (ST_Extent for FILTER attachment, got: {sql}"
         );
         assert!(
             sql.contains(" FILTER (WHERE confidence > "),
-            "FILTER clause must attach after extent expression, got: {sql}"
+            "FILTER clause must be present, got: {sql}"
+        );
+        assert!(
+            sql.ends_with(")::geometry::geography"),
+            "cast chain must close after FILTER, got: {sql}"
+        );
+        let filter_idx = sql.find(" FILTER (WHERE").unwrap();
+        let cast_idx = sql.rfind("::geometry::geography").unwrap();
+        assert!(
+            filter_idx < cast_idx,
+            "FILTER must precede the ::geometry::geography cast chain; got: {sql}"
         );
     }
 
@@ -3678,9 +3708,10 @@ mod distance_tests {
 
     #[cfg(feature = "spatial")]
     #[test]
-    fn line_agg_with_filter_attaches_after_close_paren() {
-        // FILTER (WHERE ...) attaches after the outer aggregate close —
-        // outside the whole ST_LineAgg(...)::geography expression.
+    fn line_agg_with_filter_attaches_before_cast() {
+        // Codex T22 BLOCK-1: FILTER must precede the ::geography cast.
+        // Correct shape:
+        //   (ST_LineAgg(<col>::geometry) FILTER (WHERE <cond>))::geography
         use crate::expr::Expr;
         use crate::geo::LineString;
         use crate::pg::accumulator::SqlAccumulator;
@@ -3693,12 +3724,22 @@ mod distance_tests {
         crate::expr::sql::emit_expr(&mut acc, &agg.node);
         let sql = acc.sql().to_string();
         assert!(
-            sql.starts_with("ST_LineAgg(path::geometry)::geography"),
-            "line_agg expression must precede FILTER, got: {sql}"
+            sql.starts_with("(ST_LineAgg(path::geometry)"),
+            "must start with (ST_LineAgg for FILTER attachment, got: {sql}"
         );
         assert!(
             sql.contains(" FILTER (WHERE length_m > "),
-            "FILTER clause must attach after line_agg expression, got: {sql}"
+            "FILTER clause must be present, got: {sql}"
+        );
+        assert!(
+            sql.ends_with(")::geography"),
+            "::geography cast must close after FILTER, got: {sql}"
+        );
+        let filter_idx = sql.find(" FILTER (WHERE").unwrap();
+        let cast_idx = sql.rfind("::geography").unwrap();
+        assert!(
+            filter_idx < cast_idx,
+            "FILTER must precede ::geography cast for valid Postgres syntax; got: {sql}"
         );
     }
 
