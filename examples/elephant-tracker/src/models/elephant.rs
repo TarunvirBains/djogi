@@ -2,11 +2,18 @@
 //!
 //! ## What this demonstrates
 //!
-//! - `parent_id: Option<ForeignKey<Self>>` — a self-referential foreign key
-//!   for matriarchal lineage. Djogi does not ship a tree-query API; the
-//!   `lineage` demo uses a recursive CTE via `ctx.raw_rows`, the canonical
-//!   escape hatch for shapes that fall outside the typed `QuerySet`
-//!   surface.
+//! - **Multi-edge self-FKs** — `mother_id` + `father_id` both point at
+//!   `Elephant`, mirroring biological pedigree where every individual
+//!   has at most one mother and one father (each potentially unknown).
+//!   `Model::full_ancestors(id)` walks both edges in a single recursive
+//!   CTE preserving path multiplicity (Wright kinship requires summing
+//!   independent connecting paths). The single-edge `tree_ancestors`
+//!   /`tree_descendants` builders walk one named edge — typically the
+//!   matrilineal `mother_id` for herd-society semantics; the `lineage`
+//!   demo's raw recursive CTE uses the same matrilineal edge.
+//! - **Macro-generated relation accessors**: `mother_id` → `ElephantRelated::mother()`,
+//!   `father_id` → `ElephantRelated::father()` (the `_id` suffix is
+//!   stripped by the framework's relation-name convention).
 //! - `Jsonb<ElephantTags>` — typed JSONB with unknown-field preservation.
 //!   A row whose JSON contains keys not present on `ElephantTags` (added
 //!   by an older or newer version of the schema, hand-edited in psql,
@@ -33,9 +40,18 @@ pub struct Elephant {
 
     pub herd_id: ForeignKey<Herd>,
 
-    /// Self-FK for matriarchal lineage. `None` means the row is a
-    /// matriarch — origin of the line as far as the database knows.
-    pub parent_id: Option<ForeignKey<Elephant>>,
+    /// Maternal self-FK. `None` means the mother is unknown / not in
+    /// the dataset — common for older matriarchs and members of
+    /// unmonitored herds. Realistic seed data populates this for
+    /// roughly 70% of individuals.
+    pub mother_id: Option<ForeignKey<Elephant>>,
+
+    /// Paternal self-FK. `None` means the father is unknown — much
+    /// more common than unknown mothers in elephant-society research
+    /// because females are observed nursing while males are
+    /// peripheral. Realistic seed data populates this for roughly
+    /// 40% of individuals.
+    pub father_id: Option<ForeignKey<Elephant>>,
 
     pub estimated_birth_year: Option<i16>,
 

@@ -263,8 +263,11 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     .await
     .context("create herd_ranges")?;
 
-    // Elephants — HeerId PK, FK to herds, self-FK for parent lineage,
-    // typed JSONB tags, optimistic-lock version.
+    // Elephants — HeerId PK, FK to herds, two self-FKs (mother + father)
+    // for biological pedigree, typed JSONB tags, optimistic-lock version.
+    // The two self-FKs let `Model::full_ancestors(id)` walk both
+    // matrilineal and patrilineal chains in one recursive CTE while
+    // preserving path multiplicity (load-bearing for Wright kinship).
     ctx.raw_ddl(
         "CREATE TABLE elephants (
             id                    BIGINT      PRIMARY KEY DEFAULT generate_id(),
@@ -272,13 +275,15 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
             updated_at            TIMESTAMPTZ NOT NULL    DEFAULT now(),
             name                  TEXT        NOT NULL,
             herd_id               BIGINT      NOT NULL    REFERENCES herds(id),
-            parent_id             BIGINT                  REFERENCES elephants(id),
+            mother_id             BIGINT                  REFERENCES elephants(id),
+            father_id             BIGINT                  REFERENCES elephants(id),
             estimated_birth_year  SMALLINT,
             tags                  JSONB       NOT NULL    DEFAULT '{}'::jsonb,
             version               INTEGER     NOT NULL    DEFAULT 0
         );
         CREATE INDEX elephants_herd_id_idx     ON elephants (herd_id);
-        CREATE INDEX elephants_parent_id_idx   ON elephants (parent_id);",
+        CREATE INDEX elephants_mother_id_idx   ON elephants (mother_id);
+        CREATE INDEX elephants_father_id_idx   ON elephants (father_id);",
     )
     .await
     .context("create elephants")?;

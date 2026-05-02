@@ -236,19 +236,68 @@ async fn seed_one_herd(
     )
     .await?;
 
-    // 4) Elephants — matriarch -> daughters -> grandkids -> a tail of
-    // additional rootless elephants to round to 30/herd.
+    // 4) Elephants — matriarch -> bull pool -> daughters -> grandkids -> tail.
+    //
+    // The bull pool is created first so daughters and grandkids can
+    // draw fathers from it. Bulls are unrelated males with `sex = "m"`,
+    // born 2008-2010, paternity-unknown themselves (fathers are
+    // peripheral in elephant society — observed but not pedigree-
+    // tracked). The pool size of 3 per herd plus deterministic LCG
+    // selection produces realistic father-coverage rates without a
+    // combinatorial seed-data explosion.
+    //
+    // Wild-herd realism (population-wide): ~70% known mother, ~40%
+    // known father. Mothers are tightly observed (calves nurse, herds
+    // are matrilineal); fathers are inferred from herd-overlap
+    // observations but rarely confirmed.
+    let mut rng_lineage = Lcg::new(spec.name);
     let matriarch = Elephant::create(
         ctx,
-        elephant_for_insert(spec.matriarch, herd.id, None, Some(2010)),
+        elephant_for_insert(spec.matriarch, herd.id, None, None, Some(2010), Some("f")),
     )
     .await?;
 
+    // Bull pool — 3 unrelated males per herd, born 2008-2010 so they
+    // are sexually mature when daughters bear grandkids ~2022.
+    let mut bull_ids: Vec<djogi::HeerId> = Vec::with_capacity(3);
+    for i in 0..3 {
+        let bull_name = format!("{}-Bull-{}", spec.name, i + 1);
+        let bull = Elephant::create(
+            ctx,
+            elephant_for_insert(
+                &bull_name,
+                herd.id,
+                None,
+                None,
+                Some(2008 + i as i16),
+                Some("m"),
+            ),
+        )
+        .await?;
+        bull_ids.push(bull.id);
+    }
+    let pick_father = |rng: &mut Lcg, prob_pct: u32| -> Option<djogi::HeerId> {
+        if rng.next_u32() % 100 < prob_pct {
+            Some(bull_ids[(rng.next_u32() as usize) % bull_ids.len()])
+        } else {
+            None
+        }
+    };
+
     let mut daughter_ids: Vec<djogi::HeerId> = Vec::with_capacity(spec.daughters.len());
     for d in spec.daughters {
+        // Daughters: 80% known father (one of the herd's bulls).
+        let father = pick_father(&mut rng_lineage, 80);
         let row = Elephant::create(
             ctx,
-            elephant_for_insert(d, herd.id, Some(matriarch.id), Some(2016)),
+            elephant_for_insert(
+                d,
+                herd.id,
+                Some(matriarch.id),
+                father,
+                Some(2016),
+                Some("f"),
+            ),
         )
         .await?;
         daughter_ids.push(row.id);
@@ -257,23 +306,52 @@ async fn seed_one_herd(
     for (i, kids) in spec.grandkids.iter().enumerate() {
         let parent = daughter_ids[i];
         for k in *kids {
+            // Grandkids: 70% known father; sex 50/50 m/f.
+            let father = pick_father(&mut rng_lineage, 70);
+            let sex = if rng_lineage.next_u32().is_multiple_of(2) {
+                "f"
+            } else {
+                "m"
+            };
             let _ = Elephant::create(
                 ctx,
-                elephant_for_insert(k, herd.id, Some(parent), Some(2022)),
+                elephant_for_insert(k, herd.id, Some(parent), father, Some(2022), Some(sex)),
             )
             .await?;
         }
     }
 
     // Round to 30 per herd with a deterministic tail of unrelated
-    // elephants. They use deterministic names (`Calf-{i}`) so the
-    // `lineage` demo's output is bounded and reproducible.
-    let total_so_far =
-        1 + spec.daughters.len() + spec.grandkids.iter().map(|g| g.len()).sum::<usize>();
+    // elephants — joiners or recent additions whose lineage is
+    // partially recorded. Mother known 60% of the time, father 25%,
+    // sex 50/50 m/f. The tail's tilt toward known-mother / unknown-
+    // father pulls population-wide coverage toward the realistic
+    // ~70%-mother / ~40%-father target documented in the v3 plan.
+    let total_so_far = 1 // matriarch
+        + bull_ids.len()
+        + spec.daughters.len()
+        + spec.grandkids.iter().map(|g| g.len()).sum::<usize>();
+    let known_females = std::iter::once(matriarch.id)
+        .chain(daughter_ids.iter().copied())
+        .collect::<Vec<_>>();
     for i in total_so_far..30 {
         let name = format!("Calf-{i:02}");
-        let _ =
-            Elephant::create(ctx, elephant_for_insert(&name, herd.id, None, Some(2020))).await?;
+        let mother = if rng_lineage.next_u32() % 100 < 60 {
+            Some(known_females[(rng_lineage.next_u32() as usize) % known_females.len()])
+        } else {
+            None
+        };
+        let father = pick_father(&mut rng_lineage, 25);
+        let sex = if rng_lineage.next_u32().is_multiple_of(2) {
+            "f"
+        } else {
+            "m"
+        };
+        let _ = Elephant::create(
+            ctx,
+            elephant_for_insert(&name, herd.id, mother, father, Some(2020), Some(sex)),
+        )
+        .await?;
     }
 
     // 5) Sightings — 50 per herd, three loose clusters around the herd
@@ -313,18 +391,25 @@ async fn seed_one_herd(
 fn elephant_for_insert(
     name: &str,
     herd_id: djogi::HeerId,
-    parent_id: Option<djogi::HeerId>,
+    mother_id: Option<djogi::HeerId>,
+    father_id: Option<djogi::HeerId>,
     birth_year: Option<i16>,
+    sex: Option<&str>,
 ) -> Elephant {
+    let tags = ElephantTags {
+        sex: sex.map(|s| s.to_string()),
+        ..ElephantTags::default()
+    };
     Elephant {
         id: <djogi::HeerId as djogi::PrimaryKey>::sentinel(),
         created_at: djogi::DateTime::UNIX_EPOCH,
         updated_at: djogi::DateTime::UNIX_EPOCH,
         name: Tracked::new(name.to_string()),
         herd_id: ForeignKey::new(herd_id),
-        parent_id: parent_id.map(ForeignKey::new),
+        mother_id: mother_id.map(ForeignKey::new),
+        father_id: father_id.map(ForeignKey::new),
         estimated_birth_year: birth_year,
-        tags: Jsonb::new(ElephantTags::default()),
+        tags: Jsonb::new(tags),
         version: 0,
     }
 }
