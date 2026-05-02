@@ -24,9 +24,10 @@
 //! single window-function pass below, so the demo stays as one raw
 //! `ST_ClusterDBSCAN` query until the missing aggregates land.
 //!
-//! Tracked as a v0.1.0 framework gap — the `examples/elephant-tracker`
-//! README's "framework gaps surfaced by demos" table will get a row
-//! once the issue is filed.
+//! Tracked as v0.1.0 framework gap #88 (typed `centroid` / `collect`
+//! aggregates on `FieldRef<T, GeoPoint>`); once those land the demo
+//! retrofits to a single typed `cluster_by_proximity().annotate(...)`
+//! chain.
 //!
 //! ## Output formats
 //!
