@@ -56,8 +56,19 @@ use djogi::prelude::*;
 #[model(table = "elephant_ancestries", pk = HeerId, no_default)]
 #[derive(Debug, Clone)]
 pub struct ElephantAncestry {
+    /// Source Elephant. `ON DELETE CASCADE` — when an elephant is
+    /// removed from the source table, every closure row keyed on it
+    /// (whether as source or as ancestor) is removed too. Re-running
+    /// `materialize_closure` after source mutations is the canonical
+    /// way to keep the closure aligned; cascade just bounds the
+    /// inconsistency window.
+    #[field(on_delete = "cascade")]
     pub elephant_id: ForeignKey<Elephant>,
+
+    /// Ancestor of `elephant_id`. Same cascade rationale as above.
+    #[field(on_delete = "cascade")]
     pub ancestor_id: ForeignKey<Elephant>,
+
     pub depth: i32,
     pub path_count: i64,
 }

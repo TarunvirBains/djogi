@@ -19,7 +19,7 @@ snippets.
 | `GeoPoint` + EWKB                | `Sighting::location`                                   |
 | Spatial cluster grouping (DBSCAN)| `cluster_sightings` demo                               |
 | Full-text search (FTS)           | `Researcher::notes` and `Sighting::notes`              |
-| Multi-edge self-FKs (pedigree)   | `Elephant::mother_id` + `father_id` — single-edge typed `tree_descendants` for matrilineal lineage; multi-edge `Model::full_ancestors` for Wright kinship in `mating-pairs` demo |
+| Multi-edge self-FKs (pedigree)   | `Elephant::mother_id` + `father_id` — single-edge typed `tree_descendants` for matrilineal lineage; materialized `ElephantAncestry` closure (via `Model::materialize_closure`) for indexed Wright kinship lookup in the `mating-pairs` demo |
 | Visages with side-query trait    | `HerdSummary` reports `herd_size` via aggregate, not row|
 | Transactional outbox             | `Sighting::create` enqueues an event in `sightings_outbox` |
 | RLS via `tenant_key`             | Researchers scoped per organisation                    |
@@ -45,10 +45,22 @@ density the load-bearing story:
   individual has at most one of each, either potentially unknown).
   Matrilineal lineage walks `mother_id` only (single-edge
   `tree_descendants` / raw recursive CTE in the `lineage` demo);
-  Wright kinship walks both edges with multiplicity preservation
-  (`Model::full_ancestors` in the `mating-pairs` demo).
+  Wright kinship reads from a materialized `ElephantAncestry`
+  closure (populated at seed time via
+  `Model::materialize_closure::<ElephantAncestry>`) which the
+  `mating-pairs` demo joins to itself on `ancestor_id` to find
+  shared ancestors per candidate pair.
   `tags: Jsonb<ElephantTags>` for typed extra fields including sex.
   `version: i32` for optimistic locking on tag updates.
+- **ElephantAncestry** — materialized transitive closure of the
+  pedigree graph. `(elephant_id, ancestor_id, depth, path_count)`
+  with the framework-injected `id` / `created_at` / `updated_at`.
+  Populated post-seed (and re-runnable to refresh) by a single
+  `Elephant::materialize_closure::<ElephantAncestry>(ctx, opts)`
+  call; the helper walks both self-FK edges in one recursive CTE
+  and upserts via `ON CONFLICT (...) DO UPDATE`. Indexed lookup at
+  query time means every Wright F computation against this closure
+  is a cheap join, not a re-walk of the recursive CTE per pair.
 - **Sighting** — observation events. `location: GeoPoint`, FK to
   `Researcher` (`observed_by_id`), `notes: TEXT` (FTS-indexed). Records
   on `Sighting::create` enqueue a row into `sightings_outbox` inside the

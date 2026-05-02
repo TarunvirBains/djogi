@@ -12,8 +12,12 @@
 //! edge walk through `mother_id`).
 //!
 //! Multi-edge ancestry (mother + father) lands in the `mating-pairs`
-//! demo via `Model::full_ancestors(id)`, which walks both edges in a
-//! single recursive CTE preserving Wright path multiplicity.
+//! demo via the materialized `ElephantAncestry` closure (populated
+//! at seed time by `Model::materialize_closure::<ElephantAncestry>`).
+//! That closure walks both self-FK edges in one recursive CTE while
+//! preserving Wright path multiplicity, then mating-pairs joins the
+//! closure to itself on `ancestor_id` for indexed shared-ancestor
+//! lookup per candidate pair.
 //!
 //! ## Output formats
 //!
