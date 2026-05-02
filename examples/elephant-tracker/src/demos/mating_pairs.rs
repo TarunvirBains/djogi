@@ -78,19 +78,32 @@
 //! score = (1 - F) × territory_overlap_pct × age_compatibility
 //! ```
 //!
-//! v1 ships only the kinship factor (`score = 1 - F`); territory
-//! overlap (via `convex_hull` + `intersection` + `area` from Cluster
-//! C T16/T17) and age compatibility are deferred to subsequent
-//! commits. Including them now would conflate the demonstration of
-//! "closure-table-driven kinship" with "multi-factor ranking heuristic"
-//! and obscure the framework substrate the demo exists to showcase.
+//! T24c lands two of three factors: kinship `(1 - F)` and
+//! `territory_overlap_pct`. The latter is computed via per-herd
+//! convex hulls over recorded sightings + `ST_Area(ST_Intersection
+//! (a, b))/ST_Area(a)` — the same SQL primitives Cluster C T16/T17
+//! ships through the typed `FieldRef::convex_hull()` aggregate and
+//! `Expr::area_of_intersection` / `Expr::area_of` scalar surface.
+//! The demo emits the SQL inline because the typed surface bolts
+//! `convex_hull` to `AnnotatedQuerySet<T, A>` over a single Model
+//! while the mating-pairs query is a multi-CTE pair shape (same
+//! reasoning as T24b — see #84 for the framework gap).
+//!
+//! `age_compatibility` is the third factor and is deferred to a
+//! follow-up commit (T24d) — the seed's age distribution is
+//! deterministic and clustered into 3 birth-year cohorts (matriarch
+//! 2010, daughter 2016, grandkid 2022, plus 2008-2010 bulls), so
+//! age compatibility computed naively (e.g., `1 - |Δyears|/30`)
+//! produces near-binary output. Surfacing it requires either richer
+//! seed data or a more nuanced compatibility curve, which is a
+//! polish-pass concern.
 //!
 //! ## Output formats
 //!
 //! - `json` — flat list of `{rank, female_id, female_name,
 //!   female_herd, male_id, male_name, male_herd, f_offspring,
-//!   score}` records, top-3 per female, sorted by
-//!   `(female_name, rank)`.
+//!   territory_overlap_pct, score}` records, top-3 per female,
+//!   sorted by `(female_name, rank)`.
 //! - `markdown` — sorted table with one row per pair plus a
 //!   summary header.
 //! - `mermaid` — `graph LR` with one node per participating elephant
@@ -99,11 +112,18 @@
 //!
 //! Filter: only mature elephants (estimated_birth_year ≤
 //! `now - MATURITY_YEARS years`, see the constant for rationale on
-//! the threshold), of opposite sex, in the same herd. The same-
-//! herd filter is the v1 stand-in for the v3 plan's spatial-overlap
-//! filter (convex_hull + intersection + area via Cluster C
-//! T16/T17), which lands in a follow-up commit so the demo
-//! exercises Cluster C's typed spatial surface end-to-end.
+//! the threshold), of opposite sex, whose herd-territory polygons
+//! spatially overlap. The territory polygon is the convex hull of
+//! every recorded `Sighting.location` belonging to a herd member;
+//! pairs whose hulls don't intersect (`territory_overlap_pct = 0`)
+//! are filtered out before kinship computation. In the
+//! deterministic seed, herd centers are far apart relative to the
+//! per-herd sighting jitter, so `overlap = 1.0` for same-herd
+//! pairs and `overlap = 0` for cross-herd pairs. Adopters who seed
+//! cross-territory wandering elephants (sightings outside the home
+//! range) will see fractional overlaps surface; the demo's filter
+//! and the composite-score multiplication are both ready for that
+//! data without further code changes.
 
 use anyhow::Result;
 use djogi::DjogiContext;
@@ -137,6 +157,12 @@ struct MatingPair {
     male_name: String,
     male_herd: String,
     f_offspring: f64,
+    /// Fraction in `[0, 1]` of the female's herd-territory polygon
+    /// that overlaps the male's herd-territory polygon. Computed
+    /// from the convex hull of each herd's recorded sightings (a
+    /// rough but operator-meaningful proxy for "where the herd
+    /// actually ranges"). 1.0 is the same-herd self-overlap case.
+    territory_overlap_pct: f64,
     score: f64,
 }
 
@@ -163,28 +189,63 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
             WHERE e.estimated_birth_year IS NOT NULL
               AND ($1::integer - e.estimated_birth_year::integer) >= $2
         ),
+        herd_hulls AS (
+            -- Per-herd convex-hull aggregate over recorded sightings.
+            -- `ST_Collect` rolls all `Sighting.location` GeoPoints
+            -- into a single MultiPoint per herd, then `ST_ConvexHull`
+            -- produces the smallest enclosing polygon. The outer
+            -- `::geography` cast preserves the meters-units invariant
+            -- the rest of the framework's spatial surface uses
+            -- (Cluster C T17). Mirrors the SQL the framework's typed
+            -- `FieldRef::convex_hull()` aggregate emits — but expressed
+            -- inline here because the typed aggregate surface is
+            -- bolted to `AnnotatedQuerySet<T, A>` over a single Model
+            -- (see #84), and the mating-pairs query is a multi-CTE
+            -- pair shape that doesn't fit `T = Model`.
+            SELECT
+                s.elephant_id_to_herd                     AS herd_id,
+                ST_ConvexHull(ST_Collect(s.location::geometry))::geography AS hull
+            FROM (
+                SELECT e.herd_id AS elephant_id_to_herd, s.location
+                FROM sightings s
+                JOIN elephants e ON e.id = s.elephant_id
+            ) s
+            GROUP BY s.elephant_id_to_herd
+        ),
         candidate_pairs AS (
-            -- Same-herd filter is the v1 stand-in for the spatial-
-            -- overlap filter (convex_hull + intersection + area
-            -- via Cluster C T16/T17) the v3 plan calls for. v1
-            -- restricts to same-herd pairs; subsequent commits
-            -- will swap this for the typed spatial-overlap surface
-            -- so the demo exercises Cluster C end-to-end. Keeping
-            -- pairs in-herd is also where Wright F variance shows
-            -- up in the deterministic seed: each daughter's
-            -- biological father lives in her own herd's bull pool.
+            -- Cross-product of mature (female, male) pairs filtered to
+            -- non-zero spatial overlap between their herd territories.
+            -- The same-herd self-overlap case (`fh.hull = mh.hull`)
+            -- produces overlap_pct = 1.0; cross-herd pairs whose hulls
+            -- don't intersect produce 0 — which the kinship-scored
+            -- composite would multiply out anyway, but filtering at
+            -- this stage keeps the closure self-join in `pair_kinship`
+            -- bounded to spatially-plausible candidates.
+            --
+            -- Mirrors the framework's `Expr::area_of_intersection` /
+            -- `Expr::area_of` SpatialExpr surface (Cluster C T16/T17)
+            -- inline here for the same multi-CTE reason as above.
             SELECT
                 f.id          AS female_id,
                 f.name        AS female_name,
                 f.herd_id     AS female_herd_id,
                 m.id          AS male_id,
                 m.name        AS male_name,
-                m.herd_id     AS male_herd_id
+                m.herd_id     AS male_herd_id,
+                CASE
+                    WHEN ST_Area(fh.hull) = 0 THEN 0::float8
+                    ELSE (
+                        ST_Area(
+                            ST_Intersection(fh.hull::geometry, mh.hull::geometry)::geography
+                        ) / ST_Area(fh.hull)
+                    )::float8
+                END           AS territory_overlap_pct
             FROM mature f
             CROSS JOIN mature m
+            JOIN herd_hulls fh ON fh.herd_id = f.herd_id
+            JOIN herd_hulls mh ON mh.herd_id = m.herd_id
             WHERE f.sex = 'f' AND m.sex = 'm'
               AND f.id <> m.id
-              AND f.herd_id = m.herd_id
         ),
         pair_kinship AS (
             SELECT
@@ -194,6 +255,7 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
                 cp.male_id,
                 cp.male_name,
                 cp.male_herd_id,
+                cp.territory_overlap_pct,
                 COALESCE(SUM(
                     la.path_count::numeric
                   * ra.path_count::numeric
@@ -205,29 +267,33 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
             LEFT JOIN elephant_ancestries ra
                 ON ra.elephant_id = cp.male_id
                AND ra.ancestor_id = la.ancestor_id
+            WHERE cp.territory_overlap_pct > 0
             GROUP BY cp.female_id, cp.female_name, cp.female_herd_id,
-                     cp.male_id, cp.male_name, cp.male_herd_id
+                     cp.male_id, cp.male_name, cp.male_herd_id,
+                     cp.territory_overlap_pct
         ),
         scored AS (
             SELECT
                 pk.*,
-                (1.0 - pk.f_offspring)::float8 AS score,
+                ((1.0 - pk.f_offspring) * pk.territory_overlap_pct)::float8 AS score,
                 ROW_NUMBER() OVER (
                     PARTITION BY pk.female_id
-                    ORDER BY (1.0 - pk.f_offspring) DESC, pk.male_name ASC
+                    ORDER BY ((1.0 - pk.f_offspring) * pk.territory_overlap_pct) DESC,
+                             pk.male_name ASC
                 ) AS rank
             FROM pair_kinship pk
         )
         SELECT
-            scored.rank::integer        AS rank,
-            scored.female_id            AS female_id,
-            scored.female_name          AS female_name,
-            fh.name                     AS female_herd,
-            scored.male_id              AS male_id,
-            scored.male_name            AS male_name,
-            mh.name                     AS male_herd,
-            scored.f_offspring          AS f_offspring,
-            scored.score                AS score
+            scored.rank::integer            AS rank,
+            scored.female_id                AS female_id,
+            scored.female_name              AS female_name,
+            fh.name                         AS female_herd,
+            scored.male_id                  AS male_id,
+            scored.male_name                AS male_name,
+            mh.name                         AS male_herd,
+            scored.f_offspring              AS f_offspring,
+            scored.territory_overlap_pct    AS territory_overlap_pct,
+            scored.score                    AS score
         FROM scored
         JOIN herds fh ON fh.id = scored.female_herd_id
         JOIN herds mh ON mh.id = scored.male_herd_id
@@ -254,6 +320,7 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
             male_name: row.get::<_, String>("male_name"),
             male_herd: row.get::<_, String>("male_herd"),
             f_offspring: row.get::<_, f64>("f_offspring"),
+            territory_overlap_pct: row.get::<_, f64>("territory_overlap_pct"),
             score: row.get::<_, f64>("score"),
         })
         .collect();
@@ -341,25 +408,32 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
          `(1 + F_A)` and that factor can be substantial enough to \
          shift the top-N ranking. The demo's role is showcasing the \
          framework substrate (`materialize_closure` + indexed \
-         self-join), not shipping a kinship library. Spatial-overlap \
-         and age-compatibility factors land in subsequent commits.\n",
+         self-join), not shipping a kinship library. \
+         `territory_overlap_pct` is the fraction of the female's \
+         herd-territory polygon (convex hull of recorded sightings) \
+         covered by the male's herd-territory polygon — 1.0 for the \
+         same-herd case, lower for spatially-disjoint cross-herd \
+         pairs (filtered out before kinship computation when \
+         `overlap = 0`). Composite `score = (1 - F) × overlap`. \
+         Age-compatibility multiplier lands in a follow-up commit.\n",
     )?;
     output::write_line(
         target,
-        "| Rank | Female (herd) | Male (herd) | F_offspring | Score |",
+        "| Rank | Female (herd) | Male (herd) | F_offspring | Overlap | Score |",
     )?;
-    output::write_line(target, "|---:|---|---|---:|---:|")?;
+    output::write_line(target, "|---:|---|---|---:|---:|---:|")?;
     for p in pairs {
         output::write_line(
             target,
             &format!(
-                "| {} | {} ({}) | {} ({}) | {:.6} | {:.6} |",
+                "| {} | {} ({}) | {} ({}) | {:.6} | {:.4} | {:.6} |",
                 p.rank,
                 p.female_name,
                 p.female_herd,
                 p.male_name,
                 p.male_herd,
                 p.f_offspring,
+                p.territory_overlap_pct,
                 p.score,
             ),
         )?;
