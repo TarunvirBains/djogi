@@ -104,12 +104,12 @@
 //!   the caller invoked
 //!   [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
 //!   [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by).
-//!   The internal sequence column `__djogi_search_seq` is macro-internal
-//!   (`_djogi_*` prefix is forbidden as a user column name by the
-//!   identifier validator) so it cannot collide with model fields. It is
-//!   never projected into the outer SELECT, but the outer `ORDER BY`
-//!   references it so callers see BFS / DFS order without an explicit
-//!   `order_by` call.
+//!   The internal sequence column `__djogi_search_seq` is macro-internal —
+//!   the `__djogi_` prefix is framework-reserved (see
+//!   `docs/spec/reserved-identifiers.md`), so it cannot collide with
+//!   adopter model fields. It is never projected into the outer SELECT,
+//!   but the outer `ORDER BY` references it so callers see BFS / DFS
+//!   order without an explicit `order_by` call.
 //! - **RLS:** every terminal calls
 //!   [`auto_set_tenant`](crate::query::terminal::auto_set_tenant) before
 //!   building SQL, exactly like the plain `QuerySet` terminals. Without
