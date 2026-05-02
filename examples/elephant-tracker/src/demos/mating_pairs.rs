@@ -30,14 +30,23 @@
 //!
 //!   This implementation uses the simplified Wright form with
 //!   `(1 + F_A) ≈ 1` — i.e., the ancestor's own inbreeding
-//!   coefficient is treated as zero. The full recursive Wright form
-//!   would require a self-referential `WITH RECURSIVE` over `F`
-//!   itself, which is beyond the demo's pedagogical scope. For our
-//!   deterministic 120-elephant seed (no inbreeding by
-//!   construction), `F_A = 0` is exact; for adopter datasets with
-//!   inherited inbreeding, the simplified form under-estimates F by
-//!   a small constant factor that doesn't change the top-3 ranking
-//!   per female.
+//!   coefficient is treated as zero. The full recursive Wright
+//!   form would require a self-referential `WITH RECURSIVE` over
+//!   `F` itself, which is beyond the demo's pedagogical scope.
+//!
+//!   **Caution for adopter use:** for our deterministic 120-elephant
+//!   seed (matriarchs and bulls are unrelated by construction so
+//!   ancestors carry no inbreeding) `F_A = 0` is exact. For real-
+//!   world adopter datasets with inherited inbreeding, each affected
+//!   term is under-counted by `(1 + F_A)`, and `(1 + F_A)` is not
+//!   necessarily small — populations with deep linebreeding can
+//!   carry F_A values that shift the top-N ranking. Any production
+//!   adopter computing kinship in earnest should extend this query
+//!   to the full Wright recurrence, or substitute a heavier-weight
+//!   library such as a published Wright/Malécot implementation.
+//!   The demo's value here is showing the framework substrate (one
+//!   `materialize_closure` call + indexed self-join), not shipping
+//!   a kinship library.
 //!
 //! - **Top-N per partition via window functions.** The candidate-pair
 //!   scoring is wrapped in a `ROW_NUMBER() OVER (PARTITION BY
@@ -46,10 +55,10 @@
 //!   Cluster C T18 documents this); the framework's typed
 //!   `RowNumber().qualify(...)` lowering produces the equivalent
 //!   `SELECT * FROM (<inner>) AS __djogi_q WHERE rank <= $1` shape.
-//!   This v1 of the demo emits the SQL via `raw_query` to keep the
-//!   correctness story tight; a follow-up migrates the ranking step
-//!   to the typed `RowNumber` builder so the demo also exercises
-//!   Cluster C's window-function surface end-to-end.
+//!   This v1 of the demo emits the SQL via `ctx.raw_rows` to keep
+//!   the correctness story tight; a follow-up migrates the ranking
+//!   step to the typed `RowNumber` builder so the demo also
+//!   exercises Cluster C's window-function surface end-to-end.
 //!
 //! ## Composite score
 //!
@@ -73,6 +82,9 @@
 //!   female, sorted by `(female_name, rank)`.
 //! - `markdown` — sorted table with one row per pair plus a
 //!   summary header.
+//! - `mermaid` — `graph LR` with one node per participating elephant
+//!   (label includes herd) and one directed `female --> male` edge
+//!   per pair (label `#rank score=N.NNN`).
 //!
 //! Filter: only mature elephants (estimated_birth_year ≤
 //! `now - MATURITY_YEARS years`, see the constant for rationale on
@@ -239,7 +251,53 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
     match format {
         Format::Json => output::write_json(&mut target, &pairs)?,
         Format::Markdown => render_markdown(&mut target, &pairs)?,
-        Format::Mermaid => render_markdown(&mut target, &pairs)?,
+        Format::Mermaid => render_mermaid(&mut target, &pairs)?,
+    }
+    Ok(())
+}
+
+/// `graph LR` of the top-N pairs per female. One node per
+/// participating elephant (herd-prefixed label so visually distinct
+/// herds stay readable in dense graphs); one directed edge per pair
+/// drawn `female --> male` with the score on the edge label.
+fn render_mermaid(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> Result<()> {
+    output::write_line(target, "graph LR")?;
+    if pairs.is_empty() {
+        output::write_line(
+            target,
+            "    n0[\"No candidate pairs — verify seed has mature \
+             elephants of both sexes with sex tags populated\"]",
+        )?;
+        return Ok(());
+    }
+
+    // Each elephant in the result set becomes a single node. Use
+    // mermaid_node_id (which encodes the i64 id) so two distinct
+    // elephants can never collide on a node label.
+    let mut nodes: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for p in pairs {
+        let f_node = output::mermaid_node_id(p.female_id.parse::<i64>().unwrap_or(0));
+        let m_node = output::mermaid_node_id(p.male_id.parse::<i64>().unwrap_or(0));
+        nodes.entry(f_node).or_insert_with(|| {
+            output::escape_label(&format!("{} ({})", p.female_name, p.female_herd))
+        });
+        nodes
+            .entry(m_node)
+            .or_insert_with(|| output::escape_label(&format!("{} ({})", p.male_name, p.male_herd)));
+    }
+    for (id, label) in &nodes {
+        output::write_line(target, &format!("    {id}[\"{label}\"]"))?;
+    }
+    for p in pairs {
+        let f_node = output::mermaid_node_id(p.female_id.parse::<i64>().unwrap_or(0));
+        let m_node = output::mermaid_node_id(p.male_id.parse::<i64>().unwrap_or(0));
+        output::write_line(
+            target,
+            &format!(
+                "    {f_node} -->|\"#{} score={:.3}\"| {m_node}",
+                p.rank, p.score
+            ),
+        )?;
     }
     Ok(())
 }
@@ -252,8 +310,12 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
     if pairs.is_empty() {
         output::write_line(
             target,
-            "_No candidate pairs — does the seed contain mature \
-             elephants of both sexes?_",
+            "_No candidate pairs — verify the seed has mature \
+             elephants of both sexes (`tags->>'sex' = 'f'` / `'m'` \
+             populated, `estimated_birth_year` set), and that at \
+             least two such elephants share a `herd_id`. The most \
+             common cause is running `migrate` from a pre-T22 \
+             snapshot whose elephants don't have sex tags._",
         )?;
         return Ok(());
     }

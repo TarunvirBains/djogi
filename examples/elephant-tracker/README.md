@@ -137,6 +137,10 @@ cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format markdown
 
 cargo run -p elephant-tracker -- demo cluster-sightings
 cargo run -p elephant-tracker -- demo cluster-sightings --format markdown
+
+cargo run -p elephant-tracker -- demo mating-pairs
+cargo run -p elephant-tracker -- demo mating-pairs --format markdown
+cargo run -p elephant-tracker -- demo mating-pairs --format mermaid
 ```
 
 Available format matrix:
@@ -147,6 +151,7 @@ Available format matrix:
 | `cross-border-herds`|  ✓  |   ✓     |    ✓     |
 | `lineage`           |  ✓  |   ✓     |    ✓     |
 | `cluster-sightings` |  ✓  |   —     |    ✓     |
+| `mating-pairs`      |  ✓  |   ✓     |    ✓     |
 
 ## Status
 
