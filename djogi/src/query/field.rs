@@ -1687,6 +1687,104 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
             None,
         )
     }
+
+    /// `ST_ClusterIntersecting(<col>::geometry)::geography[]` — per-
+    /// group clustering aggregate that groups mutually-intersecting
+    /// input polygons into per-cluster collections.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_ClusterIntersecting(<col>::geometry)::geography[]
+    /// ```
+    ///
+    /// # Return type
+    ///
+    /// PostGIS returns a `geometry[]` array — one element per cluster.
+    /// The trailing `::geography[]` cast moves the array's element
+    /// type onto the geography substrate so the typed surface decodes
+    /// into `Vec<MultiPolygon>`. Each `MultiPolygon` element holds
+    /// the polygons that mutually intersect; non-intersecting polygons
+    /// land in their own single-element clusters.
+    ///
+    /// # Aggregate vs window-function clustering
+    ///
+    /// Unlike the existing `cluster_by_proximity` (a window function
+    /// that adds a per-row cluster id), `cluster_intersecting()` is a
+    /// true aggregate — one row out per (group, cluster) pair after
+    /// the array is `unnest`ed at the call site. The aggregate form
+    /// suits per-group folding (e.g. \"all overlapping ranges per
+    /// herd\") whereas the window form suits per-row tagging.
+    ///
+    /// # Composition
+    ///
+    /// ```ignore
+    /// // Per-herd intersecting territory clusters.
+    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects()
+    ///     .group_by(|f| f.herd_id())
+    ///     .annotate(|f| f.boundary().cluster_intersecting())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — wrap
+    /// `Out = Option<Vec<MultiPolygon>>` for groups that may be empty.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_intersecting(self) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialClusterIntersecting,
+            self.column(),
+            None,
+        )
+    }
+
+    /// `ST_ClusterWithin(<col>::geometry, $1)::geography[]` — per-
+    /// group clustering aggregate that groups input polygons within
+    /// `distance` meters of each other.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_ClusterWithin(<col>::geometry, $n)::geography[]
+    /// ```
+    ///
+    /// `distance` is bound as a positional parameter — no string
+    /// interpolation of user-supplied data.
+    ///
+    /// # vs. [`Self::cluster_intersecting`]
+    ///
+    /// - `cluster_intersecting()` clusters geometries that *touch
+    ///   or overlap*.
+    /// - `cluster_within(d)` clusters geometries within `d` meters
+    ///   of each other — the threshold is configurable, so adopters
+    ///   can tune cluster granularity per use case.
+    ///
+    /// # Composition
+    ///
+    /// ```ignore
+    /// // Cluster nearby territories within 10 km.
+    /// let clusters: Vec<(HerdId, Vec<MultiPolygon>)> = Range::objects()
+    ///     .group_by(|f| f.herd_id())
+    ///     .annotate(|f| f.boundary().cluster_within(10_000.0))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — same caveat as
+    /// [`Self::cluster_intersecting`].
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_within(
+        self,
+        distance: f64,
+    ) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialClusterWithin(distance),
+            self.column(),
+            None,
+        )
+    }
 }
 
 #[cfg(feature = "spatial")]
@@ -1699,6 +1797,35 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::MultiPolygon> {
     pub fn union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
         crate::expr::AggregateExpr::unary_agg(
             crate::expr::node::AggOp::SpatialUnion,
+            self.column(),
+            None,
+        )
+    }
+
+    /// `ST_ClusterIntersecting(<col>::geometry)::geography[]` — see
+    /// [`FieldRef::<M, Polygon>::cluster_intersecting`] for full
+    /// documentation; the behaviour is identical, only the input
+    /// column shape differs.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_intersecting(self) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialClusterIntersecting,
+            self.column(),
+            None,
+        )
+    }
+
+    /// `ST_ClusterWithin(<col>::geometry, $1)::geography[]` — see
+    /// [`FieldRef::<M, Polygon>::cluster_within`] for full
+    /// documentation; the behaviour is identical, only the input
+    /// column shape differs.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cluster_within(
+        self,
+        distance: f64,
+    ) -> crate::expr::AggregateExpr<Vec<crate::geo::MultiPolygon>> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialClusterWithin(distance),
             self.column(),
             None,
         )
@@ -3147,6 +3274,104 @@ mod distance_tests {
             acc.sql(),
             "ST_Collect(DISTINCT territory::geometry)::geography"
         );
+    }
+
+    // ── T15 — cluster_intersecting / cluster_within ──────────────────────────
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_intersecting_on_polygon_field_produces_aggregate_vec_multipolygon() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::{MultiPolygon, Polygon as PolygonTy};
+
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        // Compile-time return-type check — Vec<MultiPolygon>.
+        let agg: AggregateExpr<Vec<MultiPolygon>> = field.cluster_intersecting();
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialClusterIntersecting));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "territory");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialClusterIntersecting)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_intersecting_emits_st_clusterintersecting_with_geography_array_cast() {
+        use crate::geo::Polygon as PolygonTy;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg = field.cluster_intersecting();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_ClusterIntersecting(territory::geometry)::geography[]"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_within_carries_distance_inline_on_aggop() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::{MultiPolygon, Polygon as PolygonTy};
+
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg: AggregateExpr<Vec<MultiPolygon>> = field.cluster_within(1_000.0);
+        if let ExprNode::Aggregate { op, .. } = agg.node {
+            // Distance is carried inline on the variant — assert the
+            // variant matches and pin the value.
+            if let AggOp::SpatialClusterWithin(distance) = op {
+                assert!(
+                    (distance - 1_000.0).abs() < f64::EPSILON,
+                    "distance must round-trip; got {distance}"
+                );
+                return;
+            }
+            panic!("expected AggOp::SpatialClusterWithin variant");
+        }
+        panic!("expected ExprNode::Aggregate");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_within_emits_st_clusterwithin_with_distance_bound() {
+        // Distance binds as a parameter, not inlined into SQL text —
+        // verifies no string interpolation of user-supplied data.
+        use crate::geo::Polygon as PolygonTy;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg = field.cluster_within(500.0);
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_ClusterWithin(territory::geometry, $1)::geography[]"
+        );
+        assert_eq!(acc.bind_count(), 1, "expected 1 bind for the distance");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_intersecting_on_multipolygon_field_also_dispatches() {
+        use crate::expr::AggregateExpr;
+        use crate::geo::MultiPolygon;
+        let field: FieldRef<Fake, MultiPolygon> = FieldRef::new("region");
+        let _agg: AggregateExpr<Vec<MultiPolygon>> = field.cluster_intersecting();
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn cluster_within_on_multipolygon_field_also_dispatches() {
+        use crate::expr::AggregateExpr;
+        use crate::geo::MultiPolygon;
+        let field: FieldRef<Fake, MultiPolygon> = FieldRef::new("region");
+        let _agg: AggregateExpr<Vec<MultiPolygon>> = field.cluster_within(2_000.0);
     }
 
     // area_of / area_of_intersection typed surface tests

@@ -626,6 +626,41 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")::geography");
                 }
+                // T15 — clustering aggregates. Both return `geometry[]`
+                // at the Postgres level; the trailing `::geography[]`
+                // cast moves the array's element type onto the
+                // geography substrate so the typed surface decodes
+                // into `Vec<MultiPolygon>`. ST_ClusterWithin takes a
+                // distance threshold bound as a parameter (carried
+                // inline on the variant, mirroring StringAgg's
+                // separator pattern).
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialClusterIntersecting => {
+                    acc.push_sql("ST_ClusterIntersecting(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography[]");
+                }
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialClusterWithin(distance) => {
+                    acc.push_sql("ST_ClusterWithin(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry, ");
+                    // Bind the distance as a parameter — never inline
+                    // a runtime-computed f64 into the SQL text. The
+                    // `*distance` deref copies the f64 (Copy type) so
+                    // the inline value is preserved across IR clones.
+                    acc.push_bind(*distance);
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography[]");
+                }
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the

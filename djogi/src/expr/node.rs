@@ -469,7 +469,15 @@ pub(crate) struct SubqueryNode {
 /// renders `COUNT(*)` specially for [`AggOp::CountStar`] so the bare `*`
 /// never flows through the identifier-validation / column-qualification
 /// paths.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # Why `PartialEq` only (no `Eq`)
+///
+/// [`AggOp::SpatialClusterWithin`] carries an inline `f64` distance,
+/// and `f64` has only [`PartialEq`] — NaN is not reflexively equal to
+/// itself. The crate uses `matches!` for variant discrimination (which
+/// only needs `PartialEq`), so dropping `Eq` is sound; no downstream
+/// code keys an `AggOp` into a `HashMap` / `HashSet`.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AggOp {
     /// `COUNT(col)` — returns `i64`. Counts non-null values of the
     /// argument column.
@@ -723,6 +731,33 @@ pub(crate) enum AggOp {
     /// PostGIS floor — only the emitter arm changes.
     #[cfg(feature = "spatial")]
     SpatialPolygonAgg,
+    /// `ST_ClusterIntersecting(<col>::geometry)::geography[]` — per-
+    /// group clustering aggregate that groups input geometries which
+    /// mutually intersect into per-cluster collections. Returns
+    /// `geometry[]` at the Postgres level; Djogi casts the array
+    /// element type to `geography` so the typed surface decodes into
+    /// `Vec<MultiPolygon>`. Gated on `feature = "spatial"`.
+    ///
+    /// Available on polygon-shaped fields only — the typed return
+    /// `Vec<MultiPolygon>` matches the natural PostGIS output for
+    /// polygonal inputs. Point-shaped inputs produce `Vec<MultiPoint>`
+    /// at the Postgres level which would break the typed decode;
+    /// adopters wanting clustering semantics over points reach for
+    /// the existing window-function `cluster_by_proximity`.
+    #[cfg(feature = "spatial")]
+    SpatialClusterIntersecting,
+    /// `ST_ClusterWithin(<col>::geometry, $1)::geography[]` — per-
+    /// group clustering aggregate that groups input geometries within
+    /// `distance` meters of each other. The distance is carried inline
+    /// on the variant (matching [`AggOp::StringAgg`]'s separator pattern)
+    /// and bound as a parameter at emission. Returns
+    /// `Vec<MultiPolygon>`. Gated on `feature = "spatial"`.
+    ///
+    /// Same receiver-shape gating as
+    /// [`AggOp::SpatialClusterIntersecting`] — polygon-shaped fields
+    /// only.
+    #[cfg(feature = "spatial")]
+    SpatialClusterWithin(f64),
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].
