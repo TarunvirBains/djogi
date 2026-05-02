@@ -516,6 +516,20 @@ pub(crate) enum AggOp {
     /// column is true. Requires a boolean column; the typed builder gates
     /// on `V: Into<bool>`.
     BoolOr,
+    /// `BIT_AND(col)` — bitwise AND across all non-null values, returned
+    /// as the column's integer type. Postgres defines this for
+    /// `SMALLINT`, `INTEGER`, `BIGINT` and bit-string types; Djogi's
+    /// typed builder gates on the sealed
+    /// [`super::aggregate::IntegerColumn`] trait, which admits the three
+    /// integer scalar types only.
+    BitAnd,
+    /// `BIT_OR(col)` — bitwise OR across all non-null values. Same type
+    /// gating as [`AggOp::BitAnd`].
+    BitOr,
+    /// `BIT_XOR(col)` — bitwise XOR across all non-null values. Same
+    /// type gating as [`AggOp::BitAnd`]. PostgreSQL 14+ feature; Djogi's
+    /// floor (PostgreSQL 18) safely supports it.
+    BitXor,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

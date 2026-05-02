@@ -548,6 +548,100 @@ impl<M: Model> FieldRef<M, bool> {
     }
 }
 
+// ── BIT_AND / BIT_OR / BIT_XOR ──────────────────────────────────────────────
+//
+// Bitwise integer aggregates. Sealed on a separate `IntegerColumn` trait
+// rather than `Numeric` because Postgres BIT_AND / BIT_OR / BIT_XOR are
+// defined for SMALLINT / INTEGER / BIGINT (and bit-string types Djogi
+// doesn't model today) but NOT for floating-point types — `BIT_AND(REAL)`
+// is a Postgres type error. Gating on `IntegerColumn` produces a compile-
+// time error if a caller writes `f.score().bit_or()` on an `f64` column,
+// which beats the runtime Postgres error.
+//
+// The return type is `Out = V` (the column's own integer type) — Postgres
+// returns the same width it operates on, no widening, so no narrowing
+// cast is required. Mirrors `min` / `max` in that respect.
+
+mod integer_column_seal {
+    /// Local seal for [`super::IntegerColumn`]. Crate-private — downstream
+    /// code cannot name `Sealed`, so `impl IntegerColumn for MyType {}`
+    /// fails at "the trait `Sealed` is not implemented for `MyType`".
+    pub trait Sealed {}
+
+    impl Sealed for i16 {}
+    impl Sealed for i32 {}
+    impl Sealed for i64 {}
+}
+
+/// Sealed marker trait for column types that admit Postgres bitwise
+/// aggregate functions ([`FieldRef::bit_and`], [`FieldRef::bit_or`],
+/// [`FieldRef::bit_xor`]).
+///
+/// Implemented for `i16`, `i32`, `i64` — the three integer scalar types
+/// Djogi blesses. Floating-point types (`f32`, `f64`), `time::Duration`,
+/// and `Decimal` deliberately do NOT implement this; the corresponding
+/// `BIT_AND(REAL)` / `BIT_OR(NUMERIC)` calls are Postgres type errors,
+/// and gating at the type system catches them at compile time.
+///
+/// # Why a separate trait from [`super::arithmetic::Numeric`]?
+///
+/// `Numeric` admits floats and `Duration` for arithmetic operator
+/// composition. Bit aggregates are integer-only — a separate trait
+/// keeps the gating precise. The two traits overlap on `i16`/`i32`/`i64`;
+/// any column type qualifies for both arithmetic and bit aggregates iff
+/// it implements both.
+pub trait IntegerColumn: integer_column_seal::Sealed {}
+
+impl IntegerColumn for i16 {}
+impl IntegerColumn for i32 {}
+impl IntegerColumn for i64 {}
+
+impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
+    /// `BIT_AND(column)` — bitwise AND across non-null integer values,
+    /// returned as the column's integer type.
+    ///
+    /// Useful for flag-bitmask reduction: `f.flags().bit_and()` returns
+    /// the set of bits set in *every* non-null row of the group.
+    /// Identity (no rows or all NULL): all-bits-set in two's complement
+    /// (`-1` for signed types). Empty groups decode as NULL — wrap `Out`
+    /// in `Option<V>` at the call site (or use a `FILTER (WHERE ...)`
+    /// guard) for NULL-safe handling.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Bits common to every flag value across the org's users
+    /// let common_bits: i32 = User::objects()
+    ///     .filter(|u| u.org_id().eq(my_org))
+    ///     .aggregate(|u| u.flags().bit_and())
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bit_and(self) -> AggregateExpr<V> {
+        AggregateExpr::unary_agg(AggOp::BitAnd, self.column(), None)
+    }
+
+    /// `BIT_OR(column)` — bitwise OR across non-null integer values.
+    ///
+    /// Useful for "did any row have flag X set?" reductions:
+    /// `f.flags().bit_or()` returns the union of bits across the group.
+    /// Identity: 0 (no bits set).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bit_or(self) -> AggregateExpr<V> {
+        AggregateExpr::unary_agg(AggOp::BitOr, self.column(), None)
+    }
+
+    /// `BIT_XOR(column)` — bitwise XOR across non-null integer values.
+    ///
+    /// Useful for parity / checksum-style aggregations. Postgres 14+
+    /// adds this aggregate; Djogi's PostgreSQL 18 floor includes it.
+    /// Identity: 0.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn bit_xor(self) -> AggregateExpr<V> {
+        AggregateExpr::unary_agg(AggOp::BitXor, self.column(), None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Emitter unit tests — each aggregate variant produces the
@@ -1208,5 +1302,85 @@ mod tests {
             sql.contains("COUNT(amount) OVER ()"),
             "default should be OVER (), got: {sql}"
         );
+    }
+
+    // ── BIT_AND / BIT_OR / BIT_XOR tests (T2) ────────────────────────────────
+
+    #[test]
+    fn bit_and_emits_bit_and_keyword() {
+        let f: FieldRef<Txn, i32> = FieldRef::new("flags");
+        let agg = f.bit_and();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "BIT_AND(flags)");
+    }
+
+    #[test]
+    fn bit_or_emits_bit_or_keyword() {
+        let f: FieldRef<Txn, i32> = FieldRef::new("flags");
+        let agg = f.bit_or();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "BIT_OR(flags)");
+    }
+
+    #[test]
+    fn bit_xor_emits_bit_xor_keyword() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("checksum_part");
+        let agg = f.bit_xor();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "BIT_XOR(checksum_part)");
+    }
+
+    #[test]
+    fn bit_aggregates_compose_with_distinct() {
+        // BIT_AND(DISTINCT col) is accepted (Postgres permits it; the
+        // result is identical to BIT_AND(col) because DISTINCT just
+        // dedupes rows before aggregation, but the emission round-trips).
+        let f: FieldRef<Txn, i32> = FieldRef::new("flags");
+        let agg = f.bit_and().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags)");
+    }
+
+    #[test]
+    fn bit_aggregates_compose_with_filter() {
+        // BIT_OR with FILTER attaches the predicate after the close paren.
+        let f: FieldRef<Txn, i32> = FieldRef::new("flags");
+        let g: FieldRef<Txn, i64> = FieldRef::new("active_at");
+        let agg = f.bit_or().filter(g.as_expr().gt(Expr::literal(0i64)));
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("BIT_OR(flags)") && sql.contains(" FILTER (WHERE active_at > "),
+            "expected BIT_OR + FILTER composition, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn bit_aggregates_compose_with_order_by() {
+        // BIT aggregates inherit the T1 .order_by modifier — useful for
+        // deterministic emission when paired with DISTINCT, even though
+        // BIT_AND/OR/XOR are commutative and the result is order-invariant.
+        let f: FieldRef<Txn, i32> = FieldRef::new("flags");
+        let agg = f.bit_and().distinct().order_by(f.asc());
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
+    }
+
+    #[test]
+    fn bit_and_returns_field_value_type() {
+        // Compile-time signature check — the return type is
+        // AggregateExpr<V> for V matching the column type.
+        let f16: FieldRef<Txn, i16> = FieldRef::new("flags16");
+        let f32: FieldRef<Txn, i32> = FieldRef::new("flags32");
+        let f64: FieldRef<Txn, i64> = FieldRef::new("flags64");
+        let _: AggregateExpr<i16> = f16.bit_and();
+        let _: AggregateExpr<i32> = f32.bit_or();
+        let _: AggregateExpr<i64> = f64.bit_xor();
     }
 }

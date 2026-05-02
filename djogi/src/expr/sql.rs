@@ -266,6 +266,11 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 // but valid Postgres syntax).
                 AggOp::BoolAnd => emit_unary_agg(acc, "BOOL_AND(", *distinct, arg, order_by),
                 AggOp::BoolOr => emit_unary_agg(acc, "BOOL_OR(", *distinct, arg, order_by),
+                // Bitwise integer aggregates — Postgres returns the
+                // operand's own integer type, so no narrowing cast.
+                AggOp::BitAnd => emit_unary_agg(acc, "BIT_AND(", *distinct, arg, order_by),
+                AggOp::BitOr => emit_unary_agg(acc, "BIT_OR(", *distinct, arg, order_by),
+                AggOp::BitXor => emit_unary_agg(acc, "BIT_XOR(", *distinct, arg, order_by),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
