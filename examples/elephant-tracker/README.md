@@ -3,10 +3,10 @@
 A runnable example showcasing Djogi's core and esoteric features through a
 plausible domain: tracking African elephant herds across borders.
 
-This example is intentionally tightly scoped — six models, one binary —
-but it exercises a wide cross-section of the framework so a learner can
-see real features in real combinations rather than reading isolated
-snippets.
+This example is intentionally tightly scoped — seven models, one
+binary — but it exercises a wide cross-section of the framework so
+a learner can see real features in real combinations rather than
+reading isolated snippets.
 
 ## What it demonstrates
 
@@ -28,8 +28,9 @@ snippets.
 
 ## The domain
 
-Six models, organized to make cross-border movement and population
-density the load-bearing story:
+Seven models, organized to make cross-border movement, population
+density, and pedigree-driven mating-pair selection the load-bearing
+story:
 
 - **Country** — reference table (Kenya, Tanzania, Uganda, Botswana,
   Zimbabwe). Serial PK, no audit trail.
@@ -84,13 +85,16 @@ Specifically:
   because biological pedigree has two edges, both potentially
   unknown, and elephant-research data captures matrilineal and
   patrilineal kinship distinctly. The split unlocks Wright
-  kinship-coefficient calculation across the population (the
-  framework's multi-edge `full_ancestors` walks both edges with
-  path-multiplicity preservation in a single recursive CTE; the
-  `mating-pairs` demo consumes that substrate). We kept the raw
-  recursive-CTE form in the `lineage` demo for matrilineal descent
-  because that path is naturally single-edge and the inline SQL is
-  the right level of explicitness for the herd-society narrative.
+  kinship-coefficient calculation across the population: the
+  framework's `Model::materialize_closure` helper walks both edges
+  with path-multiplicity preservation in a single recursive CTE
+  and writes the result into the `ElephantAncestry` table; the
+  `mating-pairs` demo joins that closure to itself on `ancestor_id`
+  for indexed shared-ancestor lookup per candidate pair. We kept
+  the raw recursive-CTE form in the `lineage` demo for matrilineal
+  descent because that path is naturally single-edge and the
+  inline SQL is the right level of explicitness for the herd-
+  society narrative.
 - We chose visages with a side-query trait (rather than embedding
   `herd_size` in `HerdRange`) because that's the realistic shape:
   aggregates that are too expensive to denormalize into rows but cheap

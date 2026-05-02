@@ -265,9 +265,12 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
 
     // Elephants — HeerId PK, FK to herds, two self-FKs (mother + father)
     // for biological pedigree, typed JSONB tags, optimistic-lock version.
-    // The two self-FKs let `Model::full_ancestors(id)` walk both
+    // The two self-FKs let `Model::materialize_closure` walk both
     // matrilineal and patrilineal chains in one recursive CTE while
     // preserving path multiplicity (load-bearing for Wright kinship).
+    // The `mating-pairs` demo reads from the resulting
+    // `elephant_ancestries` closure rather than re-walking per
+    // query — see the closure-table comment below.
     ctx.raw_ddl(
         "CREATE TABLE elephants (
             id                    BIGINT      PRIMARY KEY DEFAULT generate_id(),

@@ -53,7 +53,16 @@
 use crate::models::Elephant;
 use djogi::prelude::*;
 
-#[model(table = "elephant_ancestries", pk = HeerId, no_default)]
+#[model(
+    table = "elephant_ancestries",
+    pk = HeerId,
+    no_default,
+    indexes(
+        unique(fields = [elephant_id, ancestor_id, depth]),
+        index(fields = [elephant_id]),
+        index(fields = [ancestor_id]),
+    ),
+)]
 #[derive(Debug, Clone)]
 pub struct ElephantAncestry {
     /// Source Elephant. `ON DELETE CASCADE` — when an elephant is
