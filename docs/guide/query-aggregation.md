@@ -320,6 +320,116 @@ combination.
 
 ---
 
+## Aggregate coverage (Cluster E — Phase 8-Zero)
+
+Cluster E ([#88](https://github.com/TarunvirBains/djogi/issues/88))
+extended Djogi's aggregate surface to match the full Postgres + PostGIS
+catalog. New methods on `FieldRef<M, V>`:
+
+### Statistics
+
+`stddev` / `stddev_pop` / `stddev_samp` / `variance` / `var_pop` /
+`var_samp` (gated on `Numeric`, return `f64`).
+
+### Bivariate stats (binary aggregates)
+
+`corr(x)` / `covar_pop(x)` / `covar_samp(x)` — receiver is `y`,
+argument is `x`. Returns `f64`. Pinned to `V: Numeric` and `V2: Numeric`.
+
+### Linear regression
+
+`regr_slope(x)` / `regr_intercept(x)` / `regr_r2(x)` /
+`regr_count(x)` (returns `i64`) / `regr_avgx(x)` / `regr_avgy(x)` /
+`regr_sxx(x)` / `regr_sxy(x)` / `regr_syy(x)`. All binary; same y/x
+convention as Postgres.
+
+### Bit aggregates
+
+`bit_and` / `bit_or` / `bit_xor` (gated on `IntegerColumn` —
+`i16`/`i32`/`i64` only; floats refuse at compile time).
+
+### JSON object aggregates
+
+`json_object_agg(value)` / `jsonb_object_agg(value)` — receiver is
+the key column, argument is the value column. Returns
+`serde_json::Value`. Distinct from existing `json_agg` (which builds
+a JSON array).
+
+### Boolean alias
+
+`every()` — Postgres-standard alias for `bool_and()`. Same return
+type, identical SQL semantics; the emitter preserves the spelling so
+adopters who write `every` see `EVERY` in the emitted SQL.
+
+### Per-aggregate ORDER BY (T1)
+
+`AggregateExpr<Out>::order_by(other_field.asc())` — emits
+`AGG(arg ORDER BY other ASC)`. Load-bearing for deterministic
+`ARRAY_AGG` / `JSONB_AGG` / `STRING_AGG` results, and unblocks
+`STRING_AGG(DISTINCT col, sep)` (Postgres requires an ORDER BY for
+that combination).
+
+### Ordered-set aggregates (T7)
+
+`percentile_cont(p)` / `percentile_disc(p)` / `mode()` — Postgres
+ordered-set aggregates with mandatory `WITHIN GROUP (ORDER BY col)`.
+The receiver column populates the WITHIN GROUP target at default ASC;
+override via `.within_group_order_by(other.desc())`.
+
+### Hypothetical-set aggregates (T8)
+
+`rank_of(value)` / `dense_rank_of(value)` / `percent_rank_of(value)`
+/ `cume_dist_of(value)` — answer "what rank / fraction would this
+hypothetical value have in the sorted column?". Disambiguates from
+the window-form rank/dense_rank via the `_of` suffix.
+
+### GROUPING — subtotal detection
+
+`grouping(col)` — returns `1` if the column was rolled up in the
+current row, `0` otherwise. Used inside `SELECT` / `HAVING` under
+`GROUP BY ROLLUP` / `CUBE` / `GROUPING SETS` to detect subtotal rows.
+
+### GROUPING SETS public surface (T11)
+
+`QuerySet::grouping_sets(closure -> Vec<Vec<&'static str>>)` —
+multi-column-per-set GROUPING SETS queries. Existing
+`group_by_sets([&'static str; N])` covers the simpler arity-1-per-set
+case.
+
+### Modifier composition
+
+Every aggregate composes uniformly with the four modifiers:
+`.distinct()` / `.filter(cond)` / `.order_by(other)` /
+`.over(WindowBuilder)`. Postgres-incompatible combinations
+(e.g. `DISTINCT` on `GROUPING`, in-paren ORDER BY on ordered-set
+aggregates) are rejected at fetch time with typed
+`DjogiError::UnsupportedAggregate` errors.
+
+### Spatial aggregates
+
+See the [spatial guide](./spatial.md) for the full PostGIS aggregate
+surface (`convex_hull`, `centroid`, `collect`, `union`, `extent`,
+`make_line`, `line_agg`, `polygon_agg`, `cluster_intersecting`,
+`cluster_within`, `mem_union`, `polygonize`).
+
+### Window-only functions (T18-T19)
+
+The window-only family (functions that require `OVER (...)` and don't
+collapse rows) lives in `djogi::expr::*`. Cluster E shipped:
+
+- Zero-arg: `RowNumber`, `Rank`, `DenseRank` (Cluster C),
+  `PercentRankWindow`, `CumeDistWindow` (Cluster E T19)
+- Single-int-arg: `NtileWindow::new(n)` (T19)
+- Column-arg: `LeadWindow<V>::new(col).offset(n)`,
+  `LagWindow<V>::new(col).offset(n)`, `FirstValueWindow<V>::new(col)`,
+  `LastValueWindow<V>::new(col)`, `NthValueWindow<V>::new(col, n)` (T18)
+
+Each builds via `partition_by` / `order_by` / `alias` and decodes
+into the typed return — `i64` for ranks, `f64` for fractions,
+`i32` for NTILE, `V` for column-typed windows.
+
+---
+
 ## Spatial grouping (feature = "spatial")
 
 Phase 6.5 adds three spatial grouping entry points that reuse the same

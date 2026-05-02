@@ -430,19 +430,58 @@ Spatial aggregates compose with every grouping mode — plain `group_by`,
 `group_by_region`, `cluster_by_proximity`, `bucket_by_cell`. The
 `cluster_by_proximity` examples in the next section show the pattern.
 
-### Other PostGIS aggregates
+### Other PostGIS aggregates (Cluster E)
 
-Adopters often need more than `convex_hull` alone — per-group centroids
-(`ST_Centroid(ST_Collect(...))`), region unions (`ST_Union`), bounding
-boxes (`ST_Extent`), aggregate clustering (`ST_ClusterIntersecting`,
-`ST_ClusterWithin`), polyline construction (`ST_MakeLine`), vector
-tile generation (`ST_AsMVT`), and so on.
+Cluster E (#88) extended the typed PostGIS aggregate surface beyond
+`convex_hull`. Each method returns `AggregateExpr<ReturnType>` and
+composes with `.distinct()` / `.filter()` / `.over(...)` /
+`.order_by(...)` modifiers identically to numeric / collection
+aggregates.
 
-These are tracked in the umbrella aggregate-coverage issue
-([#88](https://github.com/TarunvirBains/djogi/issues/88)). Until they
-land as typed methods, the `ctx.raw_rows(...)` escape hatch remains
-available and emits the PostGIS call directly. New aggregate methods
-extend the section above as they ship.
+| Method | Signature | Emission | Receiver |
+|---|---|---|---|
+| `centroid()` | `FieldRef<M, GeoPoint> -> AggregateExpr<GeoPoint>` | `ST_Centroid(ST_Collect(<col>::geometry))::geography` | GeoPoint |
+| `collect()` | `FieldRef<M, GeoPoint> -> AggregateExpr<MultiPoint>` | `ST_Collect(<col>::geometry)::geography` | GeoPoint |
+| `union()` | `FieldRef<M, Polygon> -> AggregateExpr<MultiPolygon>` | `ST_Union(<col>::geometry)::geography` | Polygon, MultiPolygon |
+| `extent()` | any geography → `AggregateExpr<Polygon>` | `ST_Extent(<col>::geometry)::geometry::geography` | every `GeographyValue` field |
+| `extent_3d()` | any geography → `AggregateExpr<Polygon>` | `ST_3DExtent(...)` cast chain | every `GeographyValue` field |
+| `make_line()` | `FieldRef<M, GeoPoint> -> AggregateExpr<LineString>` | `ST_MakeLine(<col>::geometry)::geography` | GeoPoint |
+| `line_agg()` | `FieldRef<M, LineString> -> AggregateExpr<MultiLineString>` | `ST_LineAgg(<col>::geometry)::geography` | LineString |
+| `polygon_agg()` | `FieldRef<M, Polygon> -> AggregateExpr<MultiPolygon>` | `ST_Collect(<col>::geometry)::geography` (portable fallback) | Polygon |
+| `cluster_intersecting()` | `FieldRef<M, Polygon> -> AggregateExpr<Vec<MultiPolygon>>` | `ST_ClusterIntersecting(<col>::geometry)::geography[]` | Polygon, MultiPolygon |
+| `cluster_within(d)` | `FieldRef<M, Polygon>, distance: f64 -> AggregateExpr<Vec<MultiPolygon>>` | `ST_ClusterWithin(<col>::geometry, $1)::geography[]` | Polygon, MultiPolygon |
+| `mem_union()` | `FieldRef<M, Polygon> -> AggregateExpr<MultiPolygon>` | `ST_MemUnion(<col>::geometry)::geography` | Polygon, MultiPolygon |
+| `polygonize()` | `FieldRef<M, LineString> -> AggregateExpr<MultiPolygon>` | `ST_Polygonize(<col>::geometry)::geography` | LineString |
+
+#### Per-group centroid + count + IDs
+
+The `cluster_sightings` example demo combines DBSCAN clustering with
+per-cluster centroid + count + ID rollup in one typed chain — see
+`examples/elephant-tracker/src/demos/cluster_sightings.rs` for the
+full retrofit.
+
+```rust
+let rows: Vec<(ClusterId, (i64, GeoPoint, Vec<HeerId>))> = Sighting::objects()
+    .cluster_by_proximity(
+        |f| f.location(),
+        ClusterRadius::meters(50_000.0).min_points(3),
+    )
+    .annotate(|f| (
+        f.id().count_star(),
+        f.location().centroid(),
+        f.id().array_agg().order_by(f.id().asc()),
+    ))
+    .fetch_all(&mut ctx).await?;
+```
+
+#### Vector-tile / Geobuf output
+
+`ST_AsMVT` and `ST_AsGeobuf` are row-shape aggregates (they consume
+the entire annotate tuple, not a single column). They don't fit the
+column-aggregate `AggOp` surface; tracked in
+[#92](https://github.com/TarunvirBains/djogi/issues/92) as Cluster F
+work — same v0.1.0 timeline, separate execution unit because the IR
+shape differs.
 
 ---
 
