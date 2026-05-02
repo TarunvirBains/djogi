@@ -203,6 +203,36 @@ pub(crate) enum ExprNode {
         /// `STRING_AGG(DISTINCT ...)` with no ORDER BY but accepts the
         /// combination with one.
         order_by: Vec<crate::query::order::OrderExpr>,
+        /// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set
+        /// aggregates ([`AggOp::PercentileCont`] / [`AggOp::PercentileDisc`]
+        /// / [`AggOp::Mode`]) and (eventually) hypothetical-set
+        /// aggregates. Empty for every other aggregate.
+        ///
+        /// Distinct from the per-aggregate [`order_by`](Self::Aggregate::order_by)
+        /// slot — that one renders ORDER BY *inside* the aggregate's
+        /// parens (`AGG(arg ORDER BY ...)` for value aggregates like
+        /// `array_agg`). This slot renders ORDER BY *after* the parens
+        /// in a `WITHIN GROUP` clause:
+        ///
+        /// ```sql
+        /// PERCENTILE_CONT($1) WITHIN GROUP (ORDER BY response_ms)
+        /// ```
+        ///
+        /// For ordered-set aggregates this slot is **mandatory** — the
+        /// fetch-time legality check in
+        /// [`super::sql::check_aggregate_legality`] rejects an empty
+        /// `within_group_order_by` for `PercentileCont` / `PercentileDisc`
+        /// / `Mode`. The typed builder methods on `FieldRef` populate it
+        /// at construction time from the receiver column (default ASC);
+        /// the [`super::aggregate::AggregateExpr::within_group_order_by`]
+        /// modifier overrides it for the rare case where the target
+        /// should differ from the constructing column or the direction
+        /// should be DESC.
+        ///
+        /// Cluster E T7 introduced this slot. Future T8 (hypothetical-
+        /// set aggregates `RANK(args) WITHIN GROUP (ORDER BY ...)`)
+        /// reuses it without further IR change.
+        within_group_order_by: Vec<crate::query::order::OrderExpr>,
     },
 
     /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE
@@ -646,6 +676,37 @@ pub(crate) enum AggOp {
     /// follow-up task because it needs an N-arg slot and a typed bitmask
     /// return type.
     Grouping,
+    /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` — continuous
+    /// percentile (interpolating between adjacent values when the
+    /// requested fraction falls between two rows). Returns
+    /// `DOUBLE PRECISION` (cast to `f64` at the typed surface).
+    ///
+    /// Ordered-set aggregate — the fraction `p` lives in the `arg` slot
+    /// as a literal `f64`; the column being percentiled lives in the
+    /// `within_group_order_by` slot. WITHIN GROUP is mandatory; the
+    /// fetch-time legality check rejects an empty
+    /// `within_group_order_by` for this variant. DISTINCT and the
+    /// per-aggregate `order_by` slot are also rejected (Postgres
+    /// disallows them on ordered-set aggregates).
+    PercentileCont,
+    /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` — discrete
+    /// percentile (returns the actual value at the percentile cut, no
+    /// interpolation). Return type matches the column type — the typed
+    /// `AggregateExpr<V>` carries `V = column type`.
+    ///
+    /// Same shape as [`AggOp::PercentileCont`] otherwise — fraction in
+    /// `arg`, column in `within_group_order_by`.
+    PercentileDisc,
+    /// `MODE() WITHIN GROUP (ORDER BY col)` — most common value in the
+    /// group. Returns the column type (typed `AggregateExpr<V>` with
+    /// `V = column type`).
+    ///
+    /// `MODE()` takes no function arguments; the `arg` slot stores a
+    /// sentinel `Field { column: \"\" }` placeholder which the emitter
+    /// ignores on this branch (parallel to how `CountStar` ignores
+    /// `arg`). The column being mode-aggregated lives in
+    /// `within_group_order_by`.
+    Mode,
     /// `ST_Centroid(ST_Collect(<col>))::geography` — per-group centroid
     /// of point geometries. Fused two-call shape (the emitter wraps
     /// `ST_Collect` inside `ST_Centroid` and casts back to geography).

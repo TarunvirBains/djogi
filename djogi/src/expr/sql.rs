@@ -80,6 +80,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             filter,
             order_by,
             window,
+            within_group_order_by,
             ..
         } => {
             // ── DISTINCT-shape rejections ─────────────────────────────
@@ -164,6 +165,51 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                         reason: "GROUPING(col) does not accept OVER (...) — it is only \
                                  valid in SELECT or HAVING under a GROUP BY ROLLUP / CUBE / \
                                  GROUPING SETS clause, not as a window function",
+                    });
+                }
+            }
+
+            // ── Ordered-set aggregate legality (Cluster E T7) ─────────
+            //
+            // PERCENTILE_CONT / PERCENTILE_DISC / MODE require a non-
+            // empty WITHIN GROUP target. Postgres rejects DISTINCT and
+            // the in-paren ORDER BY modifier on these aggregates. FILTER
+            // and OVER are valid and pass through unchanged.
+            if matches!(
+                op,
+                AggOp::PercentileCont | AggOp::PercentileDisc | AggOp::Mode
+            ) {
+                let op_label = match op {
+                    AggOp::PercentileCont => "PERCENTILE_CONT",
+                    AggOp::PercentileDisc => "PERCENTILE_DISC",
+                    AggOp::Mode => "MODE",
+                    _ => unreachable!(),
+                };
+                if within_group_order_by.is_empty() {
+                    return Err(crate::DjogiError::UnsupportedAggregate {
+                        op: op_label,
+                        reason: "ordered-set aggregate requires a WITHIN GROUP (ORDER BY ...) \
+                             target — the typed builders on FieldRef populate this slot \
+                             at construction time; if you reached this error you have \
+                             constructed the aggregate node directly without going through \
+                             the typed surface",
+                    });
+                }
+                if *distinct {
+                    return Err(crate::DjogiError::UnsupportedAggregate {
+                        op: op_label,
+                        reason: "ordered-set aggregates do not accept DISTINCT — Postgres rejects \
+                             this combination as ambiguous (the aggregate operates over the \
+                             whole ordered set, not deduped values)",
+                    });
+                }
+                if !order_by.is_empty() {
+                    return Err(crate::DjogiError::UnsupportedAggregate {
+                        op: op_label,
+                        reason: "ordered-set aggregates do not accept the in-paren ORDER BY \
+                             modifier (the .order_by(...) chain) — use \
+                             .within_group_order_by(...) to override the WITHIN GROUP target \
+                             instead, or chain ORDER BY at the QuerySet level",
                     });
                 }
             }
@@ -270,6 +316,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             distinct,
             window: _,
             order_by,
+            within_group_order_by,
         } => {
             // Bare aggregate emission — keyword, optional DISTINCT, argument,
             // closing paren, optional FILTER clause. The `cast_to` field is
@@ -514,6 +561,32 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 // separator) matches every other unary aggregate, so
                 // routes through `emit_unary_agg`.
                 AggOp::Grouping => emit_unary_agg(acc, "GROUPING(", *distinct, arg, order_by),
+                // Ordered-set aggregates (Cluster E T7) — emit
+                // `OP(arg) WITHIN GROUP (ORDER BY target)`. The arg
+                // slot carries the function-call literal (percentile
+                // fraction); the target lives in within_group_order_by.
+                AggOp::PercentileCont => {
+                    acc.push_sql("PERCENTILE_CONT(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(") WITHIN GROUP (ORDER BY ");
+                    emit_within_group_target(acc, within_group_order_by);
+                    acc.push_sql(")");
+                }
+                AggOp::PercentileDisc => {
+                    acc.push_sql("PERCENTILE_DISC(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(") WITHIN GROUP (ORDER BY ");
+                    emit_within_group_target(acc, within_group_order_by);
+                    acc.push_sql(")");
+                }
+                AggOp::Mode => {
+                    // MODE() takes no function arguments — the arg slot
+                    // is a sentinel placeholder that the emitter ignores
+                    // on this branch (parallel to CountStar).
+                    acc.push_sql("MODE() WITHIN GROUP (ORDER BY ");
+                    emit_within_group_target(acc, within_group_order_by);
+                    acc.push_sql(")");
+                }
                 // PostGIS spatial aggregates — fused two-call shape with
                 // inner `::geometry` cast on the column and outer
                 // `::geography` cast on the result. The DISTINCT keyword,
@@ -980,6 +1053,26 @@ fn push_aggregate_order_by(acc: &mut SqlAccumulator, order_by: &[crate::query::o
             acc.push_sql(", ");
         }
         o.emit(acc, None);
+    }
+}
+
+/// Emit the `<ord1>, <ord2>, ...` body of a `WITHIN GROUP (ORDER BY ...)`
+/// clause for ordered-set / hypothetical-set aggregates. Cluster E T7
+/// added this for `PERCENTILE_CONT` / `PERCENTILE_DISC` / `MODE`; T8
+/// hypothetical-set aggregates reuse it.
+///
+/// The caller writes `WITHIN GROUP (ORDER BY ` and the closing `)`
+/// around this helper's output, identical to how
+/// [`push_aggregate_order_by`] is sandwiched inside the aggregate
+/// parens. The legality check in [`check_aggregate_legality`] guarantees
+/// `targets` is non-empty before this is reached for ordered-set
+/// aggregates, so an empty list at this site is unreachable in practice.
+fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::order::OrderExpr]) {
+    for (i, t) in targets.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        t.emit(acc, None);
     }
 }
 

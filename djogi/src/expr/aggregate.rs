@@ -122,6 +122,7 @@ impl<Out> AggregateExpr<Out> {
             distinct: false,
             window: None,
             order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
         })
     }
 
@@ -152,6 +153,38 @@ impl<Out> AggregateExpr<Out> {
             distinct: false,
             window: None,
             order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
+        })
+    }
+
+    /// Build an `AggregateExpr<Out>` for the ordered-set
+    /// `AGG(args) WITHIN GROUP (ORDER BY target)` shape.
+    ///
+    /// Powers `PercentileCont` / `PercentileDisc` / `Mode`. The `arg`
+    /// slot carries the function-call literal (the percentile fraction
+    /// for `PercentileCont` / `PercentileDisc`, or a sentinel
+    /// `Field { column: "" }` for `Mode` which takes no args). The
+    /// `target` ORDER BY column is populated from the receiver
+    /// `FieldRef` at construction time and lives in the
+    /// `within_group_order_by` slot.
+    ///
+    /// Cluster E T7 introduced this constructor.
+    pub(crate) fn ordered_set(
+        op: AggOp,
+        arg: ExprNode,
+        target: crate::query::order::OrderExpr,
+        cast_to: Option<&'static str>,
+    ) -> Self {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op,
+            arg: Box::new(arg),
+            arg2: None,
+            filter: None,
+            cast_to,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+            within_group_order_by: vec![target],
         })
     }
 
@@ -312,6 +345,45 @@ impl<Out> AggregateExpr<Out> {
     pub fn order_by(mut self, ord: crate::query::order::OrderExpr) -> Self {
         if let ExprNode::Aggregate { order_by, .. } = &mut self.node {
             order_by.push(ord);
+        }
+        self
+    }
+
+    /// Override the `WITHIN GROUP (ORDER BY ...)` target on an
+    /// ordered-set aggregate (`PERCENTILE_CONT` / `PERCENTILE_DISC` /
+    /// `MODE`). Replaces any existing target.
+    ///
+    /// The typed builders on `FieldRef` populate this slot at
+    /// construction time with the receiver column in ASC order — so
+    /// `f.response_ms().percentile_cont(0.5)` already emits
+    /// `PERCENTILE_CONT($1) WITHIN GROUP (ORDER BY response_ms)`. This
+    /// modifier is for the rare case where the target should differ
+    /// from the constructing column or the direction should be DESC:
+    ///
+    /// ```ignore
+    /// // Override default ASC to DESC — yields the *highest* p95
+    /// // when the data should be ranked top-down.
+    /// f.score().percentile_cont(0.95).within_group_order_by(f.score().desc())
+    /// ```
+    ///
+    /// Calling on a non-ordered-set aggregate (`array_agg`, `sum`, etc.)
+    /// is accepted at this method level but rejected at fetch time —
+    /// `WITHIN GROUP` is invalid syntax for value aggregates and the
+    /// legality check catches it. The intended call sites are the three
+    /// ordered-set methods on `FieldRef`.
+    ///
+    /// Multi-key WITHIN GROUP (`WITHIN GROUP (ORDER BY a, b, c)`) is
+    /// load-bearing for the upcoming T8 hypothetical-set aggregates;
+    /// today's ordered-set surface uses a single key, so this method
+    /// replaces (not appends) for clarity.
+    #[must_use = "AggregateExpr is a value — dropping discards the WITHIN GROUP target"]
+    pub fn within_group_order_by(mut self, target: crate::query::order::OrderExpr) -> Self {
+        if let ExprNode::Aggregate {
+            within_group_order_by,
+            ..
+        } = &mut self.node
+        {
+            *within_group_order_by = vec![target];
         }
         self
     }
@@ -1018,6 +1090,151 @@ impl<M: Model, V> FieldRef<M, V> {
     }
 }
 
+// ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — ordered-set aggregates ────────
+//
+// Cluster E T7. These are Postgres ordered-set aggregates: the function
+// takes a literal value (the percentile fraction; or empty for `mode()`)
+// and pairs it with a mandatory `WITHIN GROUP (ORDER BY column)` clause
+// that names the column being percentiled / mode-aggregated.
+//
+// The IR layout: the `arg` slot stores the function-call literal; the
+// `within_group_order_by` slot stores the column being aggregated. The
+// emitter renders `OP(arg) WITHIN GROUP (ORDER BY target)`.
+//
+// Postgres rules these aggregates honour:
+// - DISTINCT is invalid (rejected by `check_aggregate_legality`)
+// - The in-paren `order_by` modifier (T1) is invalid (rejected)
+// - WITHIN GROUP is mandatory (rejected if empty)
+// - FILTER (WHERE ...) is valid
+// - OVER (...) is valid (windowed ordered-set aggregates exist)
+//
+// `percentile_cont` is `Numeric`-gated because Postgres returns
+// `DOUBLE PRECISION` for numeric inputs and `INTERVAL` for interval
+// inputs; the typed surface pins `Out = f64` and emits a
+// `DOUBLE PRECISION` cast. `percentile_disc` and `mode` return the
+// column type — the typed surface carries `Out = V` and gates on
+// `IntoFilterValue` (the same bound as `min` / `max`).
+
+impl<M: Model, V: crate::expr::arithmetic::Numeric> FieldRef<M, V> {
+    /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY <col>)` — continuous
+    /// percentile with linear interpolation between adjacent values.
+    /// Returns `AggregateExpr<f64>`.
+    ///
+    /// `p` must be in `[0.0, 1.0]`. Postgres rejects out-of-range values
+    /// at runtime with a typed error; Djogi binds `p` as a literal so
+    /// the emitted SQL carries it in the function-call arg slot.
+    ///
+    /// The receiver column becomes the `WITHIN GROUP (ORDER BY ...)`
+    /// target with default ASC direction. Override via
+    /// [`AggregateExpr::within_group_order_by`] if a different column or
+    /// DESC direction is needed.
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — the non-`Option` typed surface
+    /// treats that as a runtime error. Wrap `Out = Option<f64>` at the
+    /// call site for NULL-safe handling.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Median request latency per service
+    /// let medians: Vec<(ServiceId, f64)> = Request::objects()
+    ///     .group_by(|f| f.service_id())
+    ///     .annotate(|f| f.latency_ms().percentile_cont(0.5))
+    ///     .fetch_all(&mut ctx).await?;
+    ///
+    /// // p95 latency
+    /// let p95: f64 = Request::objects()
+    ///     .filter(|r| r.day().eq(today))
+    ///     .aggregate(|r| r.latency_ms().percentile_cont(0.95))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn percentile_cont(self, p: f64) -> AggregateExpr<f64> {
+        let target = self.asc();
+        AggregateExpr::ordered_set(
+            AggOp::PercentileCont,
+            ExprNode::Literal(crate::query::condition::FilterValue::F64(p)),
+            target,
+            Some("DOUBLE PRECISION"),
+        )
+    }
+}
+
+impl<M: Model, V> FieldRef<M, V>
+where
+    V: crate::query::field::IntoFilterValue,
+{
+    /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY <col>)` — discrete
+    /// percentile (no interpolation; returns the actual value at the
+    /// percentile cut). Returns `AggregateExpr<V>` — the column's own
+    /// type, since Postgres returns the actual data point.
+    ///
+    /// Use when the column type can't be linearly interpolated
+    /// (categorical / ordinal / non-numeric data) or when adopters need
+    /// the actual row value rather than an interpolated approximation.
+    ///
+    /// Same WITHIN GROUP target population as
+    /// [`FieldRef::percentile_cont`] — receiver column at default ASC.
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Discrete median order amount (returns an actual order's
+    /// // amount, not an interpolated value).
+    /// let median_amount: i64 = Order::objects()
+    ///     .aggregate(|f| f.amount().percentile_disc(0.5))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn percentile_disc(self, p: f64) -> AggregateExpr<V> {
+        let target = self.asc();
+        AggregateExpr::ordered_set(
+            AggOp::PercentileDisc,
+            ExprNode::Literal(crate::query::condition::FilterValue::F64(p)),
+            target,
+            None,
+        )
+    }
+
+    /// `MODE() WITHIN GROUP (ORDER BY <col>)` — most common value in the
+    /// group. Returns `AggregateExpr<V>` — the column's own type.
+    ///
+    /// Ties: Postgres returns the first value encountered in the
+    /// `WITHIN GROUP (ORDER BY ...)` ordering. Default ASC means ties
+    /// resolve to the smaller value; flip via
+    /// [`AggregateExpr::within_group_order_by`] passing
+    /// `self.desc()` to bias toward the larger.
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups (or all-NULL inputs) produce SQL NULL — `MODE()`
+    /// over NULLs has no defined value.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Most common payment method per region
+    /// let popular: Vec<(RegionId, String)> = Order::objects()
+    ///     .group_by(|f| f.region_id())
+    ///     .annotate(|f| f.payment_method().mode())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn mode(self) -> AggregateExpr<V> {
+        // Mode takes no function arguments — the arg slot stores a
+        // sentinel placeholder (parallel to CountStar). The emitter
+        // renders `MODE()` and ignores arg on this branch.
+        let target = self.asc();
+        AggregateExpr::ordered_set(AggOp::Mode, ExprNode::Field { column: "" }, target, None)
+    }
+}
+
 // ── STRING_AGG ──────────────────────────────────────────────────────────────
 //
 // Gated on `V = String` — string concatenation is only meaningful on TEXT
@@ -1056,6 +1273,7 @@ impl<M: Model> FieldRef<M, String> {
             distinct: false,
             window: None,
             order_by: Vec::new(),
+            within_group_order_by: Vec::new(),
         })
     }
 }
@@ -2541,5 +2759,167 @@ mod tests {
         let _: AggregateExpr<i16> = f16.bit_and();
         let _: AggregateExpr<i32> = f32.bit_or();
         let _: AggregateExpr<i64> = f64.bit_xor();
+    }
+
+    // ── PERCENTILE_CONT / PERCENTILE_DISC / MODE — T7 ordered-set ────────────
+
+    #[test]
+    fn percentile_cont_emits_within_group() {
+        // Bare emission shape: PERCENTILE_CONT($1) WITHIN GROUP (ORDER BY ms ASC).
+        let f: FieldRef<Txn, f64> = FieldRef::new("ms");
+        let agg = f.percentile_cont(0.5);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("PERCENTILE_CONT($")
+                && sql.contains(") WITHIN GROUP (ORDER BY ms ASC)"),
+            "expected PERCENTILE_CONT($n) WITHIN GROUP (ORDER BY ms ASC), got: {sql}"
+        );
+    }
+
+    #[test]
+    fn percentile_disc_emits_within_group() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.percentile_disc(0.95);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("PERCENTILE_DISC($")
+                && sql.contains(") WITHIN GROUP (ORDER BY amount ASC)"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn mode_emits_within_group_no_args() {
+        // MODE() takes no function args — emits `MODE()` with empty parens.
+        let f: FieldRef<Txn, String> = FieldRef::new("category");
+        let agg = f.mode();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "MODE() WITHIN GROUP (ORDER BY category ASC)");
+    }
+
+    #[test]
+    fn percentile_cont_returns_f64_regardless_of_column_type() {
+        // PERCENTILE_CONT pins Out = f64 with DOUBLE PRECISION cast — same
+        // approach as avg(). Compile-time check via type ascription.
+        let f_i16: FieldRef<Txn, i16> = FieldRef::new("a");
+        let f_i64: FieldRef<Txn, i64> = FieldRef::new("b");
+        let f_f64: FieldRef<Txn, f64> = FieldRef::new("c");
+        let _: AggregateExpr<f64> = f_i16.percentile_cont(0.5);
+        let _: AggregateExpr<f64> = f_i64.percentile_cont(0.5);
+        let _: AggregateExpr<f64> = f_f64.percentile_cont(0.5);
+    }
+
+    #[test]
+    fn percentile_disc_returns_column_type() {
+        // PERCENTILE_DISC pins Out = V (the column type).
+        let f_i64: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let f_str: FieldRef<Txn, String> = FieldRef::new("category");
+        let _: AggregateExpr<i64> = f_i64.percentile_disc(0.5);
+        let _: AggregateExpr<String> = f_str.percentile_disc(0.5);
+    }
+
+    #[test]
+    fn mode_returns_column_type() {
+        let f_i64: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let f_str: FieldRef<Txn, String> = FieldRef::new("category");
+        let _: AggregateExpr<i64> = f_i64.mode();
+        let _: AggregateExpr<String> = f_str.mode();
+    }
+
+    #[test]
+    fn within_group_order_by_overrides_default_target() {
+        // .within_group_order_by(other.desc()) replaces the default
+        // ASC target the typed builder set on construction.
+        let f: FieldRef<Txn, f64> = FieldRef::new("score");
+        let other: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.percentile_cont(0.95).within_group_order_by(other.desc());
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains(") WITHIN GROUP (ORDER BY rank DESC)"),
+            "expected DESC override on different column, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn percentile_cont_with_distinct_rejected_at_fetch() {
+        // DISTINCT is invalid on ordered-set aggregates per Postgres.
+        let f: FieldRef<Txn, f64> = FieldRef::new("ms");
+        let agg = f.percentile_cont(0.5).distinct();
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected DISTINCT rejection on PERCENTILE_CONT"
+        );
+    }
+
+    #[test]
+    fn percentile_disc_with_in_paren_order_by_rejected_at_fetch() {
+        // The T1 in-paren ORDER BY modifier is invalid on ordered-set
+        // aggregates — they use WITHIN GROUP, not in-paren ORDER BY.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let other: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.percentile_disc(0.5).order_by(other.asc());
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected in-paren ORDER BY rejection on PERCENTILE_DISC"
+        );
+    }
+
+    #[test]
+    fn mode_with_filter_accepted_at_fetch() {
+        // FILTER (WHERE ...) is valid on ordered-set aggregates.
+        let f: FieldRef<Txn, String> = FieldRef::new("category");
+        let g: FieldRef<Txn, i64> = FieldRef::new("active");
+        let agg = f.mode().filter(g.as_expr().gt(Expr::literal(0i64)));
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_ok(),
+            "MODE with FILTER should pass legality, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn percentile_cont_with_filter_emits_filter_after_within_group() {
+        // FILTER attaches after the WITHIN GROUP clause — outside the
+        // aggregate's outer expression. Same emission ordering as for
+        // value aggregates.
+        let f: FieldRef<Txn, f64> = FieldRef::new("ms");
+        let g: FieldRef<Txn, i64> = FieldRef::new("active");
+        let agg = f
+            .percentile_cont(0.5)
+            .filter(g.as_expr().gt(Expr::literal(0i64)));
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains(") WITHIN GROUP (ORDER BY ms ASC) FILTER (WHERE active > "),
+            "expected WITHIN GROUP then FILTER, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn percentile_cont_within_group_target_pins_via_default_asc() {
+        // Verify the constructor populates within_group_order_by with
+        // the receiver column at default ASC — the typed builder
+        // contract.
+        let f: FieldRef<Txn, f64> = FieldRef::new("ms");
+        let agg = f.percentile_cont(0.5);
+        if let ExprNode::Aggregate {
+            within_group_order_by,
+            ..
+        } = &agg.node
+        {
+            assert_eq!(within_group_order_by.len(), 1);
+        } else {
+            panic!("expected Aggregate node");
+        }
     }
 }
