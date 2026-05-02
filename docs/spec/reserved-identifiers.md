@@ -39,6 +39,7 @@ The table groups identifiers by which compilation surface emits them. Each row l
 |---|---|---|---|
 | `__djogi_agg_N` (N ∈ 0..3) | Column alias inside annotate-tuple SELECT | [`djogi/src/query/annotate.rs`](../../djogi/src/query/annotate.rs) | Slot aliases for `QuerySet::annotate(...)` aggregate tuples. The row decoder reads each slot by alias to keep positional decode stable across user `SELECT`-list reorderings. |
 | `__djogi_edge_label` | Column alias inside lateral-fan-out subquery | [`djogi/src/query/recursive.rs`](../../djogi/src/query/recursive.rs) | Synthetic text column tagging each lateral alternative with the self-FK edge name. The outer SELECT splices it into the `path` array so callers can distinguish `["mother_id", "father_id"]` from `["father_id", "mother_id"]`. |
+| `__djogi_search_seq` | Column alias on the recursive CTE's `SEARCH BREADTH FIRST BY` / `SEARCH DEPTH FIRST BY` clause | [`djogi/src/query/recursive.rs`](../../djogi/src/query/recursive.rs) | The synthetic sequence column Postgres assigns when `with_search_breadth_first_by` / `with_search_depth_first_by` is used. The outer SELECT's auto-prepended `ORDER BY __djogi_search_seq` sorts the result set into BFS / DFS order. Internal — never returned to the caller. |
 | `__djogi_parent_id` | Column alias inside prefetch SELECT | [`djogi/src/relation/prefetch.rs`](../../djogi/src/relation/prefetch.rs) | The parent-id column the prefetch decoder reads to stitch eager-loaded relations back to their owners. Aliased on the inner `SELECT` so it cannot collide with a user column literally named `parent_id`. |
 
 ### Macro-emitted identifiers (in user crate scope)
@@ -61,12 +62,12 @@ The framework rejects user-supplied identifiers in this namespace at the surface
 
 | Surface | Enforcement | File |
 |---|---|---|
-| `WindowExpr::alias(&str)` | `assert!(!alias.starts_with("__djogi_"))` | [`djogi/src/expr/window_fn.rs:326`](../../djogi/src/expr/window_fn.rs) |
-| `QuerySet::annotate(...)` aggregate alias collisions | `DjogiError::AnnotationAliasCollision` rejects user SELECT aliases starting with `__djogi_agg_` (Phase 6.5 decision) | [`djogi/src/query/annotate.rs`](../../djogi/src/query/annotate.rs) |
+| `WindowExpr::alias(&str)` | `assert!(!alias.starts_with("__djogi_"))` | [`djogi/src/expr/window_fn.rs`](../../djogi/src/expr/window_fn.rs) |
+| Grouped-fetch SELECT-list collision detector | `assert_no_alias_collision(sql)` returns `DjogiError::AliasCollision { alias }` when the parsed SELECT list contains two columns with the same alias. The check is generic (any duplicate alias is rejected), but it indirectly enforces the `__djogi_*` rule for `__djogi_agg_N`: when the framework emits `<agg> AS __djogi_agg_0`, a user SELECT alias of `__djogi_agg_0` produces a duplicate that the detector catches. (Phase 6.5 — aggregate alias discipline.) | [`djogi/src/query/sql.rs`](../../djogi/src/query/sql.rs) |
 
 ## Coverage gap (v0.1.0)
 
-The central identifier validator [`crate::ident::check_plain_ident`](../../djogi/src/ident.rs) does **not** check the `__djogi_` prefix. The two surfaces above are the only places that enforce the rule. Other call sites that route user-supplied identifiers through `check_plain_ident` (e.g. `ClosureModel::source_column()` / `ancestor_column()` / `depth_column()` / `path_count_column()` in `closure.rs`, and FTS dictionary / source-column names in `fts.rs`) currently let `__djogi_*` through.
+The central identifier validator [`crate::ident::check_plain_ident`](../../djogi/src/ident.rs) does **not** check the `__djogi_` prefix. The two surfaces above are the only places that enforce the rule. Other call sites that route user-supplied identifiers through `check_plain_ident` (e.g. `ClosureModel::source_column()` / `ancestor_column()` / `depth_column()` / `path_count_column()` in `closure.rs`, FTS dictionary / source-column names in both `djogi/src/fts.rs` and the macro-time validator in `djogi-macros/src/model/attrs.rs`, outbox topic names in `djogi/src/outbox/worker.rs`) currently let `__djogi_*` through.
 
 In practice this is theoretical — those surfaces emit identifiers in scopes that don't share a name-resolution context with the framework's recursive CTE columns or derived-table aliases. But the rule should be uniform; tracked as **GH issue #82** for follow-up.
 

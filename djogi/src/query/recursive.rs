@@ -61,11 +61,11 @@
 //!     JOIN __djogi_tree parent ON child.<edge_col> = parent.id
 //!     [WHERE <user_filter>]
 //!     [AND parent.depth < $n]
-//! ) [SEARCH BREADTH FIRST BY <col> SET _djogi_search_seq]
+//! ) [SEARCH BREADTH FIRST BY <col> SET __djogi_search_seq]
 //!   CYCLE id SET is_cycle USING cycle_path
 //! SELECT <cols...> FROM __djogi_tree
 //! WHERE NOT is_cycle
-//! [ORDER BY <_djogi_search_seq,> <user_order>]
+//! [ORDER BY <__djogi_search_seq,> <user_order>]
 //! ```
 //!
 //! For `tree_ancestors` the join condition flips to
@@ -100,11 +100,11 @@
 //!   `cycle_path` (not `path`) so it does not collide with our user-
 //!   visible `path: text[]` column that records the edge-name
 //!   sequence from root to the current node.
-//! - **`SEARCH ... BY <col> SET _djogi_search_seq`** emits only when
+//! - **`SEARCH ... BY <col> SET __djogi_search_seq`** emits only when
 //!   the caller invoked
 //!   [`search_breadth_first_by`](RecursiveQuerySet::search_breadth_first_by) /
 //!   [`search_depth_first_by`](RecursiveQuerySet::search_depth_first_by).
-//!   The internal sequence column `_djogi_search_seq` is macro-internal
+//!   The internal sequence column `__djogi_search_seq` is macro-internal
 //!   (`_djogi_*` prefix is forbidden as a user column name by the
 //!   identifier validator) so it cannot collide with model fields. It is
 //!   never projected into the outer SELECT, but the outer `ORDER BY`
@@ -164,12 +164,13 @@ use std::marker::PhantomData;
 /// `SEARCH DEPTH FIRST BY` clauses populate. Postgres assigns this
 /// column on the recursive CTE; the outer `ORDER BY` then sorts on
 /// it to surface BFS / DFS order to the caller. Macro-internal — the
-/// `_djogi_` prefix is forbidden as a user column name by the macro
-/// identifier validators, so the constant is grep-able and shared
-/// between the SEARCH-clause emit site and the outer ORDER BY emit
-/// site (a typo at either would otherwise produce a `42703 column
-/// undefined` Postgres error at runtime, not at compile time).
-const SEARCH_SEQ_COL: &str = "_djogi_search_seq";
+/// `__djogi_` prefix is reserved by the framework (see
+/// `docs/spec/reserved-identifiers.md`) so user columns cannot
+/// collide. The constant is grep-able and shared between the
+/// SEARCH-clause emit site and the outer ORDER BY emit site (a typo
+/// at either would otherwise produce a `42703 column undefined`
+/// Postgres error at runtime, not at compile time).
+const SEARCH_SEQ_COL: &str = "__djogi_search_seq";
 
 /// Direction of the recursive walk.
 ///
@@ -197,9 +198,9 @@ pub enum RecursiveDirection {
 /// is documented behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SearchMode {
-    /// `SEARCH BREADTH FIRST BY <col> SET _djogi_search_seq`.
+    /// `SEARCH BREADTH FIRST BY <col> SET __djogi_search_seq`.
     Breadth(&'static str),
-    /// `SEARCH DEPTH FIRST BY <col> SET _djogi_search_seq`.
+    /// `SEARCH DEPTH FIRST BY <col> SET __djogi_search_seq`.
     Depth(&'static str),
 }
 
@@ -264,7 +265,7 @@ pub struct RecursiveQuerySet<T: Model> {
     pub(crate) condition: Condition,
     /// Outer `ORDER BY` clauses — applied to the materialised CTE,
     /// never inside it. SEARCH BFS/DFS, when set, prepends an
-    /// implicit `_djogi_search_seq` term so the user's ordering
+    /// implicit `__djogi_search_seq` term so the user's ordering
     /// becomes a tiebreaker after the search-order key.
     pub(crate) ordering: Vec<OrderExpr>,
     /// Optional recursive-depth cap. `None` means unbounded — only the
@@ -469,11 +470,11 @@ impl<T: Model> RecursiveQuerySet<T> {
         self
     }
 
-    /// Emit `SEARCH BREADTH FIRST BY <col> SET _djogi_search_seq` on
+    /// Emit `SEARCH BREADTH FIRST BY <col> SET __djogi_search_seq` on
     /// the CTE.
     ///
     /// Postgres annotates each recursive row with a sequence value the
-    /// outer SELECT's `ORDER BY _djogi_search_seq` then sorts by; this
+    /// outer SELECT's `ORDER BY __djogi_search_seq` then sorts by; this
     /// terminal automatically prepends that ORDER BY (the user's
     /// `order_by` clauses, if any, append after as tiebreakers) so
     /// callers see BFS-traversal order without writing the order term
@@ -483,21 +484,21 @@ impl<T: Model> RecursiveQuerySet<T> {
     /// last call wins. Type-state would be heavy for v0.1.0; mutual
     /// exclusion is documented behaviour.
     ///
-    /// `_djogi_search_seq` is macro-internal — the underscore prefix
-    /// blocks identifier validation from accepting it as a user column
-    /// name, so a model field cannot collide with the synthetic search
-    /// column.
+    /// `__djogi_search_seq` is macro-internal — the `__djogi_` prefix
+    /// is framework-reserved (see
+    /// `docs/spec/reserved-identifiers.md`), so a model field cannot
+    /// collide with the synthetic search column.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn search_breadth_first_by<V>(mut self, field: FieldRef<T, V>) -> Self {
         self.search_mode = Some(SearchMode::Breadth(field.column()));
         self
     }
 
-    /// Emit `SEARCH DEPTH FIRST BY <col> SET _djogi_search_seq` on
+    /// Emit `SEARCH DEPTH FIRST BY <col> SET __djogi_search_seq` on
     /// the CTE — DFS sibling of
     /// [`search_breadth_first_by`](Self::search_breadth_first_by).
     ///
-    /// Same auto-prepended outer `ORDER BY _djogi_search_seq`,
+    /// Same auto-prepended outer `ORDER BY __djogi_search_seq`,
     /// same mutual-exclusion rule.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn search_depth_first_by<V>(mut self, field: FieldRef<T, V>) -> Self {
@@ -1296,8 +1297,8 @@ mod tests {
             "depth/path columns must not leak into the plain Rows projection: {sql}"
         );
         assert!(
-            !sql.contains("_djogi_search_seq FROM __djogi_tree"),
-            "_djogi_search_seq must not leak into outer projection: {sql}"
+            !sql.contains("__djogi_search_seq FROM __djogi_tree"),
+            "__djogi_search_seq must not leak into outer projection: {sql}"
         );
     }
 
@@ -1335,19 +1336,19 @@ mod tests {
     #[test]
     fn search_breadth_first_emits_clause_and_orders_outer() {
         // SEARCH BFS emits the `SEARCH BREADTH FIRST BY <col> SET
-        // _djogi_search_seq` clause AND prepends `ORDER BY
-        // _djogi_search_seq` on the outer SELECT so callers see BFS
+        // __djogi_search_seq` clause AND prepends `ORDER BY
+        // __djogi_search_seq` on the outer SELECT so callers see BFS
         // order without an explicit `order_by`.
         let qs = root();
         let qs = qs.search_breadth_first_by(FieldRef::<MiniTree, String>::new("label"));
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
         assert!(
-            sql.contains("SEARCH BREADTH FIRST BY label SET _djogi_search_seq"),
+            sql.contains("SEARCH BREADTH FIRST BY label SET __djogi_search_seq"),
             "BFS clause must be emitted on the CTE: {sql}"
         );
         assert!(
-            sql.contains("ORDER BY _djogi_search_seq"),
+            sql.contains("ORDER BY __djogi_search_seq"),
             "outer SELECT must order by the search seq column: {sql}"
         );
     }
@@ -1358,7 +1359,7 @@ mod tests {
         let acc = build_recursive_select(qs);
         let sql = acc.sql();
         assert!(
-            sql.contains("SEARCH DEPTH FIRST BY label SET _djogi_search_seq"),
+            sql.contains("SEARCH DEPTH FIRST BY label SET __djogi_search_seq"),
             "DFS clause must be emitted on the CTE: {sql}"
         );
     }
