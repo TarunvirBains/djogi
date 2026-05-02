@@ -1494,6 +1494,167 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
             None,
         )
     }
+
+    /// `ST_Extent(<col>::geometry)::geometry::geography` — per-group 2D
+    /// bounding-box aggregate, returned as a four-vertex Polygon.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_Extent(<col>::geometry)::geometry::geography
+    /// ```
+    ///
+    /// `ST_Extent` returns Postgres' `box2d` type (a flat
+    /// `(minx, miny, maxx, maxy)` quadruple) which has no direct
+    /// `geography` cast. The two-step `::geometry::geography` cast chain
+    /// projects the box into a four-vertex rectangular Polygon and moves
+    /// it onto the geography substrate so the typed surface decodes
+    /// into [`crate::geo::Polygon`].
+    ///
+    /// # Composition
+    ///
+    /// Use as the bounding-box per group:
+    ///
+    /// ```ignore
+    /// let bboxes: Vec<(i64, Polygon)> = Sighting::objects()
+    ///     .group_by(|f| f.cluster_id())
+    ///     .annotate(|f| f.location().extent())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — wrap `Out = Option<Polygon>` at
+    /// the call site for datasets with known empty groups.
+    #[cfg(feature = "spatial")]
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn extent(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialExtent,
+            self.column(),
+            None,
+        )
+    }
+
+    /// `ST_3DExtent(<col>::geometry)::geometry::geography` — per-group
+    /// 3D bounding-box aggregate, projected to its 2D footprint Polygon.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_3DExtent(<col>::geometry)::geometry::geography
+    /// ```
+    ///
+    /// Identical cast chain to [`Self::extent`] — `ST_3DExtent` returns
+    /// `box3d`, neither of which casts directly to `geography`. The
+    /// geometry-side cast projects the 3D box to a 2D rectangular
+    /// Polygon (the footprint at the box's z-mid plane); the
+    /// geography-side cast keeps the value on the geography substrate
+    /// so the typed surface decodes into [`crate::geo::Polygon`].
+    ///
+    /// # Why a 2D return for a 3D aggregate
+    ///
+    /// Djogi's geography surface is 2D-only — `GeoPoint` has no
+    /// elevation, [`crate::geo::Polygon`] has no Z dimension. Adopters
+    /// with true 3D data should reach for `ctx.raw_scalar` against the
+    /// `box3d` type directly. This typed surface gives the 2D footprint
+    /// of a 3D bounding box, which is what most callers want when
+    /// rendering on a 2D map.
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — same caveat as [`Self::extent`].
+    #[cfg(feature = "spatial")]
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn extent_3d(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialExtent3D,
+            self.column(),
+            None,
+        )
+    }
+}
+
+// ── union() — region-merging aggregate, polygon-shaped fields only ──────────
+//
+// `ST_Union` produces a MultiPolygon for polygonal inputs; for point
+// inputs it would yield a MultiPoint instead, breaking the typed
+// `AggregateExpr<MultiPolygon>` decode. Restricting the receiver to
+// `Polygon` / `MultiPolygon` fields keeps the typed surface sound;
+// adopters wanting union semantics on points use the existing
+// `collect()` (T12), which produces a MultiPoint.
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
+    /// `ST_Union(<col>::geometry)::geography` — per-group region-merging
+    /// aggregate. Folds a per-group set of polygons into a single
+    /// MultiPolygon by merging shared edges.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_Union(<col>::geometry)::geography
+    /// ```
+    ///
+    /// Same cast discipline as the rest of the PostGIS aggregate
+    /// family — inner `::geometry` for `ST_Union`'s argument, outer
+    /// `::geography` for the typed-decode round-trip.
+    ///
+    /// # vs. [`Self::collect`] (when available) and [`Self::convex_hull`]
+    ///
+    /// - `ST_Union` *merges* overlapping/touching polygons, eliminating
+    ///   shared edges — output area is the union of input areas.
+    /// - `ST_Collect` (T12, available on points) builds a multi-geometry
+    ///   without merging — output is the bag of inputs.
+    /// - `ST_ConvexHull(ST_Collect(...))` returns the smallest convex
+    ///   polygon enclosing all inputs — strictly larger than the union
+    ///   for non-convex shapes.
+    ///
+    /// # Composition
+    ///
+    /// ```ignore
+    /// // Merge per-region polygons into a single MultiPolygon per herd.
+    /// let territories: Vec<(HerdId, MultiPolygon)> = Range::objects()
+    ///     .group_by(|f| f.herd_id())
+    ///     .annotate(|f| f.boundary().union())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — wrap `Out = Option<MultiPolygon>`
+    /// at the call site for datasets with known empty groups.
+    ///
+    /// # Memory characteristics
+    ///
+    /// `ST_Union` sorts inputs and merges along a shared edge tree —
+    /// efficient for moderate group sizes but memory-intensive for very
+    /// large inputs. For terabyte-scale datasets, prefer the algorithm
+    /// in `mem_union()` (a future Cluster E task) which uses pairwise
+    /// merging with bounded working memory.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialUnion,
+            self.column(),
+            None,
+        )
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, crate::geo::MultiPolygon> {
+    /// `ST_Union(<col>::geometry)::geography` — per-group region-merging
+    /// aggregate over `MultiPolygon` inputs. See
+    /// [`FieldRef::<M, Polygon>::union`] for full documentation; the
+    /// behaviour is identical, only the input column shape differs.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialUnion,
+            self.column(),
+            None,
+        )
+    }
 }
 
 #[cfg(feature = "spatial")]
@@ -2637,6 +2798,158 @@ mod distance_tests {
         assert!(
             sql.contains(" FILTER (WHERE confidence > "),
             "FILTER clause must attach after centroid expression, got: {sql}"
+        );
+    }
+
+    // ── T13 — union / extent / extent_3d ─────────────────────────────────────
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn union_on_polygon_field_produces_aggregate_multipolygon() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::{MultiPolygon, Polygon as PolygonTy};
+
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg: AggregateExpr<MultiPolygon> = field.union();
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialUnion));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "territory");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialUnion)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn union_on_multipolygon_field_also_dispatches() {
+        use crate::expr::AggregateExpr;
+        use crate::geo::MultiPolygon;
+        let field: FieldRef<Fake, MultiPolygon> = FieldRef::new("region");
+        // Compile-time return-type check from the MultiPolygon-receiver impl.
+        let _agg: AggregateExpr<MultiPolygon> = field.union();
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn union_emits_st_union_with_geography_cast() {
+        use crate::geo::Polygon as PolygonTy;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg = field.union();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "ST_Union(territory::geometry)::geography");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn union_with_distinct_emits_distinct_inside_st_union() {
+        use crate::geo::Polygon as PolygonTy;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg = field.union().distinct();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_Union(DISTINCT territory::geometry)::geography"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn extent_on_geopoint_field_produces_aggregate_polygon() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::Polygon as PolygonTy;
+
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg: AggregateExpr<PolygonTy> = field.extent();
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialExtent));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "location");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialExtent)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn extent_emits_box2d_geometry_geography_cast_chain() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = field.extent();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        // box2d → geometry → geography cast chain — ST_Extent has no
+        // direct geography cast, the two-step cast keeps the typed
+        // surface decoding into Polygon.
+        assert_eq!(
+            acc.sql(),
+            "ST_Extent(location::geometry)::geometry::geography"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn extent_3d_on_geopoint_field_produces_aggregate_polygon() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::Polygon as PolygonTy;
+
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg: AggregateExpr<PolygonTy> = field.extent_3d();
+        if let ExprNode::Aggregate { op, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialExtent3D));
+            return;
+        }
+        panic!("expected ExprNode::Aggregate(SpatialExtent3D)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn extent_3d_emits_st_3dextent_with_two_step_cast_chain() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = field.extent_3d();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_3DExtent(location::geometry)::geometry::geography"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn extent_with_filter_emits_filter_after_close() {
+        // FILTER (WHERE ...) attaches after the whole cast chain — outside
+        // the box2d::geometry::geography projection. Verifies modifier
+        // composition through the AggOp envelope.
+        use crate::expr::Expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let confidence: FieldRef<Fake, f64> = FieldRef::new("confidence");
+        let agg = loc
+            .extent()
+            .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("ST_Extent(location::geometry)::geometry::geography"),
+            "extent expression must precede FILTER, got: {sql}"
+        );
+        assert!(
+            sql.contains(" FILTER (WHERE confidence > "),
+            "FILTER clause must attach after extent expression, got: {sql}"
         );
     }
 

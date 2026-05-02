@@ -657,6 +657,40 @@ pub(crate) enum AggOp {
     /// Sibling of [`AggOp::SpatialCentroid`].
     #[cfg(feature = "spatial")]
     SpatialCollect,
+    /// `ST_Union(<col>::geometry)::geography` — per-group region-merging
+    /// aggregate. Folds polygonal inputs into a single combined region.
+    /// Returns a `MultiPolygon` — Djogi's typed surface restricts the
+    /// receiver to polygon-shaped fields (`Polygon`, `MultiPolygon`) so
+    /// the decode is sound; point-shaped inputs use [`AggOp::SpatialCollect`]
+    /// (T12's `collect()`) instead. Gated on `feature = "spatial"`.
+    #[cfg(feature = "spatial")]
+    SpatialUnion,
+    /// `ST_Extent(<col>::geometry)::geometry::geography` — per-group 2D
+    /// bounding-box aggregate. Postgres returns the special `box2d` type
+    /// which Djogi casts through `geometry` (yielding a four-vertex
+    /// rectangle Polygon) and back to `geography` for the typed decode.
+    /// Returns `Polygon`. Gated on `feature = "spatial"`.
+    ///
+    /// The `box2d::geometry::geography` cast chain is well-defined
+    /// PostGIS — the geometry-side cast produces a polygon footprint,
+    /// and the geography-side cast keeps the value on the geography
+    /// substrate so adopters get back a `Polygon` they can decompose
+    /// with the existing geometry surface.
+    #[cfg(feature = "spatial")]
+    SpatialExtent,
+    /// `ST_3DExtent(<col>::geometry)::geometry::geography` — per-group
+    /// 3D bounding-box aggregate. Same cast chain as
+    /// [`AggOp::SpatialExtent`] but the underlying Postgres type is
+    /// `box3d`; the geometry-side cast projects the 3D box to its 2D
+    /// polygon footprint, and the geography-side cast keeps the value
+    /// on the geography substrate. Returns `Polygon`.
+    /// Gated on `feature = "spatial"`.
+    ///
+    /// Adopters with true 3D data should reach for `ctx.raw_scalar`
+    /// against the `box3d` type directly — Djogi's typed geography
+    /// surface is 2D-only.
+    #[cfg(feature = "spatial")]
+    SpatialExtent3D,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

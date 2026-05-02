@@ -548,6 +548,51 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")::geography");
                 }
+                // T13 — region / bounding-box aggregates. All three share
+                // the inner `::geometry` cast on the column (PostGIS's
+                // aggregate signatures are geometry-only) and an outer
+                // cast back to `geography` so the typed surface decodes
+                // into `MultiPolygon` / `Polygon`.
+                //
+                // `ST_Extent` / `ST_3DExtent` return the bare `box2d` /
+                // `box3d` types respectively, neither of which casts
+                // directly to `geography`. The two-step cast chain
+                // `::geometry::geography` is well-defined PostGIS: the
+                // first cast produces a four-vertex Polygon footprint,
+                // the second moves it onto the geography substrate.
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialUnion => {
+                    acc.push_sql("ST_Union(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography");
+                }
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialExtent => {
+                    acc.push_sql("ST_Extent(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geometry::geography");
+                }
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialExtent3D => {
+                    acc.push_sql("ST_3DExtent(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geometry::geography");
+                }
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
