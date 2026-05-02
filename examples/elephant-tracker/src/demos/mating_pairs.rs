@@ -202,6 +202,16 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
             -- bolted to `AnnotatedQuerySet<T, A>` over a single Model
             -- (see #84), and the mating-pairs query is a multi-CTE
             -- pair shape that doesn't fit `T = Model`.
+            --
+            -- **Precondition.** Herds with zero recorded sightings
+            -- are absent from this CTE; the inner JOIN below means
+            -- mature elephants from such herds disappear from
+            -- candidate_pairs. The framework seeds 50
+            -- sightings/herd, so this is never observed in the
+            -- example, but adopters running the demo against a
+            -- subset of herds that lack sightings will see no
+            -- candidates surface for those herds. The empty-output
+            -- diagnostic flags this case explicitly.
             SELECT
                 s.elephant_id_to_herd                     AS herd_id,
                 ST_ConvexHull(ST_Collect(s.location::geometry))::geography AS hull
@@ -234,11 +244,23 @@ pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> 
                 m.herd_id     AS male_herd_id,
                 CASE
                     WHEN ST_Area(fh.hull) = 0 THEN 0::float8
-                    ELSE (
+                    -- Same-herd self-overlap is mathematically 1.0 but
+                    -- the geometry-vs-geography overlay can drift in
+                    -- floating point. Short-circuit explicitly so the
+                    -- JSON surface guarantees exact 1.0 for adopters.
+                    WHEN f.herd_id = m.herd_id THEN 1.0::float8
+                    -- LEAST/GREATEST clamps the ratio to [0, 1] in
+                    -- case the geometry/geography overlay rounds the
+                    -- intersection slightly larger than the source
+                    -- hull (within numeric tolerance). Mathematically
+                    -- impossible for exact inputs; in practice
+                    -- defensive against PostGIS overlay tolerances on
+                    -- highly-clustered point sets.
+                    ELSE LEAST(1.0::float8, GREATEST(0.0::float8, (
                         ST_Area(
                             ST_Intersection(fh.hull::geometry, mh.hull::geometry)::geography
                         ) / ST_Area(fh.hull)
-                    )::float8
+                    )::float8))
                 END           AS territory_overlap_pct
             FROM mature f
             CROSS JOIN mature m
@@ -390,10 +412,15 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
             target,
             "_No candidate pairs — verify the seed has mature \
              elephants of both sexes (`tags->>'sex' = 'f'` / `'m'` \
-             populated, `estimated_birth_year` set), and that at \
-             least two such elephants share a `herd_id`. The most \
-             common cause is running `migrate` from a pre-T22 \
-             snapshot whose elephants don't have sex tags._",
+             populated, `estimated_birth_year` set), every \
+             candidate's `herd_id` corresponds to a herd with \
+             recorded sightings (the `herd_hulls` CTE drops herds \
+             with zero sightings), and at least two such elephants \
+             share spatially-overlapping herd-territory polygons. \
+             The most common cause is running `migrate` from a \
+             pre-T22 snapshot whose elephants don't have sex tags; \
+             the second is a partial seed where some herds have \
+             no sightings yet._",
         )?;
         return Ok(());
     }
