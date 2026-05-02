@@ -256,6 +256,28 @@ impl SqlAccumulator {
     pub fn bind_count(&self) -> u32 {
         self.next_param - 1
     }
+
+    /// Pop a known SQL suffix from the accumulated text. Returns `true`
+    /// if the suffix matched and was removed, `false` otherwise.
+    ///
+    /// Used by emitters that need to splice content inside a previously-
+    /// emitted scalar wrapper. Specifically, the spatial-aggregate
+    /// emission appends an outer cast (e.g. `::geography`) inline; when
+    /// the same expression is rendered with a window clause, the OVER
+    /// must fall *inside* the cast (`(AGG(...) OVER (...))::geography`),
+    /// so the windowed-emission path pops the suffix, appends OVER,
+    /// then re-appends the suffix.
+    ///
+    /// Pure SQL-string operation — does not affect bind slots.
+    pub fn pop_sql_suffix(&mut self, suffix: &str) -> bool {
+        if self.sql.ends_with(suffix) {
+            let new_len = self.sql.len() - suffix.len();
+            self.sql.truncate(new_len);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Reborrow a `&[Box<dyn ToSql + Sync + Send>]` as a `Vec<&(dyn ToSql + Sync)>`.

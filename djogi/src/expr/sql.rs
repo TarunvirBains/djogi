@@ -674,7 +674,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_Collect(",
                     "ST_Centroid(",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -685,7 +685,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_Collect(",
                     "",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -703,7 +703,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_Union(",
                     "",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -714,7 +714,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_Extent(",
                     "",
-                    "::geometry::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -725,7 +725,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_3DExtent(",
                     "",
-                    "::geometry::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -743,7 +743,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_MakeLine(",
                     "",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -754,7 +754,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_LineAgg(",
                     "",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -770,7 +770,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_Collect(",
                     "",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -787,7 +787,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_ClusterIntersecting(",
                     "",
-                    "::geography[]",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -800,7 +800,8 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     // arg is a parameter-bound f64, not a column ref or
                     // a fixed token. Codex T22 BLOCK-1: FILTER attaches
                     // to the inner ST_ClusterWithin aggregate before
-                    // the outer ::geography[] cast.
+                    // the outer ::geography[] cast (which is appended
+                    // by the post-arm `outer_cast_suffix(op)` push).
                     let needs_filter_paren = filter.is_some();
                     if needs_filter_paren {
                         acc.push_sql("(");
@@ -822,7 +823,9 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     if needs_filter_paren {
                         acc.push_sql(")");
                     }
-                    acc.push_sql("::geography[]");
+                    // outer ::geography[] cast appended by post-arm
+                    // outer_cast_suffix(op) — matches the placement
+                    // discipline shared with emit_spatial_unary_agg.
                 }
                 // T16 — mem_union / polygonize. Same `<col>::geometry`
                 // → `geography` cast discipline.
@@ -831,7 +834,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_MemUnion(",
                     "",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -842,7 +845,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc,
                     "ST_Polygonize(",
                     "",
-                    "::geography",
+                    "",
                     *distinct,
                     arg,
                     order_by,
@@ -871,6 +874,19 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 acc.push_sql(" FILTER (WHERE ");
                 emit_expr(acc, cond);
                 acc.push_sql(")");
+            }
+
+            // Codex T22 round-3 BLOCK-1: append the outer cast suffix
+            // (e.g. `::geography`) for spatial aggregates here, AFTER
+            // FILTER. The per-aggregate spatial arms above pass `""`
+            // for the cast slot so the cast lives in exactly one
+            // place. The windowed-emission path
+            // (`emit_aggregate_inner`) pops this suffix and re-appends
+            // it after OVER so the placement is
+            // `(AGG(..) FILTER (...) OVER (...))::geography` — valid
+            // Postgres aggregate syntax.
+            if let Some(suffix) = outer_cast_suffix(op) {
+                acc.push_sql(suffix);
             }
         }
         ExprNode::Case { arms, otherwise } => {
@@ -1198,13 +1214,21 @@ fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::o
 /// - **Double-wrap (Centroid), no filter:**
 ///   `ST_Centroid(ST_Collect(arg::geometry))::geography`
 /// - **Double-wrap with filter:**
-///   `ST_Centroid(ST_Collect(arg::geometry) FILTER (WHERE ...))::geography`
+///   `ST_Centroid(ST_Collect(arg::geometry) FILTER (WHERE ...))`
 ///
 /// The outer FILTER block in the `emit_expr` Aggregate arm is gated on
 /// `op_emits_outer_cast(op)` so spatial aggregates handle FILTER inline
 /// here; the post-arm block fires only for non-cast-wrapping aggregates
 /// (the standard SUM/COUNT/etc. family that lives at the bare-emission
 /// boundary).
+///
+/// Codex T22 round-3 BLOCK-1: `outer_close_and_cast` is now always
+/// `""` — the outer `::geography` cast is appended by the post-arm
+/// `outer_cast_suffix(op)` push so the windowed-emission path can
+/// splice OVER between the bare aggregate body and the cast. The
+/// parameter is retained as an empty placeholder for caller clarity
+/// (the call sites now read as a uniform `"", "", ""` triple of
+/// inner / outer-wrap / cast slots).
 #[cfg(feature = "spatial")]
 #[allow(clippy::too_many_arguments)]
 fn emit_spatial_unary_agg(
@@ -1252,36 +1276,56 @@ fn emit_spatial_unary_agg(
     acc.push_sql(outer_close_and_cast);
 }
 
-/// Returns true for AggOps whose emission already includes an outer
-/// cast (or scalar wrapper) AND handles FILTER inline. The outer
-/// FILTER attachment in `emit_expr` skips these AggOps because the
-/// per-aggregate emitter already placed FILTER in the right structural
-/// position (between inner-aggregate close and outer cast).
+/// Outer cast suffix string for aggregates whose result requires a
+/// scalar `::TYPE` cast appended after the aggregate-call body — and
+/// after any FILTER / OVER modifier. Returns `None` for aggregates
+/// whose return type already decodes directly (no cast needed) or
+/// whose cast lives at the terminal layer via `cast_to`.
 ///
-/// Currently fires for the PostGIS aggregate family. Future aggregates
-/// with outer casts must opt in here.
+/// Spatial aggregates always cast their result onto the `geography`
+/// substrate so the typed decode tunnel matches the
+/// [`crate::geo::GeoPoint`] family. The cast must attach AFTER the
+/// FILTER and OVER modifiers — Postgres's aggregate-call grammar
+/// places `FILTER` and `OVER` on the bare aggregate expression before
+/// any post-call scalar wrapper (per
+/// <https://www.postgresql.org/docs/current/sql-expressions.html#SYNTAX-AGGREGATES>).
+/// `emit_aggregate_inner` (in `query/sql.rs`) splices OVER between
+/// the bare body and this suffix; the bare emitter emits both
+/// adjacently for the no-window case.
+///
+/// Future aggregates with outer scalar casts must opt in here. Adding
+/// a variant without listing it makes the cast attach in the wrong
+/// position relative to FILTER / OVER.
 #[cfg(feature = "spatial")]
-fn op_emits_outer_cast(op: &AggOp) -> bool {
-    matches!(
-        op,
+pub(crate) fn outer_cast_suffix(op: &AggOp) -> Option<&'static str> {
+    match op {
         AggOp::SpatialCentroid
-            | AggOp::SpatialCollect
-            | AggOp::SpatialUnion
-            | AggOp::SpatialExtent
-            | AggOp::SpatialExtent3D
-            | AggOp::SpatialMakeLine
-            | AggOp::SpatialLineAgg
-            | AggOp::SpatialPolygonAgg
-            | AggOp::SpatialClusterIntersecting
-            | AggOp::SpatialClusterWithin(_)
-            | AggOp::SpatialMemUnion
-            | AggOp::SpatialPolygonize
-    )
+        | AggOp::SpatialCollect
+        | AggOp::SpatialUnion
+        | AggOp::SpatialMakeLine
+        | AggOp::SpatialLineAgg
+        | AggOp::SpatialPolygonAgg
+        | AggOp::SpatialMemUnion
+        | AggOp::SpatialPolygonize => Some("::geography"),
+        // box2d / box3d → geometry → geography (two-step cast).
+        AggOp::SpatialExtent | AggOp::SpatialExtent3D => Some("::geometry::geography"),
+        // ST_ClusterIntersecting / ST_ClusterWithin return `geometry[]`.
+        AggOp::SpatialClusterIntersecting | AggOp::SpatialClusterWithin(_) => Some("::geography[]"),
+        _ => None,
+    }
 }
 
 #[cfg(not(feature = "spatial"))]
-fn op_emits_outer_cast(_op: &AggOp) -> bool {
-    false
+pub(crate) fn outer_cast_suffix(_op: &AggOp) -> Option<&'static str> {
+    None
+}
+
+/// Returns true when [`outer_cast_suffix`] is `Some` for this op.
+/// Equivalent to `outer_cast_suffix(op).is_some()`; kept as a named
+/// predicate because the post-arm FILTER block reads more naturally
+/// with a boolean.
+fn op_emits_outer_cast(op: &AggOp) -> bool {
+    outer_cast_suffix(op).is_some()
 }
 
 /// Emit a [`SubqueryNode`] body — `SELECT <col or 1> FROM <table>

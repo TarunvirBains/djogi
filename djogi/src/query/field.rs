@@ -3208,6 +3208,99 @@ mod distance_tests {
         );
     }
 
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn centroid_with_over_in_annotate_path_places_over_inside_geography_cast() {
+        // Codex T22 round-3 BLOCK-1: when a spatial aggregate is
+        // emitted through the windowed-annotate path (the default
+        // `OVER ()` for ungrouped annotate, or an explicit
+        // `.over(|w| ...)` window spec), the OVER clause must land
+        // inside the outer `::geography` cast — Postgres's
+        // aggregate-call grammar places `OVER` on the bare aggregate
+        // before any post-call scalar wrapper.
+        //
+        // Correct shape:
+        //   (ST_Centroid(ST_Collect(<col>::geometry)) OVER (...))::geography
+        //
+        // Wrong shape (pre-fix):
+        //   ST_Centroid(ST_Collect(<col>::geometry))::geography OVER (...)
+        //
+        // The cast attaches to OVER's result rather than the
+        // aggregate, which Postgres rejects as a syntax error.
+        use crate::pg::accumulator::SqlAccumulator;
+        let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = loc.centroid();
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert_eq!(
+            sql, "(ST_Centroid(ST_Collect(location::geometry)) OVER ())::geography",
+            "OVER must fall inside the ::geography cast; got: {sql}"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn collect_with_over_in_annotate_path_places_over_inside_geography_cast() {
+        // Same invariant as centroid — `loc.collect()` going through
+        // the windowed path must produce
+        // `(ST_Collect(...) OVER ())::geography`, not
+        // `ST_Collect(...)::geography OVER ()`.
+        use crate::pg::accumulator::SqlAccumulator;
+        let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = loc.collect();
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert_eq!(
+            sql, "(ST_Collect(location::geometry) OVER ())::geography",
+            "OVER must fall inside the ::geography cast; got: {sql}"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn centroid_with_filter_and_over_places_both_inside_geography_cast() {
+        // Combined FILTER + OVER under spatial cast — the most
+        // structurally demanding case. Both modifiers must fall
+        // inside the cast, in canonical Postgres order:
+        //   (AGG(...) FILTER (WHERE ...) OVER (...))::geography
+        use crate::expr::Expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let confidence: FieldRef<Fake, f64> = FieldRef::new("confidence");
+        let agg = loc
+            .centroid()
+            .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("(ST_Centroid("),
+            "must open with outer paren before ST_Centroid; got: {sql}"
+        );
+        assert!(
+            sql.contains(" FILTER (WHERE confidence > "),
+            "FILTER clause must be present; got: {sql}"
+        );
+        assert!(
+            sql.contains(" OVER ()"),
+            "OVER clause must be present; got: {sql}"
+        );
+        assert!(
+            sql.ends_with(")::geography"),
+            "must end with )::geography (cast outside paren-wrapped body); got: {sql}"
+        );
+        // Check ordering: FILTER < OVER < cast.
+        let filter_idx = sql.find(" FILTER (").unwrap();
+        let over_idx = sql.find(" OVER (").unwrap();
+        let cast_idx = sql.rfind("::geography").unwrap();
+        assert!(
+            filter_idx < over_idx && over_idx < cast_idx,
+            "modifier order must be FILTER < OVER < ::geography; got: {sql}"
+        );
+    }
+
     // ── T13 — union / extent / extent_3d ─────────────────────────────────────
 
     #[cfg(feature = "spatial")]

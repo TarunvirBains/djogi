@@ -808,18 +808,45 @@ fn emit_aggregate_inner(
     agg: &crate::expr::node::ExprNode,
     default_window: Option<&'static str>,
 ) {
-    let (cast_to, window) = match agg {
+    // Codex T22 round-3 BLOCK-1: spatial aggregates emit an outer
+    // scalar cast (e.g. `::geography`). When OVER is present, the
+    // cast must wrap the whole `AGG(..) OVER (..)` unit — Postgres
+    // grammar places `OVER` on the bare aggregate before any post-call
+    // scalar wrapper. The bare `emit_expr` appends the cast suffix
+    // adjacent to the aggregate body; here we pop it, emit the OVER,
+    // then re-emit the suffix outside.
+    let (cast_to, window, outer_cast) = match agg {
         crate::expr::node::ExprNode::Aggregate {
-            cast_to, window, ..
-        } => (*cast_to, window.as_ref()),
-        _ => (None, None),
+            op,
+            cast_to,
+            window,
+            ..
+        } => (
+            *cast_to,
+            window.as_ref(),
+            crate::expr::sql::outer_cast_suffix(op),
+        ),
+        _ => (None, None, None),
     };
-    // Only wrap in parens when a cast is needed — `(AGG(..) OVER (...))::ty`.
-    // A window-only aggregate (no cast) emits directly: `AGG(..) OVER (...)`.
-    if cast_to.is_some() {
+    let has_window_clause = window.is_some() || default_window.is_some();
+    let needs_paren_for_outer_cast = outer_cast.is_some() && has_window_clause;
+    let needs_paren_for_cast_to = cast_to.is_some();
+    let needs_outer_paren = needs_paren_for_cast_to || needs_paren_for_outer_cast;
+
+    if needs_outer_paren {
         acc.push_sql("(");
     }
     crate::expr::sql::emit_expr(acc, agg);
+    // Pop the outer cast suffix that `emit_expr` just appended (for
+    // spatial aggregates) so OVER falls inside the cast.
+    if let Some(suffix) = outer_cast {
+        let popped = acc.pop_sql_suffix(suffix);
+        debug_assert!(
+            popped,
+            "spatial aggregate emission must end with {suffix} \
+             (outer_cast_suffix and emit_expr disagree)"
+        );
+    }
     match window {
         Some(ws) => ws.emit(acc),
         None => {
@@ -828,8 +855,19 @@ fn emit_aggregate_inner(
             }
         }
     }
+    if needs_outer_paren {
+        acc.push_sql(")");
+    }
+    // Re-emit the popped spatial cast (if any), then any explicit
+    // cast_to. `outer_cast` and `cast_to` are mutually exclusive in
+    // practice — spatial AggOps carry `cast_to: None` and the
+    // numeric/JSON aggregates that set `cast_to` are not in the
+    // spatial family.
+    if let Some(suffix) = outer_cast {
+        acc.push_sql(suffix);
+    }
     if let Some(ty) = cast_to {
-        acc.push_sql(")::");
+        acc.push_sql("::");
         acc.push_sql(ty);
     }
 }

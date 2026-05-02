@@ -2989,6 +2989,98 @@ mod tests {
         )));
     }
 
+    // ── T22 round-3 BLOCK-2 / GAP-3 — SetIdentity diff regression ──
+
+    #[test]
+    fn diff_detects_identity_none_to_some_by_default_as_set_identity() {
+        // Codex T22 round-3 GAP-3: a snapshot predating the
+        // `identity` field (which deserialises as `None` via
+        // `#[serde(default)]`) projected against a fresh schema
+        // (Serial PKs project `identity = Some(ByDefault)`) must
+        // surface a SetIdentity AlterColumn, not silently no-op.
+        // Without this regression test, a sibling-site bug where
+        // the identity comparison is omitted would slip past CI.
+        use crate::migrate::schema::{
+            AppliedSchema, ColumnSchema, IdentityKindSchema, PkKindSchema, PrimaryKeySchema,
+            TableSchema,
+        };
+        use std::collections::BTreeMap;
+
+        fn build_schema(identity: Option<IdentityKindSchema>) -> AppliedSchema {
+            let id_col = ColumnSchema {
+                check: None,
+                default_sql: None,
+                foreign_key: None,
+                generated: None,
+                identity,
+                index_type: None,
+                indexed: false,
+                max_length: None,
+                name: "id".to_string(),
+                nullable: false,
+                on_delete: None,
+                outbox_exclude: false,
+                rationale: None,
+                relation_kind: None,
+                renamed_from: None,
+                sequence_within: None,
+                sql_type: "INTEGER".to_string(),
+                unique: false,
+            };
+            let table = TableSchema {
+                app: None,
+                columns: vec![id_col],
+                exclusion_constraints: Vec::new(),
+                fts: None,
+                is_through: false,
+                moved_from_app: None,
+                partition: None,
+                primary_key: PrimaryKeySchema {
+                    columns: vec!["id".to_string()],
+                    kind: PkKindSchema::Serial,
+                },
+                rationale: None,
+                renamed_from: None,
+                rls_enabled: false,
+                table: "countries".to_string(),
+                tenant_key: None,
+            };
+            let mut models = BTreeMap::new();
+            models.insert("countries".to_string(), table);
+            AppliedSchema {
+                djogi_version: "0.1.0".to_string(),
+                enums: BTreeMap::new(),
+                format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+                generated_at: "2026-05-02T00:00:00Z".to_string(),
+                indexes: Vec::new(),
+                models,
+                registered_apps: vec!["".to_string()],
+            }
+        }
+
+        let before = build_schema(None);
+        let after = build_schema(Some(IdentityKindSchema::ByDefault));
+        let delta = diff_schemas(&before, &after, empty_global());
+
+        let has_set_identity = delta.operations.iter().any(|op| {
+            matches!(
+                op,
+                SchemaOperation::AlterColumn {
+                    change: ColumnChange::SetIdentity {
+                        from: None,
+                        to: Some(IdentityKindSchema::ByDefault)
+                    },
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_set_identity,
+            "expected SetIdentity {{ from: None, to: Some(ByDefault) }} in delta; got: {:?}",
+            delta.operations
+        );
+    }
+
     // ── T2 fixup tests (added 2026-04-25) ───────────────────────────
 
     #[test]
