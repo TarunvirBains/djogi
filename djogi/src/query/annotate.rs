@@ -1137,6 +1137,43 @@ mod tests {
         let _: FirstValueWindow<String> = FirstValueWindow::new(label);
     }
 
+    // GAP-4 closure (Codex T22 round-2): type-pin tests for the
+    // remaining column-arg window-fn family. LastValueWindow,
+    // LagWindow, and NthValueWindow are macro-generated from the
+    // same template as FirstValue / Lead, but the type-pin
+    // verification is per-type so a regression on any one would
+    // surface independently.
+
+    #[test]
+    fn last_value_window_decode_type_pinned_to_v() {
+        use crate::expr::LastValueWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LastValueWindow<i64> = LastValueWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: LastValueWindow<String> = LastValueWindow::new(label);
+    }
+
+    #[test]
+    fn lag_window_decode_type_pinned_to_v() {
+        use crate::expr::LagWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LagWindow<i64> = LagWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: LagWindow<String> = LagWindow::new(label);
+    }
+
+    #[test]
+    fn nth_value_window_decode_type_pinned_to_v() {
+        use crate::expr::NthValueWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: NthValueWindow<i64> = NthValueWindow::new(amount, 3);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: NthValueWindow<String> = NthValueWindow::new(label, 5);
+    }
+
     #[test]
     #[should_panic(expected = "is reserved")]
     fn lead_window_alias_rejects_djogi_prefix() {
