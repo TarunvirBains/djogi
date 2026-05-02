@@ -516,6 +516,12 @@ pub(crate) enum AggOp {
     /// column is true. Requires a boolean column; the typed builder gates
     /// on `V: Into<bool>`.
     BoolOr,
+    /// `EVERY(col)` — Postgres-standard alias for `BOOL_AND`. Both produce
+    /// identical results; the alias is preserved through the IR so the
+    /// emitter renders the keyword the user wrote (matching adopters'
+    /// expectations from the `pg` docs / SQL standard). Same boolean column
+    /// gating as [`AggOp::BoolAnd`].
+    Every,
     /// `BIT_AND(col)` — bitwise AND across all non-null values, returned
     /// as the column's integer type. Postgres defines this for
     /// `SMALLINT`, `INTEGER`, `BIGINT` and bit-string types; Djogi's

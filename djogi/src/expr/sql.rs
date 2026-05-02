@@ -266,6 +266,12 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 // but valid Postgres syntax).
                 AggOp::BoolAnd => emit_unary_agg(acc, "BOOL_AND(", *distinct, arg, order_by),
                 AggOp::BoolOr => emit_unary_agg(acc, "BOOL_OR(", *distinct, arg, order_by),
+                // EVERY is the SQL-standard alias for BOOL_AND. Both produce
+                // identical results in Postgres; the IR carries the alias
+                // separately so the emitter renders the keyword the user
+                // wrote (call to `.every()` → `EVERY(col)`, never silently
+                // rewritten to `BOOL_AND(col)`).
+                AggOp::Every => emit_unary_agg(acc, "EVERY(", *distinct, arg, order_by),
                 // Bitwise integer aggregates — Postgres returns the
                 // operand's own integer type, so no narrowing cast.
                 AggOp::BitAnd => emit_unary_agg(acc, "BIT_AND(", *distinct, arg, order_by),

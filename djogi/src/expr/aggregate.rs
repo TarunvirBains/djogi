@@ -546,6 +546,21 @@ impl<M: Model> FieldRef<M, bool> {
     pub fn bool_or(self) -> AggregateExpr<bool> {
         AggregateExpr::unary_agg(AggOp::BoolOr, self.column(), None)
     }
+
+    /// `EVERY(column)` — Postgres-standard alias for [`FieldRef::bool_and`].
+    /// Returns `true` if every non-null value in the column is `true`,
+    /// `false` if any non-null value is `false`.
+    ///
+    /// `EVERY` and `BOOL_AND` are interchangeable in Postgres — they
+    /// produce identical results. Djogi exposes both because adopters
+    /// reading from one set of docs expect the spelling they know;
+    /// the emitter honours the user's choice (a call to `.every()`
+    /// emits `EVERY(col)`, not `BOOL_AND(col)`). Same NULL behaviour as
+    /// [`FieldRef::bool_and`].
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn every(self) -> AggregateExpr<bool> {
+        AggregateExpr::unary_agg(AggOp::Every, self.column(), None)
+    }
 }
 
 // ── BIT_AND / BIT_OR / BIT_XOR ──────────────────────────────────────────────
@@ -1370,6 +1385,37 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &agg.node);
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
+    }
+
+    // ── EVERY (T3) ────────────────────────────────────────────────────────
+
+    #[test]
+    fn every_emits_every_keyword() {
+        // The alias preserves spelling — `EVERY(col)`, not `BOOL_AND(col)`.
+        let f: FieldRef<Txn, bool> = FieldRef::new("active");
+        let agg = f.every();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "EVERY(active)");
+    }
+
+    #[test]
+    fn every_distinct_emits_every_distinct() {
+        // EVERY composes with DISTINCT (semantic no-op on booleans, but
+        // accepted by Postgres). The keyword stays `EVERY`.
+        let f: FieldRef<Txn, bool> = FieldRef::new("active");
+        let agg = f.every().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "EVERY(DISTINCT active)");
+    }
+
+    #[test]
+    fn every_returns_bool_aggregate() {
+        // Compile-time pin: `every()` returns `AggregateExpr<bool>`,
+        // matching `bool_and`'s shape.
+        let f: FieldRef<Txn, bool> = FieldRef::new("active");
+        let _: AggregateExpr<bool> = f.every();
     }
 
     #[test]
