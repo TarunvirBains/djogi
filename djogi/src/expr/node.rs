@@ -627,6 +627,17 @@ pub(crate) enum AggOp {
     /// `docs/spec/decisions.md`); this variant is the recommended
     /// default.
     JsonbObjectAgg,
+    /// `GROUPING(col)` — Postgres group-set helper that returns `1` if
+    /// the column was rolled up in the current result row (i.e. it is
+    /// a subtotal row from `ROLLUP` / `CUBE` / `GROUPING SETS`), `0`
+    /// otherwise. Returns `INTEGER` at the Postgres level; the typed
+    /// surface decodes into `i32`.
+    ///
+    /// Single-column form only for v0.1.0; the variadic
+    /// `GROUPING(c1, c2, …, cN)` form (which returns a bitmask) is a
+    /// follow-up task because it needs an N-arg slot and a typed bitmask
+    /// return type.
+    Grouping,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

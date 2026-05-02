@@ -436,6 +436,15 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                         .expect("JsonbObjectAgg aggregate must have arg2 set"),
                     order_by,
                 ),
+                // GROUPING(col) — single-column form. Postgres also
+                // supports a variadic GROUPING(c1, c2, …, cN) that
+                // returns a bitmask; Djogi v0.1.0 exposes only the
+                // single-column form (see the doc comment on
+                // `FieldRef::grouping` for the variadic deferral
+                // rationale). The structural shape (one arg, no
+                // separator) matches every other unary aggregate, so
+                // routes through `emit_unary_agg`.
+                AggOp::Grouping => emit_unary_agg(acc, "GROUPING(", *distinct, arg, order_by),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the

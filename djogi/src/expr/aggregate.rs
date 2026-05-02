@@ -825,6 +825,43 @@ impl<M: Model, V> FieldRef<M, V> {
     pub fn jsonb_object_agg<V2>(self, value: FieldRef<M, V2>) -> AggregateExpr<serde_json::Value> {
         AggregateExpr::binary_agg(AggOp::JsonbObjectAgg, self.column(), value.column(), None)
     }
+
+    /// `GROUPING(column)` — returns `1` if `column` was rolled up in the
+    /// current row (i.e. the row is a subtotal produced by `ROLLUP` /
+    /// `CUBE` / `GROUPING SETS`), `0` otherwise. Returns
+    /// `AggregateExpr<i32>` because Postgres' return type is `INTEGER`.
+    ///
+    /// # When to use
+    ///
+    /// Pair with the grouping-set surface (Cluster E T11 will land typed
+    /// `ROLLUP` / `CUBE` / `GROUPING SETS` builders) to distinguish
+    /// subtotal rows from base-fact rows in the result set. Used inside
+    /// SELECT / HAVING when reporting hierarchical summaries:
+    ///
+    /// ```ignore
+    /// // SELECT region, dept, SUM(sales),
+    /// //        GROUPING(region) AS is_region_subtotal,
+    /// //        GROUPING(dept)   AS is_dept_subtotal
+    /// // FROM   sales
+    /// // GROUP BY ROLLUP(region, dept);
+    /// Sales::objects()
+    ///     .annotate(|f| (f.sales().sum(), f.region().grouping(), f.dept().grouping()))
+    ///     .rollup(|f| (f.region(), f.dept()))   // T11
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Variadic form
+    ///
+    /// Postgres accepts `GROUPING(c1, c2, …, cN)` and returns a bitmask
+    /// in that case. Djogi v0.1.0 ships the single-column form only;
+    /// the variadic form is a follow-up because it needs an N-arg slot
+    /// on the IR and a typed bitmask return type. Callers needing the
+    /// bitmask form today can compose two single-column calls
+    /// (`g1 * 2 + g0`) or use `ctx.raw_scalar`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn grouping(self) -> AggregateExpr<i32> {
+        AggregateExpr::unary_agg(AggOp::Grouping, self.column(), None)
+    }
 }
 
 // ── STRING_AGG ──────────────────────────────────────────────────────────────
@@ -1739,6 +1776,41 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &agg.node);
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
+    }
+
+    // ── GROUPING (T10) ────────────────────────────────────────────────────
+
+    #[test]
+    fn grouping_emits_grouping_keyword() {
+        // GROUPING(col) — single-column form. Bare emission matches
+        // every other unary aggregate's shape because internally it
+        // routes through emit_unary_agg.
+        let f: FieldRef<Txn, String> = FieldRef::new("region");
+        let agg = f.grouping();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "GROUPING(region)");
+    }
+
+    #[test]
+    fn grouping_returns_i32_aggregate() {
+        // Compile-time pin: GROUPING returns i32 because Postgres
+        // returns INTEGER (single-column form).
+        let f: FieldRef<Txn, String> = FieldRef::new("region");
+        let _: AggregateExpr<i32> = f.grouping();
+    }
+
+    #[test]
+    fn grouping_works_on_any_column_type() {
+        // GROUPING accepts any column type — it inspects only whether
+        // the column was rolled up in the current row, not the column's
+        // value. The typed surface has no V bound for the same reason.
+        let f_str: FieldRef<Txn, String> = FieldRef::new("region");
+        let f_i64: FieldRef<Txn, i64> = FieldRef::new("dept_id");
+        let f_bool: FieldRef<Txn, bool> = FieldRef::new("is_active");
+        let _: AggregateExpr<i32> = f_str.grouping();
+        let _: AggregateExpr<i32> = f_i64.grouping();
+        let _: AggregateExpr<i32> = f_bool.grouping();
     }
 
     // ── JSON object aggregates (T9) ───────────────────────────────────────
