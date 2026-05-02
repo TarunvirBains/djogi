@@ -598,9 +598,19 @@ Phase 7.5 expanded beyond the original protected-data scope to absorb the live-m
 
 ---
 
-## Phase 8: Model Hooks, Composition & Proxy
+## Phase 8: Hooks, Composition, Proxy, Computed Properties, Q-Algebra & Punnu
 
-**Goal:** Lifecycle hooks, abstract model composition, proxy models.
+**Goal:** Lifecycle hooks, abstract model composition, proxy models, computed
+queryable properties (both SQL-projectable and Rust-trait halves), public `Q<T>`
+predicate algebra with XOR, programmatic `.exclude_struct()` parity, and `Punnu<T>`
+typed-pool integration via the new `sassi` sibling crate.
+
+**v0.1.0 publish gate.** Two-phase consumption:
+
+- **During 8a–8f development**, djogi consumes sassi via a path dependency (`sassi = { path = "../sassi" }`) so the two repos can co-evolve.
+- **At Stage F (8g pre-publish housekeeping)**, sassi v0.1.0 publishes to crates.io first; djogi then flips its Cargo.toml to `sassi = "0.1"`, re-runs its full test sweep against the published crate to confirm no path-vs-published divergence, then publishes djogi v0.1.0.
+
+v0.1.0 ships when **both** are true: (1) djogi Phase 8 complete (8a–8g all merged + green CI, including the post-flip re-test); (2) sassi v0.1.0 live on crates.io. The publish order within Stage F is sassi → djogi; that ordering is what the gate enforces.
 
 ### 8a: Trait-Based Model Hooks
 
@@ -622,13 +632,67 @@ Phase 7.5 expanded beyond the original protected-data scope to absorb the live-m
 - [ ] Custom default filter on proxy (e.g., `WHERE active = true`)
 - [ ] Different `ModelHooks` on proxy vs parent
 
-### 8d: Computed Queryable Properties
+### 8d: Computed Queryable Properties — both halves
+
+#### SQL-projectable half (column-derivable computed properties)
 
 - [ ] `#[computed(sql = "base_price * (1.0 + tax_rate)")]` — Rust getter + SQL expression
 - [ ] Usable in `.filter()`, `.order_by()`, `.annotate()` — the macro wires both sides
 - [ ] Not stored in DB unless `#[computed(sql = "...", stored)]` (Postgres GENERATED ALWAYS AS)
 
-**Deliverable:** Lifecycle hooks, composable field groups, proxy models, computed properties.
+#### Rust-trait half (non-SQL-projectable derivations — bridges to 8f)
+
+- [ ] `#[djogi::trait_impl]` macro on a trait impl block — registers the impl in the cross-type trait registry
+- [ ] `Sassi::all_impl::<Trait>()` — query across every Punnu whose type registered an impl of `Trait`; returns `Vec<Arc<dyn Trait>>`
+- [ ] `Punnu::scope().filter_impl::<Trait>()` — single-type trait queries restricted to entries impl-ing `Trait`
+- [ ] Documentation: when to choose 8d-SQL vs 8d-Trait
+  - SQL-projectable: depends only on existing columns; runs equally on backend (DB-side) and frontend (struct value)
+  - Rust-trait: depends on Rust logic that can't be expressed in SQL; runs only on materialized objects via `.cache(&punnu)`
+
+### 8e: Public Q-Algebra (NEW)
+
+- [ ] `Q<T>` enum exposed in `djogi::query` — wraps `sassi::BasicPredicate<T>` plus djogi-only SQL extensions (Ilike, FullText, JsonbPath, Spatial, Regex, Expression, Array operators)
+- [ ] Operator overloads: `&` (And), `|` (Or), `^` (Xor — NEW), `!` (Not)
+- [ ] `BasicPredicate<T>: Into<Q<T>>` — pure-field predicates lift seamlessly into the SQL-projectable algebra
+- [ ] XOR SQL emit: boolean fast-path `a <> b`; general form `(NOT a AND b) OR (a AND NOT b)`
+- [ ] `.exclude_struct(filter)` — programmatic counterpart to existing closure-based `.exclude(closure)`
+- [ ] Internal `Condition` enum at `djogi/src/query/condition.rs` is **replaced** by `Q<T>` (behavior-preserving refactor — same SQL output for same queries)
+- [ ] `LookupOp` split: Rust-evaluable ops (Eq/Neq/Gt/Gte/Lt/Lte/In/NotIn/IsNull/IsNotNull/Between/IContains/IStartsWith/IEndsWith/IExact) migrate to `sassi::BasicPredicate`; SQL-only ops (Regex/IRegex via Postgres POSIX, FTS, JSONB path) stay in djogi `Q<T>`
+
+### 8f: Punnu Integration (NEW — sassi sibling crate consumer)
+
+- [ ] `.cache(&punnu)` modifier on `QuerySet` — opt-in cache; on terminal methods (`.fetch_all()` etc.), results inserted into the bound Punnu
+- [ ] `DjogiContext::punnu<T>()` — tenant-aware Punnu construction; same context returns the same Punnu instance per type
+- [ ] Save/delete invalidation hooks via the existing `on_commit` substrate (anticipated per `docs/spec/orm-gap-analysis.md:620`); fire only on commit, not rollback
+- [ ] Cross-tenant safety guards: panic in debug builds when accessing a Punnu created from a different tenant_key; `tracing::error!` + return empty in release
+- [ ] `djogi::cache` re-export module — `pub use sassi::{Sassi, Punnu, MemQ, BasicPredicate, Cacheable, CacheBackend}` so users can `use djogi::cache::*` without explicitly adding sassi as a dep
+- [ ] **Delta-sync via watermark field** — incremental cache refresh primitive. Builds on sassi §3.9.1 `MonotonicWatermark` + `DeltaSyncCacheable` + `DeltaPunnuFetcher` traits. Surface:
+  - Watermark type is gated by sassi's `MonotonicWatermark` marker trait. Sassi crate ships std-only blanket impls (`SystemTime`, signed/unsigned integers `i32`/`i64`/`i128`/`u32`/`u64`/`u128`, tuples up to arity-4) plus opt-in feature gates for popular third-party time crates (`watermark-time`, `watermark-chrono`); `()`, `bool`, and `Duration` are deliberately not covered (the first two for trivial-Ord degeneracy, the third for elapsed-time semantics that don't match watermark contracts). djogi Models default to `Watermark = OffsetDateTime` (the type of `updated_at`); djogi's `Cargo.toml` declares `sassi = { version = "0.1", features = ["watermark-time"] }` so the `time::OffsetDateTime` blanket impl is present transitively for every adopter.
+  - `#[derive(Model)]` auto-emits the `Cacheable` and `DeltaSyncCacheable` impls in one expansion (via the shared `sassi-codegen` library) — adopter writes no extra derive attribute, gets `fn watermark(&self) -> OffsetDateTime { self.updated_at }` for free. Adopters who want a different condition override via `#[model(... watermark_field = "<field_name>")]` (alternate field, type read from the named field — must satisfy `MonotonicWatermark` or compile error), or implement `DeltaSyncCacheable` manually for composite watermarks (e.g., `type Watermark = (OffsetDateTime, i64);` for transaction-tied disambiguation) and computed watermarks (e.g., `fn watermark(&self) { max(self.updated_at, self.deleted_at, self.reviewed_at) }`). Adopter custom types (Lamport clocks, BigInt newtypes) implement `MonotonicWatermark` themselves with a one-line marker impl.
+  - `QuerySet<T>::refresh_into(self, punnu: &Punnu<T>, pool: deadpool::Pool<PgConnection>, auth: AuthContext) -> DeltaRefreshHandle<T>` — captures owned substrate (pool clone, AuthContext-by-value, the QuerySet's `BasicPredicate` filter) and starts a `RefreshSubscription` on the Punnu. The fetcher does NOT capture `&mut DjogiContext` (that would require a non-'static lifetime). On each `update()` tick, the fetcher acquires a connection from the pool, constructs a fresh `DjogiContext` from `(conn, auth.clone())`, runs `WHERE <captured_filter> AND <watermark_field> >= since`, drops the context. Watermark field is read from the Model's `DeltaSyncCacheable::watermark` extractor — defaults to `updated_at` for djogi Models, configurable per the override paths above. The returned `DeltaRefreshHandle<T>` exposes `update()`, `update_full()`, `with_eviction_recovery(bool)`, `with_periodic_full_refresh(Option<NonZeroUsize>)`, and `cancel()` per sassi §3.9.1.
+  - `Punnu<T>::start_delta_refresh(interval, fetcher)` — sassi-side, ships in sassi v0.1.0.
+  - LRU-eviction handling: three independent composable knobs per sassi §3.9.1. (1) Sized-to-fit + warn-on-eviction is always on — one-shot `tracing::warn!` per `(Punnu, RefreshSubscription)` on first eviction collision, no overhead beyond an `AtomicBool` flip. (2) `RefreshSubscription::with_eviction_recovery(bool)` (default false) wires per-subscription event-subscriber + recovery query for high-churn workloads. (3) `RefreshSubscription::with_periodic_full_refresh(Option<NonZeroUsize>)` (default None) re-baselines watermark + refreshes LRU/schema drift via full re-fetch every Nth tick without (2)'s broadcast cost; hard deletes still require tombstones from soft-delete (Tracked) or outbox subscription paths. Adopters compose (2) and (3) based on workload shape; Phase 8 exposes both via the djogi-side `QuerySet::refresh_into` builder.
+  - Compile-time enforcement: closure-flavored filters (anything that contains `MemQ::Closure`) cannot construct a fetcher — `refresh_into` is gated on `BasicPredicate`-only filters at the call site. Diagnostic points at the offending closure.
+  - Deletion handling via tombstones (per sassi §3.9.1 "Deletion handling — tombstones, not absence"). The fetcher's `DeltaResult { items, tombstones }` carries explicit deletion notifications; sassi commits items + tombstones atomically via `Punnu::apply_delta`, where the tombstone-precedence rule evicts soft-deleted rows at commit time, emitting `PunnuEvent::Invalidate { id, reason: EventReason::OnDelete }` per evicted id. Sassi never infers deletion from absence (load-bearing for multi-subscription Punnu coherence — full-refresh is "delta with `since=None`" semantically and does NOT remove rows by absence). Three patterns djogi adopters compose: (1) soft-delete via `Tracked` — fetcher includes deleted rows in `items` so the delta-sync layer derives tombstones via `collect_tombstones`; sassi's `apply_delta` tombstone-precedence rule evicts soft-deleted rows at commit time. Application UI applies a visibility predicate (`deleted_at.is_null()`) over the cached scope via `MemQ::filter` — defensive against partial ticks, but the canonical post-commit cache state already excludes soft-deleted rows. (2) Outbox subscription — backend fetcher subscribes to djogi's outbox `OnDelete` stream, accumulates IDs into a local set drained as `tombstones` on the next `fetch_delta` call. Sassi applies via `Punnu::apply_delta`. Catches hard-deletes (DELETE FROM, no soft-delete trail) backend-side. (3) Periodic full-refresh — re-baselines watermark + refreshes LRU/schema drift; combine with (1) and/or (2) for deletion coverage (hard-deletes via outbox, soft-deletes via Tracked-derived tombstones).
+  - AuthContext / RLS coherence: the fetcher's owned `AuthContext` is cloned per `update()` tick into a freshly-constructed `DjogiContext`, so each tick runs under the auth scope captured at subscription-construction time. Adopters rebuild the subscription on auth-scope changes (login/logout, tenant switch, role change) — the old `RefreshSubscription` is cancelled and a new one is constructed with the new `AuthContext`. djogi cannot enforce auth-rebuild on scope changes — surface in adopter-facing docs.
+
+### 8g: Pre-publish housekeeping (v0.1.0 gate)
+
+Lands as the final commits of Phase 8, before the publish run. Each item is its own small PR — no batching, so a single late breakage doesn't block the others.
+
+- [ ] **Sassi v0.1.0 publish + djogi crates.io flip** — workflow:
+   1. Sassi repo independently complete (test sweep green); tag `v0.1.0`; `cargo publish` from sassi; verify resolves on a clean machine.
+   2. Djogi's `Cargo.toml` flips `sassi = { path = "../sassi" }` → `sassi = "0.1"` (no path or git dep).
+   3. Djogi re-runs the full test sweep against the published crate to confirm no path-vs-published divergence.
+   4. Only after step 3 passes does djogi cut its own `v0.1.0` tag.
+- [ ] **Reference-symlink cleanup** — remove the design-mining `*-reference` symlinks at the djogi project root (django, sqlalchemy, diesel, sea-orm, sea-query, prisma, cot, alembic, flyway, liquibase, refinery, kindnudge). Keep only `HeeRanjID-reference` and `sassi-reference` (the actual integration siblings). `.gitignore` entries for `*-reference` stay as a re-introduction guard. Rationale: djogi goes public at v0.1.0; gitignored design-mining symlinks make the repo root look stale on github.
+- [ ] **Docs sweep** — README accuracy pass against shipped surface, doc-link audit (no broken `docs/spec/` references), `cargo doc --no-deps` clean.
+- [ ] **Repo-flip readiness** — branch protection re-enabled (currently off per `project_djogi_gha_billing.md`), CI-required-for-merge configured, `act` workflow validation green.
+
+**Deliverable:** Lifecycle hooks, composable field groups, proxy models, computed
+properties (both halves), public `Q<T>` algebra with XOR + programmatic `.exclude_struct()`,
+typed in-memory pool with cross-runtime predicate semantics via the sassi sibling crate.
+**Phase 8 close → v0.1.0 publish (gated on sassi v0.1.0 also being live on crates.io).**
 
 ---
 

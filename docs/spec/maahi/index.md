@@ -48,6 +48,7 @@ The legacy HTMX + Askama renderer described in earlier draft specs is not implem
 | List views, forms, validation, M2M inlines   | [UI Surface](./ui.md)                             |
 | Audit access, system permissions, bulk operations | [Operations](./operations.md)                |
 | `expose(none)` floor, `Label` trait, superuser boundaries | [Field Visibility](./field-visibility.md) |
+| Sassi-backed caching, cross-runtime predicates, multi-tab invalidation | [Caching and Cross-Runtime State](./caching.md) |
 | `[admin]` config block, CLI bootstrap        | [Configuration and CLI](./configuration.md)       |
 | Phase 10 deliverables, deferrals, open questions | [Phase Map](./phase-map.md)                  |
 
