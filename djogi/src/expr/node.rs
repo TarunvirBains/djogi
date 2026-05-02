@@ -758,6 +758,32 @@ pub(crate) enum AggOp {
     /// only.
     #[cfg(feature = "spatial")]
     SpatialClusterWithin(f64),
+    /// `ST_MemUnion(<col>::geometry)::geography` — memory-friendly
+    /// pairwise-merge variant of [`AggOp::SpatialUnion`]. Same input/
+    /// output shape (both fold polygonal inputs into a single
+    /// MultiPolygon by merging shared edges); different algorithm.
+    /// `ST_Union` sorts inputs and merges along a shared edge tree;
+    /// `ST_MemUnion` runs a pairwise merge that uses bounded working
+    /// memory but is slower per-row for moderate input sizes.
+    /// Returns `MultiPolygon`. Gated on `feature = "spatial"`.
+    ///
+    /// Adopters with terabyte-scale polygonal inputs use `mem_union()`;
+    /// for moderate group sizes [`AggOp::SpatialUnion`] is faster.
+    #[cfg(feature = "spatial")]
+    SpatialMemUnion,
+    /// `ST_Polygonize(<col>::geometry)::geography` — builds polygons
+    /// from a per-group set of LineString segments. PostGIS returns a
+    /// GeometryCollection at the geometry level; the geography-substrate
+    /// cast lets the typed surface decode it as `MultiPolygon` for the
+    /// typical line-segments-to-region case. Gated on
+    /// `feature = "spatial"`.
+    ///
+    /// Only available on `LineString` fields — the input must be a
+    /// collection of edges for the polygonization algorithm to produce
+    /// sensible output. The receiver-type gate enforces this at the
+    /// impl-block level.
+    #[cfg(feature = "spatial")]
+    SpatialPolygonize,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

@@ -661,6 +661,31 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")::geography[]");
                 }
+                // T16 — mem_union / polygonize. Same `<col>::geometry`
+                // → `geography` cast discipline as the rest of the
+                // PostGIS aggregate family.
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialMemUnion => {
+                    acc.push_sql("ST_MemUnion(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography");
+                }
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialPolygonize => {
+                    acc.push_sql("ST_Polygonize(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography");
+                }
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the

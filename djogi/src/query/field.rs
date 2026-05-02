@@ -1785,6 +1785,107 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::Polygon> {
             None,
         )
     }
+
+    /// `ST_MemUnion(<col>::geometry)::geography` — memory-friendly
+    /// pairwise-merge variant of [`Self::union`].
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_MemUnion(<col>::geometry)::geography
+    /// ```
+    ///
+    /// # vs. [`Self::union`]
+    ///
+    /// Both fold polygonal inputs into a single MultiPolygon by
+    /// merging shared edges — same input / output shape, different
+    /// algorithm:
+    ///
+    /// - `union()` (`ST_Union`) sorts inputs and merges along a
+    ///   shared edge tree. Faster for moderate group sizes; memory-
+    ///   intensive for very large input sets because the entire input
+    ///   must fit in working memory.
+    /// - `mem_union()` (`ST_MemUnion`) runs a pairwise merge with
+    ///   bounded working memory. Slower per-row but handles
+    ///   terabyte-scale inputs without spilling.
+    ///
+    /// Pick `mem_union()` when input size exceeds working memory; pick
+    /// `union()` for the common case.
+    ///
+    /// # Composition
+    ///
+    /// ```ignore
+    /// // Memory-friendly union over a very large input set.
+    /// let merged: Vec<(HerdId, MultiPolygon)> = Range::objects()
+    ///     .group_by(|f| f.herd_id())
+    ///     .annotate(|f| f.boundary().mem_union())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — same caveat as [`Self::union`].
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn mem_union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialMemUnion,
+            self.column(),
+            None,
+        )
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl<M: crate::model::Model> FieldRef<M, crate::geo::LineString> {
+    /// `ST_Polygonize(<col>::geometry)::geography` — builds polygons
+    /// from a per-group set of LineString segments.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_Polygonize(<col>::geometry)::geography
+    /// ```
+    ///
+    /// # Return type
+    ///
+    /// PostGIS returns a GeometryCollection at the geometry level;
+    /// the trailing `::geography` cast keeps the value on the
+    /// geography substrate for the typed `MultiPolygon` decode. Works
+    /// for the typical line-segments-to-region case (e.g. assembling
+    /// administrative-boundary polygons from per-edge LineString
+    /// rows). Pathological inputs (LineStrings that don't form closed
+    /// rings) yield a degenerate output that may fail the typed EWKB
+    /// decode at the call site.
+    ///
+    /// # LineString-only receiver
+    ///
+    /// `polygonize()` only makes sense for input LineStrings — the
+    /// algorithm walks edge endpoints to find closed rings. Other
+    /// geography shapes (Point, Polygon, MultiPolygon) would produce
+    /// undefined output. The receiver-type gate enforces this at the
+    /// impl-block level.
+    ///
+    /// # Composition
+    ///
+    /// ```ignore
+    /// // Per-region polygons assembled from per-edge LineString rows.
+    /// let regions: Vec<(RegionId, MultiPolygon)> = Edge::objects()
+    ///     .group_by(|f| f.region_id())
+    ///     .annotate(|f| f.geometry().polygonize())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn polygonize(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialPolygonize,
+            self.column(),
+            None,
+        )
+    }
 }
 
 #[cfg(feature = "spatial")]
@@ -1797,6 +1898,18 @@ impl<M: crate::model::Model> FieldRef<M, crate::geo::MultiPolygon> {
     pub fn union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
         crate::expr::AggregateExpr::unary_agg(
             crate::expr::node::AggOp::SpatialUnion,
+            self.column(),
+            None,
+        )
+    }
+
+    /// `ST_MemUnion(<col>::geometry)::geography` — see
+    /// [`FieldRef::<M, Polygon>::mem_union`] for full documentation;
+    /// the behaviour is identical, only the input column shape differs.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn mem_union(self) -> crate::expr::AggregateExpr<crate::geo::MultiPolygon> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialMemUnion,
             self.column(),
             None,
         )
@@ -3372,6 +3485,96 @@ mod distance_tests {
         use crate::geo::MultiPolygon;
         let field: FieldRef<Fake, MultiPolygon> = FieldRef::new("region");
         let _agg: AggregateExpr<Vec<MultiPolygon>> = field.cluster_within(2_000.0);
+    }
+
+    // ── T16 — mem_union / polygonize ─────────────────────────────────────────
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn mem_union_on_polygon_field_produces_aggregate_multipolygon() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::{MultiPolygon, Polygon as PolygonTy};
+
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg: AggregateExpr<MultiPolygon> = field.mem_union();
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialMemUnion));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "territory");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialMemUnion)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn mem_union_emits_st_memunion_with_geography_cast() {
+        use crate::geo::Polygon as PolygonTy;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
+        let agg = field.mem_union();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "ST_MemUnion(territory::geometry)::geography");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn mem_union_on_multipolygon_field_also_dispatches() {
+        use crate::expr::AggregateExpr;
+        use crate::geo::MultiPolygon;
+        let field: FieldRef<Fake, MultiPolygon> = FieldRef::new("region");
+        let _agg: AggregateExpr<MultiPolygon> = field.mem_union();
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn polygonize_on_linestring_field_produces_aggregate_multipolygon() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::{LineString, MultiPolygon};
+
+        let field: FieldRef<Fake, LineString> = FieldRef::new("edge");
+        let agg: AggregateExpr<MultiPolygon> = field.polygonize();
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialPolygonize));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "edge");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialPolygonize)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn polygonize_emits_st_polygonize_with_geography_cast() {
+        use crate::geo::LineString;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, LineString> = FieldRef::new("edge");
+        let agg = field.polygonize();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "ST_Polygonize(edge::geometry)::geography");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn polygonize_with_distinct_emits_distinct_inside_st_polygonize() {
+        use crate::geo::LineString;
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, LineString> = FieldRef::new("edge");
+        let agg = field.polygonize().distinct();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_Polygonize(DISTINCT edge::geometry)::geography"
+        );
     }
 
     // area_of / area_of_intersection typed surface tests
