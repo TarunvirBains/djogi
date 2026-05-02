@@ -55,10 +55,20 @@
 //!   Cluster C T18 documents this); the framework's typed
 //!   `RowNumber().qualify(...)` lowering produces the equivalent
 //!   `SELECT * FROM (<inner>) AS __djogi_q WHERE rank <= $1` shape.
-//!   This v1 of the demo emits the SQL via `ctx.raw_rows` to keep
-//!   the correctness story tight; a follow-up migrates the ranking
-//!   step to the typed `RowNumber` builder so the demo also
-//!   exercises Cluster C's window-function surface end-to-end.
+//!
+//!   **Why this demo emits via `ctx.raw_rows` instead of the typed
+//!   builder:** Cluster C's typed `RowNumber().qualify(...)`
+//!   surface is bolted to `AnnotatedQuerySet<T, A>` over a single
+//!   `Model T`. The mating-pairs ranking surface is a multi-CTE
+//!   pair shape (`(female, male)` rows derived from a
+//!   `WITH mature → candidate_pairs → pair_kinship` chain over
+//!   `elephant_ancestries` self-joined) — there is no single
+//!   `T = Model` that fits. The emitted SQL nonetheless mirrors the
+//!   exact shape the typed builder produces (same `__djogi_q`
+//!   alias, same outer-WHERE), so adopters reading this demo
+//!   alongside Cluster C's typed-surface tests see end-to-end
+//!   continuity. Bridging the typed surface to multi-CTE shapes
+//!   is tracked as **issue #84** for follow-up framework work.
 //!
 //! ## Composite score
 //!
