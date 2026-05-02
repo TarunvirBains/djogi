@@ -409,7 +409,8 @@ define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 ///
 /// `PERCENT_RANK` returns `f64`. The current `QualifyCondition`
 /// shape is `i64`-only (constrained for the rank/dense_rank/row_number
-/// triplet); extending qualify to f64 thresholds is a follow-up. For
+/// triplet); extending qualify to f64 thresholds is a follow-up
+/// tracked at <https://github.com/TarunvirBains/djogi/issues/95>. For
 /// v0.1.0, callers needing to filter on the percent-rank output filter
 /// at the application layer or chain a typed `.filter_expr` over the
 /// derived table.

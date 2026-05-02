@@ -1064,4 +1064,100 @@ mod tests {
             "got: {sql}"
         );
     }
+
+    // ── T18-T19 coverage backfill (quality reviewer round-1 finding) ─────────
+    //
+    // First batch of T18-T19 tests covered bare emission. Quality
+    // reviewer flagged that missing-`.alias()` rejection,
+    // `partition_by` integration, and decode-type pinning weren't
+    // covered. These tests close those gaps.
+
+    #[test]
+    fn lead_window_partition_by_renders_partition_clause() {
+        use crate::expr::LeadWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let session: FieldRef<Acc, i64> = FieldRef::new("session_id");
+        let lead: LeadWindow<i64> = LeadWindow::new(amount)
+            .partition_by(session)
+            .order_by(amount.asc())
+            .alias("next_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains(
+                "LEAD(amount) OVER (PARTITION BY session_id ORDER BY amount ASC) AS next_amount"
+            ),
+            "PARTITION BY must render before ORDER BY in window clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn ntile_window_partition_by_renders_partition_clause() {
+        use crate::expr::NtileWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let dept: FieldRef<Acc, i64> = FieldRef::new("dept_id");
+        let ntile = NtileWindow::new(4)
+            .partition_by(dept)
+            .order_by(amount.desc())
+            .alias("dept_quartile");
+        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("NTILE($")
+                && sql.contains(
+                    ") OVER (PARTITION BY dept_id ORDER BY amount DESC) AS dept_quartile"
+                ),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lead_window_decode_type_pinned_to_v() {
+        // Compile-time pin: the phantom V on LeadWindow<V> drives the
+        // AnnotationSlot::Decoded type. Constructing with a typed
+        // FieldRef<Acc, V> yields LeadWindow<V> — verified by the
+        // type ascriptions below.
+        use crate::expr::LeadWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LeadWindow<i64> = LeadWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: LeadWindow<String> = LeadWindow::new(label);
+    }
+
+    #[test]
+    fn first_value_window_decode_type_pinned_to_v() {
+        use crate::expr::FirstValueWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: FirstValueWindow<i64> = FirstValueWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: FirstValueWindow<String> = FirstValueWindow::new(label);
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn lead_window_alias_rejects_djogi_prefix() {
+        // Same `__djogi_*` reservation discipline as the rank-family
+        // alias setter.
+        use crate::expr::LeadWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LeadWindow<i64> = LeadWindow::new(amount).alias("__djogi_q");
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn ntile_window_alias_rejects_djogi_prefix() {
+        use crate::expr::NtileWindow;
+        let _ = NtileWindow::new(4).alias("__djogi_agg_0");
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn percent_rank_window_alias_rejects_djogi_prefix() {
+        use crate::expr::PercentRankWindow;
+        let _ = PercentRankWindow::new().alias("__djogi_q");
+    }
 }

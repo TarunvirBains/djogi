@@ -655,170 +655,140 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     acc.push_sql("))::geography");
                 }
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialCollect => {
-                    acc.push_sql("ST_Collect(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography");
-                }
-                // T13 — region / bounding-box aggregates. All three share
-                // the inner `::geometry` cast on the column (PostGIS's
-                // aggregate signatures are geometry-only) and an outer
-                // cast back to `geography` so the typed surface decodes
-                // into `MultiPolygon` / `Polygon`.
-                //
-                // `ST_Extent` / `ST_3DExtent` return the bare `box2d` /
-                // `box3d` types respectively, neither of which casts
-                // directly to `geography`. The two-step cast chain
-                // `::geometry::geography` is well-defined PostGIS: the
-                // first cast produces a four-vertex Polygon footprint,
-                // the second moves it onto the geography substrate.
+                AggOp::SpatialCollect => emit_spatial_unary_agg(
+                    acc,
+                    "ST_Collect(",
+                    ")::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
+                // T13 — region / bounding-box aggregates. `ST_Extent` /
+                // `ST_3DExtent` return `box2d` / `box3d` respectively,
+                // neither of which casts directly to `geography`. The
+                // two-step cast chain `::geometry::geography` is
+                // well-defined PostGIS: the first cast produces a
+                // four-vertex Polygon footprint, the second moves it
+                // onto the geography substrate.
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialUnion => {
-                    acc.push_sql("ST_Union(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography");
-                }
+                AggOp::SpatialUnion => emit_spatial_unary_agg(
+                    acc,
+                    "ST_Union(",
+                    ")::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialExtent => {
-                    acc.push_sql("ST_Extent(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geometry::geography");
-                }
+                AggOp::SpatialExtent => emit_spatial_unary_agg(
+                    acc,
+                    "ST_Extent(",
+                    ")::geometry::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialExtent3D => {
-                    acc.push_sql("ST_3DExtent(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geometry::geography");
-                }
+                AggOp::SpatialExtent3D => emit_spatial_unary_agg(
+                    acc,
+                    "ST_3DExtent(",
+                    ")::geometry::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 // T14 — line / polygon aggregates. `ST_MakeLine` is
                 // order-sensitive (the per-aggregate ORDER BY controls
-                // the LineString's vertex sequence); `ST_Collect` (used
-                // here as the portable fallback for `ST_PolygonAgg`) is
-                // order-insensitive but still emits the order_by slot
-                // uniformly so the IR stays composable.
+                // the LineString's vertex sequence). `ST_Collect`
+                // (used as the portable fallback for `ST_PolygonAgg`,
+                // which is PostGIS 3.5+) is order-insensitive but
+                // emits the order_by slot uniformly so the IR stays
+                // composable across the family.
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialMakeLine => {
-                    acc.push_sql("ST_MakeLine(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography");
-                }
+                AggOp::SpatialMakeLine => emit_spatial_unary_agg(
+                    acc,
+                    "ST_MakeLine(",
+                    ")::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialLineAgg => {
-                    // Cluster E T14b — collects per-row LineStrings into a
-                    // MultiLineString. Cast chain matches the rest of the
-                    // PostGIS aggregate family (inner ::geometry to feed
-                    // PostGIS's geometry-only ST_LineAgg, outer ::geography
-                    // for round-trip into the typed MultiLineString).
-                    acc.push_sql("ST_LineAgg(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography");
-                }
+                AggOp::SpatialLineAgg => emit_spatial_unary_agg(
+                    acc,
+                    "ST_LineAgg(",
+                    ")::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialPolygonAgg => {
+                AggOp::SpatialPolygonAgg => emit_spatial_unary_agg(
                     // Portable fallback for ST_PolygonAgg (PostGIS 3.5+);
-                    // ST_Collect produces an equivalent MultiPolygon for
-                    // polygon-typed inputs. If Djogi ever raises its
-                    // PostGIS floor to 3.5 the keyword changes; the
-                    // surrounding cast chain stays identical.
-                    acc.push_sql("ST_Collect(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography");
-                }
+                    // ST_Collect produces an equivalent MultiPolygon
+                    // for polygon-typed inputs. If Djogi ever raises
+                    // its PostGIS floor to 3.5 the keyword swaps to
+                    // "ST_PolygonAgg("; the surrounding shape stays.
+                    acc,
+                    "ST_Collect(",
+                    ")::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 // T15 — clustering aggregates. Both return `geometry[]`
                 // at the Postgres level; the trailing `::geography[]`
                 // cast moves the array's element type onto the
-                // geography substrate so the typed surface decodes
-                // into `Vec<MultiPolygon>`. ST_ClusterWithin takes a
-                // distance threshold bound as a parameter (carried
-                // inline on the variant, mirroring StringAgg's
-                // separator pattern).
+                // geography substrate. ST_ClusterIntersecting fits the
+                // unary helper; ST_ClusterWithin's bound distance
+                // argument is hand-rolled below.
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialClusterIntersecting => {
-                    acc.push_sql("ST_ClusterIntersecting(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography[]");
-                }
+                AggOp::SpatialClusterIntersecting => emit_spatial_unary_agg(
+                    acc,
+                    "ST_ClusterIntersecting(",
+                    ")::geography[]",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialClusterWithin(distance) => {
+                    // Hand-rolled — binary signature with bound distance.
+                    // The unary helper doesn't fit because the second
+                    // arg is a parameter-bound f64, not a column ref or
+                    // a fixed token.
                     acc.push_sql("ST_ClusterWithin(");
                     if *distinct {
                         acc.push_sql("DISTINCT ");
                     }
                     emit_expr(acc, arg);
                     acc.push_sql("::geometry, ");
-                    // Bind the distance as a parameter — never inline
-                    // a runtime-computed f64 into the SQL text. The
-                    // `*distance` deref copies the f64 (Copy type) so
-                    // the inline value is preserved across IR clones.
+                    // Bind the distance as a parameter — never inline a
+                    // runtime-computed f64 into the SQL text.
                     acc.push_bind(*distance);
                     push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")::geography[]");
                 }
                 // T16 — mem_union / polygonize. Same `<col>::geometry`
-                // → `geography` cast discipline as the rest of the
-                // PostGIS aggregate family.
+                // → `geography` cast discipline.
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialMemUnion => {
-                    acc.push_sql("ST_MemUnion(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography");
-                }
+                AggOp::SpatialMemUnion => emit_spatial_unary_agg(
+                    acc,
+                    "ST_MemUnion(",
+                    ")::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
                 #[cfg(feature = "spatial")]
-                AggOp::SpatialPolygonize => {
-                    acc.push_sql("ST_Polygonize(");
-                    if *distinct {
-                        acc.push_sql("DISTINCT ");
-                    }
-                    emit_expr(acc, arg);
-                    acc.push_sql("::geometry");
-                    push_aggregate_order_by(acc, order_by);
-                    acc.push_sql(")::geography");
-                }
+                AggOp::SpatialPolygonize => emit_spatial_unary_agg(
+                    acc,
+                    "ST_Polygonize(",
+                    ")::geography",
+                    *distinct,
+                    arg,
+                    order_by,
+                ),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
@@ -1118,6 +1088,51 @@ fn emit_within_group_target(acc: &mut SqlAccumulator, targets: &[crate::query::o
         }
         t.emit(acc, None);
     }
+}
+
+/// Emit the canonical PostGIS-aggregate emission shape:
+///
+/// ```text
+/// <keyword_opener>[DISTINCT ]<arg>::geometry[ ORDER BY ...]<outer_cast>
+/// ```
+///
+/// Used by the Cluster E PostGIS aggregate family
+/// (T12 `centroid` / `collect`, T13 `union` / `extent` / `extent_3d`,
+/// T14 `make_line` / `polygon_agg`, T14b `line_agg`, T15
+/// `cluster_intersecting`, T16 `mem_union` / `polygonize`). Eleven of
+/// the twelve typed PostGIS aggregates share this exact shape; only
+/// `SpatialCentroid` (double-wrap with inner `ST_Collect`) and
+/// `SpatialClusterWithin` (binary signature with bound distance) are
+/// hand-rolled because their structure differs.
+///
+/// The inner `::geometry` cast is required because PostGIS's aggregate
+/// signatures (`ST_Union(geometry)`, `ST_Extent(geometry)`, …) are
+/// geometry-only — Djogi's geography columns get cast in for the call
+/// then cast back via `outer_cast`. Two-step cast chains
+/// (`)::geometry::geography` for `ST_Extent` / `ST_3DExtent`, which
+/// return `box2d` / `box3d`) are expressed by passing the multi-token
+/// suffix as the `outer_cast` parameter.
+///
+/// `order_by` is the per-aggregate ORDER BY slot (T1) — order-sensitive
+/// PostGIS aggregates like `ST_MakeLine` honour it; commutative ones
+/// (`ST_Union` / `ST_Centroid`) accept it as a no-op for IR uniformity.
+#[cfg(feature = "spatial")]
+fn emit_spatial_unary_agg(
+    acc: &mut SqlAccumulator,
+    keyword_opener: &'static str,
+    outer_cast: &'static str,
+    distinct: bool,
+    arg: &ExprNode,
+    order_by: &[crate::query::order::OrderExpr],
+) {
+    acc.push_sql(keyword_opener);
+    if distinct {
+        acc.push_sql("DISTINCT ");
+    }
+    emit_expr(acc, arg);
+    acc.push_sql("::geometry");
+    push_aggregate_order_by(acc, order_by);
+    acc.push_sql(outer_cast);
 }
 
 /// Emit a [`SubqueryNode`] body — `SELECT <col or 1> FROM <table>

@@ -1080,10 +1080,11 @@ impl<M: Model, V> FieldRef<M, V> {
     ///
     /// Postgres accepts `GROUPING(c1, c2, …, cN)` and returns a bitmask
     /// in that case. Djogi v0.1.0 ships the single-column form only;
-    /// the variadic form is a follow-up because it needs an N-arg slot
-    /// on the IR and a typed bitmask return type. Callers needing the
-    /// bitmask form today can compose two single-column calls
-    /// (`g1 * 2 + g0`) or use `ctx.raw_scalar`.
+    /// the variadic form is tracked at
+    /// <https://github.com/TarunvirBains/djogi/issues/94> (needs an
+    /// N-arg slot on the IR and a typed bitmask return type). Callers
+    /// needing the bitmask form today can compose two single-column
+    /// calls (`g1 * 2 + g0`) or use `ctx.raw_scalar`.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn grouping(self) -> AggregateExpr<i32> {
         AggregateExpr::unary_agg(AggOp::Grouping, self.column(), None)
