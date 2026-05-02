@@ -25,6 +25,7 @@
 
 use anyhow::Result;
 use djogi::DjogiContext;
+use djogi::prelude::*;
 use serde::Serialize;
 use std::path::Path;
 
@@ -41,8 +42,9 @@ struct Row {
 }
 
 pub async fn run(ctx: &mut DjogiContext, format: Format, out: Option<&Path>) -> Result<()> {
-    let herds: Vec<Herd> = ctx
-        .raw_query("SELECT * FROM herds ORDER BY name", &[])
+    let herds: Vec<Herd> = Herd::objects()
+        .order_by(|f| f.name().asc())
+        .fetch_all(ctx)
         .await?;
 
     let mut rows = Vec::with_capacity(herds.len());

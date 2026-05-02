@@ -9,10 +9,24 @@
 //! density-based clustering pass should produce a small handful of
 //! clusters per herd plus a noise bucket for outliers.
 //!
-//! Djogi's `spatial_grouping` module ships a `cluster_by_proximity`
-//! grouping primitive that emits a per-row cluster id; this demo runs
-//! the cluster ID assignment via raw SQL using PostGIS's `ST_ClusterDBSCAN`
-//! window function so the demo stays readable in isolation.
+//! ## Djogi typed surface and current gap
+//!
+//! Djogi ships a typed `QuerySet::cluster_by_proximity(|f| f.location(),
+//! ClusterRadius::meters(...).min_points(...))` builder that produces a
+//! `GroupedQuerySet<T, ClusterId>`. Cluster id + per-cluster `count_star`
+//! + per-cluster `array_agg(id)` annotations are all typed today.
+//!
+//! What this demo additionally needs — per-cluster centroid latitude and
+//! longitude — currently has no typed annotation surface (no
+//! `geo_centroid_aggregate` / `st_collect_aggregate` on `FieldRef<T,
+//! GeoPoint>`). Retrofitting to two passes (typed clustering, then a
+//! second raw query for centroids) would cost more raw SQL than the
+//! single window-function pass below, so the demo stays as one raw
+//! `ST_ClusterDBSCAN` query until the missing aggregates land.
+//!
+//! Tracked as a v0.1.0 framework gap — the `examples/elephant-tracker`
+//! README's "framework gaps surfaced by demos" table will get a row
+//! once the issue is filed.
 //!
 //! ## Output formats
 //!
