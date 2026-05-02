@@ -391,6 +391,85 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
         // — the typed surface's `Out = f64` promise holds uniformly.
         AggregateExpr::unary_agg(AggOp::Avg, self.column(), Some(<V as Numeric>::AVG_CAST))
     }
+
+    /// `STDDEV_POP(column)` — population standard deviation, returned as
+    /// `f64`.
+    ///
+    /// Postgres returns `NUMERIC` for integer inputs and `DOUBLE PRECISION`
+    /// for floating-point inputs; the explicit `::DOUBLE PRECISION` cast
+    /// narrows uniformly to `f64` so the typed surface's `Out = f64`
+    /// promise holds across all blessed numeric column types. Use this
+    /// when you have data for the entire population and want the exact
+    /// dispersion measure (no sample-correction `n-1` term).
+    ///
+    /// # Empty / single-row groups
+    ///
+    /// Returns `NULL` when the group has zero non-null rows; with only
+    /// one non-null row, the population stddev is `0`. The non-`Option`
+    /// return type means callers operating on potentially empty groups
+    /// should use `ctx.raw_scalar` with `COALESCE(STDDEV_POP(...), 0)`
+    /// or wrap the column type in `Option<f64>` once that decode path
+    /// lands.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn stddev_pop(self) -> AggregateExpr<f64> {
+        AggregateExpr::unary_agg(AggOp::StddevPop, self.column(), Some("DOUBLE PRECISION"))
+    }
+
+    /// `STDDEV_SAMP(column)` — sample standard deviation, returned as `f64`.
+    ///
+    /// Uses the Bessel-corrected formula (divides by `n-1`), the standard
+    /// choice when treating the rows as a sample of a larger population.
+    /// Empty groups and single-row groups return `NULL` (Postgres divides
+    /// by zero in the latter case).
+    ///
+    /// See [`FieldRef::stddev`] for the alias spelling and
+    /// [`FieldRef::stddev_pop`] for the population form.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn stddev_samp(self) -> AggregateExpr<f64> {
+        AggregateExpr::unary_agg(AggOp::StddevSamp, self.column(), Some("DOUBLE PRECISION"))
+    }
+
+    /// `STDDEV(column)` — Postgres alias for [`FieldRef::stddev_samp`].
+    /// Both produce identical results; the emitter preserves the spelling
+    /// the caller used (matching the [`FieldRef::every`] alias treatment).
+    ///
+    /// Adopters reading SQL-standard docs reach for `STDDEV_SAMP`;
+    /// adopters reading `pg` docs typically write `STDDEV`. Both
+    /// work, both round-trip exactly as written.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn stddev(self) -> AggregateExpr<f64> {
+        AggregateExpr::unary_agg(AggOp::Stddev, self.column(), Some("DOUBLE PRECISION"))
+    }
+
+    /// `VAR_POP(column)` — population variance, returned as `f64`.
+    ///
+    /// Population form (no `n-1` correction). Same NULL-on-empty-group
+    /// behaviour as the stddev pair; same `DOUBLE PRECISION` narrowing
+    /// cast applies.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn var_pop(self) -> AggregateExpr<f64> {
+        AggregateExpr::unary_agg(AggOp::VarPop, self.column(), Some("DOUBLE PRECISION"))
+    }
+
+    /// `VAR_SAMP(column)` — sample variance, returned as `f64`.
+    ///
+    /// Bessel-corrected (`n-1`) form. Returns `NULL` for empty groups
+    /// and for single-row groups (division by zero on `n-1`).
+    ///
+    /// See [`FieldRef::variance`] for the alias spelling and
+    /// [`FieldRef::var_pop`] for the population form.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn var_samp(self) -> AggregateExpr<f64> {
+        AggregateExpr::unary_agg(AggOp::VarSamp, self.column(), Some("DOUBLE PRECISION"))
+    }
+
+    /// `VARIANCE(column)` — Postgres alias for [`FieldRef::var_samp`].
+    /// Same spelling-preservation contract as [`FieldRef::stddev`] /
+    /// [`FieldRef::every`].
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn variance(self) -> AggregateExpr<f64> {
+        AggregateExpr::unary_agg(AggOp::Variance, self.column(), Some("DOUBLE PRECISION"))
+    }
 }
 
 // ── MIN / MAX ─────────────────────────────────────────────────────────
@@ -1385,6 +1464,125 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &agg.node);
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
+    }
+
+    // ── STDDEV / VARIANCE family (T4) ─────────────────────────────────────
+
+    #[test]
+    fn stddev_pop_emits_stddev_pop() {
+        let f: FieldRef<Txn, f64> = FieldRef::new("score");
+        let agg = f.stddev_pop();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "STDDEV_POP(score)");
+    }
+
+    #[test]
+    fn stddev_samp_emits_stddev_samp() {
+        let f: FieldRef<Txn, f64> = FieldRef::new("score");
+        let agg = f.stddev_samp();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "STDDEV_SAMP(score)");
+    }
+
+    #[test]
+    fn stddev_alias_emits_bare_stddev() {
+        // The `.stddev()` alias preserves spelling — emits STDDEV, not
+        // STDDEV_SAMP. Both names resolve to the same Postgres aggregate
+        // semantically, but the emitter honours the caller's choice.
+        let f: FieldRef<Txn, f64> = FieldRef::new("score");
+        let agg = f.stddev();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "STDDEV(score)");
+    }
+
+    #[test]
+    fn var_pop_emits_var_pop() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("score");
+        let agg = f.var_pop();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "VAR_POP(score)");
+    }
+
+    #[test]
+    fn var_samp_emits_var_samp() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("score");
+        let agg = f.var_samp();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "VAR_SAMP(score)");
+    }
+
+    #[test]
+    fn variance_alias_emits_bare_variance() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("score");
+        let agg = f.variance();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "VARIANCE(score)");
+    }
+
+    #[test]
+    fn stats_aggregates_compose_with_distinct() {
+        // DISTINCT composes for stats aggregates — emits
+        // `STDDEV_POP(DISTINCT score)`. Semantically rare but Postgres
+        // accepts it; the round-trip is structural.
+        let f: FieldRef<Txn, f64> = FieldRef::new("score");
+        let agg = f.stddev_pop().distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "STDDEV_POP(DISTINCT score)");
+    }
+
+    #[test]
+    fn stddev_alias_pair_emit_distinct_keywords() {
+        // `stddev_samp` and `stddev` are *different* AggOp variants that
+        // resolve to the same Postgres aggregate semantically. The
+        // emitter must keep them distinct in the SQL token stream
+        // (no collapse), so the user's spelling round-trips.
+        let f1: FieldRef<Txn, f64> = FieldRef::new("score");
+        let f2: FieldRef<Txn, f64> = FieldRef::new("score");
+        let mut acc1 = SqlAccumulator::new("");
+        let mut acc2 = SqlAccumulator::new("");
+        emit_expr(&mut acc1, &f1.stddev_samp().node);
+        emit_expr(&mut acc2, &f2.stddev().node);
+        assert_eq!(acc1.sql(), "STDDEV_SAMP(score)");
+        assert_eq!(acc2.sql(), "STDDEV(score)");
+        assert_ne!(acc1.sql(), acc2.sql());
+    }
+
+    #[test]
+    fn variance_alias_pair_emit_distinct_keywords() {
+        // Same alias-equivalence pin for VAR_SAMP / VARIANCE.
+        let f1: FieldRef<Txn, i64> = FieldRef::new("score");
+        let f2: FieldRef<Txn, i64> = FieldRef::new("score");
+        let mut acc1 = SqlAccumulator::new("");
+        let mut acc2 = SqlAccumulator::new("");
+        emit_expr(&mut acc1, &f1.var_samp().node);
+        emit_expr(&mut acc2, &f2.variance().node);
+        assert_eq!(acc1.sql(), "VAR_SAMP(score)");
+        assert_eq!(acc2.sql(), "VARIANCE(score)");
+        assert_ne!(acc1.sql(), acc2.sql());
+    }
+
+    #[test]
+    fn stats_aggregates_return_f64() {
+        // Compile-time pin: every stats aggregate returns
+        // `AggregateExpr<f64>` regardless of the input numeric type.
+        let f_i16: FieldRef<Txn, i16> = FieldRef::new("score16");
+        let f_i32: FieldRef<Txn, i32> = FieldRef::new("score32");
+        let f_i64: FieldRef<Txn, i64> = FieldRef::new("score64");
+        let f_f32: FieldRef<Txn, f32> = FieldRef::new("score_f32");
+        let f_f64: FieldRef<Txn, f64> = FieldRef::new("score_f64");
+        let _: AggregateExpr<f64> = f_i16.stddev_pop();
+        let _: AggregateExpr<f64> = f_i32.stddev_samp();
+        let _: AggregateExpr<f64> = f_i64.stddev();
+        let _: AggregateExpr<f64> = f_f32.var_pop();
+        let _: AggregateExpr<f64> = f_f64.var_samp();
+        let _: AggregateExpr<f64> = f_i32.variance();
     }
 
     // ── EVERY (T3) ────────────────────────────────────────────────────────

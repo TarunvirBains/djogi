@@ -536,6 +536,23 @@ pub(crate) enum AggOp {
     /// type gating as [`AggOp::BitAnd`]. PostgreSQL 14+ feature; Djogi's
     /// floor (PostgreSQL 18) safely supports it.
     BitXor,
+    /// `STDDEV_POP(col)` — population standard deviation, returned as
+    /// `f64` (cast to `DOUBLE PRECISION` to honour the typed surface's
+    /// `Out = f64` promise across integer and float inputs).
+    StddevPop,
+    /// `STDDEV_SAMP(col)` — sample standard deviation. Postgres' default
+    /// "stddev" is the sample form; both spellings are exposed.
+    StddevSamp,
+    /// `STDDEV(col)` — Postgres alias for [`AggOp::StddevSamp`]. Carried
+    /// as a distinct variant so the emitter preserves the spelling the
+    /// caller used (matching the `every` / `bool_and` alias treatment).
+    Stddev,
+    /// `VAR_POP(col)` — population variance, returned as `f64`.
+    VarPop,
+    /// `VAR_SAMP(col)` — sample variance.
+    VarSamp,
+    /// `VARIANCE(col)` — Postgres alias for [`AggOp::VarSamp`].
+    Variance,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

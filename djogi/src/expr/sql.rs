@@ -277,6 +277,20 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 AggOp::BitAnd => emit_unary_agg(acc, "BIT_AND(", *distinct, arg, order_by),
                 AggOp::BitOr => emit_unary_agg(acc, "BIT_OR(", *distinct, arg, order_by),
                 AggOp::BitXor => emit_unary_agg(acc, "BIT_XOR(", *distinct, arg, order_by),
+                // Statistics aggregates — Postgres returns NUMERIC for
+                // integer inputs and DOUBLE PRECISION for float; the
+                // typed surface narrows everywhere via the cast slot
+                // (`::DOUBLE PRECISION`) emitted at the terminal layer.
+                // STDDEV / VARIANCE are Postgres aliases for
+                // STDDEV_SAMP / VAR_SAMP respectively; preserved as
+                // distinct keywords so the emitter honours the caller's
+                // spelling (matching the EVERY/BOOL_AND alias treatment).
+                AggOp::StddevPop => emit_unary_agg(acc, "STDDEV_POP(", *distinct, arg, order_by),
+                AggOp::StddevSamp => emit_unary_agg(acc, "STDDEV_SAMP(", *distinct, arg, order_by),
+                AggOp::Stddev => emit_unary_agg(acc, "STDDEV(", *distinct, arg, order_by),
+                AggOp::VarPop => emit_unary_agg(acc, "VAR_POP(", *distinct, arg, order_by),
+                AggOp::VarSamp => emit_unary_agg(acc, "VAR_SAMP(", *distinct, arg, order_by),
+                AggOp::Variance => emit_unary_agg(acc, "VARIANCE(", *distinct, arg, order_by),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
