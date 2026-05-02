@@ -326,6 +326,92 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     arg2.as_deref().expect("Corr aggregate must have arg2 set"),
                     order_by,
                 ),
+                // Regression family — every variant takes (y, x) and
+                // returns DOUBLE PRECISION except REGR_COUNT (BIGINT).
+                // The cast slot picks up the per-variant return type;
+                // emission shape is uniform across all ten through the
+                // shared `emit_binary_agg` helper.
+                AggOp::RegrAvgx => emit_binary_agg(
+                    acc,
+                    "REGR_AVGX(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrAvgx aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrAvgy => emit_binary_agg(
+                    acc,
+                    "REGR_AVGY(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrAvgy aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrCount => emit_binary_agg(
+                    acc,
+                    "REGR_COUNT(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrCount aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrIntercept => emit_binary_agg(
+                    acc,
+                    "REGR_INTERCEPT(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrIntercept aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrR2 => emit_binary_agg(
+                    acc,
+                    "REGR_R2(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrR2 aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrSlope => emit_binary_agg(
+                    acc,
+                    "REGR_SLOPE(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrSlope aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrSxx => emit_binary_agg(
+                    acc,
+                    "REGR_SXX(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrSxx aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrSxy => emit_binary_agg(
+                    acc,
+                    "REGR_SXY(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrSxy aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::RegrSyy => emit_binary_agg(
+                    acc,
+                    "REGR_SYY(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("RegrSyy aggregate must have arg2 set"),
+                    order_by,
+                ),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the

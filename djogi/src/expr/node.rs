@@ -582,6 +582,35 @@ pub(crate) enum AggOp {
     /// `CORR(y, x)` — Pearson correlation coefficient, returned as
     /// `f64`. Same arg ordering as [`AggOp::CovarPop`].
     Corr,
+    /// `REGR_AVGX(y, x)` — average of the independent variable across
+    /// rows where both columns are non-null. Returned as `f64`.
+    RegrAvgx,
+    /// `REGR_AVGY(y, x)` — average of the dependent variable across
+    /// rows where both columns are non-null. Returned as `f64`.
+    RegrAvgy,
+    /// `REGR_COUNT(y, x)` — number of input rows where both columns
+    /// are non-null. Postgres returns `BIGINT` here (unlike the rest
+    /// of the regression family which returns `DOUBLE PRECISION`); the
+    /// typed surface returns `AggregateExpr<i64>` accordingly.
+    RegrCount,
+    /// `REGR_INTERCEPT(y, x)` — y-intercept of the least-squares-fit
+    /// line through the (y, x) pairs. Returned as `f64`.
+    RegrIntercept,
+    /// `REGR_R2(y, x)` — coefficient of determination of the
+    /// least-squares-fit line. Returned as `f64`.
+    RegrR2,
+    /// `REGR_SLOPE(y, x)` — slope of the least-squares-fit line
+    /// through the (y, x) pairs. Returned as `f64`.
+    RegrSlope,
+    /// `REGR_SXX(y, x)` — sum of squares of the independent variable
+    /// (sum of `(x - avg(x))^2`). Returned as `f64`.
+    RegrSxx,
+    /// `REGR_SXY(y, x)` — sum of products of (y, x) deviations
+    /// (sum of `(x - avg(x)) * (y - avg(y))`). Returned as `f64`.
+    RegrSxy,
+    /// `REGR_SYY(y, x)` — sum of squares of the dependent variable
+    /// (sum of `(y - avg(y))^2`). Returned as `f64`.
+    RegrSyy,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

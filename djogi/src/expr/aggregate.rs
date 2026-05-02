@@ -570,6 +570,134 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
             Some("DOUBLE PRECISION"),
         )
     }
+
+    /// `REGR_AVGX(y, x)` — average of the independent variable across
+    /// rows where both `y` and `x` are non-null. Returned as `f64`.
+    ///
+    /// Receiver is `y`, argument is `x` — Postgres convention for the
+    /// regression family. Same `DOUBLE PRECISION` cast as the rest of
+    /// the binary numeric aggregates.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_avgx<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrAvgx,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `REGR_AVGY(y, x)` — average of the dependent variable across
+    /// rows where both `y` and `x` are non-null. Returned as `f64`.
+    /// Same convention as [`FieldRef::regr_avgx`].
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_avgy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrAvgy,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `REGR_COUNT(y, x)` — number of input rows where both `y` and
+    /// `x` are non-null. Returned as `i64`.
+    ///
+    /// Unlike the rest of the regression family, Postgres returns
+    /// `BIGINT` here — the typed surface returns `AggregateExpr<i64>`
+    /// to match. The cast slot uses `BIGINT` for emission uniformity
+    /// with the unary `count()` path.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_count<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<i64> {
+        AggregateExpr::binary_agg(AggOp::RegrCount, self.column(), x.column(), Some("BIGINT"))
+    }
+
+    /// `REGR_INTERCEPT(y, x)` — y-intercept of the least-squares-fit
+    /// line through the (y, x) pairs. Returned as `f64`.
+    ///
+    /// Returns `NULL` for empty groups and groups where `x` has zero
+    /// variance (the regression line is undefined).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_intercept<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrIntercept,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `REGR_R2(y, x)` — coefficient of determination of the
+    /// least-squares-fit line. Returned as `f64`.
+    ///
+    /// Range is `[0.0, 1.0]`: `1.0` for a perfect fit, `0.0` for no
+    /// linear relationship. Returns `NULL` when the group is empty or
+    /// `x` has zero variance.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_r2<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrR2,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `REGR_SLOPE(y, x)` — slope of the least-squares-fit line
+    /// through the (y, x) pairs. Returned as `f64`.
+    ///
+    /// Same NULL behaviour as [`FieldRef::regr_intercept`].
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_slope<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrSlope,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `REGR_SXX(y, x)` — sum of squares of the independent variable
+    /// across the (y, x) pairs (`SUM((x - AVG(x))^2)`). Returned as
+    /// `f64`. Useful as the denominator in slope / r² calculations
+    /// when computing the regression manually.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_sxx<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrSxx,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `REGR_SXY(y, x)` — sum of products of (y, x) deviations
+    /// across the pairs (`SUM((x - AVG(x)) * (y - AVG(y)))`).
+    /// Returned as `f64`. Useful as the numerator in slope / covariance
+    /// calculations.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_sxy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrSxy,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `REGR_SYY(y, x)` — sum of squares of the dependent variable
+    /// across the (y, x) pairs (`SUM((y - AVG(y))^2)`). Returned as
+    /// `f64`. Useful as the denominator in r² calculations when
+    /// computing the regression manually.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn regr_syy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::RegrSyy,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
 }
 
 // ── MIN / MAX ─────────────────────────────────────────────────────────
@@ -1565,6 +1693,125 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &agg.node);
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
+    }
+
+    // ── REGR_* family (T6) ────────────────────────────────────────────────
+
+    #[test]
+    fn regr_slope_emits_regr_slope_y_x() {
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("price");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
+        let agg = f_y.regr_slope(f_x);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "REGR_SLOPE(price, hours)");
+    }
+
+    #[test]
+    fn regr_intercept_emits_regr_intercept_y_x() {
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("price");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
+        let agg = f_y.regr_intercept(f_x);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "REGR_INTERCEPT(price, hours)");
+    }
+
+    #[test]
+    fn regr_r2_emits_regr_r2_y_x() {
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("price");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
+        let agg = f_y.regr_r2(f_x);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "REGR_R2(price, hours)");
+    }
+
+    #[test]
+    fn regr_count_emits_regr_count_y_x() {
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("price");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("hours");
+        let agg = f_y.regr_count(f_x);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "REGR_COUNT(price, hours)");
+    }
+
+    #[test]
+    fn regr_count_returns_i64_aggregate() {
+        // Compile-time pin: REGR_COUNT is the only regression-family
+        // aggregate that returns BIGINT (mirrors the unary `count()`
+        // shape) — every other regr_* method returns f64.
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("y");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("x");
+        let _: AggregateExpr<i64> = f_y.regr_count(f_x);
+    }
+
+    #[test]
+    fn regr_avgx_avgy_emit_distinct_keywords() {
+        // The two averages take y, x in that order regardless of which
+        // variable is being averaged — Postgres convention.
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("y");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("x");
+        let mut acc1 = SqlAccumulator::new("");
+        emit_expr(&mut acc1, &f_y.regr_avgx(f_x).node);
+        assert_eq!(acc1.sql(), "REGR_AVGX(y, x)");
+
+        let f_y2: FieldRef<Txn, f64> = FieldRef::new("y");
+        let f_x2: FieldRef<Txn, f64> = FieldRef::new("x");
+        let mut acc2 = SqlAccumulator::new("");
+        emit_expr(&mut acc2, &f_y2.regr_avgy(f_x2).node);
+        assert_eq!(acc2.sql(), "REGR_AVGY(y, x)");
+    }
+
+    #[test]
+    fn regr_sxx_sxy_syy_emit_distinct_keywords() {
+        // Sum-of-squares family: SXX (x deviations²), SXY (xy
+        // deviations), SYY (y deviations²). Each maps to its own
+        // Postgres function; the emitter must pick the right keyword.
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("y");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("x");
+
+        let mut acc1 = SqlAccumulator::new("");
+        emit_expr(&mut acc1, &f_y.regr_sxx(f_x).node);
+        assert_eq!(acc1.sql(), "REGR_SXX(y, x)");
+
+        let f_y2: FieldRef<Txn, f64> = FieldRef::new("y");
+        let f_x2: FieldRef<Txn, f64> = FieldRef::new("x");
+        let mut acc2 = SqlAccumulator::new("");
+        emit_expr(&mut acc2, &f_y2.regr_sxy(f_x2).node);
+        assert_eq!(acc2.sql(), "REGR_SXY(y, x)");
+
+        let f_y3: FieldRef<Txn, f64> = FieldRef::new("y");
+        let f_x3: FieldRef<Txn, f64> = FieldRef::new("x");
+        let mut acc3 = SqlAccumulator::new("");
+        emit_expr(&mut acc3, &f_y3.regr_syy(f_x3).node);
+        assert_eq!(acc3.sql(), "REGR_SYY(y, x)");
+    }
+
+    #[test]
+    fn regr_family_non_count_returns_f64() {
+        // Compile-time pin: all regression-family methods except
+        // `regr_count` return `AggregateExpr<f64>`. Mixed input numeric
+        // types compose because both sides gate on `Numeric`
+        // independently.
+        let f_y: FieldRef<Txn, i64> = FieldRef::new("y");
+        let f_x_i32: FieldRef<Txn, i32> = FieldRef::new("x");
+        let f_x_f64: FieldRef<Txn, f64> = FieldRef::new("x");
+        let _: AggregateExpr<f64> = f_y.regr_avgx(f_x_i32);
+        let _: AggregateExpr<f64> = FieldRef::<Txn, i64>::new("y").regr_avgy(f_x_f64);
+        let _: AggregateExpr<f64> =
+            FieldRef::<Txn, f32>::new("y").regr_intercept(FieldRef::<Txn, f64>::new("x"));
+        let _: AggregateExpr<f64> =
+            FieldRef::<Txn, f32>::new("y").regr_r2(FieldRef::<Txn, f64>::new("x"));
+        let _: AggregateExpr<f64> =
+            FieldRef::<Txn, f32>::new("y").regr_slope(FieldRef::<Txn, f64>::new("x"));
+        let _: AggregateExpr<f64> =
+            FieldRef::<Txn, f32>::new("y").regr_sxx(FieldRef::<Txn, f64>::new("x"));
+        let _: AggregateExpr<f64> =
+            FieldRef::<Txn, f32>::new("y").regr_sxy(FieldRef::<Txn, f64>::new("x"));
+        let _: AggregateExpr<f64> =
+            FieldRef::<Txn, f32>::new("y").regr_syy(FieldRef::<Txn, f64>::new("x"));
     }
 
     // ── COVAR / CORR (T5 — binary aggregates) ─────────────────────────────
