@@ -169,26 +169,38 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                 }
             }
 
-            // ── Ordered-set aggregate legality (Cluster E T7) ─────────
+            // ── Ordered-set + hypothetical-set aggregate legality
+            //    (Cluster E T7 + T8) ──────────────────────────────────
             //
-            // PERCENTILE_CONT / PERCENTILE_DISC / MODE require a non-
-            // empty WITHIN GROUP target. Postgres rejects DISTINCT and
-            // the in-paren ORDER BY modifier on these aggregates. FILTER
-            // and OVER are valid and pass through unchanged.
+            // PERCENTILE_CONT / PERCENTILE_DISC / MODE (ordered-set)
+            // and the hypothetical-set RANK / DENSE_RANK / PERCENT_RANK
+            // / CUME_DIST family share the same WITHIN GROUP rules:
+            // mandatory non-empty target, no DISTINCT, no in-paren
+            // ORDER BY. FILTER and OVER are valid and pass through.
             if matches!(
                 op,
-                AggOp::PercentileCont | AggOp::PercentileDisc | AggOp::Mode
+                AggOp::PercentileCont
+                    | AggOp::PercentileDisc
+                    | AggOp::Mode
+                    | AggOp::HypotheticalRank
+                    | AggOp::HypotheticalDenseRank
+                    | AggOp::HypotheticalPercentRank
+                    | AggOp::HypotheticalCumeDist
             ) {
                 let op_label = match op {
                     AggOp::PercentileCont => "PERCENTILE_CONT",
                     AggOp::PercentileDisc => "PERCENTILE_DISC",
                     AggOp::Mode => "MODE",
+                    AggOp::HypotheticalRank => "RANK (hypothetical-set)",
+                    AggOp::HypotheticalDenseRank => "DENSE_RANK (hypothetical-set)",
+                    AggOp::HypotheticalPercentRank => "PERCENT_RANK (hypothetical-set)",
+                    AggOp::HypotheticalCumeDist => "CUME_DIST (hypothetical-set)",
                     _ => unreachable!(),
                 };
                 if within_group_order_by.is_empty() {
                     return Err(crate::DjogiError::UnsupportedAggregate {
                         op: op_label,
-                        reason: "ordered-set aggregate requires a WITHIN GROUP (ORDER BY ...) \
+                        reason: "ordered-set / hypothetical-set aggregate requires a WITHIN GROUP (ORDER BY ...) \
                              target — the typed builders on FieldRef populate this slot \
                              at construction time; if you reached this error you have \
                              constructed the aggregate node directly without going through \
@@ -198,7 +210,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                 if *distinct {
                     return Err(crate::DjogiError::UnsupportedAggregate {
                         op: op_label,
-                        reason: "ordered-set aggregates do not accept DISTINCT — Postgres rejects \
+                        reason: "ordered-set / hypothetical-set aggregates do not accept DISTINCT — Postgres rejects \
                              this combination as ambiguous (the aggregate operates over the \
                              whole ordered set, not deduped values)",
                     });
@@ -206,7 +218,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                 if !order_by.is_empty() {
                     return Err(crate::DjogiError::UnsupportedAggregate {
                         op: op_label,
-                        reason: "ordered-set aggregates do not accept the in-paren ORDER BY \
+                        reason: "ordered-set / hypothetical-set aggregates do not accept the in-paren ORDER BY \
                              modifier (the .order_by(...) chain) — use \
                              .within_group_order_by(...) to override the WITHIN GROUP target \
                              instead, or chain ORDER BY at the QuerySet level",
@@ -584,6 +596,38 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     // is a sentinel placeholder that the emitter ignores
                     // on this branch (parallel to CountStar).
                     acc.push_sql("MODE() WITHIN GROUP (ORDER BY ");
+                    emit_within_group_target(acc, within_group_order_by);
+                    acc.push_sql(")");
+                }
+                // Hypothetical-set aggregates (Cluster E T8) — same
+                // shape as ordered-set, with the function-call literal
+                // being the hypothetical value (matching the WITHIN
+                // GROUP target column's type).
+                AggOp::HypotheticalRank => {
+                    acc.push_sql("RANK(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(") WITHIN GROUP (ORDER BY ");
+                    emit_within_group_target(acc, within_group_order_by);
+                    acc.push_sql(")");
+                }
+                AggOp::HypotheticalDenseRank => {
+                    acc.push_sql("DENSE_RANK(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(") WITHIN GROUP (ORDER BY ");
+                    emit_within_group_target(acc, within_group_order_by);
+                    acc.push_sql(")");
+                }
+                AggOp::HypotheticalPercentRank => {
+                    acc.push_sql("PERCENT_RANK(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(") WITHIN GROUP (ORDER BY ");
+                    emit_within_group_target(acc, within_group_order_by);
+                    acc.push_sql(")");
+                }
+                AggOp::HypotheticalCumeDist => {
+                    acc.push_sql("CUME_DIST(");
+                    emit_expr(acc, arg);
+                    acc.push_sql(") WITHIN GROUP (ORDER BY ");
                     emit_within_group_target(acc, within_group_order_by);
                     acc.push_sql(")");
                 }

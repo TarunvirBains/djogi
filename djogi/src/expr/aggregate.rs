@@ -1233,6 +1233,107 @@ where
         let target = self.asc();
         AggregateExpr::ordered_set(AggOp::Mode, ExprNode::Field { column: "" }, target, None)
     }
+
+    /// `RANK(value) WITHIN GROUP (ORDER BY <col>)` — hypothetical-set
+    /// rank: the rank that `value` would have if inserted into the
+    /// sorted column. Returns `AggregateExpr<i64>`.
+    ///
+    /// # Distinct from the window-form rank
+    ///
+    /// Postgres has two `RANK` functions:
+    /// - **Window form** ([`crate::expr::Rank`]) — ranks each row within
+    ///   a `PARTITION BY ... ORDER BY ...` window.
+    /// - **Hypothetical-set form** (this method) — answers "what rank
+    ///   would this hypothetical value have in the sorted set?" without
+    ///   inserting the row. The argument matches the column type.
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // What rank would a $7,500 salary have among the engineering team?
+    /// let rank: i64 = Employee::objects()
+    ///     .filter(|e| e.dept().eq("engineering"))
+    ///     .aggregate(|e| e.salary().rank_of(7_500))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn rank_of(self, value: V) -> AggregateExpr<i64> {
+        let target = self.asc();
+        let arg = ExprNode::Literal(value.into_filter_value());
+        AggregateExpr::ordered_set(AggOp::HypotheticalRank, arg, target, Some("BIGINT"))
+    }
+
+    /// `DENSE_RANK(value) WITHIN GROUP (ORDER BY <col>)` —
+    /// hypothetical-set dense rank (ties don't leave gaps in rank
+    /// numbering). Returns `AggregateExpr<i64>`.
+    ///
+    /// Same shape and rationale as [`Self::rank_of`]; differs only in
+    /// tie-handling semantics.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn dense_rank_of(self, value: V) -> AggregateExpr<i64> {
+        let target = self.asc();
+        let arg = ExprNode::Literal(value.into_filter_value());
+        AggregateExpr::ordered_set(AggOp::HypotheticalDenseRank, arg, target, Some("BIGINT"))
+    }
+
+    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY <col>)` —
+    /// hypothetical-set percent rank: the position the hypothetical
+    /// value would occupy as a fraction in `[0.0, 1.0]`. Returns
+    /// `AggregateExpr<f64>`.
+    ///
+    /// Distinct from the window-form `PERCENT_RANK()` (which doesn't
+    /// take a hypothetical arg and operates over a window partition).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // What percentile (as a fraction) would a 100 ms latency be at?
+    /// let pct: f64 = Request::objects()
+    ///     .aggregate(|r| r.latency_ms().percent_rank_of(100.0))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn percent_rank_of(self, value: V) -> AggregateExpr<f64> {
+        let target = self.asc();
+        let arg = ExprNode::Literal(value.into_filter_value());
+        AggregateExpr::ordered_set(
+            AggOp::HypotheticalPercentRank,
+            arg,
+            target,
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `CUME_DIST(value) WITHIN GROUP (ORDER BY <col>)` —
+    /// hypothetical-set cumulative distribution: the fraction of rows
+    /// that would rank at or below the hypothetical value. Returns
+    /// `AggregateExpr<f64>`.
+    ///
+    /// Distinct from the window-form `CUME_DIST()`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // What fraction of orders are at or below a $500 amount?
+    /// let pct: f64 = Order::objects()
+    ///     .aggregate(|o| o.amount().cume_dist_of(500))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn cume_dist_of(self, value: V) -> AggregateExpr<f64> {
+        let target = self.asc();
+        let arg = ExprNode::Literal(value.into_filter_value());
+        AggregateExpr::ordered_set(
+            AggOp::HypotheticalCumeDist,
+            arg,
+            target,
+            Some("DOUBLE PRECISION"),
+        )
+    }
 }
 
 // ── STRING_AGG ──────────────────────────────────────────────────────────────
@@ -2921,5 +3022,127 @@ mod tests {
         } else {
             panic!("expected Aggregate node");
         }
+    }
+
+    // ── Hypothetical-set aggregates — T8 ─────────────────────────────────────
+
+    #[test]
+    fn rank_of_emits_within_group() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let agg = f.rank_of(7_500);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("RANK($") && sql.contains(") WITHIN GROUP (ORDER BY salary ASC)"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn dense_rank_of_emits_within_group() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let agg = f.dense_rank_of(7_500);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("DENSE_RANK($") && sql.contains(") WITHIN GROUP (ORDER BY salary ASC)"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn percent_rank_of_emits_within_group() {
+        let f: FieldRef<Txn, f64> = FieldRef::new("ms");
+        let agg = f.percent_rank_of(100.0);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("PERCENT_RANK($") && sql.contains(") WITHIN GROUP (ORDER BY ms ASC)"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn cume_dist_of_emits_within_group() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.cume_dist_of(500);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("CUME_DIST($") && sql.contains(") WITHIN GROUP (ORDER BY amount ASC)"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn rank_of_returns_i64() {
+        // Compile-time signature pin — RANK(value) returns BIGINT/i64.
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let _: AggregateExpr<i64> = f.rank_of(7_500);
+        let _: AggregateExpr<i64> = f.dense_rank_of(7_500);
+    }
+
+    #[test]
+    fn percent_rank_of_returns_f64() {
+        // Compile-time signature pin — PERCENT_RANK / CUME_DIST return
+        // DOUBLE PRECISION / f64.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let _: AggregateExpr<f64> = f.percent_rank_of(500);
+        let _: AggregateExpr<f64> = f.cume_dist_of(500);
+    }
+
+    #[test]
+    fn hypothetical_set_with_distinct_rejected_at_fetch() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let agg = f.rank_of(7_500).distinct();
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "DISTINCT must be rejected on hypothetical-set RANK"
+        );
+    }
+
+    #[test]
+    fn hypothetical_set_with_in_paren_order_by_rejected_at_fetch() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let other: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.rank_of(7_500).order_by(other.asc());
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "in-paren ORDER BY must be rejected on hypothetical-set RANK"
+        );
+    }
+
+    #[test]
+    fn hypothetical_set_with_filter_accepted_at_fetch() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let g: FieldRef<Txn, i64> = FieldRef::new("active");
+        let agg = f.rank_of(7_500).filter(g.as_expr().gt(Expr::literal(0i64)));
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_ok(),
+            "FILTER must be accepted on hypothetical-set RANK, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn hypothetical_rank_within_group_override_works() {
+        // The .within_group_order_by(...) modifier (T7) works for
+        // hypothetical-set aggregates too — same IR slot.
+        let f: FieldRef<Txn, i64> = FieldRef::new("salary");
+        let other: FieldRef<Txn, i64> = FieldRef::new("base_salary");
+        let agg = f.rank_of(7_500).within_group_order_by(other.desc());
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains(") WITHIN GROUP (ORDER BY base_salary DESC)"),
+            "expected DESC override on different column, got: {sql}"
+        );
     }
 }

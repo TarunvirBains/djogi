@@ -707,6 +707,31 @@ pub(crate) enum AggOp {
     /// `arg`). The column being mode-aggregated lives in
     /// `within_group_order_by`.
     Mode,
+    /// `RANK(value) WITHIN GROUP (ORDER BY col)` — hypothetical-set
+    /// rank: the rank that `value` would have if inserted into the
+    /// sorted column. Returns `BIGINT` (typed as `i64`).
+    ///
+    /// Distinct from the window-only rank function in
+    /// [`super::window_fn::Rank`]: that one ranks each row within a
+    /// PARTITION/ORDER window, while this one answers "what rank
+    /// would this hypothetical value have?" given a single ordered
+    /// set. Same modifier discipline as the ordered-set aggregates —
+    /// no DISTINCT, no in-paren ORDER BY, mandatory WITHIN GROUP.
+    HypotheticalRank,
+    /// `DENSE_RANK(value) WITHIN GROUP (ORDER BY col)` — hypothetical-
+    /// set dense rank (no gaps in rank numbering when ties occur).
+    /// Returns `BIGINT`.
+    HypotheticalDenseRank,
+    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY col)` —
+    /// hypothetical-set percent rank: the position the hypothetical
+    /// value would have as a fraction in `[0.0, 1.0]`. Returns
+    /// `DOUBLE PRECISION`.
+    HypotheticalPercentRank,
+    /// `CUME_DIST(value) WITHIN GROUP (ORDER BY col)` — hypothetical-
+    /// set cumulative distribution: the fraction of rows that would
+    /// rank at or below the hypothetical value. Returns
+    /// `DOUBLE PRECISION`.
+    HypotheticalCumeDist,
     /// `ST_Centroid(ST_Collect(<col>))::geography` — per-group centroid
     /// of point geometries. Fused two-call shape (the emitter wraps
     /// `ST_Collect` inside `ST_Centroid` and casts back to geography).
