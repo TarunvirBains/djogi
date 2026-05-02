@@ -593,6 +593,39 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")::geometry::geography");
                 }
+                // T14 — line / polygon aggregates. `ST_MakeLine` is
+                // order-sensitive (the per-aggregate ORDER BY controls
+                // the LineString's vertex sequence); `ST_Collect` (used
+                // here as the portable fallback for `ST_PolygonAgg`) is
+                // order-insensitive but still emits the order_by slot
+                // uniformly so the IR stays composable.
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialMakeLine => {
+                    acc.push_sql("ST_MakeLine(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography");
+                }
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialPolygonAgg => {
+                    // Portable fallback for ST_PolygonAgg (PostGIS 3.5+);
+                    // ST_Collect produces an equivalent MultiPolygon for
+                    // polygon-typed inputs. If Djogi ever raises its
+                    // PostGIS floor to 3.5 the keyword changes; the
+                    // surrounding cast chain stays identical.
+                    acc.push_sql("ST_Collect(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography");
+                }
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the

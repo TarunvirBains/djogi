@@ -691,6 +691,38 @@ pub(crate) enum AggOp {
     /// surface is 2D-only.
     #[cfg(feature = "spatial")]
     SpatialExtent3D,
+    /// `ST_MakeLine(<col>::geometry)::geography` — per-group
+    /// LineString builder. Connects per-row points into a single
+    /// LineString in row order, or per-aggregate ORDER BY order when
+    /// `.order_by(field)` is chained. Returns `LineString`.
+    /// Gated on `feature = "spatial"`.
+    ///
+    /// Order-sensitive: the resulting line's vertex sequence follows
+    /// row order, so this aggregate naturally consumes T1's
+    /// `.order_by(field)` modifier — the per-aggregate ORDER BY
+    /// clause lands inside the `ST_MakeLine` parens to control
+    /// vertex sequence at the aggregate level.
+    ///
+    /// `line_agg()` (Postgres `ST_LineAgg` / `ST_LineFromMultiPoint`)
+    /// is deferred until Djogi's geo surface gains a `MultiLineString`
+    /// type — `ST_LineAgg` returns a MultiLineString and Djogi's
+    /// geography family does not currently include that shape.
+    #[cfg(feature = "spatial")]
+    SpatialMakeLine,
+    /// `ST_Collect(<col>::geometry)::geography` — per-group polygon
+    /// collection (portable fallback for `ST_PolygonAgg`). Returns
+    /// `MultiPolygon`. Gated on `feature = "spatial"`.
+    ///
+    /// `ST_PolygonAgg` is PostGIS 3.5+; Djogi's documented PostGIS
+    /// floor is 3.x (see `docs/guide/spatial.md`), so the emitter
+    /// uses the portable `ST_Collect` form which produces an
+    /// equivalent MultiPolygon for polygon-typed inputs. The
+    /// distinct AggOp variant carries the intent (callers asked for
+    /// `polygon_agg()` semantics, not the more general `collect()`)
+    /// and keeps a clean migration path if Djogi ever raises the
+    /// PostGIS floor — only the emitter arm changes.
+    #[cfg(feature = "spatial")]
+    SpatialPolygonAgg,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].
