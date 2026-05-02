@@ -121,12 +121,20 @@
 //!     <source>     <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
 //!     <ancestor>   <PK type> NOT NULL REFERENCES <source_table>(id) ON DELETE CASCADE,
 //!     <depth>      INTEGER NOT NULL,
-//!     <path_count> BIGINT NOT NULL DEFAULT 1,
+//!     <path_count> BIGINT NOT NULL,
 //!     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
 //!     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
 //!     UNIQUE (<source>, <ancestor>, <depth>)
 //! );
 //! ```
+//!
+//! `<path_count>` does not need a column-level `DEFAULT` — every row
+//! the helper writes carries an explicit `COUNT(*)` value. Adopters
+//! who add `DEFAULT 1` get the same runtime behavior but introduce a
+//! drift point if they're maintaining a parallel descriptor (the
+//! framework's migration projection does not synthesize column
+//! defaults for user-declared fields, so the descriptor would carry
+//! `default = None` against a live `DEFAULT 1` schema).
 //!
 //! The `UNIQUE (<source>, <ancestor>, <depth>)` constraint is **load-
 //! bearing** — `ON CONFLICT (...)` requires an exact match against a
