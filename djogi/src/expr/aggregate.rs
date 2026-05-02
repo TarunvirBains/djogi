@@ -455,6 +455,16 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     ///
     /// See [`FieldRef::stddev`] for the alias spelling and
     /// [`FieldRef::stddev_pop`] for the population form.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Per-org sample stddev of order amounts
+    /// let scatter: Vec<(i64, f64)> = Order::objects()
+    ///     .group_by(|f| f.org_id())
+    ///     .annotate(|f| f.amount().stddev_samp())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn stddev_samp(self) -> AggregateExpr<f64> {
         AggregateExpr::unary_agg(AggOp::StddevSamp, self.column(), Some("DOUBLE PRECISION"))
@@ -477,6 +487,16 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// Population form (no `n-1` correction). Same NULL-on-empty-group
     /// behaviour as the stddev pair; same `DOUBLE PRECISION` narrowing
     /// cast applies.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Population variance of latency across the day's request stream
+    /// let var: f64 = Request::objects()
+    ///     .filter(|r| r.day().eq(today))
+    ///     .aggregate(|r| r.latency_ms().var_pop())
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn var_pop(self) -> AggregateExpr<f64> {
         AggregateExpr::unary_agg(AggOp::VarPop, self.column(), Some("DOUBLE PRECISION"))
@@ -489,6 +509,16 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     ///
     /// See [`FieldRef::variance`] for the alias spelling and
     /// [`FieldRef::var_pop`] for the population form.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Per-region sample variance of customer order totals
+    /// let dispersion: Vec<(i64, f64)> = Order::objects()
+    ///     .group_by(|f| f.region_id())
+    ///     .annotate(|f| f.amount().var_samp())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn var_samp(self) -> AggregateExpr<f64> {
         AggregateExpr::unary_agg(AggOp::VarSamp, self.column(), Some("DOUBLE PRECISION"))
@@ -497,6 +527,14 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `VARIANCE(column)` — Postgres alias for [`FieldRef::var_samp`].
     /// Same spelling-preservation contract as [`FieldRef::stddev`] /
     /// [`FieldRef::every`].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let var: f64 = Order::objects()
+    ///     .aggregate(|f| f.amount().variance())
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn variance(self) -> AggregateExpr<f64> {
         AggregateExpr::unary_agg(AggOp::Variance, self.column(), Some("DOUBLE PRECISION"))
@@ -577,6 +615,18 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// Receiver is `y`, argument is `x` — Postgres convention for the
     /// regression family. Same `DOUBLE PRECISION` cast as the rest of
     /// the binary numeric aggregates.
+    ///
+    /// Returns `NULL` for empty groups (no (y, x) pairs survive the
+    /// non-null filter).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Average ad-spend (x) on days that produced any conversions (y)
+    /// let mean_x: f64 = Day::objects()
+    ///     .aggregate(|f| f.conversions().regr_avgx(f.ad_spend()))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_avgx<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -590,6 +640,17 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `REGR_AVGY(y, x)` — average of the dependent variable across
     /// rows where both `y` and `x` are non-null. Returned as `f64`.
     /// Same convention as [`FieldRef::regr_avgx`].
+    ///
+    /// Returns `NULL` for empty groups.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Average response time (y) on rows where load (x) is also recorded
+    /// let mean_y: f64 = Sample::objects()
+    ///     .aggregate(|f| f.response_ms().regr_avgy(f.load()))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_avgy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -607,6 +668,18 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// `BIGINT` here — the typed surface returns `AggregateExpr<i64>`
     /// to match. The cast slot uses `BIGINT` for emission uniformity
     /// with the unary `count()` path.
+    ///
+    /// Returns `0` (not NULL) for empty groups — `BIGINT` count
+    /// aggregates have a defined zero identity.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // How many (y, x) pairs went into the regression?
+    /// let n: i64 = Sample::objects()
+    ///     .aggregate(|f| f.response_ms().regr_count(f.load()))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_count<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<i64> {
         AggregateExpr::binary_agg(AggOp::RegrCount, self.column(), x.column(), Some("BIGINT"))
@@ -617,6 +690,16 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     ///
     /// Returns `NULL` for empty groups and groups where `x` has zero
     /// variance (the regression line is undefined).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Per-region regression intercept of conversions on ad-spend
+    /// let intercepts: Vec<(i64, f64)> = Day::objects()
+    ///     .group_by(|f| f.region_id())
+    ///     .annotate(|f| f.conversions().regr_intercept(f.ad_spend()))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_intercept<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -633,6 +716,16 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// Range is `[0.0, 1.0]`: `1.0` for a perfect fit, `0.0` for no
     /// linear relationship. Returns `NULL` when the group is empty or
     /// `x` has zero variance.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // How well does ad-spend explain conversions in each region?
+    /// let r2: Vec<(i64, f64)> = Day::objects()
+    ///     .group_by(|f| f.region_id())
+    ///     .annotate(|f| f.conversions().regr_r2(f.ad_spend()))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_r2<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -647,6 +740,16 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// through the (y, x) pairs. Returned as `f64`.
     ///
     /// Same NULL behaviour as [`FieldRef::regr_intercept`].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Per-region slope: how much does each $ of ad-spend buy in conversions?
+    /// let slopes: Vec<(i64, f64)> = Day::objects()
+    ///     .group_by(|f| f.region_id())
+    ///     .annotate(|f| f.conversions().regr_slope(f.ad_spend()))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_slope<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -661,6 +764,17 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// across the (y, x) pairs (`SUM((x - AVG(x))^2)`). Returned as
     /// `f64`. Useful as the denominator in slope / r² calculations
     /// when computing the regression manually.
+    ///
+    /// Returns `NULL` for empty groups; returns `0.0` when every (y, x)
+    /// pair has the same `x` (zero variance).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let sxx: f64 = Sample::objects()
+    ///     .aggregate(|f| f.y().regr_sxx(f.x()))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_sxx<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -675,6 +789,17 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// across the pairs (`SUM((x - AVG(x)) * (y - AVG(y)))`).
     /// Returned as `f64`. Useful as the numerator in slope / covariance
     /// calculations.
+    ///
+    /// Returns `NULL` for empty groups.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Sum of cross-deviations — input to manual covariance computation
+    /// let sxy: f64 = Sample::objects()
+    ///     .aggregate(|f| f.y().regr_sxy(f.x()))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_sxy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -689,6 +814,17 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     /// across the (y, x) pairs (`SUM((y - AVG(y))^2)`). Returned as
     /// `f64`. Useful as the denominator in r² calculations when
     /// computing the regression manually.
+    ///
+    /// Returns `NULL` for empty groups; returns `0.0` when every (y, x)
+    /// pair has the same `y` (zero variance on the dependent side).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let syy: f64 = Sample::objects()
+    ///     .aggregate(|f| f.y().regr_syy(f.x()))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn regr_syy<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
         AggregateExpr::binary_agg(
@@ -788,6 +924,19 @@ impl<M: Model, V> FieldRef<M, V> {
     /// `f.id().json_object_agg(f.name())` emits
     /// `JSON_OBJECT_AGG(id, name)`.
     ///
+    /// # Why `serde_json::Value` and not `Jsonb<T>`
+    ///
+    /// `Jsonb<T>` is a typed schema wrapper — adopters declare the
+    /// expected shape `T` at column-definition time, and the wrapper
+    /// validates incoming data against it on every save. The aggregate
+    /// produces a JSON object whose shape depends entirely on the row
+    /// stream feeding it (whatever `(key, value)` types the closure
+    /// supplies); there is no compile-time `T` to validate against
+    /// without forcing every call site to declare a one-off schema
+    /// type. `serde_json::Value` is the open-shape escape hatch:
+    /// adopters who know the expected shape can `serde_json::from_value`
+    /// the result into their own typed struct at the call site.
+    ///
     /// # Why exposed alongside [`FieldRef::jsonb_object_agg`]
     ///
     /// Djogi standardises on JSONB for storage and wire formats (see
@@ -797,7 +946,8 @@ impl<M: Model, V> FieldRef<M, V> {
     /// surfaces) have no other in-Djogi path. This variant emits the
     /// literal `JSON_OBJECT_AGG` keyword; the
     /// [`FieldRef::jsonb_object_agg`] sibling emits `JSONB_OBJECT_AGG`.
-    /// Both decode into `serde_json::Value` at the Rust level.
+    /// Both decode into `serde_json::Value` at the Rust level for the
+    /// reason above.
     ///
     /// # Duplicate keys
     ///
@@ -845,8 +995,12 @@ impl<M: Model, V> FieldRef<M, V> {
     /// // FROM   sales
     /// // GROUP BY ROLLUP(region, dept);
     /// Sales::objects()
-    ///     .annotate(|f| (f.sales().sum(), f.region().grouping(), f.dept().grouping()))
-    ///     .rollup(|f| (f.region(), f.dept()))   // T11
+    ///     .rollup(|f| (f.region(), f.dept()))
+    ///     .annotate(|f| (
+    ///         f.sales().sum(),
+    ///         f.region().grouping(),
+    ///         f.dept().grouping(),
+    ///     ))
     ///     .fetch_all(&mut ctx).await?;
     /// ```
     ///
@@ -1032,6 +1186,24 @@ impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     /// Useful for "did any row have flag X set?" reductions:
     /// `f.flags().bit_or()` returns the union of bits across the group.
     /// Identity: 0 (no bits set).
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups (or all-NULL inputs) decode as SQL NULL, which the
+    /// non-`Option` typed surface treats as a runtime error. Wrap
+    /// `Out = Option<V>` at the call site for NULL-safe handling, or
+    /// chain `.filter(col.is_not_null())` so the aggregate sees a
+    /// guaranteed-non-empty input.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Union of every set flag across the active session set
+    /// let any_set: i32 = Session::objects()
+    ///     .filter(|s| s.active().eq(true))
+    ///     .aggregate(|s| s.flags().bit_or())
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bit_or(self) -> AggregateExpr<V> {
         AggregateExpr::unary_agg(AggOp::BitOr, self.column(), None)
@@ -1042,6 +1214,21 @@ impl<M: Model, V: IntegerColumn> FieldRef<M, V> {
     /// Useful for parity / checksum-style aggregations. Postgres 14+
     /// adds this aggregate; Djogi's PostgreSQL 18 floor includes it.
     /// Identity: 0.
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups (or all-NULL inputs) decode as SQL NULL — same
+    /// caveat as [`Self::bit_or`].
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Parity bit across a row's per-event flag stream
+    /// let parity: i64 = Event::objects()
+    ///     .filter(|e| e.session_id().eq(session))
+    ///     .aggregate(|e| e.checksum_part().bit_xor())
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn bit_xor(self) -> AggregateExpr<V> {
         AggregateExpr::unary_agg(AggOp::BitXor, self.column(), None)
@@ -1440,6 +1627,87 @@ mod tests {
         assert!(
             matches!(err, crate::DjogiError::UnsupportedAggregate { .. }),
             "expected UnsupportedAggregate variant, got: {err:?}"
+        );
+    }
+
+    // ── Codex round-1 fixup tests ────────────────────────────────────────────
+
+    #[test]
+    fn count_star_with_order_by_rejected_at_fetch() {
+        // COUNT(*) does not accept a per-aggregate ORDER BY — the emitter
+        // hard-codes `COUNT(*)` and would silently drop the order_by slot.
+        // Reject at fetch time so adopters see a typed error.
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let agg = f.count_star().order_by(f.asc());
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected UnsupportedAggregate error for COUNT(*) with ORDER BY"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::DjogiError::UnsupportedAggregate { .. }),
+            "expected UnsupportedAggregate variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn grouping_with_distinct_rejected_at_fetch() {
+        // GROUPING is a metadata function, not a value aggregate. DISTINCT
+        // is invalid Postgres syntax on it.
+        let f: FieldRef<Txn, i64> = FieldRef::new("region_id");
+        let agg = f.grouping().distinct();
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected UnsupportedAggregate error for GROUPING(DISTINCT ...)"
+        );
+    }
+
+    #[test]
+    fn grouping_with_order_by_rejected_at_fetch() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("region_id");
+        let agg = f.grouping().order_by(f.asc());
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected UnsupportedAggregate error for GROUPING(... ORDER BY ...)"
+        );
+    }
+
+    #[test]
+    fn grouping_with_filter_rejected_at_fetch() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("region_id");
+        let g: FieldRef<Txn, i64> = FieldRef::new("active");
+        let agg = f.grouping().filter(g.as_expr().gt(Expr::literal(0i64)));
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected UnsupportedAggregate error for GROUPING(...) FILTER (...)"
+        );
+    }
+
+    #[test]
+    fn grouping_with_over_rejected_at_fetch() {
+        let f: FieldRef<Txn, i64> = FieldRef::new("region_id");
+        let agg = f.grouping().over(|w| w);
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_err(),
+            "expected UnsupportedAggregate error for GROUPING(...) OVER (...)"
+        );
+    }
+
+    #[test]
+    fn grouping_bare_accepted_at_fetch() {
+        // Bare GROUPING(col) without modifiers is the valid use case under
+        // ROLLUP / CUBE / GROUPING SETS. Must pass legality check.
+        let f: FieldRef<Txn, i64> = FieldRef::new("region_id");
+        let agg = f.grouping();
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_ok(),
+            "bare GROUPING(col) should pass legality, got: {result:?}"
         );
     }
 

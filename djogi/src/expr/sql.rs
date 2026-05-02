@@ -76,10 +76,13 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             op,
             distinct,
             arg,
+            arg2,
             filter,
             order_by,
+            window,
             ..
         } => {
+            // ── DISTINCT-shape rejections ─────────────────────────────
             if *distinct {
                 match op {
                     AggOp::CountStar => {
@@ -105,9 +108,75 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                     _ => {}
                 }
             }
-            // Recurse into arg and filter sub-trees in case there are nested
-            // aggregates (unusual but structurally possible).
+
+            // ── COUNT(*) + ORDER BY silent-drop guard (Codex round-1) ──
+            // The COUNT(*) emitter hard-codes `COUNT(*)` and never renders
+            // the `order_by` slot — chaining `.order_by(..)` on a
+            // `count_star()` aggregate would silently drop the modifier.
+            // Reject at fetch time so adopters see a typed error rather
+            // than mysteriously-missing ordering. `COUNT(col ORDER BY ..)`
+            // remains valid via `FieldRef::count()` which routes through
+            // the unary-emit path.
+            if matches!(op, AggOp::CountStar) && !order_by.is_empty() {
+                return Err(crate::DjogiError::UnsupportedAggregate {
+                    op: "COUNT(*)",
+                    reason: "COUNT(*) does not accept a per-aggregate ORDER BY clause — \
+                             COUNT counts every row and ordering inside the aggregate has \
+                             no effect; chain ORDER BY at the QuerySet level instead, or \
+                             use COUNT(col ORDER BY ...) via FieldRef::count()",
+                });
+            }
+
+            // ── GROUPING(...) modifier rejection (Codex round-1) ──────
+            // GROUPING is a metadata function (returns 0/1 per dimension
+            // for ROLLUP/CUBE/GROUPING SETS subtotal detection), not a
+            // value-aggregating aggregate. Postgres rejects every
+            // modifier on GROUPING — DISTINCT, ORDER BY, FILTER, OVER all
+            // produce syntax errors. The current emitter path would
+            // silently render them, so we reject here at fetch time.
+            if matches!(op, AggOp::Grouping) {
+                if *distinct {
+                    return Err(crate::DjogiError::UnsupportedAggregate {
+                        op: "GROUPING",
+                        reason: "GROUPING(col) does not accept DISTINCT — it is a metadata \
+                                 function returning 0/1 per dimension under ROLLUP / CUBE / \
+                                 GROUPING SETS, not a value-aggregating aggregate",
+                    });
+                }
+                if !order_by.is_empty() {
+                    return Err(crate::DjogiError::UnsupportedAggregate {
+                        op: "GROUPING",
+                        reason: "GROUPING(col) does not accept a per-aggregate ORDER BY \
+                                 clause — chain ORDER BY at the QuerySet level instead",
+                    });
+                }
+                if filter.is_some() {
+                    return Err(crate::DjogiError::UnsupportedAggregate {
+                        op: "GROUPING",
+                        reason: "GROUPING(col) does not accept FILTER (WHERE ...) — \
+                                 GROUPING is dimension metadata, not a row-filtered count; \
+                                 filter at the QuerySet level instead",
+                    });
+                }
+                if window.is_some() {
+                    return Err(crate::DjogiError::UnsupportedAggregate {
+                        op: "GROUPING",
+                        reason: "GROUPING(col) does not accept OVER (...) — it is only \
+                                 valid in SELECT or HAVING under a GROUP BY ROLLUP / CUBE / \
+                                 GROUPING SETS clause, not as a window function",
+                    });
+                }
+            }
+
+            // Recurse into arg, arg2, and filter sub-trees in case there
+            // are nested aggregates (unusual but structurally possible).
+            // arg2 was added by T5; threading it through the walker keeps
+            // future binary-aggregate sub-expressions inside legality
+            // (Codex round-1 counter-signal).
             check_aggregate_legality(arg)?;
+            if let Some(a2) = arg2 {
+                check_aggregate_legality(a2)?;
+            }
             if let Some(f) = filter {
                 check_aggregate_legality(f)?;
             }
