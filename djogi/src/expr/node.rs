@@ -737,13 +737,26 @@ pub(crate) enum AggOp {
     /// `ST_Collect` inside `ST_Centroid` and casts back to geography).
     /// Returns `GeoPoint`. Gated on `feature = "spatial"`.
     ///
-    /// Sibling of [`AggOp::ConvexHull`] (which currently lives in the
-    /// `SpatialExpr` family for historical reasons; future cleanup will
-    /// migrate it here so all PostGIS aggregates inherit the same
-    /// modifier composition — `.distinct()` / `.filter()` / `.over()` /
-    /// `.order_by()` work uniformly through the `Aggregate` envelope).
+    /// Sibling of [`AggOp::SpatialConvexHull`] — same wrapped emission
+    /// shape (`WRAP(ST_Collect(...))::geography`) and same modifier
+    /// composition story.
     #[cfg(feature = "spatial")]
     SpatialCentroid,
+    /// `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` —
+    /// per-group convex-hull aggregate. Migrated from
+    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` in Cluster E
+    /// round-5: the old IR shape silently dropped `.distinct()` /
+    /// `.filter()` / `.over()` / `.order_by()` modifiers because
+    /// those mutate `ExprNode::Aggregate` only. As a proper AggOp
+    /// variant ConvexHull now composes uniformly with the rest of
+    /// the aggregate family.
+    ///
+    /// Wrapped emission: ST_Collect is the actual aggregate;
+    /// ST_ConvexHull is a scalar wrapper applied to the collected
+    /// geometry set per group. Same shape as
+    /// [`AggOp::SpatialCentroid`].
+    #[cfg(feature = "spatial")]
+    SpatialConvexHull,
     /// `ST_Collect(<col>)::geography` — per-group multi-geometry
     /// collection. Returns a `MultiPoint` for `GeoPoint` inputs (and
     /// the corresponding multi-shape for other geography inputs once

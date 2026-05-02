@@ -680,6 +680,22 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     order_by,
                     filter.as_deref(),
                 ),
+                // Cluster E round-5 BLOCK-2 closure: ConvexHull
+                // migrated from SpatialExpr::ConvexHull to a proper
+                // AggOp envelope so `.distinct()` / `.filter()` /
+                // `.over()` / `.order_by()` all compose uniformly.
+                // Same wrapped shape as SpatialCentroid.
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialConvexHull => emit_spatial_unary_agg(
+                    acc,
+                    "ST_Collect(",
+                    "ST_ConvexHull(",
+                    "",
+                    *distinct,
+                    arg,
+                    order_by,
+                    filter.as_deref(),
+                ),
                 #[cfg(feature = "spatial")]
                 AggOp::SpatialCollect => emit_spatial_unary_agg(
                     acc,
@@ -1300,6 +1316,7 @@ fn emit_spatial_unary_agg(
 pub(crate) fn outer_cast_suffix(op: &AggOp) -> Option<&'static str> {
     match op {
         AggOp::SpatialCentroid
+        | AggOp::SpatialConvexHull
         | AggOp::SpatialCollect
         | AggOp::SpatialUnion
         | AggOp::SpatialMakeLine

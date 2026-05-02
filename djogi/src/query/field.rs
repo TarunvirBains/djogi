@@ -1321,7 +1321,7 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
 // spatial aggregates from Phase 6.5 — sits on `FieldRef<M, G: GeographyValue>`
 // so it is callable from the same field-closure context. The outer
 // `::geography` cast on the emit side is required for the typed `Polygon`
-// decode (see `SpatialExpr::ConvexHull` emit body for the rationale).
+// decode.
 
 #[cfg(feature = "spatial")]
 impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
@@ -1367,30 +1367,34 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
     ///
     /// # Where
     ///
-    /// - [`crate::expr::spatial::SpatialExpr::ConvexHull`] — IR variant
+    /// - [`crate::expr::node::AggOp::SpatialConvexHull`] — IR variant
     ///   that the typed surface stores inside the `AggregateExpr` envelope.
     /// - [`crate::query::QuerySet::group_by`] — produces the
     ///   `GroupedQuerySet` that consumes this aggregate via `.annotate(...)`.
+    ///
+    /// # Modifier composition
+    ///
+    /// Routes through the `Aggregate` envelope so all modifiers
+    /// (`.distinct()` / `.filter()` / `.over()` / `.order_by()`)
+    /// compose uniformly with the rest of the spatial aggregate
+    /// family. The wrapped emission shape
+    /// `ST_ConvexHull(ST_Collect(...) FILTER (...) OVER (...))::geography`
+    /// places the modifiers on the inner `ST_Collect` aggregate
+    /// (which is the actual aggregating step), inside the
+    /// `ST_ConvexHull` scalar wrapper, before the outer cast.
     #[must_use = "aggregates are lazy — dropping one silently omits the column"]
     pub fn convex_hull(self) -> crate::expr::AggregateExpr<crate::geo::Polygon> {
-        // The convex-hull SQL token stream lives in the SpatialExpr family,
-        // not the ordinary AggOp set — `ST_ConvexHull(ST_Collect(<col>))`
-        // is a fused two-call shape that doesn't fit the
-        // `<KEYWORD>([DISTINCT] <expr>)` template `emit_unary_agg` uses.
-        // Wrap it in `AggregateExpr` directly so the annotate plumbing
-        // (which only inspects the `cast_to` / `window` slots on the
-        // outer node) treats it as any other aggregate.
-        //
-        // Cluster E followup: migrate to AggOp::ConvexHull so the modifier
-        // suite (.distinct() / .filter() / .over() / .order_by()) composes
-        // automatically. Centroid + Collect (T12) ship through AggOp from
-        // the start; convex_hull stays SpatialExpr-routed for now to limit
-        // T12's blast radius.
-        crate::expr::AggregateExpr::from_node(crate::expr::node::ExprNode::Spatial(
-            crate::expr::spatial::SpatialExpr::ConvexHull {
-                field_column: self.column(),
-            },
-        ))
+        // Cluster E round-5 BLOCK-2 closure: migrated from
+        // ExprNode::Spatial(SpatialExpr::ConvexHull{..}) to
+        // AggOp::SpatialConvexHull so AggregateExpr modifiers
+        // (.distinct/.filter/.over/.order_by) compose uniformly.
+        // The old IR shape silently dropped these modifiers because
+        // the modifier impls only mutate ExprNode::Aggregate.
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialConvexHull,
+            self.column(),
+            None,
+        )
     }
 
     /// `ST_Centroid(ST_Collect(<col>))::geography` — per-group centroid of
@@ -3039,24 +3043,35 @@ mod distance_tests {
 
     /// `FieldRef<M, GeoPoint>::convex_hull()` must produce an
     /// `AggregateExpr<Polygon>` whose underlying node is the
-    /// `SpatialExpr::ConvexHull { field_column }` IR variant. The typed
+    /// `AggOp::SpatialConvexHull` aggregate IR variant. The typed
     /// return is a compile-time assertion; the runtime check pins the
     /// stored field column.
+    ///
+    /// Cluster E round-5 BLOCK-2 closure: ConvexHull migrated from
+    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to a proper
+    /// `AggOp::SpatialConvexHull` so AggregateExpr modifiers
+    /// (`.distinct()` / `.filter()` / `.over()` / `.order_by()`)
+    /// compose uniformly with the rest of the aggregate family.
     #[cfg(feature = "spatial")]
     #[test]
     fn convex_hull_on_geopoint_field_produces_aggregate_polygon() {
         use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
         use crate::geo::Polygon as PolygonTy;
 
         let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
         // Compile-time check on the return type.
         let agg: AggregateExpr<PolygonTy> = field.convex_hull();
-        // Runtime check — the IR node carries the column name.
-        if let ExprNode::Spatial(SpatialExpr::ConvexHull { field_column }) = agg.node {
-            assert_eq!(field_column, "location");
-            return;
+        // Runtime check — the IR node is the AggOp::SpatialConvexHull variant.
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialConvexHull));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "location");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
         }
-        panic!("expected ExprNode::Spatial(SpatialExpr::ConvexHull {{..}})");
+        panic!("expected ExprNode::Aggregate(SpatialConvexHull)");
     }
 
     /// `convex_hull` is generic over `GeographyValue` — verify it dispatches
@@ -3067,15 +3082,88 @@ mod distance_tests {
     #[test]
     fn convex_hull_dispatches_from_polygon_field_too() {
         use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
         use crate::geo::Polygon as PolygonTy;
 
         let field: FieldRef<Fake, PolygonTy> = FieldRef::new("territory");
         let agg: AggregateExpr<PolygonTy> = field.convex_hull();
-        if let ExprNode::Spatial(SpatialExpr::ConvexHull { field_column }) = agg.node {
-            assert_eq!(field_column, "territory");
-            return;
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialConvexHull));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "territory");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
         }
-        panic!("expected ConvexHull on Polygon field");
+        panic!("expected ConvexHull AggOp on Polygon field");
+    }
+
+    /// Bare emission shape for `convex_hull` — the canonical PostGIS
+    /// pattern `ST_ConvexHull(ST_Collect(<col>::geometry))::geography`.
+    /// Inner `::geometry` cast for ST_Collect's geometry-only signature;
+    /// outer `::geography` cast keeps the typed `Polygon` decode sound.
+    /// Replaces the round-3 SpatialExpr-routed test that was removed
+    /// when ConvexHull migrated to `AggOp::SpatialConvexHull`.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn convex_hull_emits_st_convexhull_st_collect_with_geography_cast() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = field.convex_hull();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_ConvexHull(ST_Collect(location::geometry))::geography"
+        );
+    }
+
+    /// `.distinct()` on convex_hull lands inside ST_Collect (the actual
+    /// aggregate). Cluster E round-5 BLOCK-2 closure regression: before
+    /// the AggOp migration this modifier silently no-op'd because
+    /// AggregateExpr modifiers only mutate ExprNode::Aggregate.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn convex_hull_distinct_lands_inside_st_collect() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = field.convex_hull().distinct();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_ConvexHull(ST_Collect(DISTINCT location::geometry))::geography"
+        );
+    }
+
+    /// `.filter(...)` on convex_hull places FILTER inside the wrapper,
+    /// attached to ST_Collect. Cluster E round-5 BLOCK-2 closure
+    /// regression — pre-migration this modifier silently no-op'd.
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn convex_hull_filter_attaches_to_inner_st_collect() {
+        use crate::expr::Expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let confidence: FieldRef<Fake, f64> = FieldRef::new("confidence");
+        let agg = loc
+            .convex_hull()
+            .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("ST_ConvexHull(ST_Collect("),
+            "must open ST_ConvexHull(ST_Collect(...; got: {sql}"
+        );
+        assert!(
+            sql.contains(" FILTER (WHERE confidence > "),
+            "FILTER clause must be present; got: {sql}"
+        );
+        assert!(
+            sql.ends_with(")::geography"),
+            "must end with )::geography; got: {sql}"
+        );
     }
 
     // ── centroid / collect — T12 PostGIS aggregates ──────────────────────────
@@ -3256,6 +3344,45 @@ mod distance_tests {
         assert_eq!(
             sql, "(ST_Collect(location::geometry) OVER ())::geography",
             "OVER must fall inside the ::geography cast; got: {sql}"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn collect_with_filter_and_over_attaches_modifiers_to_aggregate_call() {
+        // Cluster E round-5 BLOCK-1 closure: the unwrapped + FILTER +
+        // OVER combination must produce
+        // `(AGG(...) FILTER (...) OVER (...))::cast` — both modifiers
+        // attach directly to the aggregate call. Pre-fix the bare
+        // emission's FILTER parens nested inside the windowed
+        // emission's outer parens, giving `((AGG FILTER) OVER)::cast`,
+        // which Postgres rejects because OVER attaches to a
+        // parenthesized expression rather than the aggregate.
+        use crate::expr::Expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let confidence: FieldRef<Fake, f64> = FieldRef::new("confidence");
+        let agg = loc
+            .collect()
+            .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
+        let mut acc = SqlAccumulator::new("");
+        crate::query::sql::emit_aggregate_with_window_and_cast(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("(ST_Collect(location::geometry) FILTER (WHERE confidence > "),
+            "expected single outer paren before ST_Collect (no nested filter parens); got: {sql}"
+        );
+        assert!(sql.contains(" OVER ()"), "OVER must be present; got: {sql}");
+        assert!(
+            sql.ends_with(")::geography"),
+            "must end with )::geography (cast outside (AGG FILTER OVER)); got: {sql}"
+        );
+        // Critical anti-regression: NO double parens at the start.
+        // Post-fix the SQL must NOT begin with `((` — that would be
+        // the round-4 broken shape.
+        assert!(
+            !sql.starts_with("(("),
+            "must not start with `((` (round-5 BLOCK-1 anti-regression); got: {sql}"
         );
     }
 

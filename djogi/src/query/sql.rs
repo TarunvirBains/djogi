@@ -881,6 +881,20 @@ fn emit_aggregate_inner(
             acc.push_sql(suffix);
         }
         // Spatial unwrapped WITH window — paren-wrap (AGG OVER), then cast.
+        //
+        // Cluster E round-5 BLOCK-1 closure: the bare emission of an
+        // unwrapped spatial WITH FILTER produces
+        // `(AGG(...) FILTER (...))::cast` — emit_spatial_unary_agg
+        // adds outer parens for cast attachment when filter is
+        // present. Naively adding another outer paren here gives
+        // `((AGG FILTER) OVER)::cast`, which Postgres rejects
+        // because OVER attaches to a parenthesized expression
+        // rather than the aggregate call itself.
+        //
+        // Strategy: when filter is present, splice OVER INSIDE
+        // the existing FILTER parens by popping the trailing `)`
+        // after popping the cast. When no filter, the bare emission
+        // is `AGG(...)::cast` (no outer parens) — add them externally.
         (
             Some(SpatialShape {
                 suffix,
@@ -889,16 +903,41 @@ fn emit_aggregate_inner(
             true,
             _,
         ) => {
-            acc.push_sql("(");
-            crate::expr::sql::emit_expr(acc, agg);
-            let popped_cast = acc.pop_sql_suffix(suffix);
-            debug_assert!(
-                popped_cast,
-                "unwrapped spatial bare emission must end with {suffix}"
+            let has_filter = matches!(
+                agg,
+                crate::expr::node::ExprNode::Aggregate {
+                    filter: Some(_),
+                    ..
+                }
             );
-            emit_window_clause(acc);
-            acc.push_sql(")");
-            acc.push_sql(suffix);
+            if has_filter {
+                crate::expr::sql::emit_expr(acc, agg);
+                let popped_cast = acc.pop_sql_suffix(suffix);
+                debug_assert!(
+                    popped_cast,
+                    "unwrapped spatial bare emission must end with {suffix}"
+                );
+                let popped_close = acc.pop_sql_suffix(")");
+                debug_assert!(
+                    popped_close,
+                    "unwrapped spatial-with-filter bare emission must end with `)` \
+                     after popping cast (FILTER parens from emit_spatial_unary_agg)"
+                );
+                emit_window_clause(acc);
+                acc.push_sql(")");
+                acc.push_sql(suffix);
+            } else {
+                acc.push_sql("(");
+                crate::expr::sql::emit_expr(acc, agg);
+                let popped_cast = acc.pop_sql_suffix(suffix);
+                debug_assert!(
+                    popped_cast,
+                    "unwrapped spatial bare emission must end with {suffix}"
+                );
+                emit_window_clause(acc);
+                acc.push_sql(")");
+                acc.push_sql(suffix);
+            }
         }
         // Spatial WITHOUT window — bare emit already includes the
         // cast adjacent to the aggregate. Nothing to splice.
@@ -946,9 +985,12 @@ struct SpatialShape {
 /// ends with a scalar cast suffix (potentially preceded by a wrapper
 /// close), `None` for non-spatial aggregates.
 ///
-/// Covers two node kinds because the spatial aggregate family
-/// historically split between `ExprNode::Aggregate` (collect,
-/// centroid, union, etc.) and `ExprNode::Spatial` (convex_hull).
+/// Cluster E round-5 BLOCK-2 closure: ConvexHull migrated from
+/// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to
+/// `AggOp::SpatialConvexHull`, so the entire spatial aggregate
+/// family now routes through a single `ExprNode::Aggregate`
+/// arm — modifiers (.distinct/.filter/.over/.order_by) compose
+/// uniformly.
 fn spatial_emission_shape(agg: &crate::expr::node::ExprNode) -> Option<SpatialShape> {
     use crate::expr::node::ExprNode;
     match agg {
@@ -958,20 +1000,20 @@ fn spatial_emission_shape(agg: &crate::expr::node::ExprNode) -> Option<SpatialSh
             // because the wrapped variants live behind `spatial` —
             // outer_cast_suffix returns None when spatial is off,
             // so this branch is unreachable for unfeatured builds.
+            //
+            // Wrapped variants: SpatialCentroid, SpatialConvexHull —
+            // both emit `WRAP(ST_Collect(...))::geography` where
+            // ST_Collect is the actual aggregate and the wrapper is
+            // a scalar function. OVER must splice inside the wrap.
             #[cfg(feature = "spatial")]
-            let wrapped = matches!(op, crate::expr::node::AggOp::SpatialCentroid);
+            let wrapped = matches!(
+                op,
+                crate::expr::node::AggOp::SpatialCentroid
+                    | crate::expr::node::AggOp::SpatialConvexHull
+            );
             #[cfg(not(feature = "spatial"))]
             let wrapped = false;
             Some(SpatialShape { suffix, wrapped })
-        }
-        #[cfg(feature = "spatial")]
-        ExprNode::Spatial(crate::expr::spatial::SpatialExpr::ConvexHull { .. }) => {
-            // ST_ConvexHull(ST_Collect(<col>::geometry))::geography —
-            // same wrapped shape as SpatialCentroid.
-            Some(SpatialShape {
-                suffix: "::geography",
-                wrapped: true,
-            })
         }
         _ => None,
     }

@@ -256,33 +256,13 @@ pub enum SpatialExpr {
         /// EWKB encoding of the second geometry argument.
         b_ewkb: Vec<u8>,
     },
-
-    // Convex_hull aggregate
-    /// `ST_ConvexHull(ST_Collect(<field>::geometry))::geography`
-    ///
-    /// Per-group convex-hull aggregate — folds a set of geometries into the
-    /// smallest convex polygon enclosing them. PostGIS does not ship a
-    /// dedicated convex-hull aggregate; the canonical pattern is
-    /// `ST_ConvexHull(ST_Collect(...))` where `ST_Collect` is the actual
-    /// aggregate and `ST_ConvexHull` is the post-aggregate scalar wrapper.
-    ///
-    /// The `::geometry` cast on the column matches the cast discipline of
-    /// the geometry-only shape predicates — `ST_Collect` requires
-    /// `geometry` arguments and has no `geography` overload.
-    ///
-    /// The returned shape decodes as [`crate::geo::Polygon`] for the
-    /// typical multi-point input. Degenerate inputs (one or two collinear
-    /// points) return `Point` / `LineString` respectively; the typed
-    /// surface pins `AggregateExpr<Polygon>` because the demo use case
-    /// (per-herd territory hull) always has enough points for a polygon.
-    /// Callers with degenerate inputs should expect a runtime EWKB-decode
-    /// error and bind a stricter input set.
-    ///
-    /// Constructed by [`crate::query::field::FieldRef::convex_hull`].
-    ConvexHull {
-        /// Column name — validated by `assert_plain_ident`; safe as raw SQL.
-        field_column: &'static str,
-    },
+    // Cluster E round-5 BLOCK-2 closure: convex-hull was migrated
+    // out of this enum into `AggOp::SpatialConvexHull`. The old
+    // `SpatialExpr::ConvexHull{..}` variant silently dropped
+    // `AggregateExpr` modifiers (.distinct/.filter/.over/.order_by)
+    // because those mutate `ExprNode::Aggregate` only. Routing
+    // through `AggOp` puts ConvexHull on the same modifier substrate
+    // as the rest of the spatial aggregate family.
 }
 
 #[cfg(feature = "spatial")]
@@ -444,20 +424,6 @@ impl SpatialExpr {
                 acc.push_sql(", ");
                 push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
                 acc.push_sql(")::geography)");
-            }
-            // T16 convex_hull aggregate
-            SpatialExpr::ConvexHull { field_column } => {
-                // ST_ConvexHull(ST_Collect(<col>::geometry))::geography —
-                // ST_Collect is the actual aggregate; ST_ConvexHull is a
-                // scalar wrapper applied to the collected geometry set per
-                // group. The outer `::geography` cast is load-bearing:
-                // `Polygon::FromSql::accepts` only accepts the `"geography"`
-                // type (`accepts_geography` in `crate::geo`); without this
-                // cast the typed decode in `fetch_all` rejects the column
-                // as type-incompatible and panics at row read time.
-                acc.push_sql("ST_ConvexHull(ST_Collect(");
-                acc.push_sql(field_column);
-                acc.push_sql("::geometry))::geography");
             }
         }
     }
@@ -1191,34 +1157,11 @@ mod tests {
         assert_eq!(acc.bind_count(), 2);
     }
 
-    /// `ConvexHull { field_column }` emits the canonical PostGIS aggregate
-    /// pattern `ST_ConvexHull(ST_Collect(<col>::geometry))::geography`.
-    /// The inner `::geometry` cast on the column matches the geometry-only
-    /// discipline of `ST_Collect` (no native `geography` overload). The
-    /// outer `::geography` cast is load-bearing: `Polygon::FromSql::accepts`
-    /// only matches the `"geography"` type, so without it the typed decode
-    /// in `fetch_all` rejects the column at row-read time.
-    #[test]
-    fn convex_hull_emits_st_convexhull_st_collect_with_outer_geography_cast() {
-        let expr = SpatialExpr::ConvexHull {
-            field_column: "location",
-        };
-        let mut acc = SqlAccumulator::new("");
-        expr.emit(&mut acc);
-        let sql = acc.sql();
-        assert!(
-            sql.contains("ST_ConvexHull(ST_Collect(location::geometry))::geography"),
-            "expected fused ST_ConvexHull(ST_Collect(<col>::geometry))::geography \
-             shape; got: {sql}"
-        );
-        // Pure aggregate over a column — no binds.
-        assert_eq!(
-            acc.bind_count(),
-            0,
-            "ConvexHull aggregate over a column binds zero params; got {}",
-            acc.bind_count()
-        );
-    }
+    // Cluster E round-5 BLOCK-2 closure: ConvexHull was migrated
+    // out of `SpatialExpr` into `AggOp::SpatialConvexHull`. The
+    // bare-emission test moved alongside, see
+    // `djogi/src/query/field.rs::convex_hull_emits_*` (added in
+    // round-4) for the new bare and windowed emission tests.
 
     /// Composition contract — sequential emission keeps bind counters in
     /// lockstep so `area_of_intersection / area_of` ratios bind correctly
