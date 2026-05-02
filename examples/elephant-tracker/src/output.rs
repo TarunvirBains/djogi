@@ -10,12 +10,12 @@
 //!   that parses cleanly through `jq`; the shape is documented in
 //!   each demo's docstring. Adopters writing scripts against this
 //!   example pin their parsing to JSON.
-//! - **Mermaid** is the human-readable graph format. Two demos
-//!   (`cross-border-herds` and `lineage`) describe relationships that
-//!   are easier to read as graphs than as tables; Mermaid's
-//!   `graph LR` / `graph TD` source pastes directly into Markdown
-//!   files and is rendered inline by GitHub, GitLab, and most
-//!   documentation tooling.
+//! - **Mermaid** is the human-readable graph format. Three demos
+//!   (`cross-border-herds`, `lineage`, `mating-pairs`) describe
+//!   relationships that are easier to read as graphs than as
+//!   tables; Mermaid's `graph LR` / `graph TD` source pastes
+//!   directly into Markdown files and is rendered inline by
+//!   GitHub, GitLab, and most documentation tooling.
 //! - **Markdown** combines Mermaid (where applicable) with one or
 //!   more tables and section headings — the right format for embedding
 //!   demo output directly into runbooks, post-mortems, or handover

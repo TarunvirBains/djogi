@@ -77,9 +77,10 @@
 //!
 //! ## Output formats
 //!
-//! - `json` — flat list of `{female_id, female_name, male_id,
-//!   male_name, f_offspring, score, rank}` records, top-3 per
-//!   female, sorted by `(female_name, rank)`.
+//! - `json` — flat list of `{rank, female_id, female_name,
+//!   female_herd, male_id, male_name, male_herd, f_offspring,
+//!   score}` records, top-3 per female, sorted by
+//!   `(female_name, rank)`.
 //! - `markdown` — sorted table with one row per pair plus a
 //!   summary header.
 //! - `mermaid` — `graph LR` with one node per participating elephant
@@ -324,9 +325,14 @@ fn render_markdown(target: &mut output::OutputTarget, pairs: &[MatingPair]) -> R
         "Score = `1 - F_offspring`. Higher is better (lower expected \
          inbreeding for the offspring of this pairing). `F_offspring` \
          uses the simplified Wright form with `F_A = 0` for ancestors \
-         (exact for non-inbred ancestors, slight under-estimate \
-         otherwise). Spatial-overlap and age-compatibility factors \
-         land in subsequent commits.\n",
+         — **exact** for non-inbred ancestors, but **production \
+         adopters with linebreeding should use the full Wright \
+         recurrence**: each affected term is under-counted by \
+         `(1 + F_A)` and that factor can be substantial enough to \
+         shift the top-N ranking. The demo's role is showcasing the \
+         framework substrate (`materialize_closure` + indexed \
+         self-join), not shipping a kinship library. Spatial-overlap \
+         and age-compatibility factors land in subsequent commits.\n",
     )?;
     output::write_line(
         target,

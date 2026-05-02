@@ -104,7 +104,7 @@ enum DemoCmd {
     MatingPairs {
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Output format. `json` (default), `markdown`.
+        /// Output format. `json` (default), `mermaid`, `markdown`.
         #[arg(long, value_enum, default_value_t = Format::Json)]
         format: Format,
     },
