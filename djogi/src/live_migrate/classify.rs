@@ -930,6 +930,7 @@ mod tests {
             default_sql: None,
             foreign_key: None,
             generated: None,
+            identity: None,
             index_type: None,
             indexed: false,
             max_length: None,

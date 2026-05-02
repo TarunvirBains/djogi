@@ -727,6 +727,7 @@ async fn read_all_columns(
             // generated expressions; advisory mode treats every live
             // column as non-generated. T8/future verify pass tightens.
             generated: None,
+            identity: None,
             index_type: None,
             indexed: false,
             max_length: None,
@@ -1857,6 +1858,7 @@ mod tests {
             default_sql: None,
             foreign_key: None,
             generated: None,
+            identity: None,
             index_type: None,
             indexed: false,
             max_length: None,

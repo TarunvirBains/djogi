@@ -73,6 +73,7 @@ fn id_column() -> ColumnSchema {
         default_sql: Some("generate_id()".to_string()),
         foreign_key: None,
         generated: None,
+        identity: None,
         index_type: None,
         indexed: false,
         max_length: None,
