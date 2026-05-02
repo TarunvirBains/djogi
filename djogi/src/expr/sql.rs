@@ -77,6 +77,7 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
             distinct,
             arg,
             filter,
+            order_by,
             ..
         } => {
             if *distinct {
@@ -88,12 +89,17 @@ pub(crate) fn check_aggregate_legality(node: &ExprNode) -> Result<(), crate::Djo
                                      use COUNT(DISTINCT col) via FieldRef::count() instead",
                         });
                     }
-                    AggOp::StringAgg(_) => {
+                    AggOp::StringAgg(_) if order_by.is_empty() => {
+                        // `STRING_AGG(DISTINCT col, sep)` requires a per-
+                        // aggregate `ORDER BY` to disambiguate the output
+                        // tail. With Cluster E T1, callers can chain
+                        // `.order_by(f.other.asc())`; until they do, the
+                        // combination is still ill-formed Postgres.
                         return Err(crate::DjogiError::UnsupportedAggregate {
                             op: "STRING_AGG",
                             reason: "STRING_AGG(DISTINCT col, sep) requires a per-aggregate \
-                                     ORDER BY clause, which the current IR does not track — \
-                                     this restriction may be lifted in a future release",
+                                     ORDER BY clause — chain `.order_by(other_field.asc())` \
+                                     to disambiguate, otherwise Postgres rejects the call",
                         });
                     }
                     _ => {}
@@ -193,6 +199,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             cast_to: _,
             distinct,
             window: _,
+            order_by,
         } => {
             // Bare aggregate emission — keyword, optional DISTINCT, argument,
             // closing paren, optional FILTER clause. The `cast_to` field is
@@ -229,12 +236,13 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             match op {
                 AggOp::CountStar => acc.push_sql("COUNT(*)"),
                 AggOp::StringAgg(sep) => {
-                    // STRING_AGG with DISTINCT is rejected by
-                    // `check_aggregate_legality` at fetch time (Postgres
-                    // requires a per-aggregate ORDER BY alongside DISTINCT,
-                    // not yet tracked by the IR). The `sep.clone()` is
-                    // required because `sep` is `&String` here and
-                    // `push_bind` takes owned values.
+                    // STRING_AGG with DISTINCT requires a per-aggregate
+                    // ORDER BY, enforced by `check_aggregate_legality` at
+                    // fetch time. With T1, callers chain
+                    // `.order_by(...)` and the `order_by` slot below
+                    // emits the well-formed Postgres syntax.
+                    // `sep.clone()` is required because `sep` is
+                    // `&String` here and `push_bind` takes owned values.
                     acc.push_sql("STRING_AGG(");
                     if *distinct {
                         acc.push_sql("DISTINCT ");
@@ -242,21 +250,22 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                     emit_expr(acc, arg);
                     acc.push_sql(", ");
                     acc.push_bind(sep.clone());
+                    push_aggregate_order_by(acc, order_by);
                     acc.push_sql(")");
                 }
-                AggOp::Count => emit_unary_agg(acc, "COUNT(", *distinct, arg),
-                AggOp::Sum => emit_unary_agg(acc, "SUM(", *distinct, arg),
-                AggOp::Avg => emit_unary_agg(acc, "AVG(", *distinct, arg),
-                AggOp::Min => emit_unary_agg(acc, "MIN(", *distinct, arg),
-                AggOp::Max => emit_unary_agg(acc, "MAX(", *distinct, arg),
-                AggOp::ArrayAgg => emit_unary_agg(acc, "ARRAY_AGG(", *distinct, arg),
+                AggOp::Count => emit_unary_agg(acc, "COUNT(", *distinct, arg, order_by),
+                AggOp::Sum => emit_unary_agg(acc, "SUM(", *distinct, arg, order_by),
+                AggOp::Avg => emit_unary_agg(acc, "AVG(", *distinct, arg, order_by),
+                AggOp::Min => emit_unary_agg(acc, "MIN(", *distinct, arg, order_by),
+                AggOp::Max => emit_unary_agg(acc, "MAX(", *distinct, arg, order_by),
+                AggOp::ArrayAgg => emit_unary_agg(acc, "ARRAY_AGG(", *distinct, arg, order_by),
                 // JSONB_AGG (not JSON_AGG) — Djogi standardises on JSONB
                 // for all JSON wire and storage. See docs/spec/decisions.md.
-                AggOp::JsonAgg => emit_unary_agg(acc, "JSONB_AGG(", *distinct, arg),
+                AggOp::JsonAgg => emit_unary_agg(acc, "JSONB_AGG(", *distinct, arg, order_by),
                 // BOOL_AND / BOOL_OR accept DISTINCT (no-op for booleans
                 // but valid Postgres syntax).
-                AggOp::BoolAnd => emit_unary_agg(acc, "BOOL_AND(", *distinct, arg),
-                AggOp::BoolOr => emit_unary_agg(acc, "BOOL_OR(", *distinct, arg),
+                AggOp::BoolAnd => emit_unary_agg(acc, "BOOL_AND(", *distinct, arg, order_by),
+                AggOp::BoolOr => emit_unary_agg(acc, "BOOL_OR(", *distinct, arg, order_by),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
@@ -473,13 +482,36 @@ fn emit_unary_agg(
     keyword_opener: &'static str,
     distinct: bool,
     arg: &ExprNode,
+    order_by: &[crate::query::order::OrderExpr],
 ) {
     acc.push_sql(keyword_opener);
     if distinct {
         acc.push_sql("DISTINCT ");
     }
     emit_expr(acc, arg);
+    push_aggregate_order_by(acc, order_by);
     acc.push_sql(")");
+}
+
+/// Emit a per-aggregate `ORDER BY <ord1>, <ord2>, ...` tail when
+/// `order_by` is non-empty. Renders inside the aggregate's parens —
+/// the caller pushes the closing paren after this returns.
+///
+/// Aggregates do not participate in the join / parent-table-qualifier
+/// flow that `QuerySet`-level ordering uses, so the qualifier slot is
+/// always `None` here. Each `OrderExpr::emit` call writes its column
+/// reference without table qualification.
+fn push_aggregate_order_by(acc: &mut SqlAccumulator, order_by: &[crate::query::order::OrderExpr]) {
+    if order_by.is_empty() {
+        return;
+    }
+    acc.push_sql(" ORDER BY ");
+    for (i, o) in order_by.iter().enumerate() {
+        if i > 0 {
+            acc.push_sql(", ");
+        }
+        o.emit(acc, None);
+    }
 }
 
 /// Emit a [`SubqueryNode`] body — `SELECT <col or 1> FROM <table>

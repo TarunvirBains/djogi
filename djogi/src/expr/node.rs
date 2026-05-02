@@ -163,6 +163,28 @@ pub(crate) enum ExprNode {
         /// `OVER ()` for backwards compatibility. `Some(spec)` emits the
         /// full `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
         window: Option<crate::expr::window::WindowSpec>,
+        /// Per-aggregate `ORDER BY` clause(s). Set via
+        /// [`super::aggregate::AggregateExpr::order_by`]. Empty `Vec`
+        /// emits no ORDER BY; non-empty emits
+        /// `AGG(arg ORDER BY <ord1>, <ord2>, ...)` (or for STRING_AGG:
+        /// `STRING_AGG(arg, sep ORDER BY ...)`).
+        ///
+        /// Some aggregates' result depends on input order — `ARRAY_AGG`,
+        /// `JSONB_AGG`, `STRING_AGG`, plus the ordered-set / hypothetical-
+        /// set families (PERCENTILE_CONT, MODE, etc., per the
+        /// WITHIN GROUP modifier surface that consumes this slot
+        /// indirectly through the adjacent `within_group_order_by`
+        /// modifier). Without this slot, callers couldn't get
+        /// deterministic results from order-sensitive aggregates without
+        /// wrapping the whole query in a derived table.
+        ///
+        /// Also unblocks `STRING_AGG(DISTINCT col, sep ORDER BY other)` —
+        /// Postgres rejects that combination unless an ORDER BY is
+        /// supplied; the fetch-time check in
+        /// [`super::sql::check_aggregate_legality`] still rejects
+        /// `STRING_AGG(DISTINCT ...)` with no ORDER BY but accepts the
+        /// combination with one.
+        order_by: Vec<crate::query::order::OrderExpr>,
     },
 
     /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE

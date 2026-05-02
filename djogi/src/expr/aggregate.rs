@@ -120,6 +120,7 @@ impl<Out> AggregateExpr<Out> {
             cast_to,
             distinct: false,
             window: None,
+            order_by: Vec::new(),
         })
     }
 
@@ -230,6 +231,56 @@ impl<Out> AggregateExpr<Out> {
     {
         if let ExprNode::Aggregate { window, .. } = &mut self.node {
             *window = Some(f(WindowBuilder::new()).build());
+        }
+        self
+    }
+
+    /// Append a per-aggregate `ORDER BY` key:
+    /// `AGG(arg ORDER BY <ord1>, <ord2>, ...)`.
+    ///
+    /// Each call appends to the ordering list, matching the
+    /// [`crate::query::QuerySet::order_by`] convention. For multiple
+    /// keys, chain. The list is emitted inside the aggregate's parens —
+    /// for `STRING_AGG` it lands after the separator; for every other
+    /// aggregate it lands immediately after the argument.
+    ///
+    /// # Why this matters
+    ///
+    /// Several aggregates' result depends on input order: `ARRAY_AGG`,
+    /// `JSONB_AGG`, `STRING_AGG`. Without per-aggregate `ORDER BY`,
+    /// callers can't get a deterministic result without first wrapping
+    /// the entire query in a derived table (much less ergonomic, and
+    /// disables grouped-aggregate composition).
+    ///
+    /// # Special-case unblocked: `STRING_AGG(DISTINCT col, sep)`
+    ///
+    /// Postgres requires a per-aggregate `ORDER BY` whenever `DISTINCT`
+    /// is used with `STRING_AGG`. Without this method, the combination
+    /// was rejected at fetch time with
+    /// [`crate::DjogiError::UnsupportedAggregate`]. With it, the
+    /// well-formed shape
+    /// `string_agg(", ").distinct().order_by(f.rank().asc())` becomes
+    /// valid; the legality check still rejects `STRING_AGG(DISTINCT ...)`
+    /// when the ORDER BY list is empty.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // ARRAY_AGG(id ORDER BY id ASC) — deterministic id list per group
+    /// f.id().array_agg().order_by(f.id().asc())
+    ///
+    /// // STRING_AGG(name, ', ' ORDER BY rank DESC, name ASC) — multi-key
+    /// f.name().string_agg(", ")
+    ///     .order_by(f.rank().desc())
+    ///     .order_by(f.name().asc())
+    ///
+    /// // ARRAY_AGG(DISTINCT tag ORDER BY tag) — distinct + ordered
+    /// f.tag().array_agg().distinct().order_by(f.tag().asc())
+    /// ```
+    #[must_use = "AggregateExpr is a value — dropping discards the ORDER BY"]
+    pub fn order_by(mut self, ord: crate::query::order::OrderExpr) -> Self {
+        if let ExprNode::Aggregate { order_by, .. } = &mut self.node {
+            order_by.push(ord);
         }
         self
     }
@@ -459,6 +510,7 @@ impl<M: Model> FieldRef<M, String> {
             cast_to: None,
             distinct: false,
             window: None,
+            order_by: Vec::new(),
         })
     }
 }
@@ -865,10 +917,12 @@ mod tests {
     }
 
     #[test]
-    fn string_agg_distinct_rejected_at_fetch() {
+    fn string_agg_distinct_without_order_by_rejected_at_fetch() {
         // STRING_AGG(DISTINCT col, sep) without a per-aggregate ORDER BY is
-        // rejected by Postgres syntax. Djogi's IR does not track per-aggregate
-        // ORDER BY in Phase 6.5, so we reject it at fetch time.
+        // ill-formed Postgres. With Cluster E T1 the IR tracks per-aggregate
+        // ORDER BY, so the rejection is scoped to the still-ill-formed
+        // no-ORDER-BY case. With ORDER BY chained, the combination is
+        // accepted (covered by `string_agg_distinct_with_order_by_is_now_accepted`).
         let f: FieldRef<Txn, String> = FieldRef::new("tag");
         let mut agg = f.string_agg(", ");
         if let ExprNode::Aggregate {
@@ -880,12 +934,162 @@ mod tests {
         let result = crate::expr::sql::check_aggregate_legality(&agg.node);
         assert!(
             result.is_err(),
-            "expected UnsupportedAggregate error for STRING_AGG(DISTINCT ...)"
+            "expected UnsupportedAggregate error for STRING_AGG(DISTINCT ...) with no ORDER BY"
         );
         let err = result.unwrap_err();
         assert!(
             matches!(err, crate::DjogiError::UnsupportedAggregate { .. }),
             "expected UnsupportedAggregate variant, got: {err:?}"
+        );
+    }
+
+    // ── .order_by(...) per-aggregate ORDER BY tests (T1) ─────────────────────
+
+    #[test]
+    fn order_by_appends_to_aggregate_node() {
+        // `.order_by(...)` mutates the inner Aggregate node's order_by Vec.
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let agg = f.array_agg().order_by(f.asc());
+        if let ExprNode::Aggregate { order_by, .. } = &agg.node {
+            assert_eq!(
+                order_by.len(),
+                1,
+                "single .order_by call should append exactly one OrderExpr"
+            );
+        } else {
+            panic!("AggregateExpr did not wrap an Aggregate node");
+        }
+    }
+
+    #[test]
+    fn multiple_order_by_calls_append_keys() {
+        // Chained `.order_by(...)` calls each append, mirroring
+        // QuerySet::order_by semantics.
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let g: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.array_agg().order_by(g.desc()).order_by(f.asc());
+        if let ExprNode::Aggregate { order_by, .. } = &agg.node {
+            assert_eq!(
+                order_by.len(),
+                2,
+                "chained .order_by calls should append in order"
+            );
+        } else {
+            panic!("AggregateExpr did not wrap an Aggregate node");
+        }
+    }
+
+    #[test]
+    fn array_agg_with_order_by_emits_clause() {
+        // Bare emission shape: ARRAY_AGG(id ORDER BY id ASC).
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let agg = f.array_agg().order_by(f.asc());
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("ARRAY_AGG(id ORDER BY id ASC"),
+            "expected ARRAY_AGG with ORDER BY clause, got: {sql}"
+        );
+        assert!(sql.ends_with(')'), "aggregate must close its parens: {sql}");
+    }
+
+    #[test]
+    fn array_agg_distinct_with_order_by_emits_distinct_and_order_by() {
+        // DISTINCT + ORDER BY composes — `ARRAY_AGG(DISTINCT id ORDER BY id ASC)`.
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let agg = f.array_agg().distinct().order_by(f.asc());
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("ARRAY_AGG(DISTINCT id ORDER BY id ASC"),
+            "expected ARRAY_AGG(DISTINCT ... ORDER BY ...), got: {sql}"
+        );
+    }
+
+    #[test]
+    fn multiple_order_by_keys_emit_comma_separated() {
+        // Two-key ORDER BY: `ARRAY_AGG(id ORDER BY rank DESC, id ASC)`.
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let g: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.array_agg().order_by(g.desc()).order_by(f.asc());
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("ARRAY_AGG(id ORDER BY rank DESC, id ASC"),
+            "expected multi-key ORDER BY with comma separator, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn string_agg_with_order_by_emits_after_separator() {
+        // For STRING_AGG, ORDER BY lands AFTER the separator bind, still
+        // inside the aggregate parens: `STRING_AGG(name, $1 ORDER BY rank ASC)`.
+        let f: FieldRef<Txn, String> = FieldRef::new("name");
+        let g: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.string_agg(", ").order_by(g.asc());
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        // Bind index is the first available, which depends on accumulator state;
+        // assert the structural shape rather than the exact $N.
+        assert!(
+            sql.starts_with("STRING_AGG(name, $") && sql.contains(" ORDER BY rank ASC"),
+            "expected STRING_AGG(col, $sep ORDER BY ...), got: {sql}"
+        );
+    }
+
+    #[test]
+    fn string_agg_distinct_with_order_by_is_now_accepted() {
+        // `STRING_AGG(DISTINCT col, sep ORDER BY other)` is well-formed
+        // Postgres — the legality check now accepts the combination when
+        // an ORDER BY is present (Cluster E T1).
+        let f: FieldRef<Txn, String> = FieldRef::new("tag");
+        let g: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.string_agg(", ").distinct().order_by(g.asc());
+        let result = crate::expr::sql::check_aggregate_legality(&agg.node);
+        assert!(
+            result.is_ok(),
+            "STRING_AGG(DISTINCT ... ORDER BY ...) should be accepted, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn string_agg_distinct_with_order_by_emits_correct_sql() {
+        // End-to-end: the previously-unsupported combination now emits
+        // well-formed SQL: STRING_AGG(DISTINCT name, $1 ORDER BY rank ASC).
+        let f: FieldRef<Txn, String> = FieldRef::new("name");
+        let g: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f.string_agg(", ").distinct().order_by(g.asc());
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("STRING_AGG(DISTINCT name, $") && sql.contains(" ORDER BY rank ASC"),
+            "expected STRING_AGG(DISTINCT col, $sep ORDER BY ...), got: {sql}"
+        );
+    }
+
+    #[test]
+    fn order_by_with_filter_and_distinct_compose() {
+        // All three modifiers compose. Emission ordering inside the parens:
+        // DISTINCT → arg → ORDER BY. FILTER attaches after the close paren.
+        let f: FieldRef<Txn, i64> = FieldRef::new("id");
+        let g: FieldRef<Txn, i64> = FieldRef::new("rank");
+        let agg = f
+            .array_agg()
+            .distinct()
+            .filter(g.as_expr().gt(Expr::literal(0i64)))
+            .order_by(f.asc());
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.contains("ARRAY_AGG(DISTINCT id ORDER BY id ASC")
+                && sql.contains(") FILTER (WHERE rank > "),
+            "expected DISTINCT + ORDER BY + FILTER composition, got: {sql}"
         );
     }
 
