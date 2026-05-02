@@ -62,7 +62,10 @@
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
-use crate::expr::{AggregateExpr, DenseRank, Rank, RowNumber};
+use crate::expr::{
+    AggregateExpr, DenseRank, FirstValueWindow, LagWindow, LastValueWindow, LeadWindow,
+    NthValueWindow, Rank, RowNumber,
+};
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
@@ -244,10 +247,13 @@ where
 
 macro_rules! impl_window_annotation_slot {
     ($type_name:ty, $display:literal) => {
+        impl_window_annotation_slot!($type_name, $display, decoded = i64);
+    };
+    ($type_name:ty, $display:literal, decoded = $decoded:ty) => {
         impl annotation_slot_sealed::Sealed for $type_name {}
 
         impl AnnotationSlot for $type_name {
-            type Decoded = i64;
+            type Decoded = $decoded;
 
             fn push_column(&self, acc: &mut SqlAccumulator, _slot: usize) {
                 acc.push_sql(", ");
@@ -263,7 +269,55 @@ macro_rules! impl_window_annotation_slot {
                 row: &tokio_postgres::Row,
                 _slot: usize,
             ) -> Result<Self::Decoded, tokio_postgres::Error> {
-                row.try_get::<_, i64>(
+                row.try_get::<_, $decoded>(
+                    self.alias_name()
+                        .expect("window function annotations are checked before row decode"),
+                )
+            }
+
+            fn check_legality(&self) -> Result<(), crate::DjogiError> {
+                if self.alias_name().is_some() {
+                    Ok(())
+                } else {
+                    Err(crate::DjogiError::Validation(format!(
+                        "{} window annotation requires .alias(\"name\") before annotate",
+                        $display
+                    )))
+                }
+            }
+        }
+    };
+}
+
+/// Generic-V version for column-argument window functions: `FIRST_VALUE`,
+/// `LAST_VALUE`, `LEAD`, `LAG`, `NTH_VALUE`. Each type carries a phantom
+/// `V` for the decoded column type; the impl block decodes the row into
+/// `V` directly.
+macro_rules! impl_window_annotation_slot_generic_v {
+    ($type_name:ident, $display:literal) => {
+        impl<V> annotation_slot_sealed::Sealed for $type_name<V> {}
+
+        impl<V> AnnotationSlot for $type_name<V>
+        where
+            V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
+        {
+            type Decoded = V;
+
+            fn push_column(&self, acc: &mut SqlAccumulator, _slot: usize) {
+                acc.push_sql(", ");
+                self.push_annotated_column(acc);
+            }
+
+            fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
+                self.push_column(acc, slot);
+            }
+
+            fn decode_column(
+                &self,
+                row: &tokio_postgres::Row,
+                _slot: usize,
+            ) -> Result<Self::Decoded, tokio_postgres::Error> {
+                row.try_get::<_, V>(
                     self.alias_name()
                         .expect("window function annotations are checked before row decode"),
                 )
@@ -286,6 +340,21 @@ macro_rules! impl_window_annotation_slot {
 impl_window_annotation_slot!(RowNumber, "RowNumber");
 impl_window_annotation_slot!(Rank, "Rank");
 impl_window_annotation_slot!(DenseRank, "DenseRank");
+// Cluster E T19 — zero-arg returning f64
+impl_window_annotation_slot!(
+    crate::expr::PercentRankWindow,
+    "PercentRankWindow",
+    decoded = f64
+);
+impl_window_annotation_slot!(crate::expr::CumeDistWindow, "CumeDistWindow", decoded = f64);
+// Cluster E T19 — single-integer-arg returning i32
+impl_window_annotation_slot!(crate::expr::NtileWindow, "NtileWindow", decoded = i32);
+// Cluster E T18 — column-arg generic V
+impl_window_annotation_slot_generic_v!(FirstValueWindow, "FirstValueWindow");
+impl_window_annotation_slot_generic_v!(LastValueWindow, "LastValueWindow");
+impl_window_annotation_slot_generic_v!(LeadWindow, "LeadWindow");
+impl_window_annotation_slot_generic_v!(LagWindow, "LagWindow");
+impl_window_annotation_slot_generic_v!(NthValueWindow, "NthValueWindow");
 
 impl<S> sealed::Sealed for S where S: AnnotationSlot {}
 
@@ -841,5 +910,158 @@ mod tests {
         // decode. A user alias matching that namespace would silently
         // route window output to the wrong decode slot.
         let _ = Rank::new().alias("__djogi_agg_0");
+    }
+
+    // ── Cluster E T18-T19 — new window-only functions ────────────────────────
+
+    #[test]
+    fn percent_rank_window_emits_over_clause_and_alias() {
+        use crate::expr::PercentRankWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let pr = PercentRankWindow::new()
+            .order_by(amount.desc())
+            .alias("amount_pct");
+        let acc = build_select_with_annotations(&qs, |acc| pr.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("PERCENT_RANK() OVER (ORDER BY amount DESC) AS amount_pct"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn cume_dist_window_emits_over_clause_and_alias() {
+        use crate::expr::CumeDistWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let cd = CumeDistWindow::new()
+            .order_by(amount.asc())
+            .alias("cume_dist");
+        let acc = build_select_with_annotations(&qs, |acc| cd.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("CUME_DIST() OVER (ORDER BY amount ASC) AS cume_dist"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn ntile_window_binds_bucket_count_and_emits_over() {
+        use crate::expr::NtileWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let ntile = NtileWindow::new(4)
+            .order_by(amount.desc())
+            .alias("quartile");
+        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("NTILE($") && sql.contains(") OVER (ORDER BY amount DESC) AS quartile"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn first_value_window_emits_column_and_over() {
+        use crate::expr::FirstValueWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let fv: FirstValueWindow<i64> = FirstValueWindow::new(amount)
+            .partition_by(herd)
+            .order_by(amount.desc())
+            .alias("top_amount");
+        let acc = build_select_with_annotations(&qs, |acc| fv.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains(
+                "FIRST_VALUE(amount) OVER (PARTITION BY herd_id ORDER BY amount DESC) AS top_amount"
+            ),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn last_value_window_emits_column_and_over() {
+        use crate::expr::LastValueWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lv: LastValueWindow<i64> = LastValueWindow::new(amount)
+            .order_by(amount.asc())
+            .alias("bottom_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lv.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LAST_VALUE(amount) OVER (ORDER BY amount ASC) AS bottom_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lead_window_default_offset_emits_no_offset_arg() {
+        use crate::expr::LeadWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lead: LeadWindow<i64> = LeadWindow::new(amount)
+            .order_by(amount.asc())
+            .alias("next_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LEAD(amount) OVER (ORDER BY amount ASC) AS next_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lead_window_with_offset_binds_offset_arg() {
+        use crate::expr::LeadWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lead: LeadWindow<i64> = LeadWindow::new(amount)
+            .offset(3)
+            .order_by(amount.asc())
+            .alias("third_next_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LEAD(amount, $")
+                && sql.contains(") OVER (ORDER BY amount ASC) AS third_next_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lag_window_emits_lag_keyword() {
+        use crate::expr::LagWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lag: LagWindow<i64> = LagWindow::new(amount)
+            .order_by(amount.asc())
+            .alias("prev_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lag.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LAG(amount) OVER (ORDER BY amount ASC) AS prev_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn nth_value_window_emits_column_and_n() {
+        use crate::expr::NthValueWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let nv: NthValueWindow<i64> = NthValueWindow::new(amount, 3)
+            .order_by(amount.desc())
+            .alias("third");
+        let acc = build_select_with_annotations(&qs, |acc| nv.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("NTH_VALUE(amount, $")
+                && sql.contains(") OVER (ORDER BY amount DESC) AS third"),
+            "got: {sql}"
+        );
     }
 }

@@ -390,6 +390,565 @@ define_window_rank_fn!(RowNumber, "ROW_NUMBER", "rank");
 define_window_rank_fn!(Rank, "RANK", "rank");
 define_window_rank_fn!(DenseRank, "DENSE_RANK", "dense_rank");
 
+/// `PERCENT_RANK() OVER (...)` window-only annotation returning `f64`.
+///
+/// Cluster E T19. Zero-arg window function — the position of the
+/// current row as a fraction in `[0.0, 1.0]` within its partition,
+/// computed as `(rank - 1) / (total_rows - 1)`. First row is `0.0`;
+/// last is `1.0`. Ties share the same fraction.
+///
+/// # Distinct from PercentRank in [`crate::expr::AggregateExpr`]
+///
+/// The hypothetical-set form (`f.col().percent_rank_of(value)`,
+/// Cluster E T8) takes a literal value and answers "what fraction
+/// would this hypothetical value have if inserted?". This window form
+/// (`PercentRankWindow::new()` annotated on each row) gives every
+/// returned row its actual fraction in the partition.
+///
+/// # Comparison helpers omitted
+///
+/// `PERCENT_RANK` returns `f64`. The current `QualifyCondition`
+/// shape is `i64`-only (constrained for the rank/dense_rank/row_number
+/// triplet); extending qualify to f64 thresholds is a follow-up. For
+/// v0.1.0, callers needing to filter on the percent-rank output filter
+/// at the application layer or chain a typed `.filter_expr` over the
+/// derived table.
+///
+/// # Example
+///
+/// ```ignore
+/// let rows = Sale::objects()
+///     .annotate(|f| PercentRankWindow::new()
+///         .partition_by(f.region_id())
+///         .order_by(f.amount().desc())
+///         .alias("amount_pct"))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+#[must_use = "window functions are lazy annotations - dropping one omits the column"]
+#[derive(Debug, Clone, Default)]
+pub struct PercentRankWindow {
+    pub(crate) window: WindowSpec,
+    pub(crate) alias: Option<&'static str>,
+}
+
+/// `CUME_DIST() OVER (...)` window-only annotation returning `f64`.
+///
+/// Cluster E T19. Zero-arg window function — the cumulative
+/// distribution: `(rows preceding or peer with current) / total_rows`
+/// in the partition. Result is in `(0.0, 1.0]`. First-position rows
+/// get `1/total`; last-position rows get `1.0`.
+///
+/// # Distinct from cume_dist_of in [`crate::expr::AggregateExpr`]
+///
+/// The hypothetical-set form (`f.col().cume_dist_of(value)`, Cluster
+/// E T8) answers "what fraction would rank at-or-below this value?".
+/// This window form gives every row its actual cume-dist position in
+/// the partition.
+///
+/// # Comparison helpers omitted
+///
+/// Same `f64` qualify limitation as [`PercentRankWindow`].
+///
+/// # Example
+///
+/// ```ignore
+/// let rows = Sale::objects()
+///     .annotate(|f| CumeDistWindow::new()
+///         .partition_by(f.region_id())
+///         .order_by(f.amount().asc())
+///         .alias("cume_dist"))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+#[must_use = "window functions are lazy annotations - dropping one omits the column"]
+#[derive(Debug, Clone, Default)]
+pub struct CumeDistWindow {
+    pub(crate) window: WindowSpec,
+    pub(crate) alias: Option<&'static str>,
+}
+
+macro_rules! impl_zero_arg_f64_window {
+    ($type_name:ident, $sql_name:literal) => {
+        impl $type_name {
+            /// Construct an empty window annotation. Build via
+            /// `partition_by` / `order_by` and finalize with `alias`.
+            pub fn new() -> Self {
+                Self {
+                    window: WindowSpec::default(),
+                    alias: None,
+                }
+            }
+
+            /// Add a `PARTITION BY` column.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn partition_by<M, V>(mut self, field: FieldRef<M, V>) -> Self
+            where
+                M: Model,
+            {
+                self.window.partition_by.push(field.column());
+                self
+            }
+
+            /// Add an `ORDER BY` term. Spatial-distance orderings
+            /// panic — pass a column `asc()` or `desc()`.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn order_by(mut self, order: OrderExpr) -> Self {
+                push_order_expr(&mut self.window, order);
+                self
+            }
+
+            /// Set the output alias. Required before SQL emission.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn alias(mut self, alias: &'static str) -> Self {
+                crate::ident::assert_plain_ident(alias, "window_alias");
+                assert!(
+                    !alias.starts_with("__djogi_"),
+                    "window alias \"{alias}\" is reserved (the `__djogi_` prefix is used for framework-internal identifiers)"
+                );
+                self.alias = Some(alias);
+                self
+            }
+
+            pub(crate) fn alias_name(&self) -> Option<&'static str> {
+                self.alias
+            }
+
+            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+                acc.push_sql($sql_name);
+                acc.push_sql("()");
+                self.window.emit(acc);
+                acc.push_sql(" AS ");
+                acc.push_sql(
+                    self.alias
+                        .expect("window function annotations are checked before SQL emission"),
+                );
+            }
+        }
+    };
+}
+
+impl_zero_arg_f64_window!(PercentRankWindow, "PERCENT_RANK");
+impl_zero_arg_f64_window!(CumeDistWindow, "CUME_DIST");
+
+/// `NTILE(n) OVER (...)` window-only annotation returning `i32`.
+///
+/// Cluster E T19. Single-integer-arg window function — divides the
+/// partition into `n` approximately-equal buckets and returns the
+/// bucket number (1..=n) of each row. Useful for quartile (n=4),
+/// quintile (n=5), or arbitrary equal-group bucketing.
+///
+/// # Example
+///
+/// ```ignore
+/// // Quartile salary placement per department
+/// let rows = Employee::objects()
+///     .annotate(|f| NtileWindow::new(4)
+///         .partition_by(f.dept_id())
+///         .order_by(f.salary().desc())
+///         .alias("salary_quartile"))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+///
+/// `n` is bound as a literal in the SQL; values must fit in `i32`.
+#[must_use = "window functions are lazy annotations - dropping one omits the column"]
+#[derive(Debug, Clone)]
+pub struct NtileWindow {
+    pub(crate) window: WindowSpec,
+    pub(crate) alias: Option<&'static str>,
+    pub(crate) buckets: i32,
+}
+
+impl NtileWindow {
+    /// Construct an empty NTILE window annotation with the given
+    /// bucket count `n`. `n` must be positive (Postgres rejects
+    /// non-positive values at runtime).
+    pub fn new(buckets: i32) -> Self {
+        Self {
+            window: WindowSpec::default(),
+            alias: None,
+            buckets,
+        }
+    }
+
+    /// Add a `PARTITION BY` column.
+    #[must_use = "window functions are immutable builders - use the returned value"]
+    pub fn partition_by<M, V>(mut self, field: FieldRef<M, V>) -> Self
+    where
+        M: Model,
+    {
+        self.window.partition_by.push(field.column());
+        self
+    }
+
+    /// Add an `ORDER BY` term.
+    #[must_use = "window functions are immutable builders - use the returned value"]
+    pub fn order_by(mut self, order: OrderExpr) -> Self {
+        push_order_expr(&mut self.window, order);
+        self
+    }
+
+    /// Set the output alias.
+    #[must_use = "window functions are immutable builders - use the returned value"]
+    pub fn alias(mut self, alias: &'static str) -> Self {
+        crate::ident::assert_plain_ident(alias, "window_alias");
+        assert!(
+            !alias.starts_with("__djogi_"),
+            "window alias \"{alias}\" is reserved (the `__djogi_` prefix is used for framework-internal identifiers)"
+        );
+        self.alias = Some(alias);
+        self
+    }
+
+    pub(crate) fn alias_name(&self) -> Option<&'static str> {
+        self.alias
+    }
+
+    pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql("NTILE(");
+        acc.push_bind(self.buckets as i64);
+        acc.push_sql(")");
+        self.window.emit(acc);
+        acc.push_sql(" AS ");
+        acc.push_sql(
+            self.alias
+                .expect("window function annotations are checked before SQL emission"),
+        );
+    }
+}
+
+/// Shared shape for column-argument window functions: `LEAD`, `LAG`,
+/// `FIRST_VALUE`, `LAST_VALUE`. Cluster E T18.
+///
+/// Each takes a column reference as the primary argument; `LEAD` /
+/// `LAG` additionally take an optional offset (default 1) and an
+/// optional default value (returned when the offset row is past the
+/// partition boundary).
+///
+/// All four return the column's own type at the typed surface;
+/// adopters decode into `V`. Today the typed wrapper around these
+/// stores the column name as a `&'static str` and the SQL emitter
+/// emits `<KEYWORD>(<col>) OVER (...)` (or
+/// `<KEYWORD>(<col>, <offset>, <default>) OVER (...)` for LEAD/LAG).
+///
+/// # Why a separate macro from the rank family
+///
+/// Rank-family windows (`ROW_NUMBER`, `RANK`, `DENSE_RANK`) take no
+/// arguments and return `i64`. Column-argument windows take one or
+/// more arguments and return the column's own type. Different
+/// signatures, different emission shape; separate macros keep each
+/// surface tight.
+macro_rules! define_column_arg_window_fn {
+    ($type_name:ident, $sql_name:literal) => {
+        #[must_use = "window functions are lazy annotations - dropping one omits the column"]
+        #[derive(Debug, Clone)]
+        pub struct $type_name<V> {
+            pub(crate) window: WindowSpec,
+            pub(crate) alias: Option<&'static str>,
+            pub(crate) target_column: &'static str,
+            pub(crate) _out: std::marker::PhantomData<fn() -> V>,
+        }
+
+        impl<V> $type_name<V> {
+            /// Construct a window annotation reading from `target` —
+            /// the column whose value is reported per row by this
+            /// window function. The typed wrapper carries `V` for
+            /// row-decode at fetch time.
+            pub fn new<M>(target: FieldRef<M, V>) -> Self
+            where
+                M: Model,
+            {
+                Self {
+                    window: WindowSpec::default(),
+                    alias: None,
+                    target_column: target.column(),
+                    _out: std::marker::PhantomData,
+                }
+            }
+
+            /// Add a `PARTITION BY` column.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn partition_by<M, V2>(mut self, field: FieldRef<M, V2>) -> Self
+            where
+                M: Model,
+            {
+                self.window.partition_by.push(field.column());
+                self
+            }
+
+            /// Add an `ORDER BY` term.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn order_by(mut self, order: OrderExpr) -> Self {
+                push_order_expr(&mut self.window, order);
+                self
+            }
+
+            /// Set the output alias.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn alias(mut self, alias: &'static str) -> Self {
+                crate::ident::assert_plain_ident(alias, "window_alias");
+                assert!(
+                    !alias.starts_with("__djogi_"),
+                    "window alias \"{alias}\" is reserved"
+                );
+                self.alias = Some(alias);
+                self
+            }
+
+            pub(crate) fn alias_name(&self) -> Option<&'static str> {
+                self.alias
+            }
+
+            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+                acc.push_sql($sql_name);
+                acc.push_sql("(");
+                acc.push_sql(self.target_column);
+                acc.push_sql(")");
+                self.window.emit(acc);
+                acc.push_sql(" AS ");
+                acc.push_sql(
+                    self.alias
+                        .expect("window function annotations are checked before SQL emission"),
+                );
+            }
+        }
+    };
+}
+
+define_column_arg_window_fn!(FirstValueWindow, "FIRST_VALUE");
+define_column_arg_window_fn!(LastValueWindow, "LAST_VALUE");
+
+/// `LEAD(col [, offset [, default]]) OVER (...)` window function.
+/// Cluster E T18.
+///
+/// Returns the value of `col` from the row `offset` rows AFTER the
+/// current row in the partition (default offset is 1). When the
+/// computed row is past the partition's tail, returns `default` if
+/// supplied, else SQL NULL.
+///
+/// # Example
+///
+/// ```ignore
+/// // Compare each event to the next event in the same session
+/// let rows = Event::objects()
+///     .annotate(|f| LeadWindow::new(f.timestamp())
+///         .partition_by(f.session_id())
+///         .order_by(f.timestamp().asc())
+///         .alias("next_ts"))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+#[must_use = "window functions are lazy annotations - dropping one omits the column"]
+#[derive(Debug, Clone)]
+pub struct LeadWindow<V> {
+    pub(crate) window: WindowSpec,
+    pub(crate) alias: Option<&'static str>,
+    pub(crate) target_column: &'static str,
+    pub(crate) offset: Option<i64>,
+    pub(crate) _out: std::marker::PhantomData<fn() -> V>,
+}
+
+/// `LAG(col [, offset [, default]]) OVER (...)` window function.
+/// Cluster E T18.
+///
+/// Symmetric to [`LeadWindow`] — returns the value `offset` rows
+/// BEFORE the current row in the partition (default offset 1).
+/// Useful for "compare to previous" delta computations.
+///
+/// # Example
+///
+/// ```ignore
+/// // Compute revenue delta day-over-day
+/// let rows = Day::objects()
+///     .annotate(|f| LagWindow::new(f.revenue())
+///         .order_by(f.date().asc())
+///         .alias("prev_revenue"))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+#[must_use = "window functions are lazy annotations - dropping one omits the column"]
+#[derive(Debug, Clone)]
+pub struct LagWindow<V> {
+    pub(crate) window: WindowSpec,
+    pub(crate) alias: Option<&'static str>,
+    pub(crate) target_column: &'static str,
+    pub(crate) offset: Option<i64>,
+    pub(crate) _out: std::marker::PhantomData<fn() -> V>,
+}
+
+macro_rules! impl_lead_lag {
+    ($type_name:ident, $sql_name:literal) => {
+        impl<V> $type_name<V> {
+            /// Construct with the target column. Default offset is 1
+            /// (next/previous row); chain `.offset(n)` to override.
+            pub fn new<M>(target: FieldRef<M, V>) -> Self
+            where
+                M: Model,
+            {
+                Self {
+                    window: WindowSpec::default(),
+                    alias: None,
+                    target_column: target.column(),
+                    offset: None,
+                    _out: std::marker::PhantomData,
+                }
+            }
+
+            /// Override the row offset. Postgres default is 1; pass
+            /// any positive integer (LEAD looks N rows ahead, LAG
+            /// looks N rows back). Negative offsets reverse the
+            /// direction (Postgres permits this); stick to positive
+            /// integers for clarity.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn offset(mut self, n: i64) -> Self {
+                self.offset = Some(n);
+                self
+            }
+
+            /// Add a `PARTITION BY` column.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn partition_by<M, V2>(mut self, field: FieldRef<M, V2>) -> Self
+            where
+                M: Model,
+            {
+                self.window.partition_by.push(field.column());
+                self
+            }
+
+            /// Add an `ORDER BY` term. Lead/Lag are deterministic
+            /// only when the partition has an explicit order.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn order_by(mut self, order: OrderExpr) -> Self {
+                push_order_expr(&mut self.window, order);
+                self
+            }
+
+            /// Set the output alias.
+            #[must_use = "window functions are immutable builders - use the returned value"]
+            pub fn alias(mut self, alias: &'static str) -> Self {
+                crate::ident::assert_plain_ident(alias, "window_alias");
+                assert!(
+                    !alias.starts_with("__djogi_"),
+                    "window alias \"{alias}\" is reserved"
+                );
+                self.alias = Some(alias);
+                self
+            }
+
+            pub(crate) fn alias_name(&self) -> Option<&'static str> {
+                self.alias
+            }
+
+            pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+                acc.push_sql($sql_name);
+                acc.push_sql("(");
+                acc.push_sql(self.target_column);
+                if let Some(off) = self.offset {
+                    acc.push_sql(", ");
+                    acc.push_bind(off);
+                }
+                acc.push_sql(")");
+                self.window.emit(acc);
+                acc.push_sql(" AS ");
+                acc.push_sql(
+                    self.alias
+                        .expect("window function annotations are checked before SQL emission"),
+                );
+            }
+        }
+    };
+}
+
+impl_lead_lag!(LeadWindow, "LEAD");
+impl_lead_lag!(LagWindow, "LAG");
+
+/// `NTH_VALUE(col, n) OVER (...)` window function. Cluster E T18.
+///
+/// Returns the value of `col` from the `n`-th row of the window frame
+/// (1-indexed). When the frame has fewer than `n` rows, returns SQL
+/// NULL. Useful for "third-best per group" patterns.
+///
+/// # Example
+///
+/// ```ignore
+/// // Score of the third-highest entry per category
+/// let rows = Entry::objects()
+///     .annotate(|f| NthValueWindow::new(f.score(), 3)
+///         .partition_by(f.category_id())
+///         .order_by(f.score().desc())
+///         .alias("third_best"))
+///     .fetch_all(&mut ctx).await?;
+/// ```
+#[must_use = "window functions are lazy annotations - dropping one omits the column"]
+#[derive(Debug, Clone)]
+pub struct NthValueWindow<V> {
+    pub(crate) window: WindowSpec,
+    pub(crate) alias: Option<&'static str>,
+    pub(crate) target_column: &'static str,
+    pub(crate) n: i64,
+    pub(crate) _out: std::marker::PhantomData<fn() -> V>,
+}
+
+impl<V> NthValueWindow<V> {
+    /// Construct with the target column and the 1-indexed position
+    /// `n`. Postgres rejects `n <= 0` at runtime.
+    pub fn new<M>(target: FieldRef<M, V>, n: i64) -> Self
+    where
+        M: Model,
+    {
+        Self {
+            window: WindowSpec::default(),
+            alias: None,
+            target_column: target.column(),
+            n,
+            _out: std::marker::PhantomData,
+        }
+    }
+
+    /// Add a `PARTITION BY` column.
+    #[must_use = "window functions are immutable builders - use the returned value"]
+    pub fn partition_by<M, V2>(mut self, field: FieldRef<M, V2>) -> Self
+    where
+        M: Model,
+    {
+        self.window.partition_by.push(field.column());
+        self
+    }
+
+    /// Add an `ORDER BY` term.
+    #[must_use = "window functions are immutable builders - use the returned value"]
+    pub fn order_by(mut self, order: OrderExpr) -> Self {
+        push_order_expr(&mut self.window, order);
+        self
+    }
+
+    /// Set the output alias.
+    #[must_use = "window functions are immutable builders - use the returned value"]
+    pub fn alias(mut self, alias: &'static str) -> Self {
+        crate::ident::assert_plain_ident(alias, "window_alias");
+        assert!(
+            !alias.starts_with("__djogi_"),
+            "window alias \"{alias}\" is reserved"
+        );
+        self.alias = Some(alias);
+        self
+    }
+
+    pub(crate) fn alias_name(&self) -> Option<&'static str> {
+        self.alias
+    }
+
+    pub(crate) fn push_annotated_column(&self, acc: &mut SqlAccumulator) {
+        acc.push_sql("NTH_VALUE(");
+        acc.push_sql(self.target_column);
+        acc.push_sql(", ");
+        acc.push_bind(self.n);
+        acc.push_sql(")");
+        self.window.emit(acc);
+        acc.push_sql(" AS ");
+        acc.push_sql(
+            self.alias
+                .expect("window function annotations are checked before SQL emission"),
+        );
+    }
+}
+
 fn push_order_expr(window: &mut WindowSpec, order: OrderExpr) {
     match order {
         OrderExpr::Column {
