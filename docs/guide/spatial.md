@@ -384,6 +384,68 @@ expression type.
 
 ---
 
+## Spatial aggregates
+
+Geography fields expose typed aggregate methods that compose into the
+grouped-aggregation surface (see the
+[query-aggregation guide](./query-aggregation.md)). They follow the same
+shape as numeric / collection aggregates — call on a `FieldRef`, get back
+an `AggregateExpr<ReturnType>`.
+
+### `convex_hull` — minimal enclosing polygon
+
+`FieldRef<M, GeoPoint>::convex_hull()` returns the convex hull of every
+point in the group as `AggregateExpr<Polygon>`. The fused emission is
+`ST_ConvexHull(ST_Collect(<col>))` with an outer geography cast:
+
+```rust
+use djogi::prelude::*;
+
+// Hull around every sighting in each herd's territory.
+let hulls: Vec<(HeerId, Polygon)> = Sighting::objects()
+    .group_by(|f| f.herd_id())
+    .annotate(|f| f.location().convex_hull())
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+> **Emitted SQL:**
+> ```sql
+> SELECT t.herd_id, ST_ConvexHull(ST_Collect(t.location::geometry))::geography AS __djogi_agg_0
+> FROM sightings AS t
+> GROUP BY t.herd_id
+> ```
+
+The `::geometry` inside `ST_Collect` matches PostGIS's input-type
+expectation; the outer `::geography` cast keeps the round-trip on the
+geography substrate so result decoding lands in `Polygon` cleanly.
+
+`convex_hull` is also available on `FieldRef<M, Polygon>` (and the other
+non-point geographies) — collecting polygons and hulling the union is
+useful when you want a coarse outline around a set of regions.
+
+### Composition with grouping
+
+Spatial aggregates compose with every grouping mode — plain `group_by`,
+`group_by_region`, `cluster_by_proximity`, `bucket_by_cell`. The
+`cluster_by_proximity` examples in the next section show the pattern.
+
+### Other PostGIS aggregates
+
+Adopters often need more than `convex_hull` alone — per-group centroids
+(`ST_Centroid(ST_Collect(...))`), region unions (`ST_Union`), bounding
+boxes (`ST_Extent`), aggregate clustering (`ST_ClusterIntersecting`,
+`ST_ClusterWithin`), polyline construction (`ST_MakeLine`), vector
+tile generation (`ST_AsMVT`), and so on.
+
+These are tracked in the umbrella aggregate-coverage issue
+([#88](https://github.com/TarunvirBains/djogi/issues/88)). Until they
+land as typed methods, the `ctx.raw_rows(...)` escape hatch remains
+available and emits the PostGIS call directly. New aggregate methods
+extend the section above as they ship.
+
+---
+
 ## Spatial grouping (Phase 6.5)
 
 Three entry points integrate spatial reasoning with the grouped-aggregation
