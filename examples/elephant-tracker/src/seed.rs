@@ -23,7 +23,9 @@ use djogi::prelude::*;
 use djogi::transaction::atomic;
 use time::OffsetDateTime;
 
-use crate::models::{Country, Elephant, ElephantTags, Herd, HerdRange, Researcher, Sighting};
+use crate::models::{
+    Country, Elephant, ElephantAncestry, ElephantTags, Herd, HerdRange, Researcher, Sighting,
+};
 
 const COUNTRIES_SQL: &str = include_str!("../seeds/countries.sql");
 
@@ -178,6 +180,25 @@ async fn seed_programmatic(pool: &DjogiPool) -> Result<()> {
             for spec in HERDS {
                 seed_one_herd(ctx, spec, &countries).await?;
             }
+
+            // Materialize the pedigree closure once every elephant +
+            // both self-FK edges (`mother_id`, `father_id`) are
+            // committed. Walks both edges in a single recursive CTE
+            // up to depth 5 (enough to reach the matriarch + bull
+            // generation from any tail calf in this seed graph). The
+            // mating-pairs demo (T24) consumes the closure for O(1)-
+            // lookup-per-pair Wright F computation.
+            let report = Elephant::materialize_closure::<ElephantAncestry>(
+                ctx,
+                djogi::query::MaterializeClosureOptions::default().with_max_depth(5),
+            )
+            .await?;
+            tracing::info!(
+                rows_written = report.rows_written,
+                sources_visited = report.sources_visited,
+                "materialized ElephantAncestry closure"
+            );
+
             Ok::<_, DjogiError>(())
         })
     })

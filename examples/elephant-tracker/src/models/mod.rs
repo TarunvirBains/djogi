@@ -8,6 +8,7 @@
 
 pub mod country;
 pub mod elephant;
+pub mod elephant_ancestry;
 pub mod herd;
 pub mod herd_range;
 pub mod researcher;
@@ -15,6 +16,7 @@ pub mod sighting;
 
 pub use country::Country;
 pub use elephant::{Elephant, ElephantTags};
+pub use elephant_ancestry::ElephantAncestry;
 pub use herd::Herd;
 pub use herd_range::HerdRange;
 pub use researcher::Researcher;

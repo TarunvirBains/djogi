@@ -288,6 +288,30 @@ async fn create_tables(ctx: &mut DjogiContext) -> Result<()> {
     .await
     .context("create elephants")?;
 
+    // Elephant ancestries — materialized transitive closure of the
+    // pedigree graph. Populated post-seed via
+    // `Elephant::materialize_closure::<ElephantAncestry>` (Phase 8-Zero
+    // Cluster B substrate). The unique constraint on
+    // `(elephant_id, ancestor_id, depth)` is load-bearing — the
+    // closure helper's `INSERT ... ON CONFLICT (...)` requires it for
+    // upsert idempotency.
+    ctx.raw_ddl(
+        "CREATE TABLE elephant_ancestries (
+            id           BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            created_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            updated_at   TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            elephant_id  BIGINT      NOT NULL    REFERENCES elephants(id) ON DELETE CASCADE,
+            ancestor_id  BIGINT      NOT NULL    REFERENCES elephants(id) ON DELETE CASCADE,
+            depth        INTEGER     NOT NULL,
+            path_count   BIGINT      NOT NULL    DEFAULT 1,
+            UNIQUE (elephant_id, ancestor_id, depth)
+        );
+        CREATE INDEX elephant_ancestries_elephant_id_idx ON elephant_ancestries (elephant_id);
+        CREATE INDEX elephant_ancestries_ancestor_id_idx ON elephant_ancestries (ancestor_id);",
+    )
+    .await
+    .context("create elephant_ancestries")?;
+
     // Sightings — spatial point + FTS notes + outbox.
     ctx.raw_ddl(
         "CREATE TABLE sightings (
