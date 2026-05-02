@@ -680,6 +680,51 @@ mod tests {
         );
     }
 
+    // T11 — .grouping_sets() entry point supports multi-column sets per
+    // group AND the empty grand-total set.
+
+    #[test]
+    fn queryset_grouping_sets_supports_multi_column_sets() {
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let gaq = qs
+            .grouping_sets(|_| vec![vec!["region", "dept"], vec!["region"], vec![]])
+            .annotate(|_| vals.sum());
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUPING SETS ((region, dept), (region), ())"),
+            "expected multi-column + empty-set GROUPING SETS clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn queryset_grouping_sets_extracts_columns_from_field_refs() {
+        // Verify the closure receives `T::Fields` and adopters can call
+        // `.column()` on each FieldRef to extract column names.
+        use crate::query::sql::build_grouped_annotated_select;
+        let qs: QuerySet<Fake> = QuerySet::new();
+        let vals: FieldRef<Fake, i64> = FieldRef::new("amount");
+        let region: FieldRef<Fake, i64> = FieldRef::new("region");
+        let dept: FieldRef<Fake, i64> = FieldRef::new("dept");
+        let gaq = qs
+            .grouping_sets(|_| {
+                vec![
+                    vec![region.column(), dept.column()],
+                    vec![region.column()],
+                    vec![],
+                ]
+            })
+            .annotate(|_| vals.sum());
+        let acc = build_grouped_annotated_select(&gaq);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("GROUPING SETS ((region, dept), (region), ())"),
+            "expected sets extracted via FieldRef::column(), got: {sql}"
+        );
+    }
+
     // P1-2 — arity-3 key tuple: same check.
     #[test]
     fn having_on_arity_three_key_emits_having_clause() {
