@@ -116,6 +116,37 @@ impl<Out> AggregateExpr<Out> {
         AggregateExpr::from_node(ExprNode::Aggregate {
             op,
             arg: Box::new(ExprNode::Field { column }),
+            arg2: None,
+            filter: None,
+            cast_to,
+            distinct: false,
+            window: None,
+            order_by: Vec::new(),
+        })
+    }
+
+    /// Build an `AggregateExpr<Out>` for the binary `AGG(y, x)` shape.
+    ///
+    /// Powers the two-arg aggregate family — `COVAR_POP`, `COVAR_SAMP`,
+    /// `CORR`, the `REGR_*` regression family (T6), and the JSON-object
+    /// aggregates (T9 — `JSON_OBJECT_AGG` / `JSONB_OBJECT_AGG`). Layout
+    /// mirrors [`Self::unary_agg`] but populates the `arg2` slot with
+    /// the second column reference.
+    ///
+    /// Argument convention: for the stats / regression family, `y_column`
+    /// is the dependent variable (first), `x_column` is the independent
+    /// variable (second). For JSON-object aggregates, `y_column` is the
+    /// key and `x_column` is the value.
+    pub(crate) fn binary_agg(
+        op: AggOp,
+        y_column: &'static str,
+        x_column: &'static str,
+        cast_to: Option<&'static str>,
+    ) -> Self {
+        AggregateExpr::from_node(ExprNode::Aggregate {
+            op,
+            arg: Box::new(ExprNode::Field { column: y_column }),
+            arg2: Some(Box::new(ExprNode::Field { column: x_column })),
             filter: None,
             cast_to,
             distinct: false,
@@ -470,6 +501,75 @@ impl<M: Model, V: Numeric> FieldRef<M, V> {
     pub fn variance(self) -> AggregateExpr<f64> {
         AggregateExpr::unary_agg(AggOp::Variance, self.column(), Some("DOUBLE PRECISION"))
     }
+
+    /// `COVAR_POP(y, x)` — population covariance, returned as `f64`.
+    ///
+    /// Self is `y` (dependent variable); the argument is `x`
+    /// (independent variable). This matches Postgres' convention across
+    /// the regression / covariance family — the `y` column is always
+    /// the first argument.
+    ///
+    /// Cast to `DOUBLE PRECISION` so the typed surface's `Out = f64`
+    /// promise holds for any combination of integer / float column
+    /// types on either side. Both sides gate on the sealed `Numeric`
+    /// trait — `covar_pop` between a `String` column and an `i64`
+    /// column is a compile error, not a runtime Postgres type error.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Population covariance of order_total vs cost
+    /// let cov: f64 = Order::objects()
+    ///     .aggregate(|f| f.order_total().covar_pop(f.cost()))
+    ///     .fetch_one(&mut ctx).await?;
+    /// ```
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn covar_pop<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::CovarPop,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `COVAR_SAMP(y, x)` — sample covariance, returned as `f64`.
+    ///
+    /// Bessel-corrected (`n-1`) form. Same `y, x` argument convention
+    /// and `DOUBLE PRECISION` cast as [`FieldRef::covar_pop`].
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn covar_samp<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::CovarSamp,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
+
+    /// `CORR(y, x)` — Pearson correlation coefficient, returned as `f64`.
+    ///
+    /// Result range is `[-1.0, 1.0]`: `1.0` for perfect positive linear
+    /// correlation, `-1.0` for perfect negative, `0.0` for no linear
+    /// relationship. Same `y, x` argument convention and
+    /// `DOUBLE PRECISION` cast as [`FieldRef::covar_pop`].
+    ///
+    /// # Empty / single-row groups
+    ///
+    /// Returns `NULL` for empty groups and for groups where one of the
+    /// columns has zero variance (Postgres divides by the product of
+    /// the two stddevs); the non-`Option` return type means callers
+    /// operating on potentially degenerate groups should use
+    /// `ctx.raw_scalar` with `COALESCE(CORR(...), 0)`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn corr<V2: Numeric>(self, x: FieldRef<M, V2>) -> AggregateExpr<f64> {
+        AggregateExpr::binary_agg(
+            AggOp::Corr,
+            self.column(),
+            x.column(),
+            Some("DOUBLE PRECISION"),
+        )
+    }
 }
 
 // ── MIN / MAX ─────────────────────────────────────────────────────────
@@ -585,6 +685,7 @@ impl<M: Model> FieldRef<M, String> {
             arg: Box::new(ExprNode::Field {
                 column: self.column(),
             }),
+            arg2: None,
             filter: None,
             cast_to: None,
             distinct: false,
@@ -1464,6 +1565,120 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &agg.node);
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
+    }
+
+    // ── COVAR / CORR (T5 — binary aggregates) ─────────────────────────────
+
+    #[test]
+    fn covar_pop_emits_covar_pop_y_x() {
+        // Self is y, arg is x. Postgres convention: y first.
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("revenue");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("cost");
+        let agg = f_y.covar_pop(f_x);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "COVAR_POP(revenue, cost)");
+    }
+
+    #[test]
+    fn covar_samp_emits_covar_samp_y_x() {
+        let f_y: FieldRef<Txn, i64> = FieldRef::new("revenue");
+        let f_x: FieldRef<Txn, i64> = FieldRef::new("cost");
+        let agg = f_y.covar_samp(f_x);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "COVAR_SAMP(revenue, cost)");
+    }
+
+    #[test]
+    fn corr_emits_corr_y_x() {
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("score_a");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("score_b");
+        let agg = f_y.corr(f_x);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "CORR(score_a, score_b)");
+    }
+
+    #[test]
+    fn covar_pop_composes_with_distinct() {
+        // DISTINCT applies to the row tuple — `COVAR_POP(DISTINCT y, x)`
+        // is rare but valid Postgres syntax. The emitter places DISTINCT
+        // immediately after the open paren, before both args.
+        let f_y: FieldRef<Txn, f64> = FieldRef::new("revenue");
+        let f_x: FieldRef<Txn, f64> = FieldRef::new("cost");
+        let agg = f_y.covar_pop(f_x).distinct();
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "COVAR_POP(DISTINCT revenue, cost)");
+    }
+
+    #[test]
+    fn binary_aggregates_y_first_x_second_argument_order() {
+        // Pin the y-then-x convention — swapping the call site (x,y) →
+        // (y,x) on COVAR is silently incorrect but Postgres-symmetric;
+        // for CORR / regression the order matters and the typed API
+        // must thread it through faithfully.
+        let f_a: FieldRef<Txn, f64> = FieldRef::new("a_col");
+        let f_b: FieldRef<Txn, f64> = FieldRef::new("b_col");
+        // a.covar(b) → COVAR(a, b) — self is the first arg.
+        let agg_ab = f_a.covar_pop(f_b);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg_ab.node);
+        assert_eq!(acc.sql(), "COVAR_POP(a_col, b_col)");
+
+        // b.covar(a) → COVAR(b, a) — receiver order is the SQL order.
+        let f_a2: FieldRef<Txn, f64> = FieldRef::new("a_col");
+        let f_b2: FieldRef<Txn, f64> = FieldRef::new("b_col");
+        let agg_ba = f_b2.covar_pop(f_a2);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg_ba.node);
+        assert_eq!(acc.sql(), "COVAR_POP(b_col, a_col)");
+    }
+
+    #[test]
+    fn binary_aggregates_return_f64() {
+        // Compile-time pin: covar_pop / covar_samp / corr all return
+        // `AggregateExpr<f64>` regardless of the input numeric types.
+        // Mixed-type calls (i32 × f64) compose because both gate on
+        // `Numeric` independently.
+        let f_y_i64: FieldRef<Txn, i64> = FieldRef::new("y");
+        let f_x_i32: FieldRef<Txn, i32> = FieldRef::new("x");
+        let f_x_f64: FieldRef<Txn, f64> = FieldRef::new("x_f64");
+        let f_x_i64: FieldRef<Txn, i64> = FieldRef::new("x");
+        let _: AggregateExpr<f64> = f_y_i64.covar_pop(f_x_i32);
+        let _: AggregateExpr<f64> = FieldRef::<Txn, i64>::new("y").covar_samp(f_x_f64);
+        let _: AggregateExpr<f64> = FieldRef::<Txn, i64>::new("y").corr(f_x_i64);
+    }
+
+    #[test]
+    fn unary_aggregates_have_no_arg2_after_t5_infrastructure() {
+        // Regression check — adding the `arg2` slot to ExprNode::Aggregate
+        // must not affect unary aggregates. Every unary builder
+        // (`unary_agg` plus `string_agg`) sets `arg2: None`; the bare
+        // unary emission path is untouched.
+        let f: FieldRef<Txn, i64> = FieldRef::new("amount");
+        let agg = f.sum();
+        if let ExprNode::Aggregate { arg2, .. } = &agg.node {
+            assert!(
+                arg2.is_none(),
+                "unary aggregates must leave arg2 empty after the T5 IR change"
+            );
+        } else {
+            panic!("AggregateExpr did not wrap an Aggregate node");
+        }
+        // STRING_AGG also leaves arg2 empty — separator carries through
+        // the AggOp variant payload, not the arg2 slot.
+        let f_s: FieldRef<Txn, String> = FieldRef::new("tag");
+        let agg_s = f_s.string_agg(", ");
+        if let ExprNode::Aggregate { arg2, .. } = &agg_s.node {
+            assert!(
+                arg2.is_none(),
+                "STRING_AGG carries its separator inline; arg2 must stay empty"
+            );
+        } else {
+            panic!("AggregateExpr did not wrap an Aggregate node");
+        }
     }
 
     // ── STDDEV / VARIANCE family (T4) ─────────────────────────────────────

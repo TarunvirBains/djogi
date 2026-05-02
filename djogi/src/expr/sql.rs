@@ -195,6 +195,7 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
         ExprNode::Aggregate {
             op,
             arg,
+            arg2,
             filter,
             cast_to: _,
             distinct,
@@ -291,6 +292,40 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 AggOp::VarPop => emit_unary_agg(acc, "VAR_POP(", *distinct, arg, order_by),
                 AggOp::VarSamp => emit_unary_agg(acc, "VAR_SAMP(", *distinct, arg, order_by),
                 AggOp::Variance => emit_unary_agg(acc, "VARIANCE(", *distinct, arg, order_by),
+                // Binary (two-arg) aggregates — `arg` carries y / key,
+                // `arg2` carries x / value. Routed through the shared
+                // `emit_binary_agg` helper which handles the
+                // `KEYWORD(arg, arg2 [ORDER BY ...])` shape uniformly.
+                // The `expect` here is a structural invariant: the
+                // typed `binary_agg` constructor always populates
+                // `arg2: Some(_)` for these op variants, and no other
+                // construction path reaches this arm.
+                AggOp::CovarPop => emit_binary_agg(
+                    acc,
+                    "COVAR_POP(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("CovarPop aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::CovarSamp => emit_binary_agg(
+                    acc,
+                    "COVAR_SAMP(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("CovarSamp aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::Corr => emit_binary_agg(
+                    acc,
+                    "CORR(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref().expect("Corr aggregate must have arg2 set"),
+                    order_by,
+                ),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the
@@ -514,6 +549,39 @@ fn emit_unary_agg(
         acc.push_sql("DISTINCT ");
     }
     emit_expr(acc, arg);
+    push_aggregate_order_by(acc, order_by);
+    acc.push_sql(")");
+}
+
+/// Emit `<KEYWORD_OPENER>[DISTINCT ]<arg>, <arg2>[ ORDER BY ...])`.
+///
+/// `keyword_opener` is the SQL function name plus opening paren — e.g.
+/// `"COVAR_POP("`, `"REGR_SLOPE("`, `"JSONB_OBJECT_AGG("`. Centralises
+/// every binary aggregate emit arm so the comma-separator placement
+/// and per-aggregate ORDER BY tail stay uniform.
+///
+/// # Argument convention
+///
+/// For the stats / regression family, `arg` is `y` (dependent variable)
+/// and `arg2` is `x` (independent variable). For JSON-object aggregates,
+/// `arg` is the key and `arg2` is the value. The Postgres function
+/// signatures all share the `KEYWORD(first, second)` shape, so the
+/// helper does not need to distinguish.
+fn emit_binary_agg(
+    acc: &mut SqlAccumulator,
+    keyword_opener: &'static str,
+    distinct: bool,
+    arg: &ExprNode,
+    arg2: &ExprNode,
+    order_by: &[crate::query::order::OrderExpr],
+) {
+    acc.push_sql(keyword_opener);
+    if distinct {
+        acc.push_sql("DISTINCT ");
+    }
+    emit_expr(acc, arg);
+    acc.push_sql(", ");
+    emit_expr(acc, arg2);
     push_aggregate_order_by(acc, order_by);
     acc.push_sql(")");
 }

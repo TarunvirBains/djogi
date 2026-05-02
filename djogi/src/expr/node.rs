@@ -132,6 +132,24 @@ pub(crate) enum ExprNode {
         /// of `arg`); the typed [`super::aggregate::AggregateExpr`] surface
         /// stores a placeholder there.
         arg: Box<ExprNode>,
+        /// Second argument for binary (two-arg) aggregates. `None` for
+        /// the unary family (COUNT / SUM / AVG / MIN / MAX / ARRAY_AGG /
+        /// JSONB_AGG / STRING_AGG / BOOL_AND / BOOL_OR / EVERY / BIT_*
+        /// / STDDEV_* / VAR_* / GROUPING). `Some(node)` for the binary
+        /// family (COVAR_POP / COVAR_SAMP / CORR / REGR_* / JSON_OBJECT_AGG
+        /// / JSONB_OBJECT_AGG), where the `arg` slot carries the first
+        /// column (`y` for stats / `key` for json-object) and `arg2`
+        /// carries the second column (`x` for stats / `value` for
+        /// json-object).
+        ///
+        /// Cluster E T5 introduced this slot to back `covar_pop` / `corr`
+        /// / `regr_*` / `jsonb_object_agg`. The slot is backward-compatible
+        /// — every pre-existing unary-aggregate constructor (`unary_agg`,
+        /// the `string_agg` shape) sets `arg2: None`, so the unary
+        /// emission path remains untouched. The emitter ignores `arg2`
+        /// on the unary family and renders the comma-separated second
+        /// arg only when the variant is recognised as binary.
+        arg2: Option<Box<ExprNode>>,
         /// Optional `FILTER (WHERE ...)` clause. `None` emits the bare
         /// aggregate; `Some(cond)` emits
         /// `AGG(arg) FILTER (WHERE <cond>)`.
@@ -553,6 +571,17 @@ pub(crate) enum AggOp {
     VarSamp,
     /// `VARIANCE(col)` — Postgres alias for [`AggOp::VarSamp`].
     Variance,
+    /// `COVAR_POP(y, x)` — population covariance, returned as `f64`.
+    /// Two-arg aggregate: `arg` carries `y`, `arg2` carries `x`.
+    /// `y` first matches Postgres convention (the dependent variable
+    /// is the first argument across the regression / covariance family).
+    CovarPop,
+    /// `COVAR_SAMP(y, x)` — sample covariance, returned as `f64`. Same
+    /// arg ordering as [`AggOp::CovarPop`].
+    CovarSamp,
+    /// `CORR(y, x)` — Pearson correlation coefficient, returned as
+    /// `f64`. Same arg ordering as [`AggOp::CovarPop`].
+    Corr,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].
