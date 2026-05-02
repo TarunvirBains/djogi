@@ -412,6 +412,30 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                         .expect("RegrSyy aggregate must have arg2 set"),
                     order_by,
                 ),
+                // JSON-object aggregates — both binary, both build an
+                // object from (key, value) pairs. JSON_OBJECT_AGG
+                // returns `json`; JSONB_OBJECT_AGG returns `jsonb`.
+                // Carried as separate AggOp variants so the emitter
+                // honours the caller's choice (matching the
+                // EVERY/BOOL_AND alias treatment from T3).
+                AggOp::JsonObjectAgg => emit_binary_agg(
+                    acc,
+                    "JSON_OBJECT_AGG(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("JsonObjectAgg aggregate must have arg2 set"),
+                    order_by,
+                ),
+                AggOp::JsonbObjectAgg => emit_binary_agg(
+                    acc,
+                    "JSONB_OBJECT_AGG(",
+                    *distinct,
+                    arg,
+                    arg2.as_deref()
+                        .expect("JsonbObjectAgg aggregate must have arg2 set"),
+                    order_by,
+                ),
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the

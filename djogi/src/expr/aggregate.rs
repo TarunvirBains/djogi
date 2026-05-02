@@ -779,6 +779,52 @@ impl<M: Model, V> FieldRef<M, V> {
     pub fn json_agg(self) -> AggregateExpr<serde_json::Value> {
         AggregateExpr::unary_agg(AggOp::JsonAgg, self.column(), None)
     }
+
+    /// `JSON_OBJECT_AGG(key, value)` — builds a JSON object (Postgres
+    /// `json` type) from per-row key/value tuples. Returned as
+    /// `serde_json::Value` (always a `Value::Object`).
+    ///
+    /// Receiver is the key column, argument is the value column —
+    /// `f.id().json_object_agg(f.name())` emits
+    /// `JSON_OBJECT_AGG(id, name)`.
+    ///
+    /// # Why exposed alongside [`FieldRef::jsonb_object_agg`]
+    ///
+    /// Djogi standardises on JSONB for storage and wire formats (see
+    /// `docs/spec/decisions.md`), but adopters consuming the output
+    /// from an external system that requires `json` rather than
+    /// `jsonb` (rare but real — some legacy clients, certain extension
+    /// surfaces) have no other in-Djogi path. This variant emits the
+    /// literal `JSON_OBJECT_AGG` keyword; the
+    /// [`FieldRef::jsonb_object_agg`] sibling emits `JSONB_OBJECT_AGG`.
+    /// Both decode into `serde_json::Value` at the Rust level.
+    ///
+    /// # Duplicate keys
+    ///
+    /// Postgres' `JSON_OBJECT_AGG` rejects duplicate keys at runtime
+    /// — the call raises `22023 (invalid_parameter_value)`. Callers
+    /// guaranteeing uniqueness can pre-DISTINCT the row set or use
+    /// `.filter(...)`; otherwise the JSONB variant is more forgiving
+    /// (Postgres treats later keys as overwriting earlier ones for
+    /// `JSONB_OBJECT_AGG`, by `jsonb`'s deduplication semantics).
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn json_object_agg<V2>(self, value: FieldRef<M, V2>) -> AggregateExpr<serde_json::Value> {
+        AggregateExpr::binary_agg(AggOp::JsonObjectAgg, self.column(), value.column(), None)
+    }
+
+    /// `JSONB_OBJECT_AGG(key, value)` — `jsonb` variant of
+    /// [`FieldRef::json_object_agg`]. Same shape, different Postgres
+    /// return type (`jsonb` rather than `json`). Returned as
+    /// `serde_json::Value`.
+    ///
+    /// **Recommended default** when storing or wire-serialising the
+    /// aggregate result — Djogi standardises on JSONB across the
+    /// framework. Use [`FieldRef::json_object_agg`] only when an
+    /// external consumer specifically requires `json`.
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn jsonb_object_agg<V2>(self, value: FieldRef<M, V2>) -> AggregateExpr<serde_json::Value> {
+        AggregateExpr::binary_agg(AggOp::JsonbObjectAgg, self.column(), value.column(), None)
+    }
 }
 
 // ── STRING_AGG ──────────────────────────────────────────────────────────────
@@ -1693,6 +1739,73 @@ mod tests {
         let mut acc = SqlAccumulator::new("");
         emit_expr(&mut acc, &agg.node);
         assert_eq!(acc.sql(), "BIT_AND(DISTINCT flags ORDER BY flags ASC)");
+    }
+
+    // ── JSON object aggregates (T9) ───────────────────────────────────────
+
+    #[test]
+    fn json_object_agg_emits_json_object_agg_key_value() {
+        let f_key: FieldRef<Txn, i64> = FieldRef::new("id");
+        let f_val: FieldRef<Txn, String> = FieldRef::new("name");
+        let agg = f_key.json_object_agg(f_val);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "JSON_OBJECT_AGG(id, name)");
+    }
+
+    #[test]
+    fn jsonb_object_agg_emits_jsonb_object_agg_key_value() {
+        let f_key: FieldRef<Txn, i64> = FieldRef::new("id");
+        let f_val: FieldRef<Txn, String> = FieldRef::new("name");
+        let agg = f_key.jsonb_object_agg(f_val);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "JSONB_OBJECT_AGG(id, name)");
+    }
+
+    #[test]
+    fn json_object_agg_key_first_value_second() {
+        // The receiver is always the key, the argument is always the
+        // value. Pinning this means a future API refactor that swapped
+        // the two would fail the test.
+        let f_key: FieldRef<Txn, String> = FieldRef::new("k");
+        let f_val: FieldRef<Txn, i64> = FieldRef::new("v");
+        let agg = f_key.jsonb_object_agg(f_val);
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "JSONB_OBJECT_AGG(k, v)");
+    }
+
+    #[test]
+    fn json_object_agg_alias_pair_emit_distinct_keywords() {
+        // `json_object_agg` and `jsonb_object_agg` are *different* AggOp
+        // variants that map to *different* Postgres functions (json vs
+        // jsonb). The emitter must keep them distinct in the SQL token
+        // stream (no collapse).
+        let f_k1: FieldRef<Txn, i64> = FieldRef::new("k");
+        let f_v1: FieldRef<Txn, String> = FieldRef::new("v");
+        let f_k2: FieldRef<Txn, i64> = FieldRef::new("k");
+        let f_v2: FieldRef<Txn, String> = FieldRef::new("v");
+        let mut acc1 = SqlAccumulator::new("");
+        let mut acc2 = SqlAccumulator::new("");
+        emit_expr(&mut acc1, &f_k1.json_object_agg(f_v1).node);
+        emit_expr(&mut acc2, &f_k2.jsonb_object_agg(f_v2).node);
+        assert_eq!(acc1.sql(), "JSON_OBJECT_AGG(k, v)");
+        assert_eq!(acc2.sql(), "JSONB_OBJECT_AGG(k, v)");
+        assert_ne!(acc1.sql(), acc2.sql());
+    }
+
+    #[test]
+    fn json_object_agg_returns_serde_value() {
+        // Compile-time pin: both methods return
+        // `AggregateExpr<serde_json::Value>` regardless of the input
+        // key/value column types.
+        let f_k: FieldRef<Txn, i64> = FieldRef::new("k");
+        let f_v: FieldRef<Txn, String> = FieldRef::new("v");
+        let _: AggregateExpr<serde_json::Value> = f_k.json_object_agg(f_v);
+        let f_k2: FieldRef<Txn, String> = FieldRef::new("k");
+        let f_v2: FieldRef<Txn, i64> = FieldRef::new("v");
+        let _: AggregateExpr<serde_json::Value> = f_k2.jsonb_object_agg(f_v2);
     }
 
     // ── REGR_* family (T6) ────────────────────────────────────────────────

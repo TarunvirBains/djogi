@@ -611,6 +611,22 @@ pub(crate) enum AggOp {
     /// `REGR_SYY(y, x)` — sum of squares of the dependent variable
     /// (sum of `(y - avg(y))^2`). Returned as `f64`.
     RegrSyy,
+    /// `JSON_OBJECT_AGG(key, value)` — builds a `json` object from
+    /// per-row key/value pairs. `arg` carries the key column, `arg2`
+    /// carries the value column. Returns `serde_json::Value` at the
+    /// typed surface.
+    ///
+    /// Distinct from [`AggOp::JsonbObjectAgg`] in the Postgres return
+    /// type (`json` vs `jsonb`); both are exposed because adopters
+    /// needing JSON output (e.g. for an external consumer that cannot
+    /// handle JSONB) have no other path today.
+    JsonObjectAgg,
+    /// `JSONB_OBJECT_AGG(key, value)` — `jsonb` variant of
+    /// [`AggOp::JsonObjectAgg`]. Same shape, different Postgres return
+    /// type. Djogi standardises on JSONB elsewhere (see
+    /// `docs/spec/decisions.md`); this variant is the recommended
+    /// default.
+    JsonbObjectAgg,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].
