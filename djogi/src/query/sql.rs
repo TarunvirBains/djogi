@@ -808,67 +808,172 @@ fn emit_aggregate_inner(
     agg: &crate::expr::node::ExprNode,
     default_window: Option<&'static str>,
 ) {
-    // Codex T22 round-3 BLOCK-1: spatial aggregates emit an outer
-    // scalar cast (e.g. `::geography`). When OVER is present, the
-    // cast must wrap the whole `AGG(..) OVER (..)` unit — Postgres
-    // grammar places `OVER` on the bare aggregate before any post-call
-    // scalar wrapper. The bare `emit_expr` appends the cast suffix
-    // adjacent to the aggregate body; here we pop it, emit the OVER,
-    // then re-emit the suffix outside.
-    let (cast_to, window, outer_cast) = match agg {
+    // Codex T22 round-3 BLOCK-1 + round-4 refinement: spatial
+    // aggregates emit an outer scalar cast (e.g. `::geography`).
+    // When OVER is present, Postgres grammar places `OVER` on the
+    // *aggregate* itself before any post-call scalar wrapper. Two
+    // emission profiles cover the surface:
+    //
+    // - **Unwrapped spatial** (collect, union, extent, line_agg,
+    //   cluster_intersecting, cluster_within, mem_union, polygonize):
+    //   emit `(AGG(...) OVER (...))::cast`. The cast attaches to the
+    //   paren-wrapped aggregate-with-OVER unit.
+    //
+    // - **Wrapped spatial** (centroid, convex_hull): emit
+    //   `WRAP(AGG(...) OVER (...))::cast`. Here `WRAP` is a scalar
+    //   function (`ST_Centroid`, `ST_ConvexHull`); the *aggregate*
+    //   is the inner `ST_Collect`, so `OVER` must fall inside the
+    //   wrapper, between the inner-aggregate close and the wrapper
+    //   close. Pre-fix the OVER lived outside the wrapper, which
+    //   Postgres rejects with "OVER specified, but ST_Centroid is
+    //   not a window function nor an aggregate function".
+    //
+    // The shape detector below covers both `ExprNode::Aggregate`
+    // (collect / centroid / etc.) and `ExprNode::Spatial`
+    // (convex_hull, which historically lived in the spatial-expr
+    // family rather than AggOp).
+    let shape = spatial_emission_shape(agg);
+    let (cast_to, window) = match agg {
         crate::expr::node::ExprNode::Aggregate {
-            op,
-            cast_to,
-            window,
-            ..
-        } => (
-            *cast_to,
-            window.as_ref(),
-            crate::expr::sql::outer_cast_suffix(op),
-        ),
-        _ => (None, None, None),
+            cast_to, window, ..
+        } => (*cast_to, window.as_ref()),
+        _ => (None, None),
     };
     let has_window_clause = window.is_some() || default_window.is_some();
-    let needs_paren_for_outer_cast = outer_cast.is_some() && has_window_clause;
-    let needs_paren_for_cast_to = cast_to.is_some();
-    let needs_outer_paren = needs_paren_for_cast_to || needs_paren_for_outer_cast;
 
-    if needs_outer_paren {
-        acc.push_sql("(");
-    }
-    crate::expr::sql::emit_expr(acc, agg);
-    // Pop the outer cast suffix that `emit_expr` just appended (for
-    // spatial aggregates) so OVER falls inside the cast.
-    if let Some(suffix) = outer_cast {
-        let popped = acc.pop_sql_suffix(suffix);
-        debug_assert!(
-            popped,
-            "spatial aggregate emission must end with {suffix} \
-             (outer_cast_suffix and emit_expr disagree)"
-        );
-    }
-    match window {
+    let emit_window_clause = |acc: &mut SqlAccumulator| match window {
         Some(ws) => ws.emit(acc),
         None => {
             if let Some(s) = default_window {
                 acc.push_sql(s);
             }
         }
+    };
+
+    match (shape, has_window_clause, cast_to) {
+        // Spatial wrapped (centroid, convex_hull) WITH window — splice
+        // OVER inside the wrapper, between the inner-aggregate close
+        // and the wrapper close.
+        (
+            Some(SpatialShape {
+                suffix,
+                wrapped: true,
+            }),
+            true,
+            _,
+        ) => {
+            crate::expr::sql::emit_expr(acc, agg);
+            // Bare emission ended with `WRAP(AGG(...))::cast`. Pop
+            // the cast and the wrapper close so the next push falls
+            // between the AGG(...)'s close paren and the wrapper's.
+            let popped_cast = acc.pop_sql_suffix(suffix);
+            debug_assert!(
+                popped_cast,
+                "wrapped spatial bare emission must end with {suffix}"
+            );
+            let popped_close = acc.pop_sql_suffix(")");
+            debug_assert!(
+                popped_close,
+                "wrapped spatial bare emission must end with `)` after popping cast"
+            );
+            emit_window_clause(acc);
+            acc.push_sql(")");
+            acc.push_sql(suffix);
+        }
+        // Spatial unwrapped WITH window — paren-wrap (AGG OVER), then cast.
+        (
+            Some(SpatialShape {
+                suffix,
+                wrapped: false,
+            }),
+            true,
+            _,
+        ) => {
+            acc.push_sql("(");
+            crate::expr::sql::emit_expr(acc, agg);
+            let popped_cast = acc.pop_sql_suffix(suffix);
+            debug_assert!(
+                popped_cast,
+                "unwrapped spatial bare emission must end with {suffix}"
+            );
+            emit_window_clause(acc);
+            acc.push_sql(")");
+            acc.push_sql(suffix);
+        }
+        // Spatial WITHOUT window — bare emit already includes the
+        // cast adjacent to the aggregate. Nothing to splice.
+        (Some(_), false, _) => {
+            crate::expr::sql::emit_expr(acc, agg);
+        }
+        // Non-spatial WITH explicit cast_to — paren-wrap (AGG OVER)?,
+        // then `::ty`. Window may or may not be present; the existing
+        // contract emits parens whenever cast_to is set so the cast
+        // attaches cleanly.
+        (None, _, Some(ty)) => {
+            acc.push_sql("(");
+            crate::expr::sql::emit_expr(acc, agg);
+            emit_window_clause(acc);
+            acc.push_sql(")::");
+            acc.push_sql(ty);
+        }
+        // Non-spatial, no cast — bare emit + optional OVER.
+        (None, _, None) => {
+            crate::expr::sql::emit_expr(acc, agg);
+            emit_window_clause(acc);
+        }
     }
-    if needs_outer_paren {
-        acc.push_sql(")");
-    }
-    // Re-emit the popped spatial cast (if any), then any explicit
-    // cast_to. `outer_cast` and `cast_to` are mutually exclusive in
-    // practice — spatial AggOps carry `cast_to: None` and the
-    // numeric/JSON aggregates that set `cast_to` are not in the
-    // spatial family.
-    if let Some(suffix) = outer_cast {
-        acc.push_sql(suffix);
-    }
-    if let Some(ty) = cast_to {
-        acc.push_sql("::");
-        acc.push_sql(ty);
+}
+
+/// Emission profile for spatial aggregates. The two `wrapped` cases
+/// drive the OVER-splice strategy in [`emit_aggregate_inner`].
+///
+/// - `wrapped: true` — bare emission has the form `WRAP(AGG(...))::cast`.
+///   `WRAP` is a scalar function (`ST_Centroid`, `ST_ConvexHull`); the
+///   actual aggregate is `AGG` (`ST_Collect`). OVER must fall inside
+///   the wrapper, between AGG's close paren and the wrapper's close.
+///
+/// - `wrapped: false` — bare emission has the form `AGG(...)::cast`.
+///   No scalar wrapper; OVER attaches directly to the aggregate, then
+///   the cast wraps the aggregate-with-OVER unit:
+///   `(AGG(...) OVER (...))::cast`.
+struct SpatialShape {
+    suffix: &'static str,
+    wrapped: bool,
+}
+
+/// Detect the spatial-emission profile for an aggregate node. Returns
+/// `Some(SpatialShape)` for spatial aggregates whose bare emission
+/// ends with a scalar cast suffix (potentially preceded by a wrapper
+/// close), `None` for non-spatial aggregates.
+///
+/// Covers two node kinds because the spatial aggregate family
+/// historically split between `ExprNode::Aggregate` (collect,
+/// centroid, union, etc.) and `ExprNode::Spatial` (convex_hull).
+fn spatial_emission_shape(agg: &crate::expr::node::ExprNode) -> Option<SpatialShape> {
+    use crate::expr::node::ExprNode;
+    match agg {
+        ExprNode::Aggregate { op, .. } => {
+            let suffix = crate::expr::sql::outer_cast_suffix(op)?;
+            // The wrapped vs unwrapped distinction is feature-gated
+            // because the wrapped variants live behind `spatial` —
+            // outer_cast_suffix returns None when spatial is off,
+            // so this branch is unreachable for unfeatured builds.
+            #[cfg(feature = "spatial")]
+            let wrapped = matches!(op, crate::expr::node::AggOp::SpatialCentroid);
+            #[cfg(not(feature = "spatial"))]
+            let wrapped = false;
+            Some(SpatialShape { suffix, wrapped })
+        }
+        #[cfg(feature = "spatial")]
+        ExprNode::Spatial(crate::expr::spatial::SpatialExpr::ConvexHull { .. }) => {
+            // ST_ConvexHull(ST_Collect(<col>::geometry))::geography —
+            // same wrapped shape as SpatialCentroid.
+            Some(SpatialShape {
+                suffix: "::geography",
+                wrapped: true,
+            })
+        }
+        _ => None,
     }
 }
 
