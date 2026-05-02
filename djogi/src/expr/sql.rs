@@ -445,6 +445,40 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
                 // separator) matches every other unary aggregate, so
                 // routes through `emit_unary_agg`.
                 AggOp::Grouping => emit_unary_agg(acc, "GROUPING(", *distinct, arg, order_by),
+                // PostGIS spatial aggregates — fused two-call shape with
+                // inner `::geometry` cast on the column and outer
+                // `::geography` cast on the result. The DISTINCT keyword,
+                // when set, lands inside `ST_Collect(...)` because that
+                // is the actual aggregating step; `ST_Centroid` is a
+                // post-aggregate scalar wrapper that doesn't admit
+                // DISTINCT directly. Same for ORDER BY (T1) — it
+                // applies to ST_Collect's input ordering, which only
+                // affects the output for non-commutative outer wrappers
+                // (centroid is commutative, but the IR carries the
+                // clause uniformly so future PostGIS aggregates with
+                // order-sensitive outer wrappers can reuse the slot).
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialCentroid => {
+                    acc.push_sql("ST_Centroid(ST_Collect(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql("))::geography");
+                }
+                #[cfg(feature = "spatial")]
+                AggOp::SpatialCollect => {
+                    acc.push_sql("ST_Collect(");
+                    if *distinct {
+                        acc.push_sql("DISTINCT ");
+                    }
+                    emit_expr(acc, arg);
+                    acc.push_sql("::geometry");
+                    push_aggregate_order_by(acc, order_by);
+                    acc.push_sql(")::geography");
+                }
             }
             // Postgres `AGG(...) FILTER (WHERE <cond>)` runs the
             // filter inside the aggregate's per-row scan — the

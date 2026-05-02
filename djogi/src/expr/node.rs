@@ -638,6 +638,25 @@ pub(crate) enum AggOp {
     /// follow-up task because it needs an N-arg slot and a typed bitmask
     /// return type.
     Grouping,
+    /// `ST_Centroid(ST_Collect(<col>))::geography` — per-group centroid
+    /// of point geometries. Fused two-call shape (the emitter wraps
+    /// `ST_Collect` inside `ST_Centroid` and casts back to geography).
+    /// Returns `GeoPoint`. Gated on `feature = "spatial"`.
+    ///
+    /// Sibling of [`AggOp::ConvexHull`] (which currently lives in the
+    /// `SpatialExpr` family for historical reasons; future cleanup will
+    /// migrate it here so all PostGIS aggregates inherit the same
+    /// modifier composition — `.distinct()` / `.filter()` / `.over()` /
+    /// `.order_by()` work uniformly through the `Aggregate` envelope).
+    #[cfg(feature = "spatial")]
+    SpatialCentroid,
+    /// `ST_Collect(<col>)::geography` — per-group multi-geometry
+    /// collection. Returns a `MultiPoint` for `GeoPoint` inputs (and
+    /// the corresponding multi-shape for other geography inputs once
+    /// the typed surface extends to non-point geographies).
+    /// Sibling of [`AggOp::SpatialCentroid`].
+    #[cfg(feature = "spatial")]
+    SpatialCollect,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

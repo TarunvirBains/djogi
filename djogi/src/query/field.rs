@@ -1380,11 +1380,119 @@ impl<M: crate::model::Model, G: crate::geo::GeographyValue> FieldRef<M, G> {
         // Wrap it in `AggregateExpr` directly so the annotate plumbing
         // (which only inspects the `cast_to` / `window` slots on the
         // outer node) treats it as any other aggregate.
+        //
+        // Cluster E followup: migrate to AggOp::ConvexHull so the modifier
+        // suite (.distinct() / .filter() / .over() / .order_by()) composes
+        // automatically. Centroid + Collect (T12) ship through AggOp from
+        // the start; convex_hull stays SpatialExpr-routed for now to limit
+        // T12's blast radius.
         crate::expr::AggregateExpr::from_node(crate::expr::node::ExprNode::Spatial(
             crate::expr::spatial::SpatialExpr::ConvexHull {
                 field_column: self.column(),
             },
         ))
+    }
+
+    /// `ST_Centroid(ST_Collect(<col>))::geography` — per-group centroid of
+    /// the collected point geometries. Returns `AggregateExpr<GeoPoint>`.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_Centroid(ST_Collect(<col>::geometry))::geography
+    /// ```
+    ///
+    /// The `::geometry` inner cast matches the same cast discipline as
+    /// the geometry-only shape predicates and `convex_hull` — `ST_Collect`
+    /// requires `geometry` arguments and has no `geography` overload. The
+    /// outer `::geography` cast keeps the round-trip on the geography
+    /// substrate so the result decodes into `GeoPoint`.
+    ///
+    /// # Composition
+    ///
+    /// Used inside `GroupedQuerySet::annotate(...)` alongside other
+    /// aggregates:
+    ///
+    /// ```ignore
+    /// // Per-cluster centroid + count over a DBSCAN clustering — the
+    /// // shape that backs the cluster_sightings demo's typed retrofit.
+    /// let clusters: Vec<(ClusterId, GeoPoint, i64)> = Sighting::objects()
+    ///     .cluster_by_proximity(
+    ///         |f| f.location(),
+    ///         ClusterRadius::meters(50_000.0).min_points(3),
+    ///     )
+    ///     .annotate(|f| (f.location().centroid(), f.id().count_star()))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups (or all-NULL inputs) produce SQL NULL; the typed
+    /// surface decodes that as a runtime error on the non-`Option`
+    /// surface. Wrap `Out = Option<GeoPoint>` at the call site if your
+    /// dataset has known empty groups, or use a `FILTER (WHERE ...)`
+    /// guard.
+    ///
+    /// # Why a typed aggregate, not raw SQL
+    ///
+    /// Adopters wanting a per-group centroid had to drop to
+    /// `ctx.raw_rows("... ST_Centroid(ST_Collect(loc))::geography ...")`
+    /// before this method — losing the typed annotate composition with
+    /// `count_star`, `array_agg`, etc. The typed surface keeps the whole
+    /// expression in the `GroupedQuerySet` chain.
+    #[cfg(feature = "spatial")]
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn centroid(self) -> crate::expr::AggregateExpr<crate::geo::GeoPoint> {
+        // Routes through the AggOp variant so all aggregate modifiers
+        // (.distinct, .filter, .over, .order_by) compose automatically
+        // via the AggregateExpr envelope. Special emission lives in
+        // expr::sql::emit_expr's SpatialCentroid arm.
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialCentroid,
+            self.column(),
+            None,
+        )
+    }
+
+    /// `ST_Collect(<col>)::geography` — per-group multi-point collection.
+    /// Returns `AggregateExpr<MultiPoint>`.
+    ///
+    /// # SQL emission
+    ///
+    /// ```sql
+    /// ST_Collect(<col>::geometry)::geography
+    /// ```
+    ///
+    /// Same cast discipline as [`Self::centroid`] — inner `::geometry`
+    /// for `ST_Collect`'s input, outer `::geography` for round-trip.
+    ///
+    /// # Composition
+    ///
+    /// Useful when a downstream Rust-side computation needs every
+    /// contributing point of a group as a single multi-geometry value.
+    /// For density-based clustering plus per-cluster point dump:
+    ///
+    /// ```ignore
+    /// let clusters: Vec<(ClusterId, MultiPoint)> = Sighting::objects()
+    ///     .cluster_by_proximity(
+    ///         |f| f.location(),
+    ///         ClusterRadius::meters(50_000.0).min_points(3),
+    ///     )
+    ///     .annotate(|f| f.location().collect())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Postgres NULL behaviour
+    ///
+    /// Empty groups produce SQL NULL — same caveat as [`Self::centroid`].
+    #[cfg(feature = "spatial")]
+    #[must_use = "aggregates are lazy — dropping one silently omits the column"]
+    pub fn collect(self) -> crate::expr::AggregateExpr<crate::geo::MultiPoint> {
+        crate::expr::AggregateExpr::unary_agg(
+            crate::expr::node::AggOp::SpatialCollect,
+            self.column(),
+            None,
+        )
     }
 }
 
@@ -2420,6 +2528,116 @@ mod distance_tests {
             return;
         }
         panic!("expected ConvexHull on Polygon field");
+    }
+
+    // ── centroid / collect — T12 PostGIS aggregates ──────────────────────────
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn centroid_on_geopoint_field_produces_aggregate_geopoint() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        // Compile-time check on the return type.
+        let agg: AggregateExpr<GeoPoint> = field.centroid();
+        // Runtime check — the IR node is the AggOp variant.
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialCentroid));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "location");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialCentroid)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn collect_on_geopoint_field_produces_aggregate_multipoint() {
+        use crate::expr::AggregateExpr;
+        use crate::expr::node::AggOp;
+        use crate::geo::MultiPoint;
+
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg: AggregateExpr<MultiPoint> = field.collect();
+        if let ExprNode::Aggregate { op, arg, .. } = agg.node {
+            assert!(matches!(op, AggOp::SpatialCollect));
+            if let ExprNode::Field { column } = *arg {
+                assert_eq!(column, "location");
+                return;
+            }
+            panic!("expected Aggregate.arg to wrap the column");
+        }
+        panic!("expected ExprNode::Aggregate(SpatialCollect)");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn centroid_emits_st_centroid_st_collect_with_geography_cast() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = field.centroid();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_Centroid(ST_Collect(location::geometry))::geography"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn collect_emits_st_collect_with_geography_cast() {
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = field.collect();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(acc.sql(), "ST_Collect(location::geometry)::geography");
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn centroid_with_distinct_emits_distinct_inside_st_collect() {
+        // DISTINCT lands inside ST_Collect — the actual aggregating step.
+        // ST_Centroid is a post-aggregate scalar wrapper.
+        use crate::pg::accumulator::SqlAccumulator;
+        let field: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let agg = field.centroid().distinct();
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        assert_eq!(
+            acc.sql(),
+            "ST_Centroid(ST_Collect(DISTINCT location::geometry))::geography"
+        );
+    }
+
+    #[cfg(feature = "spatial")]
+    #[test]
+    fn centroid_with_filter_emits_filter_after_close_paren() {
+        // FILTER (WHERE ...) attaches after the outer aggregate close —
+        // outside the whole ST_Centroid(ST_Collect(...))::geography
+        // expression. Mirrors how FILTER attaches to any other aggregate.
+        use crate::expr::Expr;
+        use crate::pg::accumulator::SqlAccumulator;
+        let loc: FieldRef<Fake, GeoPoint> = FieldRef::new("location");
+        let confidence: FieldRef<Fake, f64> = FieldRef::new("confidence");
+        let agg = loc
+            .centroid()
+            .filter(confidence.as_expr().gt(Expr::literal(0.5_f64)));
+        let mut acc = SqlAccumulator::new("");
+        crate::expr::sql::emit_expr(&mut acc, &agg.node);
+        let sql = acc.sql().to_string();
+        assert!(
+            sql.starts_with("ST_Centroid(ST_Collect(location::geometry))::geography"),
+            "centroid expression must precede FILTER, got: {sql}"
+        );
+        assert!(
+            sql.contains(" FILTER (WHERE confidence > "),
+            "FILTER clause must attach after centroid expression, got: {sql}"
+        );
     }
 
     // area_of / area_of_intersection typed surface tests
