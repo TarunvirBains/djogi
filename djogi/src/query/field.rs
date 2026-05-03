@@ -3432,11 +3432,12 @@ mod distance_tests {
     #[cfg(feature = "spatial")]
     #[test]
     fn convex_hull_with_over_places_over_on_inner_collect() {
-        // Codex T22 round-4 BLOCK-3: `convex_hull` is the second
-        // wrapped spatial aggregate (after centroid) and routes
-        // through `ExprNode::Spatial(SpatialExpr::ConvexHull{..})`
-        // rather than `ExprNode::Aggregate{..}`. The OVER splice
-        // must work for both node kinds.
+        // Codex T22 round-4 BLOCK-3 / round-5 BLOCK-2: convex_hull
+        // is a wrapped spatial aggregate (sibling of centroid).
+        // After the round-5 migration it routes through the same
+        // `AggOp::SpatialConvexHull` envelope as centroid, so the
+        // wrapped OVER splice (place OVER inside the wrapper, not
+        // around the whole expression) applies uniformly.
         //
         //   correct: ST_ConvexHull(ST_Collect(<col>::geometry) OVER (...))::geography
         //   wrong:   ST_ConvexHull(ST_Collect(<col>::geometry))::geography OVER (...)

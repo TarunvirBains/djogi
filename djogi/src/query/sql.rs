@@ -828,10 +828,11 @@ fn emit_aggregate_inner(
     //   Postgres rejects with "OVER specified, but ST_Centroid is
     //   not a window function nor an aggregate function".
     //
-    // The shape detector below covers both `ExprNode::Aggregate`
-    // (collect / centroid / etc.) and `ExprNode::Spatial`
-    // (convex_hull, which historically lived in the spatial-expr
-    // family rather than AggOp).
+    // The shape detector below inspects `ExprNode::Aggregate` only;
+    // every spatial aggregate (collect, centroid, convex_hull, …)
+    // routes through the `AggOp` envelope after the round-5 ConvexHull
+    // migration. See [`spatial_emission_shape`] for the wrapped vs
+    // unwrapped distinction.
     let shape = spatial_emission_shape(agg);
     let (cast_to, window) = match agg {
         crate::expr::node::ExprNode::Aggregate {
