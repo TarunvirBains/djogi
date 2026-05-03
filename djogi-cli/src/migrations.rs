@@ -726,6 +726,7 @@ mod tests {
                     default_sql: Some("generate_id_desc()".to_string()),
                     foreign_key: None,
                     generated: None,
+                    identity: None,
                     index_type: None,
                     indexed: false,
                     max_length: None,

@@ -384,6 +384,107 @@ expression type.
 
 ---
 
+## Spatial aggregates
+
+Geography fields expose typed aggregate methods that compose into the
+grouped-aggregation surface (see the
+[query-aggregation guide](./query-aggregation.md)). They follow the same
+shape as numeric / collection aggregates — call on a `FieldRef`, get back
+an `AggregateExpr<ReturnType>`.
+
+### `convex_hull` — minimal enclosing polygon
+
+`FieldRef<M, GeoPoint>::convex_hull()` returns the convex hull of every
+point in the group as `AggregateExpr<Polygon>`. The fused emission is
+`ST_ConvexHull(ST_Collect(<col>))` with an outer geography cast:
+
+```rust
+use djogi::prelude::*;
+
+// Hull around every sighting in each herd's territory.
+let hulls: Vec<(HeerId, Polygon)> = Sighting::objects()
+    .group_by(|f| f.herd_id())
+    .annotate(|f| f.location().convex_hull())
+    .fetch_all(&mut ctx)
+    .await?;
+```
+
+> **Emitted SQL:**
+> ```sql
+> SELECT t.herd_id, ST_ConvexHull(ST_Collect(t.location::geometry))::geography AS __djogi_agg_0
+> FROM sightings AS t
+> GROUP BY t.herd_id
+> ```
+
+The `::geometry` inside `ST_Collect` matches PostGIS's input-type
+expectation; the outer `::geography` cast keeps the round-trip on the
+geography substrate so result decoding lands in `Polygon` cleanly.
+
+`convex_hull` is also available on `FieldRef<M, Polygon>` (and the other
+non-point geographies) — collecting polygons and hulling the union is
+useful when you want a coarse outline around a set of regions.
+
+### Composition with grouping
+
+Spatial aggregates compose with every grouping mode — plain `group_by`,
+`group_by_region`, `cluster_by_proximity`, `bucket_by_cell`. The
+`cluster_by_proximity` examples in the next section show the pattern.
+
+### Other PostGIS aggregates (Cluster E)
+
+Cluster E (#88) extended the typed PostGIS aggregate surface beyond
+`convex_hull`. Each method returns `AggregateExpr<ReturnType>` and
+composes with `.distinct()` / `.filter()` / `.over(...)` /
+`.order_by(...)` modifiers identically to numeric / collection
+aggregates.
+
+| Method | Signature | Emission | Receiver |
+|---|---|---|---|
+| `centroid()` | `FieldRef<M, GeoPoint> -> AggregateExpr<GeoPoint>` | `ST_Centroid(ST_Collect(<col>::geometry))::geography` | GeoPoint |
+| `collect()` | `FieldRef<M, GeoPoint> -> AggregateExpr<MultiPoint>` | `ST_Collect(<col>::geometry)::geography` | GeoPoint |
+| `union()` | `FieldRef<M, Polygon> -> AggregateExpr<MultiPolygon>` | `ST_Union(<col>::geometry)::geography` | Polygon, MultiPolygon |
+| `extent()` | any geography → `AggregateExpr<Polygon>` | `ST_Extent(<col>::geometry)::geometry::geography` | every `GeographyValue` field |
+| `extent_3d()` | any geography → `AggregateExpr<Polygon>` | `ST_3DExtent(...)` cast chain | every `GeographyValue` field |
+| `make_line()` | `FieldRef<M, GeoPoint> -> AggregateExpr<LineString>` | `ST_MakeLine(<col>::geometry)::geography` | GeoPoint |
+| `line_agg()` | `FieldRef<M, LineString> -> AggregateExpr<MultiLineString>` | `ST_LineAgg(<col>::geometry)::geography` | LineString |
+| `polygon_agg()` | `FieldRef<M, Polygon> -> AggregateExpr<MultiPolygon>` | `ST_Collect(<col>::geometry)::geography` (portable fallback) | Polygon |
+| `cluster_intersecting()` | `FieldRef<M, Polygon> -> AggregateExpr<Vec<MultiPolygon>>` | `ST_ClusterIntersecting(<col>::geometry)::geography[]` | Polygon, MultiPolygon |
+| `cluster_within(d)` | `FieldRef<M, Polygon>, distance: f64 -> AggregateExpr<Vec<MultiPolygon>>` | `ST_ClusterWithin(<col>::geometry, $1)::geography[]` | Polygon, MultiPolygon |
+| `mem_union()` | `FieldRef<M, Polygon> -> AggregateExpr<MultiPolygon>` | `ST_MemUnion(<col>::geometry)::geography` | Polygon, MultiPolygon |
+| `polygonize()` | `FieldRef<M, LineString> -> AggregateExpr<MultiPolygon>` | `ST_Polygonize(<col>::geometry)::geography` | LineString |
+
+#### Per-group centroid + count + IDs
+
+The `cluster_sightings` example demo combines DBSCAN clustering with
+per-cluster centroid + count + ID rollup in one typed chain — see
+`examples/elephant-tracker/src/demos/cluster_sightings.rs` for the
+full retrofit.
+
+```rust
+let rows: Vec<(ClusterId, (i64, GeoPoint, Vec<HeerId>))> = Sighting::objects()
+    .cluster_by_proximity(
+        |f| f.location(),
+        ClusterRadius::meters(50_000.0).min_points(3),
+    )
+    .annotate(|f| (
+        f.id().count_star(),
+        f.location().centroid(),
+        f.id().array_agg().order_by(f.id().asc()),
+    ))
+    .fetch_all(&mut ctx).await?;
+```
+
+#### Vector-tile / Geobuf output
+
+`ST_AsMVT` and `ST_AsGeobuf` are row-shape aggregates (they consume
+the entire annotate tuple, not a single column). They don't fit the
+column-aggregate `AggOp` surface; tracked in
+[#92](https://github.com/TarunvirBains/djogi/issues/92) as Cluster F
+work — same v0.1.0 timeline, separate execution unit because the IR
+shape differs.
+
+---
+
 ## Spatial grouping (Phase 6.5)
 
 Three entry points integrate spatial reasoning with the grouped-aggregation

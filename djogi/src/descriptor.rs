@@ -49,6 +49,7 @@ pub enum GeographySubtype {
     LineString,
     Polygon,
     MultiPoint,
+    MultiLineString,
     MultiPolygon,
 }
 
@@ -59,6 +60,7 @@ impl std::fmt::Display for GeographySubtype {
             Self::LineString => "LineString",
             Self::Polygon => "Polygon",
             Self::MultiPoint => "MultiPoint",
+            Self::MultiLineString => "MultiLineString",
             Self::MultiPolygon => "MultiPolygon",
         })
     }
@@ -2000,8 +2002,8 @@ impl ModelDescriptor {
     /// Used by [`Model::full_ancestors`](crate::model::Model::full_ancestors)
     /// to discover every parent edge to walk in one recursive CTE — each
     /// returned column name becomes the source-column of a synthesised
-    /// `RelationPath<T, T>` and a `UNION ALL` branch in the recursive
-    /// term.
+    /// `RelationPath<T, T>` and an alternative inside the lateral
+    /// `UNION ALL` subquery the recursive term joins to.
     ///
     /// Returns an empty iterator when `self_fk_count() == 0`. Order
     /// matches descriptor field-injection order, which equals struct

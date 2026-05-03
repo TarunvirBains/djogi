@@ -3,10 +3,10 @@
 A runnable example showcasing Djogi's core and esoteric features through a
 plausible domain: tracking African elephant herds across borders.
 
-This example is intentionally tightly scoped — six models, one binary —
-but it exercises a wide cross-section of the framework so a learner can
-see real features in real combinations rather than reading isolated
-snippets.
+This example is intentionally tightly scoped — seven models, one
+binary — but it exercises a wide cross-section of the framework so
+a learner can see real features in real combinations rather than
+reading isolated snippets.
 
 ## What it demonstrates
 
@@ -19,7 +19,7 @@ snippets.
 | `GeoPoint` + EWKB                | `Sighting::location`                                   |
 | Spatial cluster grouping (DBSCAN)| `cluster_sightings` demo                               |
 | Full-text search (FTS)           | `Researcher::notes` and `Sighting::notes`              |
-| Self-referential FK (lineage)    | `Elephant::parent_id` — recursive-CTE escape hatch     |
+| Multi-edge self-FKs (pedigree)   | `Elephant::mother_id` + `father_id` — single-edge typed `tree_descendants` for matrilineal lineage; materialized `ElephantAncestry` closure (via `Model::materialize_closure`) for indexed Wright kinship lookup in the `mating-pairs` demo |
 | Visages with side-query trait    | `HerdSummary` reports `herd_size` via aggregate, not row|
 | Transactional outbox             | `Sighting::create` enqueues an event in `sightings_outbox` |
 | RLS via `tenant_key`             | Researchers scoped per organisation                    |
@@ -28,8 +28,9 @@ snippets.
 
 ## The domain
 
-Six models, organized to make cross-border movement and population
-density the load-bearing story:
+Seven models, organized to make cross-border movement, population
+density, and pedigree-driven mating-pair selection the load-bearing
+story:
 
 - **Country** — reference table (Kenya, Tanzania, Uganda, Botswana,
   Zimbabwe). Serial PK, no audit trail.
@@ -40,9 +41,27 @@ density the load-bearing story:
   seasonally.
 - **HerdRange** — the through model. Holds the season payload and the
   composite uniqueness constraint.
-- **Elephant** — individual elephants. `parent_id: Option<ForeignKey<Self>>`
-  for matriarchal lineage. `tags: Jsonb<ElephantTags>` for typed extra
-  fields. `version: i32` for optimistic locking on tag updates.
+- **Elephant** — individual elephants. `mother_id` + `father_id`,
+  both `Option<ForeignKey<Self>>`, model biological pedigree (each
+  individual has at most one of each, either potentially unknown).
+  Matrilineal lineage walks `mother_id` only (single-edge
+  `tree_descendants` / raw recursive CTE in the `lineage` demo);
+  Wright kinship reads from a materialized `ElephantAncestry`
+  closure (populated at seed time via
+  `Model::materialize_closure::<ElephantAncestry>`) which the
+  `mating-pairs` demo joins to itself on `ancestor_id` to find
+  shared ancestors per candidate pair.
+  `tags: Jsonb<ElephantTags>` for typed extra fields including sex.
+  `version: i32` for optimistic locking on tag updates.
+- **ElephantAncestry** — materialized transitive closure of the
+  pedigree graph. `(elephant_id, ancestor_id, depth, path_count)`
+  with the framework-injected `id` / `created_at` / `updated_at`.
+  Populated post-seed (and re-runnable to refresh) by a single
+  `Elephant::materialize_closure::<ElephantAncestry>(ctx, opts)`
+  call; the helper walks both self-FK edges in one recursive CTE
+  and upserts via `ON CONFLICT (...) DO UPDATE`. Indexed lookup at
+  query time means every Wright F computation against this closure
+  is a cheap join, not a re-walk of the recursive CTE per pair.
 - **Sighting** — observation events. `location: GeoPoint`, FK to
   `Researcher` (`observed_by_id`), `notes: TEXT` (FTS-indexed). Records
   on `Sighting::create` enqueue a row into `sightings_outbox` inside the
@@ -51,7 +70,8 @@ density the load-bearing story:
 ## Why this design
 
 We considered a wider model graph (separate `Sanctuary`, `Patrol`,
-`PoachingIncident`, etc.) but trimmed to six. The bar each model has
+`PoachingIncident`, etc.) but trimmed to seven (six core models +
+`ElephantAncestry` as the materialized closure). The bar each model has
 to clear: it must be the **simplest** model that demonstrates a
 distinct framework feature. Adding more models past that just dilutes
 attention.
@@ -62,9 +82,20 @@ Specifically:
   because explicit-through M2M is a deliberate Djogi choice (no
   implicit M2M fields) and the cross-border story makes the season
   payload feel earned rather than synthetic.
-- We kept `Elephant::parent` as a self-FK because it gives us a place
-  to demonstrate the raw recursive-CTE escape hatch — Djogi doesn't
-  ship a tree-query API, and the example is honest about that.
+- We split `Elephant.parent_id` into `mother_id` + `father_id`
+  because biological pedigree has two edges, both potentially
+  unknown, and elephant-research data captures matrilineal and
+  patrilineal kinship distinctly. The split unlocks Wright
+  kinship-coefficient calculation across the population: the
+  framework's `Model::materialize_closure` helper walks both edges
+  with path-multiplicity preservation in a single recursive CTE
+  and writes the result into the `ElephantAncestry` table; the
+  `mating-pairs` demo joins that closure to itself on `ancestor_id`
+  for indexed shared-ancestor lookup per candidate pair. We kept
+  the raw recursive-CTE form in the `lineage` demo for matrilineal
+  descent because that path is naturally single-edge and the
+  inline SQL is the right level of explicitness for the herd-
+  society narrative.
 - We chose visages with a side-query trait (rather than embedding
   `herd_size` in `HerdRange`) because that's the realistic shape:
   aggregates that are too expensive to denormalize into rows but cheap
@@ -103,6 +134,13 @@ cargo run -p elephant-tracker -- demo cross-border-herds --format markdown
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format mermaid
 cargo run -p elephant-tracker -- demo lineage --matriarch Wema --format markdown
+
+# Typed-builder mode — pass --typed to switch from raw recursive-CTE
+# SQL to `Elephant::objects().tree_descendants(ElephantRelated::mother(),
+# id)`. Compose --order=bfs|dfs to exercise SEARCH BREADTH/DEPTH FIRST.
+cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed
+cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed --order bfs --format mermaid
+cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed --order dfs --format markdown
 
 cargo run -p elephant-tracker -- demo cluster-sightings
 cargo run -p elephant-tracker -- demo cluster-sightings --format markdown
@@ -152,7 +190,7 @@ elephant-tracker/
     │   └── herd_summary.rs     # hand-rolled visage + side-query trait
     └── demos/
         ├── mod.rs
-        ├── cluster_sightings.rs   # ST_ClusterDBSCAN over GeoPoint
+        ├── cluster_sightings.rs   # cluster_by_proximity + centroid (typed)
         ├── cross_border_herds.rs  # M2M traversal + season filter
         ├── lineage.rs             # recursive-CTE escape hatch
         └── herd_summaries.rs      # visage + side-query trait

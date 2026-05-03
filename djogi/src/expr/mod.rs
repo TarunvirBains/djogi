@@ -78,12 +78,18 @@ pub(crate) mod spatial;
 pub(crate) mod sql;
 pub mod subquery;
 pub mod window;
+pub mod window_fn;
 
 pub use aggregate::AggregateExpr;
 pub use case::{Case, CaseBuilder};
 use node::ExprNode;
 pub use subquery::{Exists, OuterRef, Subquery};
 pub use window::{FrameBound, FrameExclude, FrameKind, WindowBuilder, WindowSpec};
+pub use window_fn::{
+    CumeDistWindow, DenseRank, FirstValueWindow, LagWindow, LastValueWindow, LeadWindow,
+    NthValueWindow, NtileWindow, PercentRankWindow, QualifyCondition, QualifyOp, Rank, RowNumber,
+    WindowRanking,
+};
 
 /// Typed expression handle — the public entry point for the IR.
 ///
@@ -129,6 +135,141 @@ where
     /// (`Expr::literal::<i32>(100)`) is never needed in practice.
     pub fn literal(v: T) -> Expr<T> {
         v.into()
+    }
+}
+
+impl Expr<i32> {
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — the current calendar year
+    /// as an `Expr<i32>`, evaluated server-side per query.
+    ///
+    /// Composes with the rest of the `Expr<i32>` arithmetic IR. The canonical
+    /// use is age-from-birth-year:
+    ///
+    /// ```ignore
+    /// // SQL: (EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER - estimated_birth_year)
+    /// let age_years = Expr::current_year() - f.estimated_birth_year().as_expr();
+    /// Elephant::objects()
+    ///     .filter_expr(|f| age_years.gte(Expr::literal(15i32)))
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// # Why an associated `Expr<i32>` constructor?
+    ///
+    /// `current_year()` takes no arguments and is conceptually a constant for
+    /// the duration of a single query. Routing it through the typed `Expr`
+    /// surface — rather than a `FieldRef` method — keeps the call site
+    /// independent of any specific column, the same way `Expr::literal(...)`
+    /// is column-independent.
+    ///
+    /// # Volatility
+    ///
+    /// `CURRENT_DATE` is `STABLE` per Postgres semantics — it returns a
+    /// fresh value per statement, but stays constant within one transaction.
+    /// Callers who need a frozen snapshot of "now" across a long-running
+    /// transaction should bind a literal `i32` (`Expr::literal(2026i32)`)
+    /// rather than calling this helper.
+    ///
+    /// # Where
+    ///
+    /// - [`ExprNode::CurrentYear`] is the underlying IR variant.
+    /// - [`sql::emit_expr`] renders the SQL token stream.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn current_year() -> Expr<i32> {
+        Expr::from_node(ExprNode::CurrentYear)
+    }
+}
+
+#[cfg(feature = "spatial")]
+impl Expr<f64> {
+    /// `ST_Area($1::bytea::geography)` — area of the bound geometry in
+    /// **square meters** (geography overload — meters, not square degrees).
+    ///
+    /// Returns `Expr<f64>` so it composes with the existing arithmetic IR
+    /// for ratios such as `Expr::area_of_intersection(a, b) / Expr::area_of(a)`
+    /// — the canonical territory-overlap-percentage shape from the
+    /// elephant-tracker mating-pairs demo (Phase 8-Zero T17).
+    ///
+    /// # SQL emission
+    ///
+    /// Emits `ST_Area($n::bytea::geography)` — the `::bytea::geography`
+    /// double cast matches the bind discipline of the geometry-only shape
+    /// predicates (see [`crate::expr::spatial::SpatialExpr`]). The
+    /// `geography` overload yields square meters; the `geometry` overload
+    /// would yield square degrees, which is the wrong unit.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Mating-pairs scoring — territory overlap as a ratio of areas.
+    /// // hull_a / hull_b are convex-hull polygons fetched in an earlier query.
+    /// let overlap_pct: f64 = ctx.raw_scalar(
+    ///     "SELECT ($1) / ($2)",
+    ///     &[/* bound subexpressions, illustrative */],
+    /// ).await?;
+    /// // Or compose typed inside an annotate / select:
+    /// let ratio = Expr::area_of_intersection(&hull_a, &hull_b) / Expr::area_of(&hull_a);
+    /// ```
+    ///
+    /// # Where
+    ///
+    /// - [`crate::expr::spatial::SpatialExpr::Area`] — IR variant.
+    /// - [`Self::area_of_intersection`] — composed shape for the demo.
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn area_of<G>(geom: &G) -> Expr<f64>
+    where
+        G: crate::geo::GeographyValue,
+    {
+        Expr::from_node(ExprNode::Spatial(crate::expr::spatial::SpatialExpr::Area {
+            geom_ewkb: geom.to_ewkb_bytes(),
+        }))
+    }
+
+    /// `ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)`
+    /// — area in square meters of the intersection of two bound geometries.
+    ///
+    /// The composed shape powers the territory-overlap-percentage scoring in
+    /// the elephant-tracker mating-pairs demo:
+    ///
+    /// ```ignore
+    /// // overlap_pct = area(intersection(a, b)) / area(a)
+    /// let pct = Expr::area_of_intersection(&hull_a, &hull_b)
+    ///     / Expr::area_of(&hull_a);
+    /// ```
+    ///
+    /// Emitted as a single inline form rather than nesting two separate
+    /// IR nodes — the framework does not yet model geometry-typed
+    /// intermediate `Expr` nodes (that would require a phantom-typed
+    /// geometry codec on `Expr<G>`), so the composed call site is a
+    /// dedicated SpatialExpr variant.
+    ///
+    /// # Empty intersection
+    ///
+    /// When the two geometries do not overlap, `ST_Intersection` returns
+    /// an empty geometry and `ST_Area` over an empty geometry returns
+    /// `0.0`. The ratio path therefore yields `0.0` for non-overlapping
+    /// pairs without any explicit guard.
+    ///
+    /// # Where
+    ///
+    /// - [`crate::expr::spatial::SpatialExpr::AreaOfIntersection`] — IR variant.
+    /// - [`Self::area_of`] — denominator of the demo's overlap-pct ratio.
+    /// - A standalone `intersection_of` constructor that returns the raw
+    ///   intersecting geometry (rather than its area) is deferred — the IR
+    ///   variant exists at [`crate::expr::spatial::SpatialExpr::Intersection`]
+    ///   but no public typed constructor mints it today; see issue #72 for
+    ///   the prerequisites (typed geometry-valued `Expr` intermediates).
+    #[must_use = "expressions are lazy — dropping one silently omits the predicate"]
+    pub fn area_of_intersection<A, B>(a: &A, b: &B) -> Expr<f64>
+    where
+        A: crate::geo::GeographyValue,
+        B: crate::geo::GeographyValue,
+    {
+        Expr::from_node(ExprNode::Spatial(
+            crate::expr::spatial::SpatialExpr::AreaOfIntersection {
+                a_ewkb: a.to_ewkb_bytes(),
+                b_ewkb: b.to_ewkb_bytes(),
+            },
+        ))
     }
 }
 

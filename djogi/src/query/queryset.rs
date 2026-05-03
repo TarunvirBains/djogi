@@ -827,6 +827,77 @@ impl<T: Model> QuerySet<T> {
         }
     }
 
+    /// `GROUP BY GROUPING SETS (...)` — explicit multi-column sets,
+    /// one tuple of columns per set. Cluster E T11.
+    ///
+    /// Accepts a closure that returns `Vec<Vec<&'static str>>` —
+    /// outer Vec is the list of sets; inner Vec is the list of
+    /// columns in each set. An empty inner Vec is the "grand total"
+    /// set (no GROUP BY columns; one row aggregating all input).
+    ///
+    /// Adopters extract column names from `T::Fields` accessors via
+    /// each `FieldRef`'s `.column()` method:
+    ///
+    /// ```ignore
+    /// // Equivalent SQL:
+    /// //   GROUP BY GROUPING SETS ((region, dept), (region), ())
+    /// // Each result row is grouped by exactly one of the listed
+    /// // tuples; the empty tuple yields the grand-total row.
+    /// let rows = Sales::objects()
+    ///     .grouping_sets(|f| vec![
+    ///         vec![f.region().column(), f.dept().column()],
+    ///         vec![f.region().column()],
+    ///         vec![],
+    ///     ])
+    ///     .annotate(|f| f.amount().sum())
+    ///     .fetch_all(&mut ctx).await?;
+    /// ```
+    ///
+    /// Use [`Self::group_by_sets`] for the simpler arity-1-per-set
+    /// shape (one column per set, no nested tuples). Use
+    /// [`Self::rollup`] / [`Self::cube`] for hierarchical subtotal
+    /// patterns.
+    ///
+    /// # Detecting subtotal rows
+    ///
+    /// Pair with [`crate::query::field::FieldRef::grouping`] (T10)
+    /// inside `.annotate(...)` to flag which dimensions were rolled
+    /// up in each result row:
+    ///
+    /// ```ignore
+    /// .annotate(|f| (
+    ///     f.amount().sum(),
+    ///     f.region().grouping(),    // 1 if region rolled up, else 0
+    ///     f.dept().grouping(),
+    /// ))
+    /// ```
+    ///
+    /// # Why `Vec<Vec<...>>` rather than typed tuple-of-tuples
+    ///
+    /// A typed signature like `qs.grouping_sets((set1), (set2), ...)`
+    /// would need a `IntoGroupingSets` trait implemented for tuples
+    /// of varying inner arity — not expressible in stable Rust without
+    /// macros. The runtime `Vec<Vec<&'static str>>` shape preserves
+    /// flexibility (sets of differing arities mixed freely) at the
+    /// cost of one `vec![...]` allocation per call site. For the
+    /// typical analytics-dashboard adopter who builds the sets once
+    /// and runs the query repeatedly, the allocation is trivial.
+    #[must_use = "grouped queries are lazy — dropping one silently omits the query"]
+    pub fn grouping_sets<F>(self, f: F) -> crate::query::grouped::GroupedQuerySet<T, ()>
+    where
+        F: FnOnce(T::Fields) -> Vec<Vec<&'static str>>,
+    {
+        let sets = f(T::Fields::default());
+        crate::query::grouped::GroupedQuerySet {
+            qs: self,
+            keys: (),
+            grouping: crate::query::grouped::GroupingMode::Sets(sets),
+            #[cfg(feature = "spatial")]
+            spatial_source: None,
+            _k: std::marker::PhantomData,
+        }
+    }
+
     // ── Tree-recursive transitions (Phase 8-Zero Cluster B2 — T9) ───────────
     //
     // `tree_descendants` / `tree_ancestors` consume the queryset and

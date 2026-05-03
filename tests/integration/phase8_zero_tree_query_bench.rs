@@ -139,14 +139,14 @@ async fn bench_1000_node_tree_descendants(mut ctx: DjogiContext) {
     .await
     .expect("create index");
 
-    // Seed with a single round-trip via generate_series. The fan-out
-    // shape: every row has parent_id = (id - 1) // 4 in label space —
-    // a classic 4-ary tree — assigning the root explicitly.
-    //
-    // We INSERT in two passes: first the root row, then a series that
-    // computes parent_id by joining back into the seeded rows. Doing
-    // it via a recursive INSERT keeps the seed work entirely on the
-    // server side (one round trip).
+    // Seed via three round trips — fan-out shape: every non-root row
+    // has `parent_id = parent.id WHERE parent.label = child.label / 4`
+    // in label space, the classic 4-ary tree. Step 1 inserts the root
+    // (`label = 0`); step 2 inserts every other label with
+    // `parent_id = NULL`; step 3 resolves parents via a single
+    // UPDATE/JOIN over the now-committed labels. See the rationale
+    // below the root insert for why the parent resolution is split
+    // into its own statement.
     let root: i64 = ctx
         .raw_scalar(
             "INSERT INTO phase8_bench_tree (label) VALUES (0) RETURNING id",
@@ -155,37 +155,33 @@ async fn bench_1000_node_tree_descendants(mut ctx: DjogiContext) {
         .await
         .expect("seed root");
 
-    // Use a CTE: generate label 1..=n-1, parent = label/4 (rounded).
-    // Then translate label-space parent → id-space via a self-join on
-    // the seeded rows. The seed uses two separate INSERTs because the
-    // seeded rows must already be visible for the join.
-    //
-    // Simpler approach: seed depth-by-depth in a loop. With n=1000 and
-    // 4-ary fanout the depth is ceil(log_4(1000)) ≈ 5, so 5 round trips.
+    // Two-phase seed: insert every label with `parent_id = NULL` in one
+    // round trip, then a single UPDATE/JOIN resolves every non-root
+    // row's parent via label arithmetic. Splitting INSERT and UPDATE
+    // is load-bearing — a single `INSERT...SELECT` with a self-
+    // referential `(SELECT id FROM phase8_bench_tree WHERE label = g/4)`
+    // would only see rows committed *before* the statement, leaving
+    // every batch's first label-arithmetic-collision orphaned (and
+    // its entire subtree unreachable from the root). Two phases cost
+    // two round trips instead of `ceil(log_4(n))` and produce a
+    // correctly connected 4-ary tree without depth-by-depth fragility.
     let _ = root;
-    let mut next_label: i32 = 1;
-    let mut depth: i32 = 0;
-    while (next_label as usize) < n {
-        // Insert all children at this depth that have a parent at the
-        // previous depth in label space — `label/4` translates label
-        // into the parent label.
-        let upper = std::cmp::min(n as i32, next_label * 4 + 1);
-        if upper > next_label {
-            ctx.raw_execute(
-                "INSERT INTO phase8_bench_tree (label, parent_id) \
-                 SELECT g, (SELECT id FROM phase8_bench_tree WHERE label = (g / 4)) \
-                 FROM generate_series($1::int, $2::int) AS g",
-                &[&next_label, &(upper - 1)],
-            )
-            .await
-            .expect("seed depth");
-            next_label = upper;
-        }
-        depth += 1;
-        if depth > 20 {
-            break;
-        }
-    }
+    ctx.raw_execute(
+        "INSERT INTO phase8_bench_tree (label) \
+         SELECT g FROM generate_series(1::int, $1::int - 1) AS g",
+        &[&(n as i32)],
+    )
+    .await
+    .expect("seed labels");
+    ctx.raw_execute(
+        "UPDATE phase8_bench_tree AS child \
+         SET parent_id = parent.id \
+         FROM phase8_bench_tree AS parent \
+         WHERE child.label > 0 AND parent.label = child.label / 4",
+        &[],
+    )
+    .await
+    .expect("set parent_id from label arithmetic");
 
     let total: i64 = ctx
         .raw_scalar("SELECT COUNT(*)::bigint FROM phase8_bench_tree", &[])
@@ -352,30 +348,48 @@ async fn bench_5000_pedigree_materialize_closure(mut ctx: DjogiContext) {
     // pedigree: oldest ancestors at small labels, newest individuals
     // at large labels, every individual has both parents at lower
     // labels.
+    //
+    // Three-step seed (same shape as the tree bench above) — split
+    // is load-bearing for the same reason: a single
+    // `INSERT...SELECT` with `(SELECT id FROM phase8_bench_pedigree
+    // WHERE label = ...)` subqueries would only see rows committed
+    // *before* the statement, leaving every label past the two
+    // roots with `mother_id` / `father_id` resolved to NULL. Because
+    // both columns are nullable (the SQL schema needs ON DELETE SET
+    // NULL semantics), that failure mode is silent — the bench
+    // would still run, but against a dramatically thinner DAG than
+    // intended. The two-phase split (insert with NULLs, then UPDATE
+    // via JOIN over committed labels) guarantees both parents
+    // resolve for every non-root individual.
     ctx.raw_execute(
         "INSERT INTO phase8_bench_pedigree (label) VALUES (0), (1)",
         &[],
     )
     .await
     .expect("seed two roots");
-
-    // Seed labels 2..n via a single round-trip generate_series. Pick
-    // mother = (label - 2) % label, father = (label - 1) % label —
-    // ensures both are < label and unique enough that fan-in / fan-out
-    // both happen at non-trivial rates. The exact pattern doesn't
-    // matter for the bench shape; what matters is that the graph
-    // depth grows logarithmically with n and every label has both
-    // parents declared.
     ctx.raw_execute(
-        "INSERT INTO phase8_bench_pedigree (label, mother_id, father_id) \
-         SELECT g, \
-                (SELECT id FROM phase8_bench_pedigree WHERE label = ((g - 2) % g)), \
-                (SELECT id FROM phase8_bench_pedigree WHERE label = ((g - 1) % g)) \
-         FROM generate_series(2, $1::int) AS g",
+        "INSERT INTO phase8_bench_pedigree (label) \
+         SELECT g FROM generate_series(2::int, $1::int) AS g",
         &[&((n - 1) as i32)],
     )
     .await
-    .expect("seed descendants");
+    .expect("seed descendant labels");
+    // mother = g - 2, father = g - 1 (the % g in the original was a
+    // no-op since the dividend is always < g for g >= 2). Single
+    // UPDATE over the now-committed labels resolves both parents in
+    // one round trip.
+    ctx.raw_execute(
+        "UPDATE phase8_bench_pedigree AS child \
+         SET mother_id = mother.id, father_id = father.id \
+         FROM phase8_bench_pedigree AS mother, \
+              phase8_bench_pedigree AS father \
+         WHERE child.label >= 2 \
+           AND mother.label = child.label - 2 \
+           AND father.label = child.label - 1",
+        &[],
+    )
+    .await
+    .expect("set mother_id + father_id from label arithmetic");
 
     let total: i64 = ctx
         .raw_scalar("SELECT COUNT(*)::bigint FROM phase8_bench_pedigree", &[])

@@ -745,6 +745,96 @@ fn emit_alter_column(table: &str, column: &str, change: &ColumnChange) -> Operat
             );
             (up, down, kind, None)
         }
+        // Codex T22 BLOCK-3: identity-column transitions emit the
+        // proper `ALTER COLUMN ADD/DROP/SET GENERATED` syntax.
+        //
+        // Codex T22 round-3 BLOCK-2 + round-4 refinement: the None →
+        // Some(kind) transition additionally emits a setval follow-up
+        // to sync the new sequence to the existing row data. Without
+        // this, `ADD GENERATED ... AS IDENTITY` allocates a fresh
+        // sequence that starts at MIN_VALUE (default 1) regardless
+        // of existing rows — the next default-id INSERT collides
+        // with row 1 on a populated table.
+        //
+        // The setval uses the three-arg form `setval(seq, val, false)`
+        // (is_called = false), which sets the sequence so the NEXT
+        // call returns `val` rather than `val + 1`. This avoids the
+        // round-3 bug where `setval(seq, 0)` on an empty table failed
+        // with "value 0 is out of bounds for sequence ..." (default
+        // minvalue=1). With is_called=false:
+        //
+        //   - Empty table: GREATEST(COALESCE(MAX, 0), 0) + 1 = 1.
+        //     setval(seq, 1, false). Next call returns 1. ✓
+        //   - Populated max=N (positive): N + 1. setval(seq, N+1, false).
+        //     Next call returns N+1. ✓
+        //   - Negative-ids edge case (max=-5): GREATEST(-5, 0) = 0;
+        //     +1 = 1. Next call returns 1. Caller responsible for
+        //     ensuring no collision with hand-set positive ids in
+        //     this case (rare).
+        //
+        // The DROP IDENTITY down-direction still needs the setval
+        // because the rollback re-adds the identity sequence — same
+        // collision risk regardless of direction.
+        ColumnChange::SetIdentity { from, to } => {
+            let qt = quote_ident(table);
+            let qc = quote_ident(column);
+            match (from, to) {
+                (None, Some(kind)) => {
+                    let clause = kind.sql_clause();
+                    let up = format!(
+                        "ALTER TABLE {qt} ALTER COLUMN {qc} ADD {clause};\n\
+                         SELECT setval(pg_get_serial_sequence('{table}', '{column}'), \
+                         GREATEST(COALESCE((SELECT MAX({qc}) FROM {qt}), 0), 0) + 1, false);"
+                    );
+                    let down = format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP IDENTITY;");
+                    (up, down, "add IDENTITY", None)
+                }
+                (Some(prev), None) => {
+                    let clause = prev.sql_clause();
+                    let up = format!("ALTER TABLE {qt} ALTER COLUMN {qc} DROP IDENTITY;");
+                    // Down also needs to sync the sequence — adding
+                    // identity back on a populated table has the same
+                    // collision risk regardless of which direction.
+                    let down = format!(
+                        "ALTER TABLE {qt} ALTER COLUMN {qc} ADD {clause};\n\
+                         SELECT setval(pg_get_serial_sequence('{table}', '{column}'), \
+                         GREATEST(COALESCE((SELECT MAX({qc}) FROM {qt}), 0), 0) + 1, false);"
+                    );
+                    (up, down, "drop IDENTITY", None)
+                }
+                (Some(prev), Some(next)) => {
+                    // Kind change (BY DEFAULT ↔ ALWAYS). Postgres'
+                    // ALTER COLUMN SET GENERATED <kind> changes only
+                    // the kind, preserving the existing sequence.
+                    let next_clause = next.sql_clause();
+                    let prev_clause = prev.sql_clause();
+                    // Extract the GENERATED ... portion (drop the
+                    // initial "GENERATED " from sql_clause to get
+                    // "BY DEFAULT AS IDENTITY" / "ALWAYS AS IDENTITY").
+                    // Actually Postgres syntax for kind change is
+                    // SET GENERATED { ALWAYS | BY DEFAULT } — without
+                    // "AS IDENTITY". So split on " AS ".
+                    let next_kind_only = next_clause
+                        .strip_prefix("GENERATED ")
+                        .and_then(|s| s.split(" AS ").next())
+                        .unwrap_or(next_clause);
+                    let prev_kind_only = prev_clause
+                        .strip_prefix("GENERATED ")
+                        .and_then(|s| s.split(" AS ").next())
+                        .unwrap_or(prev_clause);
+                    let up = format!(
+                        "ALTER TABLE {qt} ALTER COLUMN {qc} SET GENERATED {next_kind_only};"
+                    );
+                    let down = format!(
+                        "ALTER TABLE {qt} ALTER COLUMN {qc} SET GENERATED {prev_kind_only};"
+                    );
+                    (up, down, "kind IDENTITY", None)
+                }
+                (None, None) => {
+                    unreachable!("ColumnChange::SetIdentity is only emitted when from != to")
+                }
+            }
+        }
     };
     OperationSql {
         label: format!("AlterColumn {table}.{column} ({label_suffix})"),
@@ -1211,10 +1301,22 @@ fn write_column_definition(out: &mut String, col: &ColumnSchema) {
     if !col.nullable {
         out.push_str(" NOT NULL");
     }
-    // Stored generated columns replace DEFAULT — Postgres rejects
-    // both clauses on the same column. The GENERATED clause carries
-    // the value source instead.
-    if let Some(generated) = &col.generated {
+    // Identity columns (Cluster E #86 fix) — `GENERATED BY DEFAULT AS
+    // IDENTITY` / `GENERATED ALWAYS AS IDENTITY` is part of the column
+    // definition, separate from both DEFAULT (a value expression) and
+    // computed-generated (an expression-derived value). Identity cannot
+    // coexist with DEFAULT on the same column (Postgres rejects), and
+    // cannot coexist with computed-generated either (mutually exclusive
+    // semantics — identity uses a sequence, computed uses an
+    // expression). The projection guarantees the mutual exclusion;
+    // this branch fires only when `identity.is_some()`.
+    if let Some(identity) = col.identity {
+        out.push(' ');
+        out.push_str(identity.sql_clause());
+    } else if let Some(generated) = &col.generated {
+        // Stored generated columns replace DEFAULT — Postgres rejects
+        // both clauses on the same column. The GENERATED clause
+        // carries the value source instead.
         let stored_clause = if generated.stored {
             "STORED"
         } else {
@@ -1396,6 +1498,7 @@ mod tests {
             default_sql: None,
             foreign_key: None,
             generated: None,
+            identity: None,
             index_type: None,
             indexed: false,
             max_length: None,
@@ -1817,6 +1920,88 @@ mod tests {
         assert!(sql.up.starts_with("CREATE INDEX"));
         assert!(sql.up.contains("\"users\""));
         assert!(sql.up.contains("(\"name\")"));
+    }
+
+    // ── SetIdentity (Codex T22 BLOCK-3) ──────────────────────────────────────
+
+    #[test]
+    fn alter_column_set_identity_add_emits_add_generated_clause() {
+        // Pre-fix snapshot: identity = None. Fresh projection:
+        // identity = Some(ByDefault). Differ emits ADD GENERATED
+        // followed by a setval that syncs the new sequence to
+        // MAX(id) + 1 — Codex T22 round-3 BLOCK-2: without this,
+        // populated tables collide on the next default-id INSERT.
+        use crate::migrate::schema::IdentityKindSchema;
+        let sql = emit_alter_column(
+            "countries",
+            "id",
+            &ColumnChange::SetIdentity {
+                from: None,
+                to: Some(IdentityKindSchema::ByDefault),
+            },
+        );
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"countries\" ALTER COLUMN \"id\" ADD GENERATED BY DEFAULT AS IDENTITY;\n\
+             SELECT setval(pg_get_serial_sequence('countries', 'id'), \
+             GREATEST(COALESCE((SELECT MAX(\"id\") FROM \"countries\"), 0), 0) + 1, false);"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"countries\" ALTER COLUMN \"id\" DROP IDENTITY;"
+        );
+    }
+
+    #[test]
+    fn alter_column_set_identity_drop_emits_drop_identity() {
+        // Reverse direction — adopter intentionally removes IDENTITY.
+        // The down direction adds it back, with the same setval
+        // sync the up-add path emits (the collision risk is
+        // direction-agnostic — adding identity to a populated
+        // table needs the sequence synced regardless of which
+        // direction the migration came from).
+        use crate::migrate::schema::IdentityKindSchema;
+        let sql = emit_alter_column(
+            "countries",
+            "id",
+            &ColumnChange::SetIdentity {
+                from: Some(IdentityKindSchema::ByDefault),
+                to: None,
+            },
+        );
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"countries\" ALTER COLUMN \"id\" DROP IDENTITY;"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"countries\" ALTER COLUMN \"id\" ADD GENERATED BY DEFAULT AS IDENTITY;\n\
+             SELECT setval(pg_get_serial_sequence('countries', 'id'), \
+             GREATEST(COALESCE((SELECT MAX(\"id\") FROM \"countries\"), 0), 0) + 1, false);"
+        );
+    }
+
+    #[test]
+    fn alter_column_set_identity_kind_change_emits_set_generated() {
+        // BY DEFAULT ↔ ALWAYS — preserves the existing sequence,
+        // changes only the kind (SET GENERATED <kind> syntax).
+        use crate::migrate::schema::IdentityKindSchema;
+        let sql = emit_alter_column(
+            "countries",
+            "id",
+            &ColumnChange::SetIdentity {
+                from: Some(IdentityKindSchema::ByDefault),
+                to: Some(IdentityKindSchema::Always),
+            },
+        );
+        assert_eq!(
+            sql.up,
+            "ALTER TABLE \"countries\" ALTER COLUMN \"id\" SET GENERATED ALWAYS;"
+        );
+        assert_eq!(
+            sql.down,
+            "ALTER TABLE \"countries\" ALTER COLUMN \"id\" SET GENERATED BY DEFAULT;"
+        );
     }
 
     // ── Foreign keys ───────────────────────────────────────────────────

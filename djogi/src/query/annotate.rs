@@ -62,12 +62,15 @@
 
 use crate::DjogiError;
 use crate::context::DjogiContext;
-use crate::expr::AggregateExpr;
+use crate::expr::{
+    AggregateExpr, DenseRank, FirstValueWindow, LagWindow, LastValueWindow, LeadWindow,
+    NthValueWindow, Rank, RowNumber,
+};
 use crate::model::Model;
 use crate::pg::accumulator::{SqlAccumulator, as_params};
 use crate::pg::decode::FromPgRow;
 use crate::query::queryset::QuerySet;
-use crate::query::sql::{build_select_with_annotations, emit_aggregate_with_window_and_cast};
+use crate::query::sql::{build_annotated_select_for_fetch, emit_aggregate_with_window_and_cast};
 use std::future::Future;
 use std::marker::PhantomData;
 
@@ -80,6 +83,59 @@ mod sealed {
     pub trait Sealed {}
 }
 
+mod annotation_slot_sealed {
+    pub trait Sealed {}
+}
+
+/// Framework-reserved column alias for the Nth slot in an annotate-tuple
+/// emission. Bounded to slot < 4 by the four `impl_into_aggregate_tuple!`
+/// invocations in this module — exceeding that bound is a framework-internal
+/// invariant break, surfaced through the explicit `unreachable!` panic so a
+/// future regression has a self-explaining diagnostic instead of an
+/// `index out of bounds` error.
+fn aggregate_alias(slot: usize) -> &'static str {
+    match slot {
+        0 => "__djogi_agg_0",
+        1 => "__djogi_agg_1",
+        2 => "__djogi_agg_2",
+        3 => "__djogi_agg_3",
+        _ => unreachable!(
+            "djogi annotate arity max is 4 — slot {slot} not reachable. \
+             A new impl_into_aggregate_tuple! arity must extend this match."
+        ),
+    }
+}
+
+/// A single annotation expression that can occupy one SELECT-list slot.
+///
+/// This is a hidden extension point used by Djogi's own annotation tuple
+/// bridge. It is sealed, so downstream crates cannot inject custom SQL into
+/// the annotation emitter. Public code normally names
+/// [`IntoAggregateTuple`], not this trait.
+#[doc(hidden)]
+pub trait AnnotationSlot: annotation_slot_sealed::Sealed {
+    /// Rust value decoded from this annotation's SELECT-list slot.
+    type Decoded;
+
+    /// Push this annotation as `, <expr> AS <alias>` for ungrouped annotate.
+    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize);
+
+    /// Push this annotation in grouped annotate contexts.
+    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize);
+
+    /// Decode this annotation from `row`.
+    fn decode_column(
+        &self,
+        row: &tokio_postgres::Row,
+        slot: usize,
+    ) -> Result<Self::Decoded, tokio_postgres::Error>;
+
+    /// Validate runtime invariants before SQL emission.
+    fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        Ok(())
+    }
+}
+
 /// Type-level bridge from the closure return type of
 /// [`QuerySet::annotate`] to the SELECT-list + row-decode logic.
 ///
@@ -89,14 +145,15 @@ mod sealed {
 /// SELECT-list shape and decode ordering in lockstep across all
 /// supported arities.
 ///
-/// `Decoded` is the tuple type users receive at fetch time: the
-/// scalar for arity 1, a Rust tuple for arities 2..=4.
+/// `Decoded` is the tuple type users receive at fetch time: the scalar
+/// for arity 1, a Rust tuple for arities 2..=4, or `()` for the explicitly
+/// empty annotation edge case.
 pub trait IntoAggregateTuple: sealed::Sealed {
     /// Rust tuple type returned inside `Vec<(T, Decoded)>`.
     type Decoded;
 
-    /// Push the aggregate SELECT-list columns onto `acc`, each prefixed
-    /// with `, ` and aliased as `__djogi_agg_{N}`.
+    /// Push annotation SELECT-list columns onto `acc`, each prefixed with
+    /// `, ` and aliased for row decode.
     ///
     /// Indexing starts at 0; callers already pushed `SELECT t.*` so
     /// every push here begins with a comma.
@@ -111,14 +168,20 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     /// columns as the leading SELECT columns.
     fn push_columns_bare(&self, acc: &mut SqlAccumulator);
 
-    /// Decode the aggregate columns from `row` into [`Self::Decoded`].
+    /// Decode the annotation columns from `row` into [`Self::Decoded`].
     ///
     /// The aliases are fixed (`__djogi_agg_0`, `__djogi_agg_1`, ...)
     /// so the impl reads each slot by name. Offset-based decoding is
     /// not used because `row.try_get` by name is more robust to
     /// column-ordering surprises (though the framework never reorders
     /// the SELECT list in practice).
-    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error>;
+    fn decode_tuple(
+        &self,
+        row: &tokio_postgres::Row,
+    ) -> Result<Self::Decoded, tokio_postgres::Error>;
+
+    /// Number of SELECT-list annotation slots this value contributes.
+    fn annotation_count(&self) -> usize;
 
     /// Validate all aggregate nodes in this tuple for unsupported
     /// DISTINCT modifier combinations before building SQL.
@@ -136,7 +199,7 @@ pub trait IntoAggregateTuple: sealed::Sealed {
     }
 }
 
-// ── Arity 1: single AggregateExpr<V> ─────────────────────────────────
+// ── Single annotation slots ──────────────────────────────────────────
 
 // Each aggregate is emitted with `OVER ()` so the annotate SELECT-list
 // stays valid without a `GROUP BY` clause. For self-column aggregates
@@ -148,27 +211,33 @@ pub trait IntoAggregateTuple: sealed::Sealed {
 // window-function form here is deliberately the simplest that works
 // for the Task 4 scope without requiring GROUP BY semantics.
 
-impl<V> sealed::Sealed for AggregateExpr<V> {}
-impl<V> IntoAggregateTuple for AggregateExpr<V>
+impl<V> annotation_slot_sealed::Sealed for AggregateExpr<V> {}
+impl<V> AnnotationSlot for AggregateExpr<V>
 where
     V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
 {
     type Decoded = V;
 
-    fn push_columns(&self, acc: &mut SqlAccumulator) {
+    fn push_column(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
         emit_aggregate_with_window_and_cast(acc, &self.node);
-        acc.push_sql(" AS __djogi_agg_0");
+        acc.push_sql(" AS ");
+        acc.push_sql(aggregate_alias(slot));
     }
 
-    fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
+    fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
         acc.push_sql(", ");
         crate::query::sql::emit_aggregate_with_cast(acc, &self.node);
-        acc.push_sql(" AS __djogi_agg_0");
+        acc.push_sql(" AS ");
+        acc.push_sql(aggregate_alias(slot));
     }
 
-    fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
-        row.try_get::<_, V>("__djogi_agg_0")
+    fn decode_column(
+        &self,
+        row: &tokio_postgres::Row,
+        slot: usize,
+    ) -> Result<Self::Decoded, tokio_postgres::Error> {
+        row.try_get::<_, V>(aggregate_alias(slot))
     }
 
     fn check_legality(&self) -> Result<(), crate::DjogiError> {
@@ -176,7 +245,171 @@ where
     }
 }
 
-// ── Arity 2..=4: tuples of AggregateExpr<V_i> ────────────────────────
+macro_rules! impl_window_annotation_slot {
+    ($type_name:ty, $display:literal) => {
+        impl_window_annotation_slot!($type_name, $display, decoded = i64);
+    };
+    ($type_name:ty, $display:literal, decoded = $decoded:ty) => {
+        impl annotation_slot_sealed::Sealed for $type_name {}
+
+        impl AnnotationSlot for $type_name {
+            type Decoded = $decoded;
+
+            fn push_column(&self, acc: &mut SqlAccumulator, _slot: usize) {
+                acc.push_sql(", ");
+                self.push_annotated_column(acc);
+            }
+
+            fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
+                self.push_column(acc, slot);
+            }
+
+            fn decode_column(
+                &self,
+                row: &tokio_postgres::Row,
+                _slot: usize,
+            ) -> Result<Self::Decoded, tokio_postgres::Error> {
+                row.try_get::<_, $decoded>(
+                    self.alias_name()
+                        .expect("window function annotations are checked before row decode"),
+                )
+            }
+
+            fn check_legality(&self) -> Result<(), crate::DjogiError> {
+                if self.alias_name().is_some() {
+                    Ok(())
+                } else {
+                    Err(crate::DjogiError::Validation(format!(
+                        "{} window annotation requires .alias(\"name\") before annotate",
+                        $display
+                    )))
+                }
+            }
+        }
+    };
+}
+
+/// Generic-V version for column-argument window functions: `FIRST_VALUE`,
+/// `LAST_VALUE`, `LEAD`, `LAG`, `NTH_VALUE`. Each type carries a phantom
+/// `V` for the decoded column type; the impl block decodes the row into
+/// `V` directly.
+macro_rules! impl_window_annotation_slot_generic_v {
+    ($type_name:ident, $display:literal) => {
+        impl<V> annotation_slot_sealed::Sealed for $type_name<V> {}
+
+        impl<V> AnnotationSlot for $type_name<V>
+        where
+            V: for<'a> postgres_types::FromSql<'a> + Send + Unpin + 'static,
+        {
+            type Decoded = V;
+
+            fn push_column(&self, acc: &mut SqlAccumulator, _slot: usize) {
+                acc.push_sql(", ");
+                self.push_annotated_column(acc);
+            }
+
+            fn push_column_bare(&self, acc: &mut SqlAccumulator, slot: usize) {
+                self.push_column(acc, slot);
+            }
+
+            fn decode_column(
+                &self,
+                row: &tokio_postgres::Row,
+                _slot: usize,
+            ) -> Result<Self::Decoded, tokio_postgres::Error> {
+                row.try_get::<_, V>(
+                    self.alias_name()
+                        .expect("window function annotations are checked before row decode"),
+                )
+            }
+
+            fn check_legality(&self) -> Result<(), crate::DjogiError> {
+                if self.alias_name().is_some() {
+                    Ok(())
+                } else {
+                    Err(crate::DjogiError::Validation(format!(
+                        "{} window annotation requires .alias(\"name\") before annotate",
+                        $display
+                    )))
+                }
+            }
+        }
+    };
+}
+
+impl_window_annotation_slot!(RowNumber, "RowNumber");
+impl_window_annotation_slot!(Rank, "Rank");
+impl_window_annotation_slot!(DenseRank, "DenseRank");
+// Cluster E T19 — zero-arg returning f64
+impl_window_annotation_slot!(
+    crate::expr::PercentRankWindow,
+    "PercentRankWindow",
+    decoded = f64
+);
+impl_window_annotation_slot!(crate::expr::CumeDistWindow, "CumeDistWindow", decoded = f64);
+// Cluster E T19 — single-integer-arg returning i32
+impl_window_annotation_slot!(crate::expr::NtileWindow, "NtileWindow", decoded = i32);
+// Cluster E T18 — column-arg generic V
+impl_window_annotation_slot_generic_v!(FirstValueWindow, "FirstValueWindow");
+impl_window_annotation_slot_generic_v!(LastValueWindow, "LastValueWindow");
+impl_window_annotation_slot_generic_v!(LeadWindow, "LeadWindow");
+impl_window_annotation_slot_generic_v!(LagWindow, "LagWindow");
+impl_window_annotation_slot_generic_v!(NthValueWindow, "NthValueWindow");
+
+impl<S> sealed::Sealed for S where S: AnnotationSlot {}
+
+impl<S> IntoAggregateTuple for S
+where
+    S: AnnotationSlot,
+{
+    type Decoded = <S as AnnotationSlot>::Decoded;
+
+    fn push_columns(&self, acc: &mut SqlAccumulator) {
+        self.push_column(acc, 0);
+    }
+
+    fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
+        self.push_column_bare(acc, 0);
+    }
+
+    fn decode_tuple(
+        &self,
+        row: &tokio_postgres::Row,
+    ) -> Result<Self::Decoded, tokio_postgres::Error> {
+        self.decode_column(row, 0)
+    }
+
+    fn annotation_count(&self) -> usize {
+        1
+    }
+
+    fn check_legality(&self) -> Result<(), crate::DjogiError> {
+        AnnotationSlot::check_legality(self)
+    }
+}
+
+impl sealed::Sealed for () {}
+
+impl IntoAggregateTuple for () {
+    type Decoded = ();
+
+    fn push_columns(&self, _acc: &mut SqlAccumulator) {}
+
+    fn push_columns_bare(&self, _acc: &mut SqlAccumulator) {}
+
+    fn decode_tuple(
+        &self,
+        _row: &tokio_postgres::Row,
+    ) -> Result<Self::Decoded, tokio_postgres::Error> {
+        Ok(())
+    }
+
+    fn annotation_count(&self) -> usize {
+        0
+    }
+}
+
+// ── Arity 2..=4: tuples of annotation slots ──────────────────────────
 //
 // One macro invocation per arity. The macro generates the sealed
 // marker, the `push_columns` body that walks the tuple emitting each
@@ -188,48 +421,46 @@ where
 macro_rules! impl_into_aggregate_tuple {
     (
         arity = $arity:tt,
-        types = [ $( ($ty:ident, $slot:tt, $alias:literal) ),+ $(,)? ]
+        types = [ $( ($ty:ident, $slot:tt) ),+ $(,)? ]
     ) => {
-        impl<$($ty),+> sealed::Sealed for ( $(AggregateExpr<$ty>,)+ ) {}
-
-        impl<$($ty),+> IntoAggregateTuple for ( $(AggregateExpr<$ty>,)+ )
+        impl<$($ty),+> sealed::Sealed for ( $($ty,)+ )
         where
-            $(
-                $ty: for<'a> postgres_types::FromSql<'a>
-                    + Send
-                    + Unpin
-                    + 'static,
-            )+
+            $($ty: AnnotationSlot,)+
+        {}
+
+        impl<$($ty),+> IntoAggregateTuple for ( $($ty,)+ )
+        where
+            $($ty: AnnotationSlot,)+
         {
-            type Decoded = ( $($ty,)+ );
+            type Decoded = ( $(<$ty as AnnotationSlot>::Decoded,)+ );
 
             fn push_columns(&self, acc: &mut SqlAccumulator) {
                 $(
-                    acc.push_sql(", ");
-                    emit_aggregate_with_window_and_cast(acc, &self.$slot.node);
-                    acc.push_sql(concat!(" AS ", $alias));
+                    self.$slot.push_column(acc, $slot);
                 )+
             }
 
             fn push_columns_bare(&self, acc: &mut SqlAccumulator) {
                 $(
-                    acc.push_sql(", ");
-                    crate::query::sql::emit_aggregate_with_cast(acc, &self.$slot.node);
-                    acc.push_sql(concat!(" AS ", $alias));
+                    self.$slot.push_column_bare(acc, $slot);
                 )+
             }
 
-            fn decode_tuple(row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
+            fn decode_tuple(&self, row: &tokio_postgres::Row) -> Result<Self::Decoded, tokio_postgres::Error> {
                 Ok((
                     $(
-                        row.try_get::<_, $ty>($alias)?,
+                        self.$slot.decode_column(row, $slot)?,
                     )+
                 ))
             }
 
+            fn annotation_count(&self) -> usize {
+                $arity
+            }
+
             fn check_legality(&self) -> Result<(), crate::DjogiError> {
                 $(
-                    crate::expr::sql::check_aggregate_legality(&self.$slot.node)?;
+                    self.$slot.check_legality()?;
                 )+
                 Ok(())
             }
@@ -237,29 +468,11 @@ macro_rules! impl_into_aggregate_tuple {
     };
 }
 
-impl_into_aggregate_tuple!(
-    arity = 2,
-    types = [(A, 0, "__djogi_agg_0"), (B, 1, "__djogi_agg_1"),]
-);
+impl_into_aggregate_tuple!(arity = 2, types = [(A, 0), (B, 1),]);
 
-impl_into_aggregate_tuple!(
-    arity = 3,
-    types = [
-        (A, 0, "__djogi_agg_0"),
-        (B, 1, "__djogi_agg_1"),
-        (C, 2, "__djogi_agg_2"),
-    ]
-);
+impl_into_aggregate_tuple!(arity = 3, types = [(A, 0), (B, 1), (C, 2),]);
 
-impl_into_aggregate_tuple!(
-    arity = 4,
-    types = [
-        (A, 0, "__djogi_agg_0"),
-        (B, 1, "__djogi_agg_1"),
-        (C, 2, "__djogi_agg_2"),
-        (D, 3, "__djogi_agg_3"),
-    ]
-);
+impl_into_aggregate_tuple!(arity = 4, types = [(A, 0), (B, 1), (C, 2), (D, 3),]);
 
 // ── Pending annotated queryset + terminal ────────────────────────────
 
@@ -277,7 +490,46 @@ impl_into_aggregate_tuple!(
 pub struct AnnotatedQuerySet<T: Model, A: IntoAggregateTuple> {
     pub(crate) qs: QuerySet<T>,
     pub(crate) aggregates: A,
+    pub(crate) qualify: Option<crate::expr::QualifyCondition>,
     pub(crate) _a: PhantomData<fn() -> A>,
+}
+
+impl<T: Model, A: IntoAggregateTuple> AnnotatedQuerySet<T, A> {
+    /// Filter rows by an annotated window-function output.
+    ///
+    /// PostgreSQL 18 has no `QUALIFY` clause, so the predicate lowers to
+    /// an outer `WHERE` over a derived table that wraps this annotated
+    /// select. Reading the SQL: `SELECT * FROM (<inner annotated select>)
+    /// AS __djogi_q WHERE <alias> <op> $N`.
+    ///
+    /// The closure receives `&A` — the same annotation value the user
+    /// passed to [`QuerySet::annotate`]. Calling `.lt(...)` / `.lte(...)`
+    /// / `.eq(...)` / `.gte(...)` / `.gt(...)` on a window function
+    /// produces a [`QualifyCondition`](crate::QualifyCondition) bound to
+    /// that function's `.alias("…")`, so there is no string lookup and
+    /// no way to reference an alias that was not registered.
+    ///
+    /// ```ignore
+    /// use djogi::prelude::*;
+    ///
+    /// let rows: Vec<(Elephant, i64)> = Elephant::objects()
+    ///     .annotate(|e| RowNumber::new()
+    ///         .partition_by(e.herd_id())
+    ///         .order_by(e.score().desc())
+    ///         .alias("rank"))
+    ///     .qualify(|w| w.lte(3))
+    ///     .fetch_all(&mut ctx)
+    ///     .await?;
+    /// ```
+    #[must_use = "annotated queries are lazy — dropping one silently omits the query"]
+    pub fn qualify<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&A) -> crate::expr::QualifyCondition,
+    {
+        let cond = f(&self.aggregates);
+        self.qualify = Some(cond);
+        self
+    }
 }
 
 impl<T: Model, A: IntoAggregateTuple + Send> AnnotatedQuerySet<T, A>
@@ -299,7 +551,12 @@ where
         A::Decoded: Send + 'ctx,
     {
         async move {
-            let AnnotatedQuerySet { qs, aggregates, .. } = self;
+            let AnnotatedQuerySet {
+                qs,
+                aggregates,
+                qualify,
+                ..
+            } = self;
             // Short-circuit: `QuerySet::none()` yields an empty result
             // with no SQL round trip — same contract as `fetch_all`.
             if qs.is_empty() {
@@ -310,9 +567,13 @@ where
             // rejected combos surface as DjogiError::UnsupportedAggregate.
             aggregates.check_legality()?;
 
-            let acc = build_select_with_annotations(&qs, |acc| {
-                aggregates.push_columns(acc);
-            });
+            let acc = build_annotated_select_for_fetch(
+                &qs,
+                |acc| {
+                    aggregates.push_columns(acc);
+                },
+                qualify.as_ref(),
+            );
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows = ctx.query_all(&sql, &params).await?;
@@ -324,7 +585,7 @@ where
             let mut out: Vec<(T, A::Decoded)> = Vec::with_capacity(rows.len());
             for row in &rows {
                 let model = T::from_pg_row(row)?;
-                let agg = A::decode_tuple(row).map_err(DjogiError::from)?;
+                let agg = aggregates.decode_tuple(row).map_err(DjogiError::from)?;
                 out.push((model, agg));
             }
             Ok(out)
@@ -373,6 +634,7 @@ impl<T: Model> QuerySet<T> {
         AnnotatedQuerySet {
             qs: self,
             aggregates,
+            qualify: None,
             _a: PhantomData,
         }
     }
@@ -385,8 +647,9 @@ mod tests {
 
     use super::*;
     use crate::descriptor::ModelDescriptor;
-    use crate::expr::Expr;
+    use crate::expr::{DenseRank, Expr, Rank, RowNumber};
     use crate::query::field::FieldRef;
+    use crate::query::sql::build_select_with_annotations;
 
     struct Acc;
     impl crate::model::__sealed::Sealed for Acc {}
@@ -520,5 +783,418 @@ mod tests {
             sql.contains("COUNT(balance) FILTER (WHERE balance < $1)"),
             "got: {sql}"
         );
+    }
+
+    #[test]
+    fn row_number_window_annotation_emits_required_over_and_alias() {
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let row_number = RowNumber::new()
+            .partition_by(herd)
+            .order_by(score.desc())
+            .alias("rank");
+
+        let acc = build_select_with_annotations(&qs, |acc| {
+            row_number.push_columns(acc);
+        });
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("ROW_NUMBER() OVER (PARTITION BY herd_id ORDER BY score DESC) AS rank"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn rank_window_annotation_emits_required_over_and_alias() {
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let rank = Rank::new()
+            .partition_by(herd)
+            .order_by(score.desc())
+            .alias("rank");
+
+        let acc = build_select_with_annotations(&qs, |acc| {
+            rank.push_columns(acc);
+        });
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains("RANK() OVER (PARTITION BY herd_id ORDER BY score DESC) AS rank"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn dense_rank_window_annotation_emits_required_over_and_alias() {
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let dense_rank = DenseRank::new()
+            .partition_by(herd)
+            .order_by(score.desc())
+            .alias("dense_rank");
+
+        let acc = build_select_with_annotations(&qs, |acc| {
+            dense_rank.push_columns(acc);
+        });
+        let sql = acc.sql();
+
+        assert!(
+            sql.contains(
+                "DENSE_RANK() OVER (PARTITION BY herd_id ORDER BY score DESC) AS dense_rank"
+            ),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn qualify_lowers_to_derived_table_where() {
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| RowNumber::new().order_by(score.desc()).alias("rank"))
+            .qualify(|w| w.lte(3));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        );
+        let sql = acc.sql();
+
+        assert!(
+            sql.starts_with(
+                "SELECT * FROM (SELECT t.id, ROW_NUMBER() OVER (ORDER BY score DESC) AS rank FROM accs AS t"
+            ),
+            "got: {sql}"
+        );
+        assert!(
+            sql.contains(") AS __djogi_q WHERE rank <= $1"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn qualify_lowering_never_emits_qualify_clause_token() {
+        let score: FieldRef<Acc, i64> = FieldRef::new("score");
+        let annotated = QuerySet::<Acc>::new()
+            .annotate(|_| RowNumber::new().order_by(score.desc()).alias("rank"))
+            .qualify(|w| w.lte(3));
+
+        let acc = build_annotated_select_for_fetch(
+            &annotated.qs,
+            |acc| annotated.aggregates.push_columns(acc),
+            annotated.qualify.as_ref(),
+        );
+        let sql = acc.sql();
+
+        assert!(!sql.contains("QUALIFY"), "got: {sql}");
+        assert!(!sql.contains("qualify"), "got: {sql}");
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn alias_rejects_framework_reserved_djogi_q_prefix() {
+        // `__djogi_q` is the derived-table alias the qualify emitter wraps
+        // the inner select with. Allowing a user alias of `__djogi_q` would
+        // produce ambiguous outer SQL.
+        let _ = RowNumber::new().alias("__djogi_q");
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn alias_rejects_framework_reserved_agg_slot_prefix() {
+        // `__djogi_agg_N` is the aggregate-tuple slot alias used by row
+        // decode. A user alias matching that namespace would silently
+        // route window output to the wrong decode slot.
+        let _ = Rank::new().alias("__djogi_agg_0");
+    }
+
+    // ── Cluster E T18-T19 — new window-only functions ────────────────────────
+
+    #[test]
+    fn percent_rank_window_emits_over_clause_and_alias() {
+        use crate::expr::PercentRankWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let pr = PercentRankWindow::new()
+            .order_by(amount.desc())
+            .alias("amount_pct");
+        let acc = build_select_with_annotations(&qs, |acc| pr.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("PERCENT_RANK() OVER (ORDER BY amount DESC) AS amount_pct"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn cume_dist_window_emits_over_clause_and_alias() {
+        use crate::expr::CumeDistWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let cd = CumeDistWindow::new()
+            .order_by(amount.asc())
+            .alias("cume_dist");
+        let acc = build_select_with_annotations(&qs, |acc| cd.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("CUME_DIST() OVER (ORDER BY amount ASC) AS cume_dist"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn ntile_window_binds_bucket_count_and_emits_over() {
+        use crate::expr::NtileWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let ntile = NtileWindow::new(4)
+            .order_by(amount.desc())
+            .alias("quartile");
+        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("NTILE($") && sql.contains(") OVER (ORDER BY amount DESC) AS quartile"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn first_value_window_emits_column_and_over() {
+        use crate::expr::FirstValueWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let herd: FieldRef<Acc, i64> = FieldRef::new("herd_id");
+        let fv: FirstValueWindow<i64> = FirstValueWindow::new(amount)
+            .partition_by(herd)
+            .order_by(amount.desc())
+            .alias("top_amount");
+        let acc = build_select_with_annotations(&qs, |acc| fv.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains(
+                "FIRST_VALUE(amount) OVER (PARTITION BY herd_id ORDER BY amount DESC) AS top_amount"
+            ),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn last_value_window_emits_column_and_over() {
+        use crate::expr::LastValueWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lv: LastValueWindow<i64> = LastValueWindow::new(amount)
+            .order_by(amount.asc())
+            .alias("bottom_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lv.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LAST_VALUE(amount) OVER (ORDER BY amount ASC) AS bottom_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lead_window_default_offset_emits_no_offset_arg() {
+        use crate::expr::LeadWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lead: LeadWindow<i64> = LeadWindow::new(amount)
+            .order_by(amount.asc())
+            .alias("next_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LEAD(amount) OVER (ORDER BY amount ASC) AS next_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lead_window_with_offset_binds_offset_arg() {
+        use crate::expr::LeadWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lead: LeadWindow<i64> = LeadWindow::new(amount)
+            .offset(3)
+            .order_by(amount.asc())
+            .alias("third_next_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LEAD(amount, $")
+                && sql.contains(") OVER (ORDER BY amount ASC) AS third_next_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lag_window_emits_lag_keyword() {
+        use crate::expr::LagWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let lag: LagWindow<i64> = LagWindow::new(amount)
+            .order_by(amount.asc())
+            .alias("prev_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lag.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("LAG(amount) OVER (ORDER BY amount ASC) AS prev_amount"),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn nth_value_window_emits_column_and_n() {
+        use crate::expr::NthValueWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let nv: NthValueWindow<i64> = NthValueWindow::new(amount, 3)
+            .order_by(amount.desc())
+            .alias("third");
+        let acc = build_select_with_annotations(&qs, |acc| nv.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("NTH_VALUE(amount, $")
+                && sql.contains(") OVER (ORDER BY amount DESC) AS third"),
+            "got: {sql}"
+        );
+    }
+
+    // ── T18-T19 coverage backfill (quality reviewer round-1 finding) ─────────
+    //
+    // First batch of T18-T19 tests covered bare emission. Quality
+    // reviewer flagged that missing-`.alias()` rejection,
+    // `partition_by` integration, and decode-type pinning weren't
+    // covered. These tests close those gaps.
+
+    #[test]
+    fn lead_window_partition_by_renders_partition_clause() {
+        use crate::expr::LeadWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let session: FieldRef<Acc, i64> = FieldRef::new("session_id");
+        let lead: LeadWindow<i64> = LeadWindow::new(amount)
+            .partition_by(session)
+            .order_by(amount.asc())
+            .alias("next_amount");
+        let acc = build_select_with_annotations(&qs, |acc| lead.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains(
+                "LEAD(amount) OVER (PARTITION BY session_id ORDER BY amount ASC) AS next_amount"
+            ),
+            "PARTITION BY must render before ORDER BY in window clause, got: {sql}"
+        );
+    }
+
+    #[test]
+    fn ntile_window_partition_by_renders_partition_clause() {
+        use crate::expr::NtileWindow;
+        let qs: QuerySet<Acc> = QuerySet::new();
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let dept: FieldRef<Acc, i64> = FieldRef::new("dept_id");
+        let ntile = NtileWindow::new(4)
+            .partition_by(dept)
+            .order_by(amount.desc())
+            .alias("dept_quartile");
+        let acc = build_select_with_annotations(&qs, |acc| ntile.push_columns(acc));
+        let sql = acc.sql();
+        assert!(
+            sql.contains("NTILE($")
+                && sql.contains(
+                    ") OVER (PARTITION BY dept_id ORDER BY amount DESC) AS dept_quartile"
+                ),
+            "got: {sql}"
+        );
+    }
+
+    #[test]
+    fn lead_window_decode_type_pinned_to_v() {
+        // Compile-time pin: the phantom V on LeadWindow<V> drives the
+        // AnnotationSlot::Decoded type. Constructing with a typed
+        // FieldRef<Acc, V> yields LeadWindow<V> — verified by the
+        // type ascriptions below.
+        use crate::expr::LeadWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LeadWindow<i64> = LeadWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: LeadWindow<String> = LeadWindow::new(label);
+    }
+
+    #[test]
+    fn first_value_window_decode_type_pinned_to_v() {
+        use crate::expr::FirstValueWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: FirstValueWindow<i64> = FirstValueWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: FirstValueWindow<String> = FirstValueWindow::new(label);
+    }
+
+    // GAP-4 closure (Codex T22 round-2): type-pin tests for the
+    // remaining column-arg window-fn family. LastValueWindow,
+    // LagWindow, and NthValueWindow are macro-generated from the
+    // same template as FirstValue / Lead, but the type-pin
+    // verification is per-type so a regression on any one would
+    // surface independently.
+
+    #[test]
+    fn last_value_window_decode_type_pinned_to_v() {
+        use crate::expr::LastValueWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LastValueWindow<i64> = LastValueWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: LastValueWindow<String> = LastValueWindow::new(label);
+    }
+
+    #[test]
+    fn lag_window_decode_type_pinned_to_v() {
+        use crate::expr::LagWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LagWindow<i64> = LagWindow::new(amount);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: LagWindow<String> = LagWindow::new(label);
+    }
+
+    #[test]
+    fn nth_value_window_decode_type_pinned_to_v() {
+        use crate::expr::NthValueWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: NthValueWindow<i64> = NthValueWindow::new(amount, 3);
+
+        let label: FieldRef<Acc, String> = FieldRef::new("label");
+        let _: NthValueWindow<String> = NthValueWindow::new(label, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn lead_window_alias_rejects_djogi_prefix() {
+        // Same `__djogi_*` reservation discipline as the rank-family
+        // alias setter.
+        use crate::expr::LeadWindow;
+        let amount: FieldRef<Acc, i64> = FieldRef::new("amount");
+        let _: LeadWindow<i64> = LeadWindow::new(amount).alias("__djogi_q");
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn ntile_window_alias_rejects_djogi_prefix() {
+        use crate::expr::NtileWindow;
+        let _ = NtileWindow::new(4).alias("__djogi_agg_0");
+    }
+
+    #[test]
+    #[should_panic(expected = "is reserved")]
+    fn percent_rank_window_alias_rejects_djogi_prefix() {
+        use crate::expr::PercentRankWindow;
+        let _ = PercentRankWindow::new().alias("__djogi_q");
     }
 }

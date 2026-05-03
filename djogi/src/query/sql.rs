@@ -808,29 +808,215 @@ fn emit_aggregate_inner(
     agg: &crate::expr::node::ExprNode,
     default_window: Option<&'static str>,
 ) {
+    // Codex T22 round-3 BLOCK-1 + round-4 refinement: spatial
+    // aggregates emit an outer scalar cast (e.g. `::geography`).
+    // When OVER is present, Postgres grammar places `OVER` on the
+    // *aggregate* itself before any post-call scalar wrapper. Two
+    // emission profiles cover the surface:
+    //
+    // - **Unwrapped spatial** (collect, union, extent, line_agg,
+    //   cluster_intersecting, cluster_within, mem_union, polygonize):
+    //   emit `(AGG(...) OVER (...))::cast`. The cast attaches to the
+    //   paren-wrapped aggregate-with-OVER unit.
+    //
+    // - **Wrapped spatial** (centroid, convex_hull): emit
+    //   `WRAP(AGG(...) OVER (...))::cast`. Here `WRAP` is a scalar
+    //   function (`ST_Centroid`, `ST_ConvexHull`); the *aggregate*
+    //   is the inner `ST_Collect`, so `OVER` must fall inside the
+    //   wrapper, between the inner-aggregate close and the wrapper
+    //   close. Pre-fix the OVER lived outside the wrapper, which
+    //   Postgres rejects with "OVER specified, but ST_Centroid is
+    //   not a window function nor an aggregate function".
+    //
+    // The shape detector below inspects `ExprNode::Aggregate` only;
+    // every spatial aggregate (collect, centroid, convex_hull, …)
+    // routes through the `AggOp` envelope after the round-5 ConvexHull
+    // migration. See [`spatial_emission_shape`] for the wrapped vs
+    // unwrapped distinction.
+    let shape = spatial_emission_shape(agg);
     let (cast_to, window) = match agg {
         crate::expr::node::ExprNode::Aggregate {
             cast_to, window, ..
         } => (*cast_to, window.as_ref()),
         _ => (None, None),
     };
-    // Only wrap in parens when a cast is needed — `(AGG(..) OVER (...))::ty`.
-    // A window-only aggregate (no cast) emits directly: `AGG(..) OVER (...)`.
-    if cast_to.is_some() {
-        acc.push_sql("(");
-    }
-    crate::expr::sql::emit_expr(acc, agg);
-    match window {
+    let has_window_clause = window.is_some() || default_window.is_some();
+
+    let emit_window_clause = |acc: &mut SqlAccumulator| match window {
         Some(ws) => ws.emit(acc),
         None => {
             if let Some(s) = default_window {
                 acc.push_sql(s);
             }
         }
+    };
+
+    match (shape, has_window_clause, cast_to) {
+        // Spatial wrapped (centroid, convex_hull) WITH window — splice
+        // OVER inside the wrapper, between the inner-aggregate close
+        // and the wrapper close.
+        (
+            Some(SpatialShape {
+                suffix,
+                wrapped: true,
+            }),
+            true,
+            _,
+        ) => {
+            crate::expr::sql::emit_expr(acc, agg);
+            // Bare emission ended with `WRAP(AGG(...))::cast`. Pop
+            // the cast and the wrapper close so the next push falls
+            // between the AGG(...)'s close paren and the wrapper's.
+            let popped_cast = acc.pop_sql_suffix(suffix);
+            debug_assert!(
+                popped_cast,
+                "wrapped spatial bare emission must end with {suffix}"
+            );
+            let popped_close = acc.pop_sql_suffix(")");
+            debug_assert!(
+                popped_close,
+                "wrapped spatial bare emission must end with `)` after popping cast"
+            );
+            emit_window_clause(acc);
+            acc.push_sql(")");
+            acc.push_sql(suffix);
+        }
+        // Spatial unwrapped WITH window — paren-wrap (AGG OVER), then cast.
+        //
+        // Cluster E round-5 BLOCK-1 closure: the bare emission of an
+        // unwrapped spatial WITH FILTER produces
+        // `(AGG(...) FILTER (...))::cast` — emit_spatial_unary_agg
+        // adds outer parens for cast attachment when filter is
+        // present. Naively adding another outer paren here gives
+        // `((AGG FILTER) OVER)::cast`, which Postgres rejects
+        // because OVER attaches to a parenthesized expression
+        // rather than the aggregate call itself.
+        //
+        // Strategy: when filter is present, splice OVER INSIDE
+        // the existing FILTER parens by popping the trailing `)`
+        // after popping the cast. When no filter, the bare emission
+        // is `AGG(...)::cast` (no outer parens) — add them externally.
+        (
+            Some(SpatialShape {
+                suffix,
+                wrapped: false,
+            }),
+            true,
+            _,
+        ) => {
+            let has_filter = matches!(
+                agg,
+                crate::expr::node::ExprNode::Aggregate {
+                    filter: Some(_),
+                    ..
+                }
+            );
+            if has_filter {
+                crate::expr::sql::emit_expr(acc, agg);
+                let popped_cast = acc.pop_sql_suffix(suffix);
+                debug_assert!(
+                    popped_cast,
+                    "unwrapped spatial bare emission must end with {suffix}"
+                );
+                let popped_close = acc.pop_sql_suffix(")");
+                debug_assert!(
+                    popped_close,
+                    "unwrapped spatial-with-filter bare emission must end with `)` \
+                     after popping cast (FILTER parens from emit_spatial_unary_agg)"
+                );
+                emit_window_clause(acc);
+                acc.push_sql(")");
+                acc.push_sql(suffix);
+            } else {
+                acc.push_sql("(");
+                crate::expr::sql::emit_expr(acc, agg);
+                let popped_cast = acc.pop_sql_suffix(suffix);
+                debug_assert!(
+                    popped_cast,
+                    "unwrapped spatial bare emission must end with {suffix}"
+                );
+                emit_window_clause(acc);
+                acc.push_sql(")");
+                acc.push_sql(suffix);
+            }
+        }
+        // Spatial WITHOUT window — bare emit already includes the
+        // cast adjacent to the aggregate. Nothing to splice.
+        (Some(_), false, _) => {
+            crate::expr::sql::emit_expr(acc, agg);
+        }
+        // Non-spatial WITH explicit cast_to — paren-wrap (AGG OVER)?,
+        // then `::ty`. Window may or may not be present; the existing
+        // contract emits parens whenever cast_to is set so the cast
+        // attaches cleanly.
+        (None, _, Some(ty)) => {
+            acc.push_sql("(");
+            crate::expr::sql::emit_expr(acc, agg);
+            emit_window_clause(acc);
+            acc.push_sql(")::");
+            acc.push_sql(ty);
+        }
+        // Non-spatial, no cast — bare emit + optional OVER.
+        (None, _, None) => {
+            crate::expr::sql::emit_expr(acc, agg);
+            emit_window_clause(acc);
+        }
     }
-    if let Some(ty) = cast_to {
-        acc.push_sql(")::");
-        acc.push_sql(ty);
+}
+
+/// Emission profile for spatial aggregates. The two `wrapped` cases
+/// drive the OVER-splice strategy in [`emit_aggregate_inner`].
+///
+/// - `wrapped: true` — bare emission has the form `WRAP(AGG(...))::cast`.
+///   `WRAP` is a scalar function (`ST_Centroid`, `ST_ConvexHull`); the
+///   actual aggregate is `AGG` (`ST_Collect`). OVER must fall inside
+///   the wrapper, between AGG's close paren and the wrapper's close.
+///
+/// - `wrapped: false` — bare emission has the form `AGG(...)::cast`.
+///   No scalar wrapper; OVER attaches directly to the aggregate, then
+///   the cast wraps the aggregate-with-OVER unit:
+///   `(AGG(...) OVER (...))::cast`.
+struct SpatialShape {
+    suffix: &'static str,
+    wrapped: bool,
+}
+
+/// Detect the spatial-emission profile for an aggregate node. Returns
+/// `Some(SpatialShape)` for spatial aggregates whose bare emission
+/// ends with a scalar cast suffix (potentially preceded by a wrapper
+/// close), `None` for non-spatial aggregates.
+///
+/// Cluster E round-5 BLOCK-2 closure: ConvexHull migrated from
+/// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` to
+/// `AggOp::SpatialConvexHull`, so the entire spatial aggregate
+/// family now routes through a single `ExprNode::Aggregate`
+/// arm — modifiers (.distinct/.filter/.over/.order_by) compose
+/// uniformly.
+fn spatial_emission_shape(agg: &crate::expr::node::ExprNode) -> Option<SpatialShape> {
+    use crate::expr::node::ExprNode;
+    match agg {
+        ExprNode::Aggregate { op, .. } => {
+            let suffix = crate::expr::sql::outer_cast_suffix(op)?;
+            // The wrapped vs unwrapped distinction is feature-gated
+            // because the wrapped variants live behind `spatial` —
+            // outer_cast_suffix returns None when spatial is off,
+            // so this branch is unreachable for unfeatured builds.
+            //
+            // Wrapped variants: SpatialCentroid, SpatialConvexHull —
+            // both emit `WRAP(ST_Collect(...))::geography` where
+            // ST_Collect is the actual aggregate and the wrapper is
+            // a scalar function. OVER must splice inside the wrap.
+            #[cfg(feature = "spatial")]
+            let wrapped = matches!(
+                op,
+                crate::expr::node::AggOp::SpatialCentroid
+                    | crate::expr::node::AggOp::SpatialConvexHull
+            );
+            #[cfg(not(feature = "spatial"))]
+            let wrapped = false;
+            Some(SpatialShape { suffix, wrapped })
+        }
+        _ => None,
     }
 }
 
@@ -945,6 +1131,39 @@ where
     acc.push_sql(" AS t");
     push_tail(&mut acc, qs);
     acc
+}
+
+/// Build the annotated SELECT, optionally wrapping in a derived table so
+/// an outer `WHERE` can filter on a window-function alias.
+///
+/// PostgreSQL 18 has no `QUALIFY` clause, so a window-output filter has
+/// to live in an outer scope where the alias is in scope as a column
+/// reference. When `qualify` is `Some`, this emits:
+/// `SELECT * FROM (<inner annotated select>) AS __djogi_q WHERE
+/// <alias> <op> $N`. Bind ordering: inner-query binds first, qualify
+/// bind appended last.
+///
+/// When `qualify` is `None`, this is identical in output to
+/// [`build_select_with_annotations`] — no derived-table indirection.
+pub(crate) fn build_annotated_select_for_fetch<T, F>(
+    qs: &QuerySet<T>,
+    push_columns: F,
+    qualify: Option<&crate::expr::QualifyCondition>,
+) -> SqlAccumulator
+where
+    T: Model + FromPgRow,
+    F: FnOnce(&mut SqlAccumulator),
+{
+    let inner = build_select_with_annotations(qs, push_columns);
+    let Some(qualify) = qualify else {
+        return inner;
+    };
+
+    let mut wrapped = SqlAccumulator::new("SELECT * FROM (");
+    wrapped.extend_with(inner);
+    wrapped.push_sql(") AS __djogi_q WHERE ");
+    qualify.push_outer_where(&mut wrapped);
+    wrapped
 }
 
 /// Build `SELECT keys, aggregates FROM <table> [WHERE ...] GROUP BY keys

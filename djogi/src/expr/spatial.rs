@@ -187,6 +187,82 @@ pub enum SpatialExpr {
         /// Eastern bound (maximum longitude).
         max_lon: f64,
     },
+
+    // Scalar geometry/area helpers
+    /// `ST_Area($1::bytea::geography)`
+    ///
+    /// Returns `f64` — the area in **square meters** of the bound geometry,
+    /// computed on the spheroid via Postgres's `geography`-typed
+    /// `ST_Area` overload (the geometry-typed overload returns square
+    /// degrees, which is rarely what callers want). Mirrors the
+    /// `::geography` cast convention used by [`Self::Within`] /
+    /// [`Self::Distance`] so the meters-units invariant of the
+    /// Phase 6 spatial surface holds for T17 too.
+    ///
+    /// Constructed by [`super::Expr::area_of`]. Composes with the
+    /// `Expr<f64>` arithmetic IR for ratios such as
+    /// `area_of_intersection(a, b) / area_of(a)`.
+    Area {
+        /// EWKB encoding of the geometry whose area is computed.
+        geom_ewkb: Vec<u8>,
+    },
+
+    /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)`
+    ///
+    /// Returns a geometry — the spatial intersection of the two bound
+    /// geometries. The empty geometry is the natural sentinel when the
+    /// two inputs do not overlap; Postgres's `ST_Area` over an empty
+    /// geometry returns `0.0`, which is the correct "no overlap"
+    /// answer for the territory-overlap-percentage demo use case.
+    ///
+    /// Both args are bound as raw EWKB `bytea` and cast at query time —
+    /// matches the cast discipline of the geometry-only shape predicates
+    /// (`ST_Contains` / `ST_Touches` / `ST_Within`) which have no
+    /// `geography` overload in PostGIS 3.x.
+    ///
+    /// # No public typed constructor today
+    ///
+    /// This variant is reachable only by IR-level construction; the public
+    /// surface ships [`super::Expr::area_of_intersection`] (which uses the
+    /// fused [`Self::AreaOfIntersection`] variant) because the framework
+    /// does not yet model a geometry-typed `Expr<G>` (no `Expr<Polygon>`
+    /// codec path). Splitting the standalone `intersection_of` constructor
+    /// out is a future-phase amendment once geometry-typed `Expr` lands;
+    /// the variant exists today so the SpatialExpr family is structurally
+    /// complete and tests can pin its emission shape.
+    #[allow(dead_code)]
+    Intersection {
+        /// EWKB encoding of the first geometry argument.
+        a_ewkb: Vec<u8>,
+        /// EWKB encoding of the second geometry argument.
+        b_ewkb: Vec<u8>,
+    },
+
+    /// `ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)`
+    ///
+    /// Composed shape — returns `f64` square meters of the intersection of
+    /// two bound geometries. Equivalent to nesting [`Self::Intersection`]
+    /// inside [`Self::Area`], emitted as a single inline form because the
+    /// IR does not currently model geometry-typed intermediate `Expr` nodes
+    /// (see the rustdoc on [`Self::Intersection`]).
+    ///
+    /// This is the canonical territory-overlap-percentage expression: the
+    /// demo uses it as the numerator of
+    /// `area_of_intersection(a, b) / area_of(a)`. Constructed by
+    /// [`super::Expr::area_of_intersection`].
+    AreaOfIntersection {
+        /// EWKB encoding of the first geometry argument.
+        a_ewkb: Vec<u8>,
+        /// EWKB encoding of the second geometry argument.
+        b_ewkb: Vec<u8>,
+    },
+    // Cluster E round-5 BLOCK-2 closure: convex-hull was migrated
+    // out of this enum into `AggOp::SpatialConvexHull`. The old
+    // `SpatialExpr::ConvexHull{..}` variant silently dropped
+    // `AggregateExpr` modifiers (.distinct/.filter/.over/.order_by)
+    // because those mutate `ExprNode::Aggregate` only. Routing
+    // through `AggOp` puts ConvexHull on the same modifier substrate
+    // as the rest of the spatial aggregate family.
 }
 
 #[cfg(feature = "spatial")]
@@ -317,8 +393,66 @@ impl SpatialExpr {
                 acc.push_sql(", 4326)::geography && ");
                 acc.push_sql(field_column);
             }
+            // T17 scalar geometry / area helpers
+            SpatialExpr::Area { geom_ewkb } => {
+                // ST_Area($n::bytea::geography) — geography overload returns
+                // square meters; the geometry overload returns square degrees
+                // and is the wrong unit for the demo use case.
+                acc.push_sql("ST_Area(");
+                push_ewkb_arg(acc, geom_ewkb, EwkbCast::Geography);
+                acc.push_sql(")");
+            }
+            SpatialExpr::Intersection { a_ewkb, b_ewkb } => {
+                // ST_Intersection($1::bytea::geometry, $2::bytea::geometry) —
+                // PostGIS 3.x has no `geography` overload for ST_Intersection;
+                // both args go through the `::geometry` cast pair (matches
+                // the discipline of `emit_binary_predicate` for non-Intersects
+                // shape predicates).
+                acc.push_sql("ST_Intersection(");
+                push_ewkb_arg(acc, a_ewkb, EwkbCast::Geometry);
+                acc.push_sql(", ");
+                push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
+                acc.push_sql(")");
+            }
+            SpatialExpr::AreaOfIntersection { a_ewkb, b_ewkb } => {
+                // ST_Area(ST_Intersection(..)::geography) — composed inline
+                // because the IR does not yet model geometry-typed Expr
+                // intermediates. The outer `::geography` cast keeps the
+                // meters-units invariant from `Area` end-to-end.
+                acc.push_sql("ST_Area(ST_Intersection(");
+                push_ewkb_arg(acc, a_ewkb, EwkbCast::Geometry);
+                acc.push_sql(", ");
+                push_ewkb_arg(acc, b_ewkb, EwkbCast::Geometry);
+                acc.push_sql(")::geography)");
+            }
         }
     }
+}
+
+/// PostGIS cast target for an EWKB bind argument.
+///
+/// Used by [`push_ewkb_arg`] to keep the per-arm emit bodies free of
+/// stringly-typed `"::bytea::geometry"` / `"::bytea::geography"` literals —
+/// the variants are the only two PostGIS overload directions a binary EWKB
+/// blob can flow into.
+#[cfg(feature = "spatial")]
+#[derive(Clone, Copy)]
+enum EwkbCast {
+    Geometry,
+    Geography,
+}
+
+/// Push `$N::bytea::<cast>` for an EWKB bind. Centralises the 3-step splice
+/// (`push_bind` + `::bytea` + `::geometry`/`::geography`) that every T17 arm
+/// repeats — without the helper, each emit body is `acc.push_bind(...);
+/// acc.push_sql("::bytea::geometry")` which a 4th arm would faithfully copy.
+#[cfg(feature = "spatial")]
+fn push_ewkb_arg(acc: &mut SqlAccumulator, ewkb: &[u8], cast: EwkbCast) {
+    acc.push_bind(ewkb.to_vec());
+    acc.push_sql(match cast {
+        EwkbCast::Geometry => "::bytea::geometry",
+        EwkbCast::Geography => "::bytea::geography",
+    });
 }
 
 /// Which PostGIS shape predicate `emit_binary_predicate` should emit.
@@ -395,9 +529,9 @@ fn emit_binary_predicate(
     let use_geometry = predicate.needs_geometry_cast();
     let col_cast = if use_geometry { "::geometry" } else { "" };
     let bind_cast = if use_geometry {
-        "::bytea::geometry"
+        EwkbCast::Geometry
     } else {
-        "::bytea::geography"
+        EwkbCast::Geography
     };
 
     acc.push_sql(predicate.function_name());
@@ -405,8 +539,7 @@ fn emit_binary_predicate(
     acc.push_sql(field_column);
     acc.push_sql(col_cast);
     acc.push_sql(", ");
-    acc.push_bind(other_ewkb.to_vec());
-    acc.push_sql(bind_cast);
+    push_ewkb_arg(acc, other_ewkb, bind_cast);
     acc.push_sql(")");
 }
 
@@ -936,5 +1069,122 @@ mod tests {
         );
         assert!(sql.contains("$1"), "first bind must be $1; got: {sql}");
         assert!(sql.contains("$2"), "second bind must be $2; got: {sql}");
+    }
+
+    // ── Phase 8-Zero Cluster C C1 — T16 + T17 emission tests ─────────────────
+
+    /// `Area { geom_ewkb }` emits `ST_Area($1::bytea::geography)` — geography
+    /// overload yields square meters; the geometry overload yields square
+    /// degrees and is the wrong unit for the demo use case.
+    #[test]
+    fn area_emits_st_area_with_geography_cast() {
+        let expr = SpatialExpr::Area {
+            geom_ewkb: vec![0x01, 0x02, 0x03],
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(sql.contains("ST_Area("), "expected ST_Area, got: {sql}");
+        assert!(
+            sql.contains("::bytea::geography"),
+            "expected ::bytea::geography cast for meters-units, got: {sql}"
+        );
+        assert_eq!(
+            acc.bind_count(),
+            1,
+            "Area binds exactly one EWKB param; got {}",
+            acc.bind_count()
+        );
+    }
+
+    /// `Intersection { a_ewkb, b_ewkb }` emits
+    /// `ST_Intersection($1::bytea::geometry, $2::bytea::geometry)` — both args
+    /// double-cast to geometry because PostGIS 3.x has no `geography`
+    /// overload for `ST_Intersection`.
+    #[test]
+    fn intersection_emits_st_intersection_with_geometry_cast() {
+        let expr = SpatialExpr::Intersection {
+            a_ewkb: vec![0xAA],
+            b_ewkb: vec![0xBB],
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("ST_Intersection("),
+            "expected ST_Intersection, got: {sql}"
+        );
+        // Both args carry the geometry cast.
+        assert!(
+            sql.contains("$1::bytea::geometry"),
+            "expected $1::bytea::geometry, got: {sql}"
+        );
+        assert!(
+            sql.contains("$2::bytea::geometry"),
+            "expected $2::bytea::geometry, got: {sql}"
+        );
+        // Must NOT use the geography path — that overload doesn't exist.
+        assert!(
+            !sql.contains("::geography"),
+            "ST_Intersection has no geography overload; got: {sql}"
+        );
+        assert_eq!(acc.bind_count(), 2);
+    }
+
+    /// `AreaOfIntersection { a_ewkb, b_ewkb }` — the fused composed shape used
+    /// by the territory-overlap-percentage demo. Emits
+    /// `ST_Area(ST_Intersection($1::bytea::geometry, $2::bytea::geometry)::geography)`.
+    /// Both inner args cast to geometry (no Intersection overload otherwise);
+    /// the outer geometry-result is cast to geography so ST_Area returns
+    /// square meters rather than square degrees.
+    #[test]
+    fn area_of_intersection_emits_composed_st_area_st_intersection() {
+        let expr = SpatialExpr::AreaOfIntersection {
+            a_ewkb: vec![0xCC],
+            b_ewkb: vec![0xDD],
+        };
+        let mut acc = SqlAccumulator::new("");
+        expr.emit(&mut acc);
+        let sql = acc.sql();
+        assert!(sql.contains("ST_Area("), "got: {sql}");
+        assert!(sql.contains("ST_Intersection("), "got: {sql}");
+        assert!(sql.contains("$1::bytea::geometry"), "got: {sql}");
+        assert!(sql.contains("$2::bytea::geometry"), "got: {sql}");
+        assert!(
+            sql.contains(")::geography)"),
+            "expected outer geography cast for meters-units, got: {sql}"
+        );
+        assert_eq!(acc.bind_count(), 2);
+    }
+
+    // Cluster E round-5 BLOCK-2 closure: ConvexHull was migrated
+    // out of `SpatialExpr` into `AggOp::SpatialConvexHull`. The
+    // bare-emission test moved alongside, see
+    // `djogi/src/query/field.rs::convex_hull_emits_*` (added in
+    // round-4) for the new bare and windowed emission tests.
+
+    /// Composition contract — sequential emission keeps bind counters in
+    /// lockstep so `area_of_intersection / area_of` ratios bind correctly
+    /// when emitted inline in a SELECT list.
+    #[test]
+    fn cluster_c_sequential_emission_preserves_bind_counter() {
+        let area_a = SpatialExpr::Area {
+            geom_ewkb: vec![0x11],
+        };
+        let area_int = SpatialExpr::AreaOfIntersection {
+            a_ewkb: vec![0x22],
+            b_ewkb: vec![0x33],
+        };
+        let mut acc = SqlAccumulator::new("");
+        area_int.emit(&mut acc);
+        acc.push_sql(" / ");
+        area_a.emit(&mut acc);
+        let sql = acc.sql();
+        // 2 binds from AreaOfIntersection ($1, $2), 1 from Area ($3) = 3 total.
+        assert_eq!(acc.bind_count(), 3);
+        assert!(
+            sql.contains("$1") && sql.contains("$2") && sql.contains("$3"),
+            "expected $1 $2 $3, got: {sql}"
+        );
     }
 }

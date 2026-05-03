@@ -23,12 +23,14 @@
 
 mod ewkb;
 pub mod linestring;
+pub mod multilinestring;
 pub mod multipoint;
 pub mod multipolygon;
 pub mod point;
 pub mod polygon;
 
 pub use linestring::LineString;
+pub use multilinestring::MultiLineString;
 pub use multipoint::MultiPoint;
 pub use multipolygon::MultiPolygon;
 pub use point::GeoPoint;
@@ -113,6 +115,17 @@ pub enum GeoError {
     #[cfg(feature = "spatial")]
     #[error("invalid MultiPolygon: {reason}")]
     InvalidMultiPolygon {
+        /// Human-readable description of the violated constraint.
+        reason: &'static str,
+    },
+
+    /// A `MultiLineString` was constructed with an empty linestring list.
+    ///
+    /// `MultiLineString` requires at least one `LineString`. Mirrors the
+    /// non-empty invariant on `MultiPoint` and `MultiPolygon`.
+    #[cfg(feature = "spatial")]
+    #[error("invalid MultiLineString: {reason}")]
+    InvalidMultiLineString {
         /// Human-readable description of the violated constraint.
         reason: &'static str,
     },
@@ -329,6 +342,26 @@ impl GeographyValue for MultiPoint {
     }
 }
 
+// ── MultiLineString impl ──────────────────────────────────────────────────────
+
+#[cfg(feature = "spatial")]
+impl sealed_value::Sealed for MultiLineString {}
+
+#[cfg(feature = "spatial")]
+impl GeographyValue for MultiLineString {
+    const GEO_TYPE_WORD: u32 = 0x20000005;
+    const SUBTYPE: crate::descriptor::GeographySubtype =
+        crate::descriptor::GeographySubtype::MultiLineString;
+
+    fn to_ewkb_bytes(&self) -> Vec<u8> {
+        MultiLineString::to_ewkb_bytes(self)
+    }
+
+    fn from_ewkb_bytes(bytes: &[u8]) -> Result<Self, GeoError> {
+        ewkb::decode_multilinestring(bytes)
+    }
+}
+
 // ── MultiPolygon impl ─────────────────────────────────────────────────────────
 
 #[cfg(feature = "spatial")]
@@ -375,6 +408,11 @@ mod geography_value_tests {
     #[test]
     fn multipoint_is_geography_value() {
         takes_geo::<MultiPoint>();
+    }
+
+    #[test]
+    fn multilinestring_is_geography_value() {
+        takes_geo::<MultiLineString>();
     }
 
     #[test]

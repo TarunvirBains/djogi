@@ -132,6 +132,24 @@ pub(crate) enum ExprNode {
         /// of `arg`); the typed [`super::aggregate::AggregateExpr`] surface
         /// stores a placeholder there.
         arg: Box<ExprNode>,
+        /// Second argument for binary (two-arg) aggregates. `None` for
+        /// the unary family (COUNT / SUM / AVG / MIN / MAX / ARRAY_AGG /
+        /// JSONB_AGG / STRING_AGG / BOOL_AND / BOOL_OR / EVERY / BIT_*
+        /// / STDDEV_* / VAR_* / GROUPING). `Some(node)` for the binary
+        /// family (COVAR_POP / COVAR_SAMP / CORR / REGR_* / JSON_OBJECT_AGG
+        /// / JSONB_OBJECT_AGG), where the `arg` slot carries the first
+        /// column (`y` for stats / `key` for json-object) and `arg2`
+        /// carries the second column (`x` for stats / `value` for
+        /// json-object).
+        ///
+        /// Cluster E T5 introduced this slot to back `covar_pop` / `corr`
+        /// / `regr_*` / `jsonb_object_agg`. The slot is backward-compatible
+        /// — every pre-existing unary-aggregate constructor (`unary_agg`,
+        /// the `string_agg` shape) sets `arg2: None`, so the unary
+        /// emission path remains untouched. The emitter ignores `arg2`
+        /// on the unary family and renders the comma-separated second
+        /// arg only when the variant is recognised as binary.
+        arg2: Option<Box<ExprNode>>,
         /// Optional `FILTER (WHERE ...)` clause. `None` emits the bare
         /// aggregate; `Some(cond)` emits
         /// `AGG(arg) FILTER (WHERE <cond>)`.
@@ -163,6 +181,58 @@ pub(crate) enum ExprNode {
         /// `OVER ()` for backwards compatibility. `Some(spec)` emits the
         /// full `OVER (PARTITION BY ... ORDER BY ... frame)` from the spec.
         window: Option<crate::expr::window::WindowSpec>,
+        /// Per-aggregate `ORDER BY` clause(s). Set via
+        /// [`super::aggregate::AggregateExpr::order_by`]. Empty `Vec`
+        /// emits no ORDER BY; non-empty emits
+        /// `AGG(arg ORDER BY <ord1>, <ord2>, ...)` (or for STRING_AGG:
+        /// `STRING_AGG(arg, sep ORDER BY ...)`).
+        ///
+        /// Some aggregates' result depends on input order — `ARRAY_AGG`,
+        /// `JSONB_AGG`, `STRING_AGG`, plus the ordered-set / hypothetical-
+        /// set families (PERCENTILE_CONT, MODE, etc., per the
+        /// WITHIN GROUP modifier surface that consumes this slot
+        /// indirectly through the adjacent `within_group_order_by`
+        /// modifier). Without this slot, callers couldn't get
+        /// deterministic results from order-sensitive aggregates without
+        /// wrapping the whole query in a derived table.
+        ///
+        /// Also unblocks `STRING_AGG(DISTINCT col, sep ORDER BY other)` —
+        /// Postgres rejects that combination unless an ORDER BY is
+        /// supplied; the fetch-time check in
+        /// [`super::sql::check_aggregate_legality`] still rejects
+        /// `STRING_AGG(DISTINCT ...)` with no ORDER BY but accepts the
+        /// combination with one.
+        order_by: Vec<crate::query::order::OrderExpr>,
+        /// `WITHIN GROUP (ORDER BY ...)` clause for ordered-set
+        /// aggregates ([`AggOp::PercentileCont`] / [`AggOp::PercentileDisc`]
+        /// / [`AggOp::Mode`]) and (eventually) hypothetical-set
+        /// aggregates. Empty for every other aggregate.
+        ///
+        /// Distinct from the per-aggregate [`order_by`](Self::Aggregate::order_by)
+        /// slot — that one renders ORDER BY *inside* the aggregate's
+        /// parens (`AGG(arg ORDER BY ...)` for value aggregates like
+        /// `array_agg`). This slot renders ORDER BY *after* the parens
+        /// in a `WITHIN GROUP` clause:
+        ///
+        /// ```sql
+        /// PERCENTILE_CONT($1) WITHIN GROUP (ORDER BY response_ms)
+        /// ```
+        ///
+        /// For ordered-set aggregates this slot is **mandatory** — the
+        /// fetch-time legality check in
+        /// [`super::sql::check_aggregate_legality`] rejects an empty
+        /// `within_group_order_by` for `PercentileCont` / `PercentileDisc`
+        /// / `Mode`. The typed builder methods on `FieldRef` populate it
+        /// at construction time from the receiver column (default ASC);
+        /// the [`super::aggregate::AggregateExpr::within_group_order_by`]
+        /// modifier overrides it for the rare case where the target
+        /// should differ from the constructing column or the direction
+        /// should be DESC.
+        ///
+        /// Cluster E T7 introduced this slot. Future T8 (hypothetical-
+        /// set aggregates `RANK(args) WITHIN GROUP (ORDER BY ...)`)
+        /// reuses it without further IR change.
+        within_group_order_by: Vec<crate::query::order::OrderExpr>,
     },
 
     /// `CASE WHEN <cond> THEN <val> [WHEN <cond> THEN <val> ...] ELSE
@@ -219,6 +289,33 @@ pub(crate) enum ExprNode {
     /// The `column` string is a `&'static str` validated at
     /// [`crate::query::field::FieldRef::new`] construction time.
     ArrayLength { column: &'static str },
+
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — the current calendar year
+    /// as an `i32`, evaluated server-side per query.
+    ///
+    /// Produced by [`super::Expr::current_year`]. Composes with the existing
+    /// `Expr<i32>` arithmetic IR so e.g.
+    /// `Expr::current_year() - f.estimated_birth_year().as_expr()` yields the
+    /// row's age as an `Expr<i32>`.
+    ///
+    /// # SQL emission
+    ///
+    /// The emitter renders the literal token stream
+    /// `EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER` — no bind parameter is
+    /// taken because there is no user-supplied value (the year is read from
+    /// the Postgres server clock at query time). The explicit `::INTEGER`
+    /// cast narrows Postgres's native `numeric` return from `EXTRACT` back
+    /// to a Rust-decodable `i32` so the typed surface's `Expr<i32>` promise
+    /// holds end-to-end.
+    ///
+    /// # Volatility note
+    ///
+    /// `CURRENT_DATE` is `STABLE` (not `IMMUTABLE`) per Postgres semantics —
+    /// it changes by calendar day, not within a single transaction. The
+    /// IR does not annotate volatility on `ExprNode` variants today; callers
+    /// who need a deterministic snapshot of "now" inside a long-running
+    /// transaction should bind a literal `i32` instead of using this helper.
+    CurrentYear,
 
     /// Outer-scope column reference inside a correlated subquery.
     ///
@@ -402,7 +499,15 @@ pub(crate) struct SubqueryNode {
 /// renders `COUNT(*)` specially for [`AggOp::CountStar`] so the bare `*`
 /// never flows through the identifier-validation / column-qualification
 /// paths.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # Why `PartialEq` only (no `Eq`)
+///
+/// [`AggOp::SpatialClusterWithin`] carries an inline `f64` distance,
+/// and `f64` has only [`PartialEq`] — NaN is not reflexively equal to
+/// itself. The crate uses `matches!` for variant discrimination (which
+/// only needs `PartialEq`), so dropping `Eq` is sound; no downstream
+/// code keys an `AggOp` into a `HashMap` / `HashSet`.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AggOp {
     /// `COUNT(col)` — returns `i64`. Counts non-null values of the
     /// argument column.
@@ -467,6 +572,334 @@ pub(crate) enum AggOp {
     /// column is true. Requires a boolean column; the typed builder gates
     /// on `V: Into<bool>`.
     BoolOr,
+    /// `EVERY(col)` — Postgres-standard alias for `BOOL_AND`. Both produce
+    /// identical results; the alias is preserved through the IR so the
+    /// emitter renders the keyword the user wrote (matching adopters'
+    /// expectations from the `pg` docs / SQL standard). Same boolean column
+    /// gating as [`AggOp::BoolAnd`].
+    Every,
+    /// `BIT_AND(col)` — bitwise AND across all non-null values, returned
+    /// as the column's integer type. Postgres defines this for
+    /// `SMALLINT`, `INTEGER`, `BIGINT` and bit-string types; Djogi's
+    /// typed builder gates on the sealed
+    /// [`super::aggregate::IntegerColumn`] trait, which admits the three
+    /// integer scalar types only.
+    BitAnd,
+    /// `BIT_OR(col)` — bitwise OR across all non-null values. Same type
+    /// gating as [`AggOp::BitAnd`].
+    BitOr,
+    /// `BIT_XOR(col)` — bitwise XOR across all non-null values. Same
+    /// type gating as [`AggOp::BitAnd`]. PostgreSQL 14+ feature; Djogi's
+    /// floor (PostgreSQL 18) safely supports it.
+    BitXor,
+    /// `STDDEV_POP(col)` — population standard deviation, returned as
+    /// `f64` (cast to `DOUBLE PRECISION` to honour the typed surface's
+    /// `Out = f64` promise across integer and float inputs).
+    StddevPop,
+    /// `STDDEV_SAMP(col)` — sample standard deviation. Postgres' default
+    /// "stddev" is the sample form; both spellings are exposed.
+    StddevSamp,
+    /// `STDDEV(col)` — Postgres alias for [`AggOp::StddevSamp`]. Carried
+    /// as a distinct variant so the emitter preserves the spelling the
+    /// caller used (matching the `every` / `bool_and` alias treatment).
+    Stddev,
+    /// `VAR_POP(col)` — population variance, returned as `f64`.
+    VarPop,
+    /// `VAR_SAMP(col)` — sample variance.
+    VarSamp,
+    /// `VARIANCE(col)` — Postgres alias for [`AggOp::VarSamp`].
+    Variance,
+    /// `COVAR_POP(y, x)` — population covariance, returned as `f64`.
+    /// Two-arg aggregate: `arg` carries `y`, `arg2` carries `x`.
+    /// `y` first matches Postgres convention (the dependent variable
+    /// is the first argument across the regression / covariance family).
+    CovarPop,
+    /// `COVAR_SAMP(y, x)` — sample covariance, returned as `f64`. Same
+    /// arg ordering as [`AggOp::CovarPop`].
+    CovarSamp,
+    /// `CORR(y, x)` — Pearson correlation coefficient, returned as
+    /// `f64`. Same arg ordering as [`AggOp::CovarPop`].
+    Corr,
+    /// `REGR_AVGX(y, x)` — average of the independent variable across
+    /// rows where both columns are non-null. Returned as `f64`.
+    RegrAvgx,
+    /// `REGR_AVGY(y, x)` — average of the dependent variable across
+    /// rows where both columns are non-null. Returned as `f64`.
+    RegrAvgy,
+    /// `REGR_COUNT(y, x)` — number of input rows where both columns
+    /// are non-null. Postgres returns `BIGINT` here (unlike the rest
+    /// of the regression family which returns `DOUBLE PRECISION`); the
+    /// typed surface returns `AggregateExpr<i64>` accordingly.
+    RegrCount,
+    /// `REGR_INTERCEPT(y, x)` — y-intercept of the least-squares-fit
+    /// line through the (y, x) pairs. Returned as `f64`.
+    RegrIntercept,
+    /// `REGR_R2(y, x)` — coefficient of determination of the
+    /// least-squares-fit line. Returned as `f64`.
+    RegrR2,
+    /// `REGR_SLOPE(y, x)` — slope of the least-squares-fit line
+    /// through the (y, x) pairs. Returned as `f64`.
+    RegrSlope,
+    /// `REGR_SXX(y, x)` — sum of squares of the independent variable
+    /// (sum of `(x - avg(x))^2`). Returned as `f64`.
+    RegrSxx,
+    /// `REGR_SXY(y, x)` — sum of products of (y, x) deviations
+    /// (sum of `(x - avg(x)) * (y - avg(y))`). Returned as `f64`.
+    RegrSxy,
+    /// `REGR_SYY(y, x)` — sum of squares of the dependent variable
+    /// (sum of `(y - avg(y))^2`). Returned as `f64`.
+    RegrSyy,
+    /// `JSON_OBJECT_AGG(key, value)` — builds a `json` object from
+    /// per-row key/value pairs. `arg` carries the key column, `arg2`
+    /// carries the value column. Returns `serde_json::Value` at the
+    /// typed surface.
+    ///
+    /// Distinct from [`AggOp::JsonbObjectAgg`] in the Postgres return
+    /// type (`json` vs `jsonb`); both are exposed because adopters
+    /// needing JSON output (e.g. for an external consumer that cannot
+    /// handle JSONB) have no other path today.
+    JsonObjectAgg,
+    /// `JSONB_OBJECT_AGG(key, value)` — `jsonb` variant of
+    /// [`AggOp::JsonObjectAgg`]. Same shape, different Postgres return
+    /// type. Djogi standardises on JSONB elsewhere (see
+    /// `docs/spec/decisions.md`); this variant is the recommended
+    /// default.
+    JsonbObjectAgg,
+    /// `GROUPING(col)` — Postgres group-set helper that returns `1` if
+    /// the column was rolled up in the current result row (i.e. it is
+    /// a subtotal row from `ROLLUP` / `CUBE` / `GROUPING SETS`), `0`
+    /// otherwise. Returns `INTEGER` at the Postgres level; the typed
+    /// surface decodes into `i32`.
+    ///
+    /// Single-column form only for v0.1.0; the variadic
+    /// `GROUPING(c1, c2, …, cN)` form (which returns a bitmask) is a
+    /// follow-up task because it needs an N-arg slot and a typed bitmask
+    /// return type.
+    Grouping,
+    /// `PERCENTILE_CONT(p) WITHIN GROUP (ORDER BY col)` — continuous
+    /// percentile (interpolating between adjacent values when the
+    /// requested fraction falls between two rows). Returns
+    /// `DOUBLE PRECISION` (cast to `f64` at the typed surface).
+    ///
+    /// Ordered-set aggregate — the fraction `p` lives in the `arg` slot
+    /// as a literal `f64`; the column being percentiled lives in the
+    /// `within_group_order_by` slot. WITHIN GROUP is mandatory; the
+    /// fetch-time legality check rejects an empty
+    /// `within_group_order_by` for this variant. DISTINCT and the
+    /// per-aggregate `order_by` slot are also rejected (Postgres
+    /// disallows them on ordered-set aggregates).
+    PercentileCont,
+    /// `PERCENTILE_DISC(p) WITHIN GROUP (ORDER BY col)` — discrete
+    /// percentile (returns the actual value at the percentile cut, no
+    /// interpolation). Return type matches the column type — the typed
+    /// `AggregateExpr<V>` carries `V = column type`.
+    ///
+    /// Same shape as [`AggOp::PercentileCont`] otherwise — fraction in
+    /// `arg`, column in `within_group_order_by`.
+    PercentileDisc,
+    /// `MODE() WITHIN GROUP (ORDER BY col)` — most common value in the
+    /// group. Returns the column type (typed `AggregateExpr<V>` with
+    /// `V = column type`).
+    ///
+    /// `MODE()` takes no function arguments; the `arg` slot stores a
+    /// sentinel `Field { column: \"\" }` placeholder which the emitter
+    /// ignores on this branch (parallel to how `CountStar` ignores
+    /// `arg`). The column being mode-aggregated lives in
+    /// `within_group_order_by`.
+    Mode,
+    /// `RANK(value) WITHIN GROUP (ORDER BY col)` — hypothetical-set
+    /// rank: the rank that `value` would have if inserted into the
+    /// sorted column. Returns `BIGINT` (typed as `i64`).
+    ///
+    /// Distinct from the window-only rank function in
+    /// [`super::window_fn::Rank`]: that one ranks each row within a
+    /// PARTITION/ORDER window, while this one answers "what rank
+    /// would this hypothetical value have?" given a single ordered
+    /// set. Same modifier discipline as the ordered-set aggregates —
+    /// no DISTINCT, no in-paren ORDER BY, mandatory WITHIN GROUP.
+    HypotheticalRank,
+    /// `DENSE_RANK(value) WITHIN GROUP (ORDER BY col)` — hypothetical-
+    /// set dense rank (no gaps in rank numbering when ties occur).
+    /// Returns `BIGINT`.
+    HypotheticalDenseRank,
+    /// `PERCENT_RANK(value) WITHIN GROUP (ORDER BY col)` —
+    /// hypothetical-set percent rank: the position the hypothetical
+    /// value would have as a fraction in `[0.0, 1.0]`. Returns
+    /// `DOUBLE PRECISION`.
+    HypotheticalPercentRank,
+    /// `CUME_DIST(value) WITHIN GROUP (ORDER BY col)` — hypothetical-
+    /// set cumulative distribution: the fraction of rows that would
+    /// rank at or below the hypothetical value. Returns
+    /// `DOUBLE PRECISION`.
+    HypotheticalCumeDist,
+    /// `ST_Centroid(ST_Collect(<col>))::geography` — per-group centroid
+    /// of point geometries. Fused two-call shape (the emitter wraps
+    /// `ST_Collect` inside `ST_Centroid` and casts back to geography).
+    /// Returns `GeoPoint`. Gated on `feature = "spatial"`.
+    ///
+    /// Sibling of [`AggOp::SpatialConvexHull`] — same wrapped emission
+    /// shape (`WRAP(ST_Collect(...))::geography`) and same modifier
+    /// composition story.
+    #[cfg(feature = "spatial")]
+    SpatialCentroid,
+    /// `ST_ConvexHull(ST_Collect(<col>::geometry))::geography` —
+    /// per-group convex-hull aggregate. Migrated from
+    /// `ExprNode::Spatial(SpatialExpr::ConvexHull{..})` in Cluster E
+    /// round-5: the old IR shape silently dropped `.distinct()` /
+    /// `.filter()` / `.over()` / `.order_by()` modifiers because
+    /// those mutate `ExprNode::Aggregate` only. As a proper AggOp
+    /// variant ConvexHull now composes uniformly with the rest of
+    /// the aggregate family.
+    ///
+    /// Wrapped emission: ST_Collect is the actual aggregate;
+    /// ST_ConvexHull is a scalar wrapper applied to the collected
+    /// geometry set per group. Same shape as
+    /// [`AggOp::SpatialCentroid`].
+    #[cfg(feature = "spatial")]
+    SpatialConvexHull,
+    /// `ST_Collect(<col>)::geography` — per-group multi-geometry
+    /// collection. Returns a `MultiPoint` for `GeoPoint` inputs (and
+    /// the corresponding multi-shape for other geography inputs once
+    /// the typed surface extends to non-point geographies).
+    /// Sibling of [`AggOp::SpatialCentroid`].
+    #[cfg(feature = "spatial")]
+    SpatialCollect,
+    /// `ST_Union(<col>::geometry)::geography` — per-group region-merging
+    /// aggregate. Folds polygonal inputs into a single combined region.
+    /// Returns a `MultiPolygon` — Djogi's typed surface restricts the
+    /// receiver to polygon-shaped fields (`Polygon`, `MultiPolygon`) so
+    /// the decode is sound; point-shaped inputs use [`AggOp::SpatialCollect`]
+    /// (T12's `collect()`) instead. Gated on `feature = "spatial"`.
+    #[cfg(feature = "spatial")]
+    SpatialUnion,
+    /// `ST_Extent(<col>::geometry)::geometry::geography` — per-group 2D
+    /// bounding-box aggregate. Postgres returns the special `box2d` type
+    /// which Djogi casts through `geometry` (yielding a four-vertex
+    /// rectangle Polygon) and back to `geography` for the typed decode.
+    /// Returns `Polygon`. Gated on `feature = "spatial"`.
+    ///
+    /// The `box2d::geometry::geography` cast chain is well-defined
+    /// PostGIS — the geometry-side cast produces a polygon footprint,
+    /// and the geography-side cast keeps the value on the geography
+    /// substrate so adopters get back a `Polygon` they can decompose
+    /// with the existing geometry surface.
+    #[cfg(feature = "spatial")]
+    SpatialExtent,
+    /// `ST_3DExtent(<col>::geometry)::geometry::geography` — per-group
+    /// 3D bounding-box aggregate. Same cast chain as
+    /// [`AggOp::SpatialExtent`] but the underlying Postgres type is
+    /// `box3d`; the geometry-side cast projects the 3D box to its 2D
+    /// polygon footprint, and the geography-side cast keeps the value
+    /// on the geography substrate. Returns `Polygon`.
+    /// Gated on `feature = "spatial"`.
+    ///
+    /// Adopters with true 3D data should reach for `ctx.raw_scalar`
+    /// against the `box3d` type directly — Djogi's typed geography
+    /// surface is 2D-only.
+    #[cfg(feature = "spatial")]
+    SpatialExtent3D,
+    /// `ST_MakeLine(<col>::geometry)::geography` — per-group
+    /// LineString builder. Connects per-row points into a single
+    /// LineString in row order, or per-aggregate ORDER BY order when
+    /// `.order_by(field)` is chained. Returns `LineString`.
+    /// Gated on `feature = "spatial"`.
+    ///
+    /// Order-sensitive: the resulting line's vertex sequence follows
+    /// row order, so this aggregate naturally consumes T1's
+    /// `.order_by(field)` modifier — the per-aggregate ORDER BY
+    /// clause lands inside the `ST_MakeLine` parens to control
+    /// vertex sequence at the aggregate level.
+    ///
+    /// Sibling [`AggOp::SpatialLineAgg`] (Cluster E T14b) handles the
+    /// "collect already-existing LineStrings into a MultiLineString"
+    /// use case once the `MultiLineString` geo type lands.
+    #[cfg(feature = "spatial")]
+    SpatialMakeLine,
+    /// `ST_LineAgg(<col>::geometry)::geography` — per-group
+    /// `MultiLineString` builder. Collects per-row `LineString` values
+    /// into a single `MultiLineString`. Returns `MultiLineString`.
+    /// Gated on `feature = "spatial"`.
+    ///
+    /// `ST_LineAgg` is PostgreSQL 17+ / PostGIS 3.5+; on earlier
+    /// installations the equivalent shape is
+    /// `ST_LineFromMultiPoint(ST_Collect(<col>))` for a multipoint
+    /// input. Djogi targets PG 18 + PostGIS 3.5, so the canonical
+    /// `ST_LineAgg` keyword is the safe choice. If a future
+    /// installation drift surfaces, the emitter arm is the single
+    /// migration site.
+    ///
+    /// Cluster E T14b retroactively shipped this aggregate after
+    /// Track A's initial deferral — no arbitrary deferrals per
+    /// `feedback_no_arbitrary_deferrals.md`.
+    #[cfg(feature = "spatial")]
+    SpatialLineAgg,
+    /// `ST_Collect(<col>::geometry)::geography` — per-group polygon
+    /// collection (portable fallback for `ST_PolygonAgg`). Returns
+    /// `MultiPolygon`. Gated on `feature = "spatial"`.
+    ///
+    /// `ST_PolygonAgg` is PostGIS 3.5+; Djogi's documented PostGIS
+    /// floor is 3.x (see `docs/guide/spatial.md`), so the emitter
+    /// uses the portable `ST_Collect` form which produces an
+    /// equivalent MultiPolygon for polygon-typed inputs. The
+    /// distinct AggOp variant carries the intent (callers asked for
+    /// `polygon_agg()` semantics, not the more general `collect()`)
+    /// and keeps a clean migration path if Djogi ever raises the
+    /// PostGIS floor — only the emitter arm changes.
+    #[cfg(feature = "spatial")]
+    SpatialPolygonAgg,
+    /// `ST_ClusterIntersecting(<col>::geometry)::geography[]` — per-
+    /// group clustering aggregate that groups input geometries which
+    /// mutually intersect into per-cluster collections. Returns
+    /// `geometry[]` at the Postgres level; Djogi casts the array
+    /// element type to `geography` so the typed surface decodes into
+    /// `Vec<MultiPolygon>`. Gated on `feature = "spatial"`.
+    ///
+    /// Available on polygon-shaped fields only — the typed return
+    /// `Vec<MultiPolygon>` matches the natural PostGIS output for
+    /// polygonal inputs. Point-shaped inputs produce `Vec<MultiPoint>`
+    /// at the Postgres level which would break the typed decode;
+    /// adopters wanting clustering semantics over points reach for
+    /// the existing window-function `cluster_by_proximity`.
+    #[cfg(feature = "spatial")]
+    SpatialClusterIntersecting,
+    /// `ST_ClusterWithin(<col>::geometry, $1)::geography[]` — per-
+    /// group clustering aggregate that groups input geometries within
+    /// `distance` meters of each other. The distance is carried inline
+    /// on the variant (matching [`AggOp::StringAgg`]'s separator pattern)
+    /// and bound as a parameter at emission. Returns
+    /// `Vec<MultiPolygon>`. Gated on `feature = "spatial"`.
+    ///
+    /// Same receiver-shape gating as
+    /// [`AggOp::SpatialClusterIntersecting`] — polygon-shaped fields
+    /// only.
+    #[cfg(feature = "spatial")]
+    SpatialClusterWithin(f64),
+    /// `ST_MemUnion(<col>::geometry)::geography` — memory-friendly
+    /// pairwise-merge variant of [`AggOp::SpatialUnion`]. Same input/
+    /// output shape (both fold polygonal inputs into a single
+    /// MultiPolygon by merging shared edges); different algorithm.
+    /// `ST_Union` sorts inputs and merges along a shared edge tree;
+    /// `ST_MemUnion` runs a pairwise merge that uses bounded working
+    /// memory but is slower per-row for moderate input sizes.
+    /// Returns `MultiPolygon`. Gated on `feature = "spatial"`.
+    ///
+    /// Adopters with terabyte-scale polygonal inputs use `mem_union()`;
+    /// for moderate group sizes [`AggOp::SpatialUnion`] is faster.
+    #[cfg(feature = "spatial")]
+    SpatialMemUnion,
+    /// `ST_Polygonize(<col>::geometry)::geography` — builds polygons
+    /// from a per-group set of LineString segments. PostGIS returns a
+    /// GeometryCollection at the geometry level; the geography-substrate
+    /// cast lets the typed surface decode it as `MultiPolygon` for the
+    /// typical line-segments-to-region case. Gated on
+    /// `feature = "spatial"`.
+    ///
+    /// Only available on `LineString` fields — the input must be a
+    /// collection of edges for the polygonization algorithm to produce
+    /// sensible output. The receiver-type gate enforces this at the
+    /// impl-block level.
+    #[cfg(feature = "spatial")]
+    SpatialPolygonize,
 }
 
 /// Comparison operator — the sub-discriminant inside [`ExprNode::Cmp`].

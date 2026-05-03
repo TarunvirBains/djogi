@@ -33,6 +33,7 @@ These documents define Djogi's public contract as a performance-sensitive, Postg
 ## Reference
 
 - [Scope & Boundaries](./scope.md) — what belongs in Djogi vs an app or companion crate
+- [Reserved Identifier Namespace](./reserved-identifiers.md) — the `__djogi_*` prefix, what lives in it, and where it's enforced
 - [Research Areas](./research.md) — open implementation questions by subsystem
 - [Resolved Design Decisions](./decisions.md) — full decision log with rationale
 
