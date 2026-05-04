@@ -1405,6 +1405,49 @@ pub struct FieldDescriptor {
     /// `GENERATED ALWAYS AS (to_tsvector(...)) STORED` column;
     /// `generated` is the general-purpose adopter-controlled form.
     pub generated: Option<GeneratedColumnSpec>,
+
+    /// Composition-derive provenance — the name of the composition
+    /// trait that contributed this field to the model's schema, when
+    /// applicable. Phase 8α T2.5.
+    ///
+    /// Two callers populate this slot today:
+    ///
+    /// - `#[model(auditable)]` on a model with a `created_by` field
+    ///   sets `composed_via: Some("Auditable")` on that field.
+    /// - `#[model(soft_deletable)]` on a model with a `deleted_at`
+    ///   field sets `composed_via: Some("SoftDeletable")` on that
+    ///   field.
+    ///
+    /// `None` for every user-declared field that is not contributed
+    /// by a recognised composition opt-in — including framework
+    /// columns (`id`, `created_at`, `updated_at`) and any
+    /// adopter-declared `created_by` / `deleted_at` field whose model
+    /// did not opt into the matching `#[model(...)]` flag.
+    ///
+    /// Migration emission is byte-identical for composed vs hand-
+    /// declared columns — this slot is provenance metadata only,
+    /// surfaced to `djogi docs` and admin-UI consumers that want to
+    /// distinguish framework-contributed columns from adopter-
+    /// authored ones. The migration differ does NOT key off this
+    /// field; a `composed_via: Some("Auditable")` column compares
+    /// identical to a hand-declared `created_by: Option<String>`
+    /// column under `diff_schemas`.
+    ///
+    /// **Do not use as a behavioral gate.** Today the tag is keyed off
+    /// the model attribute (`auditable` / `soft_deletable`) AND the
+    /// canonical column name (`created_by` / `deleted_at`); any future
+    /// per-model column-rename path (e.g.
+    /// `#[model(soft_deletable(column = "trashed_at"))]` overriding
+    /// `<M as SoftDeletable>::COLUMN`) would re-introduce a different
+    /// kind of mismatch — the descriptor field would still be tagged
+    /// against the renamed column's name, but a behavioural-gate
+    /// consumer that relied on this tag would key off a stale
+    /// `"deleted_at"` literal and silently miss the renamed column.
+    /// Future consumers that need to reason about composition
+    /// behaviour must read it from the typed trait surface (`<M as
+    /// SoftDeletable>` / `<M as Auditable>`) rather than from this
+    /// metadata slot.
+    pub composed_via: Option<&'static str>,
 }
 
 /// Adopter-supplied override for the Postgres volatility class of a
@@ -1477,6 +1520,10 @@ pub const fn field_descriptor(
         protected: None,
         default_volatility_override: None,
         generated: None,
+        // Phase 8α T2.5 — composition-derive provenance defaults to
+        // `None`. Composition-derive emitters (Auditable / SoftDeletable)
+        // override this on the specific contributed columns.
+        composed_via: None,
     }
 }
 

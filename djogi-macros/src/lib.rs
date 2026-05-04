@@ -16,6 +16,7 @@
 
 mod apps;
 mod case;
+mod compose;
 mod djogi_enum;
 mod ident;
 mod jsonb_schema;

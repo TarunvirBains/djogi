@@ -12,6 +12,7 @@ pub mod exclusion;
 pub mod filter;
 pub mod from_joined_row;
 pub mod from_row;
+pub mod hooks;
 pub mod indexes;
 pub mod inject;
 pub mod outer_ref;
@@ -79,6 +80,45 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    for user fields that collide with reserved framework names.
     let expanded = inject::expand(&mut struct_item, &model_attrs)?;
 
+    // 1b. Hooks opt-in — Phase 8α T1.3. Emits the `Sealed` + `HasHooks`
+    //     impl pair when `#[model(hooks)]` is set; otherwise returns an
+    //     empty `TokenStream` so opt-out models pay zero macro-output
+    //     overhead. See `model::hooks` for the rationale on why we cannot
+    //     emit `impl ModelHooks for #ident {}` automatically.
+    let hooks_impl = hooks::expand(&struct_item.ident, &model_attrs);
+
+    // 1c. Auditable opt-in — Phase 8α T2.4. Emits both the
+    //     `impl ::djogi::Auditable for #ident { ... }` trait impl AND
+    //     the `__djogi_auditable_populate` inherent helper invoked from
+    //     `Model::create` between `auto_set_tenant` and the user
+    //     `before_create` hook. Returns an empty `TokenStream` when
+    //     `#[model(auditable)]` is absent so opt-out models pay zero
+    //     macro-output overhead.
+    //
+    //     T2.4 supersedes T2.2's `#[derive(Auditable)]` per spec line
+    //     1037 (locked 2026-05-03). Single attribute drives the
+    //     trait impl + the populator + the create_body wiring in one
+    //     expansion — proc macros cannot observe sibling derives, so
+    //     a derive could not deterministically signal to
+    //     `#[model(...)]` that the populator should be wired.
+    let auditable_impl = crate::compose::auditable::expand(&struct_item.ident, &model_attrs);
+
+    // 1d. SoftDeletable opt-in — Phase 8α T2.6. Emits the
+    //     `impl ::djogi::SoftDeletable for #ident { ... }` trait impl
+    //     when `#[model(soft_deletable)]` is set; otherwise returns an
+    //     empty `TokenStream` so opt-out models pay zero macro-output
+    //     overhead.
+    //
+    //     T2.6 supersedes T2.3's `#[derive(SoftDeletable)]` for the
+    //     same proc-macros-cannot-observe-sibling-derives constraint
+    //     that drove the T2.4 Auditable pivot. Both opt-ins now route
+    //     through `#[model(...)]`. 8γ T6's automatic default-filter
+    //     composition will need to know the model is soft-deletable AT
+    //     model-macro expansion time, which a sibling derive cannot
+    //     signal — doing the migration NOW is cheaper than later.
+    let soft_deletable_impl =
+        crate::compose::soft_deletable::expand(&struct_item.ident, &model_attrs);
+
     // 2. FromPgRow — positional ordinal decode against the canonical projection.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
@@ -138,6 +178,9 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 
     Ok(quote::quote! {
         #expanded
+        #hooks_impl
+        #auditable_impl
+        #soft_deletable_impl
         #from_row
         #from_joined_row
         #model_impl

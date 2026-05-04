@@ -153,6 +153,20 @@ fn compile_pass_phase8_zero() {
 }
 
 #[test]
+fn compile_pass_phase8() {
+    // Globs cannot exclude sub-prefixes (no brace expansion), so this
+    // can't be expressed as `phase8_*.rs` — that pattern would also
+    // sweep up `phase8_zero_*.rs`. List each phase8-only fixture
+    // explicitly. Phase 8α T1.3 lands two (attribute opt-in + zero-
+    // overhead absent path); T1.7 adds one more — the canonical
+    // adopter shape with a real `impl ModelHooks` body.
+    let t = TestCases::new();
+    t.pass("tests/compile_pass/phase8_hooks_attribute.rs");
+    t.pass("tests/compile_pass/phase8_hooks_basic.rs");
+    t.pass("tests/compile_pass/phase8_no_hooks_attribute.rs");
+}
+
+#[test]
 fn compile_pass_unphased() {
     let t = TestCases::new();
     // Pre-phased fixtures — stable and rarely touched.
@@ -202,6 +216,19 @@ fn compile_fail_phase7_5() {
 #[test]
 fn compile_fail_phase8_zero() {
     TestCases::new().compile_fail("tests/compile_fail/phase8_zero_*.rs");
+}
+
+#[test]
+fn compile_fail_phase8() {
+    // Globs cannot exclude sub-prefixes (no brace expansion), so this
+    // can't be expressed as `phase8_*.rs` — that pattern would also
+    // sweep up `phase8_zero_*.rs`. List each phase8-only fixture
+    // explicitly. Phase 8α T1.7 lands two: a wrong-receiver-mutability
+    // override on `before_create` and a `#[model(hooks)]` model that
+    // forgot the sibling `impl ModelHooks for M`.
+    let t = TestCases::new();
+    t.compile_fail("tests/compile_fail/phase8_hooks_attr_without_impl.rs");
+    t.compile_fail("tests/compile_fail/phase8_hooks_invalid_signature.rs");
 }
 
 #[test]

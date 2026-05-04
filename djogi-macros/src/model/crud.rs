@@ -594,6 +594,20 @@ pub fn expand(
         .enumerate()
         .filter_map(|(i, fa)| fa.sequence_within.as_deref().map(|s| (i, s)))
         .collect();
+    // `value` must be mutable when any of the following participates:
+    //   - `sequence_within` (assigns the counter back into the seq field)
+    //   - `#[model(hooks)]` (`before_create(&mut value, ctx)` per Phase 8 §D3)
+    //   - `#[model(auditable)]` (T2.4 — `value.__djogi_auditable_populate(ctx)`
+    //     mutates `created_by` in place when auth is present and the field
+    //     is currently None)
+    // A single shared flag keeps the binding choice explicit.
+    let value_must_be_mut =
+        !seq_within_fields.is_empty() || model_attrs.hooks || model_attrs.auditable;
+    let create_value_binding_default = if value_must_be_mut {
+        quote! { let mut value = value; }
+    } else {
+        quote! { let value = value; }
+    };
     let (sequence_compile_err, sequence_upsert_preamble, create_value_binding) =
         if seq_within_fields.len() > 1 {
             let msg = "models may declare #[field(sequence_within = ...)] on at most one field; \
@@ -601,7 +615,7 @@ pub fn expand(
             (
                 quote! { ::std::compile_error!(#msg); },
                 quote! {},
-                quote! { let value = value; },
+                create_value_binding_default.clone(),
             )
         } else if let Some(&(seq_idx, parent_col)) = seq_within_fields.first() {
             let seq_field_ident = &user_fields[seq_idx];
@@ -634,17 +648,99 @@ pub fn expand(
                 ))?;
                 value.#seq_field_ident = __seq_val;
             };
-            // `value` needs to be mutable so we can assign the
-            // seq field.
-            (quote! {}, preamble, quote! { let mut value = value; })
+            // `value` is already mutable via `create_value_binding_default`
+            // (sequence_within forces it on through `value_must_be_mut`).
+            (quote! {}, preamble, create_value_binding_default.clone())
         } else {
-            (quote! {}, quote! {}, quote! { let value = value; })
+            (quote! {}, quote! {}, create_value_binding_default.clone())
         };
+
+    // Phase 8α T1.4 — hook dispatch wrapping the INSERT.
+    //
+    // When `#[model(hooks)]` is set, `before_create(&mut value, ctx)` runs
+    // before the INSERT (may mutate the in-memory value or abort the whole
+    // operation by returning Err) and `after_create(&row, ctx)` runs after
+    // the outbox write (Phase 8 §D3 sequence:
+    // before_create -> INSERT -> outbox -> after_create -> on_commit drain).
+    //
+    // For non-hooks models both branches collapse to empty `TokenStream`
+    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
+    // verifies this with `cargo asm`. The dispatch itself routes through
+    // `::djogi::__private::hooks::ModelHooks` per the macro-path-routing
+    // convention; the `HasHooks` impl emitted in T1.3 satisfies the bound
+    // at the use site without any runtime branch.
+    let (before_create_call, after_create_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_create(
+                    &mut value,
+                    ctx,
+                ).await?;
+            },
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_create(
+                    &row,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
+    // Phase 8α T2.4 — composition populator for `#[model(auditable)]`.
+    //
+    // When the flag is set, the model emitter also produced an inherent
+    // `__djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)`
+    // method (see `compose::auditable::expand`). Call it BEFORE the user
+    // `before_create` hook so user code can inspect or override the
+    // populated `created_by` value (spec line 990). The populator
+    // contains an `if self.created_by.is_none()` guard so a user-set
+    // value at construction time is never clobbered (spec line 1062).
+    //
+    // Models without `auditable` emit empty TokenStream — zero
+    // dispatch overhead at the create path and the inherent method is
+    // never emitted.
+    let auditable_populate = if model_attrs.auditable {
+        quote! {
+            value.__djogi_auditable_populate(ctx);
+        }
+    } else {
+        TokenStream::new()
+    };
 
     let create_body = quote! {
         async move {
             #auto_set_tenant
             #create_value_binding
+            // Phase 8α T2.4 — composition populator runs BEFORE the user
+            // `before_create` hook so user hooks can inspect/override
+            // the populated `created_by` value. Per spec line 1032 the
+            // canonical sequence is:
+            //   #auto_set_tenant
+            //   #create_value_binding
+            //   #auditable_populate     ← here (T2.4)
+            //   #before_create_call     ← T1.4
+            //   #sequence_upsert_preamble  ← T1 BLOCK-1 fix (982bee2)
+            //   ... INSERT, outbox, after_create ...
+            // Empty TokenStream when `#[model(auditable)]` is absent —
+            // zero codegen for opt-out models.
+            #auditable_populate
+            // Phase 8α T1.4 — before_create fires before ANY DB write on
+            // the create path (including the sequence_within counter upsert
+            // below). Per Phase 8 §D3 "before -> DB -> outbox -> after":
+            // a hook returning Err must leave the database untouched, so
+            // the counter upsert MUST run after this point — otherwise
+            // an aborted create would still increment the per-parent
+            // counter, leaking sequence numbers on validation failure.
+            // Returning Err short-circuits via `?` — no upsert, no
+            // INSERT, no outbox row, surrounding atomic() rolls back
+            // through standard error propagation.
+            #before_create_call
+            // Counter upsert (if `#[field(sequence_within = ...)]` is
+            // declared) runs AFTER before_create so the hook may mutate
+            // `value.<parent>` and have the upsert key off the updated
+            // parent_id. Aborted hooks never reach this point.
             #sequence_upsert_preamble
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #(#create_param_entries,)*
@@ -655,6 +751,11 @@ pub fn expand(
             // Runs in the same ctx so a transactional caller gets the
             // outbox row committed/rolled back atomically with `row`.
             #emit_outbox_create
+            // Phase 8α T1.4 — after_create runs AFTER the outbox emission
+            // per Phase 8 §D3: "after_create … can read the just-inserted
+            // row, can read the just-written outbox row." Order is load-
+            // bearing.
+            #after_create_call
             ::std::result::Result::Ok(row)
         }
     };
@@ -676,6 +777,49 @@ pub fn expand(
     //    comes from a zero-row UPDATE (Postgres returns 0 rows without an
     //    error code when the WHERE clause matches nothing).
     // -------------------------------------------------------------------------
+
+    // Phase 8α T1.5 — hook dispatch wrapping the UPDATE.
+    //
+    // When `#[model(hooks)]` is set, `before_save(self, ctx)` runs before
+    // the UPDATE composes (may mutate `*self` or abort the whole operation
+    // by returning Err) and `after_save(&*self, ctx)` runs after the
+    // outbox emission AND after the `*self = row` rehydration so the hook
+    // observes server-side defaults, triggers, and any DB-bumped column
+    // values (Phase 8 §D3 sequence:
+    // before_save -> UPDATE -> outbox -> after_save -> on_commit drain).
+    //
+    // Critical placement notes:
+    // - `save()` works directly on `&mut self`; unlike `create()` there is
+    //   no local `value` binding. Pass `self` (re-borrow `&mut self`) into
+    //   `before_save` and `&*self` (immutable re-borrow after rehydration)
+    //   into `after_save`.
+    // - In Shape B (version-aware), `after_save` MUST be placed inside the
+    //   `Some(__raw_row)` success branch — the `None` arm returns
+    //   `LockConflict` early and `after_save` would observe stale state
+    //   that was never written to the DB.
+    //
+    // For non-hooks models both branches collapse to empty `TokenStream`
+    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
+    // verifies this with `cargo asm`.
+    let (before_save_call, after_save_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
+                    self,
+                    ctx,
+                ).await?;
+            },
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_save(
+                    &*self,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
     let save_body = if let Some((ver_ident, ver_col)) = &version_field_info {
         // Shape B — version-aware save.
         let ver_set = format!(", {ver_col} = {ver_col} + 1");
@@ -685,6 +829,13 @@ pub fn expand(
         quote! {
             async move {
                 #auto_set_tenant
+                // Phase 8α T1.5 — before_save fires after auto_set_tenant
+                // is in scope (so the hook can read tenant context) but
+                // before the UPDATE composes its SET clause. Returning Err
+                // short-circuits via `?` — no UPDATE, no outbox row,
+                // surrounding atomic() rolls back via standard error
+                // propagation.
+                #before_save_call
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // The version field is excluded from the dirty loop — it always
@@ -725,11 +876,24 @@ pub fn expand(
                         #(#mark_clean_fragments)*
                         // Phase 4 Task 6 — outbox after DB-refreshed rehydration.
                         #emit_outbox_save
+                        // Phase 8α T1.5 — after_save runs AFTER the outbox
+                        // emission AND after `*self = row` rehydration so
+                        // the hook observes server-side defaults, triggers,
+                        // and the bumped version counter (Phase 8 §D3:
+                        // "after_save … reads DB truth, not pre-call
+                        // value"). MUST stay inside the success arm — the
+                        // None branch (LockConflict) skips after_save.
+                        #after_save_call
                         ::std::result::Result::Ok(())
                     }
                     ::std::option::Option::None => {
                         // Zero rows updated — DB version has moved ahead of our
                         // in-memory version. Signal optimistic lock conflict.
+                        // Phase 8α T1.5 — after_save deliberately NOT
+                        // dispatched here: the UPDATE didn't actually
+                        // mutate the row, so observing stale in-memory
+                        // state would violate the Phase 8 §D3 guarantee
+                        // that after_save sees DB truth.
                         ::std::result::Result::Err(
                             ::djogi::DjogiError::LockConflict(
                                 ::djogi::DbError::other(#ver_conflict_msg)
@@ -744,6 +908,13 @@ pub fn expand(
         quote! {
             async move {
                 #auto_set_tenant
+                // Phase 8α T1.5 — before_save fires after auto_set_tenant
+                // is in scope (so the hook can read tenant context) but
+                // before the UPDATE composes its SET clause. Returning Err
+                // short-circuits via `?` — no UPDATE, no outbox row,
+                // surrounding atomic() rolls back via standard error
+                // propagation.
+                #before_save_call
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // `__first` tracks whether we have emitted any SET assignment yet
@@ -782,22 +953,95 @@ pub fn expand(
                 // values (triggers, column defaults), so emission runs AFTER the
                 // `*self = row` rehydration. No-op for non-events models.
                 #emit_outbox_save
+                // Phase 8α T1.5 — after_save runs AFTER the outbox emission
+                // AND after `*self = row` rehydration so the hook observes
+                // server-side defaults, triggers, and any DB-bumped column
+                // values (Phase 8 §D3 sequence).
+                #after_save_call
                 ::std::result::Result::Ok(())
             }
         }
     };
 
+    // Phase 8α T1.6 — hook dispatch wrapping the DELETE.
+    //
+    // When `#[model(hooks)]` is set, `before_delete(&mut self, ctx)` runs
+    // before the DELETE composes (may mutate the in-memory snapshot or
+    // abort the whole operation by returning Err) and
+    // `after_delete(&self, ctx)` runs after the outbox emission so the
+    // hook can observe both the pre-delete snapshot AND the just-written
+    // outbox row (Phase 8 §D3 sequence:
+    // before_delete -> DELETE -> outbox -> after_delete -> on_commit drain).
+    //
+    // Critical placement notes:
+    // - `delete(self, ctx)` consumes `self`. To pass `&mut self` to
+    //   `before_delete`, the impl signature emits `mut self` instead of
+    //   `self` when hooks are enabled (Rust forbids shadowing the `self`
+    //   keyword with `let mut self = self;`, but `mut self` as a function
+    //   binding pattern is permitted and matches the trait declaration).
+    //   The `mut` binding is emitted ONLY when `hooks` is true so non-hook
+    //   models keep the original `self` binding and do not trip clippy's
+    //   `unused_mut` lint.
+    // - `after_delete` takes `&self` (immutable re-borrow of the same
+    //   consumed-but-still-in-scope value). The DB row is gone; the
+    //   outbox row carries the canonical snapshot. v3 §D1 fixes the
+    //   after-hook receiver as `&self`, not `&mut self`.
+    //
+    // For non-hooks models both branches collapse to empty `TokenStream`
+    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
+    // verifies this with `cargo asm`.
+    let (before_delete_call, after_delete_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
+                    &mut self,
+                    ctx,
+                ).await?;
+            },
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
+                    &self,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
+    // The `self` binding pattern in the `delete(...)` impl signature.
+    // `mut self` only when hooks are enabled — otherwise `self` so non-
+    // hook models do not trip clippy's `unused_mut` lint.
+    let delete_self_pat = if model_attrs.hooks {
+        quote! { mut self }
+    } else {
+        quote! { self }
+    };
+
     let delete_body = quote! {
         async move {
             #auto_set_tenant
+            // Phase 8α T1.6 — D3 step 1: before_delete fires before the
+            // DELETE composes its parameter slice. Returning Err short-
+            // circuits via `?` — no DELETE, no outbox row, surrounding
+            // atomic() rolls back through standard error propagation.
+            #before_delete_call
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #owned_pk_param,
             ];
+            // D3 step 2 — DELETE.
             ctx.__execute_for_macros(#delete_sql, __params).await?;
-            // Phase 4 Task 6 — outbox carries the pre-delete snapshot
+            // D3 step 3 — outbox carries the pre-delete snapshot
             // (reads `self` before it drops at function scope end).
             // No-op for non-events models.
             #emit_outbox_delete
+            // Phase 8α T1.6 — D3 step 4: after_delete observes the
+            // consumed-but-still-in-scope `self` (last valid read of the
+            // pre-delete snapshot — the DB row is gone, but the outbox
+            // row carries the canonical payload by the time after_delete
+            // fires). Order is load-bearing: an audit sink consuming
+            // outbox sees the row before after_delete's body runs.
+            #after_delete_call
             ::std::result::Result::Ok(())
         }
     };
@@ -2225,7 +2469,7 @@ pub fn expand(
             }
 
             fn delete(
-                self,
+                #delete_self_pat,
                 ctx: &mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,

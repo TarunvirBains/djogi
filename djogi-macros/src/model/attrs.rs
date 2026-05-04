@@ -216,6 +216,99 @@ pub struct ModelAttrs {
     /// 2+ self-FK edges must set this *or* every caller passes
     /// `RelationPath` explicitly to the recursive-query builder.
     pub tree_edge: Option<syn::LitStr>,
+
+    /// When `true`, this model opts into lifecycle-hook dispatch — Phase 8α T1.3.
+    ///
+    /// Set via `#[model(hooks)]`. The macro emits
+    /// `impl ::djogi::__private::hooks::Sealed for #ident {}` and
+    /// `impl ::djogi::__private::hooks::HasHooks for #ident {}` so the
+    /// CRUD terminals (T1.4–T1.6) can branch monomorphically between the
+    /// no-op fast path and the hook-dispatch path. The adopter must also
+    /// `impl ModelHooks for MyModel` — the `HasHooks` supertrait bound
+    /// (`HasHooks: ModelHooks + Sealed`) makes that requirement a compile
+    /// error at the use site if it is missing.
+    ///
+    /// Models without the flag pay zero hook-dispatch overhead — no
+    /// `HasHooks` impl is emitted, so the dispatch helpers fold to no-ops
+    /// via marker-trait monomorphisation (Phase 8 §D2).
+    ///
+    /// Standalone keyword only — `hooks = true` / `hooks = false` are
+    /// rejected, mirroring the convention `events`, `through`, and
+    /// `no_default` already follow.
+    pub hooks: bool,
+
+    /// When `true`, this model opts into the [`Auditable`] composition —
+    /// Phase 8α T2.4.
+    ///
+    /// Set via `#[model(auditable)]`. The macro emits both:
+    ///
+    /// 1. `impl ::djogi::Auditable for #ident { ... }` — the trait impl
+    ///    exposing `created_by(&self) -> Option<&str>`, borrowing from
+    ///    the adopter-declared `pub created_by: Option<String>` field.
+    /// 2. `impl #ident { #[doc(hidden)] pub(crate) fn
+    ///    __djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)
+    ///    { ... } }` — the populator helper invoked from
+    ///    `Model::create` between `auto_set_tenant` and the user
+    ///    `before_create` hook (Phase 8 §D6).
+    ///
+    /// Models without the flag pay zero auditable-dispatch overhead —
+    /// no impl is emitted, so the populator call collapses to a
+    /// no-op and the `Auditable` bound is unsatisfied at the use site
+    /// (compile-time error if a generic asks for it).
+    ///
+    /// Standalone keyword only — `auditable = true` / `auditable = false`
+    /// are rejected, mirroring the convention `hooks`, `events`,
+    /// `through`, and `no_default` already follow.
+    ///
+    /// # 2026-05-03 design pivot
+    ///
+    /// T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the
+    /// opt-in surface; T2.4 supersedes it with this attribute and the
+    /// derive is removed from the v3 surface. Per spec line 1037
+    /// (locked 2026-05-03): proc macros cannot observe sibling derives,
+    /// so the derive could not deterministically signal to
+    /// `#[derive(Model)]` / `#[model(...)]`. Single
+    /// `#[model(auditable)]` solves this cleanly — model macro emits
+    /// the trait impl AND the populator hook wiring in one expansion.
+    ///
+    /// [`Auditable`]: ::djogi::Auditable
+    pub auditable: bool,
+
+    /// When `true`, this model opts into the [`SoftDeletable`] composition —
+    /// Phase 8α T2.6.
+    ///
+    /// Set via `#[model(soft_deletable)]`. The macro emits:
+    ///
+    /// `impl ::djogi::SoftDeletable for #ident { ... }` — the trait impl
+    /// exposing `deleted_at(&self) -> Option<DateTime>`, copying from the
+    /// adopter-declared `pub deleted_at: Option<DateTime>` field. The
+    /// trait-level `const COLUMN: &'static str = "deleted_at"` provides
+    /// the canonical column name without re-emitting it per model; the
+    /// emitted `impl` inherits the default and `QuerySet::not_deleted()`
+    /// reads it through `<M as SoftDeletable>::COLUMN`.
+    ///
+    /// Models without the flag pay zero soft-deletable-dispatch overhead —
+    /// no impl is emitted, so the `SoftDeletable` bound is unsatisfied at
+    /// the use site (compile-time error if a generic asks for it).
+    ///
+    /// Standalone keyword only — `soft_deletable = true` /
+    /// `soft_deletable = false` are rejected, mirroring the convention
+    /// `auditable`, `hooks`, `events`, `through`, and `no_default` already
+    /// follow.
+    ///
+    /// # 2026-05-03 design pivot
+    ///
+    /// T2.3 (commit 863c4cb) shipped `#[derive(SoftDeletable)]` as the
+    /// opt-in surface; T2.6 supersedes it with this attribute and the
+    /// derive is removed from the v3 surface — same constraint that drove
+    /// the T2.4 Auditable pivot. Proc macros cannot observe sibling
+    /// derives, so a derive could not deterministically signal to
+    /// `#[model(...)]` that 8γ T6's automatic default-filter composition
+    /// should be wired. Doing the migration NOW is cheaper than later
+    /// (8γ would have to unwind composition wiring).
+    ///
+    /// [`SoftDeletable`]: ::djogi::SoftDeletable
+    pub soft_deletable: bool,
 }
 
 /// Parsed `pk = X` value.
@@ -288,6 +381,12 @@ impl ModelAttrs {
         let mut seen_through = false;
         let mut events = false;
         let mut seen_events = false;
+        let mut hooks = false;
+        let mut seen_hooks = false;
+        let mut auditable = false;
+        let mut seen_auditable = false;
+        let mut soft_deletable = false;
+        let mut seen_soft_deletable = false;
         let mut idempotency_key: Option<String> = Option::None;
         let mut tenant_key: Option<String> = Option::None;
         let mut fts: Option<FtsSpec> = Option::None;
@@ -333,6 +432,56 @@ impl ModelAttrs {
                     }
                     seen_events = true;
                     events = true;
+                }
+                // Flag-only attribute: `hooks` — Phase 8α T1.3.
+                // Standalone keyword only; the `hooks::expand` emitter
+                // reads `model_attrs.hooks` to decide whether to emit
+                // the `Sealed` + `HasHooks` impl pair for this model.
+                Meta::Path(path) if path.is_ident("hooks") => {
+                    if seen_hooks {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `hooks` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_hooks = true;
+                    hooks = true;
+                }
+                // Flag-only attribute: `auditable` — Phase 8α T2.4.
+                // Standalone keyword only; supersedes the T2.2
+                // `#[derive(Auditable)]` derive (removed 2026-05-03 per
+                // spec line 1037). The model emitter reads
+                // `model_attrs.auditable` to decide whether to emit:
+                //   1. `impl ::djogi::Auditable for #ident { ... }`
+                //   2. `impl #ident { fn __djogi_auditable_populate(...) }`
+                //   3. The populator call inside `create_body` between
+                //      `#auto_set_tenant` and `#before_create_call`.
+                Meta::Path(path) if path.is_ident("auditable") => {
+                    if seen_auditable {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `auditable` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_auditable = true;
+                    auditable = true;
+                }
+                // Flag-only attribute: `soft_deletable` — Phase 8α T2.6.
+                // Standalone keyword only; supersedes the T2.3
+                // `#[derive(SoftDeletable)]` derive. The model emitter
+                // reads `model_attrs.soft_deletable` to decide whether
+                // to emit `impl ::djogi::SoftDeletable for #ident { ... }`
+                // and to gate the `composed_via: Some("SoftDeletable")`
+                // tag on the `deleted_at` column (descriptor T2.5).
+                Meta::Path(path) if path.is_ident("soft_deletable") => {
+                    if seen_soft_deletable {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `soft_deletable` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_soft_deletable = true;
+                    soft_deletable = true;
                 }
                 // `pk = X` bare-identifier form (Phase 7-Zero-2 T2). Accepts
                 // only single-segment paths matching the alias set in
@@ -506,8 +655,8 @@ impl ModelAttrs {
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
-                                 `fts`, `indexes`, `exclusion`, `no_default`, `through`, or \
-                                 `events`",
+                                 `fts`, `indexes`, `exclusion`, `no_default`, `through`, \
+                                 `events`, `hooks`, `auditable`, or `soft_deletable`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -604,7 +753,8 @@ impl ModelAttrs {
                     return Err(syn::Error::new_spanned(
                         other,
                         "expected `key = \"value\"` or `key = TypePath` attribute, \
-                         or bare flag (`no_default`, `through`, `events`)",
+                         or bare flag (`no_default`, `through`, `events`, `hooks`, \
+                         `auditable`, `soft_deletable`)",
                     ));
                 }
             }
@@ -645,6 +795,9 @@ impl ModelAttrs {
             moved_from_app,
             renamed_from,
             tree_edge,
+            hooks,
+            auditable,
+            soft_deletable,
         })
     }
 }

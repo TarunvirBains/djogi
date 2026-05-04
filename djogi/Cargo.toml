@@ -322,3 +322,53 @@ harness = true
 name = "phase8_zero_cluster_c_bench"
 path = "../tests/integration/phase8_zero_cluster_c_bench.rs"
 harness = true
+
+[[test]]
+name = "phase8_hooks_create"
+path = "../tests/integration/phase8_hooks_create.rs"
+harness = true
+
+[[test]]
+name = "phase8_hooks_save"
+path = "../tests/integration/phase8_hooks_save.rs"
+harness = true
+
+[[test]]
+name = "phase8_hooks_delete"
+path = "../tests/integration/phase8_hooks_delete.rs"
+harness = true
+
+[[test]]
+name = "phase8_hooks_canonical_sequence"
+path = "../tests/integration/phase8_hooks_canonical_sequence.rs"
+harness = true
+
+[[test]]
+name = "phase8_hooks_dispatch_overhead"
+path = "../tests/integration/phase8_hooks_dispatch_overhead.rs"
+harness = true
+
+[[test]]
+name = "phase8_compose_auditable"
+path = "../tests/integration/phase8_compose_auditable.rs"
+harness = true
+
+[[test]]
+name = "phase8_compose_softdeletable"
+path = "../tests/integration/phase8_compose_softdeletable.rs"
+harness = true
+
+[[test]]
+name = "phase8_compose_descriptor"
+path = "../tests/integration/phase8_compose_descriptor.rs"
+harness = true
+
+[[test]]
+name = "phase8_compose_migration"
+path = "../tests/integration/phase8_compose_migration.rs"
+harness = true
+
+[[test]]
+name = "phase8_on_commit_pool_warn"
+path = "../tests/integration/phase8_on_commit_pool_warn.rs"
+harness = true

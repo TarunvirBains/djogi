@@ -39,9 +39,19 @@
 //! canonical types (`DateTime`, `Date`, `HeerId`, `RanjId`), and the
 //! `DjogiError` enum — everything a model definition needs.
 
+// Alias the current crate as `djogi` under test so the absolute
+// `::djogi::*` paths emitted by `#[djogi_test]` (and any other macro that
+// hard-codes the crate name) resolve when used from inside this crate's
+// own unit-test modules. Outside of tests, the dependency graph already
+// carries the name; under `cargo test --lib` the crate root has no
+// `djogi` entry without this self-extern.
+#[cfg(test)]
+extern crate self as djogi;
+
 pub mod apps;
 pub mod array;
 pub mod auth;
+pub mod compose;
 pub mod config;
 pub mod context;
 pub mod descriptor;
@@ -53,6 +63,7 @@ pub mod fts;
 pub mod fts_query;
 #[cfg(feature = "spatial")]
 pub mod geo;
+pub mod hooks;
 pub(crate) mod ident;
 pub mod jsonb;
 pub mod live_migrate;
@@ -167,6 +178,25 @@ pub mod __private {
         pub const TOKEN: SealToken = SealToken::__new();
     }
 
+    /// Hook-dispatch re-exports for the `#[model(hooks)]` macro (T1.3).
+    ///
+    /// The macro-emitted code routes through `::djogi::__private::hooks::*`
+    /// rather than `::djogi::hooks::*` so the seal supertrait
+    /// (`Sealed`, otherwise unnameable from outside the `djogi` crate)
+    /// is reachable in the macro's emission context. Adopter code uses
+    /// the public surface — `djogi::ModelHooks` for the trait one
+    /// implements, `djogi::hooks::HasHooks` for trait bounds — and never
+    /// touches this module.
+    ///
+    /// Per `feedback_macro_path_routing.md`: macro-emitted paths route
+    /// through `::djogi::*` only; the macro never reaches into
+    /// `::heeranjid::*` / `::time::*` / `::uuid::*` / etc. directly.
+    pub mod hooks {
+        pub use crate::hooks::__seal::{MarkerSeal, Sealed};
+        pub use crate::hooks::HasHooks;
+        pub use crate::hooks::ModelHooks;
+    }
+
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     ///
     /// Routing through `::djogi::__private::tracing` keeps user crates from
@@ -182,6 +212,14 @@ pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
 // consumer lands and the variant set stabilises.
 #[doc(hidden)]
 pub use apps::AppDiagnostic;
+// Phase 8 §T2.1 — composition primitives. The runtime trait surfaces.
+// `Auditable` impls are emitted by `#[model(auditable)]` (T2.4 — the
+// surface superseded T2.2's `#[derive(Auditable)]` per spec line 1037,
+// locked 2026-05-03); `SoftDeletable` impls are emitted by
+// `#[model(soft_deletable)]` (T2.6 — the surface superseded T2.3's
+// `#[derive(SoftDeletable)]` for the same proc-macros-cannot-observe-
+// sibling-derives constraint).
+pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
     DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
@@ -198,6 +236,7 @@ pub use djogi_macros::{
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
+pub use hooks::ModelHooks;
 pub use jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
 // `FromPgRow` is the canonical row-decode trait — adopters write
 // `ctx.raw_query::<MyType>(...)` against it, so it stays in the public
@@ -256,6 +295,8 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::apps::AppDiagnostic;
     pub use crate::apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
+    // Phase 8 §T2.1 — composition primitives (see crate root re-export).
+    pub use crate::compose::{Auditable, SoftDeletable};
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
         DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
@@ -279,6 +320,7 @@ pub mod prelude {
     pub use crate::field_codec::is_registered as is_codec_registered;
     pub use crate::fts::{FtsDescriptor, TsQuery, TsVector};
     pub use crate::fts_query::FtsFieldRef;
+    pub use crate::hooks::ModelHooks;
     pub use crate::jsonb::{Jsonb, JsonbPathRef, JsonbSchema, UnknownField, UnknownFieldExt};
     pub use crate::model::Model;
     pub use crate::pg::decode::FromPgRow;
@@ -333,6 +375,10 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
+    // Phase 8 §T2.6 — `#[derive(SoftDeletable)]` was retired in favour
+    // of `#[model(soft_deletable)]` (mirrors the T2.4 Auditable pivot).
+    // The runtime trait `SoftDeletable` re-export above (via
+    // `crate::compose::*`) stays — only the derive surface goes away.
     // T11 / issue #30 — re-export the serde derives so `use djogi::prelude::*`
     // is sufficient for any `JsonbSchema`-deriving or `DjogiEnum`-deriving
     // type. The macro emits `#[derive(Serialize, Deserialize)]` paths through
