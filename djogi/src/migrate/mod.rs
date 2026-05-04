@@ -56,6 +56,7 @@
 //! group of statements.
 
 pub mod attune;
+pub mod bootstrap;
 pub mod build_match;
 pub mod compose;
 pub mod diff;
@@ -82,6 +83,11 @@ pub mod verify;
 pub use attune::{
     AttuneDiagnostic, AttuneEntry, AttuneEntryKind, AttuneError, AttuneMode, AttuneRefusal,
     AttuneReport, AttuneRequest, attune,
+};
+pub use bootstrap::{
+    BootstrapError, DEFAULT_NODE_ID, PHASE_ZERO_VERSION, compose_extension_installs,
+    compose_heeranjid_install, compose_node_seed, compose_phase_zero,
+    extension_dependencies_from_models, run_phase_zero,
 };
 pub use build_match::{
     DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket,
