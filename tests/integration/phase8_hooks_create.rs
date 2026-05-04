@@ -292,3 +292,142 @@ async fn before_create_err_aborts_no_row(mut ctx: djogi::DjogiContext) {
         "before_create returning Err must leave the table empty (no INSERT, atomic rolls back)",
     );
 }
+
+// ---------------------------------------------------------------------------
+// Test 4 — before_create runs BEFORE any DB write, including the
+// `#[field(sequence_within = ...)]` counter upsert.
+//
+// Adversarial-review counter-signal (Phase 8α T1 cluster review,
+// Codex 2026-05-04 BLOCK-1): the macro previously emitted the
+// sequence-counter upsert AHEAD of `before_create`, so an aborted
+// hook on a pool-backed (non-transactional) ctx would still increment
+// the per-parent counter — leaking sequence numbers on validation
+// failure. The fix moves `before_create` ahead of the upsert so the
+// canonical sequence holds: `before -> DB -> outbox -> after`.
+//
+// This test exercises the invariant on a pool-backed `ctx` (NOT
+// wrapped in `atomic()` — that would mask the bug because the
+// surrounding rollback would clean the counter regardless of order).
+// ---------------------------------------------------------------------------
+
+#[model(table = "seq_abort_parents", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct SeqAbortParent {
+    pub name: String,
+}
+
+// `no_default` because `ForeignKey<T>` is not `Default`. `hooks` opts into
+// the Phase 8α dispatch path. `sequence_within` writes back into a `i64`
+// field per the macro's `try_get::<i64>` decode of `last_seq`.
+#[model(table = "seq_abort_children", pk = HeerId, hooks, no_default)]
+#[derive(Debug, Clone)]
+pub struct SeqAbortChild {
+    pub parent_id: ForeignKey<SeqAbortParent>,
+    #[field(sequence_within = "parent_id")]
+    pub seq_num: i64,
+}
+
+impl djogi::hooks::ModelHooks for SeqAbortChild {
+    async fn before_create(
+        &mut self,
+        _ctx: &mut djogi::DjogiContext,
+    ) -> Result<(), djogi::DjogiError> {
+        Err(djogi::DjogiError::Validation("seq abort".into()))
+    }
+}
+
+async fn setup_seq_abort_tables(ctx: &mut djogi::DjogiContext) {
+    ctx.raw_execute(
+        "CREATE TABLE seq_abort_parents (
+            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            name        TEXT        NOT NULL
+        )",
+        &[],
+    )
+    .await
+    .expect("create seq_abort_parents table");
+    ctx.raw_execute(
+        "CREATE TABLE seq_abort_children (
+            id          BIGINT      PRIMARY KEY DEFAULT generate_id(),
+            created_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            updated_at  TIMESTAMPTZ NOT NULL    DEFAULT now(),
+            parent_id   BIGINT      NOT NULL    REFERENCES seq_abort_parents(id),
+            seq_num     BIGINT      NOT NULL
+        )",
+        &[],
+    )
+    .await
+    .expect("create seq_abort_children table");
+    // `last_seq` is BIGINT to match the macro's `try_get::<i64>` decode
+    // path at `crud.rs:639` (Phase 4 Task 7.6 emission).
+    ctx.raw_execute(
+        "CREATE TABLE seq_abort_children_seq_parent_id (
+            parent_id   BIGINT      PRIMARY KEY REFERENCES seq_abort_parents(id),
+            last_seq    BIGINT      NOT NULL
+        )",
+        &[],
+    )
+    .await
+    .expect("create seq_abort_children_seq_parent_id companion table");
+}
+
+#[djogi::djogi_test]
+async fn before_create_err_blocks_sequence_within_upsert(mut ctx: djogi::DjogiContext) {
+    setup_seq_abort_tables(&mut ctx).await;
+
+    let parent = SeqAbortParent::create(
+        &mut ctx,
+        SeqAbortParent {
+            name: "p".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("parent insert");
+
+    // Direct call on pool-backed ctx — NOT wrapped in atomic().
+    // Without the ordering fix, the counter upsert would auto-commit
+    // before the hook returned Err, leaving last_seq=1 in the
+    // companion table. `no_default` requires explicit framework-column
+    // construction; `id` uses the PK sentinel and the row's `id` is
+    // populated server-side via `RETURNING` (irrelevant here because
+    // before_create aborts before the INSERT runs).
+    let res = SeqAbortChild::create(
+        &mut ctx,
+        SeqAbortChild {
+            id: HeerId::ZERO,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+            parent_id: ForeignKey::new(parent.id),
+            seq_num: 0,
+        },
+    )
+    .await;
+
+    let Err(djogi::DjogiError::Validation(msg)) = res else {
+        panic!("expected Err(Validation), got {res:?}");
+    };
+    assert_eq!(msg, "seq abort");
+
+    let counter_rows: i64 = ctx
+        .raw_scalar("SELECT COUNT(*) FROM seq_abort_children_seq_parent_id", &[])
+        .await
+        .expect("count companion rows");
+    assert_eq!(
+        counter_rows, 0,
+        "before_create's Err must abort BEFORE the counter upsert — \
+         a non-zero count means the upsert ran ahead of the hook \
+         (Phase 8 §D3 before -> DB ordering violated)",
+    );
+
+    let child_rows: i64 = SeqAbortChild::objects()
+        .count(&mut ctx)
+        .await
+        .expect("count child rows");
+    assert_eq!(
+        child_rows, 0,
+        "the aborted create must leave the child table empty",
+    );
+}

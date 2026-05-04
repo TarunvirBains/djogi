@@ -688,13 +688,22 @@ pub fn expand(
         async move {
             #auto_set_tenant
             #create_value_binding
-            #sequence_upsert_preamble
-            // Phase 8α T1.4 — before_create fires after the value binding
-            // is in scope (so the hook can mutate `value`) but before the
-            // INSERT composes its parameter slice. Returning Err short-
-            // circuits via `?` — no INSERT, no outbox row, surrounding
-            // atomic() rolls back through standard error propagation.
+            // Phase 8α T1.4 — before_create fires before ANY DB write on
+            // the create path (including the sequence_within counter upsert
+            // below). Per Phase 8 §D3 "before -> DB -> outbox -> after":
+            // a hook returning Err must leave the database untouched, so
+            // the counter upsert MUST run after this point — otherwise
+            // an aborted create would still increment the per-parent
+            // counter, leaking sequence numbers on validation failure.
+            // Returning Err short-circuits via `?` — no upsert, no
+            // INSERT, no outbox row, surrounding atomic() rolls back
+            // through standard error propagation.
             #before_create_call
+            // Counter upsert (if `#[field(sequence_within = ...)]` is
+            // declared) runs AFTER before_create so the hook may mutate
+            // `value.<parent>` and have the upsert key off the updated
+            // parent_id. Aborted hooks never reach this point.
+            #sequence_upsert_preamble
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #(#create_param_entries,)*
             ];
