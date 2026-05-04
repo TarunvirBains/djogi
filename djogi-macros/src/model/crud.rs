@@ -594,6 +594,16 @@ pub fn expand(
         .enumerate()
         .filter_map(|(i, fa)| fa.sequence_within.as_deref().map(|s| (i, s)))
         .collect();
+    // `value` must be mutable when either `sequence_within` (assigns the
+    // counter back into the seq field) or `#[model(hooks)]`
+    // (`before_create(&mut value, ctx)` per Phase 8 §D3) participates. A
+    // single shared flag keeps the binding choice explicit.
+    let value_must_be_mut = !seq_within_fields.is_empty() || model_attrs.hooks;
+    let create_value_binding_default = if value_must_be_mut {
+        quote! { let mut value = value; }
+    } else {
+        quote! { let value = value; }
+    };
     let (sequence_compile_err, sequence_upsert_preamble, create_value_binding) =
         if seq_within_fields.len() > 1 {
             let msg = "models may declare #[field(sequence_within = ...)] on at most one field; \
@@ -601,7 +611,7 @@ pub fn expand(
             (
                 quote! { ::std::compile_error!(#msg); },
                 quote! {},
-                quote! { let value = value; },
+                create_value_binding_default.clone(),
             )
         } else if let Some(&(seq_idx, parent_col)) = seq_within_fields.first() {
             let seq_field_ident = &user_fields[seq_idx];
@@ -634,18 +644,57 @@ pub fn expand(
                 ))?;
                 value.#seq_field_ident = __seq_val;
             };
-            // `value` needs to be mutable so we can assign the
-            // seq field.
-            (quote! {}, preamble, quote! { let mut value = value; })
+            // `value` is already mutable via `create_value_binding_default`
+            // (sequence_within forces it on through `value_must_be_mut`).
+            (quote! {}, preamble, create_value_binding_default.clone())
         } else {
-            (quote! {}, quote! {}, quote! { let value = value; })
+            (quote! {}, quote! {}, create_value_binding_default.clone())
         };
+
+    // Phase 8α T1.4 — hook dispatch wrapping the INSERT.
+    //
+    // When `#[model(hooks)]` is set, `before_create(&mut value, ctx)` runs
+    // before the INSERT (may mutate the in-memory value or abort the whole
+    // operation by returning Err) and `after_create(&row, ctx)` runs after
+    // the outbox write (Phase 8 §D3 sequence:
+    // before_create -> INSERT -> outbox -> after_create -> on_commit drain).
+    //
+    // For non-hooks models both branches collapse to empty `TokenStream`
+    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
+    // verifies this with `cargo asm`. The dispatch itself routes through
+    // `::djogi::__private::hooks::ModelHooks` per the macro-path-routing
+    // convention; the `HasHooks` impl emitted in T1.3 satisfies the bound
+    // at the use site without any runtime branch.
+    let (before_create_call, after_create_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_create(
+                    &mut value,
+                    ctx,
+                ).await?;
+            },
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_create(
+                    &row,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
 
     let create_body = quote! {
         async move {
             #auto_set_tenant
             #create_value_binding
             #sequence_upsert_preamble
+            // Phase 8α T1.4 — before_create fires after the value binding
+            // is in scope (so the hook can mutate `value`) but before the
+            // INSERT composes its parameter slice. Returning Err short-
+            // circuits via `?` — no INSERT, no outbox row, surrounding
+            // atomic() rolls back through standard error propagation.
+            #before_create_call
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #(#create_param_entries,)*
             ];
@@ -655,6 +704,11 @@ pub fn expand(
             // Runs in the same ctx so a transactional caller gets the
             // outbox row committed/rolled back atomically with `row`.
             #emit_outbox_create
+            // Phase 8α T1.4 — after_create runs AFTER the outbox emission
+            // per Phase 8 §D3: "after_create … can read the just-inserted
+            // row, can read the just-written outbox row." Order is load-
+            // bearing.
+            #after_create_call
             ::std::result::Result::Ok(row)
         }
     };
