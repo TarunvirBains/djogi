@@ -5,19 +5,24 @@
 //!
 //! 1. Connect to the admin database (via `DATABASE_URL`).
 //! 2. Create a fresh `djogi_test_<uuid>` database.
-//! 3. Install HeeRanjID schema and seed the default node.
-//! 4. Optionally provision extra Postgres extensions (e.g. `postgis`) via
-//!    `CREATE EXTENSION IF NOT EXISTS` — driven by the
+//! 3. Run the Phase 0 bootstrap migration via
+//!    [`crate::migrate::bootstrap::run_phase_zero`] — installs HeeRanjID
+//!    schema, seeds the default node, sets the `heer.node_id` GUC, and
+//!    creates any extensions requested via the
 //!    `#[djogi_test(extensions = [...])]` attribute argument.
-//! 5. Return a `DjogiContext` backed by a pool pointed at the new database.
-//! 6. Drop the database via `teardown_test_db` — called explicitly by the
+//! 4. Return a `DjogiContext` backed by a pool pointed at the new database.
+//! 5. Drop the database via `teardown_test_db` — called explicitly by the
 //!    macro-generated wrapper, both on normal return and after a caught panic.
 //!
 //! # Substrate
 //!
-//! Internals use `tokio_postgres` directly (no sqlx) and call the
-//! `heeranjid::postgres_schema` helpers from heeranjid 0.2.1 for schema
-//! installation and node seeding.
+//! Internals use `tokio_postgres` directly (no sqlx) and route the
+//! HeeRanjID + extension install through
+//! [`crate::migrate::bootstrap`] — the same module the
+//! `migrations compose` auto-emit path uses to write Phase 0 to disk
+//! and the production `db reset` path replays. Track 0 strategic
+//! lockdown: the test harness has NO parallel install path; every test
+//! exercises the same bootstrap code adopters hit.
 //!
 //! # Database name format
 //!
@@ -129,34 +134,45 @@ pub async fn setup_test_db() -> Result<(TestDbCleanup, DjogiContext), DjogiError
 /// Called by macro-generated code from `#[djogi_test(extensions = [...])]`
 /// tests. Also available for direct use from hand-written test harnesses.
 ///
-/// # Steps
+/// # Steps (Track 0 — bootstrap-routed)
 ///
-/// 1. Read `DATABASE_URL` from the environment (same convention as sqlx::test).
+/// 1. Read `DATABASE_URL` from the environment (same convention as
+///    sqlx::test).
 /// 2. Connect to the admin database via `tokio_postgres`.
-/// 3. Generate a unique database name `djogi_test_<uuid-simple>`.
-/// 4. Issue `CREATE DATABASE "<name>"`.
-/// 5. Connect to the new database via `tokio_postgres`.
-/// 6. Install HeeRanjID schema + seed the default node via
-///    `heeranjid::postgres_schema::install_schema` and `seed_default_node`.
-/// 7. For each entry in `extensions`, validate the name against the
-///    identifier rule (see module docs) and issue
-///    `CREATE EXTENSION IF NOT EXISTS "<name>"`. `IF NOT EXISTS` means a
-///    repeated name or a pre-installed extension is a no-op.
-/// 8. Set `heer.node_id = '1'` at the database level so every new connection
-///    inherits it without a per-connection SET call.
-/// 9. Open a `DjogiPool` (deadpool-postgres) and return it as a `DjogiContext`.
+/// 3. Generate a unique database name `djogi_test_<uuid-simple>` and
+///    issue `CREATE DATABASE`.
+/// 4. Connect to the new database via `tokio_postgres`.
+/// 5. Run [`crate::migrate::bootstrap::run_phase_zero`] against the
+///    new connection. This is the SAME bootstrap surface
+///    `migrations compose` writes to disk and `db reset` replays —
+///    no parallel install path. Phase 0 installs HeeRanjID, every
+///    requested extension, and seeds the `heer.node_id` GUC at both
+///    the database (`ALTER DATABASE`) and session (`SET`) levels.
+/// 6. Open a `DjogiPool` (deadpool-postgres) and return it as a
+///    `DjogiContext`.
+///
+/// # Strategic lockdown invariant
+///
+/// Pre-Track-0, this function had its own SQL-by-hand install path
+/// for HeeRanjID + extensions + node-id GUC. That meant `#[djogi_test]`
+/// was the ONLY surface that exercised bootstrap; the production CLI
+/// / `db reset` paths were uncovered. Track 0 closes that gap by
+/// routing every test through `bootstrap::run_phase_zero` — the same
+/// code path adopters hit. There is exactly ONE bootstrap path now.
 ///
 /// # Errors
 ///
 /// Returns `DjogiError::Db` on all setup failures. Failure modes that
 /// mention the offending extension by name:
 ///
-/// - The extension name does not match the identifier rule (handled in Rust).
-/// - The Postgres server rejects `CREATE EXTENSION IF NOT EXISTS` — for
-///   example, when the named extension is not installed on the server
-///   (missing `.control` file). The original `tokio_postgres::Error` is
-///   preserved in the `DjogiError::Db` source chain so the adopter can see
-///   the full server message.
+/// - The extension name does not match the identifier rule (handled
+///   in Rust before any SQL is sent — the validator is shared between
+///   this module and `bootstrap`).
+/// - The Postgres server rejects `CREATE EXTENSION IF NOT EXISTS` —
+///   for example, when the named extension is not installed on the
+///   server (missing `.control` file). The original `tokio_postgres::Error`
+///   is preserved in the `DjogiError::Db` source chain so the adopter
+///   can see the full server message.
 pub async fn setup_test_db_with_extensions(
     extensions: &[&str],
 ) -> Result<(TestDbCleanup, DjogiContext), DjogiError> {
@@ -202,7 +218,11 @@ pub async fn setup_test_db_with_extensions(
     // Build the per-test database URL by replacing the database component.
     let test_url = replace_db_in_url(&database_url, &db_name)?;
 
-    // Connect to the fresh database for HeeRanjID setup.
+    // Drop the admin client — Phase 0 runs against the per-test DB,
+    // not the admin DB.
+    drop(admin_client);
+
+    // Connect to the fresh database for Phase 0 bootstrap.
     let (test_client, test_conn) = tokio_postgres::connect(&test_url, NoTls)
         .await
         .map_err(|e| DjogiError::Db(DbError::other(format!("test DB connect failed: {e}"))))?;
@@ -213,76 +233,24 @@ pub async fn setup_test_db_with_extensions(
         }
     });
 
-    // Install the base HeeRanjID schema (generate_ids / generate_ranj_ids
-    // / heer-node tables). This does NOT include the Desc flip primitives
-    // and `*_next_desc` generators — those live in the v0.3 opt-in helper
-    // `install_all_desc_support` below.
-    heeranjid::postgres_schema::install_schema(&test_client)
-        .await
-        .map_err(|e| {
-            DjogiError::Db(DbError::other(format!(
-                "heeranjid install_schema failed: {e}"
-            )))
-        })?;
+    // Track 0: route through `bootstrap::run_phase_zero` — the SAME
+    // bootstrap surface adopters hit via `migrations compose` +
+    // `migrations apply` + `db reset`. This is the strategic lockdown
+    // — no parallel install path lives in `testing` anymore.
+    let extension_set: std::collections::BTreeSet<String> =
+        extensions.iter().map(|s| s.to_string()).collect();
+    crate::migrate::bootstrap::run_phase_zero(
+        &test_client,
+        &db_name,
+        &extension_set,
+        crate::migrate::bootstrap::DEFAULT_NODE_ID,
+    )
+    .await
+    .map_err(|e| DjogiError::Db(DbError::other(format!("phase 0 bootstrap failed: {e}"))))?;
 
-    // Phase 7-Zero-2 T1 fixup — install the Desc flip primitives
-    // (`heerid_to_desc` / `ranjid_to_desc` / `heerid_flip_mask`), the
-    // `heerid_next` / `ranjid_next` single-row wrappers, the `*_next_desc`
-    // generators, and the bulk-backfill helper. heeranjid 0.3 moved these
-    // out of `install_schema` into this opt-in group; every PK family the
-    // framework ships depends on them, so the test harness must install
-    // them unconditionally. Without this, `HeerIdDesc::generate_many` and
-    // `RanjIdDesc::generate_many` fail with "function heerid_to_desc does
-    // not exist".
-    heeranjid::postgres_schema::install_all_desc_support(&test_client)
-        .await
-        .map_err(|e| {
-            DjogiError::Db(DbError::other(format!(
-                "heeranjid install_all_desc_support failed: {e}"
-            )))
-        })?;
-
-    // Seed the default node (node_id = 1).
-    heeranjid::postgres_schema::seed_default_node(&test_client)
-        .await
-        .map_err(|e| {
-            DjogiError::Db(DbError::other(format!(
-                "heeranjid seed_default_node failed: {e}"
-            )))
-        })?;
-
-    // Auto-provision extra extensions requested via `#[djogi_test(extensions = [...])]`.
-    // Each name is already validated above, so interpolating it into a
-    // double-quoted identifier is safe. `IF NOT EXISTS` makes this a no-op
-    // if the extension is already present (for example, if a previous step
-    // pulled it in transitively).
-    for name in extensions {
-        let sql = format!("CREATE EXTENSION IF NOT EXISTS {}", quoted(name));
-        test_client.batch_execute(&sql).await.map_err(|e| {
-            DjogiError::Db(DbError::other(format!(
-                "failed to create Postgres extension `{name}` \
-                 (is it installed on the server?): {e}"
-            )))
-        })?;
-    }
-
-    // Set heer.node_id at the database level so every NEW connection inherits
-    // it. This must happen before we open the app pool, so that all connections
-    // in the DjogiPool see node_id = 1 without needing per-connection SET calls.
-    admin_client
-        .batch_execute(&format!(
-            "ALTER DATABASE {} SET heer.node_id = '1'",
-            quoted(&db_name)
-        ))
-        .await
-        .map_err(|e| {
-            DjogiError::Db(DbError::other(format!(
-                "ALTER DATABASE SET heer.node_id failed: {e}"
-            )))
-        })?;
-
-    // The setup client is dropped here — the connection driver task will finish.
-    // The DjogiPool opens fresh connections that will inherit heer.node_id.
+    // The setup client is dropped here — the connection driver task
+    // will finish. Phase 0's `ALTER DATABASE ... SET heer.node_id`
+    // persists for every NEW connection the DjogiPool opens.
     drop(test_client);
 
     // Build the DjogiPool (tokio-postgres / deadpool) for the app context.

@@ -14,8 +14,8 @@
 //! schema installs. The node_id is resolved by
 //! `current_heer_node_id()` / `current_heer_ranj_node_id()` inside
 //! Postgres, so callers need no per-request session setup beyond the
-//! standard `djogi_test` fixtures which run `install_schema` +
-//! `seed_default_node`.
+//! standard `djogi_test` fixtures which route Phase 0 bootstrap through
+//! `djogi::migrate::bootstrap::run_phase_zero` (Track 0 strategic lockdown).
 //!
 //! Desc variants post-process each ascending row with
 //! `heerid_to_desc(id)` / `ranjid_to_desc(id)` in the SAME query — the

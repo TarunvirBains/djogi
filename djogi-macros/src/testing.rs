@@ -15,10 +15,12 @@
 //!
 //! This macro generates code that calls
 //! `::djogi::testing::setup_test_db_with_extensions(&["postgis", ...])`,
-//! which uses `tokio_postgres` directly for bootstrap (no sqlx), calls
-//! `heeranjid::postgres_schema::install_schema` + `seed_default_node` from
-//! heeranjid 0.2.1, and then loops over the extension list issuing one
-//! `CREATE EXTENSION IF NOT EXISTS "<name>"` per entry.
+//! which uses `tokio_postgres` directly for bootstrap (no sqlx) and routes
+//! the HeeRanjID schema install + extension provisioning + node-id GUC seed
+//! through `djogi::migrate::bootstrap::run_phase_zero` — the SAME bootstrap
+//! surface adopters hit via `migrations compose` + `db reset`. Track 0
+//! (strategic lockdown) eliminated every parallel install path; there is
+//! exactly ONE bootstrap surface across the whole codebase.
 //!
 //! # Usage
 //!

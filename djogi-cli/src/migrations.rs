@@ -218,9 +218,36 @@ fn compose_with_inputs(
         now,
         _guard: &guard,
         pk_flip_join_table_option,
+        // Production: always run Phase 0 auto-emit. The flag is a
+        // test-only escape hatch for unit tests that exercise
+        // compose's lower-level write/rollback machinery in
+        // isolation; the CLI / production path always goes through
+        // the full bootstrap flow.
+        skip_phase_zero_auto_emit: false,
     };
     match compose(req) {
         Ok(report) => {
+            // Track 0: surface auto-emitted Phase 0 bootstraps before
+            // the regular composed buckets so the operator sees the
+            // bootstrap context before the per-bucket changes.
+            for emit in &report.emitted_phase_zero {
+                let ext_summary = if emit.extensions.is_empty() {
+                    "no extensions".to_string()
+                } else {
+                    format!(
+                        "extensions: {}",
+                        emit.extensions
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                println!(
+                    "auto-emitted Phase 0 bootstrap: {database}/_global_ ({ext_summary})",
+                    database = emit.database,
+                );
+            }
             for cb in &report.composed_buckets {
                 println!(
                     "composed {database}/{app}: {version} ({classification:?})",

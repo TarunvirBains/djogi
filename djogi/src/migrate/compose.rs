@@ -327,6 +327,12 @@ pub enum ComposeError {
     /// the depth contract). Compose rendered the error verbatim
     /// rather than letting the panic unwind the run.
     Diff(super::diff::DiffError),
+    /// Phase 0 auto-emit failed. Track 0 (sub-step 0.3) wired
+    /// `migrations compose` to emit a Phase 0 bootstrap migration
+    /// before its delta-based work for any database that doesn't
+    /// already have one. The wrapped error names the failing step
+    /// (composition vs. filesystem write vs. pending-JSON serialize).
+    PhaseZeroAutoEmit(super::bootstrap::AutoEmitError),
 }
 
 impl std::fmt::Display for ComposeError {
@@ -368,6 +374,7 @@ impl std::fmt::Display for ComposeError {
                 to_path = to.display(),
             ),
             Self::Diff(e) => write!(f, "differ refused: {e}"),
+            Self::PhaseZeroAutoEmit(e) => write!(f, "{e}"),
         }
     }
 }
@@ -436,6 +443,24 @@ pub struct ComposeRequest<'a> {
     /// converted via
     /// [`super::diff::PkFlipJoinTableOption::from_config_char`].
     pub pk_flip_join_table_option: Option<super::diff::PkFlipJoinTableOption>,
+    /// Track 0 — opt out of Phase 0 bootstrap auto-emit.
+    ///
+    /// Production callers leave this `false` (the default behaviour):
+    /// every database referenced in `models` ∪ `apps` that doesn't
+    /// already have a Phase 0 migration on disk receives one before
+    /// the regular delta-based work runs.
+    ///
+    /// Tests that exercise compose's lower-level write / rollback
+    /// machinery in isolation (no real schema, just the file dance)
+    /// set this to `true` to keep the per-bucket directory free of
+    /// the auto-emitted Phase 0 artefacts. The skip is a test-only
+    /// affordance — the CLI / production paths always go through the
+    /// full auto-emit flow.
+    ///
+    /// Not adopter API. Setting this `true` from outside the crate
+    /// bypasses Phase 0 and is unsupported.
+    #[doc(hidden)]
+    pub skip_phase_zero_auto_emit: bool,
 }
 
 /// Successful-compose report. Returned per-bucket so the caller can
@@ -446,6 +471,13 @@ pub struct ComposeReport {
     /// every bucket was already in sync (callers handle this via the
     /// [`ComposeError::NothingToCompose`] error path).
     pub composed_buckets: Vec<ComposedBucket>,
+    /// One entry per database that received a Phase 0 bootstrap
+    /// migration during this compose run. Track 0 (sub-step 0.3)
+    /// wired auto-emit so any database whose
+    /// `migrations/<db>/_global_/V00000000000000__phase_zero_bootstrap.sql`
+    /// is missing receives one before the delta-based work runs.
+    /// Empty when every database already had Phase 0 on disk.
+    pub emitted_phase_zero: Vec<super::bootstrap::EmittedPhaseZero>,
 }
 
 /// Per-bucket success record.
@@ -648,6 +680,39 @@ pub fn load_pending(path: &Path) -> Result<PendingPlan, PendingLoadError> {
 /// `now` produce byte-identical output. Production callers pass
 /// `OffsetDateTime::now_utc()`; tests pin a fixed instant.
 pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
+    // 0. Phase 0 auto-emit (Track 0, sub-step 0.3) — for any database
+    //    referenced in the inputs that doesn't already have a Phase 0
+    //    bootstrap migration on disk, emit one. This runs BEFORE the
+    //    tombstone / differ / classification / write logic because
+    //    Phase 0 is independent of the descriptor delta — it's
+    //    framework bootstrap (HeeRanjID schema + Postgres extensions
+    //    + node-id GUC) that every subsequent migration depends on.
+    //
+    //    Idempotent — emits nothing when the marker file already
+    //    exists. Once emitted, Phase 0 is a regular committed
+    //    migration that the runner / `db reset` replays in lexical
+    //    version order (the all-zero `V00000000000000` prefix sorts
+    //    before any operator-composed migration).
+    //
+    //    Crucially, Phase 0 emission is NOT gated on "delta has
+    //    operations" — a workspace can validly compose Phase 0 even
+    //    when no model changes need a regular migration. The downstream
+    //    `NothingToCompose` check below considers ONLY the regular
+    //    delta path; Phase 0 emissions count as compose progress on
+    //    their own (the report carries them in `emitted_phase_zero`).
+    let emitted_phase_zero = if req.skip_phase_zero_auto_emit {
+        Vec::new()
+    } else {
+        super::bootstrap::ensure_phase_zero_emitted(
+            req.workspace_root,
+            req.models,
+            req.apps,
+            req.now,
+            req._guard,
+        )
+        .map_err(ComposeError::PhaseZeroAutoEmit)?
+    };
+
     // 1. Collect tombstone violations BEFORE any work — fail loudly
     //    when an active model OR a stale snapshot still references a
     //    tombstoned app.
@@ -763,6 +828,23 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
         .collect();
 
     if effective.is_empty() {
+        // Track 0 (sub-step 0.3): when the regular delta path has
+        // nothing to do BUT Phase 0 was emitted this run, the compose
+        // is NOT a no-op — Phase 0 is real progress that the operator
+        // will apply via `migrations apply`. Surface a successful
+        // report so the CLI's friendly "composed N phase-zero
+        // bootstrap migrations" line prints, instead of the
+        // `NothingToCompose` exit-zero quiet path.
+        //
+        // The reverse case — Phase 0 already on disk AND no delta
+        // changes — surfaces `NothingToCompose` as before. That keeps
+        // the "all in sync" message intact.
+        if !emitted_phase_zero.is_empty() {
+            return Ok(ComposeReport {
+                composed_buckets: Vec::new(),
+                emitted_phase_zero,
+            });
+        }
         return Err(ComposeError::NothingToCompose);
     }
 
@@ -968,7 +1050,10 @@ pub fn compose(req: ComposeRequest<'_>) -> Result<ComposeReport, ComposeError> {
     // every backup file captured during promote and clears every
     // entry-rename tracking entry.
     rollback.commit();
-    Ok(ComposeReport { composed_buckets })
+    Ok(ComposeReport {
+        composed_buckets,
+        emitted_phase_zero,
+    })
 }
 
 /// Codex B-3 / D013 — refuse to overwrite a hand-edited migration.
@@ -1601,6 +1686,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("noop");
         assert!(matches!(err, ComposeError::NothingToCompose));
@@ -1627,6 +1719,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let report = compose(req).expect("compose");
         assert_eq!(report.composed_buckets.len(), 1);
@@ -1668,6 +1767,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("destructive");
         assert!(matches!(
@@ -1701,6 +1807,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let report = compose(req).expect("compose");
         assert_eq!(report.composed_buckets.len(), 1);
@@ -1735,6 +1848,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("tombstone");
         match err {
@@ -1807,6 +1927,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let report = compose(req).expect("compose");
         // The destination bucket (newname) should have the RenameApp
@@ -1847,6 +1974,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let r1 = compose(req1).expect("first");
         let up1 = fs::read(&r1.composed_buckets[0].up_sql_path).unwrap();
@@ -1863,6 +1997,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let r2 = compose(req2).expect("second");
         let up2 = fs::read(&r2.composed_buckets[0].up_sql_path).unwrap();
@@ -1930,6 +2071,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("must surface D011");
         match err {
@@ -1967,6 +2115,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let r1 = compose(req1).expect("first");
         let up_path = r1.composed_buckets[0].up_sql_path.clone();
@@ -1987,6 +2142,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req2).expect_err("must refuse");
         match err {
@@ -2035,6 +2197,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         compose(req3).expect("force-overwrite succeeds");
         let after_force = fs::read_to_string(&up_path).unwrap();
@@ -2105,6 +2274,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let report = compose(req).expect("compose");
         let dest = report
@@ -2244,6 +2420,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("rename must fail");
         assert!(matches!(err, ComposeError::Io { .. }));
@@ -2333,6 +2516,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("down promote must fail");
         assert!(matches!(err, ComposeError::Io { .. }));
@@ -2460,6 +2650,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("pending promote must fail");
         assert!(
@@ -2543,6 +2740,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let r1 = compose(req1).expect("first compose");
         let down_path = r1.composed_buckets[0].down_sql_path.clone();
@@ -2561,6 +2765,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req2).expect_err("down hand-edit must refuse");
         match err {
@@ -2621,6 +2832,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let r1 = compose(req1).expect("first compose");
         let up_path = r1.composed_buckets[0].up_sql_path.clone();
@@ -2639,6 +2857,13 @@ mod tests {
             now,
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req2).expect_err("both-side edit must refuse");
         match err {
@@ -2775,6 +3000,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let report = compose(req).expect("rename without --allow-destructive must succeed");
         let dest = report
@@ -2844,6 +3076,13 @@ mod tests {
             now: at(2026, 4, 25, 1, 2, 3),
             _guard: &guard,
             pk_flip_join_table_option: None,
+            // Track 0: existing compose unit tests target the
+            // delta-based write/rollback machinery in isolation. The
+            // Phase 0 auto-emit is exercised by dedicated integration
+            // + unit tests; opt out here so the per-bucket directory
+            // assertions stay tight to what these tests actually
+            // verify.
+            skip_phase_zero_auto_emit: true,
         };
         let err = compose(req).expect_err("collision must surface");
         match err {
@@ -2986,6 +3225,7 @@ mod tests {
                 now: at(2026, 4, 25, 1, 2, 3),
                 _guard: &guard,
                 pk_flip_join_table_option: None,
+                skip_phase_zero_auto_emit: true,
             };
             let err = compose(req).expect_err("collision must surface");
             match err {
@@ -3066,6 +3306,7 @@ mod tests {
                 now: at(2026, 4, 25, 1, 2, 3),
                 _guard: &guard,
                 pk_flip_join_table_option: None,
+                skip_phase_zero_auto_emit: true,
             };
             let err = compose(req).expect_err("file-vs-dir collision must surface");
             match err {

@@ -307,9 +307,12 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
 /// 5. Passes the context to the test body.
 /// 6. Drops the database when the body returns — whether normally or via panic.
 ///
-/// The runtime machinery uses `tokio_postgres` directly (no sqlx) and calls
-/// `heeranjid::postgres_schema::install_schema` and `seed_default_node` from
-/// heeranjid 0.2.1.
+/// The runtime machinery uses `tokio_postgres` directly (no sqlx) and routes
+/// the HeeRanjID + extension install through Djogi's canonical
+/// `djogi::migrate::bootstrap::run_phase_zero` surface — the same code path
+/// `migrations compose` writes to disk and `db reset` replays. Track 0
+/// (strategic lockdown) eliminated every parallel install path; there is
+/// exactly ONE bootstrap surface across the whole codebase.
 ///
 /// # Usage
 ///
