@@ -9,10 +9,10 @@
 //!   DDL via `ctx.raw_ddl` and `ctx.raw_execute`.
 //! - `seed` — load `seeds/countries.sql`, then insert herds,
 //!   herd ranges, elephants, and sightings programmatically.
-//! - `demo <which>` — run one of four feature walkthroughs:
-//!   `cluster-sightings`, `cross-border-herds`, `lineage`, or
-//!   `herd-summaries`. Most demos accept `--format json|mermaid|markdown`
-//!   plus `--out <path>` (default stdout).
+//! - `demo <which>` — run one of five feature walkthroughs:
+//!   `cluster-sightings`, `cross-border-herds`, `lineage`,
+//!   `herd-summaries`, or `mating-pairs`. Most demos accept
+//!   `--format json|mermaid|markdown` plus `--out <path>` (default stdout).
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -111,6 +111,16 @@ enum DemoCmd {
         #[arg(long, value_enum, default_value_t = Format::Json)]
         format: Format,
     },
+
+    /// Wright F coefficient over the materialized ancestry closure,
+    /// top-3 candidate pairs per mature female.
+    MatingPairs {
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Output format. `json` (default), `mermaid`, `markdown`.
+        #[arg(long, value_enum, default_value_t = Format::Json)]
+        format: Format,
+    },
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -187,6 +197,9 @@ async fn main() -> Result<()> {
             }
             DemoCmd::HerdSummaries { out, format } => {
                 demos::herd_summaries::run(&mut ctx, format, out.as_deref()).await?
+            }
+            DemoCmd::MatingPairs { out, format } => {
+                demos::mating_pairs::run(&mut ctx, format, out.as_deref()).await?
             }
         },
     }
