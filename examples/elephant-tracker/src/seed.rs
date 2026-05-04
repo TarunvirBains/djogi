@@ -405,6 +405,7 @@ async fn seed_one_herd(
                 created_at: djogi::DateTime::UNIX_EPOCH,
                 updated_at: djogi::DateTime::UNIX_EPOCH,
                 elephant_id: ForeignKey::new(matriarch.id),
+                herd_id: ForeignKey::new(herd.id),
                 observed_by_id: ForeignKey::new(researcher.id),
                 location: GeoPoint::new(lat, lon).map_err(|e| {
                     DjogiError::Db(djogi::DbError::other(format!("GeoPoint::new: {e}")))

@@ -144,6 +144,10 @@ cargo run -p elephant-tracker -- demo lineage --matriarch Wema --typed --order d
 
 cargo run -p elephant-tracker -- demo cluster-sightings
 cargo run -p elephant-tracker -- demo cluster-sightings --format markdown
+
+cargo run -p elephant-tracker -- demo mating-pairs
+cargo run -p elephant-tracker -- demo mating-pairs --format markdown
+cargo run -p elephant-tracker -- demo mating-pairs --format mermaid
 ```
 
 Available format matrix:
@@ -154,6 +158,7 @@ Available format matrix:
 | `cross-border-herds`|  ✓  |   ✓     |    ✓     |
 | `lineage`           |  ✓  |   ✓     |    ✓     |
 | `cluster-sightings` |  ✓  |   —     |    ✓     |
+| `mating-pairs`      |  ✓  |   ✓     |    ✓     |
 
 ## Status
 
@@ -193,5 +198,6 @@ elephant-tracker/
         ├── cluster_sightings.rs   # cluster_by_proximity + centroid (typed)
         ├── cross_border_herds.rs  # M2M traversal + season filter
         ├── lineage.rs             # recursive-CTE escape hatch
-        └── herd_summaries.rs      # visage + side-query trait
+        ├── herd_summaries.rs      # visage + side-query trait
+        └── mating_pairs.rs        # Wright kinship + window-fn ranking (raw SQL)
 ```
