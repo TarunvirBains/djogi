@@ -177,6 +177,25 @@ pub mod __private {
         pub const TOKEN: SealToken = SealToken::__new();
     }
 
+    /// Hook-dispatch re-exports for the `#[model(hooks)]` macro (T1.3).
+    ///
+    /// The macro-emitted code routes through `::djogi::__private::hooks::*`
+    /// rather than `::djogi::hooks::*` so the seal supertrait
+    /// (`Sealed`, otherwise unnameable from outside the `djogi` crate)
+    /// is reachable in the macro's emission context. Adopter code uses
+    /// the public surface — `djogi::ModelHooks` for the trait one
+    /// implements, `djogi::hooks::HasHooks` for trait bounds — and never
+    /// touches this module.
+    ///
+    /// Per `feedback_macro_path_routing.md`: macro-emitted paths route
+    /// through `::djogi::*` only; the macro never reaches into
+    /// `::heeranjid::*` / `::time::*` / `::uuid::*` / etc. directly.
+    pub mod hooks {
+        pub use crate::hooks::__seal::{MarkerSeal, Sealed};
+        pub use crate::hooks::HasHooks;
+        pub use crate::hooks::ModelHooks;
+    }
+
     /// `tracing` re-export for macro-generated `_insecurely()` warn! calls.
     ///
     /// Routing through `::djogi::__private::tracing` keeps user crates from
