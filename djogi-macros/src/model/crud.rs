@@ -916,17 +916,85 @@ pub fn expand(
         }
     };
 
+    // Phase 8α T1.6 — hook dispatch wrapping the DELETE.
+    //
+    // When `#[model(hooks)]` is set, `before_delete(&mut self, ctx)` runs
+    // before the DELETE composes (may mutate the in-memory snapshot or
+    // abort the whole operation by returning Err) and
+    // `after_delete(&self, ctx)` runs after the outbox emission so the
+    // hook can observe both the pre-delete snapshot AND the just-written
+    // outbox row (Phase 8 §D3 sequence:
+    // before_delete -> DELETE -> outbox -> after_delete -> on_commit drain).
+    //
+    // Critical placement notes:
+    // - `delete(self, ctx)` consumes `self`. To pass `&mut self` to
+    //   `before_delete`, the impl signature emits `mut self` instead of
+    //   `self` when hooks are enabled (Rust forbids shadowing the `self`
+    //   keyword with `let mut self = self;`, but `mut self` as a function
+    //   binding pattern is permitted and matches the trait declaration).
+    //   The `mut` binding is emitted ONLY when `hooks` is true so non-hook
+    //   models keep the original `self` binding and do not trip clippy's
+    //   `unused_mut` lint.
+    // - `after_delete` takes `&self` (immutable re-borrow of the same
+    //   consumed-but-still-in-scope value). The DB row is gone; the
+    //   outbox row carries the canonical snapshot. v3 §D1 fixes the
+    //   after-hook receiver as `&self`, not `&mut self`.
+    //
+    // For non-hooks models both branches collapse to empty `TokenStream`
+    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
+    // verifies this with `cargo asm`.
+    let (before_delete_call, after_delete_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_delete(
+                    &mut self,
+                    ctx,
+                ).await?;
+            },
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_delete(
+                    &self,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
+    // The `self` binding pattern in the `delete(...)` impl signature.
+    // `mut self` only when hooks are enabled — otherwise `self` so non-
+    // hook models do not trip clippy's `unused_mut` lint.
+    let delete_self_pat = if model_attrs.hooks {
+        quote! { mut self }
+    } else {
+        quote! { self }
+    };
+
     let delete_body = quote! {
         async move {
             #auto_set_tenant
+            // Phase 8α T1.6 — D3 step 1: before_delete fires before the
+            // DELETE composes its parameter slice. Returning Err short-
+            // circuits via `?` — no DELETE, no outbox row, surrounding
+            // atomic() rolls back through standard error propagation.
+            #before_delete_call
             let __params: &[&(dyn ::djogi::__private::postgres_types::ToSql + Sync)] = &[
                 #owned_pk_param,
             ];
+            // D3 step 2 — DELETE.
             ctx.__execute_for_macros(#delete_sql, __params).await?;
-            // Phase 4 Task 6 — outbox carries the pre-delete snapshot
+            // D3 step 3 — outbox carries the pre-delete snapshot
             // (reads `self` before it drops at function scope end).
             // No-op for non-events models.
             #emit_outbox_delete
+            // Phase 8α T1.6 — D3 step 4: after_delete observes the
+            // consumed-but-still-in-scope `self` (last valid read of the
+            // pre-delete snapshot — the DB row is gone, but the outbox
+            // row carries the canonical payload by the time after_delete
+            // fires). Order is load-bearing: an audit sink consuming
+            // outbox sees the row before after_delete's body runs.
+            #after_delete_call
             ::std::result::Result::Ok(())
         }
     };
@@ -2354,7 +2422,7 @@ pub fn expand(
             }
 
             fn delete(
-                self,
+                #delete_self_pat,
                 ctx: &mut ::djogi::context::DjogiContext,
             ) -> impl ::std::future::Future<
                 Output = ::std::result::Result<(), ::djogi::DjogiError>,
