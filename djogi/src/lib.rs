@@ -51,6 +51,7 @@ extern crate self as djogi;
 pub mod apps;
 pub mod array;
 pub mod auth;
+pub mod compose;
 pub mod config;
 pub mod context;
 pub mod descriptor;
@@ -211,6 +212,10 @@ pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
 // consumer lands and the variant set stabilises.
 #[doc(hidden)]
 pub use apps::AppDiagnostic;
+// Phase 8 §T2.1 — composition primitives. The traits live as bound
+// surfaces today; `#[derive(Auditable)]` / `#[derive(SoftDeletable)]`
+// (T2.2 / T2.3) emit the impls in follow-up commits.
+pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
     DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
@@ -286,6 +291,8 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::apps::AppDiagnostic;
     pub use crate::apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
+    // Phase 8 §T2.1 — composition primitives (see crate root re-export).
+    pub use crate::compose::{Auditable, SoftDeletable};
     pub use crate::context::DjogiContext;
     pub use crate::descriptor::{
         DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
