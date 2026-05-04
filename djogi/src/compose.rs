@@ -1,14 +1,13 @@
 //! Composition primitives — `Auditable` and `SoftDeletable`.
 //!
-//! These are the runtime trait surfaces a model picks up when adopters opt
-//! in via the (forthcoming) `#[derive(Auditable)]` / `#[derive(SoftDeletable)]`
-//! proc macros (Phase 8 §T2.2 / §T2.3 — implemented in follow-up commits).
-//! Phase 8 §T2.1 — the present commit — lands the trait shapes only; the
-//! macro-emitted `impl Auditable for M { … }` / `impl SoftDeletable for M
-//! { … }` blocks arrive in the next two atomic commits and are the source
-//! of truth for behavior. Downstream code that only needs to *bound a
-//! generic* on "models with audit fields" or "models with soft-delete
-//! semantics" can import these traits today.
+//! These are the runtime trait surfaces a model picks up when adopters
+//! opt in via `#[model(auditable)]` (Phase 8 §T2.4 — supersedes T2.2's
+//! `#[derive(Auditable)]` per spec line 1037, locked 2026-05-03) or
+//! `#[derive(SoftDeletable)]` (Phase 8 §T2.3). Phase 8 §T2.1 landed
+//! the trait shapes only; T2.3 / T2.4 ship the macro emissions and are
+//! the source of truth for behavior. Downstream code that only needs to
+//! *bound a generic* on "models with audit fields" or "models with
+//! soft-delete semantics" can import these traits today.
 //!
 //! # Why two traits, no methods beyond the field accessors?
 //!
@@ -37,12 +36,14 @@
 //! reasons:
 //!
 //! 1. The traits are *user-implementable in shape* — adopter macros
-//!    (T2.2 / T2.3) emit `impl Auditable for UserModel` directly. If we
-//!    sealed them via a supertrait, the macro emission would need to
-//!    route through `::djogi::__private::compose::Sealed` (the
-//!    [`crate::hooks`] precedent). T2.1 explicitly defers macro work,
-//!    and threading a seal across two follow-up commits adds churn for
-//!    no protection benefit at this stage.
+//!    (`#[model(auditable)]` T2.4 / `#[derive(SoftDeletable)]` T2.3)
+//!    emit `impl Auditable for UserModel` / `impl SoftDeletable for
+//!    UserModel` directly. If we sealed them via a supertrait, the
+//!    macro emission would need to route through
+//!    `::djogi::__private::compose::Sealed` (the [`crate::hooks`]
+//!    precedent). T2.1 explicitly defers macro work, and threading a
+//!    seal across two follow-up commits adds churn for no protection
+//!    benefit at this stage.
 //! 2. The framework's harder seals (`Model` via [`crate::model::__sealed`],
 //!    `HasHooks` via [`crate::hooks`], `App` via the apps-seal token,
 //!    `PrimaryKey` via `PkSealToken`) defend an SQL-injection or
@@ -85,13 +86,18 @@
 use crate::model::Model;
 use crate::types::DateTime;
 
-/// Marker trait emitted by `#[derive(Auditable)]` (Phase 8 §T2.2).
+/// Marker trait emitted by `#[model(auditable)]` (Phase 8 §T2.4 —
+/// supersedes T2.2's `#[derive(Auditable)]` per spec line 1037).
 ///
-/// A model carrying this bound has a `created_by: Option<String>`
-/// column injected by the derive macro and populated from
-/// [`crate::context::DjogiContext::auth`] at create time. When
-/// `ctx.auth().is_some()` the macro-emitted `before_create` hook (T2.4)
-/// captures `auth.user_id().to_string()` into the field; otherwise the
+/// A model carrying this bound declares `created_by: Option<String>`
+/// itself (Path B per Phase 8 v3 line 866) and the
+/// `#[model(auditable)]` attribute emits the trait impl plus an
+/// inherent `__djogi_auditable_populate` helper invoked from
+/// [`Model::create`](crate::model::Model::create) before the user
+/// `before_create` hook. When [`ctx.auth()`](crate::context::DjogiContext::auth)
+/// is `Some`, the helper captures `format!("{}", auth.user_id)`
+/// (Display, not Debug — Debug shape is unstable per spec line 1064)
+/// into the field unless the user already set a value; otherwise the
 /// field stays `None`. No warn-on-null per Phase 8 §D6.
 ///
 /// The single accessor returns a borrowed `&str` to keep audit reads

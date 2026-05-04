@@ -16,8 +16,9 @@
 //! ```
 //!
 //! No fields are added, removed, or renamed. The derive is purely
-//! additive at the trait level. Mirrors the [`super::auditable`] (T2.2)
-//! pattern verbatim — same Path B + same convention-sealed routing.
+//! additive at the trait level. Same Path B + same convention-sealed
+//! routing as the sibling [`super::auditable`] (Phase 8 §T2.4 —
+//! `#[model(auditable)]` opt-in attribute).
 //!
 //! # Path B — adopter declares the `deleted_at` field
 //!
@@ -73,7 +74,7 @@
 //! emitted impl therefore routes through the public re-export
 //! `::djogi::SoftDeletable`, not through `::djogi::__private::*`.
 //! See `feedback_macro_path_routing.md` for the full routing
-//! convention — same shape T2.2 used for `Auditable`.
+//! convention.
 
 use proc_macro2::TokenStream;
 use quote::quote;

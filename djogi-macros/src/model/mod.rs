@@ -87,6 +87,22 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //     emit `impl ModelHooks for #ident {}` automatically.
     let hooks_impl = hooks::expand(&struct_item.ident, &model_attrs);
 
+    // 1c. Auditable opt-in — Phase 8α T2.4. Emits both the
+    //     `impl ::djogi::Auditable for #ident { ... }` trait impl AND
+    //     the `__djogi_auditable_populate` inherent helper invoked from
+    //     `Model::create` between `auto_set_tenant` and the user
+    //     `before_create` hook. Returns an empty `TokenStream` when
+    //     `#[model(auditable)]` is absent so opt-out models pay zero
+    //     macro-output overhead.
+    //
+    //     T2.4 supersedes T2.2's `#[derive(Auditable)]` per spec line
+    //     1037 (locked 2026-05-03). Single attribute drives the
+    //     trait impl + the populator + the create_body wiring in one
+    //     expansion — proc macros cannot observe sibling derives, so
+    //     a derive could not deterministically signal to
+    //     `#[model(...)]` that the populator should be wired.
+    let auditable_impl = crate::compose::auditable::expand(&struct_item.ident, &model_attrs);
+
     // 2. FromPgRow — positional ordinal decode against the canonical projection.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
@@ -147,6 +163,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     Ok(quote::quote! {
         #expanded
         #hooks_impl
+        #auditable_impl
         #from_row
         #from_joined_row
         #model_impl

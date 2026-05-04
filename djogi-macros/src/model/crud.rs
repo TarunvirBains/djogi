@@ -594,11 +594,15 @@ pub fn expand(
         .enumerate()
         .filter_map(|(i, fa)| fa.sequence_within.as_deref().map(|s| (i, s)))
         .collect();
-    // `value` must be mutable when either `sequence_within` (assigns the
-    // counter back into the seq field) or `#[model(hooks)]`
-    // (`before_create(&mut value, ctx)` per Phase 8 §D3) participates. A
-    // single shared flag keeps the binding choice explicit.
-    let value_must_be_mut = !seq_within_fields.is_empty() || model_attrs.hooks;
+    // `value` must be mutable when any of the following participates:
+    //   - `sequence_within` (assigns the counter back into the seq field)
+    //   - `#[model(hooks)]` (`before_create(&mut value, ctx)` per Phase 8 §D3)
+    //   - `#[model(auditable)]` (T2.4 — `value.__djogi_auditable_populate(ctx)`
+    //     mutates `created_by` in place when auth is present and the field
+    //     is currently None)
+    // A single shared flag keeps the binding choice explicit.
+    let value_must_be_mut =
+        !seq_within_fields.is_empty() || model_attrs.hooks || model_attrs.auditable;
     let create_value_binding_default = if value_must_be_mut {
         quote! { let mut value = value; }
     } else {
@@ -684,10 +688,44 @@ pub fn expand(
         (TokenStream::new(), TokenStream::new())
     };
 
+    // Phase 8α T2.4 — composition populator for `#[model(auditable)]`.
+    //
+    // When the flag is set, the model emitter also produced an inherent
+    // `__djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)`
+    // method (see `compose::auditable::expand`). Call it BEFORE the user
+    // `before_create` hook so user code can inspect or override the
+    // populated `created_by` value (spec line 990). The populator
+    // contains an `if self.created_by.is_none()` guard so a user-set
+    // value at construction time is never clobbered (spec line 1062).
+    //
+    // Models without `auditable` emit empty TokenStream — zero
+    // dispatch overhead at the create path and the inherent method is
+    // never emitted.
+    let auditable_populate = if model_attrs.auditable {
+        quote! {
+            value.__djogi_auditable_populate(ctx);
+        }
+    } else {
+        TokenStream::new()
+    };
+
     let create_body = quote! {
         async move {
             #auto_set_tenant
             #create_value_binding
+            // Phase 8α T2.4 — composition populator runs BEFORE the user
+            // `before_create` hook so user hooks can inspect/override
+            // the populated `created_by` value. Per spec line 1032 the
+            // canonical sequence is:
+            //   #auto_set_tenant
+            //   #create_value_binding
+            //   #auditable_populate     ← here (T2.4)
+            //   #before_create_call     ← T1.4
+            //   #sequence_upsert_preamble  ← T1 BLOCK-1 fix (982bee2)
+            //   ... INSERT, outbox, after_create ...
+            // Empty TokenStream when `#[model(auditable)]` is absent —
+            // zero codegen for opt-out models.
+            #auditable_populate
             // Phase 8α T1.4 — before_create fires before ANY DB write on
             // the create path (including the sequence_within counter upsert
             // below). Per Phase 8 §D3 "before -> DB -> outbox -> after":

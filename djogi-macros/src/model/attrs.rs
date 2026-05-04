@@ -236,6 +236,43 @@ pub struct ModelAttrs {
     /// rejected, mirroring the convention `events`, `through`, and
     /// `no_default` already follow.
     pub hooks: bool,
+
+    /// When `true`, this model opts into the [`Auditable`] composition —
+    /// Phase 8α T2.4.
+    ///
+    /// Set via `#[model(auditable)]`. The macro emits both:
+    ///
+    /// 1. `impl ::djogi::Auditable for #ident { ... }` — the trait impl
+    ///    exposing `created_by(&self) -> Option<&str>`, borrowing from
+    ///    the adopter-declared `pub created_by: Option<String>` field.
+    /// 2. `impl #ident { #[doc(hidden)] pub(crate) fn
+    ///    __djogi_auditable_populate(&mut self, ctx: &mut DjogiContext)
+    ///    { ... } }` — the populator helper invoked from
+    ///    `Model::create` between `auto_set_tenant` and the user
+    ///    `before_create` hook (Phase 8 §D6).
+    ///
+    /// Models without the flag pay zero auditable-dispatch overhead —
+    /// no impl is emitted, so the populator call collapses to a
+    /// no-op and the `Auditable` bound is unsatisfied at the use site
+    /// (compile-time error if a generic asks for it).
+    ///
+    /// Standalone keyword only — `auditable = true` / `auditable = false`
+    /// are rejected, mirroring the convention `hooks`, `events`,
+    /// `through`, and `no_default` already follow.
+    ///
+    /// # 2026-05-03 design pivot
+    ///
+    /// T2.2 (commit 939b9ab) shipped `#[derive(Auditable)]` as the
+    /// opt-in surface; T2.4 supersedes it with this attribute and the
+    /// derive is removed from the v3 surface. Per spec line 1037
+    /// (locked 2026-05-03): proc macros cannot observe sibling derives,
+    /// so the derive could not deterministically signal to
+    /// `#[derive(Model)]` / `#[model(...)]`. Single
+    /// `#[model(auditable)]` solves this cleanly — model macro emits
+    /// the trait impl AND the populator hook wiring in one expansion.
+    ///
+    /// [`Auditable`]: ::djogi::Auditable
+    pub auditable: bool,
 }
 
 /// Parsed `pk = X` value.
@@ -310,6 +347,8 @@ impl ModelAttrs {
         let mut seen_events = false;
         let mut hooks = false;
         let mut seen_hooks = false;
+        let mut auditable = false;
+        let mut seen_auditable = false;
         let mut idempotency_key: Option<String> = Option::None;
         let mut tenant_key: Option<String> = Option::None;
         let mut fts: Option<FtsSpec> = Option::None;
@@ -369,6 +408,25 @@ impl ModelAttrs {
                     }
                     seen_hooks = true;
                     hooks = true;
+                }
+                // Flag-only attribute: `auditable` — Phase 8α T2.4.
+                // Standalone keyword only; supersedes the T2.2
+                // `#[derive(Auditable)]` derive (removed 2026-05-03 per
+                // spec line 1037). The model emitter reads
+                // `model_attrs.auditable` to decide whether to emit:
+                //   1. `impl ::djogi::Auditable for #ident { ... }`
+                //   2. `impl #ident { fn __djogi_auditable_populate(...) }`
+                //   3. The populator call inside `create_body` between
+                //      `#auto_set_tenant` and `#before_create_call`.
+                Meta::Path(path) if path.is_ident("auditable") => {
+                    if seen_auditable {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `auditable` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_auditable = true;
+                    auditable = true;
                 }
                 // `pk = X` bare-identifier form (Phase 7-Zero-2 T2). Accepts
                 // only single-segment paths matching the alias set in
@@ -543,7 +601,7 @@ impl ModelAttrs {
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
                                  `fts`, `indexes`, `exclusion`, `no_default`, `through`, \
-                                 `events`, or `hooks`",
+                                 `events`, `hooks`, or `auditable`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -640,7 +698,8 @@ impl ModelAttrs {
                     return Err(syn::Error::new_spanned(
                         other,
                         "expected `key = \"value\"` or `key = TypePath` attribute, \
-                         or bare flag (`no_default`, `through`, `events`, `hooks`)",
+                         or bare flag (`no_default`, `through`, `events`, `hooks`, \
+                         `auditable`)",
                     ));
                 }
             }
@@ -682,6 +741,7 @@ impl ModelAttrs {
             renamed_from,
             tree_edge,
             hooks,
+            auditable,
         })
     }
 }

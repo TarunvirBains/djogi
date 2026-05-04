@@ -212,9 +212,11 @@ pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
 // consumer lands and the variant set stabilises.
 #[doc(hidden)]
 pub use apps::AppDiagnostic;
-// Phase 8 §T2.1 — composition primitives. The traits live as bound
-// surfaces today; `#[derive(Auditable)]` / `#[derive(SoftDeletable)]`
-// (T2.2 / T2.3) emit the impls in follow-up commits.
+// Phase 8 §T2.1 — composition primitives. The runtime trait surfaces.
+// `Auditable` impls are emitted by `#[model(auditable)]` (T2.4 — the
+// surface superseded T2.2's `#[derive(Auditable)]` per spec line 1037,
+// locked 2026-05-03); `SoftDeletable` impls are emitted by
+// `#[derive(SoftDeletable)]` (T2.3).
 pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
@@ -227,8 +229,8 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    Auditable, DjogiEnum, JsonbSchema, SoftDeletable, apps, many_to_many, primary_key,
-    reverse_one_to_many, reverse_one_to_one,
+    DjogiEnum, JsonbSchema, SoftDeletable, apps, many_to_many, primary_key, reverse_one_to_many,
+    reverse_one_to_one,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
@@ -371,12 +373,6 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
-    // Phase 8 §T2.2 — re-export the `#[derive(Auditable)]` derive macro
-    // so the prelude carries both the `Auditable` trait (re-exported
-    // above through `crate::compose`) and the derive that emits its
-    // impl. Trait and derive macro live in separate namespaces
-    // (types vs macros), mirroring the `JsonbSchema` precedent.
-    pub use djogi_macros::Auditable;
     // Phase 8 §T2.3 — re-export the `#[derive(SoftDeletable)]` derive
     // macro alongside the `SoftDeletable` trait. Pairs with the manual
     // `QuerySet::not_deleted()` helper; 8γ T6 replaces that helper
