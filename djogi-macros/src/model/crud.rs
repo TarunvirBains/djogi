@@ -730,6 +730,49 @@ pub fn expand(
     //    comes from a zero-row UPDATE (Postgres returns 0 rows without an
     //    error code when the WHERE clause matches nothing).
     // -------------------------------------------------------------------------
+
+    // Phase 8α T1.5 — hook dispatch wrapping the UPDATE.
+    //
+    // When `#[model(hooks)]` is set, `before_save(self, ctx)` runs before
+    // the UPDATE composes (may mutate `*self` or abort the whole operation
+    // by returning Err) and `after_save(&*self, ctx)` runs after the
+    // outbox emission AND after the `*self = row` rehydration so the hook
+    // observes server-side defaults, triggers, and any DB-bumped column
+    // values (Phase 8 §D3 sequence:
+    // before_save -> UPDATE -> outbox -> after_save -> on_commit drain).
+    //
+    // Critical placement notes:
+    // - `save()` works directly on `&mut self`; unlike `create()` there is
+    //   no local `value` binding. Pass `self` (re-borrow `&mut self`) into
+    //   `before_save` and `&*self` (immutable re-borrow after rehydration)
+    //   into `after_save`.
+    // - In Shape B (version-aware), `after_save` MUST be placed inside the
+    //   `Some(__raw_row)` success branch — the `None` arm returns
+    //   `LockConflict` early and `after_save` would observe stale state
+    //   that was never written to the DB.
+    //
+    // For non-hooks models both branches collapse to empty `TokenStream`
+    // (no `quote!` invocation) so opt-out paths emit zero codegen — T1.8
+    // verifies this with `cargo asm`.
+    let (before_save_call, after_save_call) = if model_attrs.hooks {
+        (
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::before_save(
+                    self,
+                    ctx,
+                ).await?;
+            },
+            quote! {
+                <Self as ::djogi::__private::hooks::ModelHooks>::after_save(
+                    &*self,
+                    ctx,
+                ).await?;
+            },
+        )
+    } else {
+        (TokenStream::new(), TokenStream::new())
+    };
+
     let save_body = if let Some((ver_ident, ver_col)) = &version_field_info {
         // Shape B — version-aware save.
         let ver_set = format!(", {ver_col} = {ver_col} + 1");
@@ -739,6 +782,13 @@ pub fn expand(
         quote! {
             async move {
                 #auto_set_tenant
+                // Phase 8α T1.5 — before_save fires after auto_set_tenant
+                // is in scope (so the hook can read tenant context) but
+                // before the UPDATE composes its SET clause. Returning Err
+                // short-circuits via `?` — no UPDATE, no outbox row,
+                // surrounding atomic() rolls back via standard error
+                // propagation.
+                #before_save_call
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // The version field is excluded from the dirty loop — it always
@@ -779,11 +829,24 @@ pub fn expand(
                         #(#mark_clean_fragments)*
                         // Phase 4 Task 6 — outbox after DB-refreshed rehydration.
                         #emit_outbox_save
+                        // Phase 8α T1.5 — after_save runs AFTER the outbox
+                        // emission AND after `*self = row` rehydration so
+                        // the hook observes server-side defaults, triggers,
+                        // and the bumped version counter (Phase 8 §D3:
+                        // "after_save … reads DB truth, not pre-call
+                        // value"). MUST stay inside the success arm — the
+                        // None branch (LockConflict) skips after_save.
+                        #after_save_call
                         ::std::result::Result::Ok(())
                     }
                     ::std::option::Option::None => {
                         // Zero rows updated — DB version has moved ahead of our
                         // in-memory version. Signal optimistic lock conflict.
+                        // Phase 8α T1.5 — after_save deliberately NOT
+                        // dispatched here: the UPDATE didn't actually
+                        // mutate the row, so observing stale in-memory
+                        // state would violate the Phase 8 §D3 guarantee
+                        // that after_save sees DB truth.
                         ::std::result::Result::Err(
                             ::djogi::DjogiError::LockConflict(
                                 ::djogi::DbError::other(#ver_conflict_msg)
@@ -798,6 +861,13 @@ pub fn expand(
         quote! {
             async move {
                 #auto_set_tenant
+                // Phase 8α T1.5 — before_save fires after auto_set_tenant
+                // is in scope (so the hook can read tenant context) but
+                // before the UPDATE composes its SET clause. Returning Err
+                // short-circuits via `?` — no UPDATE, no outbox row,
+                // surrounding atomic() rolls back via standard error
+                // propagation.
+                #before_save_call
                 // Build the SET clause dynamically. Tracked<T> fields are only
                 // included when dirty; non-Tracked fields are always included.
                 // `__first` tracks whether we have emitted any SET assignment yet
@@ -836,6 +906,11 @@ pub fn expand(
                 // values (triggers, column defaults), so emission runs AFTER the
                 // `*self = row` rehydration. No-op for non-events models.
                 #emit_outbox_save
+                // Phase 8α T1.5 — after_save runs AFTER the outbox emission
+                // AND after `*self = row` rehydration so the hook observes
+                // server-side defaults, triggers, and any DB-bumped column
+                // values (Phase 8 §D3 sequence).
+                #after_save_call
                 ::std::result::Result::Ok(())
             }
         }
