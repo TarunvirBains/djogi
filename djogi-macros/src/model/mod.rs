@@ -12,6 +12,7 @@ pub mod exclusion;
 pub mod filter;
 pub mod from_joined_row;
 pub mod from_row;
+pub mod hooks;
 pub mod indexes;
 pub mod inject;
 pub mod outer_ref;
@@ -79,6 +80,13 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    for user fields that collide with reserved framework names.
     let expanded = inject::expand(&mut struct_item, &model_attrs)?;
 
+    // 1b. Hooks opt-in — Phase 8α T1.3. Emits the `Sealed` + `HasHooks`
+    //     impl pair when `#[model(hooks)]` is set; otherwise returns an
+    //     empty `TokenStream` so opt-out models pay zero macro-output
+    //     overhead. See `model::hooks` for the rationale on why we cannot
+    //     emit `impl ModelHooks for #ident {}` automatically.
+    let hooks_impl = hooks::expand(&struct_item.ident, &model_attrs);
+
     // 2. FromPgRow — positional ordinal decode against the canonical projection.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
@@ -138,6 +146,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
 
     Ok(quote::quote! {
         #expanded
+        #hooks_impl
         #from_row
         #from_joined_row
         #model_impl

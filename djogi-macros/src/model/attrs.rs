@@ -216,6 +216,26 @@ pub struct ModelAttrs {
     /// 2+ self-FK edges must set this *or* every caller passes
     /// `RelationPath` explicitly to the recursive-query builder.
     pub tree_edge: Option<syn::LitStr>,
+
+    /// When `true`, this model opts into lifecycle-hook dispatch — Phase 8α T1.3.
+    ///
+    /// Set via `#[model(hooks)]`. The macro emits
+    /// `impl ::djogi::__private::hooks::Sealed for #ident {}` and
+    /// `impl ::djogi::__private::hooks::HasHooks for #ident {}` so the
+    /// CRUD terminals (T1.4–T1.6) can branch monomorphically between the
+    /// no-op fast path and the hook-dispatch path. The adopter must also
+    /// `impl ModelHooks for MyModel` — the `HasHooks` supertrait bound
+    /// (`HasHooks: ModelHooks + Sealed`) makes that requirement a compile
+    /// error at the use site if it is missing.
+    ///
+    /// Models without the flag pay zero hook-dispatch overhead — no
+    /// `HasHooks` impl is emitted, so the dispatch helpers fold to no-ops
+    /// via marker-trait monomorphisation (Phase 8 §D2).
+    ///
+    /// Standalone keyword only — `hooks = true` / `hooks = false` are
+    /// rejected, mirroring the convention `events`, `through`, and
+    /// `no_default` already follow.
+    pub hooks: bool,
 }
 
 /// Parsed `pk = X` value.
@@ -288,6 +308,8 @@ impl ModelAttrs {
         let mut seen_through = false;
         let mut events = false;
         let mut seen_events = false;
+        let mut hooks = false;
+        let mut seen_hooks = false;
         let mut idempotency_key: Option<String> = Option::None;
         let mut tenant_key: Option<String> = Option::None;
         let mut fts: Option<FtsSpec> = Option::None;
@@ -333,6 +355,20 @@ impl ModelAttrs {
                     }
                     seen_events = true;
                     events = true;
+                }
+                // Flag-only attribute: `hooks` — Phase 8α T1.3.
+                // Standalone keyword only; the `hooks::expand` emitter
+                // reads `model_attrs.hooks` to decide whether to emit
+                // the `Sealed` + `HasHooks` impl pair for this model.
+                Meta::Path(path) if path.is_ident("hooks") => {
+                    if seen_hooks {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `hooks` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_hooks = true;
+                    hooks = true;
                 }
                 // `pk = X` bare-identifier form (Phase 7-Zero-2 T2). Accepts
                 // only single-segment paths matching the alias set in
@@ -506,8 +542,8 @@ impl ModelAttrs {
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
-                                 `fts`, `indexes`, `exclusion`, `no_default`, `through`, or \
-                                 `events`",
+                                 `fts`, `indexes`, `exclusion`, `no_default`, `through`, \
+                                 `events`, or `hooks`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -604,7 +640,7 @@ impl ModelAttrs {
                     return Err(syn::Error::new_spanned(
                         other,
                         "expected `key = \"value\"` or `key = TypePath` attribute, \
-                         or bare flag (`no_default`, `through`, `events`)",
+                         or bare flag (`no_default`, `through`, `events`, `hooks`)",
                     ));
                 }
             }
@@ -645,6 +681,7 @@ impl ModelAttrs {
             moved_from_app,
             renamed_from,
             tree_edge,
+            hooks,
         })
     }
 }

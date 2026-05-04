@@ -153,6 +153,18 @@ fn compile_pass_phase8_zero() {
 }
 
 #[test]
+fn compile_pass_phase8() {
+    // Globs cannot exclude sub-prefixes (no brace expansion), so this
+    // can't be expressed as `phase8_*.rs` — that pattern would also
+    // sweep up `phase8_zero_*.rs`. List each phase8-only fixture
+    // explicitly. Phase 8α T1.3 lands two: the hooks-attribute opt-in
+    // path and the absent-attribute zero-overhead path.
+    let t = TestCases::new();
+    t.pass("tests/compile_pass/phase8_hooks_attribute.rs");
+    t.pass("tests/compile_pass/phase8_no_hooks_attribute.rs");
+}
+
+#[test]
 fn compile_pass_unphased() {
     let t = TestCases::new();
     // Pre-phased fixtures — stable and rarely touched.
