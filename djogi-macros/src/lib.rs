@@ -346,6 +346,68 @@ pub fn derive_auditable(input: TokenStream) -> TokenStream {
     compose::auditable::expand(input.into()).into()
 }
 
+/// Derive [`djogi::SoftDeletable`] — emit the trait impl exposing
+/// `deleted_at(&self) -> Option<DateTime>`.
+///
+/// Phase 8 §T2.3.
+///
+/// # Adopter contract
+///
+/// The adopter declares `pub deleted_at: Option<djogi::DateTime>` on
+/// the struct **before** stacking the derive. The macro emits getter
+/// only — it does **not** inject the field. Standard Rust derives
+/// cannot mutate the input AST; the v3 spec settled this on Path B
+/// (line 866).
+///
+/// Automatic exclusion of soft-deleted rows from default queries is
+/// **deferred to Phase 8γ T6** — see spec line 971
+/// (RESOLVED 2026-05-03, lens, locked). T2.3 ships the trait impl
+/// plus a manual `QuerySet::not_deleted()` helper that adopters call
+/// explicitly on each `objects()` chain. 8γ will replace
+/// `.not_deleted()` with auto-composition once the `Q<T>` substrate
+/// lands.
+///
+/// # Macro ordering
+///
+/// Stack `#[derive(SoftDeletable)]` **above** `#[model(...)]`:
+///
+/// ```rust,ignore
+/// use djogi::prelude::*;
+///
+/// #[derive(SoftDeletable)]
+/// #[model(table = "posts")]
+/// #[derive(Debug, Clone)]
+/// pub struct Post {
+///     pub title: String,
+///     pub deleted_at: Option<djogi::DateTime>,
+/// }
+/// ```
+///
+/// At call sites that should exclude soft-deleted rows, invoke the
+/// manual helper:
+///
+/// ```rust,ignore
+/// let live = Post::objects().not_deleted().fetch_all(&mut ctx).await?;
+/// ```
+///
+/// # Compile errors
+///
+/// - Field `deleted_at` missing → rustc emits an `E0609 no field
+///   "deleted_at" on type ...` at the macro-generated impl. The
+///   diagnostic is implementer-actionable and points at the adopter's
+///   struct declaration.
+/// - Unsupported input shape (enum, union) is silently accepted at
+///   parse time but produces an `E0609`-equivalent failure when the
+///   compiler reaches `self.deleted_at` resolution; the failure is
+///   still actionable. T2.5 may add a tighter compile_fail fixture.
+///
+/// See `compose::soft_deletable` module docs for the Path B rationale,
+/// the seal/path-routing decision, and the deferred-to-8γ note.
+#[proc_macro_derive(SoftDeletable)]
+pub fn derive_soft_deletable(input: TokenStream) -> TokenStream {
+    compose::soft_deletable::expand(input.into()).into()
+}
+
 /// Per-test database lifecycle harness.
 ///
 /// Transforms an `async fn my_test(ctx: DjogiContext)` into a

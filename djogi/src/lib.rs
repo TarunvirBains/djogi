@@ -227,8 +227,8 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    Auditable, DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
-    reverse_one_to_one,
+    Auditable, DjogiEnum, JsonbSchema, SoftDeletable, apps, many_to_many, primary_key,
+    reverse_one_to_many, reverse_one_to_one,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
@@ -377,6 +377,11 @@ pub mod prelude {
     // impl. Trait and derive macro live in separate namespaces
     // (types vs macros), mirroring the `JsonbSchema` precedent.
     pub use djogi_macros::Auditable;
+    // Phase 8 §T2.3 — re-export the `#[derive(SoftDeletable)]` derive
+    // macro alongside the `SoftDeletable` trait. Pairs with the manual
+    // `QuerySet::not_deleted()` helper; 8γ T6 replaces that helper
+    // with auto-composition once the `Q<T>` substrate lands.
+    pub use djogi_macros::SoftDeletable;
     // T11 / issue #30 — re-export the serde derives so `use djogi::prelude::*`
     // is sufficient for any `JsonbSchema`-deriving or `DjogiEnum`-deriving
     // type. The macro emits `#[derive(Serialize, Deserialize)]` paths through

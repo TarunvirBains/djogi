@@ -51,3 +51,4 @@
 //! `auth()` capture; for T2.2 the derive is getter-only.
 
 pub mod auditable;
+pub mod soft_deletable;

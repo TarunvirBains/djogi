@@ -352,3 +352,8 @@ harness = true
 name = "phase8_compose_auditable"
 path = "../tests/integration/phase8_compose_auditable.rs"
 harness = true
+
+[[test]]
+name = "phase8_compose_softdeletable"
+path = "../tests/integration/phase8_compose_softdeletable.rs"
+harness = true
