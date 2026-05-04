@@ -446,22 +446,11 @@ where
 
 /// Collect the distinct, sorted set of `extension_dependency` values
 /// across every index in every model in the per-bucket `AppliedSchema`
-/// map.
+/// map (all databases combined).
 ///
-/// Used by `migrations compose` to build the `extensions` argument
-/// passed to [`compose_phase_zero`] when auto-emitting Phase 0.
-///
-/// Walks every index on every bucket. `AppliedSchema::indexes` is the
-/// flat per-bucket index list — each entry already carries its
-/// `table` field so the per-bucket level is the correct walk.
-/// `None`-valued dependencies (the common case for stock BTree / GIN
-/// indexes) are skipped; named dependencies (e.g. `"postgis"`,
-/// `"pg_trgm"`) are inserted into the result set. Duplicates collapse
-/// — declaring a PostGIS-dependent index on five models still produces
-/// one `CREATE EXTENSION IF NOT EXISTS "postgis"`.
-///
-/// Returns owned strings keyed by `BTreeSet<String>` so the result
-/// is sorted + de-duplicated and the caller can hash it deterministically.
+/// Production compose uses [`extensions_for_database`] to aggregate
+/// per-database.  This cross-database variant exists for unit tests
+/// that verify deduplication semantics across multiple buckets.
 #[cfg(test)]
 fn extension_dependencies_from_models(
     models: &BTreeMap<BucketKey, AppliedSchema>,
