@@ -16,6 +16,7 @@
 
 mod apps;
 mod case;
+mod compose;
 mod djogi_enum;
 mod ident;
 mod jsonb_schema;
@@ -291,6 +292,58 @@ pub fn derive_jsonb_schema(input: TokenStream) -> TokenStream {
     jsonb_schema::expand(input.into())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
+}
+
+/// Derive [`djogi::Auditable`] — emit the trait impl exposing
+/// `created_by(&self) -> Option<&str>`.
+///
+/// Phase 8 §T2.2.
+///
+/// # Adopter contract
+///
+/// The adopter declares `pub created_by: Option<String>` on the struct
+/// **before** stacking the derive. The macro emits getter only — it
+/// does **not** inject the field. Standard Rust derives cannot mutate
+/// the input AST; the v3 spec settled this on Path B (line 866).
+///
+/// Population of `created_by` from the request-side
+/// [`djogi::auth::AuthContext`] is wired separately via
+/// `#[model(hooks)]` + an adopter-written `before_create` body. T2.4
+/// will introduce a macro-emitted helper that synthesises the body;
+/// T2.2 ships getter only.
+///
+/// # Macro ordering
+///
+/// Stack `#[derive(Auditable)]` **above** `#[model(...)]`:
+///
+/// ```rust,ignore
+/// use djogi::prelude::*;
+///
+/// #[derive(Auditable)]
+/// #[model(table = "posts", hooks)]
+/// #[derive(Debug, Clone)]
+/// pub struct Post {
+///     pub title: String,
+///     pub created_by: Option<String>,
+/// }
+/// ```
+///
+/// # Compile errors
+///
+/// - Field `created_by` missing → rustc emits an `E0609 no field
+///   "created_by" on type ...` at the macro-generated impl. The
+///   diagnostic is implementer-actionable and points at the adopter's
+///   struct declaration.
+/// - Unsupported input shape (enum, union) is silently accepted at
+///   parse time but produces an `E0609`-equivalent failure when the
+///   compiler reaches `self.created_by` resolution; the failure is
+///   still actionable. T2.5 may add a tighter compile_fail fixture.
+///
+/// See `compose::auditable` module docs for the Path B rationale and
+/// the seal/path-routing decision.
+#[proc_macro_derive(Auditable)]
+pub fn derive_auditable(input: TokenStream) -> TokenStream {
+    compose::auditable::expand(input.into()).into()
 }
 
 /// Per-test database lifecycle harness.

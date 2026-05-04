@@ -227,7 +227,7 @@ pub use descriptor::{
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
-    DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
+    Auditable, DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
     reverse_one_to_one,
 };
 #[cfg(feature = "spatial")]
@@ -371,6 +371,12 @@ pub mod prelude {
     pub use djogi_macros::DjogiEnum;
     // Re-export the `#[derive(JsonbSchema)]` derive macro.
     pub use djogi_macros::JsonbSchema;
+    // Phase 8 §T2.2 — re-export the `#[derive(Auditable)]` derive macro
+    // so the prelude carries both the `Auditable` trait (re-exported
+    // above through `crate::compose`) and the derive that emits its
+    // impl. Trait and derive macro live in separate namespaces
+    // (types vs macros), mirroring the `JsonbSchema` precedent.
+    pub use djogi_macros::Auditable;
     // T11 / issue #30 — re-export the serde derives so `use djogi::prelude::*`
     // is sufficient for any `JsonbSchema`-deriving or `DjogiEnum`-deriving
     // type. The macro emits `#[derive(Serialize, Deserialize)]` paths through

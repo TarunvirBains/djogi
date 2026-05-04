@@ -347,3 +347,8 @@ harness = true
 name = "phase8_hooks_dispatch_overhead"
 path = "../tests/integration/phase8_hooks_dispatch_overhead.rs"
 harness = true
+
+[[test]]
+name = "phase8_compose_auditable"
+path = "../tests/integration/phase8_compose_auditable.rs"
+harness = true
