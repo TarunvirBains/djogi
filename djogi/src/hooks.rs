@@ -155,12 +155,14 @@ pub trait ModelHooks: Sized {
 /// routes through `::djogi::__private::hooks::Sealed` (re-exported below)
 /// per the macro-path-routing convention.
 ///
-/// **Seal-by-convention caveat.** The `__private::hooks` re-export means
-/// the `Sealed` trait is reachable cross-crate by name — downstream code
-/// that deliberately reaches into `__private` (in violation of the
-/// "we reserve the right to break that code in any future release without
-/// notice" contract documented at the crate root) could still hand-roll
-/// an `impl HasHooks` chain. This matches the convention used by
+/// **Seal-by-convention caveat.** Both `::djogi::__private::hooks::Sealed`
+/// and `::djogi::hooks::__seal::Sealed` re-export the same supertrait, so
+/// the `Sealed` trait is reachable cross-crate by name through either
+/// path — downstream code that deliberately reaches into `__private` or
+/// the `#[doc(hidden)] __seal` module (in violation of the "we reserve
+/// the right to break that code in any future release without notice"
+/// contract documented at the crate root) could still hand-roll an
+/// `impl HasHooks` chain. This matches the convention used by
 /// [`crate::visage_boundary`] for `DjogiVisageOf` / `VisageSealed` and
 /// by [`crate::primary_key`] for the `PkSealToken` witness — Rust has no
 /// way to mark a trait "implementable only inside this crate" when its
