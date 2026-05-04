@@ -812,7 +812,7 @@ async fn apply_plan_inner(
     );
 
     // 5. Insert pending ledger row. Generate a fresh run_id.
-    let run_id = generate_run_id(ctx).await?;
+    let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     let ledger_row = LedgerRow {
         version: runner_ctx.version.clone(),
         description: runner_ctx.description.clone(),
@@ -1491,7 +1491,7 @@ async fn fake_apply_inner(
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "<unknown timestamp>".to_string());
     let note = format!("faked at {timestamp}; reason: {reason}");
-    let run_id = generate_run_id(ctx).await?;
+    let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     // `insert_pending` binds `row.status.as_db_str()` directly, so
     // constructing the row with `LedgerStatus::Faked` writes the
     // correct terminal status in a single INSERT — no post-insert
@@ -1646,7 +1646,7 @@ async fn baseline_inner(
         db = bucket.database,
         app = bucket.app,
     );
-    let run_id = generate_run_id(ctx).await?;
+    let run_id = generate_run_id(ctx, &runner_ctx.version).await?;
     let row = LedgerRow {
         version: runner_ctx.version.clone(),
         description: format!("<baseline> {}", runner_ctx.description),
@@ -2483,7 +2483,41 @@ fn note_for_failed_transactional_segment(seg_idx: usize, e: &RunnerError) -> Str
 /// HeerId is a 64-bit time-ordered ID — perfect for the per-runner
 /// invocation key, which we want to be unique, sortable, and stable
 /// across machines.
-async fn generate_run_id(ctx: &mut DjogiContext) -> Result<i64, RunnerError> {
+///
+/// **Phase 0 carve-out (Track 0).** When `version` is the canonical
+/// Phase 0 bootstrap label (`super::bootstrap::PHASE_ZERO_VERSION`),
+/// HeeRanjID is by definition not yet installed — Phase 0 is what
+/// installs it. Calling `heerid_next()` would fail with "function
+/// does not exist". For Phase 0 only, we fall back to a wall-clock
+/// nanosecond-precision id derived from
+/// `clock_timestamp() - epoch '2026-01-01'`, which fits in `i64`
+/// for the next ~140 years and is unique-enough across the one-time
+/// Phase 0 emission per database. Subsequent migrations route
+/// through the standard HeerId path because Phase 0 has by then
+/// installed `heerid_next()`.
+async fn generate_run_id(ctx: &mut DjogiContext, version: &str) -> Result<i64, RunnerError> {
+    if version == super::bootstrap::PHASE_ZERO_VERSION {
+        // Phase 0 carve-out — HeerRanjID not yet installed at this
+        // point. Fall back to a wall-clock nanosecond id. We use
+        // `EXTRACT(EPOCH FROM clock_timestamp()) * 1e9` for nanosecond
+        // resolution; the cast to BIGINT fits comfortably in i64
+        // for the foreseeable future. Two concurrent Phase 0 applies
+        // against the same workspace are impossible (the workspace
+        // lock guarantees exclusion), so collision risk is zero.
+        let row = ctx
+            .__query_one_for_macros(
+                "SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000000000)::BIGINT AS run_id",
+                &[],
+            )
+            .await
+            .map_err(|e| RunnerError::RunIdGenerationFailed { source: e })?;
+        let id: i64 = row
+            .try_get("run_id")
+            .map_err(|e| RunnerError::RunIdGenerationFailed {
+                source: crate::DjogiError::Db(crate::DbError::other(format!("decode run_id: {e}"))),
+            })?;
+        return Ok(id);
+    }
     use crate::primary_key::PrimaryKeyDbGen;
     let id = HeerId::generate(ctx)
         .await

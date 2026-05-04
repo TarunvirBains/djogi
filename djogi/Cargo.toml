@@ -372,3 +372,13 @@ harness = true
 name = "phase8_on_commit_pool_warn"
 path = "../tests/integration/phase8_on_commit_pool_warn.rs"
 harness = true
+
+[[test]]
+name = "phase8_zero_phase_zero_emit"
+path = "../tests/integration/phase8_zero_phase_zero_emit.rs"
+harness = true
+
+[[test]]
+name = "phase8_zero_db_reset_replays_phase_zero"
+path = "../tests/integration/phase8_zero_db_reset_replays_phase_zero.rs"
+harness = true

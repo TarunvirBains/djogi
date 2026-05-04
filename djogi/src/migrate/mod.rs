@@ -85,9 +85,9 @@ pub use attune::{
     AttuneReport, AttuneRequest, attune,
 };
 pub use bootstrap::{
-    BootstrapError, DEFAULT_NODE_ID, PHASE_ZERO_VERSION, compose_extension_installs,
-    compose_heeranjid_install, compose_node_seed, compose_phase_zero,
-    extension_dependencies_from_models, run_phase_zero,
+    AutoEmitError, BootstrapError, DEFAULT_NODE_ID, EmittedPhaseZero, PHASE_ZERO_VERSION,
+    compose_extension_installs, compose_heeranjid_install, compose_node_seed, compose_phase_zero,
+    ensure_phase_zero_emitted, extension_dependencies_from_models, run_phase_zero,
 };
 pub use build_match::{
     DriftDiagnostic, DriftKind, classify_bucket as build_classify_bucket,

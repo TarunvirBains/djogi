@@ -91,11 +91,20 @@
 //!   driver and the validator.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
+use time::OffsetDateTime;
 use tokio_postgres::GenericClient;
 
+use super::compose::{AppLifecycle, PENDING_FORMAT_VERSION, PendingPlan};
+use super::guard::WorkspaceGuard;
+use super::ledger::compute_checksum;
+use super::naming::{down_filename, up_filename};
 use super::projection::BucketKey;
-use super::schema::AppliedSchema;
+use super::schema::{AppliedSchema, SNAPSHOT_FORMAT_VERSION};
+use super::target::{bucket_dir, pending_database_dir, pending_json_path};
 
 /// Default node id used by single-node deployments.
 ///
@@ -435,6 +444,349 @@ pub fn extension_dependencies_from_models(
     deps
 }
 
+// ── Auto-emit (sub-step 0.3) ──────────────────────────────────────────────
+
+/// One database that received a Phase 0 emission during this compose
+/// run. Returned in [`EmittedPhaseZero`] reports so the CLI can log
+/// structured progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmittedPhaseZero {
+    /// Database name. Phase 0 is emitted into the synthetic
+    /// `_global_` bucket of this database.
+    pub database: String,
+    /// Final on-disk path of the up-side migration file.
+    pub up_sql_path: PathBuf,
+    /// Final on-disk path of the down-side migration file.
+    pub down_sql_path: PathBuf,
+    /// Final on-disk path of the pending JSON file.
+    pub pending_json_path: PathBuf,
+    /// Distinct extensions baked into this Phase 0 emission. Useful
+    /// for logging — adopters often want to see which Postgres
+    /// extensions were detected.
+    pub extensions: BTreeSet<String>,
+}
+
+/// Errors surfaced by [`ensure_phase_zero_emitted`].
+///
+/// Distinct from [`BootstrapError`] because the auto-emit path also
+/// touches the filesystem — I/O errors and bootstrap composition
+/// errors are different kinds of failure and the caller (compose)
+/// surfaces them through different `ComposeError` variants.
+#[derive(Debug)]
+pub enum AutoEmitError {
+    /// Bootstrap composition failed (e.g. invalid extension name).
+    Compose(BootstrapError),
+    /// Filesystem I/O failed at the named path.
+    Io { path: PathBuf, source: io::Error },
+    /// Pending JSON serialization failed.
+    PendingJson(serde_json::Error),
+}
+
+impl std::fmt::Display for AutoEmitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AutoEmitError::Compose(e) => write!(f, "phase 0 auto-emit: {e}"),
+            AutoEmitError::Io { path, source } => write!(
+                f,
+                "phase 0 auto-emit: i/o failure at {}: {source}",
+                path.display()
+            ),
+            AutoEmitError::PendingJson(e) => {
+                write!(f, "phase 0 auto-emit: pending JSON serialization: {e}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AutoEmitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AutoEmitError::Compose(e) => Some(e),
+            AutoEmitError::Io { source, .. } => Some(source),
+            AutoEmitError::PendingJson(e) => Some(e),
+        }
+    }
+}
+
+impl From<BootstrapError> for AutoEmitError {
+    fn from(e: BootstrapError) -> Self {
+        AutoEmitError::Compose(e)
+    }
+}
+
+/// Walk every database referenced in `models` ∪ `apps` and emit a
+/// Phase 0 bootstrap migration for any database that doesn't already
+/// have one on disk.
+///
+/// **When this fires.** A database is considered "missing Phase 0"
+/// when the file
+/// `<workspace>/migrations/<database>/_global_/V00000000000000__phase_zero_bootstrap.sql`
+/// does not exist. Once it exists, subsequent compose runs leave it
+/// untouched (idempotent — running compose twice never re-emits).
+///
+/// **What gets baked in.** The Phase 0 SQL composition (per
+/// [`compose_phase_zero`]) snapshots the descriptor inventory's
+/// extension dependencies AT THE TIME of the first compose. Future
+/// compose runs that introduce NEW extensions (e.g. adding a
+/// `pgvector` index after PostGIS was already in use) emit a regular
+/// migration via the standard delta path — they do NOT re-emit
+/// Phase 0. The trade-off: simpler invariant (Phase 0 is one-shot)
+/// at the cost of a separate `CREATE EXTENSION` migration for any
+/// extension added later.
+///
+/// **Bucket placement.** Phase 0 lives in the synthetic global
+/// bucket (empty-string app label) of each database, on disk at
+/// `migrations/<database>/_global_/`. This means the auto-emit fires
+/// once per `(database, "")` pair and the regular `_global_` app
+/// space carries one extra "fixed point" migration that always
+/// applies first.
+///
+/// **Down side.** Phase 0 is bootstrap — there is no meaningful
+/// rollback. The down-side file is comment-only with an explicit
+/// "phase 0 has no rollback" marker. `db reset` never invokes the
+/// down side; this exists only to satisfy the migration-pair
+/// convention and keep tooling that reads the down side simple.
+///
+/// **Pending JSON.** The pending JSON tracks Phase 0 the same way as
+/// any composed migration. Its `model_snapshot` is the empty schema
+/// because Phase 0 doesn't define any user-visible schema — it only
+/// installs framework dependencies.
+///
+/// **Idempotency contract.**
+///
+/// - Running compose against a workspace that already has Phase 0
+///   on disk is a no-op for the Phase 0 path. Returns
+///   `Ok(Vec::new())`.
+/// - Running compose against a workspace with NO Phase 0 yet emits
+///   exactly one Phase 0 per database in the inputs.
+///
+/// **Witness-typed lock.** The `_guard: &WorkspaceGuard` parameter
+/// is a compile-time witness that the workspace lock is held — the
+/// same convention compose / runner use. The function does not
+/// touch the guard; the parameter is named with a leading underscore
+/// to signal "consumed at the type level only".
+pub fn ensure_phase_zero_emitted(
+    workspace_root: &Path,
+    models: &BTreeMap<BucketKey, AppliedSchema>,
+    apps: &[AppLifecycle],
+    now: OffsetDateTime,
+    _guard: &WorkspaceGuard,
+) -> Result<Vec<EmittedPhaseZero>, AutoEmitError> {
+    // 1. Collect the distinct database set from inputs.
+    //
+    //    Sources:
+    //      - Every bucket in `models` carries a `database`.
+    //      - Every entry in `apps` carries a `database` — covers the
+    //        case where an app is registered but has no models yet
+    //        (still needs its database bootstrapped).
+    let mut databases: BTreeSet<String> = BTreeSet::new();
+    for bucket in models.keys() {
+        databases.insert(bucket.database.clone());
+    }
+    for app in apps {
+        databases.insert(app.database.clone());
+    }
+
+    // 2. For each database, decide whether to emit. Skip databases
+    //    that already have Phase 0 on disk.
+    let mut emitted: Vec<EmittedPhaseZero> = Vec::new();
+    for database in &databases {
+        let bucket = BucketKey {
+            database: database.clone(),
+            app: String::new(),
+        };
+        let dir = bucket_dir(workspace_root, &bucket);
+        let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
+        if up_path.exists() {
+            continue;
+        }
+
+        // 3. Compose the Phase 0 SQL for this database.
+        //
+        //    Aggregate extensions from EVERY bucket in this database
+        //    (per-bucket `app` is irrelevant — extensions are a
+        //    Postgres-cluster-level concept and PostGIS-on-billing is
+        //    the same install as PostGIS-on-shipping).
+        let extensions = extensions_for_database(models, database);
+        let up_sql = compose_phase_zero(database, &extensions, DEFAULT_NODE_ID)?;
+        let down_sql = compose_phase_zero_down_text();
+
+        // 4. Build the pending JSON. `model_snapshot` is empty —
+        //    Phase 0 doesn't capture any user schema, only framework
+        //    bootstrap. Production callers re-derive snapshots
+        //    on subsequent composes; the Phase 0 row in the ledger
+        //    survives the snapshot rebuild.
+        let pending = PendingPlan {
+            format_version: PENDING_FORMAT_VERSION.to_string(),
+            bucket_database: database.clone(),
+            bucket_app: String::new(),
+            version: PHASE_ZERO_VERSION.to_string(),
+            slug: PHASE_ZERO_SLUG.to_string(),
+            model_snapshot: empty_schema_for(&bucket),
+            checksum_up: compute_checksum([up_sql.as_str()]),
+            checksum_down: None, // comment-only, no real rollback
+            composed_at: format_rfc3339_seconds(now),
+        };
+        let pending_bytes =
+            serde_json::to_vec_pretty(&pending).map_err(AutoEmitError::PendingJson)?;
+
+        let down_path = dir.join(down_filename(PHASE_ZERO_VERSION));
+        let pending_path = pending_json_path(workspace_root, &bucket);
+
+        // 5. Ensure parent directories exist for the bucket dir and
+        //    the pending dir, then write all three files. We use a
+        //    plain `fs::write` rather than the more elaborate atomic
+        //    rename dance from `compose` itself: Phase 0 emission is
+        //    a single per-database transaction (three file writes),
+        //    and the workspace lock guarantees exclusion. A failure
+        //    after up-sql is written but before pending-json leaves
+        //    a marker but no pending entry — the next compose detects
+        //    the marker and skips, leaving a stale pending JSON on
+        //    disk only on the failed-emit path. The trade-off
+        //    matches `migrations apply` semantics: the on-disk file
+        //    is the source of truth; pending JSON is a build-cache.
+        ensure_parent(&up_path)?;
+        ensure_parent(&pending_path)?;
+        fs::create_dir_all(&dir).map_err(|e| AutoEmitError::Io {
+            path: dir.clone(),
+            source: e,
+        })?;
+        fs::create_dir_all(pending_database_dir(workspace_root, database)).map_err(|e| {
+            AutoEmitError::Io {
+                path: pending_database_dir(workspace_root, database),
+                source: e,
+            }
+        })?;
+        fs::write(&up_path, up_sql.as_bytes()).map_err(|e| AutoEmitError::Io {
+            path: up_path.clone(),
+            source: e,
+        })?;
+        fs::write(&down_path, down_sql.as_bytes()).map_err(|e| AutoEmitError::Io {
+            path: down_path.clone(),
+            source: e,
+        })?;
+        fs::write(&pending_path, &pending_bytes).map_err(|e| AutoEmitError::Io {
+            path: pending_path.clone(),
+            source: e,
+        })?;
+
+        emitted.push(EmittedPhaseZero {
+            database: database.clone(),
+            up_sql_path: up_path,
+            down_sql_path: down_path,
+            pending_json_path: pending_path,
+            extensions,
+        });
+    }
+    Ok(emitted)
+}
+
+/// Slug component of [`PHASE_ZERO_VERSION`]. Exposed so consumers
+/// that need to construct the version string from parts (rare) can
+/// stay aligned with the canonical label.
+const PHASE_ZERO_SLUG: &str = "phase_zero_bootstrap";
+
+/// Compose the Phase 0 down-side SQL — comment-only.
+///
+/// Phase 0 has no meaningful rollback: dropping the HeeRanjID schema
+/// would invalidate every model's primary key, dropping PostGIS
+/// would invalidate every spatial column. `db reset` re-replays
+/// Phase 0 from scratch on the recreated database; rollback through
+/// the down side is not a supported flow.
+///
+/// We emit a comment block rather than an empty file so tooling that
+/// reads the down side (status reports, diff views) sees an explicit
+/// "no rollback" message rather than a silent empty file that might
+/// be mistaken for missing or corrupt.
+fn compose_phase_zero_down_text() -> String {
+    let mut out = String::with_capacity(512);
+    out.push_str("-- Djogi Phase 0 bootstrap — down (no-op).\n");
+    out.push_str("--\n");
+    out.push_str("-- Phase 0 installs framework dependencies (HeeRanjID schema +\n");
+    out.push_str("-- Postgres extensions + node-id GUC) that every subsequent\n");
+    out.push_str("-- migration depends on. Rolling those back would invalidate the\n");
+    out.push_str("-- entire schema, so Phase 0 has no meaningful down side.\n");
+    out.push_str("--\n");
+    out.push_str("-- `djogi db reset` re-replays Phase 0 from scratch on the\n");
+    out.push_str("-- recreated database. The migration ledger tracks Phase 0 like\n");
+    out.push_str("-- any other migration; rolling it back is not a supported flow.\n");
+    out
+}
+
+/// Aggregate extension dependencies from every bucket in a single
+/// database.
+///
+/// Filters [`extension_dependencies_from_models`] semantics to one
+/// database: PostGIS declared in `main.billing` and `main.shipping`
+/// merges to one install in `main`'s Phase 0. PostGIS declared in
+/// `crud_log.audit` lives in a separate Phase 0 for the `crud_log`
+/// database.
+fn extensions_for_database(
+    models: &BTreeMap<BucketKey, AppliedSchema>,
+    database: &str,
+) -> BTreeSet<String> {
+    let mut deps = BTreeSet::new();
+    for (bucket, schema) in models {
+        if bucket.database != database {
+            continue;
+        }
+        for index in &schema.indexes {
+            if let Some(dep) = &index.extension_dependency {
+                deps.insert(dep.clone());
+            }
+        }
+    }
+    deps
+}
+
+/// Ensure the parent directory of `path` exists; create it (and any
+/// missing intermediates) when absent. Mirrors the helper used in
+/// `compose.rs` — duplicated here so `bootstrap` does not import
+/// internals from a peer module.
+fn ensure_parent(path: &Path) -> Result<(), AutoEmitError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|e| AutoEmitError::Io {
+            path: parent.to_path_buf(),
+            source: e,
+        })?;
+    }
+    Ok(())
+}
+
+/// Build an empty [`AppliedSchema`] for the supplied bucket — used as
+/// the Phase 0 pending JSON's `model_snapshot` since Phase 0 captures
+/// no user schema.
+fn empty_schema_for(bucket: &BucketKey) -> AppliedSchema {
+    AppliedSchema {
+        djogi_version: env!("CARGO_PKG_VERSION").to_string(),
+        enums: BTreeMap::new(),
+        format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+        generated_at: format_rfc3339_seconds(OffsetDateTime::now_utc()),
+        indexes: Vec::new(),
+        models: BTreeMap::new(),
+        registered_apps: vec![bucket.app.clone()],
+    }
+}
+
+/// Format an instant as `YYYY-MM-DDTHH:MM:SSZ` (RFC 3339, UTC,
+/// second precision). Mirrors [`super::projection::rfc3339_now_seconds`]
+/// so the Phase 0 pending JSON's `composed_at` field matches the
+/// shape every other compose-emitted pending file uses.
+fn format_rfc3339_seconds(instant: OffsetDateTime) -> String {
+    let utc = instant.to_offset(time::UtcOffset::UTC);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        utc.year(),
+        utc.month() as u8,
+        utc.day(),
+        utc.hour(),
+        utc.minute(),
+        utc.second()
+    )
+}
+
 // ── Validators ────────────────────────────────────────────────────────────
 
 /// Validate that `name` is a plain Postgres identifier safe to
@@ -648,5 +1000,241 @@ mod tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(deps, expected);
+    }
+
+    // ── ensure_phase_zero_emitted (auto-emit, sub-step 0.3) tests ─────────
+
+    use crate::migrate::guard::WorkspaceGuard;
+    use crate::migrate::guard::acquire as acquire_workspace_lock;
+    use std::time::Duration;
+
+    /// Per-test workspace root + lock guard. Each test gets its own
+    /// unique paths so concurrent runs do not collide.
+    fn temp_workspace_with_guard(label: &str) -> (PathBuf, WorkspaceGuard) {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("djogi-bootstrap-test-{label}-{stamp}"));
+        std::fs::create_dir_all(&root).expect("create workspace root");
+        let lock_path = root.join(crate::migrate::guard::LOCK_FILE_NAME);
+        let guard = acquire_workspace_lock(&lock_path, Duration::from_secs(5))
+            .expect("acquire workspace lock");
+        (root, guard)
+    }
+
+    fn fixed_now() -> OffsetDateTime {
+        let date = time::Date::from_calendar_date(2026, time::Month::May, 4).unwrap();
+        let t = time::Time::from_hms(12, 0, 0).unwrap();
+        date.with_time(t).assume_utc()
+    }
+
+    #[test]
+    fn ensure_phase_zero_emits_for_empty_workspace_with_apps() {
+        let (work, guard) = temp_workspace_with_guard("auto_empty_apps");
+        let apps = vec![AppLifecycle {
+            label: String::new(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+        let models = BTreeMap::new();
+        let emitted =
+            ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
+        assert_eq!(emitted.len(), 1, "one Phase 0 per database");
+        assert_eq!(emitted[0].database, "main");
+        assert!(emitted[0].extensions.is_empty(), "no extensions in models");
+        assert!(emitted[0].up_sql_path.exists());
+        assert!(emitted[0].down_sql_path.exists());
+        assert!(emitted[0].pending_json_path.exists());
+        // Up SQL contains HeeRanjID install + node seed; no extension section.
+        let up = fs::read_to_string(&emitted[0].up_sql_path).unwrap();
+        assert!(up.contains("HeeRanjID base schema"));
+        assert!(up.contains("ALTER DATABASE \"main\" SET heer.node_id"));
+        assert!(!up.contains("CREATE EXTENSION"));
+        // Down SQL is comment-only.
+        let down = fs::read_to_string(&emitted[0].down_sql_path).unwrap();
+        assert!(down.contains("Phase 0 bootstrap — down"));
+        assert!(!down.contains("DROP "), "down must not contain real DDL");
+        // Pending JSON parses cleanly.
+        let pending_bytes = fs::read(&emitted[0].pending_json_path).unwrap();
+        let pending: PendingPlan = serde_json::from_slice(&pending_bytes).expect("parse");
+        assert_eq!(pending.version, PHASE_ZERO_VERSION);
+        assert_eq!(pending.bucket_database, "main");
+        assert_eq!(pending.bucket_app, "");
+        assert!(pending.checksum_up.starts_with("V1:"));
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn ensure_phase_zero_idempotent_on_second_run() {
+        let (work, guard) = temp_workspace_with_guard("auto_idempotent");
+        let apps = vec![AppLifecycle {
+            label: String::new(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+        let models = BTreeMap::new();
+        let first =
+            ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("first");
+        assert_eq!(first.len(), 1);
+        let second =
+            ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("second");
+        assert!(
+            second.is_empty(),
+            "second run must be a no-op once Phase 0 exists"
+        );
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn ensure_phase_zero_aggregates_extensions_per_database() {
+        use crate::migrate::schema::{
+            IndexKindSchema, IndexSchema, IndexTargetSchema, IndexTypeSchema,
+        };
+
+        let (work, guard) = temp_workspace_with_guard("auto_extensions");
+        let mk_index = |name: &str, dep: &str| IndexSchema {
+            extension_dependency: Some(dep.to_string()),
+            include: Vec::new(),
+            index_type: IndexTypeSchema::BTree,
+            kind: IndexKindSchema::NonUnique,
+            name: name.to_string(),
+            nulls_not_distinct: false,
+            predicate: None,
+            requires_out_of_transaction: false,
+            table: "t".to_string(),
+            target: IndexTargetSchema::Columns(Vec::new()),
+        };
+        let mk_schema = |indexes: Vec<IndexSchema>| AppliedSchema {
+            djogi_version: "0.1.0".to_string(),
+            enums: BTreeMap::new(),
+            format_version: SNAPSHOT_FORMAT_VERSION.to_string(),
+            generated_at: "2026-05-04T00:00:00Z".to_string(),
+            indexes,
+            models: BTreeMap::new(),
+            registered_apps: vec!["billing".to_string()],
+        };
+        let mut models = BTreeMap::new();
+        models.insert(
+            BucketKey {
+                database: "main".to_string(),
+                app: "billing".to_string(),
+            },
+            mk_schema(vec![mk_index("idx_geom", "postgis")]),
+        );
+        models.insert(
+            BucketKey {
+                database: "main".to_string(),
+                app: "shipping".to_string(),
+            },
+            mk_schema(vec![mk_index("idx_geom2", "postgis")]),
+        );
+        // Cross-database — should NOT bleed into main's Phase 0.
+        models.insert(
+            BucketKey {
+                database: "crud_log".to_string(),
+                app: "audit".to_string(),
+            },
+            mk_schema(vec![mk_index("idx_text", "pg_trgm")]),
+        );
+
+        let apps = vec![
+            AppLifecycle {
+                label: "billing".to_string(),
+                database: "main".to_string(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "shipping".to_string(),
+                database: "main".to_string(),
+                renamed_from: None,
+                tombstone: false,
+            },
+            AppLifecycle {
+                label: "audit".to_string(),
+                database: "crud_log".to_string(),
+                renamed_from: None,
+                tombstone: false,
+            },
+        ];
+
+        let emitted =
+            ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
+        assert_eq!(emitted.len(), 2, "one Phase 0 per database");
+
+        // Each database gets only its own extensions; PostGIS-on-main
+        // dedups across (billing, shipping); crud_log gets only pg_trgm.
+        let main_emit = emitted
+            .iter()
+            .find(|e| e.database == "main")
+            .expect("main emitted");
+        assert_eq!(
+            main_emit.extensions,
+            ["postgis"].iter().map(|s| s.to_string()).collect()
+        );
+        let crud_emit = emitted
+            .iter()
+            .find(|e| e.database == "crud_log")
+            .expect("crud_log emitted");
+        assert_eq!(
+            crud_emit.extensions,
+            ["pg_trgm"].iter().map(|s| s.to_string()).collect()
+        );
+
+        // Up SQL for main contains CREATE EXTENSION postgis but NOT pg_trgm.
+        let main_up = fs::read_to_string(&main_emit.up_sql_path).unwrap();
+        assert!(main_up.contains("CREATE EXTENSION IF NOT EXISTS \"postgis\""));
+        assert!(
+            !main_up.contains("\"pg_trgm\""),
+            "cross-database extension bled into main"
+        );
+
+        // Up SQL for crud_log contains CREATE EXTENSION pg_trgm but NOT postgis.
+        let crud_up = fs::read_to_string(&crud_emit.up_sql_path).unwrap();
+        assert!(crud_up.contains("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\""));
+        assert!(
+            !crud_up.contains("\"postgis\""),
+            "cross-database extension bled into crud_log"
+        );
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn ensure_phase_zero_skips_databases_with_existing_marker() {
+        let (work, guard) = temp_workspace_with_guard("auto_skip_marker");
+        let apps = vec![AppLifecycle {
+            label: String::new(),
+            database: "main".to_string(),
+            renamed_from: None,
+            tombstone: false,
+        }];
+        let models = BTreeMap::new();
+        // Pre-create the Phase 0 marker for "main".
+        let bucket = BucketKey {
+            database: "main".to_string(),
+            app: String::new(),
+        };
+        let dir = bucket_dir(&work, &bucket);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(up_filename(PHASE_ZERO_VERSION)),
+            "-- existing Phase 0 marker",
+        )
+        .unwrap();
+
+        let emitted =
+            ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
+        assert!(
+            emitted.is_empty(),
+            "main was skipped (marker present); no other databases in inputs"
+        );
+
+        // Confirm the existing marker was NOT overwritten.
+        let content = fs::read_to_string(dir.join(up_filename(PHASE_ZERO_VERSION))).unwrap();
+        assert_eq!(content, "-- existing Phase 0 marker");
+        let _ = std::fs::remove_dir_all(&work);
     }
 }
