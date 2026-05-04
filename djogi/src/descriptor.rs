@@ -1430,6 +1430,18 @@ pub struct FieldDescriptor {
     /// field; a `composed_via: Some("Auditable")` column compares
     /// identical to a hand-declared `created_by: Option<String>`
     /// column under `diff_schemas`.
+    ///
+    /// **Do not use as a behavioral gate.** `composed_via` for the
+    /// `SoftDeletable` tag is detected by field name alone (`deleted_at`
+    /// of type `Option<DateTime>`), so an adopter who declares a
+    /// similarly-named field WITHOUT `#[derive(SoftDeletable)]` will
+    /// still see `composed_via: Some("SoftDeletable")` on that column.
+    /// Future consumers that need to reason about composition behaviour
+    /// must read it from the typed trait surface (`<M as
+    /// SoftDeletable>` / `<M as Auditable>`) rather than from this
+    /// metadata slot — using `composed_via` to decide migration
+    /// strategy, default-filter composition, or RLS would silently
+    /// turn the false-positive into a real bug.
     pub composed_via: Option<&'static str>,
 }
 

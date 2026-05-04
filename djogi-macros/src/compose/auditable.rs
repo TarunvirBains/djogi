@@ -152,17 +152,17 @@ pub fn expand(model_ident: &Ident, model_attrs: &ModelAttrs) -> TokenStream {
         // §D6). The `is_none()` guard is load-bearing: a user-set
         // `created_by` is never clobbered. Spec line 1062.
         //
-        // `#[doc(hidden)] pub(crate)` because the helper is a
-        // macro-call surface, not adopter API. `pub(crate)` would
-        // collide with the consumer's crate boundary if the model is
-        // declared in a downstream crate; the actual visibility
-        // emitted is `pub` so the macro-emitted call site (in
-        // `crud.rs::create_body`, expanded into the same downstream
-        // crate) can reach it. `#[doc(hidden)]` keeps it out of
-        // adopter rustdoc.
+        // `#[doc(hidden)] pub(crate)` per spec line 1003: the helper
+        // is a macro-call surface, not adopter API. Both this `impl`
+        // block and the call site (`value.__djogi_auditable_populate(ctx)`
+        // in `crud.rs::create_body`) expand into the SAME downstream
+        // crate where `#[model(auditable)] struct M { ... }` is
+        // declared, so `pub(crate)` is reachable from the call site
+        // without leaking the helper as adopter-callable public API.
+        // `#[doc(hidden)]` doubles up to keep it out of rustdoc.
         impl #model_ident {
             #[doc(hidden)]
-            pub fn __djogi_auditable_populate(
+            pub(crate) fn __djogi_auditable_populate(
                 &mut self,
                 ctx: &mut ::djogi::DjogiContext,
             ) {
