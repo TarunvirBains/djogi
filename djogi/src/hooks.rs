@@ -2,8 +2,12 @@
 //!
 //! Six methods, each defaulted to a no-op that returns `Ok(())`. Adopters
 //! `impl ModelHooks for MyModel` selectively — methods they don't override
-//! stay no-op. The marker trait `HasHooks` in `hooks::sealed` is what the
-//! macro layer uses to decide whether to emit dispatch calls (see T1.3).
+//! stay no-op.
+//!
+//! T1.2 will add a sealed `HasHooks` marker trait that the macro layer
+//! emits in T1.3 (`#[model(hooks)]`) to gate monomorphic dispatch in
+//! T1.4–T1.6. Until those land, `ModelHooks` is the public adopter trait
+//! and nothing dispatches against it.
 //!
 //! # Async-fn-in-trait via `impl Future + Send`
 //!
