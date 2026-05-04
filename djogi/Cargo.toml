@@ -357,3 +357,13 @@ harness = true
 name = "phase8_compose_softdeletable"
 path = "../tests/integration/phase8_compose_softdeletable.rs"
 harness = true
+
+[[test]]
+name = "phase8_compose_descriptor"
+path = "../tests/integration/phase8_compose_descriptor.rs"
+harness = true
+
+[[test]]
+name = "phase8_compose_migration"
+path = "../tests/integration/phase8_compose_migration.rs"
+harness = true

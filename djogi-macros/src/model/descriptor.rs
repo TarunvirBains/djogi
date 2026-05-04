@@ -72,6 +72,9 @@ fn framework_field_descriptor(name: &str, sql_type_tokens: TokenStream, pk: bool
             protected: ::std::option::Option::None,
             default_volatility_override: ::std::option::Option::None,
             generated: ::std::option::Option::None,
+            // Phase 8α T2.5 — framework-injected columns are never
+            // contributed by a composition derive.
+            composed_via: ::std::option::Option::None,
         }
     }
 }
@@ -429,6 +432,40 @@ fn try_expand(
                 None => quote! { ::std::option::Option::None },
             };
 
+            // Phase 8α T2.5 — composition-derive provenance.
+            //
+            // Two surfaces contribute composed columns today and the
+            // descriptor records which one for each:
+            //
+            // - `#[model(auditable)]` (T2.4 attribute pattern):
+            //   `model_attrs.auditable == true` flips the `created_by`
+            //   column to `composed_via: Some("Auditable")`. Detection
+            //   keys off `model_attrs` because the model macro is the
+            //   single source of truth for this opt-in.
+            //
+            // - `#[derive(SoftDeletable)]` (T2.3 derive macro): the
+            //   derive runs in a separate macro pass and the model
+            //   macro cannot observe the derive list. We fall back to
+            //   field-name detection — any user-declared field literally
+            //   named `deleted_at` gets `composed_via: Some("SoftDeletable")`.
+            //   See T2.5 design notes for the Option-A trade-off (false
+            //   positives possible if an adopter declares `deleted_at`
+            //   without deriving `SoftDeletable`; provenance is
+            //   informational metadata for `djogi docs`, not load-bearing
+            //   for migration emission per spec line 1124).
+            //
+            // Order matters: `created_by` checked first so a model that
+            // declares both `auditable` and a `deleted_at` field tags
+            // each column with its own provenance independently.
+            let composed_via_tokens: TokenStream = if name == "created_by" && model_attrs.auditable
+            {
+                quote! { ::std::option::Option::Some("Auditable") }
+            } else if name == "deleted_at" {
+                quote! { ::std::option::Option::Some("SoftDeletable") }
+            } else {
+                quote! { ::std::option::Option::None }
+            };
+
             quote! {
                 ::djogi::FieldDescriptor {
                     name: #name,
@@ -465,6 +502,13 @@ fn try_expand(
                     // `stored: true` is implicit (Pg18 supports only
                     // STORED). `None` for non-generated columns.
                     generated: #generated_tokens,
+                    // Phase 8α T2.5 — composition-derive provenance.
+                    // `Some("Auditable")` for the `created_by` column on
+                    // a `#[model(auditable)]` model; `Some("SoftDeletable")`
+                    // for any field literally named `deleted_at` (Option A
+                    // — see Cluster 8α T2.5 commit message); `None`
+                    // otherwise.
+                    composed_via: #composed_via_tokens,
                 }
             }
         })
