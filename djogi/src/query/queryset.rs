@@ -1295,7 +1295,7 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     /// Filter to rows where `deleted_at IS NULL` — the manual
     /// soft-delete exclusion helper.
     ///
-    /// **Manual today; auto-composed in 8γ T6.** Phase 8α T2.3 ships
+    /// **Manual today; auto-composed in 8γ T6.** Phase 8α T2.6 ships
     /// this helper only; adopters who want soft-deleted rows excluded
     /// must call `.not_deleted()` on every `objects()` chain. Phase
     /// 8γ T6 will land automatic default-filter composition once the
@@ -1306,9 +1306,8 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     /// migration plan.
     ///
     /// ```ignore
-    /// // Soft-deletable model with the derive stacked above #[model]:
-    /// #[derive(SoftDeletable)]
-    /// #[model(table = "posts")]
+    /// // Soft-deletable model with the attribute on `#[model]`:
+    /// #[model(table = "posts", soft_deletable)]
     /// pub struct Post {
     ///     pub title: String,
     ///     pub deleted_at: Option<djogi::DateTime>,
@@ -1322,15 +1321,22 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn not_deleted(mut self) -> Self {
-        // Construct the `deleted_at IS NULL` leaf directly. `Leaf::new`
+        // Construct the `<column> IS NULL` leaf directly. `Leaf::new`
         // is `pub(crate)`, so this is the canonical in-crate path — no
         // need to route through the typed `FieldRef::is_null` (which
         // would require the column to be exposed on the macro-emitted
         // `T::Fields` ZST and would also pin the column type at
         // compile time, defeating the convention-by-name model the
         // `SoftDeletable` trait uses for its getter).
+        //
+        // Phase 8α T2.6: read the column name through `<M as
+        // SoftDeletable>::COLUMN` rather than a hard-coded `"deleted_at"`
+        // string. The trait const defaults to `"deleted_at"` (canonical
+        // case) but a future per-model rename can override the const
+        // at the `impl` level — `.not_deleted()` picks up the override
+        // automatically without changing this call site.
         let leaf = crate::query::condition::Leaf::new(
-            "deleted_at",
+            <M as crate::SoftDeletable>::COLUMN,
             crate::query::condition::LookupOp::IsNull,
             crate::query::condition::FilterValue::Null,
         );

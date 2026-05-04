@@ -121,13 +121,20 @@ pub trait Auditable: Model {
     fn created_by(&self) -> Option<&str>;
 }
 
-/// Marker trait emitted by `#[derive(SoftDeletable)]` (Phase 8 §T2.3).
+/// Marker trait emitted by `#[model(soft_deletable)]` (Phase 8 §T2.6 —
+/// supersedes T2.3's `#[derive(SoftDeletable)]` for the same
+/// proc-macros-cannot-observe-sibling-derives constraint that drove
+/// the T2.4 Auditable pivot).
 ///
-/// A model carrying this bound has a `deleted_at: Option<DateTime>`
-/// column injected by the derive macro. Phase 8 §T2.4 / §T2.5 wire the
-/// default filter so `Model::objects()` excludes rows with
-/// `deleted_at IS NOT NULL`; the bypass uses `_insecurely()` in the
-/// Phase 5 `set_tenant` audit-warning shape.
+/// A model carrying this bound declares `deleted_at: Option<DateTime>`
+/// itself (Path B per Phase 8 v3 line 866) and the
+/// `#[model(soft_deletable)]` attribute emits the trait impl. Phase 8γ
+/// T6 will land automatic default-filter composition once the `Q<T>`
+/// substrate is in place (spec line 971, RESOLVED 2026-05-03, lens,
+/// locked); T2.6 ships the trait impl plus the manual
+/// [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted)
+/// helper that reads the column name through `<M as
+/// SoftDeletable>::COLUMN` rather than a hard-coded string.
 ///
 /// This trait is the bound surface used by code that needs to talk
 /// generically about "models with soft-delete semantics" — for example,
@@ -142,6 +149,20 @@ pub trait Auditable: Model {
 /// }
 /// ```
 pub trait SoftDeletable: Model {
+    /// SQL column name for the soft-delete timestamp. Defaults to
+    /// `"deleted_at"`.
+    ///
+    /// Reading via `<M as SoftDeletable>::COLUMN` from generic code
+    /// lets [`QuerySet::not_deleted()`](crate::query::QuerySet::not_deleted)
+    /// and any future `SoftDeletable` consumer key off the trait
+    /// surface instead of a hard-coded string. Phase 8α T2.6 keeps the
+    /// canonical `"deleted_at"` value as the trait default so today's
+    /// macro-emitted impls inherit it without per-model override
+    /// emission. A future per-model column-rename path (e.g.
+    /// `#[model(soft_deletable(column = "trashed_at"))]`) can override
+    /// the const at the `impl` level — non-breaking extension.
+    const COLUMN: &'static str = "deleted_at";
+
     /// Returns the soft-delete timestamp for this row, or `None` if the
     /// row is live.
     fn deleted_at(&self) -> Option<DateTime>;

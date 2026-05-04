@@ -1,71 +1,83 @@
-//! `#[derive(SoftDeletable)]` — emit the `SoftDeletable` trait impl.
+//! `#[model(soft_deletable)]` — emit the `SoftDeletable` trait impl.
 //!
-//! Phase 8 §T2.3.
+//! Phase 8 §T2.6 (supersedes T2.3's `#[derive(SoftDeletable)]`).
 //!
-//! # What this derive does
+//! # 2026-05-03 design pivot
 //!
-//! Given a struct with a declared `deleted_at: Option<DateTime>` field,
-//! the derive emits exactly one impl block:
+//! T2.3 (commit 863c4cb) shipped `#[derive(SoftDeletable)]` as the
+//! opt-in surface; T2.6 supersedes it with `#[model(soft_deletable)]`,
+//! mirroring the T2.4 Auditable pivot. Proc macros cannot observe
+//! sibling derives — `#[derive(SoftDeletable)]` could not
+//! deterministically signal to `#[derive(Model)]` / `#[model(...)]`.
+//! 8γ T6's automatic default-filter composition will need to know the
+//! model is soft-deletable AT model-macro expansion time, so doing the
+//! migration NOW is cheaper than later (8γ would have to unwind
+//! composition wiring otherwise).
+//!
+//! # What this module emits
+//!
+//! Given a struct `MyModel` with `pub deleted_at: Option<djogi::DateTime>`:
 //!
 //! ```rust,ignore
-//! impl ::djogi::SoftDeletable for #ident {
+//! impl ::djogi::SoftDeletable for MyModel {
 //!     fn deleted_at(&self) -> ::std::option::Option<::djogi::types::DateTime> {
 //!         self.deleted_at
 //!     }
 //! }
 //! ```
 //!
-//! No fields are added, removed, or renamed. The derive is purely
-//! additive at the trait level. Same Path B + same convention-sealed
-//! routing as the sibling [`super::auditable`] (Phase 8 §T2.4 —
-//! `#[model(auditable)]` opt-in attribute).
+//! No fields are added, removed, or renamed. The adopter still
+//! declares `pub deleted_at: Option<DateTime>` themselves (Path B per
+//! Phase 8 v3 line 866 — preserved across the T2.3→T2.6 pivot).
+//!
+//! The `COLUMN` const on the `SoftDeletable` trait carries the default
+//! `"deleted_at"` value at the trait level; this emission inherits
+//! the default and does not override the const. `QuerySet::not_deleted()`
+//! reads the column name through `<M as SoftDeletable>::COLUMN` rather
+//! than from a hard-coded string, so future column-rename overrides are
+//! one trait-const override away.
 //!
 //! # Path B — adopter declares the `deleted_at` field
 //!
-//! Phase 8 v3 line 866 settled the field-injection question on **Path
-//! B**: the adopter declares `pub deleted_at: Option<DateTime>` on the
-//! struct, and the derive emits only the trait impl. Path A (an
-//! attribute macro that mutates the struct AST) was rejected because:
-//!
-//! 1. Standard Rust `#[derive(...)]` derives **cannot** mutate the
-//!    input — see "Risk notes" in the v3 plan and the Rust reference
-//!    chapter on derive macros. Forcing field injection would require
-//!    a separate `#[soft_deletable]` attribute macro, breaking the
-//!    natural "stack the derive next to the existing derives"
-//!    composition.
-//! 2. Idiomatic Rust derives are non-mutating. Adopters expect
-//!    `#[derive(Foo)]` to add an impl, never to silently inject a
-//!    field.
-//! 3. The adopter cost is one extra line. When the field is missing,
-//!    the emitted `self.deleted_at` produces an actionable rustc
-//!    diagnostic (`error[E0609]: no field "deleted_at" on type ...`).
+//! Phase 8 v3 line 866 settled the field-injection question on Path B:
+//! the adopter declares `pub deleted_at: Option<djogi::DateTime>` on
+//! the struct. The macro emits only the trait impl. The T2.6 pivot
+//! does not change this: the surface flipped from a derive to an
+//! attribute, but field injection still does not happen. When the
+//! field is missing, the emitted `self.deleted_at` produces an
+//! actionable rustc diagnostic (`error[E0609]: no field "deleted_at"
+//! on type ...`).
 //!
 //! # Default-filter composition deferred to 8γ T6
 //!
-//! Phase 8α T2.3 ships **only** the trait impl. The runtime helper
-//! `QuerySet::not_deleted()` (added in
-//! `djogi/src/query/queryset.rs`) is a manual filter the adopter
-//! invokes per `objects()` chain. **Automatic** default-filter
-//! composition — making `Model::objects()` exclude soft-deleted rows
-//! by default and exposing an `_insecurely()` bypass — is deferred to
-//! Phase 8γ T6 once the `Q<T>` substrate lands.
-//!
-//! Per spec line 971 (RESOLVED 2026-05-03, lens, locked): substrate
-//! decisions belong with the substrate refactor; shipping
-//! `Model::default_filter()` extension in 8α before `Q<T>` exists in
-//! 8γ would create a cross-cluster filter-composition phantom-bug
-//! seam — 8α's filter representation would be one shape; 8γ would
-//! absorb/rewrite it, and the migration window is exactly when latent
-//! bugs surface under long-running adopter use. Simple-to-use is
-//! preserved by the manual `.not_deleted()` helper — one extra method
-//! call now, automatic by default in 8γ.
+//! Phase 8α T2.6 ships **only** the trait impl. The runtime helper
+//! `QuerySet::not_deleted()` (in `djogi/src/query/queryset.rs`) is a
+//! manual filter the adopter invokes per `objects()` chain, now reading
+//! the column name through `<M as SoftDeletable>::COLUMN`. **Automatic**
+//! default-filter composition — making `Model::objects()` exclude
+//! soft-deleted rows by default and exposing an `_insecurely()`
+//! bypass — is deferred to Phase 8γ T6 once the `Q<T>` substrate
+//! lands. Per spec line 971 (RESOLVED 2026-05-03, lens, locked):
+//! substrate decisions belong with the substrate refactor.
 //!
 //! # Composition with `#[model(...)]`
 //!
-//! Macro ordering: write `#[derive(SoftDeletable)]` **above**
-//! `#[model(...)]`. The derive runs after `#[model]` expansion in the
-//! same compilation pass — both produce independent impl blocks that
-//! coexist on the same struct without interaction.
+//! Adopter usage:
+//!
+//! ```rust,ignore
+//! use djogi::prelude::*;
+//!
+//! #[model(table = "posts", soft_deletable)]
+//! #[derive(Debug, Clone)]
+//! pub struct Post {
+//!     pub title: String,
+//!     pub deleted_at: Option<djogi::DateTime>,
+//! }
+//! ```
+//!
+//! `#[model(soft_deletable)]` and `#[model(auditable)]` / `#[model(hooks)]`
+//! compose orthogonally — the model macro produces independent impl
+//! blocks for each opt-in.
 //!
 //! # Sealing
 //!
@@ -76,25 +88,36 @@
 //! See `feedback_macro_path_routing.md` for the full routing
 //! convention.
 
+use crate::model::attrs::ModelAttrs;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{DeriveInput, parse2};
+use syn::Ident;
 
-/// Expand `#[derive(SoftDeletable)]` for the given input.
+/// Emit the `SoftDeletable` trait impl when `#[model(soft_deletable)]`
+/// is set.
 ///
-/// Returns a compile-error TokenStream on parse failure (covers the
-/// rare case where rustc hands the macro a syntactically broken
-/// struct after a previous failure recovery).
-pub fn expand(input: TokenStream) -> TokenStream {
-    let ast: DeriveInput = match parse2(input) {
-        Ok(a) => a,
-        Err(e) => return e.to_compile_error(),
-    };
-    let ident = &ast.ident;
-    let (impl_generics, ty_generics, where_clause) = ast.generics.split_for_impl();
-
+/// Returns an empty [`TokenStream`] without invoking `quote!` when
+/// the flag is absent so opt-out models pay zero macro-output
+/// overhead. Mirrors the T2.4 Auditable pattern.
+///
+/// The emitted impl inherits the trait-level
+/// `const COLUMN: &'static str = "deleted_at"` default — the column
+/// name lives on the trait, not in this macro emission, so
+/// `QuerySet::not_deleted()` and any future SoftDeletable consumer
+/// reads it through `<M as SoftDeletable>::COLUMN` rather than a
+/// hard-coded string. A future per-model column-rename path can
+/// override the const at the impl level without changing this
+/// emission shape.
+pub fn expand(model_ident: &Ident, model_attrs: &ModelAttrs) -> TokenStream {
+    if !model_attrs.soft_deletable {
+        return TokenStream::new();
+    }
     quote! {
-        impl #impl_generics ::djogi::SoftDeletable for #ident #ty_generics #where_clause {
+        // Trait impl — `SoftDeletable` getter exposing the adopter-declared
+        // `deleted_at: Option<DateTime>` as `Option<DateTime>` (copy —
+        // `OffsetDateTime` is `Copy`-bounded under the `time` crate's
+        // surface).
+        impl ::djogi::SoftDeletable for #model_ident {
             fn deleted_at(&self) -> ::std::option::Option<::djogi::types::DateTime> {
                 self.deleted_at
             }

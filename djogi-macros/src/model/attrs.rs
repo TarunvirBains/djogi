@@ -273,6 +273,42 @@ pub struct ModelAttrs {
     ///
     /// [`Auditable`]: ::djogi::Auditable
     pub auditable: bool,
+
+    /// When `true`, this model opts into the [`SoftDeletable`] composition —
+    /// Phase 8α T2.6.
+    ///
+    /// Set via `#[model(soft_deletable)]`. The macro emits:
+    ///
+    /// `impl ::djogi::SoftDeletable for #ident { ... }` — the trait impl
+    /// exposing `deleted_at(&self) -> Option<DateTime>`, copying from the
+    /// adopter-declared `pub deleted_at: Option<DateTime>` field. The
+    /// trait-level `const COLUMN: &'static str = "deleted_at"` provides
+    /// the canonical column name without re-emitting it per model; the
+    /// emitted `impl` inherits the default and `QuerySet::not_deleted()`
+    /// reads it through `<M as SoftDeletable>::COLUMN`.
+    ///
+    /// Models without the flag pay zero soft-deletable-dispatch overhead —
+    /// no impl is emitted, so the `SoftDeletable` bound is unsatisfied at
+    /// the use site (compile-time error if a generic asks for it).
+    ///
+    /// Standalone keyword only — `soft_deletable = true` /
+    /// `soft_deletable = false` are rejected, mirroring the convention
+    /// `auditable`, `hooks`, `events`, `through`, and `no_default` already
+    /// follow.
+    ///
+    /// # 2026-05-03 design pivot
+    ///
+    /// T2.3 (commit 863c4cb) shipped `#[derive(SoftDeletable)]` as the
+    /// opt-in surface; T2.6 supersedes it with this attribute and the
+    /// derive is removed from the v3 surface — same constraint that drove
+    /// the T2.4 Auditable pivot. Proc macros cannot observe sibling
+    /// derives, so a derive could not deterministically signal to
+    /// `#[model(...)]` that 8γ T6's automatic default-filter composition
+    /// should be wired. Doing the migration NOW is cheaper than later
+    /// (8γ would have to unwind composition wiring).
+    ///
+    /// [`SoftDeletable`]: ::djogi::SoftDeletable
+    pub soft_deletable: bool,
 }
 
 /// Parsed `pk = X` value.
@@ -349,6 +385,8 @@ impl ModelAttrs {
         let mut seen_hooks = false;
         let mut auditable = false;
         let mut seen_auditable = false;
+        let mut soft_deletable = false;
+        let mut seen_soft_deletable = false;
         let mut idempotency_key: Option<String> = Option::None;
         let mut tenant_key: Option<String> = Option::None;
         let mut fts: Option<FtsSpec> = Option::None;
@@ -427,6 +465,23 @@ impl ModelAttrs {
                     }
                     seen_auditable = true;
                     auditable = true;
+                }
+                // Flag-only attribute: `soft_deletable` — Phase 8α T2.6.
+                // Standalone keyword only; supersedes the T2.3
+                // `#[derive(SoftDeletable)]` derive. The model emitter
+                // reads `model_attrs.soft_deletable` to decide whether
+                // to emit `impl ::djogi::SoftDeletable for #ident { ... }`
+                // and to gate the `composed_via: Some("SoftDeletable")`
+                // tag on the `deleted_at` column (descriptor T2.5).
+                Meta::Path(path) if path.is_ident("soft_deletable") => {
+                    if seen_soft_deletable {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `soft_deletable` flag in #[model(...)]",
+                        ));
+                    }
+                    seen_soft_deletable = true;
+                    soft_deletable = true;
                 }
                 // `pk = X` bare-identifier form (Phase 7-Zero-2 T2). Accepts
                 // only single-segment paths matching the alias set in
@@ -601,7 +656,7 @@ impl ModelAttrs {
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
                                  `fts`, `indexes`, `exclusion`, `no_default`, `through`, \
-                                 `events`, `hooks`, or `auditable`",
+                                 `events`, `hooks`, `auditable`, or `soft_deletable`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -699,7 +754,7 @@ impl ModelAttrs {
                         other,
                         "expected `key = \"value\"` or `key = TypePath` attribute, \
                          or bare flag (`no_default`, `through`, `events`, `hooks`, \
-                         `auditable`)",
+                         `auditable`, `soft_deletable`)",
                     ));
                 }
             }
@@ -742,6 +797,7 @@ impl ModelAttrs {
             tree_edge,
             hooks,
             auditable,
+            soft_deletable,
         })
     }
 }

@@ -2,14 +2,17 @@
 //!
 //! This module groups the composition surfaces. T2.4 pivoted the
 //! `Auditable` opt-in from a derive macro to the `#[model(auditable)]`
-//! attribute (spec line 1037, locked 2026-05-03); T2.3's
-//! `#[derive(SoftDeletable)]` derive remains.
+//! attribute (spec line 1037, locked 2026-05-03); T2.6 (2026-05-04)
+//! followed by pivoting `SoftDeletable` to `#[model(soft_deletable)]`
+//! for the same proc-macros-cannot-observe-sibling-derives constraint
+//! that drove T2.4 — both opt-ins now route through the model
+//! attribute. `#[derive(Auditable)]` and `#[derive(SoftDeletable)]`
+//! are removed from the v3 surface.
 //!
-//! Each submodule exposes a single `expand(...)` entry point. The
-//! `auditable` submodule's `expand` takes a model identifier + parsed
-//! `ModelAttrs` and is called from `model::expand_inner`; the
-//! `soft_deletable` submodule's `expand` takes a raw `TokenStream`
-//! (derive input) and is called from `crate::lib::derive_soft_deletable`.
+//! Each submodule exposes a single `expand(model_ident, model_attrs)`
+//! entry point called from `model::expand_inner`. Both functions
+//! return an empty `TokenStream` when their respective opt-in flag is
+//! absent so opt-out models pay zero macro-output overhead.
 //!
 //! # Path-routing convention
 //!
@@ -24,19 +27,20 @@
 //!
 //! # Composition with `#[model(hooks)]` (T1)
 //!
-//! `#[model(auditable)]` and `#[model(hooks)]` compose orthogonally.
-//! The composition populator runs BEFORE any user
-//! `ModelHooks::before_create`, so user hooks can inspect or override
-//! the populated `created_by` value. Adopter usage:
+//! `#[model(auditable)]` / `#[model(soft_deletable)]` and
+//! `#[model(hooks)]` compose orthogonally. The composition populator
+//! runs BEFORE any user `ModelHooks::before_create`, so user hooks can
+//! inspect or override the populated `created_by` value. Adopter usage:
 //!
 //! ```rust,ignore
 //! use djogi::prelude::*;
 //!
-//! #[model(table = "posts", auditable, hooks)]
+//! #[model(table = "posts", auditable, soft_deletable, hooks)]
 //! #[derive(Debug, Clone)]
 //! pub struct Post {
 //!     pub title: String,
-//!     pub created_by: Option<String>, // adopter declares the field
+//!     pub created_by: Option<String>,         // adopter declares the field
+//!     pub deleted_at: Option<djogi::DateTime>, // adopter declares the field
 //! }
 //!
 //! impl djogi::hooks::ModelHooks for Post {

@@ -6,9 +6,9 @@
 //!
 //! 1. A `#[model(auditable)]` model carries
 //!    `composed_via: Some("Auditable")` on its `created_by` column.
-//! 2. A `#[derive(SoftDeletable)]` model carries
+//! 2. A `#[model(soft_deletable)]` model carries
 //!    `composed_via: Some("SoftDeletable")` on its `deleted_at` column.
-//! 3. A regular user-declared field (no composition derive contributing
+//! 3. A regular user-declared field (no composition opt-in contributing
 //!    it) keeps `composed_via: None`.
 //!
 //! These are pure descriptor-inspection tests — no Postgres, no async
@@ -39,7 +39,6 @@
 //! test cannot exist until the helper does. Re-add the assertion at
 //! 8γ T6 alongside the helper's first commit.
 
-use djogi::SoftDeletable;
 use djogi::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -79,21 +78,18 @@ fn auditable_field_descriptor_carries_composed_via() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 — `#[derive(SoftDeletable)]` tags `deleted_at` with
+// Test 2 — `#[model(soft_deletable)]` tags `deleted_at` with
 // `composed_via: Some("SoftDeletable")`.
 //
-// Detection here is field-name-based (Option A, T2.5 commit message).
-// `#[derive(SoftDeletable)]` runs in a separate macro pass that the
-// model macro cannot observe, so the model macro recognises the
-// composed column by the conventional `deleted_at` name. False
-// positives (a model that declares `deleted_at` without deriving
-// `SoftDeletable`) are accepted as a documented trade-off — the
-// provenance slot is informational metadata, not load-bearing for
-// migration emission per spec line 1124.
+// Phase 8α T2.6 tightened detection from field-name-only to
+// field-name-plus-flag, eliminating the false-positive risk that
+// motivated round-1 Gemini BLOCK-1: an adopter who declares a
+// `deleted_at` column without opting into the composition no longer
+// sees the (informational) tag on that column. Counter-test 3a below
+// pins that tightening.
 // ---------------------------------------------------------------------------
 
-#[derive(SoftDeletable)]
-#[model(table = "soft_provenance")]
+#[model(table = "soft_provenance", soft_deletable)]
 #[derive(Debug, Clone)]
 pub struct SoftProvenance {
     pub note: String,
@@ -121,7 +117,7 @@ fn soft_deletable_field_descriptor_carries_composed_via() {
 // Test 3 — Regular user-declared fields keep `composed_via: None`.
 //
 // Counter-test for the previous two cases. The `note` column on a
-// model that derives neither `Auditable` nor `SoftDeletable` (and
+// model that opts into neither `Auditable` nor `SoftDeletable` (and
 // declares neither `created_by` nor `deleted_at`) must stay at the
 // constructor default of `None`. This pins the negative half of the
 // contract so a future emitter that accidentally tags every column
@@ -144,9 +140,45 @@ fn regular_field_composed_via_none() {
         .expect("RegularProvenance must declare a `value` field");
     assert!(
         value.composed_via.is_none(),
-        "a user-declared field on a model with no composition derive \
+        "a user-declared field on a model with no composition opt-in \
          must keep composed_via = None; got {:?}",
         value.composed_via,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 3a — Phase 8α T2.6 tightening counter-test.
+//
+// A model that declares a `deleted_at: Option<DateTime>` field
+// WITHOUT `#[model(soft_deletable)]` must NOT carry the
+// `composed_via: Some("SoftDeletable")` tag. T2.5's original detection
+// was field-name-only; T2.6 tightened it to field-name-plus-flag,
+// eliminating the false-positive risk. This test pins the tightening
+// so a regression that drops the flag check fires loudly.
+// ---------------------------------------------------------------------------
+
+#[model(table = "deleted_at_no_optin")]
+#[derive(Debug, Clone)]
+pub struct DeletedAtNoOptin {
+    pub note: String,
+    pub deleted_at: Option<djogi::DateTime>,
+}
+
+#[test]
+fn deleted_at_without_opt_in_keeps_composed_via_none() {
+    let desc = DeletedAtNoOptin::descriptor();
+    let deleted_at = desc
+        .fields
+        .iter()
+        .find(|f| f.name == "deleted_at")
+        .expect("DeletedAtNoOptin must declare a `deleted_at` field");
+    assert!(
+        deleted_at.composed_via.is_none(),
+        "a `deleted_at` column on a model that does NOT opt into \
+         #[model(soft_deletable)] must keep composed_via = None; \
+         T2.6 tightened detection from field-name-only to \
+         field-name-plus-flag. got {:?}",
+        deleted_at.composed_via,
     );
 }
 

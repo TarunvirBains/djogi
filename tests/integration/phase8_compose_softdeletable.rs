@@ -1,9 +1,10 @@
-//! Phase 8α T2.3 integration tests: `#[derive(SoftDeletable)]` proc
-//! macro + manual `QuerySet::not_deleted()` helper.
+//! Phase 8α T2.6 integration tests: `#[model(soft_deletable)]` opt-in
+//! (supersedes T2.3's `#[derive(SoftDeletable)]`) + manual
+//! `QuerySet::not_deleted()` helper.
 //!
 //! What this file pins:
 //!
-//! 1. `#[derive(SoftDeletable)]` emits an `impl ::djogi::SoftDeletable
+//! 1. `#[model(soft_deletable)]` emits an `impl ::djogi::SoftDeletable
 //!    for #ident` block whose `deleted_at()` getter returns
 //!    `Option<DateTime>` copied from the adopter-declared
 //!    `deleted_at: Option<DateTime>` field (Path B per Phase 8 v3
@@ -42,8 +43,7 @@ use time::OffsetDateTime;
 // Test 1 — `deleted_at()` returns `Some(now)` when the field is set.
 // ---------------------------------------------------------------------------
 
-#[derive(SoftDeletable)]
-#[model(table = "soft_getter")]
+#[model(table = "soft_getter", soft_deletable)]
 #[derive(Debug, Clone)]
 pub struct SoftGetter {
     pub note: String,
@@ -117,8 +117,7 @@ async fn softdeletable_getter_round_trip(mut ctx: djogi::DjogiContext) {
 // non-NULL.
 // ---------------------------------------------------------------------------
 
-#[derive(SoftDeletable)]
-#[model(table = "soft_filter")]
+#[model(table = "soft_filter", soft_deletable)]
 #[derive(Debug, Clone)]
 pub struct SoftFilter {
     pub note: String,
@@ -205,8 +204,7 @@ async fn softdeletable_not_deleted_filter_excludes_deleted(mut ctx: djogi::Djogi
 // silently.
 // ---------------------------------------------------------------------------
 
-#[derive(SoftDeletable)]
-#[model(table = "soft_default")]
+#[model(table = "soft_default", soft_deletable)]
 #[derive(Debug, Clone)]
 pub struct SoftDefault {
     pub note: String,

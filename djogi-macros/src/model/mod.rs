@@ -103,6 +103,22 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //     `#[model(...)]` that the populator should be wired.
     let auditable_impl = crate::compose::auditable::expand(&struct_item.ident, &model_attrs);
 
+    // 1d. SoftDeletable opt-in — Phase 8α T2.6. Emits the
+    //     `impl ::djogi::SoftDeletable for #ident { ... }` trait impl
+    //     when `#[model(soft_deletable)]` is set; otherwise returns an
+    //     empty `TokenStream` so opt-out models pay zero macro-output
+    //     overhead.
+    //
+    //     T2.6 supersedes T2.3's `#[derive(SoftDeletable)]` for the
+    //     same proc-macros-cannot-observe-sibling-derives constraint
+    //     that drove the T2.4 Auditable pivot. Both opt-ins now route
+    //     through `#[model(...)]`. 8γ T6's automatic default-filter
+    //     composition will need to know the model is soft-deletable AT
+    //     model-macro expansion time, which a sibling derive cannot
+    //     signal — doing the migration NOW is cheaper than later.
+    let soft_deletable_impl =
+        crate::compose::soft_deletable::expand(&struct_item.ident, &model_attrs);
+
     // 2. FromPgRow — positional ordinal decode against the canonical projection.
     let from_row = from_row::expand(&struct_item, &model_attrs, &field_attrs);
 
@@ -164,6 +180,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #expanded
         #hooks_impl
         #auditable_impl
+        #soft_deletable_impl
         #from_row
         #from_joined_row
         #model_impl

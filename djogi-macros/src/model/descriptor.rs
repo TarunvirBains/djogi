@@ -434,33 +434,39 @@ fn try_expand(
 
             // Phase 8α T2.5 — composition-derive provenance.
             //
-            // Two surfaces contribute composed columns today and the
-            // descriptor records which one for each:
+            // Both composition surfaces are now driven by `#[model(...)]`
+            // attributes (T2.4 + T2.6 pivots, 2026-05-03 / 2026-05-04):
             //
-            // - `#[model(auditable)]` (T2.4 attribute pattern):
-            //   `model_attrs.auditable == true` flips the `created_by`
-            //   column to `composed_via: Some("Auditable")`. Detection
-            //   keys off `model_attrs` because the model macro is the
-            //   single source of truth for this opt-in.
+            // - `#[model(auditable)]` (T2.4): `model_attrs.auditable
+            //   == true` flips the `created_by` column to
+            //   `composed_via: Some("Auditable")`.
             //
-            // - `#[derive(SoftDeletable)]` (T2.3 derive macro): the
-            //   derive runs in a separate macro pass and the model
-            //   macro cannot observe the derive list. We fall back to
-            //   field-name detection — any user-declared field literally
-            //   named `deleted_at` gets `composed_via: Some("SoftDeletable")`.
-            //   See T2.5 design notes for the Option-A trade-off (false
-            //   positives possible if an adopter declares `deleted_at`
-            //   without deriving `SoftDeletable`; provenance is
-            //   informational metadata for `djogi docs`, not load-bearing
-            //   for migration emission per spec line 1124).
+            // - `#[model(soft_deletable)]` (T2.6 — supersedes T2.3's
+            //   `#[derive(SoftDeletable)]`): `model_attrs.soft_deletable
+            //   == true` flips the `deleted_at` column to
+            //   `composed_via: Some("SoftDeletable")`. T2.6 tightens the
+            //   detection from field-name-only to field-name-plus-flag,
+            //   eliminating the false-positive risk that motivated
+            //   round-1 Gemini BLOCK-1: an adopter who declares a
+            //   `deleted_at` column without opting into the
+            //   composition no longer sees the (informational) tag on
+            //   that column.
             //
             // Order matters: `created_by` checked first so a model that
-            // declares both `auditable` and a `deleted_at` field tags
-            // each column with its own provenance independently.
+            // declares both `auditable` and `soft_deletable` tags each
+            // column with its own provenance independently.
+            //
+            // Per spec line 1124, `composed_via` is metadata only — the
+            // migration differ does NOT key off it. Reading
+            // `composed_via` to decide migration strategy or
+            // default-filter composition would re-introduce a different
+            // kind of mismatch (a future column-rename override would
+            // diverge from the tag); the descriptor doc comment at
+            // `djogi/src/descriptor.rs` carries that warning explicitly.
             let composed_via_tokens: TokenStream = if name == "created_by" && model_attrs.auditable
             {
                 quote! { ::std::option::Option::Some("Auditable") }
-            } else if name == "deleted_at" {
+            } else if name == "deleted_at" && model_attrs.soft_deletable {
                 quote! { ::std::option::Option::Some("SoftDeletable") }
             } else {
                 quote! { ::std::option::Option::None }

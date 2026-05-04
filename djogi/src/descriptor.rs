@@ -1414,13 +1414,15 @@ pub struct FieldDescriptor {
     ///
     /// - `#[model(auditable)]` on a model with a `created_by` field
     ///   sets `composed_via: Some("Auditable")` on that field.
-    /// - `#[derive(SoftDeletable)]` on a model with a `deleted_at`
+    /// - `#[model(soft_deletable)]` on a model with a `deleted_at`
     ///   field sets `composed_via: Some("SoftDeletable")` on that
     ///   field.
     ///
     /// `None` for every user-declared field that is not contributed
-    /// by a recognised composition derive — including framework
-    /// columns (`id`, `created_at`, `updated_at`).
+    /// by a recognised composition opt-in — including framework
+    /// columns (`id`, `created_at`, `updated_at`) and any
+    /// adopter-declared `created_by` / `deleted_at` field whose model
+    /// did not opt into the matching `#[model(...)]` flag.
     ///
     /// Migration emission is byte-identical for composed vs hand-
     /// declared columns — this slot is provenance metadata only,
@@ -1431,17 +1433,20 @@ pub struct FieldDescriptor {
     /// identical to a hand-declared `created_by: Option<String>`
     /// column under `diff_schemas`.
     ///
-    /// **Do not use as a behavioral gate.** `composed_via` for the
-    /// `SoftDeletable` tag is detected by field name alone (`deleted_at`
-    /// of type `Option<DateTime>`), so an adopter who declares a
-    /// similarly-named field WITHOUT `#[derive(SoftDeletable)]` will
-    /// still see `composed_via: Some("SoftDeletable")` on that column.
-    /// Future consumers that need to reason about composition behaviour
-    /// must read it from the typed trait surface (`<M as
+    /// **Do not use as a behavioral gate.** Today the tag is keyed off
+    /// the model attribute (`auditable` / `soft_deletable`) AND the
+    /// canonical column name (`created_by` / `deleted_at`); any future
+    /// per-model column-rename path (e.g.
+    /// `#[model(soft_deletable(column = "trashed_at"))]` overriding
+    /// `<M as SoftDeletable>::COLUMN`) would re-introduce a different
+    /// kind of mismatch — the descriptor field would still be tagged
+    /// against the renamed column's name, but a behavioural-gate
+    /// consumer that relied on this tag would key off a stale
+    /// `"deleted_at"` literal and silently miss the renamed column.
+    /// Future consumers that need to reason about composition
+    /// behaviour must read it from the typed trait surface (`<M as
     /// SoftDeletable>` / `<M as Auditable>`) rather than from this
-    /// metadata slot — using `composed_via` to decide migration
-    /// strategy, default-filter composition, or RLS would silently
-    /// turn the false-positive into a real bug.
+    /// metadata slot.
     pub composed_via: Option<&'static str>,
 }
 

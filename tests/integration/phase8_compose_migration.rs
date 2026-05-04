@@ -34,8 +34,8 @@
 //!
 //! - The model macro's `auditable` flag flowing through to descriptor
 //!   emission (`#[model(auditable)]` path).
-//! - The standalone `#[derive(SoftDeletable)]` path emitting the trait
-//!   impl alongside.
+//! - The `#[model(soft_deletable)]` opt-in (T2.6) emitting the trait
+//!   impl alongside the auditable surface.
 //! - The descriptor emitter tagging both `created_by` and `deleted_at`
 //!   independently with the right provenance string.
 //! - The migration emitter NOT discriminating between composed and
@@ -43,7 +43,6 @@
 
 use std::collections::BTreeMap;
 
-use djogi::SoftDeletable;
 use djogi::migrate::diff::{Classification, SchemaDelta, SchemaOperation};
 use djogi::migrate::projection::{BucketKey, project_from_inventory};
 use djogi::migrate::sql::lower_delta;
@@ -56,8 +55,7 @@ use djogi::prelude::*;
 // would adopt.
 // ---------------------------------------------------------------------------
 
-#[derive(SoftDeletable)]
-#[model(table = "phase8_compose_round_trip", auditable)]
+#[model(table = "phase8_compose_round_trip", auditable, soft_deletable)]
 #[derive(Debug, Clone)]
 pub struct Phase8ComposeRoundTrip {
     pub note: String,
