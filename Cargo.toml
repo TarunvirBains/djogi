@@ -37,7 +37,7 @@ bytes = "1"
 # SQL constants, `postgres_types::ToSql`/`FromSql` impls for `HeerId` /
 # `RanjId`) are preserved; the `postgres` feature additionally covers the
 # new *Desc types.
-heeranjid = { version = "0.3", features = ["postgres"] }
+heeranjid = { version = "0.3.6", features = ["postgres"] }
 
 # Proc macro
 syn = { version = "2", features = ["full", "extra-traits"] }
