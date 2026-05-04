@@ -70,25 +70,22 @@
 //!   stamps on the migration. Sorts lexically before any operator-
 //!   composed migration (which use `V<YYYYMMDDHHMMSS>__<slug>` with
 //!   year ≥ 1000), guaranteeing replay order.
-//! - [`compose_heeranjid_install`] — owned SQL string for the
-//!   HeeRanjID schema + desc support + seed.
-//! - [`compose_extension_installs`] — owned SQL string for
-//!   `CREATE EXTENSION IF NOT EXISTS <name>` over a sorted set.
-//! - [`compose_node_seed`] — owned SQL string for the
-//!   `ALTER DATABASE ... SET` + session-level `SET` of
-//!   `heer.node_id`.
-//! - [`compose_phase_zero`] — combined SQL: HeeRanjID install +
-//!   extensions + node seed. The auto-emit path writes this to disk;
-//!   the test harness runs it directly.
-//! - [`run_phase_zero`] — runtime driver that executes the composed
-//!   SQL via a `tokio_postgres::GenericClient`. Routes through the
-//!   per-database client the caller supplies.
-//! - [`extension_dependencies_from_models`] — collects the distinct
-//!   `extension_dependency` values across a per-bucket `AppliedSchema`
-//!   map. Used by `migrations compose` to build the `extensions`
-//!   argument when auto-emitting Phase 0.
+//! - [`DEFAULT_NODE_ID`] — the default node id for single-node
+//!   deployments, passed to [`run_phase_zero`] by most callers.
+//! - [`run_phase_zero`] — runtime driver that installs HeeRanjID,
+//!   required extensions, and the node-id GUC in one batch. The only
+//!   entry point adopters and the test harness need.
 //! - [`BootstrapError`] — error variants surfaced by the runtime
-//!   driver and the validator.
+//!   driver.
+//!
+//! - [`ensure_phase_zero_emitted`] — idempotent per-database Phase 0
+//!   emission called by `migrations compose`. Exposed as `pub` so the
+//!   integration test suite can drive it directly.
+//!
+//! The SQL composition helpers (`compose_heeranjid_install`,
+//! `compose_extension_installs`, `compose_node_seed`,
+//! `compose_phase_zero`) are `pub(crate)` — used internally
+//! by `migrations compose` and `db reset`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -128,6 +125,23 @@ pub const DEFAULT_NODE_ID: i32 = 1;
 /// which always reflects a wall-clock instant.
 pub const PHASE_ZERO_VERSION: &str = "V00000000000000__phase_zero_bootstrap";
 
+/// Sorted allowlist of Postgres extensions Djogi knows how to install.
+///
+/// Validated via `binary_search` in [`compose_extension_installs`] —
+/// descriptor-derived extension names that are not in this list are
+/// rejected before any SQL is emitted.  Adding a new extension to
+/// Djogi's descriptor system requires a matching entry here.
+///
+/// Rules: ASCII lowercase, sorted lexically (binary_search requirement).
+pub(crate) const ALLOWED_EXTENSIONS: &[&str] = &[
+    "btree_gist",
+    "pg_trgm",
+    "pgcrypto",
+    "pgvector",
+    "postgis",
+    "vector",
+];
+
 /// Errors surfaced by the bootstrap entry points.
 #[derive(Debug)]
 pub enum BootstrapError {
@@ -135,6 +149,13 @@ pub enum BootstrapError {
     /// Postgres-identifier grammar (ASCII letter or underscore
     /// followed by ASCII alphanumerics or underscores, 1–63 bytes).
     InvalidExtensionName {
+        /// The offending name, preserved for diagnostics.
+        name: String,
+    },
+    /// Caller supplied a valid identifier that is not in Djogi's
+    /// known-extension allowlist ([`ALLOWED_EXTENSIONS`]).  Adding new
+    /// Postgres extensions to Djogi requires updating that list.
+    UnknownExtension {
         /// The offending name, preserved for diagnostics.
         name: String,
     },
@@ -159,6 +180,12 @@ impl std::fmt::Display for BootstrapError {
                  Postgres-identifier grammar (ASCII letter or underscore followed \
                  by ASCII alphanumerics or underscores, 1-63 bytes)"
             ),
+            BootstrapError::UnknownExtension { name } => write!(
+                f,
+                "phase 0 bootstrap: extension `{name}` is not in Djogi's \
+                 known-extension allowlist; add it to ALLOWED_EXTENSIONS in \
+                 migrate/bootstrap.rs to enable installation"
+            ),
             BootstrapError::Db { step, source } => {
                 write!(f, "phase 0 bootstrap: {step} failed: {source}")
             }
@@ -170,7 +197,8 @@ impl std::error::Error for BootstrapError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             BootstrapError::Db { source, .. } => Some(source),
-            BootstrapError::InvalidExtensionName { .. } => None,
+            BootstrapError::InvalidExtensionName { .. }
+            | BootstrapError::UnknownExtension { .. } => None,
         }
     }
 }
@@ -196,7 +224,7 @@ impl std::error::Error for BootstrapError {
 /// file. The runtime test-harness path also benefits — a single
 /// composed blob means one `batch_execute` call with one round-trip,
 /// instead of four.
-pub fn compose_heeranjid_install() -> String {
+pub(crate) fn compose_heeranjid_install() -> String {
     // The order here mirrors what the test harness ran pre-Track-0:
     // base install, desc-support primitives, seed.
     //
@@ -241,14 +269,18 @@ pub fn compose_heeranjid_install() -> String {
 ///
 /// An empty set returns an empty string. Callers concatenate this
 /// into [`compose_phase_zero`] without conditional handling.
-pub fn compose_extension_installs(extensions: &BTreeSet<String>) -> Result<String, BootstrapError> {
-    // Validate up-front — any failure surfaces before the output
-    // String is allocated. This keeps the function output partition
-    // clean: either every extension was acceptable and SQL is
-    // returned, or no SQL is returned and the operator gets a
-    // structured error naming the bad input.
+pub(crate) fn compose_extension_installs(
+    extensions: &BTreeSet<String>,
+) -> Result<String, BootstrapError> {
+    // Two-pass validation: identifier grammar first (cheap), then
+    // allowlist (binary_search on ALLOWED_EXTENSIONS).  Both passes
+    // run before any output String is allocated so callers either get
+    // clean SQL or a structured error — never partial output.
     for name in extensions {
         validate_extension_name(name)?;
+        if ALLOWED_EXTENSIONS.binary_search(&name.as_str()).is_err() {
+            return Err(BootstrapError::UnknownExtension { name: name.clone() });
+        }
     }
     if extensions.is_empty() {
         return Ok(String::new());
@@ -299,7 +331,7 @@ pub fn compose_extension_installs(extensions: &BTreeSet<String>) -> Result<Strin
 /// composer re-validates as defence-in-depth so a future caller that
 /// skips the URL helper still gets a typed error rather than an SQL
 /// injection.
-pub fn compose_node_seed(database: &str, node_id: i32) -> Result<String, BootstrapError> {
+pub(crate) fn compose_node_seed(database: &str, node_id: i32) -> Result<String, BootstrapError> {
     // Re-validate the database identifier even though production
     // callers pre-validate via `extract_database_from_url` +
     // `is_valid_pg_identifier`. Defence-in-depth — a mis-routed
@@ -336,7 +368,7 @@ pub fn compose_node_seed(database: &str, node_id: i32) -> Result<String, Bootstr
 ///
 /// Returns owned bytes so the caller can hash, write, or execute
 /// directly.
-pub fn compose_phase_zero(
+pub(crate) fn compose_phase_zero(
     database: &str,
     extensions: &BTreeSet<String>,
     node_id: i32,
@@ -430,7 +462,8 @@ where
 ///
 /// Returns owned strings keyed by `BTreeSet<String>` so the result
 /// is sorted + de-duplicated and the caller can hash it deterministically.
-pub fn extension_dependencies_from_models(
+#[cfg(test)]
+fn extension_dependencies_from_models(
     models: &BTreeMap<BucketKey, AppliedSchema>,
 ) -> BTreeSet<String> {
     let mut deps = BTreeSet::new();
@@ -597,7 +630,14 @@ pub fn ensure_phase_zero_emitted(
         };
         let dir = bucket_dir(workspace_root, &bucket);
         let up_path = dir.join(up_filename(PHASE_ZERO_VERSION));
-        if up_path.exists() {
+        let down_path = dir.join(down_filename(PHASE_ZERO_VERSION));
+        let pending_path = pending_json_path(workspace_root, &bucket);
+
+        // All three artifacts must be present for the emit to be
+        // considered complete. Checking only `up_path` would skip
+        // re-emission on a partial write (e.g. crash after up.sql but
+        // before pending.json), leaving a stale disk state forever.
+        if up_path.exists() && down_path.exists() && pending_path.exists() {
             continue;
         }
 
@@ -630,21 +670,8 @@ pub fn ensure_phase_zero_emitted(
         let pending_bytes =
             serde_json::to_vec_pretty(&pending).map_err(AutoEmitError::PendingJson)?;
 
-        let down_path = dir.join(down_filename(PHASE_ZERO_VERSION));
-        let pending_path = pending_json_path(workspace_root, &bucket);
-
         // 5. Ensure parent directories exist for the bucket dir and
-        //    the pending dir, then write all three files. We use a
-        //    plain `fs::write` rather than the more elaborate atomic
-        //    rename dance from `compose` itself: Phase 0 emission is
-        //    a single per-database transaction (three file writes),
-        //    and the workspace lock guarantees exclusion. A failure
-        //    after up-sql is written but before pending-json leaves
-        //    a marker but no pending entry — the next compose detects
-        //    the marker and skips, leaving a stale pending JSON on
-        //    disk only on the failed-emit path. The trade-off
-        //    matches `migrations apply` semantics: the on-disk file
-        //    is the source of truth; pending JSON is a build-cache.
+        //    the pending dir, then write all three files.
         ensure_parent(&up_path)?;
         ensure_parent(&pending_path)?;
         fs::create_dir_all(&dir).map_err(|e| AutoEmitError::Io {
@@ -716,9 +743,8 @@ fn compose_phase_zero_down_text() -> String {
 /// Aggregate extension dependencies from every bucket in a single
 /// database.
 ///
-/// Filters [`extension_dependencies_from_models`] semantics to one
-/// database: PostGIS declared in `main.billing` and `main.shipping`
-/// merges to one install in `main`'s Phase 0. PostGIS declared in
+/// PostGIS declared in `main.billing` and `main.shipping` merges to
+/// one install in `main`'s Phase 0.  PostGIS declared in
 /// `crud_log.audit` lives in a separate Phase 0 for the `crud_log`
 /// database.
 fn extensions_for_database(
@@ -1212,29 +1238,39 @@ mod tests {
             tombstone: false,
         }];
         let models = BTreeMap::new();
-        // Pre-create the Phase 0 marker for "main".
+        // Pre-create all three Phase 0 artifacts for "main" to
+        // simulate a complete prior emit. The guard now requires all
+        // three to be present — a partial write (only up_path) is no
+        // longer treated as complete and will be overwritten.
         let bucket = BucketKey {
             database: "main".to_string(),
             app: String::new(),
         };
         let dir = bucket_dir(&work, &bucket);
         fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(pending_database_dir(&work, "main")).unwrap();
         fs::write(
             dir.join(up_filename(PHASE_ZERO_VERSION)),
-            "-- existing Phase 0 marker",
+            "-- existing Phase 0 up",
         )
         .unwrap();
+        fs::write(
+            dir.join(down_filename(PHASE_ZERO_VERSION)),
+            "-- existing Phase 0 down",
+        )
+        .unwrap();
+        fs::write(pending_json_path(&work, &bucket), b"{}").unwrap();
 
         let emitted =
             ensure_phase_zero_emitted(&work, &models, &apps, fixed_now(), &guard).expect("emit");
         assert!(
             emitted.is_empty(),
-            "main was skipped (marker present); no other databases in inputs"
+            "main was skipped (all three artifacts present); no other databases in inputs"
         );
 
-        // Confirm the existing marker was NOT overwritten.
+        // Confirm the existing up-sql was NOT overwritten.
         let content = fs::read_to_string(dir.join(up_filename(PHASE_ZERO_VERSION))).unwrap();
-        assert_eq!(content, "-- existing Phase 0 marker");
+        assert_eq!(content, "-- existing Phase 0 up");
         let _ = std::fs::remove_dir_all(&work);
     }
 }

@@ -456,6 +456,10 @@ pub struct ComposeRequest<'a> {
     /// the auto-emitted Phase 0 artefacts. The skip is a test-only
     /// affordance — the CLI / production paths always go through the
     /// full auto-emit flow.
+    ///
+    /// Not adopter API. Setting this `true` from outside the crate
+    /// bypasses Phase 0 and is unsupported.
+    #[doc(hidden)]
     pub skip_phase_zero_auto_emit: bool,
 }
 
