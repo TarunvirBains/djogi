@@ -54,8 +54,17 @@
 //!   for application code; wraps the same drain-after-commit semantics but
 //!   also handles nested savepoints.
 //!
-//! Callbacks registered on a pool-backed context with no `atomic()` scope
-//! are silently dropped when the context is dropped.
+//! Calls to [`DjogiContext::on_commit`] on a **pool-backed** context (no
+//! `atomic()` scope, no surrounding transaction) are an audit-warn no-op:
+//! the callback is **not** queued, and a `#[track_caller] tracing::warn!`
+//! event with the grep-able token `djogi::on_commit::pool_backed_drop`
+//! fires once per `on_commit` call so log scrapers catch every silent-drop
+//! site. The recommended fix is to wrap the CRUD chain in
+//! [`djogi::transaction::atomic`](crate::transaction::atomic) (or open a
+//! transaction explicitly via [`DjogiContext::begin`]) so the
+//! [`commit`](DjogiContext::commit) drain step actually fires. The warn
+//! is **single-shot per `on_commit` call** — it does not amplify per row
+//! or per drain step.
 
 use crate::auth::AuthContext;
 use crate::pg::connection::PgConnection;
@@ -557,17 +566,74 @@ impl DjogiContext {
 
     /// Register an async callback to fire after a successful commit.
     ///
-    /// Callbacks execute in FIFO order after the transaction commits.
-    /// Callback errors are logged via `tracing::error!` but do not fail the
-    /// commit (per the spec resolution). Subsequent callbacks still
-    /// fire even if an earlier callback fails.
+    /// # Behavior by context kind
+    ///
+    /// - **Transaction-backed** context (inside `atomic()` or after
+    ///   [`begin`](Self::begin)): the callback is queued and fires in FIFO
+    ///   order after the underlying transaction commits. Callback errors
+    ///   are logged via `tracing::error!` but do not fail the commit (per
+    ///   the spec resolution). Subsequent callbacks still fire even if an
+    ///   earlier callback fails.
+    /// - **Pool-backed** context (no surrounding transaction): the callback
+    ///   is **dropped without queuing** and a `#[track_caller]
+    ///   tracing::warn!` event with the grep-able token
+    ///   `djogi::on_commit::pool_backed_drop` fires at the caller's source
+    ///   location. There is no `commit()` to drain the queue against on a
+    ///   pool-backed context, so silently queuing the callback would lose
+    ///   work; emitting an audit-warn instead makes the silent-drop
+    ///   observable for log scrapers.
+    ///
+    /// # Recommended fix for pool-backed callers
+    ///
+    /// Wrap the CRUD chain (or just the `on_commit` registration) in
+    /// [`djogi::transaction::atomic`](crate::transaction::atomic):
+    ///
+    /// ```ignore
+    /// djogi::transaction::atomic(&pool, |ctx| Box::pin(async move {
+    ///     Foo::create(ctx, foo).await?;
+    ///     ctx.on_commit(move || async move { /* fires after commit */ Ok(()) });
+    ///     Ok::<_, djogi::DjogiError>(())
+    /// })).await?;
+    /// ```
+    ///
+    /// `atomic()` performs the canonical Phase 8 §D3 drain sequence
+    /// (`before → DB → outbox → after → on_commit`) so the callback runs
+    /// exactly once after the surrounding transaction commits.
+    ///
+    /// # Audit-warn semantics
+    ///
+    /// The warn is **single-shot per `on_commit` call** — it does not
+    /// amplify per row or per drain step. The `#[track_caller]` attribute
+    /// surfaces the adopter's call site rather than this method, so log
+    /// scrapers can pinpoint which application code needs the `atomic()`
+    /// wrap. The grep-able token `djogi::on_commit::pool_backed_drop` is
+    /// stable; treat it as part of the audit invariant.
+    #[track_caller]
     pub fn on_commit<F, Fut>(&mut self, callback: F)
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), DjogiError>> + Send + 'static,
     {
-        let boxed: OnCommitCallback = Box::new(move || Box::pin(callback()));
-        self.on_commit.push(boxed);
+        match &self.inner {
+            ContextInner::Pool(_) => {
+                // Pool-backed context: no transaction commit will ever run
+                // to drain queued callbacks. Drop the callback and emit a
+                // grep-able warn at the caller's site so silent failures
+                // are observable to log scrapers. Mirrors the Phase 5
+                // `_insecurely` audit-warn pattern.
+                tracing::warn!(
+                    caller = %std::panic::Location::caller(),
+                    "djogi::on_commit::pool_backed_drop: on_commit callback dropped on a \
+                     pool-backed DjogiContext (no transaction commit will run to drain it); \
+                     wrap the call in djogi::transaction::atomic(..) so the on_commit drain fires",
+                );
+                drop(callback);
+            }
+            ContextInner::Transaction(_) => {
+                let boxed: OnCommitCallback = Box::new(move || Box::pin(callback()));
+                self.on_commit.push(boxed);
+            }
+        }
     }
 
     /// Length of the on-commit callback queue. Used by `transaction.rs`

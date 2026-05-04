@@ -367,3 +367,8 @@ harness = true
 name = "phase8_compose_migration"
 path = "../tests/integration/phase8_compose_migration.rs"
 harness = true
+
+[[test]]
+name = "phase8_on_commit_pool_warn"
+path = "../tests/integration/phase8_on_commit_pool_warn.rs"
+harness = true
