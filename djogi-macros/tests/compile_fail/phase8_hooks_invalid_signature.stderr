@@ -1,0 +1,12 @@
+error[E0053]: method `before_create` has an incompatible type for trait
+  --> tests/compile_fail/phase8_hooks_invalid_signature.rs:29:9
+   |
+29 |         &self,
+   |         ^^^^^ types differ in mutability
+   |
+   = note: expected signature `fn(&mut Widget, &mut DjogiContext) -> impl Future<Output = Result<(), DjogiError>>`
+              found signature `fn(&Widget, &mut DjogiContext) -> impl Future<Output = Result<(), DjogiError>>`
+help: change the self-receiver type to match the trait
+   |
+29 |         &mut self,
+   |          +++

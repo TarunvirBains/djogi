@@ -337,3 +337,8 @@ harness = true
 name = "phase8_hooks_delete"
 path = "../tests/integration/phase8_hooks_delete.rs"
 harness = true
+
+[[test]]
+name = "phase8_hooks_canonical_sequence"
+path = "../tests/integration/phase8_hooks_canonical_sequence.rs"
+harness = true
