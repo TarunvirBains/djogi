@@ -303,9 +303,11 @@ impl DjogiPool {
     ///   driver API rather than through `QuerySet::stream`.
     /// - `CREATE EXTENSION` and other DDL that runs once at cold-start
     ///   migration time, before any model context exists.
-    /// - Bridging into third-party crates (e.g.
-    ///   `heeranjid::postgres_schema::install_schema`) that take a
-    ///   `&tokio_postgres::Client`.
+    /// - Bridging into third-party crates that take a
+    ///   `&tokio_postgres::Client` directly (rare since Track 0
+    ///   collapsed the HeeRanjID + extension install path through
+    ///   `djogi::migrate::bootstrap::run_phase_zero`, which itself
+    ///   takes a generic client).
     ///
     /// # When NOT to reach for this
     ///
