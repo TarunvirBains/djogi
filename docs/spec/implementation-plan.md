@@ -620,8 +620,8 @@ v0.1.0 ships when **both** are true: (1) djogi Phase 8 complete (8a–8g all mer
 
 ### 8b: Abstract Model Composition
 
-- [ ] `#[derive(Auditable)]` — injects `created_at`, `updated_at` (already exists) + `created_by: Option<String>`
-- [ ] `#[derive(SoftDeletable)]` — injects `deleted_at: Option<OffsetDateTime>`, adds default filter excluding deleted
+- [ ] `#[model(auditable)]` — adopter declares `created_by: Option<String>`; macro emits the `Auditable` trait impl + `__djogi_auditable_populate` hook (T2.4 superseded the original `#[derive(Auditable)]` surface — proc macros cannot observe sibling derives, so a single attribute opt-in is the canonical path)
+- [ ] `#[model(soft_deletable)]` — adopter declares `deleted_at: Option<OffsetDateTime>`; macro emits the `SoftDeletable` trait impl. Adopter calls `.objects().not_deleted()` to filter; automatic default-filter composition deferred to 8γ T6 once `Q<T>` substrate lands (T2.6 superseded the original `#[derive(SoftDeletable)]` surface for symmetry with the auditable opt-in)
 - [ ] Custom field group macros: developers can define their own derive macros that inject fields
 - [ ] Constraint/index name interpolation: `%(model)s_%(field)s_unique`
 

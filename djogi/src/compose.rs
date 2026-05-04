@@ -3,11 +3,14 @@
 //! These are the runtime trait surfaces a model picks up when adopters
 //! opt in via `#[model(auditable)]` (Phase 8 §T2.4 — supersedes T2.2's
 //! `#[derive(Auditable)]` per spec line 1037, locked 2026-05-03) or
-//! `#[derive(SoftDeletable)]` (Phase 8 §T2.3). Phase 8 §T2.1 landed
-//! the trait shapes only; T2.3 / T2.4 ship the macro emissions and are
-//! the source of truth for behavior. Downstream code that only needs to
-//! *bound a generic* on "models with audit fields" or "models with
-//! soft-delete semantics" can import these traits today.
+//! `#[model(soft_deletable)]` (Phase 8 §T2.6 — supersedes T2.3's
+//! `#[derive(SoftDeletable)]` for symmetry with the auditable surface
+//! and to de-risk 8γ T6's automatic default-filter composition).
+//! Phase 8 §T2.1 landed the trait shapes only; T2.4 / T2.6 ship the
+//! macro emissions and are the source of truth for behavior.
+//! Downstream code that only needs to *bound a generic* on "models with
+//! audit fields" or "models with soft-delete semantics" can import
+//! these traits today.
 //!
 //! # Why two traits, no methods beyond the field accessors?
 //!
@@ -36,7 +39,7 @@
 //! reasons:
 //!
 //! 1. The traits are *user-implementable in shape* — adopter macros
-//!    (`#[model(auditable)]` T2.4 / `#[derive(SoftDeletable)]` T2.3)
+//!    (`#[model(auditable)]` T2.4 / `#[model(soft_deletable)]` T2.6)
 //!    emit `impl Auditable for UserModel` / `impl SoftDeletable for
 //!    UserModel` directly. If we sealed them via a supertrait, the
 //!    macro emission would need to route through

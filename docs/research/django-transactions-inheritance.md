@@ -43,14 +43,22 @@
 
 ### Djogi Recommendation
 
-Abstract models map naturally to Rust **trait-based composition** or **derive macro field groups**:
+Abstract models map naturally to Rust **trait-based composition** via attribute-driven opt-ins on `#[model(...)]`. Phase 8α landed the canonical shape: composition opt-ins live as keywords on the model attribute (not as sibling derives) so the model macro can wire them through CRUD and descriptor emission in a single expansion.
 
 ```rust
-#[derive(Auditable)]  // injects created_at, updated_at, created_by
-#[derive(SoftDeletable)]  // injects deleted_at, custom default filter
-#[derive(Model)]
-pub struct Vehicle { ... }
+// Phase 8α-final shape (post-T2.4 + T2.6 surface migrations):
+#[model(auditable, soft_deletable)]  // adopter declares created_by + deleted_at
+                                     // fields; macro emits trait impls and
+                                     // (for auditable) the before_create
+                                     // populator hook
+pub struct Vehicle {
+    pub created_by: Option<String>,
+    pub deleted_at: Option<OffsetDateTime>,
+    // ... other fields
+}
 ```
+
+Earlier Phase 8α drafts proposed sibling derives `#[derive(Auditable)]` / `#[derive(SoftDeletable)]`, but proc macros cannot observe sibling derives — wiring a `before_create` populator from `Auditable` into the model's CRUD path needed the model macro to know about `Auditable` at expansion time. The single-attribute shape resolves that constraint and keeps the two opt-ins symmetric.
 
 ## Proxy Models
 

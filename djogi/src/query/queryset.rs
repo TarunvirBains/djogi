@@ -1282,9 +1282,12 @@ impl<T: Model> QuerySet<T> {
 //      deriving models declare the column themselves (Path B), which
 //      means there's no compile-time guarantee that
 //      `T::Fields::default().deleted_at` exists at the type level.
-//    - The column name `"deleted_at"` is a hard-coded string by
-//      convention (the same way the `Auditable` getter assumes
-//      `created_by`). The trait getter signature pins the convention.
+//    - The column name reads from `<M as SoftDeletable>::COLUMN`
+//      (defaults to `"deleted_at"`; T2.6 added the trait const).
+//      Reading via the trait surface lets a future column-override
+//      path (e.g. `#[model(soft_deletable(column = "trashed_at"))]`)
+//      flow through `.not_deleted()` automatically — the helper is
+//      not a hard-coded literal anymore.
 //
 // 3. The `'static` bound on `M` mirrors the bounds present on the
 //    other terminal-method impls below (`fetch_all`, `count`, etc.)

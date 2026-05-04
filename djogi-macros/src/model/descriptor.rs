@@ -508,12 +508,14 @@ fn try_expand(
                     // `stored: true` is implicit (Pg18 supports only
                     // STORED). `None` for non-generated columns.
                     generated: #generated_tokens,
-                    // Phase 8α T2.5 — composition-derive provenance.
+                    // Phase 8α T2.5 + T2.6 — composition-derive provenance.
                     // `Some("Auditable")` for the `created_by` column on
                     // a `#[model(auditable)]` model; `Some("SoftDeletable")`
-                    // for any field literally named `deleted_at` (Option A
-                    // — see Cluster 8α T2.5 commit message); `None`
-                    // otherwise.
+                    // for the `deleted_at` column on a
+                    // `#[model(soft_deletable)]` model (T2.6 tightened
+                    // the detection from field-name-only to
+                    // field-name + attribute opt-in to eliminate the
+                    // adopter false-positive risk); `None` otherwise.
                     composed_via: #composed_via_tokens,
                 }
             }
