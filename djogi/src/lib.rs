@@ -39,6 +39,15 @@
 //! canonical types (`DateTime`, `Date`, `HeerId`, `RanjId`), and the
 //! `DjogiError` enum — everything a model definition needs.
 
+// Alias the current crate as `djogi` under test so the absolute
+// `::djogi::*` paths emitted by `#[djogi_test]` (and any other macro that
+// hard-codes the crate name) resolve when used from inside this crate's
+// own unit-test modules. Outside of tests, the dependency graph already
+// carries the name; under `cargo test --lib` the crate root has no
+// `djogi` entry without this self-extern.
+#[cfg(test)]
+extern crate self as djogi;
+
 pub mod apps;
 pub mod array;
 pub mod auth;

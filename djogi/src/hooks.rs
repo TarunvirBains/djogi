@@ -131,59 +131,67 @@ pub trait ModelHooks: Sized {
 
 #[cfg(test)]
 mod tests {
-    //! Compile-time tests for the `ModelHooks` trait.
+    //! Runtime tests for the `ModelHooks` trait.
     //!
-    //! These tests intentionally do NOT construct a real `DjogiContext`.
-    //! The default bodies (`let _ = ctx; async { Ok(()) }`) never read
-    //! from `ctx`, so the only behavioural surface to verify is that
-    //! the trait compiles, that an empty `impl ModelHooks for T {}`
-    //! type-checks, and that an override can shadow each default.
-    //! Behavioural integration with the CRUD terminals lands in T1.7's
-    //! canonical-sequence integration test, which uses `#[djogi_test]`
-    //! against a real per-test database.
+    //! Each test runs against a fresh per-test Postgres database via
+    //! `#[djogi_test]`. The `DjogiContext` is the real one CRUD terminals
+    //! receive, so a passing test here proves both that the trait compiles
+    //! and that the awaited futures behave: the default body returns
+    //! `Ok(())`, an override can mutate `self` through `before_create`, and
+    //! an override returning `Err(DjogiError::Validation(_))` round-trips
+    //! the variant without coercion.
     //!
-    //! Static (compile-time) verification is sufficient here because:
+    //! Behavioural integration with the CRUD terminals (the
+    //! `before → DB → outbox → after → on_commit drain` sequence) lands in
+    //! T1.7; these tests cover the trait surface in isolation.
     //!
-    //! - The default body is literally `async { Ok(()) }` — no runtime
-    //!   ambiguity to test.
-    //! - Confirming `T: ModelHooks` via the `_assert_impls` helper
-    //!   forces the compiler to instantiate every defaulted method's
-    //!   future type, catching any signature mistake (missing `Send`,
-    //!   wrong return type, accidental `'static` bound) at this layer.
-    //!
-    //! Runtime tests requiring a `DjogiContext` would either need a
-    //! mock/stub constructor (none exists today — `DjogiPool::connect`
-    //! pings the DB at build time) or `#[djogi_test]` (which requires
-    //! `DATABASE_URL` to be set). Both options push the test outside
-    //! the `cargo test --lib` lane the spec asks the verification step
-    //! to exercise.
+    //! The crate root carries `#[cfg(test)] extern crate self as djogi;`
+    //! so the absolute `::djogi::*` paths emitted by `#[djogi_test]` resolve
+    //! to the current crate when the macro is used from inside the `djogi`
+    //! crate's own unit-test code.
 
     use super::*;
+    use djogi_macros::djogi_test;
 
-    /// Generic compile-time witness: forces the trait bound on `T` so
-    /// the compiler instantiates every defaulted future type. If any
-    /// signature drifts (e.g. a stray `'static` bound, a missing `Send`,
-    /// a return type that no longer matches `Result<(), DjogiError>`)
-    /// this helper fails to compile.
-    fn _assert_impls<T: ModelHooks>() {}
-
-    /// Test 1: an empty impl on a unit struct compiles, exercising every
-    /// defaulted method.
-    #[test]
-    fn default_impl_is_no_op() {
+    /// Test 1: every defaulted method on an empty `impl ModelHooks for T`
+    /// awaits to `Ok(())`.
+    #[djogi_test]
+    async fn default_impl_is_no_op(mut ctx: DjogiContext) {
         struct Empty;
         impl ModelHooks for Empty {}
 
-        // Witness: `Empty: ModelHooks` instantiates each defaulted
-        // method's future type. The compiler proves the no-op default
-        // is reachable for every hook on `Empty`.
-        _assert_impls::<Empty>();
+        let mut empty = Empty;
+
+        empty
+            .before_create(&mut ctx)
+            .await
+            .expect("default before_create returns Ok(())");
+        empty
+            .after_create(&mut ctx)
+            .await
+            .expect("default after_create returns Ok(())");
+        empty
+            .before_save(&mut ctx)
+            .await
+            .expect("default before_save returns Ok(())");
+        empty
+            .after_save(&mut ctx)
+            .await
+            .expect("default after_save returns Ok(())");
+        empty
+            .before_delete(&mut ctx)
+            .await
+            .expect("default before_delete returns Ok(())");
+        empty
+            .after_delete(&mut ctx)
+            .await
+            .expect("default after_delete returns Ok(())");
     }
 
-    /// Test 2: overriding `before_create` to mutate `self` compiles and
-    /// keeps the rest of the trait at the no-op default.
-    #[test]
-    fn custom_before_create_can_mutate_self() {
+    /// Test 2: overriding `before_create` mutates `self` before the
+    /// awaited future resolves.
+    #[djogi_test]
+    async fn custom_before_create_can_mutate_self(mut ctx: DjogiContext) {
         struct M {
             count: i32,
         }
@@ -194,17 +202,18 @@ mod tests {
             }
         }
 
-        // Constructing the value verifies the field shape; the trait
-        // bound on the witness verifies the override resolves.
-        let _m = M { count: 0 };
-        _assert_impls::<M>();
+        let mut m = M { count: 0 };
+        m.before_create(&mut ctx)
+            .await
+            .expect("override returns Ok(())");
+        assert_eq!(m.count, 42, "override should have mutated self.count");
     }
 
-    /// Test 3: overriding `before_create` to return `Err` compiles, and
-    /// the chosen `DjogiError::Validation(String)` variant round-trips
-    /// through the trait's return type without coercion.
-    #[test]
-    fn custom_before_create_err_propagates() {
+    /// Test 3: overriding `before_create` to return `Err` propagates the
+    /// `DjogiError::Validation(String)` variant unchanged through the
+    /// trait's return type.
+    #[djogi_test]
+    async fn custom_before_create_err_propagates(mut ctx: DjogiContext) {
         struct M;
         impl ModelHooks for M {
             async fn before_create(&mut self, _ctx: &mut DjogiContext) -> Result<(), DjogiError> {
@@ -212,17 +221,11 @@ mod tests {
             }
         }
 
-        _assert_impls::<M>();
-
-        // Pattern-match a constructed error of the same variant to
-        // confirm the spelling stays valid as the error enum evolves.
-        // If `Validation(String)` is renamed or replaced, this match
-        // breaks at the same time the trait test breaks, surfacing the
-        // upstream change in one place.
-        let err = DjogiError::Validation("nope".into());
-        match err {
-            DjogiError::Validation(msg) => assert_eq!(msg, "nope"),
-            _ => panic!("expected Validation variant"),
-        }
+        let mut m = M;
+        let result = m.before_create(&mut ctx).await;
+        let Err(DjogiError::Validation(msg)) = result else {
+            panic!("expected Err(DjogiError::Validation(_)), got {result:?}");
+        };
+        assert_eq!(msg, "nope");
     }
 }
