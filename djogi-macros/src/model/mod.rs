@@ -58,6 +58,56 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // accessors. T4.4 emits the Rust-side getter stub.
     let computed_attrs = computed::parse_computed_attrs(&struct_item)?;
 
+    // Phase 8β BLOCK-4 fix — remove computed fields from the struct
+    // before any downstream pass walks `struct_item.fields`. Computed
+    // fields are virtual: no storage column, no INSERT/UPDATE binding,
+    // no row decode. Leaving them on the struct produces three silent
+    // failures:
+    //
+    //   1. `from_row::expand` would put them in `COLUMN_LIST` /
+    //      `COLUMNS`, so every `SELECT {COLUMN_LIST} FROM t` would
+    //      include `total_price` (a column that never existed) and
+    //      every row decode would error or panic.
+    //   2. `descriptor::expand` would emit them as regular
+    //      `FieldDescriptor` entries, and the migration differ would
+    //      generate `ADD COLUMN total_price FLOAT8` DDL — drift the
+    //      adopter never authored.
+    //   3. The `Default` / `FromPgRow` impl bodies would reference
+    //      `total_price: ...` as a real field assignment.
+    //
+    // `field_attrs` was collected upstream by zip-walking the same
+    // field iterator, so its index alignment with `struct_item.fields`
+    // is positional. After removal the indices shift; downstream
+    // consumers (`from_row`, `descriptor`, `stubs`, `filter`,
+    // `relations`, `outer_ref`, `visages`, `from_joined_row`,
+    // `emit_rationale_advisories`) all walk `struct_item.fields`
+    // and `field_attrs` together, so we filter both in lockstep here
+    // to keep them aligned.
+    let computed_field_names: std::collections::BTreeSet<String> = computed_attrs
+        .iter()
+        .map(|(ident, _)| ident.to_string())
+        .collect();
+    if !computed_field_names.is_empty()
+        && let Fields::Named(named) = &mut struct_item.fields
+    {
+        named.named = std::mem::take(&mut named.named)
+            .into_iter()
+            .filter(|f| {
+                f.ident
+                    .as_ref()
+                    .is_none_or(|id| !computed_field_names.contains(&id.to_string()))
+            })
+            .collect();
+    }
+    let field_attrs: Vec<attrs::FieldAttrs> = field_attrs
+        .into_iter()
+        .filter(|fa| {
+            fa.ident
+                .as_ref()
+                .is_none_or(|id| !computed_field_names.contains(&id.to_string()))
+        })
+        .collect();
+
     validate_through_model_shape(&struct_item, &model_attrs)?;
     validate_version_fields(&struct_item, &field_attrs)?;
 
