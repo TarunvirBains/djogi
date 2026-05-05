@@ -62,6 +62,14 @@ time.workspace = true
 uuid.workspace = true
 rust_decimal.workspace = true
 heeranjid.workspace = true
+# sassi — sibling Rust crate providing the universal predicate algebra
+# (`BasicPredicate<T>`), the typed in-memory pool (`Punnu<T>`), and
+# cross-runtime trait queries. Path-dep during 8γ–8ε so djogi iterates
+# against in-flight sassi fixes; flips to `version = "0.1"` from crates.io
+# at Cluster 8η T13. `watermark-time` opts the `time`-crate-backed
+# `MonotonicWatermark` impl in (matches djogi's `time` crate baseline);
+# default features (`serde`, `runtime-tokio`) stay enabled.
+sassi = { path = "../sassi-reference/sassi", features = ["watermark-time"] }
 tokio-postgres.workspace = true
 postgres-types.workspace = true
 deadpool-postgres.workspace = true

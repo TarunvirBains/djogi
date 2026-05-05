@@ -1,5 +1,14 @@
 [workspace]
 members = ["djogi", "djogi-macros", "djogi-cli", "djogi-shell", "examples/elephant-tracker"]
+# Local sibling-repo symlinks (per `reference_sibling_repos.md`) live alongside
+# this workspace as `*-reference` directories. They are gitignored and may
+# point at sibling Rust workspaces (e.g. `sassi-reference -> ../sassi`).
+# Excluding them prevents cargo from treating their `Cargo.toml` files as
+# members of djogi's workspace — without this, a path-dep into
+# `../sassi-reference/sassi` would walk back up to djogi's workspace root
+# when resolving sassi's `dep.workspace = true` inheritance and fail with
+# `dependency.<name> was not found in workspace.dependencies`.
+exclude = ["sassi-reference"]
 resolver = "2"
 
 [workspace.package]
