@@ -269,17 +269,45 @@ pub enum AnalyzeError {
 }
 
 impl std::fmt::Display for AnalyzeError {
+    /// Every variant ships an operator-actionable remediation hint after
+    /// the cause — `eprintln!("djogi analyze: {e}")` should be enough to
+    /// either fix the problem or know what to file. The shape is
+    /// "<cause>. <remediation verb>...". The
+    /// `analyze_error_display_is_operator_actionable` test pins each
+    /// variant's remediation keyword (`Verify` / `Check` / `file an
+    /// issue`) so a future drift trips the test rather than silently
+    /// losing the hint.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AnalyzeError::Config(message) => write!(f, "config load: {message}"),
+            AnalyzeError::Config(message) => write!(
+                f,
+                "config load: {message}. \
+                 Verify the Djogi.toml workspace path and the [database] section.",
+            ),
             AnalyzeError::Pool { url, message } => write!(
                 f,
-                "application DB at `{url}` unreachable: {message} \
-                 (check Djogi.toml::database.url)",
+                "application DB at `{url}` unreachable: {message}. \
+                 Verify Djogi.toml::database.url is reachable and the \
+                 credentials grant CONNECT.",
             ),
-            AnalyzeError::Db(message) => write!(f, "live-DB query: {message}"),
-            AnalyzeError::Io(e) => write!(f, "writing analyze output: {e}"),
-            AnalyzeError::Json(e) => write!(f, "encoding analyze output as JSON: {e}"),
+            AnalyzeError::Db(message) => write!(
+                f,
+                "live-DB query: {message}. \
+                 Verify the app DB is reachable and the role has SELECT \
+                 privilege on pg_stat_user_tables (and on partman.* if \
+                 pg_partman is installed).",
+            ),
+            AnalyzeError::Io(e) => write!(
+                f,
+                "writing analyze output: {e}. \
+                 Check stdout/stderr permissions and the workspace path.",
+            ),
+            AnalyzeError::Json(e) => write!(
+                f,
+                "encoding analyze output as JSON: {e}. \
+                 This is an internal bug — please file an issue with the \
+                 input that triggered it.",
+            ),
         }
     }
 }
@@ -417,10 +445,25 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // per-table round-trip.
     let mut out = Vec::with_capacity(stats_rows.len());
     for row in stats_rows {
-        let table_name: String = row.get(0);
-        let n_live_tup: i64 = row.get(1);
-        let n_dead_tup: i64 = row.get(2);
-        let last_analyze: Option<time::OffsetDateTime> = row.get(3);
+        // `try_get` (not `get`) per the `raw_rows` contract: the row
+        // accessor that returns `Result<T, _>` rather than panicking on
+        // a type/decode mismatch. A future Postgres upgrade or a
+        // restrictive role granting access to `pg_stat_user_tables` with
+        // unexpected nullability could otherwise crash the CLI; routing
+        // through `AnalyzeError::Db` keeps every failure path
+        // operator-actionable.
+        let table_name: String = row
+            .try_get(0)
+            .map_err(|e| AnalyzeError::Db(format!("decoding table_name: {e}")))?;
+        let n_live_tup: i64 = row
+            .try_get(1)
+            .map_err(|e| AnalyzeError::Db(format!("decoding n_live_tup: {e}")))?;
+        let n_dead_tup: i64 = row
+            .try_get(2)
+            .map_err(|e| AnalyzeError::Db(format!("decoding n_dead_tup: {e}")))?;
+        let last_analyze: Option<time::OffsetDateTime> = row
+            .try_get(3)
+            .map_err(|e| AnalyzeError::Db(format!("decoding last_analyze: {e}")))?;
 
         let partition_count = if partman_present {
             match query_partition_count(&mut ctx, &table_name).await {
@@ -487,7 +530,14 @@ async fn query_partition_count(
     match ctx.raw_rows(sql, &[&table_name]).await {
         Ok(rows) => {
             if let Some(row) = rows.first() {
-                let count: i32 = row.get(0);
+                // `try_get` (not `get`) per the `raw_rows` contract — a
+                // future change to `partman.show_partitions` return shape
+                // would otherwise panic the CLI instead of surfacing as
+                // a structured `Other` variant the caller routes into
+                // `AnalyzeError::Db`.
+                let count: i32 = row
+                    .try_get(0)
+                    .map_err(|e| PartmanError::Other(format!("decoding partition count: {e}")))?;
                 Ok(count)
             } else {
                 // `count(*)` always returns one row, but defend against
@@ -1171,13 +1221,30 @@ mod tests {
 
     /// `AnalyzeError::Display` must surface operator-actionable text
     /// for every variant — the CLI prints these straight to stderr.
+    /// Every arm carries a remediation hint with a verb keyword
+    /// (`Verify` / `Check` / `file an issue`). The keyword assertion is
+    /// the regression sentinel: a future drift that drops the hint
+    /// trips the test rather than silently regressing operator UX.
+    /// All five variants are covered (Config, Pool, Db, Io, Json).
     #[test]
     fn analyze_error_display_is_operator_actionable() {
+        // Config — surfaces the cause AND a remediation pointer to the
+        // workspace + [database] section.
         let cfg = AnalyzeError::Config("bad toml".to_string());
         let s = format!("{cfg}");
         assert!(s.contains("config load"), "config display: {s}");
         assert!(s.contains("bad toml"), "config display: {s}");
+        assert!(
+            s.contains("Verify"),
+            "config display must carry a remediation keyword: {s}"
+        );
+        assert!(
+            s.contains("Djogi.toml"),
+            "config display must point at Djogi.toml: {s}"
+        );
 
+        // Pool — surfaces the URL, the cause, AND a remediation pointer
+        // to Djogi.toml::database.url.
         let pool = AnalyzeError::Pool {
             url: "postgres://localhost/x".to_string(),
             message: "refused".to_string(),
@@ -1189,14 +1256,48 @@ mod tests {
             s.contains("Djogi.toml::database.url"),
             "pool display must point at config: {s}"
         );
+        assert!(
+            s.contains("Verify"),
+            "pool display must carry a remediation keyword: {s}"
+        );
 
+        // Db — surfaces the cause AND a remediation pointer to
+        // privileges + reachability.
         let db = AnalyzeError::Db("relation \"foo\" does not exist".to_string());
         let s = format!("{db}");
         assert!(s.contains("live-DB query"), "db display: {s}");
         assert!(s.contains("relation \"foo\""), "db display: {s}");
+        assert!(
+            s.contains("Verify"),
+            "db display must carry a remediation keyword: {s}"
+        );
+        assert!(
+            s.contains("pg_stat_user_tables"),
+            "db display must mention the catalogue we query: {s}"
+        );
 
+        // Io — surfaces the cause AND a remediation pointer to
+        // stdout/stderr permissions.
         let io = AnalyzeError::Io(std::io::Error::other("broken pipe"));
         let s = format!("{io}");
         assert!(s.contains("writing analyze output"), "io display: {s}");
+        assert!(s.contains("broken pipe"), "io display: {s}");
+        assert!(
+            s.contains("Check"),
+            "io display must carry a remediation keyword: {s}"
+        );
+
+        // Json — was previously omitted; covered now. Surfaces the cause
+        // AND a "file an issue" hint because reaching this arm implies
+        // an internal serde bug rather than operator misconfiguration.
+        let json_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let json = AnalyzeError::Json(json_err);
+        let s = format!("{json}");
+        assert!(s.contains("encoding analyze output"), "json display: {s}");
+        assert!(
+            s.contains("file an issue"),
+            "json display must point at the issue tracker: {s}"
+        );
     }
 }
