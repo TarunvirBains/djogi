@@ -186,6 +186,18 @@ fn compile_pass_phase8_t7_4() {
 }
 
 #[test]
+fn compile_pass_phase8_t7_5() {
+    // Targeted bucket for Cluster 8δ T7.5 — on_commit cache invalidation.
+    // Pins that the macro-emitted `save` / `delete` bodies reference
+    // `::djogi::cache::InvalidationReason` only — no `::sassi::*` leakage.
+    // Also swept by `compile_pass_phase8_t7` (the `phase8_t7_*` glob).
+    //
+    // Run this bucket in isolation to check just the T7.5 emission:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t7_5 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t7_5_*.rs");
+}
+
+#[test]
 fn compile_pass_phase8() {
     // Globs cannot exclude sub-prefixes (no brace expansion), so this
     // can't be expressed as `phase8_*.rs` — that pattern would also

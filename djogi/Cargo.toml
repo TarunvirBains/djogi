@@ -436,3 +436,10 @@ harness = true
 name = "phase8_t7_4_punnu_boot_registration"
 path = "../tests/integration/phase8_t7_4_punnu_boot_registration.rs"
 harness = true
+
+# ── Phase 8δ T7.5 — on_commit cache invalidation hooks ──────────────────────
+
+[[test]]
+name = "phase8_t7_5_cache_invalidation"
+path = "../tests/integration/phase8_t7_5_cache_invalidation.rs"
+harness = true

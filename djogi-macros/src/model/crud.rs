@@ -966,6 +966,29 @@ pub fn expand(
                         // value"). MUST stay inside the success arm — the
                         // None branch (LockConflict) skips after_save.
                         #after_save_call
+                        // Cluster 8δ T7.5 — enqueue on_commit cache
+                        // invalidation. The callback is captured by value
+                        // so it does not need to borrow ctx after the SQL
+                        // completes. The `if let Some(...)` gate skips
+                        // models without a registered Punnu (pk=None or
+                        // no-cache context). Pool-backed contexts log a
+                        // warn and drop the callback — no special-case
+                        // needed here.
+                        if let ::std::option::Option::Some(__punnu) =
+                            ctx.punnu::<Self>()
+                        {
+                            let __id_for_cache =
+                                ::core::clone::Clone::clone(&self.id);
+                            ctx.on_commit(move || async move {
+                                let _ = __punnu
+                                    .invalidate(
+                                        &__id_for_cache,
+                                        ::djogi::cache::InvalidationReason::OnSave,
+                                    )
+                                    .await;
+                                ::std::result::Result::Ok(())
+                            });
+                        }
                         ::std::result::Result::Ok(())
                     }
                     ::std::option::Option::None => {
@@ -1040,6 +1063,20 @@ pub fn expand(
                 // server-side defaults, triggers, and any DB-bumped column
                 // values (Phase 8 §D3 sequence).
                 #after_save_call
+                // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
+                // Captured by value; pool-backed contexts warn + drop.
+                if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                    let __id_for_cache = ::core::clone::Clone::clone(&self.id);
+                    ctx.on_commit(move || async move {
+                        let _ = __punnu
+                            .invalidate(
+                                &__id_for_cache,
+                                ::djogi::cache::InvalidationReason::OnSave,
+                            )
+                            .await;
+                        ::std::result::Result::Ok(())
+                    });
+                }
                 ::std::result::Result::Ok(())
             }
         }
@@ -1124,6 +1161,20 @@ pub fn expand(
             // fires). Order is load-bearing: an audit sink consuming
             // outbox sees the row before after_delete's body runs.
             #after_delete_call
+            // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
+            // Captured by value; pool-backed contexts warn + drop.
+            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                let __id_for_cache = ::core::clone::Clone::clone(&self.id);
+                ctx.on_commit(move || async move {
+                    let _ = __punnu
+                        .invalidate(
+                            &__id_for_cache,
+                            ::djogi::cache::InvalidationReason::OnDelete,
+                        )
+                        .await;
+                    ::std::result::Result::Ok(())
+                });
+            }
             ::std::result::Result::Ok(())
         }
     };
