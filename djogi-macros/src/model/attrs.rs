@@ -316,11 +316,12 @@ pub struct ModelAttrs {
     /// names the parent model whose table this proxy shares; the
     /// migration differ treats proxies as schema-passthrough (no
     /// `CREATE TABLE` emitted) and uses the parent's table for SQL
-    /// emission. T3.3 lowers this into `ModelDescriptor.proxy_for` as a
-    /// `&'static str` of the parent's name; T3.4 wires the override
-    /// methods on `Model` so the proxy queryset honours its own
-    /// default filter / default ordering without leaking storage
-    /// concerns into the proxy's emission path.
+    /// emission. The descriptor emitter lowers this into
+    /// `ModelDescriptor.proxy_for` as a `&'static str` of the parent's
+    /// name, and the trait-impl emitter wires the override methods on
+    /// `Model` so the proxy queryset honours its own default filter /
+    /// default ordering without leaking storage concerns into the
+    /// proxy's emission path.
     ///
     /// `None` for ordinary (non-proxy) models — the common case.
     pub proxy_for: Option<syn::Ident>,
@@ -336,24 +337,24 @@ pub struct ModelAttrs {
     /// Django-style semantics — see `queryset.rs:25-28` for the
     /// canonical append rule.
     ///
-    /// Only meaningful when `proxy_for` is also set. T3.3 surfaces a
-    /// span-precise error if `default_order` is set on a non-proxy
-    /// model.
+    /// Only meaningful when `proxy_for` is also set; the parser
+    /// surfaces a span-precise error if `default_order` is set on a
+    /// non-proxy model.
     pub proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)>,
 
     /// Default filter AND-composed into every `QuerySet<Self>` on
     /// construction — Phase 8β T3.2.
     ///
     /// Set via `#[model(default_filter = |f| f.active.eq(true))]`.
-    /// The closure body is captured verbatim at parse time; T3.3 walks
-    /// it via `syn::visit::Visit` and lowers the recognised patterns
-    /// (eq / gte / and_with / etc.) to a SQL fragment string. T3.4
-    /// emits the lowered fragment as the body of the proxy's
-    /// `Model::default_filter_condition` override.
+    /// The closure body is captured verbatim at parse time; the
+    /// descriptor emitter walks it via recursive descent and lowers
+    /// the recognised patterns (eq / gte / and_with / etc.) to a SQL
+    /// fragment string, then emits that fragment as the body of the
+    /// proxy's `Model::default_filter_condition` override.
     ///
-    /// Only meaningful when `proxy_for` is also set. T3.3 surfaces a
-    /// span-precise error if `default_filter` is set on a non-proxy
-    /// model.
+    /// Only meaningful when `proxy_for` is also set; the parser
+    /// surfaces a span-precise error if `default_filter` is set on a
+    /// non-proxy model.
     pub proxy_default_filter: Option<syn::ExprClosure>,
 }
 

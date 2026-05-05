@@ -450,11 +450,28 @@ where
         )?;
     }
 
-    // Second pass — group models by bucket. Validate the model's
-    // declared app exists, and build a parallel `type_name → bucket`
-    // map for the cross-database FK validation pass below.
+    // Second pass — group models by bucket and build the
+    // `type_name → proxy_for_target` map in the same walk. Both maps
+    // iterate the full model inventory unconditionally, so a single
+    // pass keeps the projection setup linear.
+    //
+    // The `type_to_bucket` half validates that each model's declared
+    // app exists and gives the cross-database FK pass below a fast
+    // lookup from a model's `type_name` to its `(database, app)`
+    // bucket.
+    //
+    // The `type_to_proxy_for` half lets the FK pass traverse proxy
+    // chains to the concrete parent. Phase 8β BLOCK-2 fix: when an FK
+    // targets a proxy, the actual SQL table the FK references is the
+    // parent's (proxies are schema-passthrough — never projected).
+    // Validating the proxy's bucket would silently accept FKs that
+    // point at a non-existent target table when the proxy and parent
+    // live in different buckets, and would falsely flag cross-database
+    // FKs when the proxy and parent sit in different databases but the
+    // source and parent share one.
     let mut bucket_models: BTreeMap<BucketKey, Vec<&ModelDescriptor>> = BTreeMap::new();
     let mut type_to_bucket: BTreeMap<&str, BucketKey> = BTreeMap::new();
+    let mut type_to_proxy_for: BTreeMap<&str, &str> = BTreeMap::new();
     for m in &models {
         let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
         let app = label_to_app
@@ -469,19 +486,6 @@ where
         };
         type_to_bucket.insert(m.type_name, bucket.clone());
         bucket_models.entry(bucket).or_default().push(m);
-    }
-
-    // Build a `type_name → proxy_for_target` map so the FK validation
-    // pass below can traverse proxy chains to the concrete parent.
-    // Phase 8β BLOCK-2 fix: when an FK targets a proxy, the actual SQL
-    // table the FK references is the parent's (proxies are schema-
-    // passthrough — never projected). Validating the proxy's bucket
-    // would silently accept FKs that point at a non-existent target
-    // table when the proxy and parent live in different buckets, and
-    // would falsely flag cross-database FKs when the proxy and parent
-    // sit in different databases but the source and parent share one.
-    let mut type_to_proxy_for: BTreeMap<&str, &str> = BTreeMap::new();
-    for m in &models {
         if let Some(parent) = m.proxy_for {
             type_to_proxy_for.insert(m.type_name, parent);
         }
@@ -494,20 +498,11 @@ where
     // projection time so the differ never has to reason about
     // cross-database FK transitions.
     //
-    // Phase 8β T3.5 — proxies share the parent's storage and never
-    // declare independent FKs (the parent's FK columns flow through
-    // the proxy's struct via injection, but the schema-passthrough
-    // means the parent's projection already registered them). Skip
-    // proxies on the SOURCE side so the FK pass does not double-
-    // validate already-checked relations.
-    //
-    // Phase 8β BLOCK-2 fix — on the TARGET side, traverse proxy_for
-    // links to the concrete parent before resolving the target bucket.
-    // Without this, an FK to a proxy in another bucket would either
-    // (a) silently pass when the proxy and source share a bucket but
-    // the parent is in a different database (orphaned FK at DDL time),
-    // or (b) falsely fail when the proxy is in a different database
-    // but the parent sits alongside the source.
+    // Proxies are skipped on the SOURCE side (the parent's projection
+    // already registered the inherited FK columns) and resolved
+    // through `type_to_proxy_for` on the TARGET side so we validate
+    // against the concrete parent's bucket — see the
+    // `type_to_proxy_for` rationale at the second-pass loop above.
     for m in &models {
         if m.proxy_for.is_some() {
             continue;
@@ -647,27 +642,15 @@ where
         let mut tables: BTreeMap<String, TableSchema> = BTreeMap::new();
         let mut indexes: Vec<IndexSchema> = Vec::new();
         for m in &ms {
-            // Phase 8β T3.5 — proxy schema-passthrough.
-            //
-            // Proxy models share their parent's table by construction
-            // (`#[model(proxy_for = Parent)]`). Emitting DDL for the
-            // proxy would produce a duplicate `CREATE TABLE` against
-            // the parent's table; skip the projection step entirely so
-            // the migration differ never sees the proxy descriptor as
-            // a schema source. Indexes declared on a proxy are
-            // similarly skipped — index ownership belongs to the parent
-            // model in v0.1.0.
-            //
-            // The cross-type "tables match" invariant — i.e. the
-            // proxy's `table` value equals its parent's — is enforced
-            // by the duplicate-table check below: if a proxy declares
-            // `table = "other"` while its parent declares
-            // `table = "vehicles"`, the proxy's lone non-proxy sibling
-            // cannot be detected at this layer (the proxy is skipped
-            // before the table map sees it). The mismatch surfaces at
-            // descriptor-lookup time when adopter code calls
-            // `T::table_name()` and gets the wrong value. Flag in
-            // `docs/guide/proxy.md` (T5.7).
+            // Phase 8β T3.5 — proxy schema-passthrough. Proxies share
+            // their parent's table (`#[model(proxy_for = Parent)]`),
+            // so emitting DDL here would duplicate the parent's
+            // `CREATE TABLE`. Skip projection entirely (table + indexes)
+            // so the differ never sees the proxy descriptor as a schema
+            // source; index ownership belongs to the parent in v0.1.0.
+            // A proxy/parent `table = ...` mismatch is caught at
+            // descriptor-lookup time (`T::table_name()`), not here —
+            // see `docs/guide/proxy.md` (T5.7).
             if m.proxy_for.is_some() {
                 continue;
             }

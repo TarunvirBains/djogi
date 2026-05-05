@@ -5,12 +5,11 @@
 //! T5.4 + 8δ T7) can iterate every model that implements a given
 //! trait without naming each model in the consumer's path.
 //!
-//! T5.2 ships the parser + the impl-block round-trip; T5.3 fills in
-//! the type-erased caster body. This file currently implements T5.2
-//! only — the emitted `caster` field is a placeholder that returns
-//! `None` for every input (the registration is reachable via
-//! `iter_for_trait::<dyn T>` but downcasting to a concrete `Arc<dyn T>`
-//! is an explicit T5.3 task).
+//! Emits the impl block verbatim plus a sibling `inventory::submit!`
+//! `TraitRegistration` and a type-erased caster that uses the safe
+//! `Arc<dyn Any>` → `Arc<Self>` → `Arc<dyn Trait>` carrier pattern
+//! (no `transmute`) so consumers can downcast registry entries back to
+//! the concrete trait object.
 //!
 //! # Why a separate attribute macro
 //!
@@ -128,8 +127,8 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
         trait_last_seg,
     );
 
-    // T5.3 — the safe type-erased caster body. We avoid `transmute`
-    // entirely: the path is
+    // Safe type-erased caster body — avoid `transmute` entirely:
+    // the path is
     //
     //   1. `Arc<dyn Any + Send + Sync>` → `Arc<Self>`     via `Arc::downcast`
     //   2. `Arc<Self>`                  → `Arc<dyn Trait>` via unsizing coercion
@@ -181,10 +180,9 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
             }
         }
 
-        // Type-erased caster — T5.3 final body. Safe carrier pattern;
-        // no `transmute`. Returns `Some(arc_to_carrier)` when the
-        // input downcasts to the registered model type; `None`
-        // otherwise.
+        // Type-erased caster — safe carrier pattern; no `transmute`.
+        // Returns `Some(arc_to_carrier)` when the input downcasts to
+        // the registered model type; `None` otherwise.
         #[doc(hidden)]
         pub fn #caster_fn_ident(
             any: &::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,

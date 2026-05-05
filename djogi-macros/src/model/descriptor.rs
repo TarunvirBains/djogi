@@ -111,7 +111,7 @@ fn try_expand(
     // captured attributes by emitting one ComputedFieldDescriptor
     // literal per entry into the inventory::submit! body. Empty
     // slice when no computed fields are declared.
-    computed_attrs_param: &[(syn::Ident, crate::model::computed::ComputedAttr)],
+    computed_attrs: &[(syn::Ident, crate::model::computed::ComputedAttr)],
 ) -> syn::Result<TokenStream> {
     let source_ident = &struct_item.ident;
     let source_name_string = source_ident.to_string();
@@ -805,10 +805,10 @@ fn try_expand(
     // stored), so a permissive `Custom` mapping is sufficient. Future
     // phases that want stricter typing can map the Rust type more
     // precisely.
-    let computed_fields_tokens = if computed_attrs_param.is_empty() {
+    let computed_fields_tokens = if computed_attrs.is_empty() {
         quote! { &[] }
     } else {
-        let entries: Vec<proc_macro2::TokenStream> = computed_attrs_param
+        let entries: Vec<proc_macro2::TokenStream> = computed_attrs
             .iter()
             .map(|(field_ident, attr)| {
                 let name = field_ident.to_string();

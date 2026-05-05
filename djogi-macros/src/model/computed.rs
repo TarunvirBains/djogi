@@ -50,18 +50,16 @@ use syn::{Expr, Lit, Meta, MetaNameValue, Token, punctuated::Punctuated};
 ///
 /// Captured at field-walk time alongside the regular `FieldAttrs`
 /// parser. The field's Rust type (`return_type`) is captured from the
-/// declared `syn::Field::ty` so T4.4 wires the auto-emitted Rust-side
-/// getter stub signature to match and T4.5 threads the type through
-/// the typed `Expr<T>::__raw_sql_fragment(...)` constructor.
+/// declared `syn::Field::ty` so T4.5 threads the type through the
+/// typed `Expr<T>::__raw_sql_fragment(...)` constructor.
 #[derive(Debug, Clone)]
 pub struct ComputedAttr {
     /// SQL expression source as written in the attribute.
     pub sql: String,
     /// Rust return type of the computed getter — sourced from the
-    /// `syn::Field::ty` of the field carrying the annotation. T4.4
-    /// uses this for the getter stub signature; T4.5 threads it into
-    /// the typed `Expr<T>::__raw_sql_fragment(...)` carrier in the
-    /// `{Model}Computed` accessor emission.
+    /// `syn::Field::ty` of the field carrying the annotation. T4.5
+    /// threads it into the typed `Expr<T>::__raw_sql_fragment(...)`
+    /// carrier in the `{Model}Computed` accessor emission.
     pub return_type: syn::Type,
 }
 

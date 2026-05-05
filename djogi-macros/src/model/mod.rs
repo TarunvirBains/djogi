@@ -53,9 +53,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // Phase 8β T4.3 — parse `#[computed(sql = "...")]` annotations.
     // Surfaces span-precise errors for the deferred `stored` keyword,
     // empty-SQL strings, unknown keys, and `#[field(...)]`-with-
-    // `#[computed(...)]` collisions. T4.5 will lower the captured
-    // metadata into descriptor entries + `{Model}Computed` ZST
-    // accessors. T4.4 emits the Rust-side getter stub.
+    // `#[computed(...)]` collisions.
     let computed_attrs = computed::parse_computed_attrs(&struct_item)?;
 
     // Phase 8β BLOCK-4 fix — remove computed fields from the struct
@@ -93,22 +91,23 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // — but the check prevents a future refactor that populates `computed_attrs`
     // from an external source from silently stripping the wrong field and
     // corrupting `FromPgRow` ordinal decoding.
-    if !computed_field_names.is_empty() {
-        if let Fields::Named(named) = &struct_item.fields {
-            for field in &named.named {
-                let has_computed_attr = field.attrs.iter().any(|a| a.path().is_ident("computed"));
-                if let Some(id) = &field.ident {
-                    if !has_computed_attr && computed_field_names.contains(&id.to_string()) {
-                        return Err(syn::Error::new_spanned(
-                            field,
-                            format!(
-                                "field `{id}` appears as both a computed field and a \
-                                 non-computed field — this should never happen under \
-                                 normal Rust syntax; this is a djogi internal error"
-                            ),
-                        ));
-                    }
-                }
+    if !computed_field_names.is_empty()
+        && let Fields::Named(named) = &struct_item.fields
+    {
+        for field in &named.named {
+            let has_computed_attr = field.attrs.iter().any(|a| a.path().is_ident("computed"));
+            if let Some(id) = &field.ident
+                && !has_computed_attr
+                && computed_field_names.contains(&id.to_string())
+            {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    format!(
+                        "field `{id}` appears as both a computed field and a \
+                         non-computed field — this should never happen under \
+                         normal Rust syntax; this is a djogi internal error"
+                    ),
+                ));
             }
         }
     }

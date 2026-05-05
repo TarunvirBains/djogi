@@ -83,10 +83,10 @@ pub enum Condition {
     ///
     /// Per the lens (`feedback_decision_priorities.md`, plan §7 #5
     /// resolved 2026-05-03): macro-only constructor + a sealed inner
-    /// payload for 8β. T6 (cluster 8γ) absorbs this into the typed
-    /// `Q<T>` IR without a public-API break — the variant disappears
-    /// with the rewrite, so adopters never see it. Constructing one
-    /// outside the crate goes through
+    /// payload for 8β. T6 Stage 2 will migrate this to the typed
+    /// `Q<T>` IR; migrating callers is a semver-minor change at the
+    /// enum-variant level. Constructing one outside the crate goes
+    /// through
     /// [`Condition::__from_raw_sql_fragment`], which is
     /// `#[doc(hidden)]` and not part of the supported surface.
     ///

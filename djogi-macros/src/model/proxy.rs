@@ -15,7 +15,7 @@
 //! T3.2 captures syntactic state only — no SQL lowering, no runtime
 //! wiring. The closure body parses as a `syn::ExprClosure`; its single
 //! input parameter (`f`) is the user's binding for `{Model}Fields`. T3.3
-//! walks the closure body via `syn::visit::Visit` and lowers recognised
+//! walks the closure body via recursive descent and lowers recognised
 //! patterns to a SQL fragment string. T3.4 wires the fragment into
 //! `QuerySet<T>::new()` so the filter is AND-composed transparently.
 //!
@@ -213,7 +213,7 @@ pub fn parse_default_order_list(expr: &syn::Expr) -> syn::Result<Vec<(syn::Ident
 ///
 /// At T3.2 we validate only the shape: the value must be a single-input
 /// closure expression. The closure body is captured verbatim for T3.3 to
-/// walk via `syn::visit::Visit` and lower to SQL.
+/// walk via recursive descent and lower to SQL.
 ///
 /// We accept any closure with exactly one input — the descriptor
 /// emitter (T3.3) cross-checks that the input binding matches the

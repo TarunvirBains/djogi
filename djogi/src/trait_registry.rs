@@ -138,6 +138,32 @@ pub fn iter_registrations() -> impl Iterator<Item = &'static TraitRegistration> 
     inventory::iter::<TraitRegistration>()
 }
 
+/// One-shot, lazily-built index of `inventory::iter::<TraitRegistration>`
+/// keyed by trait `TypeId`. Built on the first `iter_for_trait` call by
+/// invoking each registration's `trait_type_id` fn-ptr exactly once;
+/// every subsequent lookup is a single `HashMap::get`.
+///
+/// The pre-cache shape walked the full registration list and called
+/// `(r.trait_type_id)()` on every entry per call — O(n) fn-ptr calls
+/// per `iter_for_trait` invocation. The cache flips that to O(1) for
+/// hot paths (e.g. cross-type queries that re-enumerate trait impls
+/// frequently) at the cost of one map allocation per process.
+static REGISTRY_CACHE: std::sync::OnceLock<
+    std::collections::HashMap<std::any::TypeId, Vec<&'static TraitRegistration>>,
+> = std::sync::OnceLock::new();
+
+fn registry_cache()
+-> &'static std::collections::HashMap<std::any::TypeId, Vec<&'static TraitRegistration>> {
+    REGISTRY_CACHE.get_or_init(|| {
+        let mut map: std::collections::HashMap<std::any::TypeId, Vec<&'static TraitRegistration>> =
+            std::collections::HashMap::new();
+        for reg in inventory::iter::<TraitRegistration>() {
+            map.entry((reg.trait_type_id)()).or_default().push(reg);
+        }
+        map
+    })
+}
+
 /// Iterate every `TraitRegistration` whose `trait_type_id` matches
 /// `T`'s `TypeId`. Phase 8β T5.4 — the consumer-side filter for
 /// `Sassi::all_impl::<dyn T>()` and equivalent cross-type queries.
@@ -145,9 +171,18 @@ pub fn iter_registrations() -> impl Iterator<Item = &'static TraitRegistration> 
 /// The `T: ?Sized + 'static` bound covers `dyn Trait` types — the
 /// canonical caller-side spelling is
 /// `iter_for_trait::<dyn Searchable>()`.
+///
+/// First call builds the keyed cache (O(n) fn-ptr calls); subsequent
+/// calls are O(1) `HashMap` lookups. Returns `Vec<&'static …>` —
+/// `inventory::collect!` already yields `'static` references, and the
+/// cache holds them by reference, so the returned iterator borrows
+/// from the static cache without per-call allocation aside from the
+/// `Vec` clone of pointers (cheap; one word per registered impl).
 pub fn iter_for_trait<T: ?Sized + 'static>() -> impl Iterator<Item = &'static TraitRegistration> {
     let target = std::any::TypeId::of::<T>();
-    iter_registrations().filter(move |r| (r.trait_type_id)() == target)
+    let entries: Vec<&'static TraitRegistration> =
+        registry_cache().get(&target).cloned().unwrap_or_default();
+    entries.into_iter()
 }
 
 #[cfg(test)]
