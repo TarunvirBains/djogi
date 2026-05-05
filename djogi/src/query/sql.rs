@@ -436,7 +436,7 @@ pub(crate) fn emit_condition(
         // does not, so the wrapper here is the universal safety net.
         Condition::RawSql(s) => {
             acc.push_sql("(");
-            acc.push_sql(s);
+            acc.push_sql(s.as_str());
             acc.push_sql(")");
         }
     }

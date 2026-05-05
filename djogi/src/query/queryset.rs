@@ -1937,7 +1937,7 @@ mod tests {
     fn proxy_queryset_seeds_default_filter() {
         let qs: QuerySet<FakeProxy> = QuerySet::new();
         match crate::query::q::q_to_condition_ref(&qs.condition) {
-            Condition::RawSql(s) => assert_eq!(s, "active = TRUE"),
+            Condition::RawSql(s) => assert_eq!(s.as_str(), "active = TRUE"),
             other => panic!("expected RawSql variant, got {other:?}"),
         }
     }
