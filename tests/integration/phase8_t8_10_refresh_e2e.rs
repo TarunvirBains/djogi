@@ -33,7 +33,7 @@
 //!    and the `DjogiDeltaFetcher::auth: AuthContext` owned field verified in
 //!    T8.3–T8.5.
 //!
-//!    **GH issue for full RLS test:** [GH #TBD] — full RLS proof via a
+//!    **GH issue for full RLS test:** [GH #129] — full RLS proof via a
 //!    dedicated `djogi_fetcher_test_user` non-superuser role that is
 //!    explicitly switched to inside the fetcher's transaction via a new
 //!    optional `with_role(role_name)` knob on `DeltaRefreshHandle` or via
@@ -373,7 +373,7 @@ async fn refresh_into_e2e_happy_path(mut ctx: djogi::DjogiContext) {
 /// (a) a `with_role(role_name)` knob on `DeltaRefreshHandle` that injects
 ///     `SET LOCAL ROLE` inside the fetcher's transaction (out of T8.10 scope), or
 /// (b) a dedicated `DjogiPool` built with a non-superuser DSN (out of scope).
-/// This is tracked in GH #TBD (filed as part of T8.10 deliverable).
+/// This is tracked in GH #129 (filed as part of T8.10 deliverable).
 ///
 /// The structural proof provided here closes the gap T8.5 test 4 admitted:
 /// the auth IS captured by value (proven by `DjogiDeltaFetcher::auth: AuthContext`
@@ -477,7 +477,7 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
     //
     // Full RLS-backed row-count isolation proof deferred: requires non-superuser
     // connection or `SET LOCAL ROLE` inside the fetcher transaction. Tracked at
-    // GH #TBD.
+    // GH #129.
 
     // ── Second tick on handle_a: still runs under auth_a ────────────────────
     // After handle_b has ticked, handle_a's auth snapshot is unchanged.
