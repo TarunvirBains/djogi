@@ -66,6 +66,57 @@ pub enum Condition {
     /// Produced by [`crate::jsonb::path::JsonbPathRef`] comparison methods.
     /// The expression SQL is pre-rendered from validated identifiers.
     JsonbPath(crate::jsonb::path::JsonbPathLeaf),
+
+    /// Raw SQL fragment — Phase 8β T3.4 carve-out for proxy
+    /// `default_filter` lowering.
+    ///
+    /// The fragment is a `&'static str` baked at macro-expand time by
+    /// [`crate::__private::lower_default_filter_fragment`] (which forwards
+    /// to `djogi-macros`'s `model::proxy::lower_default_filter_to_sql`).
+    /// The lowering pass enforces a closed grammar (eq/neq/range/null/
+    /// between over inline literals; `and_with`/`or_with` combinators)
+    /// and rejects every other shape with a span-precise compile error,
+    /// so the fragment that reaches this variant cannot smuggle SQL
+    /// from runtime input — the only construction path is the macro.
+    ///
+    /// # Why an escape-hatch variant rather than a full IR lowering
+    ///
+    /// Per the lens (`feedback_decision_priorities.md`, plan §7 #5
+    /// resolved 2026-05-03): `pub(crate)` constructor + public variant
+    /// for 8β. T6 (cluster 8γ) absorbs this into the typed `Q<T>` IR
+    /// without a public-API break — the variant disappears with the
+    /// rewrite, so adopters never see it. Constructing one outside the
+    /// crate goes through [`Condition::__from_raw_sql_fragment`], which
+    /// is `#[doc(hidden)]` and not part of the supported surface.
+    ///
+    /// # Why no bind parameters
+    ///
+    /// The closed grammar rejects every non-literal RHS, so the
+    /// fragment is fully self-contained at expand time. No `$n` binds
+    /// are threaded through the accumulator — the emitter pushes the
+    /// fragment as raw SQL with outer parens for operator-precedence
+    /// safety under further AND-composition with user `.filter(...)`
+    /// calls.
+    RawSql(&'static str),
+}
+
+impl Condition {
+    /// Macro-only constructor for the raw-SQL escape hatch — Phase 8β
+    /// T3.4. Routes through the public surface so `djogi-macros`'s
+    /// emitted code can construct one without naming the `pub(crate)`
+    /// variant. Not part of the user-facing API; `#[doc(hidden)]`
+    /// signals that downstream code must not call this directly.
+    ///
+    /// The `&'static str` argument is the lowered SQL fragment from
+    /// `model::proxy::lower_default_filter_to_sql`. The lowering pass
+    /// enforces the closed grammar at expand time, so the fragment
+    /// reaching this constructor cannot carry runtime-bound values or
+    /// out-of-grammar tokens.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __from_raw_sql_fragment(sql: &'static str) -> Condition {
+        Condition::RawSql(sql)
+    }
 }
 
 // Written out explicitly instead of `#[derive(Default)]` + `#[default]` on the

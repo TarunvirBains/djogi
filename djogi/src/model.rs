@@ -109,8 +109,69 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
     /// trait's associated `type Fields` bounds (`Copy + Default + Send +
     /// Sync + 'static`) already satisfy `QuerySet::filter`'s default-
     /// constructed field bag.
+    ///
+    /// Proxy models inherit `objects()` and rely on the default-filter /
+    /// default-ordering hooks (Phase 8β T3.4) to seed the returned
+    /// queryset with the proxy's `#[model(default_filter, default_order)]`
+    /// state — the override happens inside [`crate::query::QuerySet::new`]
+    /// rather than here so non-proxy models never pay a virtual-call cost.
     fn objects() -> crate::query::QuerySet<Self> {
         crate::query::QuerySet::new()
+    }
+
+    /// Default filter AND-composed into every freshly constructed
+    /// [`crate::query::QuerySet<Self>`]. Proxy models override via
+    /// `#[model(proxy_for = Parent, default_filter = |f| ...)]` — the
+    /// macro emits an override returning `Some(Condition::RawSql(...))`
+    /// containing the lowered SQL fragment from
+    /// `model::proxy::lower_default_filter_to_sql`.
+    ///
+    /// Non-proxy models keep this default impl (returns `None`), which
+    /// is a zero-cost no-op at every `QuerySet::new()` call site —
+    /// rustc inlines the `None` return and the conditional in
+    /// [`crate::query::QuerySet::new`] folds the default seed away.
+    ///
+    /// User `.filter(|f| ...)` calls AND-compose with the default,
+    /// matching Django-style semantics: the proxy filter is the prefix
+    /// no adopter call can drop, and explicit filters narrow further on
+    /// top of it. Bulk-delete on a proxy queryset inherits this scoping
+    /// automatically — no separate runtime warning per D5 (v3 line 144).
+    ///
+    /// # Why `Option<Condition>` rather than `Condition`
+    ///
+    /// `None` is the structural-no-op signal for the default impl —
+    /// distinct from `Some(Condition::True)`. Both render the same SQL,
+    /// but `None` lets [`crate::query::QuerySet::new`] short-circuit
+    /// without an enum match per call (the cost of which would be
+    /// noise on the hot construction path for non-proxy querysets).
+    fn default_filter_condition() -> Option<crate::query::internal::Condition> {
+        None
+    }
+
+    /// Default ordering applied to every freshly constructed
+    /// [`crate::query::QuerySet<Self>`]. Proxy models override via
+    /// `#[model(proxy_for = Parent, default_order = [(field, Asc), ...])]`
+    /// — the macro emits an override returning the lowered
+    /// [`Vec<crate::query::OrderExpr>`] from the parsed
+    /// `(field, Asc|Desc)` tuples.
+    ///
+    /// Non-proxy models keep this default impl (returns the empty
+    /// `Vec`). User `.order_by(|f| ...)` calls **append** to the
+    /// default per the existing Django-style queryset convention
+    /// (`queryset.rs` lines 25–28 — append, not replace). Adopter
+    /// surprise is minimised: one ordering rule for every queryset
+    /// shape, regardless of proxy / non-proxy status.
+    ///
+    /// # Why `Vec` rather than `&'static [OrderExpr]`
+    ///
+    /// `OrderExpr` is `Clone` but not `Copy` (the spatial variant
+    /// holds a `GeoPoint`), so a `&'static [OrderExpr]` would force
+    /// every call site to clone the slice into a `Vec` for the
+    /// `QuerySet::ordering` field anyway. Returning the `Vec` here
+    /// flattens the call chain and keeps the override path compact for
+    /// proxy macro emission.
+    fn default_order_by() -> Vec<crate::query::OrderExpr> {
+        Vec::new()
     }
 
     /// Returns the primary key value for this instance.

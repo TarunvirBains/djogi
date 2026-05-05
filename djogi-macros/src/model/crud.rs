@@ -471,6 +471,88 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // Phase 8β T3.4 — proxy default-filter / default-order overrides.
+    //
+    // For proxy models (`#[model(proxy_for = Parent, default_filter = |f| ...,
+    // default_order = [(field, Asc|Desc), ...])]`), emit overrides for
+    // `Model::default_filter_condition` and `Model::default_order_by` so
+    // every freshly constructed `QuerySet<Self>` starts with the proxy's
+    // state already AND-composed / appended.
+    //
+    // Non-proxy models emit nothing here — the trait's default impls
+    // (`None` / empty `Vec`) inline to a no-op at every `QuerySet::new()`
+    // call site. Zero-cost for the common case per the lens (`feedback_
+    // decision_priorities.md`).
+    //
+    // The default-filter override threads the lowered SQL fragment from
+    // T3.3 through `Condition::__from_raw_sql_fragment` — the
+    // `#[doc(hidden)]` constructor that wraps the `pub(crate)`
+    // `Condition::RawSql` variant. The fragment is `&'static str`,
+    // baked at expand time, so no allocation runs at queryset
+    // construction.
+    //
+    // The default-order override emits a `Vec::with_capacity(N)` followed
+    // by `.push(OrderExpr::Column { ... })` per parsed `(field, Asc|Desc)`
+    // tuple. NULL position defaults to `NullsOrder::Default` (matching
+    // the queryset convention from `query/order.rs`).
+    let proxy_default_filter_override = match &model_attrs.proxy_default_filter {
+        Some(closure) => {
+            let sql = match crate::model::proxy::lower_default_filter_to_sql(closure) {
+                Ok(s) => s,
+                Err(err) => return err.to_compile_error(),
+            };
+            quote! {
+                fn default_filter_condition() -> ::std::option::Option<
+                    ::djogi::query::Condition,
+                > {
+                    ::std::option::Option::Some(
+                        ::djogi::query::Condition::__from_raw_sql_fragment(#sql),
+                    )
+                }
+            }
+        }
+        None => quote! {},
+    };
+    let proxy_default_order_override = if model_attrs.proxy_default_order.is_empty() {
+        quote! {}
+    } else {
+        let n = model_attrs.proxy_default_order.len();
+        let pushes: Vec<TokenStream> = model_attrs
+            .proxy_default_order
+            .iter()
+            .map(|(field_ident, dir)| {
+                let column_lit = field_ident.to_string();
+                let dir_tokens = match dir {
+                    crate::model::proxy::OrderDir::Asc => {
+                        quote! { ::djogi::query::Direction::Asc }
+                    }
+                    crate::model::proxy::OrderDir::Desc => {
+                        quote! { ::djogi::query::Direction::Desc }
+                    }
+                };
+                quote! {
+                    // Use the `#[doc(hidden)]` constructor — the variant
+                    // is `#[non_exhaustive]`, so downstream-crate literal
+                    // construction is rejected. The constructor lives in
+                    // the djogi crate where the variant is defined.
+                    __out.push(::djogi::query::OrderExpr::__from_macro_column(
+                        #column_lit,
+                        #dir_tokens,
+                        ::djogi::query::NullsOrder::Default,
+                    ));
+                }
+            })
+            .collect();
+        quote! {
+            fn default_order_by() -> ::std::vec::Vec<::djogi::query::OrderExpr> {
+                let mut __out = ::std::vec::Vec::with_capacity(#n);
+                #(#pushes)*
+                __out
+            }
+        }
+    };
+
+    // -------------------------------------------------------------------------
     // Auto-tenant wiring (Phase 5.5 Task 10 + Task 11).
     //
     // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
@@ -2436,6 +2518,9 @@ pub fn expand(
             }
 
             #descriptor_impl
+
+            #proxy_default_filter_override
+            #proxy_default_order_override
 
             fn get(
                 ctx: &mut ::djogi::context::DjogiContext,

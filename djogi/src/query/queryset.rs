@@ -259,21 +259,45 @@ fn and_condition_into_q<T: Model>(current: Q<T>, addition: Condition) -> Q<T> {
 }
 
 impl<T: Model> QuerySet<T> {
-    /// Construct an empty QuerySet. Prefer `T::objects()` at call sites —
-    /// it is the idiomatic spelling and reads as "all objects of this
-    /// model (before filtering)".
+    /// Construct an empty QuerySet — or, for proxy models, one seeded
+    /// with the proxy's `#[model(default_filter, default_order)]` state.
+    /// Prefer `T::objects()` at call sites — it is the idiomatic
+    /// spelling and reads as "all objects of this model (before
+    /// filtering)".
+    ///
+    /// # Proxy default-filter / default-order seeding (Phase 8β T3.4)
+    ///
+    /// Reads [`Model::default_filter_condition`] and
+    /// [`Model::default_order_by`] at construction time. Non-proxy
+    /// models inherit the default trait impls (returns `None` /
+    /// `Vec::new()`) so the seeded queryset is structurally identical
+    /// to the pre-T3.4 surface; rustc inlines the `None` / empty `Vec`
+    /// returns and folds the seeding step away on the hot path.
+    ///
+    /// Proxy models override the trait methods via the macro, so the
+    /// seeded queryset starts with the proxy's lowered SQL fragment
+    /// already in `condition` and the proxy's ordering already in
+    /// `ordering`. Subsequent `.filter(...)` calls AND-compose with
+    /// the default (matching Django-style semantics — the proxy
+    /// filter is the prefix no adopter call can drop), and `.order_by(...)`
+    /// calls APPEND to the default ordering per the existing queryset
+    /// convention (`queryset.rs` lines 25–28).
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn new() -> Self {
+        // Proxy default filter (8β T3.4) → Q<T> (8γ Stage 2 substrate flip).
+        // `T::default_filter_condition()` returns `Option<Condition>`; wrap
+        // any returned condition in `Q::Condition(c)` so it round-trips
+        // through the bridge with identical SQL. Non-proxy models return
+        // `None` → `Q::always_true()` (same vacuous-truth as the pre-flip
+        // `Condition::True` default).
+        let condition = T::default_filter_condition().map_or_else(Q::always_true, |c| {
+            use crate::query::q::Q;
+            Q::Condition(c)
+        });
+        let ordering = T::default_order_by();
         QuerySet {
-            // Cluster 8γ Stage 2 (T6.9): substrate flip from
-            // `Condition::True` to `Q::always_true()`. The two are
-            // semantically identical — `Q::always_true()` is
-            // `Q::Basic(BasicPredicate::True)` and lowers back to
-            // `Condition::True` through the bridge — so the SQL
-            // emitter sees the same vacuous-truth shape it did
-            // pre-flip.
-            condition: Q::always_true(),
-            ordering: Vec::new(),
+            condition,
+            ordering,
             distinct: DistinctMode::None,
             limit: None,
             offset: None,
@@ -1815,6 +1839,196 @@ mod tests {
         let qs: QuerySet<Fake> = QuerySet::new().limit(5);
         let qs2 = qs.clone();
         assert_eq!(qs.limit, qs2.limit);
+    }
+
+    // ── Phase 8β T3.4 — proxy default-filter / default-order seeding ─────
+    //
+    // A second hand-rolled `Model` impl that overrides the new trait
+    // methods so the `QuerySet::new()` seeding path can be exercised
+    // without requiring the proc macro. The tests below assert that:
+    //
+    // - A proxy-shaped model whose `default_filter_condition` returns
+    //   `Some(...)` seeds the queryset's `condition` field with that
+    //   value (not `Condition::True`).
+    // - A proxy-shaped model whose `default_order_by` returns a
+    //   non-empty `Vec<OrderExpr>` seeds the `ordering` field.
+    // - User `.filter(...)` calls AND-compose with the seeded condition
+    //   (the proxy filter is the prefix no adopter call can drop).
+    // - User `.order_by(...)` calls APPEND to the seeded ordering
+    //   (matches the existing queryset-level append convention).
+    // - The non-proxy `Fake` model above remains structurally identical
+    //   to its pre-T3.4 shape — no `RawSql` leakage when the trait
+    //   default impls (`None` / `Vec::new()`) are used.
+
+    /// A proxy-shaped model. The hand-rolled impl overrides
+    /// `default_filter_condition` and `default_order_by`; everything
+    /// else mirrors `Fake`'s `unreachable!()` body.
+    struct FakeProxy;
+    impl crate::model::__sealed::Sealed for FakeProxy {}
+    #[allow(clippy::manual_async_fn)]
+    impl Model for FakeProxy {
+        type Pk = i64;
+        type Fields = ();
+        fn table_name() -> &'static str {
+            "fake_proxy"
+        }
+        fn pk_value(&self) -> &Self::Pk {
+            unreachable!("not called in QuerySet unit tests")
+        }
+        fn descriptor() -> &'static crate::descriptor::ModelDescriptor {
+            unreachable!("not called in QuerySet unit tests")
+        }
+        fn default_filter_condition() -> Option<Condition> {
+            // Mirrors the macro emission path — `Condition::__from_raw_sql_fragment`
+            // is the constructor the macro uses for the lowered SQL
+            // fragment. Using a static string here keeps the test self-
+            // contained without dragging the macro-emission pipeline in.
+            Some(Condition::__from_raw_sql_fragment("active = TRUE"))
+        }
+        fn default_order_by() -> Vec<crate::query::OrderExpr> {
+            vec![crate::query::OrderExpr::__from_macro_column(
+                "created_at",
+                crate::query::Direction::Desc,
+                crate::query::NullsOrder::Default,
+            )]
+        }
+        fn get(
+            _ctx: &mut crate::context::DjogiContext,
+            _id: Self::Pk,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn create(
+            _ctx: &mut crate::context::DjogiContext,
+            _v: Self,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn save<'ctx>(
+            &'ctx mut self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+        fn delete(
+            self,
+            _ctx: &mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<(), crate::DjogiError>> + Send {
+            async { unreachable!() }
+        }
+        fn refresh_from_db<'ctx>(
+            &'ctx self,
+            _ctx: &'ctx mut crate::context::DjogiContext,
+        ) -> impl std::future::Future<Output = Result<Self, crate::DjogiError>> + Send + 'ctx
+        {
+            async { unreachable!() }
+        }
+    }
+
+    /// `QuerySet::new()` seeds `condition` from
+    /// `Model::default_filter_condition` when the proxy override
+    /// returns `Some(...)`.
+    ///
+    /// Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` — lower
+    /// through the bridge to assert the legacy shape the SQL emitter
+    /// actually sees.
+    #[test]
+    fn proxy_queryset_seeds_default_filter() {
+        let qs: QuerySet<FakeProxy> = QuerySet::new();
+        match crate::query::q::q_to_condition_ref(&qs.condition) {
+            Condition::RawSql(s) => assert_eq!(s, "active = TRUE"),
+            other => panic!("expected RawSql variant, got {other:?}"),
+        }
+    }
+
+    /// `QuerySet::new()` seeds `ordering` from
+    /// `Model::default_order_by` when the proxy override returns a
+    /// non-empty Vec.
+    #[test]
+    fn proxy_queryset_seeds_default_order() {
+        let qs: QuerySet<FakeProxy> = QuerySet::new();
+        assert_eq!(qs.ordering.len(), 1);
+        match &qs.ordering[0] {
+            crate::query::OrderExpr::Column {
+                column, direction, ..
+            } => {
+                assert_eq!(*column, "created_at");
+                assert!(matches!(direction, crate::query::Direction::Desc));
+            }
+            #[allow(unreachable_patterns)]
+            other => panic!("expected Column variant, got {other:?}"),
+        }
+    }
+
+    /// User `.filter(...)` AND-composes with the seeded default filter —
+    /// the proxy condition stays as the prefix and the user's leaf is
+    /// appended via the standard `Condition::and()` flatten path.
+    ///
+    /// Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` — lower
+    /// through the bridge so the assertion still inspects the shape
+    /// the SQL emitter renders.
+    #[test]
+    fn proxy_filter_ands_with_default() {
+        use crate::query::condition::{FilterValue, Leaf};
+        let qs: QuerySet<FakeProxy> = QuerySet::<FakeProxy>::new()
+            .filter(|_| Condition::Leaf(Leaf::eq_raw("price", FilterValue::I64(100))));
+        match crate::query::q::q_to_condition_ref(&qs.condition) {
+            Condition::And(parts) => {
+                assert_eq!(parts.len(), 2, "expected proxy filter AND user filter");
+                assert!(matches!(parts[0], Condition::RawSql(_)));
+                assert!(matches!(parts[1], Condition::Leaf(_)));
+            }
+            other => panic!("expected And, got {other:?}"),
+        }
+    }
+
+    /// User `.order_by(...)` APPENDS to the seeded default ordering —
+    /// the proxy ordering stays as the prefix and the user's expression
+    /// is pushed onto the end. Matches the existing queryset convention
+    /// (`queryset.rs:25-28`).
+    #[test]
+    fn proxy_order_by_appends_to_default() {
+        let user_order = crate::query::OrderExpr::__from_macro_column(
+            "id",
+            crate::query::Direction::Asc,
+            crate::query::NullsOrder::Default,
+        );
+        let qs: QuerySet<FakeProxy> = QuerySet::<FakeProxy>::new().order_by(|_| user_order);
+        assert_eq!(qs.ordering.len(), 2);
+        // Prefix: the seeded default.
+        match &qs.ordering[0] {
+            crate::query::OrderExpr::Column { column, .. } => assert_eq!(*column, "created_at"),
+            #[allow(unreachable_patterns)]
+            other => panic!("expected Column, got {other:?}"),
+        }
+        // Suffix: the user's `.order_by(...)`.
+        match &qs.ordering[1] {
+            crate::query::OrderExpr::Column { column, .. } => assert_eq!(*column, "id"),
+            #[allow(unreachable_patterns)]
+            other => panic!("expected Column, got {other:?}"),
+        }
+    }
+
+    /// The non-proxy `Fake` model is structurally unchanged by T3.4 —
+    /// `default_filter_condition` returns `None` (default impl) and
+    /// `default_order_by` returns the empty `Vec`, so the seeded queryset
+    /// is identical to the pre-T3.4 shape (`Condition::True` + empty
+    /// ordering).
+    ///
+    /// Cluster 8γ Stage 2 (T6.9): the substrate is now `Q<T>`. For
+    /// `default_filter_condition() == None`, `QuerySet::new()` seeds
+    /// `Q::always_true()` (== `Q::Basic(BasicPredicate::True)`), which
+    /// the bridge lowers to the legacy `Condition::True` — preserving
+    /// the pre-flip emission contract.
+    #[test]
+    fn non_proxy_queryset_unchanged_by_t3_4() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        assert!(matches!(
+            crate::query::q::q_to_condition_ref(&qs.condition),
+            Condition::True
+        ));
+        assert!(qs.ordering.is_empty());
     }
 
     // ── T11: group_by_region / count_by_region type-dispatch tests ────────────

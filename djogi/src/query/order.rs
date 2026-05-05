@@ -305,3 +305,35 @@ impl From<OrderExpr> for Vec<OrderExpr> {
         vec![o]
     }
 }
+
+impl OrderExpr {
+    /// Macro-only constructor for a `Column` ordering — Phase 8β T3.4.
+    ///
+    /// `#[non_exhaustive]` on the variant prevents downstream
+    /// (user-crate) `OrderExpr::Column { column, direction, nulls }`
+    /// literals; the proxy macro emits `default_order = [(field,
+    /// Asc|Desc), ...]` overrides in the *user's* crate, so we expose
+    /// this `#[doc(hidden)]` constructor as the macro-only path. Mirrors
+    /// the [`crate::query::Condition::__from_raw_sql_fragment`] pattern
+    /// from the same task.
+    ///
+    /// Not part of the user-facing API. The macro never quotes the
+    /// `column` argument at the call site, but `#[model(default_order)]`
+    /// only accepts a parsed `syn::Ident` (validated against the
+    /// unquoted-identifier byte grammar in
+    /// `model::proxy::parse_default_order_list`), so an out-of-grammar
+    /// column name cannot reach this constructor.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __from_macro_column(
+        column: &'static str,
+        direction: Direction,
+        nulls: NullsOrder,
+    ) -> Self {
+        OrderExpr::Column {
+            column,
+            direction,
+            nulls,
+        }
+    }
+}
