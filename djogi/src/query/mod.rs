@@ -31,6 +31,7 @@ pub mod filter;
 pub mod grouped;
 pub(crate) mod lock;
 pub mod order;
+pub mod q;
 pub mod queryset;
 pub mod recursive;
 #[cfg(feature = "spatial")]
@@ -48,6 +49,7 @@ pub use condition::Condition;
 pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
+pub use q::{ArrayPredicate, Q};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
 // `BasicPredicate<T>` is sassi's universal Rust-evaluable predicate algebra.
