@@ -692,21 +692,15 @@ pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
         }
         Q::Xor(a, b) => xor_to_condition(*a, *b),
         Q::Negated(inner) => Condition::Not(Box::new(q_to_condition(*inner))),
-        // `#[non_exhaustive]` catch-all. Hit only if a sister cluster
-        // adds a new SQL-only variant without extending this lowering;
-        // the trybuild and SQL-parity tests should catch the gap
-        // before any production build, but the defensive arm ensures
-        // the build doesn't break across cluster merges in flight.
+        // `#[non_exhaustive]` catch-all for future Q<T> variants.
+        // Panicking is correct — `Condition::True` would silently pass
+        // every row. Update both `q_to_condition` and `q_to_condition_ref`
+        // together when a new variant is added.
         #[allow(unreachable_patterns)]
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "djogi::query::q::q_to_condition: unhandled Q<T> variant — \
-                 lowering to Condition::True. Extend the match arm to include \
-                 the new variant before merging."
-            );
-            Condition::True
-        }
+        _ => panic!(
+            "djogi internal: unhandled Q<T> variant in q_to_condition — \
+             update the bridge when a new variant is added."
+        ),
     }
 }
 
