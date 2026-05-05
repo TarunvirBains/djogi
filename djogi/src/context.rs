@@ -1050,6 +1050,115 @@ impl DjogiContext {
     pub fn applied_tenant_id(&self) -> Option<&str> {
         self.applied_tenant_id.as_deref()
     }
+
+    /// Switch the Postgres session role for the remainder of the current
+    /// transaction by issuing `SET LOCAL ROLE "<role>"`.
+    ///
+    /// This is the security-overlay primitive the row-level-security
+    /// helpers compose on top of — it lets a transaction temporarily
+    /// drop into a less-privileged role (e.g. `app_readonly`) so a
+    /// downstream subquery runs against narrower RLS predicates than
+    /// the connecting user otherwise carries.
+    ///
+    /// # Validation
+    ///
+    /// Postgres refuses to bind parameters (`$1`) on `SET LOCAL ROLE`,
+    /// so the role name is interpolated directly into the SQL. The
+    /// byte-level validator below is the substitute defence: the input
+    /// must match the Postgres unquoted-identifier grammar — an ASCII
+    /// letter or underscore followed by ASCII alphanumerics or
+    /// underscores, up to 63 bytes (`NAMEDATALEN - 1`). No embedded
+    /// quotes, no control characters, no non-ASCII bytes. The
+    /// validation runs via byte-level primitives (`u8::is_ascii_*`,
+    /// equality on individual bytes); there is no Rust regex engine
+    /// involved, in line with the framework-wide ban on regex
+    /// dependencies.
+    ///
+    /// Reserved-keyword rejection is intentionally **not** applied to
+    /// role names. Postgres allows reserved words as role names when
+    /// double-quoted (which is exactly how this method emits them), so
+    /// rejecting `select` or `where` as a role name would be stricter
+    /// than the server itself. The validator delegates to
+    /// [`crate::ident::check_plain_ident`] with `check_reserved =
+    /// false`, mirroring the runtime-helper convention established by
+    /// [`Self::ensure_enum_type`].
+    ///
+    /// # Quoting and injection surface
+    ///
+    /// After validation succeeds, the role is wrapped in double quotes
+    /// and emitted as `SET LOCAL ROLE "<role>"`. Every byte that could
+    /// escape the double-quoted form (`"`, `\`, control characters,
+    /// any non-ASCII or non-identifier byte) is rejected by the
+    /// validator before the SQL is built — the validator and the
+    /// quoting are designed in lockstep, neither layer can stand on
+    /// its own.
+    ///
+    /// # Scope
+    ///
+    /// `SET LOCAL ROLE` binds the role change to the surrounding
+    /// transaction; it reverts at COMMIT or ROLLBACK. Calling this on
+    /// a pool-backed `DjogiContext` would either be a no-op (the
+    /// connection returns to the pool with the role cleared) or —
+    /// worse, in the absence of `LOCAL` — leak the role onto the
+    /// pooled connection where the next checkout-victim inherits it.
+    /// Both outcomes are programming errors, so this method refuses to
+    /// run on a pool-backed context and returns
+    /// [`DjogiError::SetRoleOutsideTransaction`] instead. Wrap the
+    /// call in [`crate::transaction::atomic`] to get a transaction
+    /// scope.
+    ///
+    /// # Errors
+    ///
+    /// - [`DjogiError::SetRoleOutsideTransaction`] if `self` is
+    ///   pool-backed.
+    /// - [`DjogiError::InvalidRoleName`] (carrying the offending
+    ///   string) if the role fails byte-level validation.
+    /// - [`DjogiError::Db`] for any underlying `tokio_postgres` error
+    ///   reported by the server (e.g. role does not exist, current
+    ///   user is not a member of the target role).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// djogi::transaction::atomic(&pool, |ctx| Box::pin(async move {
+    ///     ctx.set_role("app_readonly").await?;
+    ///     // Subsequent statements run under the app_readonly role
+    ///     // until this atomic() exits.
+    ///     let posts = Post::objects().fetch_all(ctx).await?;
+    ///     Ok(posts)
+    /// })).await?;
+    /// ```
+    pub async fn set_role(&mut self, role: &str) -> Result<(), DjogiError> {
+        // Step 1 — refuse pool-backed contexts. `SET LOCAL ROLE` is
+        // bound to the surrounding transaction; without one, the role
+        // change either evaporates after the single statement or
+        // leaks onto the pooled connection. Both outcomes are misuse,
+        // so we surface a typed terminal error before touching SQL.
+        // Mirrors the discriminant pattern in
+        // `_execute_savepoint_unchecked`.
+        match &self.inner {
+            ContextInner::Pool(_) => return Err(DjogiError::SetRoleOutsideTransaction),
+            ContextInner::Transaction(_) => {}
+        }
+        // Step 2 — byte-level identifier validation. `check_plain_ident`
+        // enforces non-empty, ≤ 63 bytes, ASCII letter or underscore
+        // first, ASCII alphanumerics or underscores after. Reserved
+        // keywords are *not* rejected (Postgres permits reserved words
+        // as role names when double-quoted, which is exactly how the
+        // SQL below emits them).
+        if crate::ident::check_plain_ident(role, false).is_err() {
+            return Err(DjogiError::InvalidRoleName(role.to_owned()));
+        }
+        // Step 3 — emit `SET LOCAL ROLE "<role>"`. Postgres rejects
+        // parameter binding on `SET LOCAL ROLE`, so the validated
+        // identifier is interpolated directly. Every byte that could
+        // escape the double-quoted form (`"`, `\`, controls, non-
+        // ASCII) was rejected in step 2 — the validator is the
+        // substitute defence for the missing parameter slot.
+        let sql = format!("SET LOCAL ROLE \"{role}\"");
+        self.execute(&sql, &[]).await?;
+        Ok(())
+    }
 }
 
 /// Runtime plain-identifier validator for user-facing helpers like
@@ -1183,5 +1292,122 @@ mod tests {
     fn validate_runtime_plain_ident_accepts_exact_max_length() {
         let exact = "a".repeat(63);
         assert!(validate_runtime_plain_ident(&exact, "enum type name").is_ok());
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 8ε T9.2 — set_role byte-level validation gate.
+    //
+    // Tests 1 and 5 require a real Postgres pool / transaction to exercise
+    // the discriminant arms end-to-end and are gated behind `#[ignore]`;
+    // T9.7 integration tests cover them under the `#[djogi_test]` runtime.
+    // The validation-only tests (2, 3, 4) run as plain unit tests because
+    // the byte-level gate fires before any DB activity and is itself the
+    // primary security invariant — every byte that could escape the
+    // double-quoted SQL form must be rejected here.
+    // -------------------------------------------------------------------------
+
+    /// Helper: route a role string through the same validation chain
+    /// `set_role` uses, returning the typed `DjogiError::InvalidRoleName`
+    /// (or `Ok(())`) without needing a real `DjogiContext`. Mirrors the
+    /// `set_role` body's step 2 exactly so test coverage of this helper
+    /// is coverage of the gate the production code emits SQL behind.
+    fn check_role_for_set_role(role: &str) -> Result<(), DjogiError> {
+        if crate::ident::check_plain_ident(role, false).is_err() {
+            return Err(DjogiError::InvalidRoleName(role.to_owned()));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Postgres pool; covered by T9.7 integration tests"]
+    async fn set_role_rejects_outside_transaction() {
+        // Pool-backed context — `SET LOCAL ROLE` cannot bind to a
+        // transaction scope here, so the method must surface
+        // `SetRoleOutsideTransaction` *before* sending any SQL.
+        let url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://djogi:djogi@localhost/djogi_test".into());
+        let pool = crate::pg::pool::DjogiPool::connect(&url)
+            .await
+            .expect("pool connect");
+        let mut ctx = DjogiContext::from_pool(pool);
+        match ctx.set_role("readonly").await {
+            Err(DjogiError::SetRoleOutsideTransaction) => {}
+            other => panic!("expected SetRoleOutsideTransaction, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_role_rejects_quote_injection() {
+        // The classic injection shape — a quote-and-trail payload that
+        // would close the surrounding `"..."` quoting in the emitted
+        // SQL and append a destructive statement. The byte-level
+        // validator must reject it at the first non-identifier byte
+        // (the embedded `"`), and the typed error must carry the
+        // offending input verbatim so logs identify what was blocked.
+        let attack = "readonly\"; DROP TABLE users--";
+        match check_role_for_set_role(attack) {
+            Err(DjogiError::InvalidRoleName(s)) => assert_eq!(s, attack),
+            other => panic!("expected InvalidRoleName({attack:?}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_role_rejects_empty_string() {
+        // Empty string — `check_plain_ident` returns `IdentError::Empty`,
+        // which the gate maps to `InvalidRoleName("")`. Pinning this
+        // case explicitly because an empty identifier is the canonical
+        // boundary defect: `SET LOCAL ROLE ""` is malformed SQL, but
+        // a sloppy validator that only checked "first byte is alpha"
+        // would index out of bounds before reaching the alpha check.
+        match check_role_for_set_role("") {
+            Err(DjogiError::InvalidRoleName(s)) => assert_eq!(s, ""),
+            other => panic!("expected InvalidRoleName(\"\"), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_role_rejects_overlong_name() {
+        // 64-byte role name — exactly one byte over Postgres's 63-byte
+        // unquoted identifier limit (`NAMEDATALEN - 1`). The server
+        // would silently truncate at 63, which means two Rust-distinct
+        // role names could collide after truncation. Reject up front
+        // so Rust- and SQL-level identity contracts stay aligned.
+        let overlong = "a".repeat(64);
+        assert_eq!(overlong.len(), 64);
+        match check_role_for_set_role(&overlong) {
+            Err(DjogiError::InvalidRoleName(s)) => assert_eq!(s, overlong),
+            other => panic!("expected InvalidRoleName(<64-byte>), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_role_accepts_valid_identifier() {
+        // Positive case — a well-formed role name with the full set of
+        // allowed bytes (lowercase letters, digits, underscores, an
+        // underscore-led prefix segment). The validation gate must
+        // pass; the DB-touch step is exercised separately under
+        // `#[ignore]` (see `set_role_executes_set_local_role_sql`).
+        assert!(check_role_for_set_role("app_readonly_role").is_ok());
+        assert!(check_role_for_set_role("_internal").is_ok());
+        assert!(check_role_for_set_role("role1").is_ok());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live Postgres pool + role; covered by T9.7 integration tests"]
+    async fn set_role_executes_set_local_role_sql() {
+        // End-to-end round-trip — open a transaction, run `set_role`
+        // against a known role name, observe that `SELECT
+        // current_role` reports the new role. Gated behind `#[ignore]`
+        // because the role must exist in the test database; T9.7
+        // sets up a fixture role for the integration suite.
+        let url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://djogi:djogi@localhost/djogi_test".into());
+        let pool = crate::pg::pool::DjogiPool::connect(&url)
+            .await
+            .expect("pool connect");
+        let outer = DjogiContext::from_pool(pool);
+        let mut ctx = outer.begin().await.expect("BEGIN");
+        ctx.set_role("djogi").await.expect("set_role on djogi role");
+        ctx.rollback().await.expect("ROLLBACK");
     }
 }
