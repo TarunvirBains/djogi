@@ -314,6 +314,16 @@ impl<T> Expr<T> {
     /// wires this from the computed getter's signature so the typed
     /// seal stays intact at the public boundary.
     ///
+    /// **Macro-only.** Calling this directly from adopter code is
+    /// unsupported behaviour at the framework level — `#[doc(hidden)]`
+    /// and the `__`-prefix are a convention, not a visibility gate. The
+    /// only supported path is the macro-emitted `{Model}Computed`
+    /// accessor; direct calls bypass token-level validation and can
+    /// inject arbitrary SQL into `filter_expr`. This is accepted
+    /// pre-alpha risk (parallel to
+    /// [`crate::query::condition::Condition::__from_raw_sql_fragment`]),
+    /// documented here so adopters cannot claim ignorance.
+    ///
     /// Not part of the user-facing `Expr` API — the `__`-prefix +
     /// `#[doc(hidden)]` pair signals that downstream code must not
     /// call this directly, mirroring

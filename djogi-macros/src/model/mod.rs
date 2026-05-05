@@ -87,6 +87,31 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .iter()
         .map(|(ident, _)| ident.to_string())
         .collect();
+    // Guard: a non-computed field must not share a name with a computed field.
+    // In practice this is unreachable — Rust forbids duplicate field names and
+    // `parse_computed_attrs` only collects fields that carry `#[computed(...)]`
+    // — but the check prevents a future refactor that populates `computed_attrs`
+    // from an external source from silently stripping the wrong field and
+    // corrupting `FromPgRow` ordinal decoding.
+    if !computed_field_names.is_empty() {
+        if let Fields::Named(named) = &struct_item.fields {
+            for field in &named.named {
+                let has_computed_attr = field.attrs.iter().any(|a| a.path().is_ident("computed"));
+                if let Some(id) = &field.ident {
+                    if !has_computed_attr && computed_field_names.contains(&id.to_string()) {
+                        return Err(syn::Error::new_spanned(
+                            field,
+                            format!(
+                                "field `{id}` appears as both a computed field and a \
+                                 non-computed field — this should never happen under \
+                                 normal Rust syntax; this is a djogi internal error"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
     if !computed_field_names.is_empty()
         && let Fields::Named(named) = &mut struct_item.fields
     {
