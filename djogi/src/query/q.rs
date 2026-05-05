@@ -877,14 +877,32 @@ mod tests {
         match result {
             Q::Basic(BasicPredicate::Or(or_parts)) => {
                 assert_eq!(or_parts.len(), 2, "outer Or must have 2 branches");
-                // Left branch: `(a & b) ^ c` = BasicPredicate::Xor(And([a,b]), c)
+                // Left branch: `(a & b) ^ c` = Xor(And([True, False]), True)
                 match &or_parts[0] {
-                    BasicPredicate::Xor(lhs, _rhs_c) => match lhs.as_ref() {
-                        BasicPredicate::And(and_parts) => {
-                            assert_eq!(and_parts.len(), 2, "And must have 2 parts (a, b)");
+                    BasicPredicate::Xor(lhs, rhs_c) => {
+                        // XOR RHS is `c` = BasicPredicate::True
+                        assert!(
+                            matches!(rhs_c.as_ref(), BasicPredicate::True),
+                            "XOR rhs must be c = True, got {rhs_c:?}"
+                        );
+                        // XOR LHS is `a & b` = And([True, False])
+                        match lhs.as_ref() {
+                            BasicPredicate::And(and_parts) => {
+                                assert_eq!(and_parts.len(), 2, "And must have 2 parts (a, b)");
+                                assert!(
+                                    matches!(and_parts[0], BasicPredicate::True),
+                                    "And[0] must be a = True"
+                                );
+                                assert!(
+                                    matches!(and_parts[1], BasicPredicate::False),
+                                    "And[1] must be b = False"
+                                );
+                            }
+                            other => {
+                                panic!("expected And([True, False]) as XOR lhs, got {other:?}")
+                            }
                         }
-                        other => panic!("expected And(a,b) as XOR lhs, got {other:?}"),
-                    },
+                    }
                     other => panic!("expected Xor as left Or branch, got {other:?}"),
                 }
                 // Right branch: `d` = BasicPredicate::False
