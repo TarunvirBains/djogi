@@ -47,6 +47,12 @@ use sha2::Sha256;
 use std::env;
 use subtle::ConstantTimeEq;
 
+// The all-zero sentinel `[0u8; 32]` denotes "signing disabled".
+// HMAC-SHA256 over real input has a ~2^-256 probability of producing
+// this output — vanishingly small (lower than a hash collision in
+// the lifetime of the universe). The sentinel is therefore safe
+// even though it occupies a value in the legitimate output range.
+
 /// Signing-disabled sentinel. Per the module-level "No-op key sentinel"
 /// section, all-zeros means "do not compute or verify HMAC".
 const NOOP_KEY: [u8; 32] = [0u8; 32];
@@ -134,10 +140,16 @@ pub fn verify_snapshot(json_bytes: &[u8], signature: &[u8; 32], key: &[u8; 32]) 
 pub fn load_signing_key_from_env() -> Result<Option<[u8; 32]>, SnapshotKeyError> {
     let raw = match env::var("DJOGI_SNAPSHOT_SIGNING_KEY") {
         Ok(s) => s,
-        // Either unset or contains non-UTF-8 — treat both as "no key
-        // configured". A non-UTF-8 value would never decode as hex anyway,
-        // and surfacing it as `Ok(None)` mirrors the unset case.
-        Err(_) => return Ok(None),
+        // Unset → caller falls back to the no-op key sentinel.
+        Err(env::VarError::NotPresent) => return Ok(None),
+        // Set but non-UTF-8 → surface as a hard error rather than
+        // silently degrading to the no-op sentinel. Collapsing this
+        // into `Ok(None)` would let a malformed env var (typo,
+        // accidental binary paste, injection) downgrade signing to a
+        // no-op without warning, which violates the documented
+        // signing contract. The operator must explicitly fix or
+        // unset the variable.
+        Err(env::VarError::NotUnicode(_)) => return Err(SnapshotKeyError::NonUnicodeEnvVar),
     };
 
     let bytes = raw.as_bytes();
@@ -173,9 +185,9 @@ fn decode_hex_nibble(byte: u8, idx: usize) -> Result<u8, SnapshotKeyError> {
 
 /// Errors surfaced by [`load_signing_key_from_env`].
 ///
-/// The variants are deliberately narrow — the only failure modes for hex
-/// decode are wrong-length input and a stray non-hex byte. We hand-roll
-/// `Display` and `Error` rather than pulling `thiserror` in for two
+/// The variants are deliberately narrow — the failure modes are wrong-length
+/// input, a stray non-hex byte, and a non-UTF-8 env-var value. We hand-roll
+/// `Display` and `Error` rather than pulling `thiserror` in for three
 /// variants; the message format is stable and the boilerplate is trivial.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotKeyError {
@@ -189,6 +201,12 @@ pub enum SnapshotKeyError {
     /// secret material — see the verify-side timing-channel rationale at
     /// the top of this module).
     InvalidHexByte { idx: usize, byte: u8 },
+    /// `DJOGI_SNAPSHOT_SIGNING_KEY` is set but contains non-UTF-8 bytes.
+    ///
+    /// Treating this as "no key set" would silently degrade signing to
+    /// the no-op sentinel — a security regression. Surface as an error
+    /// so the operator must explicitly fix the env var or unset it.
+    NonUnicodeEnvVar,
 }
 
 impl std::fmt::Display for SnapshotKeyError {
@@ -201,6 +219,11 @@ impl std::fmt::Display for SnapshotKeyError {
             SnapshotKeyError::InvalidHexByte { idx, byte } => write!(
                 f,
                 "DJOGI_SNAPSHOT_SIGNING_KEY contains a non-hex byte at index {idx} (byte 0x{byte:02x})",
+            ),
+            SnapshotKeyError::NonUnicodeEnvVar => write!(
+                f,
+                "DJOGI_SNAPSHOT_SIGNING_KEY is set but contains non-UTF-8 bytes; \
+                 fix the value or unset the variable to disable signing",
             ),
         }
     }
@@ -243,10 +266,15 @@ mod tests {
         // semantics will fail this test loudly.
         //
         // Note: the canonical RFC-4231 Test Case 1 uses a 20-byte key
-        // (only the leading 0x0b bytes); this fixture extends the key to
-        // 32 bytes by zero-padding, so the expected MAC differs from the
-        // RFC vector. The bytes below were captured from the RustCrypto
-        // `hmac` 0.13 implementation and cross-checked against the
+        // (only the leading 0x0b bytes). This fixture zero-pads that
+        // key to 32 bytes — but the resulting MAC is IDENTICAL to the
+        // RFC vector. HMAC's key-derivation step pads any key shorter
+        // than the block size (64 bytes for SHA-256) with zeros before
+        // XOR'ing with the inner/outer pad constants, so a 20-byte key
+        // padded to 32 bytes and then internally padded to 64 produces
+        // the same `K XOR ipad`/`K XOR opad` as the 20-byte key padded
+        // directly to 64. The pinned bytes below match RFC-4231 Test
+        // Case 1's expected output and were cross-checked via the
         // openssl command in the doc comment.
         let expected: [u8; 32] = [
             0xb0, 0x34, 0x4c, 0x61, 0xd8, 0xdb, 0x38, 0x53, 0x5c, 0xa8, 0xaf, 0xce, 0xaf, 0x0b,
@@ -415,5 +443,40 @@ mod tests {
             result,
             Err(SnapshotKeyError::InvalidHexByte { idx: 0, byte: b'g' }),
         );
+    }
+
+    /// `env::var` distinguishes `NotPresent` (variable is unset) from
+    /// `NotUnicode` (variable is set but the value is not valid UTF-8).
+    /// The function under test must surface the latter as an error rather
+    /// than silently degrading to the no-op key sentinel — otherwise a
+    /// malformed env var (typo, accidental binary paste, injection)
+    /// downgrades signing to a no-op without warning.
+    ///
+    /// Test is Unix-gated because constructing a non-UTF-8 `OsString`
+    /// requires `os::unix::ffi::OsStringExt::from_vec`. On Windows the
+    /// equivalent shape (ill-formed UTF-16 in the environment block) is
+    /// possible but reaches the same code path; covering it on Unix is
+    /// sufficient for the variant-routing assertion.
+    #[cfg(unix)]
+    #[test]
+    fn load_key_from_env_non_unicode_returns_error() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+        let _g = ENV_MUTEX.lock().unwrap();
+        // SAFETY: ENV_MUTEX serialises every env-var test in this binary;
+        // the runtime is single-threaded inside this critical section.
+        unsafe {
+            env::set_var(
+                "DJOGI_SNAPSHOT_SIGNING_KEY",
+                OsString::from_vec(vec![0xFF, 0xFE, 0xFD]),
+            );
+        }
+        let result = load_signing_key_from_env();
+        // SAFETY: same — clear after the test so adjacent tests see an
+        // unset variable.
+        unsafe {
+            env::remove_var("DJOGI_SNAPSHOT_SIGNING_KEY");
+        }
+        assert_eq!(result, Err(SnapshotKeyError::NonUnicodeEnvVar));
     }
 }
