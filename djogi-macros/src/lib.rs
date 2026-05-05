@@ -26,6 +26,7 @@ mod primary_key_macro;
 mod reverse_relation;
 mod syn_util;
 mod testing;
+mod trait_impl;
 
 use proc_macro::TokenStream;
 
@@ -438,4 +439,51 @@ pub fn apps(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn primary_key(input: TokenStream) -> TokenStream {
     primary_key_macro::expand(input.into()).into()
+}
+
+/// `#[djogi::trait_impl]` — Phase 8β T5 trait-registry attribute.
+///
+/// Wraps a trait `impl` block so cross-cutting consumers
+/// (`Sassi::all_impl::<dyn T>()`, T5.4 + 8δ T7) can iterate every
+/// model that implements the trait at runtime without enumerating
+/// each `impl` site by hand.
+///
+/// ```ignore
+/// use djogi::prelude::*;
+///
+/// trait Searchable {
+///     fn searchable_columns(&self) -> &'static [&'static str];
+/// }
+///
+/// #[model(table = "vehicles")]
+/// pub struct Vehicle { pub title: String }
+///
+/// #[djogi::trait_impl]
+/// impl Searchable for Vehicle {
+///     fn searchable_columns(&self) -> &'static [&'static str] {
+///         &["title"]
+///     }
+/// }
+/// ```
+///
+/// The impl block reaches rustc verbatim — adopter-side compile
+/// errors point at the adopter's code, not at the macro expansion.
+/// Alongside the impl, the macro emits an
+/// `inventory::submit!(TraitRegistration { ... })` block whose
+/// `caster` field is the type-erased downcast helper consumers use
+/// to obtain `Arc<dyn Trait>` from `Arc<dyn Any>`.
+///
+/// # Constraints
+///
+/// - Trait impls only — `impl Trait for Type`. Inherent
+///   `impl Type { ... }` rejected.
+/// - Concrete (non-generic) impls only — `impl<T> Trait for Vec<T>`
+///   rejected. Generic impls deferred to a future phase per
+///   `feedback_anchored_deferrals`.
+/// - The self type must be a named type (`Type` or
+///   `crate::module::Type`); tuples, references, and function
+///   pointers are not supported.
+#[proc_macro_attribute]
+pub fn trait_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
+    trait_impl::expand(attr.into(), item.into()).into()
 }

@@ -259,7 +259,7 @@ pub use descriptor::{
 // when PostGIS support is not requested.
 pub use djogi_macros::{
     DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
-    reverse_one_to_one,
+    reverse_one_to_one, trait_impl,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;
