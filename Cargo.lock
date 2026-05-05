@@ -574,6 +574,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

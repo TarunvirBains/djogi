@@ -29,3 +29,9 @@ time.workspace = true
 # Used by the `live` subcommand to surface typed CLI errors
 # (`LiveCmdError`) without per-call boilerplate.
 thiserror.workspace = true
+# Used by `verify` to compare the audit-DB error's SQLSTATE against
+# `SqlState::UNDEFINED_TABLE` (`42P01`) — the constant lives in
+# `tokio_postgres::error`. djogi already depends on tokio-postgres
+# transitively; declaring it directly here keeps the import path
+# stable (no `djogi::__private::*` reach-through from CLI code).
+tokio-postgres.workspace = true

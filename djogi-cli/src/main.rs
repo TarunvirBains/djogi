@@ -17,6 +17,7 @@ use clap::{Parser, Subcommand};
 mod db;
 mod live;
 mod migrations;
+mod verify;
 
 #[derive(Parser)]
 #[command(name = "djogi", about = "Djogi framework CLI")]
@@ -58,6 +59,23 @@ enum TopCommand {
         /// `<workspace>/target/djogi-docs/`.
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Workspace root override. Defaults to the current working
+        /// directory.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Cluster 8ε T9.6 — read-only HMAC cross-check of every
+    /// `migrations/<target>/<app>/schema_snapshot.json` against the
+    /// audit DB's `djogi_ddl_audit` ledger.
+    ///
+    /// Exit codes: `0` when every snapshot reports `OK` or `Skipped`
+    /// (audit table absent or no audit row yet), `1` on any mismatch
+    /// or runtime error (config / connect / I/O / key decode).
+    ///
+    /// **Read-only.** Verify never issues `INSERT`, `UPDATE`,
+    /// `DELETE`, or DDL — the only SQL leaving the CLI is a
+    /// positional-bind `SELECT` against `djogi_ddl_audit`.
+    Verify {
         /// Workspace root override. Defaults to the current working
         /// directory.
         #[arg(long)]
@@ -312,6 +330,28 @@ fn main() -> ExitCode {
         },
         TopCommand::Docs { output, workspace } => db::docs_cmd(output, workspace),
         TopCommand::Live { command } => live::dispatch(command),
+        TopCommand::Verify { workspace } => {
+            // Build a current-thread Tokio runtime to drive the async
+            // verify body. Mirrors `db reset` / `db seed` — both pull
+            // the same shape of runtime out of `db::build_runtime`.
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("djogi verify: tokio runtime: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            match runtime.block_on(verify::run(workspace)) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("djogi verify: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         TopCommand::Migrations { command } => match command {
             MigrationsCommand::Compose {
                 name,
