@@ -61,6 +61,30 @@ pub(crate) enum ExprNode {
     /// not re-validate; the seal is on the constructor.
     Field { column: &'static str },
 
+    /// Raw SQL fragment — Phase 8β T4.2 carve-out for the
+    /// `#[computed(sql = "...")]` field surface.
+    ///
+    /// The fragment is a `&'static str` baked at macro expansion time
+    /// from the user-authored SQL expression. The macro does NOT parse
+    /// the fragment (per the lens, plan §7 #6 resolved 2026-05-03 —
+    /// shipping a tiny in-house SQL parser introduces a
+    /// Rust-vs-Postgres parse-divergence surface that is hard to test
+    /// exhaustively); it does run a token-level validation pass
+    /// confirming that every `\w+`-shaped token resolves to a declared
+    /// struct field on the model and that operators come from an
+    /// explicit allowlist. Anything outside the allowlist surfaces as
+    /// a span-precise compile error.
+    ///
+    /// Emitter wraps the fragment in outer parens at every emission
+    /// site for operator-precedence stability under further
+    /// composition (the same pattern as
+    /// [`crate::query::condition::Condition::RawSql`] from T3.4).
+    ///
+    /// Construction goes through
+    /// [`crate::expr::Expr::raw_sql_fragment`], which is
+    /// `#[doc(hidden)]` and not part of the user-facing API.
+    RawSql(&'static str),
+
     /// Scalar literal. Every SQL-bindable type Djogi ships with already
     /// lives in [`FilterValue`]; reusing that enum avoids parallel
     /// variant lists and keeps the emitter's bind path in one place

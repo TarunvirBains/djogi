@@ -305,4 +305,39 @@ impl<T> Expr<T> {
             _phantom: PhantomData,
         }
     }
+
+    /// Construct an `Expr<T>` from a raw SQL fragment — Phase 8β T4.2.
+    ///
+    /// Macro-only constructor, emitted by `#[computed(sql = "...")]`
+    /// and the `{Model}Computed` ZST accessors (T4.5). The `T`
+    /// parameter must match the SQL fragment's return type; the macro
+    /// wires this from the computed getter's signature so the typed
+    /// seal stays intact at the public boundary.
+    ///
+    /// Not part of the user-facing `Expr` API. The `&'static str`
+    /// argument is the user-authored SQL expression, baked at macro
+    /// expansion time after the token-level validation pass in
+    /// `model::computed`. Adopters who need a runtime-bound SQL
+    /// fragment must drop down to `DjogiContext::raw_query` /
+    /// `raw_execute` — the typed `Expr<T>` surface stays free of
+    /// runtime SQL composition.
+    ///
+    /// # Why parens-wrapped at every emission site (not in the
+    /// constructor)
+    ///
+    /// Wrapping happens inside `expr::sql::emit_expr` rather than at
+    /// fragment-construction time so the `Expr<T>` IR stays a clean
+    /// tree of well-typed nodes — adding parens here would make the
+    /// fragment opaque to any future tree-walking optimisation pass.
+    /// The emitter's universal wrapping is the operator-precedence
+    /// safety net.
+    #[doc(hidden)]
+    pub fn raw_sql_fragment(s: &'static str) -> Self {
+        // `Expr<T>` carries its own `#[must_use]` via the type-level
+        // attribute — no method-level must_use needed.
+        Expr {
+            node: ExprNode::RawSql(s),
+            _phantom: PhantomData,
+        }
+    }
 }
