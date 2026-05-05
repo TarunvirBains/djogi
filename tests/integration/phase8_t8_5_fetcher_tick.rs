@@ -279,6 +279,12 @@ async fn fetcher_constructs_fresh_context_per_tick(mut ctx: djogi::DjogiContext)
     // assertion here is that the second tick SUCCEEDS — proving the ctx
     // is freshly constructed per tick (the first tick released the connection).
     // We also verify at least 1 row is returned (the boundary row).
+    //
+    // Note: the `>= 1` lower bound depends on the watermark protocol using
+    // an inclusive `>=` boundary (per DeltaPunnuFetcher contract). If sassi
+    // ever changes the boundary to exclusive `>` the boundary row would be
+    // skipped on the second tick and `applied` would be 0 — that would be
+    // a sassi-side semantic change, not a djogi bug.
     assert!(
         result_2.applied >= 1,
         "second tick must apply at least 1 row (the boundary row at max watermark); \
@@ -290,16 +296,19 @@ async fn fetcher_constructs_fresh_context_per_tick(mut ctx: djogi::DjogiContext)
 
 // ── Test 4 — auth locked to subscription ─────────────────────────────────────
 
-/// Create a `refresh_into` with `auth_a`; then build a different
-/// `auth_b`. Verify the handle still runs successfully under `auth_a`
-/// (the snapshot). This pins spec §677: auth is locked to the
-/// subscription, not to whatever auth the caller holds at tick time.
+/// Create a `refresh_into` with `auth_a`; verify the handle still runs
+/// successfully and returns the expected rows.
 ///
-/// For a model without tenant-key RLS the auth snapshot is invisible to
-/// SQL (no WHERE clause changes). We therefore verify the contract by
-/// checking that the tick completes successfully and returns the expected
-/// rows — the auth snapshot is applied but doesn't filter, confirming
-/// the fetcher used the CAPTURED auth rather than crashing or using None.
+/// **Limited scope:** this test does NOT structurally pin the
+/// auth-locked-to-subscription contract (spec §677). The fetcher captures
+/// `auth_a` by value, so any unrelated `auth_b` constructed in caller
+/// scope is unobservable from the fetcher regardless of test setup. For a
+/// model without tenant-key RLS the auth snapshot has no WHERE-clause
+/// effect, so the auth used per-tick is not directly observable from the
+/// returned rows either. The test verifies "tick completes successfully
+/// under captured auth" — which proves the fetcher accepts and applies
+/// the auth without crashing. A meaningful pin of §677 awaits either RLS
+/// integration tests or a mock-fetcher that records ctx.auth() per tick.
 #[djogi::djogi_test]
 async fn fetcher_runs_under_captured_auth(mut ctx: djogi::DjogiContext) {
     setup_fetcher_tick_rows(&mut ctx).await;

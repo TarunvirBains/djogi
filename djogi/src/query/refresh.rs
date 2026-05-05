@@ -66,7 +66,7 @@ use crate::cache::DjogiDeltaSyncMeta;
 use crate::context::DjogiContext;
 use crate::pg::decode::FromPgRow;
 use crate::pg::pool::DjogiPool;
-use sassi::{BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError};
+use sassi::{BackendError, BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError};
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use tokio_postgres::types::ToSql;
@@ -122,16 +122,27 @@ where
         }
 
         // ── 1. Acquire a connection from the pool ────────────────────────────
+        // Pool failures are infrastructure/transport-class — surface them via
+        // sassi's structured `BackendError` taxonomy so observability tooling
+        // (PunnuMetrics::record_backend_error etc.) can distinguish them from
+        // application-level errors. `BackendError::Other` is correct for
+        // pool-acquisition failures (deadpool's `PoolError` doesn't cleanly
+        // map to NotFound / Serialization / WireFormat / Network).
         let conn = self
             .pool
             .get()
             .await
-            .map_err(|e| FetchError::Custom(Box::new(e)))?;
+            .map_err(|e| FetchError::Backend(BackendError::Other(Box::new(e))))?;
 
         // ── 2. Build a fresh DjogiContext with captured auth ─────────────────
         // Per spec §677: auth is locked to the subscription — the context uses
         // the AuthContext snapshot captured at refresh_into call time, not
         // whatever the caller's context holds at tick time.
+        //
+        // Note: AuthContext::clone() is cheap in practice (Vec<String> scopes
+        // and HashMap<String, String> ext are typically small or empty). If
+        // future profiling shows clone-per-tick is a bottleneck, switching to
+        // `Arc<AuthContext>` in the fetcher field is a drop-in optimization.
         let mut ctx = DjogiContext::from_connection(conn).with_auth(self.auth.clone());
 
         // ── 3. Build SQL ─────────────────────────────────────────────────────
@@ -144,41 +155,43 @@ where
         // (T::Watermark and T::Id may differ) into one Vec. The references for
         // raw_query are derived from the boxes after the Vec is complete.
         let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
-        let mut where_parts: Vec<String> = Vec::new();
 
-        // Watermark clause: WHERE <col> >= $N (inclusive per DeltaPunnuFetcher
-        // contract — boundary rows may have changed without their watermark
-        // advancing; Sassi deduplicates by id).
-        if let Some(since) = query.since.as_ref() {
+        // Build the WHERE clause as four explicit cases on (since, recover_ids).
+        // The structure of the resulting clause directly reflects the pair —
+        // we deliberately avoid a `Vec<String>::join(" AND ")` because the
+        // recovery clause is OR-combined with the watermark clause, not
+        // AND-combined, and a future addition of a new AND-clause would have
+        // bound incorrectly to the OR group.
+        //
+        // Watermark is `>=` (inclusive) per the DeltaPunnuFetcher contract:
+        // boundary rows may have changed without their watermark advancing;
+        // Sassi deduplicates by id at apply_delta time.
+        //
+        // Recovery ids are OR'd with the watermark clause — we want those
+        // rows regardless of whether their watermark advanced (e.g. the
+        // caller is recovering from an LRU eviction).
+        let push_watermark = |params: &mut Vec<Box<dyn ToSql + Sync + Send>>, since: &T::Watermark| -> String {
             params.push(Box::new(since.clone()));
-            where_parts.push(format!("{watermark_col} >= ${}", params.len()));
-        }
-
-        // Recovery clause: id IN ($N, $N+1, …)
-        // Recovery ids are OR'd with the watermark clause — we want those rows
-        // regardless of whether their watermark advanced.
-        if !query.recover_ids.is_empty() {
+            format!("{watermark_col} >= ${}", params.len())
+        };
+        let push_recover = |params: &mut Vec<Box<dyn ToSql + Sync + Send>>| -> String {
             let mut placeholders: Vec<String> = Vec::new();
             for id in &query.recover_ids {
                 params.push(Box::new(id.clone()));
                 placeholders.push(format!("${}", params.len()));
             }
-            let recover_clause = format!("id IN ({})", placeholders.join(", "));
+            format!("id IN ({})", placeholders.join(", "))
+        };
 
-            if where_parts.is_empty() {
-                where_parts.push(recover_clause);
-            } else {
-                // Combine: (watermark_clause) OR (recovery_clause).
-                // The watermark_clause was pushed as a single entry above.
-                let watermark_clause = where_parts.remove(0);
-                where_parts.push(format!("({watermark_clause}) OR ({recover_clause})"));
+        let where_sql: String = match (query.since.as_ref(), query.recover_ids.is_empty()) {
+            (None, true) => String::new(),
+            (Some(since), true) => format!("WHERE {}", push_watermark(&mut params, since)),
+            (None, false) => format!("WHERE {}", push_recover(&mut params)),
+            (Some(since), false) => {
+                let watermark_clause = push_watermark(&mut params, since);
+                let recover_clause = push_recover(&mut params);
+                format!("WHERE ({watermark_clause}) OR ({recover_clause})")
             }
-        }
-
-        let where_sql = if where_parts.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", where_parts.join(" AND "))
         };
 
         let sql =
@@ -192,6 +205,13 @@ where
             .map(|b| b.as_ref() as &(dyn ToSql + Sync))
             .collect();
 
+        // raw_query errors can be Postgres wire (infrastructure) or type-decode
+        // (application logic). Without the discriminating context, `Custom` is
+        // the safest mapping — it preserves the inner Display + Source chain
+        // for diagnostics. A future helper that classifies tokio_postgres
+        // errors into BackendError vs Custom could refine this; for now the
+        // taxonomy degradation is acceptable (the inner DjogiError's Display
+        // output names the underlying cause).
         let items: Vec<T> = ctx
             .raw_query::<T>(&sql, &params_refs)
             .await
@@ -203,6 +223,12 @@ where
         // ── 6. ctx drops here — returns conn back to pool ────────────────────
         drop(ctx);
 
+        // `DeltaResult::new` sets `high_watermark = None` — Sassi's
+        // `observed_watermark()` will infer the high watermark from
+        // `max(item.watermark())` across the returned items. We never emit a
+        // synthetic high_watermark past what the query returned, so omitting
+        // it is correct (and preserves the invariant that the watermark only
+        // advances based on observed rows).
         Ok(DeltaResult::new(items, tombstones))
     }
 }
