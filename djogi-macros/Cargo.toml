@@ -60,12 +60,3 @@ serde_json.workspace = true
 # djogi's own consumption — same workspace `exclude = ["sassi-reference"]`
 # trick keeps cargo from absorbing the symlink tree into djogi's workspace.
 sassi = { path = "../sassi-reference/sassi" }
-# tokio-postgres — needed by Phase 8ε T9.7 trybuild compile-fail fixture
-# (`phase8e_set_role_outside_atomic.rs`) which references
-# `tokio_postgres::Client` to prove the type-system gate on
-# `DjogiContext::set_role`. The fixture takes a `&tokio_postgres::Client` and
-# calls `.set_role(...)` on it; the captured `.stderr` pins that no such
-# method exists on the raw client (the only `set_role` lives on
-# `&mut DjogiContext`). djogi already depends on tokio-postgres directly;
-# declaring it here makes the dep explicit for fixture compilation.
-tokio-postgres.workspace = true
