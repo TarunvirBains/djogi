@@ -59,7 +59,16 @@ pub mod visage_queryset;
 pub use aggregate::AggregateQuery;
 pub use annotate::{AnnotatedQuerySet, IntoAggregateTuple};
 pub use closure::{ClosureModel, MaterializeClosureOptions, MaterializeClosureReport};
-pub use condition::Condition;
+// `Condition` is NOT re-exported at this level post-Cluster 8γ Stage 2.
+// The public substrate is `Q<T>` (re-exported below); legacy
+// `Condition`-producing FieldRef lookup methods (`f.col.eq(v)` etc.) are
+// still in use by the closure API (`QuerySet::filter` / `exclude`), so
+// the type itself stays reachable at `crate::query::condition::Condition`
+// for inference. Removing it from the public re-export tree closes the
+// "downstream Into<Condition> ambiguity" attack v3 §T6 Codex bullet
+// calls out — adopter code that needs to name the type uses
+// `crate::query::internal::Condition` (the unstable namespace below)
+// or composes via `Q<T>` instead.
 pub use field::{FieldRef, IntoFilterValue, OptionalRelationRef};
 pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
@@ -93,7 +102,15 @@ pub use visage_queryset::VisageQuerySet;
 /// items** in this module, and its path, may change across phases. Pin
 /// your own type aliases if you depend on them.
 pub mod internal {
-    pub use super::condition::{FilterValue, Leaf, LookupOp};
+    // Cluster 8γ Stage 2 (T6.9b): `Condition` graduates from peer
+    // public API (it was `pub use condition::Condition` at module
+    // root pre-flip) into the unstable internal namespace alongside
+    // `Leaf` / `FilterValue` / `LookupOp`. Cluster 8β's
+    // `default_filter_condition() -> Option<Condition>` trait method
+    // names this type and rebases against this path; future code
+    // composing through the public algebra never needs to name it
+    // (closure-side `FieldRef::eq` etc. type-infer the return).
+    pub use super::condition::{Condition, FilterValue, Leaf, LookupOp};
 }
 
 #[cfg(test)]

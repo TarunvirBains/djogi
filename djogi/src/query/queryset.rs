@@ -324,15 +324,27 @@ impl<T: Model> QuerySet<T> {
     /// Post::objects().filter(|f| f.published.eq(true))
     /// ```
     ///
-    /// # Substrate
+    /// # New code: prefer [`filter_struct`](Self::filter_struct)
     ///
-    /// As of Cluster 8γ Stage 2 (T6.9), the queryset's filter substrate
-    /// is the [`Q<T>`](crate::query::Q) algebra. `filter` keeps its
-    /// `FnOnce(T::Fields) -> Condition` signature for back-compat (every
-    /// shipped `FieldRef` lookup method returns `Condition`), and the
-    /// returned `Condition` lifts through the bridge into the algebra
-    /// substrate at storage time. SQL parity is exact because the
-    /// lowering bridge round-trips `Q::Condition(_)` as the identity.
+    /// As of Cluster 8γ Stage 2 (T6.9), the public predicate substrate
+    /// is the [`Q<T>`](crate::query::Q) algebra. `filter` and
+    /// [`exclude`](Self::exclude) keep their
+    /// `FnOnce(T::Fields) -> Condition` shape because every shipped
+    /// `FieldRef` lookup method (`f.col.eq(v)`, `f.col.gt(v)`, …)
+    /// returns the legacy [`Condition`] type and changing those return
+    /// types would rewrite every adopter's filter callsite. New code
+    /// composing against `Q<T>` directly — through the algebra
+    /// (`Q::Ilike(...)`, `Q::Regex(...)`), through sassi's
+    /// [`BasicPredicate<T>`](crate::query::BasicPredicate), or through
+    /// the macro-emitted `{Model}Filter` programmatic builder —
+    /// reaches for [`filter_struct`](Self::filter_struct) /
+    /// [`exclude_struct`](Self::exclude_struct) instead.
+    ///
+    /// SQL parity between `filter` and `filter_struct` is exact: the
+    /// closure-returned `Condition` lifts through the bridge into the
+    /// `Q<T>` substrate at storage time, and the reference-borrowing
+    /// lowering bridge round-trips `Q::Condition(_)` as the identity
+    /// at SQL emit time. Adopter code does not need to migrate.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter<F>(mut self, f: F) -> Self
     where
@@ -394,6 +406,17 @@ impl<T: Model> QuerySet<T> {
     /// ```ignore
     /// Post::objects().exclude(|f| f.title.eq("draft".to_string()))
     /// ```
+    ///
+    /// # New code: prefer [`exclude_struct`](Self::exclude_struct)
+    ///
+    /// See the module-level note on [`filter`](Self::filter): the
+    /// public predicate substrate is the
+    /// [`Q<T>`](crate::query::Q) algebra. `exclude` keeps its
+    /// `FnOnce(T::Fields) -> Condition` shape for back-compat with
+    /// every shipped `FieldRef` lookup method; new code composing
+    /// against `Q<T>` reaches for
+    /// [`exclude_struct`](Self::exclude_struct) instead. SQL parity
+    /// between the two paths is exact.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn exclude<F>(mut self, f: F) -> Self
     where

@@ -877,7 +877,7 @@ pub fn expand(input: TokenStream) -> TokenStream {
                             });
                         let __djogi_exists =
                             ::djogi::expr::Exists::new(__djogi_inner).as_expr();
-                        let __djogi_cond = ::djogi::Condition::Expr(__djogi_exists);
+                        let __djogi_cond = ::djogi::query::internal::Condition::Expr(__djogi_exists);
                         <#peer>::__filter_with_initial_condition(__djogi_cond)
                     }
                 }

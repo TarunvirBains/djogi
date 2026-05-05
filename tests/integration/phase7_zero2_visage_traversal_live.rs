@@ -41,8 +41,10 @@
 //! round-trips, and real closure captures.
 
 use djogi::prelude::*;
-use djogi::query::Condition;
-use djogi::query::internal::LookupOp;
+// Cluster 8γ Stage 2 (T6.9b): `Condition` lives at the unstable
+// internal path post-flip; the integration tests still pattern-match
+// on the lowered tree and import directly.
+use djogi::query::internal::{Condition, LookupOp};
 
 #[model(table = "phase7_zero2_t8_live_depts")]
 #[derive(Debug, Clone)]
