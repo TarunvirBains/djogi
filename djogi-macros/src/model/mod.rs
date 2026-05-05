@@ -151,7 +151,10 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let model_impl = crud::expand(&struct_item, &model_attrs, &field_attrs);
 
     // 4. ModelDescriptor + inventory::submit! for migration-differ consumption.
-    let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs);
+    //    T4.5 — `computed_attrs` is threaded through so the emitter can
+    //    populate `ModelDescriptor.computed_fields` with one
+    //    `ComputedFieldDescriptor` literal per parsed `#[computed]` field.
+    let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs, &computed_attrs);
 
     // 5. {Model}Fields — ZST with one `FieldRef<Self, V>` accessor per
     //    column. Reads field types off the post-injection `struct_item`;
@@ -211,6 +214,19 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // common case). Non-computed models pay zero cost.
     let computed_getters = computed::emit_rust_getters(&struct_item.ident, &computed_attrs);
 
+    // Phase 8β T4.5 — `{Model}Computed` ZST + accessor methods +
+    // `Vehicle::computed()` inherent constructor.
+    //
+    // Adopters access computed fields via `Vehicle::computed()
+    // .total_price()` returning `Expr<f64>`, suitable for use in
+    // `.annotate()`, `.filter_expr()`, `.order_by()`. The ZST is
+    // independent of `{Model}Fields` for v0.1.0 simplicity (see the
+    // module-level comment in `model::computed` for the bundling
+    // tradeoff with plan §7 #10).
+    //
+    // Empty token stream when no computed fields are declared.
+    let computed_zst = computed::emit_computed_zst(&struct_item.ident, &computed_attrs);
+
     Ok(quote::quote! {
         #expanded
         #hooks_impl
@@ -227,6 +243,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #projections_ts
         #rationale_advisories
         #computed_getters
+        #computed_zst
     })
 }
 

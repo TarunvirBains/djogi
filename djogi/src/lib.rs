@@ -248,10 +248,10 @@ pub use apps::AppDiagnostic;
 pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
-    DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
-    GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget, IndexNullsOrder,
-    IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
-    ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
+    ComputedFieldDescriptor, DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor,
+    FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget,
+    IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec,
+    PkType, ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
 };
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
 // the symbol does not appear in default-feature builds or `cargo doc` output

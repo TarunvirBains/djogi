@@ -321,6 +321,96 @@ pub fn emit_rust_getters(
     }
 }
 
+// ── T4.5 — `{Model}Computed` ZST emission for SQL projection ─────────────
+//
+// Emits a ZST `{Model}Computed` whose accessors return
+// `Expr<V>` (where `V` is the computed field's Rust return type) so
+// adopters can use computed fields in `.annotate()`, `.filter_expr()`,
+// and `.order_by()` — the SQL-projectable half of T4. The ZST is
+// constructed via `Vehicle::computed()` (an inherent method we also
+// emit on `#name`), giving adopters the call-site pattern:
+//
+// ```rust
+// Vehicle::objects()
+//     .filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0)))
+//     .fetch_all(ctx).await?;
+// ```
+//
+// # Why a separate ZST rather than bundling into `T::Fields`
+//
+// Plan §7 #10 (resolved 2026-05-03) recommended bundling computed
+// accessors directly into `T::Fields` so the call site is
+// `f.total_price()` symmetrically with regular fields. That decision
+// requires extending `FieldRef` with an internal `Source` enum
+// (Column | RawSql), which is a substantial surface-area change
+// touching every method. T4.5 ships the simpler ZST split for
+// v0.1.0 — the call-site difference is `Vehicle::computed()
+// .total_price()` vs `f.total_price()`. Adopter ergonomics drift
+// slightly but the API surface stays narrow. T6's Q-Algebra refactor
+// is the natural place to bundle if real adopter feedback warrants.
+
+/// Emit the `{Model}Computed` ZST + its accessor methods + the
+/// `Vehicle::computed()` inherent constructor.
+///
+/// Empty token stream when no computed fields are declared. Non-
+/// computed models pay zero emission cost.
+pub fn emit_computed_zst(
+    struct_name: &syn::Ident,
+    computed_attrs: &[(syn::Ident, ComputedAttr)],
+) -> proc_macro2::TokenStream {
+    if computed_attrs.is_empty() {
+        return proc_macro2::TokenStream::new();
+    }
+    let zst_name = quote::format_ident!("{}Computed", struct_name);
+    let accessors: Vec<proc_macro2::TokenStream> = computed_attrs
+        .iter()
+        .map(|(field_ident, attr)| {
+            let return_type = &attr.return_type;
+            let sql = &attr.sql;
+            let doc_comment = format!(
+                " Accessor for the `#[computed(sql = \"{sql}\")]` field.\n\
+                 Returns an `Expr<{}>` for use in `.annotate()`, \
+                 `.filter_expr()`, and `.order_by()`.",
+                quote::quote!(#return_type),
+            );
+            quote::quote! {
+                #[doc = #doc_comment]
+                #[allow(clippy::wrong_self_convention)]
+                pub fn #field_ident(self) -> ::djogi::expr::Expr<#return_type> {
+                    ::djogi::expr::Expr::<#return_type>::raw_sql_fragment(#sql)
+                }
+            }
+        })
+        .collect();
+    quote::quote! {
+        // {Model}Computed — Phase 8β T4.5 ZST holding one accessor per
+        // computed field. Default + Copy + Clone so adopters can
+        // construct it without naming the type.
+        #[derive(::core::default::Default, ::core::marker::Copy, ::core::clone::Clone, ::core::fmt::Debug)]
+        pub struct #zst_name;
+
+        impl #zst_name {
+            #(#accessors)*
+        }
+
+        impl #struct_name {
+            // Adopter-facing constructor for the computed accessor ZST.
+            // Returns the freshly-constructed ZST; the call site is
+            // `Vehicle::computed().total_price()` returning `Expr<f64>`.
+            #[doc = " Phase 8β T4.5 — accessor for the model's computed fields."]
+            #[doc = ""]
+            #[doc = " Returns a `{Model}Computed` ZST whose methods return `Expr<V>`"]
+            #[doc = " typed values suitable for `.annotate()`, `.filter_expr()`,"]
+            #[doc = " and `.order_by()`. Each method's `V` is the computed field's"]
+            #[doc = " declared Rust return type."]
+            #[must_use]
+            pub fn computed() -> #zst_name {
+                #zst_name
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +558,40 @@ mod tests {
     fn empty_input_emits_empty_token_stream() {
         let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
         let ts = emit_rust_getters(&struct_name, &[]).to_string();
+        assert!(ts.is_empty());
+    }
+
+    /// T4.5 — `emit_computed_zst` emits the `{Model}Computed` ZST
+    /// plus accessor methods plus `Vehicle::computed()` constructor.
+    /// Each accessor returns `Expr<V>` typed for the field's declared
+    /// return type and routes through `Expr::raw_sql_fragment`.
+    #[test]
+    fn emits_computed_zst_with_accessors() {
+        let s = parse_struct(quote! {
+            struct Vehicle {
+                #[computed(sql = "base_price * 2")]
+                pub double_price: f64,
+            }
+        });
+        let parsed = parse_computed_attrs(&s).expect("ok");
+        let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
+        let ts = emit_computed_zst(&struct_name, &parsed).to_string();
+        // ZST declared.
+        assert!(ts.contains("struct VehicleComputed"));
+        // Accessor method.
+        assert!(ts.contains("pub fn double_price"));
+        // Routes through `Expr::raw_sql_fragment` with the SQL.
+        assert!(ts.contains("raw_sql_fragment"));
+        assert!(ts.contains("base_price * 2"));
+        // Inherent constructor on the parent model.
+        assert!(ts.contains("pub fn computed"));
+    }
+
+    /// T4.5 — non-computed model pays zero emission cost.
+    #[test]
+    fn empty_computed_attrs_skips_zst_emission() {
+        let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
+        let ts = emit_computed_zst(&struct_name, &[]).to_string();
         assert!(ts.is_empty());
     }
 

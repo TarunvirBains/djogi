@@ -83,8 +83,9 @@ pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
+    computed_attrs: &[(syn::Ident, crate::model::computed::ComputedAttr)],
 ) -> TokenStream {
-    match try_expand(struct_item, model_attrs, field_attrs) {
+    match try_expand(struct_item, model_attrs, field_attrs, computed_attrs) {
         Ok(tokens) => tokens,
         Err(err) => err.to_compile_error(),
     }
@@ -105,6 +106,12 @@ fn try_expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
+    // Phase 8β T4.5 — `#[computed(sql = "...")]` field metadata.
+    // T4.1 added the descriptor field; T4.5 populates it from the
+    // captured attributes by emitting one ComputedFieldDescriptor
+    // literal per entry into the inventory::submit! body. Empty
+    // slice when no computed fields are declared.
+    computed_attrs_param: &[(syn::Ident, crate::model::computed::ComputedAttr)],
 ) -> syn::Result<TokenStream> {
     let source_ident = &struct_item.ident;
     let source_name_string = source_ident.to_string();
@@ -788,6 +795,51 @@ fn try_expand(
         None => quote! { ::core::option::Option::None },
     };
 
+    // Phase 8β T4.5 — populate `ModelDescriptor.computed_fields` from
+    // the captured `#[computed(sql = "...")]` attributes. Emits one
+    // `ComputedFieldDescriptor { ... }` literal per entry; empty slice
+    // when no computed fields are declared. The descriptor's
+    // `value_type` is set to `FieldSqlType::Custom` keyed off the
+    // declared Rust return-type token stream — the migration differ
+    // does not consult this field in v0.1.0 (computed fields are non-
+    // stored), so a permissive `Custom` mapping is sufficient. Future
+    // phases that want stricter typing can map the Rust type more
+    // precisely.
+    let computed_fields_tokens = if computed_attrs_param.is_empty() {
+        quote! { &[] }
+    } else {
+        let entries: Vec<proc_macro2::TokenStream> = computed_attrs_param
+            .iter()
+            .map(|(field_ident, attr)| {
+                let name = field_ident.to_string();
+                let sql = &attr.sql;
+                let return_ty = &attr.return_type;
+                // Map the Rust return type to a `FieldSqlType` variant
+                // via the existing `rust_type_to_sql` helper +
+                // `sql_str_to_tokens` lookup. Fall back to
+                // `Custom("<rendered>")` for shapes the helper does not
+                // recognise — the migration differ does not consult
+                // this field in v0.1.0 (computed fields are non-stored)
+                // so the Custom mapping is documentation-only.
+                let value_type_ts = match rust_type_to_sql(return_ty) {
+                    Some(s) => sql_str_to_tokens(s),
+                    None => {
+                        let rendered = quote::quote!(#return_ty).to_string().replace(' ', "");
+                        quote! { ::djogi::FieldSqlType::Custom(#rendered) }
+                    }
+                };
+                quote! {
+                    ::djogi::descriptor::ComputedFieldDescriptor {
+                        name: #name,
+                        sql: #sql,
+                        value_type: #value_type_ts,
+                    }
+                }
+            })
+            .collect();
+        quote! { &[ #(#entries,)* ] }
+    };
+
     Ok(quote! {
         #tombstone_guard_tokens
 
@@ -843,10 +895,10 @@ fn try_expand(
                 // into every `QuerySet<Self>::new()` (T3.4).
                 proxy_for: #proxy_for_tokens,
                 default_filter_sql: #default_filter_sql_tokens,
-                // Phase 8β T4 — computed-field descriptors. T4.1 ships the
-                // empty-slice default; T4.5 populates this from parsed
-                // `#[computed(sql = "...")]` field attributes.
-                computed_fields: &[],
+                // Phase 8β T4 — computed-field descriptors. T4.5
+                // populates this from parsed `#[computed(sql = "...")]`
+                // field attributes; empty slice for non-computed models.
+                computed_fields: #computed_fields_tokens,
             }
         }
         #(#deferrability_submits)*
