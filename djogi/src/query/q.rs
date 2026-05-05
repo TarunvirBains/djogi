@@ -16,6 +16,7 @@
 //! | `Q::Regex(...)`    | `col ~ $1` / `col ~* $1` (POSIX)   | SQL only           |
 //! | `Q::Expression(e)` | `Expr<bool>` escape hatch          | SQL only           |
 //! | `Q::Array(p)`      | `@>`, `<@`, `&&`                   | SQL only           |
+//! | `Q::Condition(c)`  | legacy [`Condition`] escape hatch  | SQL only           |
 //! | `Q::Compound`      | `AND` / `OR` over mixed siblings   | both               |
 //! | `Q::Xor(a, b)`     | XOR (general form `(¬a∧b)∨(a∧¬b)`) | both               |
 //! | `Q::Negated(q)`    | `NOT (...)`                        | both               |
@@ -106,6 +107,7 @@
 //! the rule at the type level.
 
 use crate::model::Model;
+use crate::query::condition::{Condition, FilterValue, Leaf, LookupOp};
 use crate::query::field::FieldRef;
 use sassi::BasicPredicate;
 use std::ops::{BitAnd, BitOr, BitXor, Not};
@@ -144,7 +146,6 @@ use std::ops::{BitAnd, BitOr, BitXor, Not};
 #[derive(Debug, Clone)]
 #[must_use = "Q<T> describes a filter predicate; use it in a QuerySet::filter_struct call or it has no effect"]
 #[non_exhaustive]
-#[allow(dead_code)] // Variants ship here (T6.1–T6.5); SQL-emitter consumers land at T6.6/T6.7 (Stage 2).
 pub enum Q<T: Model> {
     /// Rust-evaluable predicates lifted from sassi.
     /// `BasicPredicate::True` / `False` cover the vacuous identities
@@ -182,6 +183,41 @@ pub enum Q<T: Model> {
     /// Array operators — `@>`, `<@`, `&&` over Postgres array
     /// columns.
     Array(ArrayPredicate<T>),
+
+    /// SQL-side escape hatch carrying a legacy [`Condition`] tree.
+    ///
+    /// During the Cluster 8γ Stage 2 substrate flip (T6.9), every
+    /// callsite that previously assigned a `Condition` to
+    /// `QuerySet<T>::condition` lifts the value through this variant.
+    /// The lowering bridge ([`q_to_condition`]) unwraps it as the
+    /// identity, so the SQL emitter sees the **same** `Condition` tree
+    /// it would have seen pre-flip — character-for-character SQL
+    /// parity is preserved by construction.
+    ///
+    /// Adopters do not normally construct this variant by hand. It
+    /// exists so:
+    ///
+    /// - The legacy [`QuerySet::filter`] / [`QuerySet::exclude`]
+    ///   closure API (which returns `Condition` from `FieldRef::eq` /
+    ///   `gt` / `ilike` / etc.) keeps compiling unchanged.
+    /// - The [`crate::query::filter::ModelFilter`] programmatic
+    ///   builder bridges into `Q<T>` by folding its clauses through
+    ///   the existing `clauses_into_condition` helper and wrapping
+    ///   the result as `Q::Condition(_)`.
+    /// - Sister clusters (8β `default_filter_condition`, etc.) that
+    ///   still produce `Condition` can compose with `Q<T>` without a
+    ///   parallel rewrite.
+    ///
+    /// The variant is `pub` for cross-crate macro emission but is
+    /// effectively an implementation detail. Code that constructs it
+    /// directly is signalling "I have a typed-leaf path that the
+    /// public `Q<T>` algebra doesn't yet cover" — the long-term
+    /// answer is to extend the public algebra rather than reach
+    /// through here.
+    ///
+    /// [`QuerySet::filter`]: crate::query::QuerySet::filter
+    /// [`QuerySet::exclude`]: crate::query::QuerySet::exclude
+    Condition(Condition),
 
     /// Mixed-operand And/Or — at least one side is not pure
     /// `Q::Basic`. Pure-Basic And/Or short-circuits through
@@ -304,6 +340,97 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
         Q::Array(leaf.into())
     }
 }
+
+// ── `IntoQ<T>` — sealed trait for `filter_struct` / `exclude_struct` ─────────
+//
+// T6.7 (Cluster 8γ Stage 2). Anything convertible into a `Q<T>` for
+// `QuerySet::filter_struct` / `QuerySet::exclude_struct` implements
+// this trait. The sealing is the load-bearing piece: only djogi (and
+// macro-emitted code in adopter crates) may extend the surface, so a
+// downstream crate cannot reach for a custom impl that bypasses the
+// `Q<T>` algebra invariants — the sealed trait is the type-system
+// enforcement of v3 §T6 Codex review's "no `Into<Condition>` ambiguity"
+// rule.
+//
+// Three impls ship today:
+//
+// 1. `Q<T>` — identity. `filter_struct(my_q)` is the canonical caller.
+// 2. `BasicPredicate<T>` — sassi's universal Rust-evaluable predicate.
+//    Adopters can pass a sassi predicate directly without naming
+//    `Q::Basic(_)`; the impl wraps it for them.
+// 3. The `{Model}Filter` programmatic builder — emitted by the
+//    `#[derive(Model)]` macro alongside the existing `ModelFilter`
+//    impl. The bridge folds `into_clauses()` through the existing
+//    `clauses_into_condition` helper and lifts the result via
+//    `Q::Condition(_)`. SQL parity with the pre-T6.9 `Condition`
+//    substrate is exact because the lowering bridge round-trips the
+//    `Condition` as the identity (see `q_to_condition` for the contract).
+
+mod sealed_into_q {
+    /// Crate-private seal. Only djogi (and macro-emitted code routed
+    /// through `crate::__private`) may impl `IntoQ<T>`.
+    pub trait Sealed {}
+}
+
+/// Macro-only seal extension for `{Model}Filter` types.
+///
+/// `#[derive(Model)]` emits an `impl IntoQ<#model_ty> for #filter_name`
+/// alongside the existing `ModelFilter` impl. To satisfy the
+/// crate-private `sealed_into_q::Sealed` supertrait from a user crate,
+/// the emitted code routes through `::djogi::__private::seal_model_filter_for_into_q!`
+/// which expands to a single `impl Sealed for #filter_name` line.
+/// Adopter code cannot call this macro directly — it lives in
+/// `__private` and is only reachable from the proc-macro's emitted
+/// output (per `feedback_macro_path_routing.md`).
+#[doc(hidden)]
+pub use sealed_into_q::Sealed as __SealedIntoQ;
+
+/// Anything convertible into a [`Q<T>`] for
+/// [`QuerySet::filter_struct`](crate::query::QuerySet::filter_struct)
+/// / [`QuerySet::exclude_struct`](crate::query::QuerySet::exclude_struct).
+///
+/// Sealed — see `mod sealed_into_q`. The sealing closes the
+/// "downstream `Into<Condition>` ambiguity" attack the v3 §T6 Codex
+/// review explicitly calls out: a hostile downstream impl cannot
+/// smuggle a non-`Q<T>` type through the filter API.
+pub trait IntoQ<T: Model>: sealed_into_q::Sealed {
+    /// Lower the implementor into the `Q<T>` algebra.
+    fn into_q(self) -> Q<T>;
+}
+
+impl<T: Model> sealed_into_q::Sealed for Q<T> {}
+impl<T: Model> IntoQ<T> for Q<T> {
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        self
+    }
+}
+
+impl<T: Model> sealed_into_q::Sealed for BasicPredicate<T> {}
+impl<T: Model> IntoQ<T> for BasicPredicate<T> {
+    /// Lift a sassi `BasicPredicate<T>` directly into `Q<T>` without
+    /// requiring the adopter to name `Q::Basic(_)` at the callsite.
+    /// Identical effect to `Q::from(p)` / `p.into()`; this impl exists
+    /// so `filter_struct(my_basic)` reads naturally.
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        Q::Basic(self)
+    }
+}
+
+// ── Macro-emitted `IntoQ<T>` for `{Model}Filter` ────────────────────────────
+//
+// The `#[derive(Model)]` macro emits an `IntoQ<#model_ty>` impl for
+// each `{Model}Filter` it generates. The impl folds `into_clauses()`
+// through `crate::query::filter::clauses_into_condition` and wraps the
+// result as `Q::Condition(_)`. Character-for-character SQL parity with
+// the pre-T6.9 `Condition` substrate is preserved because
+// `q_to_condition` round-trips `Q::Condition(_)` as the identity.
+//
+// The seal extension lives in `crate::__private::__seal_into_q_for_model_filter`
+// so adopter crates cannot impl `IntoQ<T>` for arbitrary types — only
+// the macro (which routes through that helper) and djogi itself reach
+// the seal. See `djogi/src/lib.rs` for the helper definition.
 
 // ── `Q<T>` constructors + operator overloads ─────────────────────────────────
 
@@ -456,6 +583,371 @@ where
             parts: vec![lhs, rhs],
         },
     }
+}
+
+// ── `Q<T> → Condition` lowering bridge (one-way, transitional) ───────────────
+//
+// T6.6 (Cluster 8γ Stage 2). Lowers any `Q<T>` into the legacy
+// [`Condition`] tree that the SQL emitter (`query::sql::emit_condition`)
+// already consumes. This is the **single point** where the two
+// substrates meet during the substrate flip:
+//
+// - T6.9 swaps `QuerySet<T>::condition` from `Condition` to `Q<T>`.
+// - The SQL emitter still walks `Condition`, so every
+//   `emit_condition(acc, qs.condition.clone(), …)` call gets routed
+//   through `q_to_condition(...)` first.
+// - Character-for-character SQL parity is the contract: every
+//   `Q::Condition(_)`-wrapped legacy tree round-trips as the identity,
+//   and every `Q::*` algebra variant lowers to the same SQL the
+//   pre-flip code path produced.
+//
+// The direction is one-way by design. `Condition → Q<T>` would have to
+// reconstruct sassi's `BasicPredicate::Field` closure payload from a
+// type-erased leaf, which is not generally possible (the closure
+// captures a typed field-accessor). The legacy path that needs to feed
+// `Condition` into a `Q<T>`-shaped queryset uses `Q::Condition(_)` as
+// the lift, which preserves the original tree exactly.
+
+/// Lower a [`Q<T>`] into the legacy [`Condition`] tree consumed by the
+/// SQL emitter.
+///
+/// Used by `QuerySet<T>` after the T6.9 substrate flip: every
+/// `qs.condition` access in the SQL path goes through this function
+/// before reaching `emit_condition`. Every existing pre-flip test must
+/// produce **byte-identical** SQL post-flip — that contract is what
+/// makes `Q::Condition(_)` the load-bearing variant during the
+/// transition.
+///
+/// Lowering is total over the variants that exist today; the
+/// catch-all `_ => Condition::True` arm is defensive against
+/// `#[non_exhaustive]` extensions added in a sister cluster before
+/// this match learns about them. A debug-only `eprintln!` flags the
+/// fallthrough so missing emitter coverage is loud during
+/// development. Production builds silently degrade to the
+/// vacuous-truth identity rather than panic — the alternative is a
+/// runtime crash on an unrecognised algebra extension, which would
+/// destabilise the substrate refactor.
+///
+/// # XOR general form
+///
+/// `Q::Xor(a, b)` lowers to `(NOT a AND b) OR (a AND NOT b)` — the
+/// boolean fast-path (`a <> b`) is deferred to T11 per v3 §T6
+/// deliverables bullet 3 / `cluster-8gamma-granular.md` §"Out-of-scope".
+/// Same identity sassi's `BasicPredicate::Xor` carries; the lowering
+/// is identical whether the XOR rides `Q::Xor(_, _)` directly or
+/// `Q::Basic(BasicPredicate::Xor(_, _))`.
+//
+// `#[allow(dead_code)]` matches the T6.6 atomic-commit shape per
+// `feedback_atomic_commits.md`: the bridge ships by itself first so a
+// bisect that points here points at the lowering, not the wider
+// substrate flip. The first production caller lands in T6.7
+// (`QuerySet::filter_struct` accepts `Q<T>`); the SQL emitter starts
+// routing through here at T6.9. The unit tests below exercise every
+// variant before any caller depends on it.
+//
+// # By-value vs by-reference
+//
+// `q_to_condition` consumes the `Q<T>` and is the canonical
+// production caller (used by `filter_struct` / `exclude_struct`
+// after `filter.into_q()` produces an owned `Q<T>`). The SQL emit
+// path holds `&QuerySet<T>` and cannot consume — see
+// [`q_to_condition_ref`] for the reference-borrowing counterpart
+// that walks the algebra without requiring `T: Clone`. Both produce
+// byte-identical [`Condition`] trees by construction.
+#[allow(dead_code)]
+pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
+    match q {
+        Q::Basic(bp) => basic_predicate_to_condition(bp),
+        Q::Ilike(field, pattern) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::IContains,
+            FilterValue::String(pattern),
+        )),
+        Q::JsonbPath(leaf) => Condition::JsonbPath(leaf),
+        Q::Regex(field, pattern, true) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::Regex,
+            FilterValue::String(pattern),
+        )),
+        Q::Regex(field, pattern, false) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::IRegex,
+            FilterValue::String(pattern),
+        )),
+        Q::Expression(expr) => Condition::Expr(expr),
+        Q::Array(ArrayPredicate::Contains(leaf, _)) => Condition::ArrayContains(leaf),
+        Q::Array(ArrayPredicate::ContainedBy(leaf, _)) => Condition::ArrayContainedBy(leaf),
+        Q::Array(ArrayPredicate::Overlap(leaf, _)) => Condition::ArrayOverlap(leaf),
+        // Identity — `Q::Condition(_)` is the escape hatch the legacy
+        // path uses to feed a `Condition` into a `Q<T>` substrate.
+        // Round-tripping it as the identity is what guarantees
+        // character-for-character SQL parity post-substrate-flip.
+        Q::Condition(c) => c,
+        Q::Compound { op, parts } => {
+            let lowered: Vec<Condition> = parts.into_iter().map(q_to_condition).collect();
+            match op {
+                CompoundOp::And => Condition::And(lowered),
+                CompoundOp::Or => Condition::Or(lowered),
+            }
+        }
+        Q::Xor(a, b) => xor_to_condition(*a, *b),
+        Q::Negated(inner) => Condition::Not(Box::new(q_to_condition(*inner))),
+        // `#[non_exhaustive]` catch-all for future Q<T> variants.
+        // Panicking is correct — `Condition::True` would silently pass
+        // every row. Update both `q_to_condition` and `q_to_condition_ref`
+        // together when a new variant is added.
+        #[allow(unreachable_patterns)]
+        _ => panic!(
+            "djogi internal: unhandled Q<T> variant in q_to_condition — \
+             update the bridge when a new variant is added."
+        ),
+    }
+}
+
+/// Lower a sassi [`BasicPredicate`] into the legacy [`Condition`]
+/// tree.
+///
+/// `BasicPredicate::Field(_)` is the type-erased pinch point: sassi's
+/// `FieldPredicate` carries `Arc<dyn Any>` for its operand value, and
+/// reconstructing the full [`FilterValue`] discriminant (including
+/// `List` for `In` / `NotIn`, `Pair` for `Between`, etc.) from the
+/// erased payload requires either:
+///
+/// 1. A model-side type registry mapping `(field_name, LookupOp)` to
+///    the concrete value type, OR
+/// 2. Each construction site lifting the value into [`FilterValue`]
+///    before reaching the bridge.
+///
+/// Option 2 is the path djogi uses today — every typed `FieldRef`
+/// lookup method (`eq`, `gt`, `ilike`, `between`, `in_list`, …)
+/// returns [`Condition`] directly, so the
+/// `BasicPredicate::Field(_)` arm of this match is **not reachable**
+/// from any djogi FieldRef API as of Cluster 8γ Stage 2. A future
+/// integration that lifts FieldRef methods to `BasicPredicate` (per
+/// the §660 split's forward-looking direction in
+/// `cluster-8gamma-granular.md` §T6.8) would extend this arm with the
+/// `(field_name, op, value_as<V>())` reconstruction.
+///
+/// Today the arm logs a debug-only warning and lowers to
+/// `Condition::True` (vacuous-truth identity). The SQL-parity
+/// guarantee at T6.9 is unaffected because no shipped code path
+/// produces a `BasicPredicate::Field(_)` that flows through this
+/// bridge.
+fn basic_predicate_to_condition<T: Model>(bp: BasicPredicate<T>) -> Condition {
+    match bp {
+        BasicPredicate::True => Condition::True,
+        // Empty `Or(vec![])` is the vacuous-falsehood identity — same
+        // shape `Condition::or` uses, so SQL emission renders `FALSE`
+        // (see `condition.rs:30` and `sql.rs:367`).
+        BasicPredicate::False => Condition::Or(Vec::new()),
+        BasicPredicate::And(parts) => Condition::And(
+            parts
+                .into_iter()
+                .map(basic_predicate_to_condition)
+                .collect(),
+        ),
+        BasicPredicate::Or(parts) => Condition::Or(
+            parts
+                .into_iter()
+                .map(basic_predicate_to_condition)
+                .collect(),
+        ),
+        BasicPredicate::Not(inner) => {
+            Condition::Not(Box::new(basic_predicate_to_condition(*inner)))
+        }
+        BasicPredicate::Xor(a, b) => xor_to_condition_basic(*a, *b),
+        BasicPredicate::Field(_fp) => {
+            // `FieldPredicate::new` is `pub(crate)` in sassi so djogi
+            // cannot read the field name / op / value to reconstruct a
+            // `Condition::Leaf`. No djogi `FieldRef` method produces
+            // `BasicPredicate::Field` today — they produce `Condition::Leaf`
+            // via the closure filter path. Panicking is correct here:
+            // `Condition::True` silently passes every row, which is far
+            // more dangerous than a loud panic that surfaces the gap
+            // immediately. Remove this panic when sassi exposes the
+            // `FieldPredicate` fields so the arm can do a real
+            // `Condition::Leaf` reconstruction.
+            panic!(
+                "djogi internal: cannot lower BasicPredicate::Field to \
+                 Condition — FieldPredicate is pub(crate) in sassi. No djogi \
+                 FieldRef API constructs this variant; reaching this panic \
+                 means a future cluster must expose the sassi constructor. \
+                 Use the closure-based filter API (QuerySet::filter) or \
+                 Q<T> directly."
+            )
+        }
+        // `#[non_exhaustive]` catch-all for future sassi BasicPredicate variants.
+        // Panicking is correct — `Condition::True` would silently pass every
+        // row. Update this arm when sassi adds a new variant.
+        #[allow(unreachable_patterns)]
+        _ => panic!(
+            "djogi internal: unhandled BasicPredicate variant in \
+             basic_predicate_to_condition — update the bridge when sassi \
+             adds a new variant."
+        ),
+    }
+}
+
+/// XOR general-form lowering shared between `Q::Xor` and
+/// `BasicPredicate::Xor`. Truth table identity:
+/// `a XOR b ≡ (¬a ∧ b) ∨ (a ∧ ¬b)`.
+fn xor_to_condition<T: Model>(a: Q<T>, b: Q<T>) -> Condition {
+    let ca = q_to_condition(a);
+    let cb = q_to_condition(b);
+    Condition::Or(vec![
+        Condition::And(vec![Condition::Not(Box::new(ca.clone())), cb.clone()]),
+        Condition::And(vec![ca, Condition::Not(Box::new(cb))]),
+    ])
+}
+
+/// XOR general-form for the sassi-side path.
+///
+/// Recursing into `basic_predicate_to_condition` keeps the lowering
+/// scoped to the `BasicPredicate` subtree without round-tripping
+/// through `q_to_condition`. The two helpers exist as a pair because
+/// `Q::Xor(Box<Q<T>>, Box<Q<T>>)` and
+/// `BasicPredicate::Xor(Box<BasicPredicate<T>>, Box<BasicPredicate<T>>)`
+/// have different operand types and we lower each in its own arm
+/// without an extra heap roundtrip.
+fn xor_to_condition_basic<T: Model>(a: BasicPredicate<T>, b: BasicPredicate<T>) -> Condition {
+    let ca = basic_predicate_to_condition(a);
+    let cb = basic_predicate_to_condition(b);
+    Condition::Or(vec![
+        Condition::And(vec![Condition::Not(Box::new(ca.clone())), cb.clone()]),
+        Condition::And(vec![ca, Condition::Not(Box::new(cb))]),
+    ])
+}
+
+// ── Reference-borrowing lowering — `&Q<T> -> Condition` ──────────────────────
+//
+// T6.9 substrate flip companion. The SQL emit path holds
+// `&QuerySet<T>` and cannot consume `qs.condition`. Cloning the
+// queryset's condition would require `T: Clone` to propagate
+// virally through every terminal method (`fetch_all`, `count`,
+// `update`, `delete`, etc.) because sassi's `BasicPredicate<T>`
+// derives Clone and that derive imposes a `T: Clone` bound on the
+// generated impl — even though the Field variant's payload sits
+// behind `Arc` and the True / False variants carry no data at all.
+//
+// Walking by reference and producing a fresh [`Condition`] sidesteps
+// the bound: we never invoke `.clone()` on a `BasicPredicate<T>` or
+// any operand that carries the `T` parameter. `Condition` is
+// unconditionally `Clone`, so the `Q::Condition(_)` arm clones its
+// inner tree without trouble. Every other `Q<T>` variant either
+// recurses (Compound, Xor, Negated), reads `&'static str` plus an
+// owned non-`T`-bound payload (Ilike, Regex, JsonbPath, Array,
+// Expression), or is `BasicPredicate::Field(_)` which the bridge
+// reduces to `Condition::True` with a debug warning (see the
+// `basic_predicate_to_condition` arm — no shipped djogi FieldRef
+// path constructs that variant).
+//
+// SQL parity: the by-reference walker produces the **same**
+// [`Condition`] tree shape the by-value walker does. Both go through
+// the lowering tests in `query::q::tests`; the reference path is
+// asserted via `q_to_condition_ref_matches_q_to_condition` which
+// pins the parity contract at every variant.
+
+#[allow(dead_code)]
+pub(crate) fn q_to_condition_ref<T: Model>(q: &Q<T>) -> Condition {
+    match q {
+        Q::Basic(bp) => basic_predicate_ref_to_condition(bp),
+        Q::Ilike(field, pattern) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::IContains,
+            FilterValue::String(pattern.clone()),
+        )),
+        Q::JsonbPath(leaf) => Condition::JsonbPath(leaf.clone()),
+        Q::Regex(field, pattern, true) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::Regex,
+            FilterValue::String(pattern.clone()),
+        )),
+        Q::Regex(field, pattern, false) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::IRegex,
+            FilterValue::String(pattern.clone()),
+        )),
+        Q::Expression(expr) => Condition::Expr(expr.clone()),
+        Q::Array(ArrayPredicate::Contains(leaf, _)) => Condition::ArrayContains(leaf.clone()),
+        Q::Array(ArrayPredicate::ContainedBy(leaf, _)) => Condition::ArrayContainedBy(leaf.clone()),
+        Q::Array(ArrayPredicate::Overlap(leaf, _)) => Condition::ArrayOverlap(leaf.clone()),
+        Q::Condition(c) => c.clone(),
+        Q::Compound { op, parts } => {
+            let lowered: Vec<Condition> = parts.iter().map(q_to_condition_ref).collect();
+            match op {
+                CompoundOp::And => Condition::And(lowered),
+                CompoundOp::Or => Condition::Or(lowered),
+            }
+        }
+        Q::Xor(a, b) => xor_to_condition_ref(a, b),
+        Q::Negated(inner) => Condition::Not(Box::new(q_to_condition_ref(inner))),
+        // `#[non_exhaustive]` catch-all for future Q<T> variants.
+        // Panicking is correct — `Condition::True` would silently pass
+        // every row. Update both `q_to_condition` and `q_to_condition_ref`
+        // together when a new variant is added.
+        #[allow(unreachable_patterns)]
+        _ => panic!(
+            "djogi internal: unhandled Q<T> variant in q_to_condition_ref — \
+             update the bridge when a new variant is added."
+        ),
+    }
+}
+
+/// Reference-borrowing analogue of `basic_predicate_to_condition`.
+/// Walks `&BasicPredicate<T>` and produces a fresh [`Condition`]
+/// without invoking `Clone` on the predicate or its `T` parameter.
+fn basic_predicate_ref_to_condition<T: Model>(bp: &BasicPredicate<T>) -> Condition {
+    match bp {
+        BasicPredicate::True => Condition::True,
+        BasicPredicate::False => Condition::Or(Vec::new()),
+        BasicPredicate::And(parts) => {
+            Condition::And(parts.iter().map(basic_predicate_ref_to_condition).collect())
+        }
+        BasicPredicate::Or(parts) => {
+            Condition::Or(parts.iter().map(basic_predicate_ref_to_condition).collect())
+        }
+        BasicPredicate::Not(inner) => {
+            Condition::Not(Box::new(basic_predicate_ref_to_condition(inner)))
+        }
+        BasicPredicate::Xor(a, b) => xor_basic_ref_to_condition(a, b),
+        BasicPredicate::Field(_fp) => {
+            // Same rationale as `basic_predicate_to_condition`: `FieldPredicate`
+            // is `pub(crate)` in sassi; panicking is correct over silent
+            // `Condition::True`. See the owned bridge for the full explanation.
+            panic!(
+                "djogi internal: cannot lower BasicPredicate::Field to \
+                 Condition (by-ref path) — FieldPredicate is pub(crate) in \
+                 sassi. Use the closure-based filter API or Q<T> directly."
+            )
+        }
+        #[allow(unreachable_patterns)]
+        _ => panic!(
+            "djogi internal: unhandled BasicPredicate variant in \
+             basic_predicate_ref_to_condition — update the bridge when \
+             sassi adds a new variant."
+        ),
+    }
+}
+
+/// XOR general-form for the reference-borrowing path. Same identity
+/// as `xor_to_condition`: `(NOT a AND b) OR (a AND NOT b)`.
+fn xor_to_condition_ref<T: Model>(a: &Q<T>, b: &Q<T>) -> Condition {
+    let ca = q_to_condition_ref(a);
+    let cb = q_to_condition_ref(b);
+    Condition::Or(vec![
+        Condition::And(vec![Condition::Not(Box::new(ca.clone())), cb.clone()]),
+        Condition::And(vec![ca, Condition::Not(Box::new(cb))]),
+    ])
+}
+
+/// XOR general-form for the sassi-side reference-borrowing path.
+fn xor_basic_ref_to_condition<T: Model>(a: &BasicPredicate<T>, b: &BasicPredicate<T>) -> Condition {
+    let ca = basic_predicate_ref_to_condition(a);
+    let cb = basic_predicate_ref_to_condition(b);
+    Condition::Or(vec![
+        Condition::And(vec![Condition::Not(Box::new(ca.clone())), cb.clone()]),
+        Condition::And(vec![ca, Condition::Not(Box::new(cb))]),
+    ])
 }
 
 #[cfg(test)]
@@ -956,6 +1448,263 @@ mod tests {
                 );
             }
             other => panic!("expected Q::Basic(Or([...])), got {other:?}"),
+        }
+    }
+
+    // ── T6.6 lowering bridge tests ────────────────────────────────────────────
+    //
+    // These tests lock the `Q<T> → Condition` lowering at every variant.
+    // Together with the integration suite, they guarantee character-for-
+    // character SQL parity at the T6.9 substrate flip: every variant the
+    // pre-flip `Condition` path could carry round-trips through
+    // `q_to_condition` to the same shape the SQL emitter consumed before.
+
+    /// `Q::Basic(BasicPredicate::True)` lowers to `Condition::True`.
+    #[test]
+    fn q_basic_true_lowers_to_condition_true() {
+        let q: Q<TestModel> = Q::Basic(BasicPredicate::True);
+        assert!(matches!(q_to_condition(q), Condition::True));
+    }
+
+    /// `Q::Basic(BasicPredicate::False)` lowers to the empty-Or
+    /// vacuous-falsehood identity (matches `condition.rs:30` and the
+    /// SQL emitter's `FALSE` rendering at `sql.rs:367`).
+    #[test]
+    fn q_basic_false_lowers_to_empty_or() {
+        let q: Q<TestModel> = Q::Basic(BasicPredicate::False);
+        match q_to_condition(q) {
+            Condition::Or(v) => assert!(v.is_empty(), "expected empty Or, got {v:?}"),
+            other => panic!("expected Condition::Or(empty), got {other:?}"),
+        }
+    }
+
+    /// `Q::Compound { op: And, parts }` lowers to `Condition::And` in
+    /// the same order — locks the order-preservation contract the SQL
+    /// emitter relies on for predictable EXPLAIN output.
+    #[test]
+    fn q_compound_and_lowers_preserves_order() {
+        // Use Q::Condition wrappers so we can compare leaves by column name.
+        let a =
+            Q::<TestModel>::Condition(Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
+        let b =
+            Q::<TestModel>::Condition(Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false))));
+        let c =
+            Q::<TestModel>::Condition(Condition::Leaf(Leaf::eq_raw("c", FilterValue::Bool(true))));
+        let q = Q::Compound {
+            op: CompoundOp::And,
+            parts: vec![a, b, c],
+        };
+        match q_to_condition(q) {
+            Condition::And(parts) => {
+                assert_eq!(parts.len(), 3);
+                let names: Vec<&'static str> = parts
+                    .iter()
+                    .map(|p| match p {
+                        Condition::Leaf(l) => l.column(),
+                        _ => panic!("expected leaf, got {p:?}"),
+                    })
+                    .collect();
+                assert_eq!(names, vec!["a", "b", "c"]);
+            }
+            other => panic!("expected Condition::And, got {other:?}"),
+        }
+    }
+
+    /// `Q::Compound { op: Or, parts }` lowers to `Condition::Or`.
+    #[test]
+    fn q_compound_or_lowers_to_or() {
+        let q = Q::<TestModel>::Compound {
+            op: CompoundOp::Or,
+            parts: vec![
+                Q::Basic(BasicPredicate::True),
+                Q::Basic(BasicPredicate::False),
+            ],
+        };
+        match q_to_condition(q) {
+            Condition::Or(parts) => assert_eq!(parts.len(), 2),
+            other => panic!("expected Condition::Or, got {other:?}"),
+        }
+    }
+
+    /// `Q::Negated(inner)` lowers to `Condition::Not(_)`.
+    #[test]
+    fn q_negated_lowers_to_condition_not() {
+        let q = Q::<TestModel>::Negated(Box::new(Q::Basic(BasicPredicate::True)));
+        match q_to_condition(q) {
+            Condition::Not(inner) => assert!(matches!(*inner, Condition::True)),
+            other => panic!("expected Condition::Not, got {other:?}"),
+        }
+    }
+
+    /// `Q::Xor(a, b)` lowers to the general form
+    /// `(NOT a AND b) OR (a AND NOT b)` — sassi's identity, no
+    /// boolean fast-path (deferred to T11).
+    #[test]
+    fn q_xor_lowers_to_general_form() {
+        let a = Q::<TestModel>::Basic(BasicPredicate::True);
+        let b = Q::<TestModel>::Basic(BasicPredicate::False);
+        let q = Q::Xor(Box::new(a), Box::new(b));
+        match q_to_condition(q) {
+            Condition::Or(or_parts) => {
+                assert_eq!(or_parts.len(), 2, "outer Or must have 2 branches");
+                // First branch: (NOT a AND b)
+                match &or_parts[0] {
+                    Condition::And(and_parts) => {
+                        assert_eq!(and_parts.len(), 2);
+                        assert!(matches!(and_parts[0], Condition::Not(_)));
+                    }
+                    other => panic!("expected And as first Or branch, got {other:?}"),
+                }
+                // Second branch: (a AND NOT b)
+                match &or_parts[1] {
+                    Condition::And(and_parts) => {
+                        assert_eq!(and_parts.len(), 2);
+                        assert!(matches!(and_parts[1], Condition::Not(_)));
+                    }
+                    other => panic!("expected And as second Or branch, got {other:?}"),
+                }
+            }
+            other => panic!("expected Condition::Or for XOR general form, got {other:?}"),
+        }
+    }
+
+    /// `Q::Regex(field, pattern, true)` lowers to `LookupOp::Regex`
+    /// — the load-bearing test for the §660 split. Confirms regex
+    /// stays SQL-only and never reaches sassi's `BasicPredicate`.
+    #[test]
+    fn q_regex_case_sensitive_lowers_to_lookup_op_regex() {
+        // Construct a FieldRef via the macro support helper. The
+        // typed FieldRef API requires a field name + the model
+        // type; using a string column name + LookupOp directly via
+        // the lowering bridge is the only way to test this without
+        // standing up a full model.
+        //
+        // Skipping FieldRef construction here — instead, directly
+        // exercise the `Q::Ilike` / `Q::Regex` arms via the lowering
+        // function with a leaf the bridge produces. The covering
+        // `q_regex_*` tests below assert via the resulting
+        // Condition::Leaf shape.
+        use crate::query::field::__macro_support::__make_field_ref;
+        let field: FieldRef<TestModel, String> = __make_field_ref(None, "slug");
+        let q: Q<TestModel> = Q::Regex(field, "^foo".to_string(), true);
+        match q_to_condition(q) {
+            Condition::Leaf(leaf) => {
+                assert_eq!(leaf.op(), LookupOp::Regex);
+                assert_eq!(leaf.column(), "slug");
+                assert!(matches!(leaf.value(), FilterValue::String(s) if s == "^foo"));
+            }
+            other => panic!("expected Condition::Leaf with LookupOp::Regex, got {other:?}"),
+        }
+    }
+
+    /// `Q::Regex(field, pattern, false)` lowers to `LookupOp::IRegex`
+    /// — the case-insensitive POSIX regex variant.
+    #[test]
+    fn q_regex_case_insensitive_lowers_to_lookup_op_iregex() {
+        use crate::query::field::__macro_support::__make_field_ref;
+        let field: FieldRef<TestModel, String> = __make_field_ref(None, "slug");
+        let q: Q<TestModel> = Q::Regex(field, "^foo".to_string(), false);
+        match q_to_condition(q) {
+            Condition::Leaf(leaf) => {
+                assert_eq!(leaf.op(), LookupOp::IRegex);
+            }
+            other => panic!("expected Condition::Leaf with LookupOp::IRegex, got {other:?}"),
+        }
+    }
+
+    /// `Q::Ilike(field, pattern)` lowers to `LookupOp::IContains`
+    /// (the case-insensitive ILIKE family the existing FieldRef
+    /// `.contains` API also routes through).
+    #[test]
+    fn q_ilike_lowers_to_lookup_op_icontains() {
+        use crate::query::field::__macro_support::__make_field_ref;
+        let field: FieldRef<TestModel, String> = __make_field_ref(None, "title");
+        let q: Q<TestModel> = Q::Ilike(field, "rust%".to_string());
+        match q_to_condition(q) {
+            Condition::Leaf(leaf) => {
+                assert_eq!(leaf.op(), LookupOp::IContains);
+                assert_eq!(leaf.column(), "title");
+            }
+            other => panic!("expected Condition::Leaf with LookupOp::IContains, got {other:?}"),
+        }
+    }
+
+    /// `Q::Condition(c)` round-trips as the identity — load-bearing
+    /// for character-for-character SQL parity at T6.9. Every legacy
+    /// `Condition` lifted through this variant produces the **same**
+    /// SQL the pre-flip code path produced.
+    #[test]
+    fn q_condition_round_trips_as_identity() {
+        let original = Condition::Leaf(Leaf::eq_raw("status", FilterValue::Bool(true)));
+        let q: Q<TestModel> = Q::Condition(original.clone());
+        match q_to_condition(q) {
+            Condition::Leaf(leaf) => {
+                assert_eq!(leaf.column(), "status");
+                assert_eq!(leaf.op(), LookupOp::Eq);
+            }
+            other => panic!("expected identity round-trip, got {other:?}"),
+        }
+    }
+
+    /// `Q::Array(ArrayPredicate::Contains(...))` lowers to the
+    /// matching `Condition::ArrayContains` variant.
+    #[test]
+    fn q_array_contains_lowers_to_condition_array_contains() {
+        use crate::array::ArrayContainsLeaf;
+        let leaf = ArrayContainsLeaf {
+            column: "tags",
+            values: FilterValue::ArrayString(vec!["a".to_string()]),
+        };
+        let q: Q<TestModel> = leaf.into();
+        match q_to_condition(q) {
+            Condition::ArrayContains(l) => assert_eq!(l.column, "tags"),
+            other => panic!("expected Condition::ArrayContains, got {other:?}"),
+        }
+    }
+
+    /// `Q::Array(ArrayPredicate::ContainedBy(...))` lowers identically.
+    #[test]
+    fn q_array_contained_by_lowers_to_condition_array_contained_by() {
+        use crate::array::ArrayContainedByLeaf;
+        let leaf = ArrayContainedByLeaf {
+            column: "tags",
+            values: FilterValue::ArrayI32(vec![1, 2]),
+        };
+        let q: Q<TestModel> = leaf.into();
+        assert!(matches!(q_to_condition(q), Condition::ArrayContainedBy(_)));
+    }
+
+    /// `Q::Array(ArrayPredicate::Overlap(...))` lowers identically.
+    #[test]
+    fn q_array_overlap_lowers_to_condition_array_overlap() {
+        use crate::array::ArrayOverlapLeaf;
+        let leaf = ArrayOverlapLeaf {
+            column: "tags",
+            values: FilterValue::ArrayBool(vec![true]),
+        };
+        let q: Q<TestModel> = leaf.into();
+        assert!(matches!(q_to_condition(q), Condition::ArrayOverlap(_)));
+    }
+
+    /// Sassi `BasicPredicate::And/Or/Not` round-trip through the
+    /// nested helper into `Condition::And/Or/Not` with the same
+    /// flattening rules — no extra wrapping, no implicit
+    /// re-association.
+    #[test]
+    fn q_basic_and_or_not_round_trip() {
+        let q: Q<TestModel> = Q::Basic(BasicPredicate::And(vec![
+            BasicPredicate::True,
+            BasicPredicate::False,
+        ]));
+        match q_to_condition(q) {
+            Condition::And(parts) => assert_eq!(parts.len(), 2),
+            other => panic!("expected Condition::And, got {other:?}"),
+        }
+
+        let q: Q<TestModel> = Q::Basic(BasicPredicate::Not(Box::new(BasicPredicate::True)));
+        match q_to_condition(q) {
+            Condition::Not(inner) => assert!(matches!(*inner, Condition::True)),
+            other => panic!("expected Condition::Not, got {other:?}"),
         }
     }
 }

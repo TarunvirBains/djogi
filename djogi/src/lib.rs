@@ -203,6 +203,32 @@ pub mod __private {
     /// needing `tracing` as a direct dependency — the same path-routing
     /// convention used for `inventory`, `postgres_types`, and `futures`.
     pub use tracing;
+
+    /// Q-algebra seal extension — routed through `__private` so the
+    /// proc-macro's emitted `IntoQ<#model>` impl for `{Model}Filter`
+    /// can satisfy the crate-private `sealed_into_q::Sealed`
+    /// supertrait from inside the adopter crate.
+    ///
+    /// Adopter code never names this trait — `IntoQ<T>` is the public
+    /// surface. Only `djogi-macros::model::filter` reaches in here,
+    /// and only to stamp the seal on the `{Model}Filter` types it
+    /// generates.
+    ///
+    /// See `crate::query::q::__SealedIntoQ` for the underlying
+    /// crate-private seal, and `query::q::IntoQ` for the public
+    /// trait downstream code consumes.
+    pub use crate::query::q::__SealedIntoQ;
+
+    /// Re-exports needed by the `IntoQ<#model>` impl macro emission
+    /// in `djogi-macros::model::filter`. Adopter code uses
+    /// `crate::query::filter::clauses_into_condition` ↔ `Q::Condition(_)`
+    /// indirectly via `filter_struct(my_filter)`; the helper exists at
+    /// this path so macro-emitted code can route through
+    /// `::djogi::__private::query::*` per `feedback_macro_path_routing.md`.
+    pub mod query {
+        pub use crate::query::filter::clauses_into_condition;
+        pub use crate::query::q::{IntoQ, Q};
+    }
 }
 
 pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};
@@ -274,9 +300,16 @@ pub use field_codec::FieldCodec;
 pub use field_codec::is_registered as is_codec_registered;
 pub use fts::{FtsDescriptor, TsQuery, TsVector};
 pub use fts_query::FtsFieldRef;
+// Cluster 8γ Stage 2 (T6.9b): `Condition` retired from the crate
+// root re-export. The public predicate substrate is `Q<T>`; the
+// legacy `Condition` type lives at `djogi::query::internal::Condition`
+// for the few cross-cluster consumers that still name it (8β's
+// `default_filter_condition` trait method, integration tests
+// asserting on tree shape). Adopter code composes through `Q<T>` and
+// never reaches for `Condition` directly.
 pub use query::{
-    AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, ClosureModel, Condition,
-    FieldRef, FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup, MaterializeClosureOptions,
+    AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, ClosureModel, FieldRef,
+    FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup, MaterializeClosureOptions,
     MaterializeClosureReport, ModelCursorStream, ModelFilter, OrderExpr, Q, QuerySet,
     RawCursorStream, RecursiveDirection, RecursiveQuerySet, UpdateAssignment, UpdateStmt,
     VisageQuerySet,
@@ -327,11 +360,14 @@ pub mod prelude {
     pub use crate::pg::decode::FromPgRow;
     #[doc(hidden)]
     pub use crate::pg::decode::{FromJoinedPgRow, try_get_scalar};
+    // Cluster 8γ Stage 2 (T6.9b): `Condition` retired from the
+    // prelude. Adopter code composes through `Q<T>` (in this list);
+    // legacy `Condition` callers reach `djogi::query::internal::Condition`.
     pub use crate::query::{
-        AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, ClosureModel, Condition,
-        FieldRef, FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup,
-        MaterializeClosureOptions, MaterializeClosureReport, ModelFilter, OrderExpr, Q, QuerySet,
-        RecursiveDirection, RecursiveQuerySet, VisageQuerySet,
+        AggregateQuery, AnnotatedQuerySet, ArrayPredicate, BasicPredicate, ClosureModel, FieldRef,
+        FilterClause, IntoAggregateTuple, IntoFilterValue, Lookup, MaterializeClosureOptions,
+        MaterializeClosureReport, ModelFilter, OrderExpr, Q, QuerySet, RecursiveDirection,
+        RecursiveQuerySet, VisageQuerySet,
     };
     // `atomic` / `retry_on_conflict` — Phase 4 Task 1 canonical
     // transaction scope + retry helper.

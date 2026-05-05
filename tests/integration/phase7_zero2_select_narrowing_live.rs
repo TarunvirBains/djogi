@@ -20,6 +20,11 @@
 //! through `FromPgRow for UserPublic` and yield the right values.
 
 use djogi::prelude::*;
+// Cluster 8γ Stage 2 (T6.9b): `Condition` retired from the prelude;
+// reachable via the unstable internal namespace for in-tree consumers
+// that still pattern-match on it. Adopter code composing through the
+// public `Q<T>` algebra never needs this import.
+use djogi::query::internal::Condition;
 
 #[model(table = "phase7_zero2_t10_users_narrow")]
 #[derive(Debug, Clone)]

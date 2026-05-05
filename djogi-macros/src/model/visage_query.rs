@@ -176,7 +176,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 ::djogi::query::VisageQuerySet::<#visage_ident>::new_for_visage(
                     <#source as ::djogi::prelude::Model>::table_name(),
                     COLS,
-                    ::djogi::Condition::True,
+                    ::djogi::query::internal::Condition::True,
                 )
             }
 
@@ -192,7 +192,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
                 predicate: __DjogiF,
             ) -> ::djogi::query::VisageQuerySet<#visage_ident>
             where
-                __DjogiF: ::core::ops::FnOnce(#fields_ident) -> ::djogi::Condition,
+                __DjogiF: ::core::ops::FnOnce(#fields_ident) -> ::djogi::query::internal::Condition,
             {
                 let __cond = predicate(<#fields_ident as ::core::default::Default>::default());
                 Self::__new().filter(__cond)
@@ -241,7 +241,7 @@ pub fn expand(ctx: &VisageEmitContext<'_>) -> TokenStream {
             #[doc(hidden)]
             #[must_use = "querysets are lazy — dropping one silently omits the query"]
             pub fn __filter_with_initial_condition(
-                cond: ::djogi::Condition,
+                cond: ::djogi::query::internal::Condition,
             ) -> ::djogi::query::VisageQuerySet<#visage_ident> {
                 Self::__new().filter(cond)
             }

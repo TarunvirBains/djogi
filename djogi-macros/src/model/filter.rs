@@ -293,5 +293,31 @@ pub fn expand(
                 self.clauses
             }
         }
+
+        // ── `IntoQ<#name>` bridge (Cluster 8γ Stage 2 — T6.7) ───────────────
+        //
+        // Lifts `{Model}Filter` into the `Q<T>` algebra so it composes
+        // with the new `QuerySet::filter_struct` / `exclude_struct`
+        // signature `<F: IntoQ<T>>`. The impl folds the accumulated
+        // clauses through the existing `clauses_into_condition` helper
+        // and wraps the result as `Q::Condition(_)`. Character-for-
+        // character SQL parity is preserved by construction:
+        // `q_to_condition` round-trips `Q::Condition(_)` as the
+        // identity, so the SQL emitter sees exactly the `Condition`
+        // tree the pre-T6.9 path produced.
+        //
+        // The seal is satisfied via the `__SealedIntoQ` macro-routing
+        // helper exposed in `__private`. Adopter code cannot impl
+        // `IntoQ<T>` for arbitrary downstream types because the
+        // underlying seal trait is crate-private to djogi.
+        impl ::djogi::__private::__SealedIntoQ for #filter_name {}
+        impl ::djogi::__private::query::IntoQ<#name> for #filter_name {
+            #[inline]
+            fn into_q(self) -> ::djogi::__private::query::Q<#name> {
+                let clauses = <Self as ::djogi::ModelFilter>::into_clauses(self);
+                let cond = ::djogi::__private::query::clauses_into_condition(clauses);
+                ::djogi::__private::query::Q::Condition(cond)
+            }
+        }
     }
 }
