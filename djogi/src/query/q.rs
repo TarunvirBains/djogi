@@ -142,6 +142,7 @@ use std::ops::{BitAnd, BitOr, BitXor, Not};
 /// negation rides sassi's `Not` (which collapses double-negation in
 /// place); only the mixed side needs the new variant.
 #[derive(Debug, Clone)]
+#[must_use = "Q<T> describes a filter predicate; use it in a QuerySet::filter_struct call or it has no effect"]
 #[non_exhaustive]
 #[allow(dead_code)] // Variants populated as T6.6/T6.7 wire consumers; constructors land at T6.4.
 pub enum Q<T: Model> {
@@ -311,13 +312,11 @@ impl<T: Model> Q<T> {
     /// Helper for reductions; matches the existing `Condition::True`
     /// idiom and is used by `QuerySet::default()` once T6.9 swaps the
     /// substrate.
-    #[must_use]
     pub fn always_true() -> Self {
         Q::Basic(BasicPredicate::True)
     }
 
     /// Vacuous-falsehood identity — `Q::Basic(BasicPredicate::False)`.
-    #[must_use]
     pub fn always_false() -> Self {
         Q::Basic(BasicPredicate::False)
     }
@@ -846,6 +845,98 @@ mod tests {
                 assert!(matches!(*rhs, Q::Negated(_)));
             }
             other => panic!("expected outer Q::Xor, got {other:?}"),
+        }
+    }
+
+    // ── Operator-precedence tree-shape assertions (Codex 8γ BLOCK-2/3) ─────
+
+    /// `a & b ^ c | d` must parse as `((a & b) ^ c) | d` under Rust's
+    /// operator precedence rules: `&` binds tighter than `^`, which binds
+    /// tighter than `|`. Compile-pass trybuild fixtures verify the expression
+    /// compiles; this test verifies the resulting tree shape.
+    ///
+    /// When all operands are `Q::Basic(...)`, the `BitAnd`/`BitOr`/`BitXor`
+    /// impls delegate to sassi's `BasicPredicate` operators, producing a
+    /// `Q::Basic(BasicPredicate::Or([Xor(And([...]), ...), ...]))` tree.
+    /// Checking the `BasicPredicate` structure verifies precedence.
+    ///
+    /// Locking this prevents a future operator-impl rewrite from silently
+    /// changing associativity without this test catching it.
+    #[test]
+    fn operator_precedence_a_and_b_xor_c_or_d() {
+        let a: Q<TestModel> = Q::always_true();
+        let b: Q<TestModel> = Q::always_false();
+        let c: Q<TestModel> = Q::always_true();
+        let d: Q<TestModel> = Q::always_false();
+
+        // `a & b ^ c | d` = `((a & b) ^ c) | d`
+        let result = a & b ^ c | d;
+
+        // All operands are Q::Basic → result is Q::Basic wrapping the
+        // BasicPredicate algebra tree. Outer node must be Or.
+        match result {
+            Q::Basic(BasicPredicate::Or(or_parts)) => {
+                assert_eq!(or_parts.len(), 2, "outer Or must have 2 branches");
+                // Left branch: `(a & b) ^ c` = BasicPredicate::Xor(And([a,b]), c)
+                match &or_parts[0] {
+                    BasicPredicate::Xor(lhs, _rhs_c) => match lhs.as_ref() {
+                        BasicPredicate::And(and_parts) => {
+                            assert_eq!(and_parts.len(), 2, "And must have 2 parts (a, b)");
+                        }
+                        other => panic!("expected And(a,b) as XOR lhs, got {other:?}"),
+                    },
+                    other => panic!("expected Xor as left Or branch, got {other:?}"),
+                }
+                // Right branch: `d` = BasicPredicate::False
+                assert!(
+                    matches!(or_parts[1], BasicPredicate::False),
+                    "right Or branch must be d = False"
+                );
+            }
+            other => panic!("expected Q::Basic(Or([...])), got {other:?}"),
+        }
+    }
+
+    /// Eight-term composition `a & b & c & d | e | f ^ g ^ h` verifies that
+    /// the `BitAnd` / `BitOr` / `BitXor` impls flatten consecutive same-op
+    /// calls (the `And`-chain has 4 parts, not a nested binary tree).
+    ///
+    /// When all operands are `Q::Basic`, operators delegate to sassi's
+    /// `BasicPredicate` algebra — the flattening happens at the
+    /// `BasicPredicate` level. Outermost node is Or.
+    #[test]
+    fn eight_term_composition_flattens_same_op() {
+        let a: Q<TestModel> = Q::always_true();
+        let b: Q<TestModel> = Q::always_false();
+        let c: Q<TestModel> = Q::always_true();
+        let d: Q<TestModel> = Q::always_false();
+        let e: Q<TestModel> = Q::always_true();
+        let f: Q<TestModel> = Q::always_false();
+        let g: Q<TestModel> = Q::always_true();
+        let h: Q<TestModel> = Q::always_false();
+
+        // Precedence: `&` first, then `^`, then `|`
+        // = (a & b & c & d) | e | (f ^ g ^ h)
+        let result = a & b & c & d | e | f ^ g ^ h;
+
+        match result {
+            Q::Basic(BasicPredicate::Or(or_parts)) => {
+                assert!(
+                    or_parts.len() >= 2,
+                    "outer Or must have ≥ 2 parts; got {}",
+                    or_parts.len()
+                );
+                // The And-chain `a & b & c & d` should appear as one Or-part
+                // with 4 inner parts (flattened, not binary-nested).
+                let has_4_way_and = or_parts
+                    .iter()
+                    .any(|p| matches!(p, BasicPredicate::And(ap) if ap.len() == 4));
+                assert!(
+                    has_4_way_and,
+                    "expected a 4-part And in Or parts (a&b&c&d flattened); parts: {or_parts:?}"
+                );
+            }
+            other => panic!("expected Q::Basic(Or([...])), got {other:?}"),
         }
     }
 }
