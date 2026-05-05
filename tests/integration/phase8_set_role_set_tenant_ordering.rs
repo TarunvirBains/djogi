@@ -36,13 +36,26 @@
 //! Today's djogi implementation is non-opinionated: it does not
 //! reject the inversion at the framework level — Postgres decides.
 //! On a vanilla Postgres install with no role restrictions on the
-//! `app.tenant_id` GUC, both orderings succeed and the GUC value is
-//! visible.
+//! `app.tenant_id` GUC, both `set_role` and `set_tenant` succeed
+//! under the inverted ordering and both pieces of state are
+//! observable.
 //!
-//! This test pins THAT behaviour as the documented mode. If a future
-//! commit adds a framework-level guard or a role-scoped GUC
-//! restriction, this test trips and the maintainer must either
-//! re-pin the documented mode or update D7 — both are fine; the
+//! **Pinned vanilla behaviour (current):** `Ok((actual_role,
+//! actual_tenant))` where `actual_role == role` and `actual_tenant ==
+//! tenant_id`. This is documented-mode-A in D7 terms.
+//!
+//! The test uses `expect(...)` on the observed result rather than a
+//! broad `match`-with-log-and-pass. Any `Err` outcome — regardless
+//! of variant — fails the test, surfacing either:
+//!   - a future framework-level guard that rejects role-before-tenant;
+//!   - a future role-scoped GUC restriction on `app.tenant_id` that
+//!     fails under the downgraded role; or
+//!   - any unrelated regression in `set_role` / `set_tenant` /
+//!     `atomic()`.
+//!
+//! When such a contract change lands, the maintainer must update D7
+//! to record the new pinned mode (e.g. mode-B with a specific
+//! `DjogiError` variant) and re-pin this assertion accordingly. The
 //! point is that the change does not silently slip through.
 //!
 //! # Spec / memory anchors
@@ -117,11 +130,9 @@ async fn role_first_then_tenant_documented_failure_mode(mut ctx: djogi::DjogiCon
     // this as the non-canonical mode and says it may either error or
     // succeed depending on Postgres role / GUC configuration.
     //
-    // On vanilla Postgres with no role-scoped GUC restrictions, the
-    // inversion succeeds and both pieces of state are observable.
-    // This test pins THAT behaviour so a future framework-level
-    // guard or a role-scoped GUC restriction shows up as a
-    // regression here rather than slipping through.
+    // Pinned vanilla behaviour: `Ok((role, tenant_id))`. Any `Err`
+    // is a regression — see the module-level doc comment for the
+    // re-pinning workflow.
     let role = "djogi_t9_7_ordering_role";
     let tenant_id = "t1";
     ensure_test_role(&mut ctx, role).await;
@@ -149,41 +160,33 @@ async fn role_first_then_tenant_documented_failure_mode(mut ctx: djogi::DjogiCon
     })
     .await;
 
-    match observed {
-        Ok((actual_role, actual_tenant)) => {
-            // Documented mode A — both calls succeed, both pieces of
-            // state are observable. Pin the values so a divergence
-            // (e.g. tenant becomes invisible under the downgraded
-            // role) trips the regression guard.
-            assert_eq!(
-                actual_role, role,
-                "current_user must reflect SET LOCAL ROLE under inverted ordering",
-            );
-            assert_eq!(
-                actual_tenant, tenant_id,
-                "app.tenant_id GUC must remain visible under inverted ordering on \
-                 vanilla Postgres (no role-scoped GUC restriction). If this \
-                 assertion ever flips to documented-mode-B (Err), update D7 \
-                 and re-pin.",
-            );
-        }
-        Err(e) => {
-            // Documented mode B — the inversion errored out. This is
-            // legal under D7 (e.g. a future role-scoped restriction
-            // on `app.tenant_id` rejects the SET under the
-            // downgraded role). The test still passes — the contract
-            // is "error OR succeed-but-non-canonical", not a
-            // specific outcome.
-            //
-            // We intentionally do NOT panic here. If a maintainer
-            // wants to harden the contract (one specific outcome),
-            // they should update D7 first and then narrow the
-            // assertion. Pinning the message tail keeps the
-            // documented-mode signal visible in CI logs.
-            eprintln!(
-                "role_first_then_tenant: documented mode B observed (Err: {e}); \
-                 see D7 for the documented orderings",
-            );
-        }
-    }
+    // Pinned: vanilla Postgres returns Ok for inverted ordering. Any
+    // Err is a regression — either a new framework-level guard
+    // rejecting the inversion, or a role-scoped GUC restriction on
+    // `app.tenant_id` that fails under the downgraded role. Either
+    // case is a contract change that needs an explicit D7 update +
+    // re-pin, NOT a silent pass.
+    //
+    // We intentionally use `expect(...)` (rather than a broad
+    // `if let Err(_) = ...` log-and-pass) so the wrong-error-class
+    // regression cannot hide behind a generic catch-all.
+    let (actual_role, actual_tenant) = observed.expect(
+        "role_first_then_tenant currently succeeds on vanilla Postgres — \
+         if this Err arm is reached, a future framework guard or a \
+         role-scoped GUC restriction has changed the ordering contract; \
+         update D7 (v3 §159–166) to document the new pinned mode and \
+         re-pin this assertion accordingly",
+    );
+
+    // Pin the values so a divergence (e.g. tenant becomes invisible
+    // under the downgraded role) trips the regression guard.
+    assert_eq!(
+        actual_role, role,
+        "current_user must reflect SET LOCAL ROLE under inverted ordering",
+    );
+    assert_eq!(
+        actual_tenant, tenant_id,
+        "app.tenant_id GUC must remain visible under inverted ordering on \
+         vanilla Postgres (no role-scoped GUC restriction)",
+    );
 }
