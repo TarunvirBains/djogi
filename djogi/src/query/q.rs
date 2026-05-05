@@ -911,27 +911,21 @@ fn basic_predicate_ref_to_condition<T: Model>(bp: &BasicPredicate<T>) -> Conditi
         }
         BasicPredicate::Xor(a, b) => xor_basic_ref_to_condition(a, b),
         BasicPredicate::Field(_fp) => {
-            // Same rationale as `basic_predicate_to_condition`: no
-            // shipped djogi FieldRef path constructs this variant; if
-            // a future cluster lifts FieldRef methods to
-            // `BasicPredicate::Field(_)`, this arm extends with the
-            // (column, op, value_as<V>()) reconstruction.
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "djogi::query::q::basic_predicate_ref_to_condition: \
-                 BasicPredicate::Field(_) lowering not yet implemented."
-            );
-            Condition::True
+            // Same rationale as `basic_predicate_to_condition`: `FieldPredicate`
+            // is `pub(crate)` in sassi; panicking is correct over silent
+            // `Condition::True`. See the owned bridge for the full explanation.
+            panic!(
+                "djogi internal: cannot lower BasicPredicate::Field to \
+                 Condition (by-ref path) — FieldPredicate is pub(crate) in \
+                 sassi. Use the closure-based filter API or Q<T> directly."
+            )
         }
         #[allow(unreachable_patterns)]
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "djogi::query::q::basic_predicate_ref_to_condition: \
-                 unhandled BasicPredicate variant — lowering to Condition::True."
-            );
-            Condition::True
-        }
+        _ => panic!(
+            "djogi internal: unhandled BasicPredicate variant in \
+             basic_predicate_ref_to_condition — update the bridge when \
+             sassi adds a new variant."
+        ),
     }
 }
 
