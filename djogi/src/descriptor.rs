@@ -572,8 +572,9 @@ impl IndexSpec {
 #[cfg(test)]
 mod tests {
     use super::{
-        FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec, IndexType, ModelDescriptor,
-        PkType, field_descriptor, migration_shape::MigrationShape, model_descriptor,
+        ComputedFieldDescriptor, FieldDescriptor, FieldSqlType, GeographySubtype, IndexSpec,
+        IndexType, ModelDescriptor, PkType, field_descriptor, migration_shape::MigrationShape,
+        model_descriptor,
     };
 
     // ── T6: GeographySubtype Display ─────────────────────────────────────────
@@ -1228,6 +1229,51 @@ mod tests {
         };
         assert_eq!(desc.proxy_for, Some("Vehicle"));
         assert_eq!(desc.default_filter_sql, Some("active = TRUE"));
+    }
+
+    // ── Phase 8β T4.1 — computed-field descriptor defaults ───────────────────
+
+    /// `computed_fields` defaults to the empty slice for every model
+    /// without `#[computed(sql = "...")]` attributes — the common case.
+    ///
+    /// Mirrors the proxy_for / default_filter_sql default-shape tests
+    /// in T3.1: locks the struct-layout-stability convention so adding
+    /// `computed_fields` does not break existing descriptor literal
+    /// sites that go through the `model_descriptor(...)` factory spread.
+    #[test]
+    fn computed_fields_defaults_to_empty_slice() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let desc = ModelDescriptor {
+            ..model_descriptor("V", "vs", PkType::HeerId, FIELDS)
+        };
+        assert!(desc.computed_fields.is_empty());
+    }
+
+    /// A descriptor populated with computed-field entries round-trips
+    /// every field correctly. Locks the `ComputedFieldDescriptor`
+    /// shape (name / sql / value_type) so any rename or retyping
+    /// surfaces here.
+    #[test]
+    fn computed_field_descriptor_struct_shape() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("base_price", FieldSqlType::DoublePrecision, false)
+        }];
+        static COMPUTED: &[ComputedFieldDescriptor] = &[ComputedFieldDescriptor {
+            name: "total_price",
+            sql: "base_price * (1.0 + tax_rate)",
+            value_type: FieldSqlType::DoublePrecision,
+        }];
+        let desc = ModelDescriptor {
+            computed_fields: COMPUTED,
+            ..model_descriptor("Vehicle", "vehicles", PkType::HeerId, FIELDS)
+        };
+        assert_eq!(desc.computed_fields.len(), 1);
+        let c = &desc.computed_fields[0];
+        assert_eq!(c.name, "total_price");
+        assert_eq!(c.sql, "base_price * (1.0 + tax_rate)");
+        assert_eq!(c.value_type, FieldSqlType::DoublePrecision);
     }
 }
 
@@ -2034,6 +2080,70 @@ pub struct ModelDescriptor {
     /// `None` for non-proxy models and for proxies without a
     /// `default_filter` clause.
     pub default_filter_sql: Option<&'static str>,
+
+    // ── Computed properties (Phase 8 Cluster 8β — T4) ───────────────────────
+    /// Computed (virtual / SQL-projectable) fields declared via
+    /// `#[computed(sql = "...")]` on a struct field. Phase 8β T4.
+    ///
+    /// Each entry records the field's Rust name, the SQL expression
+    /// source, and the SQL-side return type. Migration differ does NOT
+    /// consult these in v0.1.0 (computed fields are non-stored —
+    /// evaluated at query time, not persisted as columns); the
+    /// descriptor entry exists so `djogi docs` (Phase 7) can render
+    /// computed-field documentation alongside regular columns and so
+    /// the macro emitter can cross-reference computed names against
+    /// regular field names for collision detection.
+    ///
+    /// `&[]` for models without any `#[computed]` fields — the common
+    /// case. `&'static [...]` rather than `Vec` to keep the descriptor
+    /// `inventory`-submittable with no allocation at registration.
+    pub computed_fields: &'static [ComputedFieldDescriptor],
+}
+
+/// Descriptor for one `#[computed(sql = "...")]` field — Phase 8 Cluster
+/// 8β T4.
+///
+/// Computed fields are non-stored in v0.1.0: the SQL expression is
+/// evaluated at query time (filter, order_by, annotate via the
+/// `{Model}Computed` ZST emitted alongside the model), and the Rust-
+/// side getter evaluates the equivalent expression in-memory for
+/// adopters who need to call `vehicle.total_price()` after `fetch_one()`
+/// without a re-query. The stored variant (`#[computed(sql, stored)]`)
+/// is deferred to Phase 8.5 — the macro emits a span-precise deferral
+/// error when the `stored` keyword appears.
+///
+/// # Field stability
+///
+/// Like [`FieldDescriptor`] and [`ModelDescriptor`], this struct uses
+/// `&'static str` for every text field so the descriptor literal
+/// emitted by the macro is `inventory`-submittable. Adding a field is
+/// a breaking change for every existing `ComputedFieldDescriptor`
+/// literal site — only do it when load-bearing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComputedFieldDescriptor {
+    /// Rust identifier for the computed field — also the suggested
+    /// `SELECT`-list alias when the expression is used in
+    /// `.annotate()`. Validated at parse time against the same
+    /// byte-level grammar as regular column names: ASCII letter or
+    /// underscore start, alphanumerics or underscores after, ≤ 63
+    /// bytes (Postgres unquoted-identifier cap).
+    pub name: &'static str,
+
+    /// SQL expression source as written in the `#[computed(sql = "...")]`
+    /// attribute. Used by Phase 7's `djogi docs` to render the
+    /// computed-field documentation alongside regular columns;
+    /// consumed by the macro-emitted `{Model}Computed` ZST at filter /
+    /// order_by / annotate time to splice the fragment into the
+    /// emitted SQL. The `&'static str` is verbatim — no transformation
+    /// happens at descriptor-emission time.
+    pub sql: &'static str,
+
+    /// SQL-side return type, lowered from the Rust return type of the
+    /// computed getter. The migration differ does NOT consult this in
+    /// v0.1.0 (computed fields are non-stored), so it is documentation-
+    /// only at this phase. Future work may use it to validate the
+    /// computed expression's SQL type against adopter-declared casts.
+    pub value_type: FieldSqlType,
 }
 
 impl ModelDescriptor {
@@ -2244,6 +2354,10 @@ pub const fn model_descriptor(
         // present.
         proxy_for: None,
         default_filter_sql: None,
+        // Phase 8β T4 — computed (virtual / SQL-projectable) fields.
+        // Defaults to the empty slice; populated by the macro when one or
+        // more struct fields carry `#[computed(sql = "...")]`.
+        computed_fields: &[],
     }
 }
 

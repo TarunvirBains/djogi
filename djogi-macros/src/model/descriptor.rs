@@ -843,6 +843,10 @@ fn try_expand(
                 // into every `QuerySet<Self>::new()` (T3.4).
                 proxy_for: #proxy_for_tokens,
                 default_filter_sql: #default_filter_sql_tokens,
+                // Phase 8β T4 — computed-field descriptors. T4.1 ships the
+                // empty-slice default; T4.5 populates this from parsed
+                // `#[computed(sql = "...")]` field attributes.
+                computed_fields: &[],
             }
         }
         #(#deferrability_submits)*
