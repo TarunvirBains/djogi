@@ -81,7 +81,7 @@ use std::process::ExitCode;
 use djogi::config::DjogiConfig;
 use djogi::migrate::{
     FilesystemBucket, SNAPSHOT_FILENAME, app_dirname, derive_per_database_url, migrations_root,
-    scan_filesystem,
+    scan_filesystem, signature_to_hex,
 };
 use djogi::pg::pool::DjogiPool;
 use djogi::snapshot::sign::{SnapshotKeyError, load_signing_key_from_env, sign_snapshot};
@@ -120,6 +120,26 @@ pub enum VerifyError {
     },
     /// Reading `Djogi.toml` (and its env overlays) failed.
     Config(String),
+    /// A snapshot path resolved to a symlink rather than a regular
+    /// file. Verify refuses to follow it — a malicious or accidental
+    /// symlink could escape the workspace and cause `djogi verify` to
+    /// hash an attacker-controlled file (e.g. `/etc/passwd`) before
+    /// reporting a confusing MISMATCH against the audit ledger. The
+    /// scanner already skips symlinked directories via
+    /// `entry.file_type().is_dir()` returning `false` for symlinks; this
+    /// variant closes the file-side gap on the same defense.
+    ///
+    /// Residual TOCTOU window: between this `symlink_metadata` check
+    /// and the subsequent `std::fs::read`, an attacker with write
+    /// access to the migrations tree could swap the regular file for a
+    /// symlink. Closing that window properly requires `openat`
+    /// semantics (re-checking the metadata via the open file handle's
+    /// fd); for v0.1.0 the symlink-reject is the main exploit vector
+    /// and the residual window is documented here. Phase 11 may revisit.
+    SymlinkSnapshot {
+        /// The snapshot path that resolved to a symlink.
+        path: PathBuf,
+    },
 }
 
 impl std::fmt::Display for VerifyError {
@@ -137,6 +157,13 @@ impl std::fmt::Display for VerifyError {
                  (set DJOGI_CRUD_LOG_URL or check Djogi.toml::database.url)",
             ),
             VerifyError::Config(message) => write!(f, "config load: {message}"),
+            VerifyError::SymlinkSnapshot { path } => write!(
+                f,
+                "snapshot path is a symlink; refusing to follow to prevent path-traversal escapes: {} \
+                 (replace the symlink with the real `schema_snapshot.json` file or remove the \
+                 offending entry from the migrations tree)",
+                path.display()
+            ),
         }
     }
 }
@@ -146,7 +173,9 @@ impl std::error::Error for VerifyError {
         match self {
             VerifyError::Io { source, .. } => Some(source),
             VerifyError::KeyDecode(err) => Some(err),
-            VerifyError::AuditPoolUnreachable { .. } | VerifyError::Config(_) => None,
+            VerifyError::AuditPoolUnreachable { .. }
+            | VerifyError::Config(_)
+            | VerifyError::SymlinkSnapshot { .. } => None,
         }
     }
 }
@@ -236,30 +265,21 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
     buckets.sort();
 
     // Step 4 — resolve the audit DB URL. Env var wins; otherwise
-    // derive `crud_log` from `database.url`.
-    let audit_url = resolve_audit_url(&config);
+    // derive `crud_log` from `database.url`. Resolver enforces the
+    // "audit DB must be a separate database" invariant — a derived URL
+    // identical to `database.url` is rejected so a misconfigured app
+    // pointing at `…/crud_log` cannot silently audit itself.
+    let audit_url = resolve_audit_url(&config)?;
 
     // Step 5 — connect to the audit DB once. Re-use one pool for every
     // snapshot's per-bucket query.
-    let pool = match audit_url.as_deref() {
-        Some(url) => match DjogiPool::connect(url).await {
-            Ok(p) => Some((url.to_string(), p)),
-            Err(e) => {
-                return Err(VerifyError::AuditPoolUnreachable {
-                    url: url.to_string(),
-                    message: e.to_string(),
-                });
-            }
-        },
-        None => {
-            // No URL we can derive — surface as a config error rather
-            // than silently treating every snapshot as Skipped, which
-            // would erode the meaning of the cross-check.
-            return Err(VerifyError::Config(
-                "cannot resolve audit DB URL: set DJOGI_CRUD_LOG_URL or ensure \
-                 Djogi.toml::database.url has a path component to splice"
-                    .to_string(),
-            ));
+    let pool = match DjogiPool::connect(&audit_url).await {
+        Ok(p) => (audit_url.clone(), p),
+        Err(e) => {
+            return Err(VerifyError::AuditPoolUnreachable {
+                url: audit_url,
+                message: e.to_string(),
+            });
         }
     };
 
@@ -267,7 +287,7 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
     // exit-code calculation happens after the loop so the output
     // ordering is deterministic.
     let mut entries: Vec<VerifyEntry> = Vec::with_capacity(buckets.len());
-    let (audit_url_for_log, audit_pool) = pool.expect("pool established at step 5");
+    let (audit_url_for_log, audit_pool) = pool;
     let mut audit_ctx = djogi::context::DjogiContext::from_pool(audit_pool);
 
     for bucket in &buckets {
@@ -276,19 +296,12 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
             .join(&bucket.database)
             .join(app_dirname(&bucket.app))
             .join(SNAPSHOT_FILENAME);
-        if !snapshot.is_file() {
-            // No snapshot for this bucket — typical of a fresh
-            // `migrations/<db>/<app>/` directory before the first
-            // compose. Skip without reporting; nothing to verify.
-            continue;
-        }
-
-        let bytes = std::fs::read(&snapshot).map_err(|e| VerifyError::Io {
-            path: snapshot.clone(),
-            source: e,
-        })?;
+        let bytes = match read_snapshot_bytes(&snapshot)? {
+            Some(b) => b,
+            None => continue,
+        };
         let computed = sign_snapshot(&bytes, &key);
-        let computed_hex = signature_to_hex_local(&computed);
+        let computed_hex = signature_to_hex(&computed);
 
         let stored = match fetch_audit_signature(
             &mut audit_ctx,
@@ -381,14 +394,108 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
 }
 
 /// Resolve the audit DB URL — env var first, then derive from
-/// `database.url`. Returns `None` when neither path produces a URL.
-fn resolve_audit_url(config: &DjogiConfig) -> Option<String> {
+/// `database.url`.
+///
+/// # Resolution priority
+///
+/// 1. `DJOGI_CRUD_LOG_URL` (when set and non-empty) — explicit operator
+///    override, returned verbatim. The operator owns the consequences
+///    of pointing this anywhere they like, including back at the app
+///    DB; this branch deliberately skips the unchanged-URL guard so a
+///    deployment with intentional co-location is still possible.
+/// 2. `derive_per_database_url(&config.database.url, "crud_log")` —
+///    splice `crud_log` into the application URL's path component.
+///    REJECTED when the splice produces the same string as the input
+///    (i.e. `database.url` already ends in `/crud_log`); returning the
+///    same URL would silently auto-audit the app DB into itself, the
+///    exact regression Codex BLOCK-1 (`docs/superpowers/codex-review-phase8-findings.md`)
+///    flagged.
+///
+/// # Errors
+///
+/// - `VerifyError::Config` when neither path resolves a usable URL
+///   (no env var, no path component to splice) OR when the derive
+///   path produces an unchanged URL (would silently auto-audit).
+fn resolve_audit_url(config: &DjogiConfig) -> Result<String, VerifyError> {
     if let Ok(url) = std::env::var("DJOGI_CRUD_LOG_URL")
         && !url.is_empty()
     {
-        return Some(url);
+        return Ok(url);
     }
-    derive_per_database_url(&config.database.url, "crud_log")
+    let derived = derive_per_database_url(&config.database.url, "crud_log").ok_or_else(|| {
+        VerifyError::Config(
+            "cannot resolve audit DB URL: set DJOGI_CRUD_LOG_URL or ensure \
+             Djogi.toml::database.url has a path component to splice"
+                .to_string(),
+        )
+    })?;
+    if derived == config.database.url {
+        return Err(VerifyError::Config(format!(
+            "audit URL derivation produced the same URL as the app DB (`{}`). \
+             The audit DB must be a separate database — set DJOGI_CRUD_LOG_URL \
+             explicitly, or rename the app DB so its path does not end in \
+             `/crud_log`.",
+            config.database.url
+        )));
+    }
+    Ok(derived)
+}
+
+/// Read a snapshot file's bytes, refusing to follow symlinks.
+///
+/// Codex BLOCK-2 fix — the scanner already skips symlinked
+/// DIRECTORIES via `entry.file_type()?.is_dir()`, but the verify path's
+/// per-bucket file lookup previously used `path.is_file()` (which
+/// follows symlinks) followed by `std::fs::read`. A symlinked
+/// `schema_snapshot.json` pointing at `/etc/passwd` (or any
+/// attacker-controlled file) would have its bytes hashed and
+/// cross-checked against the audit ledger, leaking content of the
+/// target file via the MISMATCH diagnostic OR — when the attacker can
+/// also write the audit row — producing a successful match against
+/// attacker-controlled bytes.
+///
+/// This helper:
+///
+/// - Returns `Ok(None)` when the path does not exist (typical of a
+///   freshly composed migrations directory before the first apply).
+/// - Returns `Err(VerifyError::SymlinkSnapshot)` when the path is a
+///   symlink — refusing to follow.
+/// - Returns `Ok(None)` when the path is some other non-regular file
+///   (named pipe, device file). The migrations tree is supposed to
+///   contain regular files; non-file entries are silently skipped.
+/// - Returns `Ok(Some(bytes))` for regular files.
+///
+/// **Residual TOCTOU.** Between `symlink_metadata` and `std::fs::read`
+/// an attacker with write access to the migrations tree could swap the
+/// regular file for a symlink. Closing that window properly requires
+/// `openat`-style fd re-checking (open the file, then `metadata()`
+/// the open handle); for v0.1.0 the symlink-reject is the main exploit
+/// vector and the residual window is documented on
+/// [`VerifyError::SymlinkSnapshot`]. Phase 11 may revisit.
+fn read_snapshot_bytes(snapshot: &std::path::Path) -> Result<Option<Vec<u8>>, VerifyError> {
+    let meta = match std::fs::symlink_metadata(snapshot) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(VerifyError::Io {
+                path: snapshot.to_path_buf(),
+                source: e,
+            });
+        }
+    };
+    if meta.file_type().is_symlink() {
+        return Err(VerifyError::SymlinkSnapshot {
+            path: snapshot.to_path_buf(),
+        });
+    }
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(snapshot).map_err(|e| VerifyError::Io {
+        path: snapshot.to_path_buf(),
+        source: e,
+    })?;
+    Ok(Some(bytes))
 }
 
 /// Result of trying to fetch a single audit row. `TableAbsent` is the
@@ -452,24 +559,6 @@ async fn fetch_audit_signature(
     }
 }
 
-/// Encode 32-byte HMAC output as 64-character UPPERCASE hex.
-///
-/// Matches [`djogi::migrate::audit::signature_to_hex`] byte-for-byte.
-/// Re-implemented here rather than imported to keep the verify path's
-/// dependency surface tight (we only need the encoder, not the rest of
-/// the audit module). When the audit module's encoder is exposed as a
-/// stable, generic helper a follow-up commit may collapse the two; for
-/// now they are independently tested.
-fn signature_to_hex_local(sig: &[u8; 32]) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(64);
-    for &byte in sig {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0F) as usize] as char);
-    }
-    out
-}
-
 /// ASCII-case-insensitive equality on hex strings. The runner emits
 /// uppercase (per [`djogi::migrate::audit::signature_to_hex`]) but
 /// older audit rows may be lowercase; tolerate both rather than
@@ -520,30 +609,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signature_to_hex_matches_audit_encoder_for_zero() {
-        // Cross-check against `djogi::migrate::audit::signature_to_hex`
-        // for the all-zero input — the CLI's local encoder MUST
-        // agree byte-for-byte with the runner's encoder, otherwise a
-        // verify run would always report MISMATCH on the no-op key
-        // path.
-        let sig = [0u8; 32];
-        assert_eq!(signature_to_hex_local(&sig), "0".repeat(64));
-    }
-
-    #[test]
-    fn signature_to_hex_matches_audit_encoder_for_mixed_bytes() {
-        // Same pattern as `audit::signature_to_hex_known_mixed_bytes`
-        // — keeps the two encoders pinned together.
-        let mut sig = [0u8; 32];
-        for (i, byte) in sig.iter_mut().enumerate() {
-            *byte = ((i as u32 * 17 + 3) & 0xFF) as u8;
-        }
-        let local = signature_to_hex_local(&sig);
-        let canonical: String = sig.iter().map(|b| format!("{b:02X}")).collect();
-        assert_eq!(local, canonical);
-    }
-
-    #[test]
     fn eq_ignore_ascii_case_hex_uppercase_lowercase() {
         // Uppercase from the runner, lowercase from a stale audit row
         // — verify must treat them as equal.
@@ -569,7 +634,10 @@ mod tests {
         unsafe {
             std::env::remove_var("DJOGI_CRUD_LOG_URL");
         }
-        assert_eq!(resolved.as_deref(), Some("postgres://override/audit"));
+        assert_eq!(
+            resolved.expect("env URL").as_str(),
+            "postgres://override/audit"
+        );
     }
 
     #[test]
@@ -611,13 +679,186 @@ mod tests {
         unsafe {
             std::env::remove_var("DJOGI_CRUD_LOG_URL");
         }
+        let url = resolved.expect("derived audit URL on empty env");
         assert!(
-            resolved
-                .as_deref()
-                .map(|u| u.ends_with("/crud_log"))
-                .unwrap_or(false),
-            "empty env var should fall back to derived; got {resolved:?}"
+            url.ends_with("/crud_log"),
+            "empty env var should fall back to derived; got `{url}`"
         );
+    }
+
+    #[test]
+    fn verify_rejects_audit_url_matches_app_db() {
+        // Codex BLOCK-1 regression test — when `database.url` already
+        // ends in `/crud_log`, the derived audit URL is identical to
+        // the app DB URL. Returning that silently would auto-audit the
+        // app DB into itself; the resolver MUST refuse.
+        unsafe {
+            std::env::remove_var("DJOGI_CRUD_LOG_URL");
+        }
+        let cfg = stub_config_with_url("postgres://localhost/crud_log");
+        let resolved = resolve_audit_url(&cfg);
+        match resolved {
+            Err(VerifyError::Config(msg)) => {
+                assert!(
+                    msg.contains("audit URL derivation produced the same URL as the app DB"),
+                    "operator-actionable error message expected, got: {msg}"
+                );
+                assert!(
+                    msg.contains("postgres://localhost/crud_log"),
+                    "error must echo the offending URL, got: {msg}"
+                );
+                assert!(
+                    msg.contains("DJOGI_CRUD_LOG_URL"),
+                    "error must point at the env-var override, got: {msg}"
+                );
+            }
+            other => panic!("expected VerifyError::Config rejecting unchanged URL, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_resolve_audit_url_via_env() {
+        // Codex BLOCK-1 regression test — operator with intentional
+        // co-location must still be able to set DJOGI_CRUD_LOG_URL
+        // explicitly and have it returned verbatim, even pointing
+        // at the app DB. The resolver only enforces the
+        // unchanged-URL guard on the derive path.
+        unsafe {
+            std::env::set_var("DJOGI_CRUD_LOG_URL", "postgres://localhost/crud_log");
+        }
+        let cfg = stub_config_with_url("postgres://localhost/crud_log");
+        let resolved = resolve_audit_url(&cfg);
+        unsafe {
+            std::env::remove_var("DJOGI_CRUD_LOG_URL");
+        }
+        assert_eq!(
+            resolved.expect("env URL bypasses guard").as_str(),
+            "postgres://localhost/crud_log",
+            "env-set URL must be returned verbatim even when it equals app DB"
+        );
+    }
+
+    /// Codex BLOCK-2 regression test — `read_snapshot_bytes` must
+    /// reject a symlinked snapshot file rather than reading through to
+    /// the target. Without this guard, `std::fs::read` would happily
+    /// hash an attacker-controlled file (e.g. `/etc/passwd`),
+    /// leaking content via the MISMATCH diagnostic OR — when the
+    /// attacker can also write the audit row — producing a successful
+    /// match against attacker-controlled bytes.
+    ///
+    /// We test `read_snapshot_bytes` directly rather than driving
+    /// `run(...)` end-to-end so the test does not depend on a live
+    /// Postgres for the audit pool. The full end-to-end coverage lives
+    /// in T9.7's `phase8_djogi_verify_cli` integration suite.
+    #[cfg(unix)]
+    #[test]
+    fn verify_rejects_symlink_snapshot() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let workspace = std::env::temp_dir().join(format!("djogi-cli-verify-symlink-{nanos}-{n}"));
+        fs::create_dir_all(&workspace).unwrap();
+
+        // Create a target file OUTSIDE the workspace — the canonical
+        // attack shape is a symlink pointing at /etc/passwd, but a
+        // plain file under temp_dir() exercises the same codepath
+        // without depending on a system file the test runner may not
+        // be permitted to read.
+        let outside_target =
+            std::env::temp_dir().join(format!("djogi-cli-verify-outside-{nanos}-{n}.txt"));
+        fs::write(&outside_target, b"attacker-controlled bytes").unwrap();
+
+        // Lay down `migrations/main/_global_/schema_snapshot.json`
+        // as a SYMLINK to the outside file.
+        let app_dir = workspace.join("migrations/main/_global_");
+        fs::create_dir_all(&app_dir).unwrap();
+        let snapshot_link = app_dir.join("schema_snapshot.json");
+        symlink(&outside_target, &snapshot_link).unwrap();
+
+        let result = read_snapshot_bytes(&snapshot_link);
+
+        // Cleanup before assertion so a panic doesn't leak temp files.
+        let _ = fs::remove_file(&outside_target);
+        let _ = fs::remove_dir_all(&workspace);
+
+        match result {
+            Err(VerifyError::SymlinkSnapshot { path }) => {
+                // Path in the error must be the in-workspace symlink,
+                // NOT the resolved target — operators diagnose by the
+                // path they put in the migrations tree.
+                assert!(
+                    path.ends_with("schema_snapshot.json"),
+                    "SymlinkSnapshot path must point at the in-workspace symlink, got: {}",
+                    path.display()
+                );
+                // Display must be operator-actionable.
+                let display = format!("{}", VerifyError::SymlinkSnapshot { path });
+                assert!(
+                    display.contains("snapshot path is a symlink"),
+                    "Display must be operator-actionable, got: {display}"
+                );
+                assert!(
+                    display.contains("refusing to follow"),
+                    "Display must explain the refusal, got: {display}"
+                );
+            }
+            other => panic!(
+                "expected VerifyError::SymlinkSnapshot rejecting symlinked snapshot, got: {other:?}"
+            ),
+        }
+    }
+
+    /// Companion test — `read_snapshot_bytes` must return `Ok(None)`
+    /// for a path that does not exist (no snapshot composed yet) so
+    /// the verify loop's `continue` branch is preserved.
+    #[test]
+    fn read_snapshot_bytes_returns_none_for_missing_file() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let missing =
+            std::env::temp_dir().join(format!("djogi-cli-verify-missing-{nanos}-{n}.json"));
+        // Sanity — path must not exist.
+        assert!(!missing.exists());
+        let result = read_snapshot_bytes(&missing);
+        assert!(
+            matches!(result, Ok(None)),
+            "missing file must return Ok(None), got: {result:?}"
+        );
+    }
+
+    /// Companion test — `read_snapshot_bytes` must return the bytes
+    /// verbatim for a regular file. Pins the happy path so a future
+    /// refactor cannot regress it.
+    #[test]
+    fn read_snapshot_bytes_returns_bytes_for_regular_file() {
+        use std::fs;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("djogi-cli-verify-regular-{nanos}-{n}.json"));
+        fs::write(&path, b"{\"x\":1}").unwrap();
+        let result = read_snapshot_bytes(&path);
+        let _ = fs::remove_file(&path);
+        match result {
+            Ok(Some(bytes)) => assert_eq!(bytes, b"{\"x\":1}"),
+            other => panic!("expected Ok(Some(bytes)), got: {other:?}"),
+        }
     }
 
     /// Build a minimal [`DjogiConfig`] for the URL-resolver tests. We
