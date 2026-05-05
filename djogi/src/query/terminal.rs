@@ -171,6 +171,13 @@ where
                 return Ok(Vec::new());
             }
             auto_set_tenant::<T>(ctx).await?;
+            // Snapshot the cache binding before we consume `self` in
+            // `build_select(&self)` — the SQL emitter borrows the
+            // queryset, but the post-fetch hook needs to outlive that
+            // borrow. Cluster 8δ T7.3. The clone is `Arc::clone` on
+            // the trait-object handle (see `queryset.rs` Clone impl
+            // for the cache_target field rationale), so it's cheap.
+            let cache_target = self.cache_target.clone();
             let acc = build_select(&self);
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
@@ -179,6 +186,24 @@ where
                 .iter()
                 .map(|r| T::from_pg_row(r))
                 .collect::<Result<Vec<T>, _>>()?;
+            // Cluster 8δ T7.3 post-fetch cache hook. Fires only when
+            // `.cache(&punnu)` was called on the queryset — adopters
+            // who didn't bind a Punnu pay zero (the `Option::is_none`
+            // branch is the optimiser's hot path here). The trait
+            // object's `insert(&T)` clones internally where the
+            // `T: Clone` bound is satisfied (the `.cache(...)`
+            // builder requires it), so this terminal stays free of
+            // a `T: Clone` bound and the existing fetch_all surface
+            // is unchanged for callers who don't bind a cache.
+            //
+            // Errors from `Punnu::insert` are logged-and-swallowed
+            // inside `PunnuCacheTarget::insert`; see the granular
+            // plan §3 commit T7.3 risk note for the rationale.
+            if let Some(target) = cache_target.as_ref() {
+                for row in &result {
+                    target.insert(row).await;
+                }
+            }
             Ok(result)
         }
     }
@@ -211,6 +236,16 @@ where
             // multiple-rows error path without a `COUNT(*)` round trip.
             let mut qs = self;
             qs.limit = Some(2);
+            // Cluster 8δ T7.3: snapshot the cache binding before we
+            // consume `qs` in `build_select(&qs)`. The success path
+            // below feeds the (sole) decoded row to the bound Punnu;
+            // the error paths (NotFound / MultipleObjects) skip the
+            // hook because no user-facing row materialised — the
+            // caller wouldn't have been able to observe a cached
+            // entry from a failed lookup either, and inserting a row
+            // that the caller never saw would surface in the Punnu's
+            // event stream as an unexplained Insert.
+            let cache_target = qs.cache_target.clone();
             let acc = build_select(&qs);
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
@@ -226,7 +261,14 @@ where
                         .into_iter()
                         .next()
                         .expect("rows.len() == 1 was just matched");
-                    T::from_pg_row(&row)
+                    let decoded = T::from_pg_row(&row)?;
+                    // Post-fetch cache hook (success path only). See
+                    // the comment on `cache_target` snapshot above for
+                    // why the error branches skip the insert.
+                    if let Some(target) = cache_target.as_ref() {
+                        target.insert(&decoded).await;
+                    }
+                    Ok(decoded)
                 }
                 // `n` here is a sentinel: because we force `LIMIT 2`
                 // above, `n` is always exactly 2 on this branch — not the
@@ -447,11 +489,22 @@ where
             auto_set_tenant::<T>(ctx).await?;
             let mut qs = self;
             qs.limit = Some(1);
+            // Cluster 8δ T7.3: snapshot before the SQL emitter
+            // borrows `qs`.
+            let cache_target = qs.cache_target.clone();
             let acc = build_select(&qs);
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let opt = ctx.query_opt(&sql, &params).await?;
-            opt.as_ref().map(|r| T::from_pg_row(r)).transpose()
+            let decoded = opt.as_ref().map(|r| T::from_pg_row(r)).transpose()?;
+            // Cluster 8δ T7.3 post-fetch cache hook — fires only on
+            // the `Some(_)` branch (no row, no insert). Error
+            // semantics + bound rationale match the `fetch_all`
+            // hook above.
+            if let (Some(target), Some(row)) = (cache_target.as_ref(), decoded.as_ref()) {
+                target.insert(row).await;
+            }
+            Ok(decoded)
         }
     }
 
@@ -745,6 +798,18 @@ where
     ///     Ok(())
     /// })).await?;
     /// ```
+    // TODO(8δ T7.x): stream surfaces (`stream`,
+    // `stream_with_fetch_size`) and the joined / prefetched
+    // terminals (`fetch_all_prefetched`, `fetch_all_joined`,
+    // `in_bulk`) intentionally do NOT yet honour `cache_target`.
+    // Cluster 8δ commit T7.3 scopes the post-fetch hook to the
+    // three terminals named in the granular plan §3 commit T7.3
+    // — `fetch_all`, `first`, `fetch_one`. The streaming surface
+    // needs a separate design pass (back-pressure interactions
+    // with `Punnu::insert`'s async write-through, and the
+    // semantics of "cache mid-stream" if the consumer aborts
+    // before exhausting the cursor) that's deliberately a future
+    // commit's concern.
     pub async fn stream<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,

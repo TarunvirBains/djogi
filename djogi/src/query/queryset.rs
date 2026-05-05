@@ -85,6 +85,121 @@ pub enum DistinctMode {
     On(Vec<&'static str>),
 }
 
+/// Type-erased binding from a [`QuerySet`] to a [`sassi::Punnu`] for the
+/// post-fetch cache hook.
+///
+/// # What
+///
+/// Implementors carry a concrete `sassi::Punnu<T>` and expose a single
+/// async [`CacheTarget::insert`] hook that the terminal methods call
+/// once per fetched row. The trait is `pub(crate)` because it exists
+/// purely to keep the `T: sassi::Cacheable` bound off the
+/// [`QuerySet`] struct (`Punnu<T: Cacheable>` would otherwise force
+/// the bound onto every `impl<T: Model> QuerySet<T>` block via rustc's
+/// well-formedness check).
+///
+/// # Why a trait object, not `Option<Punnu<T>>`
+///
+/// See the doc on [`QuerySet::cache_target`] — the upshot is that
+/// naming `Punnu<T>` directly in the `QuerySet` field set would
+/// propagate `T: sassi::Cacheable` everywhere the struct is named.
+/// Type-erasing the handle through this trait keeps that bound
+/// localised to [`QuerySet::cache`], which is the only place it
+/// actually matters.
+///
+/// # Why async-fn-in-trait
+///
+/// `Punnu::insert` is async (it write-throughs to any attached L2
+/// backend), so the hook must be async too. The Send bound on the
+/// returned future matches the `+ Send` shape every QuerySet terminal
+/// already returns — terminals can `.await` the insert from any
+/// multi-thread executor.
+pub(crate) trait CacheTarget<T>: Send + Sync {
+    /// Insert one row into the bound Punnu. Returns a `+ Send` future
+    /// that resolves to `()` (errors are logged and swallowed inside
+    /// the implementor — see [`PunnuCacheTarget::insert`] — so the
+    /// fetch terminal is never aborted by a cache-side failure).
+    ///
+    /// Takes `&T` (not `T`) because the terminal still owns the
+    /// fetched `Vec<T>` and returns it to the caller — the cache
+    /// hook is a side-effect on a borrow, not a transfer of
+    /// ownership. The implementor clones internally inside the
+    /// wrapper where the necessary `T: Clone` bound is satisfied
+    /// (see [`PunnuCacheTarget`] — the wrapper requires
+    /// `T: Cacheable + Clone`); routing the clone through the
+    /// trait keeps the `T: Clone` bound off every terminal-method
+    /// signature in `terminal.rs`, preserving the pre-T7.3 surface
+    /// for adopters who never call `.cache(...)`.
+    ///
+    /// `&self` (not `&mut`) because `Punnu::insert` does. Returning
+    /// a boxed future keeps the trait object-safe.
+    fn insert<'a>(
+        &'a self,
+        value: &'a T,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+}
+
+/// Concrete [`CacheTarget`] backed by a `sassi::Punnu<T>`.
+///
+/// # Why a wrapper, not a blanket impl on `Punnu<T>`
+///
+/// `Punnu<T>` lives in the sibling `sassi` crate; the orphan rule
+/// forbids implementing a djogi-owned trait on a sassi-owned type
+/// outside djogi without a wrapper. The wrapper is also where errors
+/// from `Punnu::insert` get logged-and-swallowed — see the impl below
+/// for why "do not propagate cache-side errors out of a fetch
+/// terminal" is the load-bearing contract.
+pub(crate) struct PunnuCacheTarget<T: sassi::Cacheable> {
+    punnu: sassi::Punnu<T>,
+}
+
+impl<T: sassi::Cacheable> PunnuCacheTarget<T> {
+    /// Wrap a `sassi::Punnu<T>` for use as a [`CacheTarget`].
+    pub(crate) fn new(punnu: sassi::Punnu<T>) -> Self {
+        Self { punnu }
+    }
+}
+
+impl<T: sassi::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> {
+    fn insert<'a>(
+        &'a self,
+        value: &'a T,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        // Clone the Punnu handle (cheap: `Arc::clone` on
+        // `Arc<PunnuInner<T>>`) and the row (delegated to the user-
+        // supplied `Clone` impl — required at `.cache(...)` call
+        // time via the `T: Clone` bound on `QuerySet::cache`).
+        // Cloning is required because `Punnu::insert(T)` takes `T`
+        // by value — sassi's identity-map semantics own the
+        // inserted value in an `Arc<T>` once it lands in the L1
+        // snapshot.
+        let punnu = self.punnu.clone();
+        let value = value.clone();
+        Box::pin(async move {
+            // Per Cluster 8δ granular plan §3 commit T7.3 risk note
+            // (line 148): "Errors from `insert` (e.g.,
+            // `InsertError::Conflict` under `OnConflict::Reject`)
+            // MUST NOT abort the fetch; log via `tracing::warn!` and
+            // continue. Do NOT add `?` to the insert."
+            //
+            // The terminal contract is "fetch returned rows;
+            // cache-side write-through is best-effort". A conflict
+            // under `OnConflict::Reject`, an L2-backend
+            // serialization failure, an LRU pressure spike — none of
+            // these change what Postgres said the rows are. Logging
+            // the error preserves observability without breaking the
+            // caller.
+            if let Err(e) = punnu.insert(value).await {
+                tracing::warn!(
+                    target: "djogi::cache",
+                    error = ?e,
+                    "Punnu::insert failed during QuerySet::cache hook; continuing",
+                );
+            }
+        })
+    }
+}
+
 /// Lazy query builder. Nothing hits the database until a terminal method
 /// (added in Task 6) is called.
 ///
@@ -165,6 +280,46 @@ pub struct QuerySet<T: Model> {
     /// [`crate::query::lock`] for the full behaviour table and the
     /// pool-backed footgun note.
     pub(crate) lock: crate::query::lock::LockMode,
+    /// Optional Punnu binding — Cluster 8δ T7.3. When `Some(handle)`,
+    /// every terminal method that produces user-facing rows
+    /// (`fetch_all` / `first` / `fetch_one`) inserts each fetched row
+    /// into the bound Punnu via [`sassi::Punnu::insert`] post-fetch,
+    /// before returning the value to the caller. Identity-map
+    /// semantics + the configured [`sassi::OnConflict`] policy from
+    /// sassi apply.
+    ///
+    /// # Why a type-erased handle, not `Option<Punnu<T>>` directly
+    ///
+    /// `sassi::Punnu<T>` is defined `Punnu<T: Cacheable>`, so naming
+    /// the type in a field of `QuerySet<T: Model>` would force
+    /// `T: Cacheable` onto every existing `impl<T: Model> QuerySet<T>`
+    /// block in the crate (the bound propagates structurally through
+    /// rustc's well-formedness check). Type-erasing the binding
+    /// through [`CacheTarget`] keeps the existing surface — every
+    /// non-cache builder, every terminal, every Clone / Debug impl —
+    /// unchanged for non-cacheable `T`. The bound `T: Cacheable` is
+    /// applied only on the [`QuerySet::cache`](Self::cache) builder
+    /// where it actually matters.
+    ///
+    /// # Why `Arc`-cheap cloning
+    ///
+    /// `sassi::Punnu<T>` is `Arc`-internal
+    /// (`sassi-reference/sassi/src/punnu/pool.rs` lines 112–122 — the
+    /// struct holds a single `Arc<PunnuInner<T>>` and `Clone` clones
+    /// the `Arc`). The boxed [`CacheTarget`] underneath similarly
+    /// clones a single `Arc<dyn ...>` handle. Binding a queryset to a
+    /// Punnu therefore records "this QuerySet feeds that Punnu
+    /// instance" rather than taking a snapshot of the pool's contents.
+    ///
+    /// # Why outside the SQL emit path
+    ///
+    /// The SQL emitter ([`crate::query::sql::build_select`] and
+    /// friends) never reads this field. The cache modifier is purely
+    /// additive: SQL output, query plan, and the lifetime of the
+    /// QuerySet are unchanged whether `cache_target` is `None` or
+    /// `Some(_)`. The post-fetch hook fires exactly once per terminal
+    /// call.
+    pub(crate) cache_target: Option<std::sync::Arc<dyn CacheTarget<T>>>,
     /// Covariant `T` tag; never owns or borrows a `T`.
     _model: PhantomData<fn() -> T>,
 }
@@ -202,6 +357,11 @@ impl<T: Model> Clone for QuerySet<T> {
             select_related_paths: self.select_related_paths.clone(),
             // `LockMode` is `Copy` — bit-copy is trivial.
             lock: self.lock,
+            // Cluster 8δ T7.3: `Arc::clone` on the trait-object handle
+            // — the underlying `Punnu<T>` is `Arc`-internal so the bind
+            // semantics carry through every queryset clone. A clone of
+            // a `.cache(&p)`-bound queryset still feeds the same `p`.
+            cache_target: self.cache_target.clone(),
             _model: PhantomData,
         }
     }
@@ -216,6 +376,16 @@ impl<T: Model> Clone for QuerySet<T> {
 impl<T: Model> std::fmt::Debug for QuerySet<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let lowered = crate::query::q::q_to_condition_ref(&self.condition);
+        // Cluster 8δ T7.3: `cache_target` is intentionally excluded
+        // from the Debug projection. The cache modifier is purely
+        // additive on the post-fetch side (SQL output, query plan,
+        // and every accumulator on the build path are byte-identical
+        // whether `.cache(...)` was called or not), so the Debug
+        // shape — which downstream tests grep against to check SQL
+        // structure — must stay invariant under `.cache(...)`.
+        // Including the cache_target would make `.cache(...)` show up
+        // in `format!("{:?}", qs)` and accidentally turn cache
+        // bindings into a tested SQL-structure surface.
         f.debug_struct("QuerySet")
             .field("table", &T::table_name())
             .field("condition", &lowered)
@@ -305,6 +475,11 @@ impl<T: Model> QuerySet<T> {
             prefetch_paths: Vec::new(),
             select_related_paths: Vec::new(),
             lock: crate::query::lock::LockMode::None,
+            // Cluster 8δ T7.3: opt-in. The default queryset has no
+            // cache binding; `.cache(&p)` (defined in a separate
+            // `impl<T: Model + sassi::Cacheable>` block) sets this
+            // to `Some(_)`.
+            cache_target: None,
             _model: PhantomData,
         }
     }
@@ -1515,6 +1690,115 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
             crate::query::condition::FilterValue::Null,
         );
         self.condition = and_condition_into_q(self.condition, Condition::Leaf(leaf));
+        self
+    }
+}
+
+// ── Cluster 8δ T7.3 — `.cache(&punnu)` opt-in modifier ─────────────────────
+//
+// Bound `T: Model + sassi::Cacheable` is split into a dedicated impl
+// block for the same reason `not_deleted` lives in its own block: the
+// extra trait bound is opt-in. Models that don't go through
+// `#[derive(Model)]` (and therefore don't pick up T7.2's auto-emitted
+// `Cacheable` impl) keep the existing `impl<T: Model> QuerySet<T>`
+// surface unchanged — `.cache(...)` simply doesn't compile for them,
+// matching the spec contract that the cache modifier is opt-in.
+//
+// Why `crate::types::Cacheable` (not `sassi::Cacheable`) for the
+// bound: per `feedback_macro_path_routing.md`, code that names
+// trait paths routes through `crate::types` so a future sassi
+// reshuffle (e.g., moving `Cacheable` to a sub-module) only has to
+// update one re-export instead of every `use sassi::Cacheable;`
+// site in the framework. The trait identity is the same — the
+// re-export at `djogi/src/types.rs` is `pub use sassi::cacheable::Cacheable;`
+// — so the bound resolves byte-identically.
+//
+// Spec anchors: §664 (`.cache(&punnu)` modifier; opt-in).
+// Phase 8 plan §374. Granular plan
+// `cluster-8delta-granular.md` §3 commit T7.3.
+impl<T: Model + crate::types::Cacheable + Clone> QuerySet<T> {
+    /// Bind this QuerySet to a [`sassi::Punnu`] — every row produced
+    /// by a terminal method (`.fetch_all()`, `.first()`, `.fetch_one()`)
+    /// is inserted into the bound Punnu via [`sassi::Punnu::insert`]
+    /// after the rows materialise and before the value is returned to
+    /// the caller. Identity-map semantics + the configured
+    /// [`sassi::OnConflict`] policy from sassi apply.
+    ///
+    /// # Bounds
+    ///
+    /// `T: Clone` is required because the post-fetch hook runs after
+    /// the terminal has materialised the `Vec<T>` for the caller —
+    /// the cache target needs its own copy of each row to feed into
+    /// `Punnu::insert`, while the caller still gets the original.
+    /// Sassi's `Cacheable` does not include `Clone` as a supertrait
+    /// (a model can be cacheable without being cloneable), so the
+    /// bound is added explicitly here. Every model that goes
+    /// through `#[derive(Model)]` already has `#[derive(Clone)]` in
+    /// the canonical recipe (see the model spec) so this bound is
+    /// satisfied by construction for every realistic adopter.
+    ///
+    /// # Why opt-in
+    ///
+    /// The cache hook is purely additive — SQL output, query plan,
+    /// and the lifetime of the QuerySet are unchanged whether
+    /// `.cache(...)` was called or not. Calling `.cache(&p)` records
+    /// "this QuerySet feeds that Punnu instance"; not calling it
+    /// preserves the pre-T7.3 fetch behaviour exactly. Adopters who
+    /// don't want a cache pay zero — neither in cycles nor in API
+    /// surface.
+    ///
+    /// # Why `&Punnu<T>` (not `Punnu<T>`)
+    ///
+    /// `sassi::Punnu<T>` is `Arc`-internal — `Punnu::clone` clones a
+    /// single `Arc<PunnuInner<T>>` (see
+    /// `sassi-reference/sassi/src/punnu/pool.rs` lines 116–122). The
+    /// builder takes the punnu by reference and clones internally so
+    /// the call site reads as a binding ("feed THIS punnu") rather
+    /// than a transfer ("hand over your punnu"). The cloned handle
+    /// shares state with the caller's, matching the bind semantics
+    /// the spec requires.
+    ///
+    /// # Errors propagation
+    ///
+    /// Errors from `Punnu::insert` (e.g.,
+    /// [`sassi::InsertError::Conflict`] under
+    /// [`sassi::OnConflict::Reject`], or an L2-backend serialization
+    /// failure) are logged via `tracing::warn!` and swallowed — they
+    /// do not abort the fetch. Adopters who want to observe cache-
+    /// side errors subscribe to [`sassi::Punnu::events`] (which fires
+    /// per-insert events including conflict outcomes) — that is the
+    /// designed observability surface for cache-pool lifecycle.
+    /// Routing them through the fetch return type would conflate
+    /// "Postgres said something went wrong" with "the cache mirror
+    /// disagreed" and break the spec's contract that the cache
+    /// modifier is purely additive.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use djogi::cache::Punnu;
+    /// use djogi::prelude::*;
+    ///
+    /// let pool: Punnu<Post> = Punnu::<Post>::builder().build();
+    /// let recent = Post::objects()
+    ///     .filter(|f| f.published.eq(true))
+    ///     .order_by(|f| f.created_at.desc())
+    ///     .limit(20)
+    ///     .cache(&pool)               // ← opt in
+    ///     .fetch_all(&mut ctx)
+    ///     .await?;
+    /// // `pool.len() == recent.len()` — the 20 rows are now in
+    /// // the bound Punnu's L1 identity map, ready for `pool.get(id)`.
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn cache(mut self, punnu: &sassi::Punnu<T>) -> Self {
+        // Wrap in the type-erased `CacheTarget` handle so the
+        // queryset's struct field doesn't need a `T: Cacheable`
+        // bound. `Arc::new` here boxes the wrapper once at bind
+        // time; later clones of the queryset reuse the same `Arc`.
+        // `Punnu::clone` itself is `Arc`-cheap, so the embedded
+        // clone inside `PunnuCacheTarget::new` is also cheap.
+        self.cache_target = Some(std::sync::Arc::new(PunnuCacheTarget::new(punnu.clone())));
         self
     }
 }

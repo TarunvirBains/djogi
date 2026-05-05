@@ -422,3 +422,10 @@ harness = true
 name = "phase8_djogi_verify_cli"
 path = "../tests/integration/phase8_djogi_verify_cli.rs"
 harness = true
+
+# ── Phase 8δ T7.3 — cache modifier integration ───────────────────────────────
+
+[[test]]
+name = "phase8_t7_3_cache_modifier"
+path = "../tests/integration/phase8_t7_3_cache_modifier.rs"
+harness = true
