@@ -328,38 +328,86 @@ impl<T: Model> QuerySet<T> {
         self
     }
 
-    /// AND a programmatic filter struct onto the condition tree.
+    /// AND a [`Q<T>`] predicate onto the condition tree.
     ///
-    /// The filter's accumulated clauses are folded into a single
-    /// `Condition::And(...)` and AND-ed onto `self.condition`. Empty
-    /// filters short-circuit — no AND-ing, no vacuous `TRUE` sub-tree.
-    /// Single-clause filters unwrap to a plain `Condition::Leaf` so the
-    /// SQL emitter renders `col = $1` rather than `(col = $1)`.
+    /// Accepts any [`IntoQ<T>`] — `Q<T>` directly, a sassi
+    /// [`BasicPredicate<T>`](crate::query::BasicPredicate), or a
+    /// `{Model}Filter` programmatic builder (the macro emits an
+    /// `IntoQ<#model>` impl alongside the existing
+    /// [`ModelFilter`](crate::query::ModelFilter)). All three paths
+    /// fold into the same condition-tree representation and produce
+    /// byte-identical SQL — character-for-character parity with the
+    /// pre-Cluster-8γ `Condition`-substrate `filter_struct` is the
+    /// load-bearing contract of the substrate flip.
+    ///
+    /// Empty `{Model}Filter` bodies short-circuit — no AND-ing, no
+    /// vacuous `TRUE` sub-tree. Single-clause filters unwrap to a
+    /// plain `Condition::Leaf` (via the lowering bridge) so the SQL
+    /// emitter renders `col = $1` rather than `(col = $1)`. Both
+    /// shapes are preserved by routing through the existing
+    /// `clauses_into_condition` helper inside the macro-emitted
+    /// `IntoQ<#model>` impl.
     ///
     /// This is the closure-free sibling of [`QuerySet::filter`] — the
-    /// two paths produce structurally equivalent condition trees for the
-    /// same set of lookups, and the SQL emitter treats them identically.
-    /// Use this method from shell bindings, admin UIs, and any dynamic
-    /// assembler that can't write a `|f|` closure at compile time.
+    /// two paths produce structurally equivalent condition trees for
+    /// the same set of lookups, and the SQL emitter treats them
+    /// identically. Use this method from shell bindings, admin UIs,
+    /// any dynamic assembler that can't write a `|f|` closure at
+    /// compile time, and any new caller composing a `Q<T>` directly
+    /// through the public algebra.
     ///
     /// ```ignore
+    /// // ModelFilter — closure-free
     /// let filter = PostFilter::new()
     ///     .published(Lookup::Eq(true))
     ///     .view_count(Lookup::Gte(50i32));
     /// let rows = Post::objects().filter_struct(filter).fetch_all(&pool).await?;
+    ///
+    /// // Q<T> — public algebra
+    /// let q: Q<Post> = Q::Ilike(Post::fields().title, "rust%".into());
+    /// let rows = Post::objects().filter_struct(q).fetch_all(&pool).await?;
     /// ```
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
-    pub fn filter_struct<F: crate::query::filter::ModelFilter>(mut self, filter: F) -> Self {
-        let clauses = filter.into_clauses();
-        if clauses.is_empty() {
-            // Empty filter — don't AND `Condition::True` onto `self.condition`;
-            // `Condition::and` would fold it away anyway, but early-returning
-            // makes the no-op case explicit and avoids the intermediate
-            // allocation.
+    pub fn filter_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
+        let q = filter.into_q();
+        let cond = crate::query::q::q_to_condition(q);
+        // Vacuous-truth short-circuit — same shape `filter_struct`
+        // historically used for `ModelFilter` empty-clauses. Keeps the
+        // pre-flip emission identical: an empty `Q<T>` does not AND a
+        // synthetic `TRUE` onto the queryset's tree.
+        if cond.is_vacuously_true() {
             return self;
         }
-        let folded = crate::query::filter::clauses_into_condition(clauses);
-        self.condition = Condition::and(self.condition, folded);
+        self.condition = Condition::and(self.condition, cond);
+        self
+    }
+
+    /// AND the **negation** of a [`Q<T>`] predicate onto the condition
+    /// tree. The struct-API counterpart of [`QuerySet::exclude`] —
+    /// the closure-free version of `.exclude(|f| ...)`.
+    ///
+    /// Wraps the lowered condition in a single
+    /// [`Condition::Not`](crate::query::Condition::Not) so the SQL
+    /// emitter renders `... WHERE NOT (predicate)`. Unlike
+    /// [`QuerySet::filter_struct`], an empty filter is **not**
+    /// short-circuited — `NOT TRUE` is `FALSE`, and silently dropping
+    /// it would produce a different result set. Callers who pass an
+    /// empty filter through `exclude_struct` get the explicit `NOT
+    /// (TRUE)` SQL.
+    ///
+    /// Sister method to [`QuerySet::filter_struct`]; the two compose
+    /// freely:
+    ///
+    /// ```ignore
+    /// Post::objects()
+    ///     .filter_struct(PostFilter::new().published(Lookup::Eq(true)))
+    ///     .exclude_struct(PostFilter::new().title(Lookup::Eq("draft".to_string())))
+    /// ```
+    #[must_use = "querysets are lazy — dropping one silently omits the query"]
+    pub fn exclude_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
+        let q = filter.into_q();
+        let cond = crate::query::q::q_to_condition(q);
+        self.condition = Condition::and(self.condition, Condition::not(cond));
         self
     }
 
@@ -1523,6 +1571,95 @@ mod tests {
             .exclude(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
         // True AND NOT(leaf) → NOT(leaf) thanks to Condition::and's identity folding.
         assert!(matches!(qs.condition, Condition::Not(_)));
+    }
+
+    // ── T6.7 — `IntoQ<T>` + `filter_struct(Q<T>)` + `exclude_struct(Q<T>)` ────
+    //
+    // Locks the new substrate-aware filter API: any `IntoQ<T>` impl
+    // (Q<T> directly, sassi BasicPredicate<T>, or `{Model}Filter`
+    // through the macro-emitted bridge) folds into the same
+    // `Condition` tree the pre-flip path produced. Character-for-
+    // character SQL parity is the load-bearing contract.
+
+    /// `filter_struct` accepts `Q<T>` directly. Pure-Basic Q lowers
+    /// through the bridge into `Condition::And/Or/Not/...`; the
+    /// resulting tree matches what a closure-side `.filter` call would
+    /// have produced.
+    #[test]
+    fn filter_struct_accepts_q_directly() {
+        use crate::query::Q;
+        use sassi::BasicPredicate;
+
+        let q: Q<Fake> = Q::Basic(BasicPredicate::True);
+        let qs: QuerySet<Fake> = QuerySet::new().filter_struct(q);
+        // True is vacuously-true → short-circuit returns self unchanged.
+        assert!(matches!(qs.condition, Condition::True));
+    }
+
+    /// `filter_struct` over a non-vacuous Q lifts through
+    /// `q_to_condition` and ANDs onto the existing tree.
+    #[test]
+    fn filter_struct_q_negated_ands_onto_tree() {
+        use crate::query::Q;
+        use sassi::BasicPredicate;
+
+        // Q::Basic(BasicPredicate::False) lowers to `Or(empty)` —
+        // structurally non-vacuous, so it AND-s through.
+        let q: Q<Fake> = Q::Basic(BasicPredicate::False);
+        let qs: QuerySet<Fake> = QuerySet::new().filter_struct(q);
+        match qs.condition {
+            Condition::Or(ref v) => assert!(v.is_empty(), "expected Or(empty)"),
+            ref other => panic!("expected Condition::Or(empty), got {other:?}"),
+        }
+    }
+
+    /// `exclude_struct` wraps the lowered condition in
+    /// `Condition::Not`. Locks the SQL parity contract: the same `NOT
+    /// (...)` SQL the closure-side `.exclude(|f| ...)` path would
+    /// have produced.
+    #[test]
+    fn exclude_struct_wraps_q_in_not() {
+        use crate::query::Q;
+        use sassi::BasicPredicate;
+
+        let q: Q<Fake> = Q::Basic(BasicPredicate::False);
+        let qs: QuerySet<Fake> = QuerySet::new().exclude_struct(q);
+        match qs.condition {
+            Condition::Not(_) => {}
+            ref other => panic!("expected Condition::Not, got {other:?}"),
+        }
+    }
+
+    /// `exclude_struct` does **not** short-circuit on
+    /// vacuously-true filters. `NOT TRUE` is `FALSE`; silently
+    /// dropping it would change the result set.
+    #[test]
+    fn exclude_struct_does_not_short_circuit_on_vacuous_true() {
+        use crate::query::Q;
+        use sassi::BasicPredicate;
+
+        let q: Q<Fake> = Q::Basic(BasicPredicate::True);
+        let qs: QuerySet<Fake> = QuerySet::new().exclude_struct(q);
+        // True AND NOT(True) → NOT(True). Condition::and folds away
+        // the `Condition::True` side, so we expect a bare `Not(True)`.
+        match qs.condition {
+            Condition::Not(inner) => assert!(matches!(*inner, Condition::True)),
+            ref other => panic!("expected Condition::Not(True), got {other:?}"),
+        }
+    }
+
+    /// `BasicPredicate<T>` lifts through `IntoQ<T>::into_q` so
+    /// `.filter_struct(my_basic)` reads naturally without naming
+    /// `Q::Basic(_)` at the callsite.
+    #[test]
+    fn filter_struct_accepts_basic_predicate_directly() {
+        use sassi::BasicPredicate;
+        let bp: BasicPredicate<Fake> = BasicPredicate::False;
+        let qs: QuerySet<Fake> = QuerySet::new().filter_struct(bp);
+        match qs.condition {
+            Condition::Or(ref v) => assert!(v.is_empty()),
+            ref other => panic!("expected Condition::Or(empty), got {other:?}"),
+        }
     }
 
     #[test]

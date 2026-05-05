@@ -203,6 +203,32 @@ pub mod __private {
     /// needing `tracing` as a direct dependency — the same path-routing
     /// convention used for `inventory`, `postgres_types`, and `futures`.
     pub use tracing;
+
+    /// Q-algebra seal extension — routed through `__private` so the
+    /// proc-macro's emitted `IntoQ<#model>` impl for `{Model}Filter`
+    /// can satisfy the crate-private `sealed_into_q::Sealed`
+    /// supertrait from inside the adopter crate.
+    ///
+    /// Adopter code never names this trait — `IntoQ<T>` is the public
+    /// surface. Only `djogi-macros::model::filter` reaches in here,
+    /// and only to stamp the seal on the `{Model}Filter` types it
+    /// generates.
+    ///
+    /// See `crate::query::q::__SealedIntoQ` for the underlying
+    /// crate-private seal, and `query::q::IntoQ` for the public
+    /// trait downstream code consumes.
+    pub use crate::query::q::__SealedIntoQ;
+
+    /// Re-exports needed by the `IntoQ<#model>` impl macro emission
+    /// in `djogi-macros::model::filter`. Adopter code uses
+    /// `crate::query::filter::clauses_into_condition` ↔ `Q::Condition(_)`
+    /// indirectly via `filter_struct(my_filter)`; the helper exists at
+    /// this path so macro-emitted code can route through
+    /// `::djogi::__private::query::*` per `feedback_macro_path_routing.md`.
+    pub mod query {
+        pub use crate::query::filter::clauses_into_condition;
+        pub use crate::query::q::{IntoQ, Q};
+    }
 }
 
 pub use apps::{App, AppDescriptor, AppIdentity, AppRegistry, CrossAppEdge};

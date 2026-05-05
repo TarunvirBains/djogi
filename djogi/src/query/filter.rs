@@ -313,7 +313,18 @@ pub trait ModelFilter {
 /// The plan lists it as a "helper to fold a Vec<FilterClause> into a
 /// Condition::And(...) tree"; keeping it in this module means the
 /// queryset layer stays free of condition-tree construction details.
-pub(crate) fn clauses_into_condition(clauses: Vec<FilterClause>) -> Condition {
+///
+/// # Visibility
+///
+/// `pub` on the symbol but routed through `::djogi::__private::query`
+/// in the public path tree, so adopter code reaching for it crosses
+/// the framework boundary into the unstable `__private` namespace.
+/// Macro-emitted `IntoQ<#model>` impls for `{Model}Filter` (Cluster
+/// 8γ Stage 2 — T6.7) need to call this from the adopter crate; the
+/// `pub(crate)` shape blocks that, while `pub` + `__private`-only
+/// re-export preserves the same "internal" contract every other
+/// `__private` helper carries (see `feedback_macro_path_routing.md`).
+pub fn clauses_into_condition(clauses: Vec<FilterClause>) -> Condition {
     match clauses.len() {
         0 => Condition::True,
         1 => {

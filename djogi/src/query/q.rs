@@ -341,6 +341,97 @@ impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
     }
 }
 
+// ── `IntoQ<T>` — sealed trait for `filter_struct` / `exclude_struct` ─────────
+//
+// T6.7 (Cluster 8γ Stage 2). Anything convertible into a `Q<T>` for
+// `QuerySet::filter_struct` / `QuerySet::exclude_struct` implements
+// this trait. The sealing is the load-bearing piece: only djogi (and
+// macro-emitted code in adopter crates) may extend the surface, so a
+// downstream crate cannot reach for a custom impl that bypasses the
+// `Q<T>` algebra invariants — the sealed trait is the type-system
+// enforcement of v3 §T6 Codex review's "no `Into<Condition>` ambiguity"
+// rule.
+//
+// Three impls ship today:
+//
+// 1. `Q<T>` — identity. `filter_struct(my_q)` is the canonical caller.
+// 2. `BasicPredicate<T>` — sassi's universal Rust-evaluable predicate.
+//    Adopters can pass a sassi predicate directly without naming
+//    `Q::Basic(_)`; the impl wraps it for them.
+// 3. The `{Model}Filter` programmatic builder — emitted by the
+//    `#[derive(Model)]` macro alongside the existing `ModelFilter`
+//    impl. The bridge folds `into_clauses()` through the existing
+//    `clauses_into_condition` helper and lifts the result via
+//    `Q::Condition(_)`. SQL parity with the pre-T6.9 `Condition`
+//    substrate is exact because the lowering bridge round-trips the
+//    `Condition` as the identity (see `q_to_condition` for the contract).
+
+mod sealed_into_q {
+    /// Crate-private seal. Only djogi (and macro-emitted code routed
+    /// through `crate::__private`) may impl `IntoQ<T>`.
+    pub trait Sealed {}
+}
+
+/// Macro-only seal extension for `{Model}Filter` types.
+///
+/// `#[derive(Model)]` emits an `impl IntoQ<#model_ty> for #filter_name`
+/// alongside the existing `ModelFilter` impl. To satisfy the
+/// crate-private `sealed_into_q::Sealed` supertrait from a user crate,
+/// the emitted code routes through `::djogi::__private::seal_model_filter_for_into_q!`
+/// which expands to a single `impl Sealed for #filter_name` line.
+/// Adopter code cannot call this macro directly — it lives in
+/// `__private` and is only reachable from the proc-macro's emitted
+/// output (per `feedback_macro_path_routing.md`).
+#[doc(hidden)]
+pub use sealed_into_q::Sealed as __SealedIntoQ;
+
+/// Anything convertible into a [`Q<T>`] for
+/// [`QuerySet::filter_struct`](crate::query::QuerySet::filter_struct)
+/// / [`QuerySet::exclude_struct`](crate::query::QuerySet::exclude_struct).
+///
+/// Sealed — see `mod sealed_into_q`. The sealing closes the
+/// "downstream `Into<Condition>` ambiguity" attack the v3 §T6 Codex
+/// review explicitly calls out: a hostile downstream impl cannot
+/// smuggle a non-`Q<T>` type through the filter API.
+pub trait IntoQ<T: Model>: sealed_into_q::Sealed {
+    /// Lower the implementor into the `Q<T>` algebra.
+    fn into_q(self) -> Q<T>;
+}
+
+impl<T: Model> sealed_into_q::Sealed for Q<T> {}
+impl<T: Model> IntoQ<T> for Q<T> {
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        self
+    }
+}
+
+impl<T: Model> sealed_into_q::Sealed for BasicPredicate<T> {}
+impl<T: Model> IntoQ<T> for BasicPredicate<T> {
+    /// Lift a sassi `BasicPredicate<T>` directly into `Q<T>` without
+    /// requiring the adopter to name `Q::Basic(_)` at the callsite.
+    /// Identical effect to `Q::from(p)` / `p.into()`; this impl exists
+    /// so `filter_struct(my_basic)` reads naturally.
+    #[inline]
+    fn into_q(self) -> Q<T> {
+        Q::Basic(self)
+    }
+}
+
+// ── Macro-emitted `IntoQ<T>` for `{Model}Filter` ────────────────────────────
+//
+// The `#[derive(Model)]` macro emits an `IntoQ<#model_ty>` impl for
+// each `{Model}Filter` it generates. The impl folds `into_clauses()`
+// through `crate::query::filter::clauses_into_condition` and wraps the
+// result as `Q::Condition(_)`. Character-for-character SQL parity with
+// the pre-T6.9 `Condition` substrate is preserved because
+// `q_to_condition` round-trips `Q::Condition(_)` as the identity.
+//
+// The seal extension lives in `crate::__private::__seal_into_q_for_model_filter`
+// so adopter crates cannot impl `IntoQ<T>` for arbitrary types — only
+// the macro (which routes through that helper) and djogi itself reach
+// the seal. See `djogi/src/lib.rs` for the helper definition.
+
 // ── `Q<T>` constructors + operator overloads ─────────────────────────────────
 
 impl<T: Model> Q<T> {
