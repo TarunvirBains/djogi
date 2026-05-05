@@ -494,9 +494,12 @@ impl DjogiContext {
     /// **Release builds fail closed** because crashing a multi-tenant server
     /// on a single cross-context bug in cold-path code violates production
     /// stability. `tracing::error!` emits an observable signal for log
-    /// scrapers; the empty `Punnu<T>` fallback means reads return `None` and
-    /// writes are silently discarded — the correct degraded-mode behaviour
-    /// (no cross-context state contamination).
+    /// scrapers; the empty `Punnu<T>` fallback is a live but isolated pool —
+    /// reads return `None` (it is fresh-empty), and writes go into the
+    /// fallback's own L1 cache only. They do NOT propagate to either the
+    /// calling context's registered `Punnu<T>` or to the source `Arc` the
+    /// caller passed in. The caller observes a normal `Arc<Punnu<T>>`
+    /// surface but no cross-context state contamination is possible.
     ///
     /// # Returns
     ///
@@ -550,10 +553,13 @@ impl DjogiContext {
                     target: "djogi::cache",
                     model = std::any::type_name::<T>(),
                     "cross-context Punnu access — returning empty Punnu fallback. \
-                     A Punnu<T> from another DjogiContext was passed to use_punnu; \
-                     reads will return None and writes will not be observable on \
-                     the original context. This is a release-build fail-closed; \
-                     the caller should be using ctx.punnu::<T>() on this context.",
+                     The passed Punnu<T> is not bound to this DjogiContext: \
+                     either it was acquired from a different context, or T \
+                     was never registered on this context's boot inventory \
+                     (e.g. pk = None or no #[derive(Model)]). Reads return \
+                     None; writes go into the fallback's own L1 only. This \
+                     is a release-build fail-closed; the caller should use \
+                     ctx.punnu::<T>() on this context.",
                 );
                 return std::sync::Arc::new(sassi::Punnu::<T>::builder().build());
             }
