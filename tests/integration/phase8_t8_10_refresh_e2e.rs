@@ -457,14 +457,17 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
     );
 
     // ── Tick handle_b: captures auth_b (user_id=2) ──────────────────────────
-    // Same 8 rows visible (no RLS filtering; plain model). Proves the second
-    // subscription also runs successfully under its independently captured auth.
+    // Same 8 rows visible (no RLS filtering; plain model). handle_b starts
+    // with `since = None` (its own independent watermark), so the first tick
+    // is a deterministic full scan of all 8 rows. A `<= 8` bound would paper
+    // over a delta-path regression that returned partial results; pin
+    // exactly 8.
     let tick_b = handle_b.update().await.expect("handle_b tick must succeed");
-    assert!(
-        tick_b.applied <= 8,
-        "handle_b tick must apply at most 8 rows (watermark boundary re-delivery \
-         means the result is <= 8, not necessarily 0 on a delta tick from handle_b's \
-         perspective since handle_b's watermark started at None); got {applied}",
+    assert_eq!(
+        tick_b.applied, 8,
+        "handle_b's first tick must apply exactly 8 rows — handle_b starts \
+         from `since = None` (independent watermark) and the AuthRow model \
+         has no tenant_key, so a full scan is deterministic; got {applied}",
         applied = tick_b.applied,
     );
 
