@@ -1176,6 +1176,59 @@ mod tests {
             "expected false: GiST on a text column is not spatial acceleration"
         );
     }
+
+    // ── Phase 8β T3.1 — proxy descriptor field defaults ─────────────────────
+
+    /// `proxy_for` defaults to `None` for every non-proxy descriptor.
+    ///
+    /// Locks the struct-layout-stability convention: adding a new field on
+    /// `ModelDescriptor` must default to a no-op shape so existing literal
+    /// sites that go through `model_descriptor(...)` keep compiling.
+    #[test]
+    fn proxy_for_field_defaults_to_none() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let desc = ModelDescriptor {
+            ..model_descriptor("V", "vs", PkType::HeerId, FIELDS)
+        };
+        assert!(desc.proxy_for.is_none());
+    }
+
+    /// `default_filter_sql` defaults to `None` for every non-proxy descriptor.
+    ///
+    /// Mirror of `proxy_for_field_defaults_to_none` — the two fields ship
+    /// together in T3.1 and share the no-op default convention.
+    #[test]
+    fn default_filter_sql_field_defaults_to_none() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let desc = ModelDescriptor {
+            ..model_descriptor("V", "vs", PkType::HeerId, FIELDS)
+        };
+        assert!(desc.default_filter_sql.is_none());
+    }
+
+    /// Both proxy fields can be populated together — sanity check that the
+    /// struct layout accepts the proxy shape T3.3 will emit.
+    ///
+    /// Hand-constructs the descriptor with non-default values for both new
+    /// fields and asserts they round-trip. Locks the field surface so
+    /// renaming or retyping either field surfaces here before T3.3 lands.
+    #[test]
+    fn proxy_fields_round_trip_populated_values() {
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            ..field_descriptor("id", FieldSqlType::BigInt, false)
+        }];
+        let desc = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            default_filter_sql: Some("active = TRUE"),
+            ..model_descriptor("ActiveVehicle", "vehicles", PkType::HeerId, FIELDS)
+        };
+        assert_eq!(desc.proxy_for, Some("Vehicle"));
+        assert_eq!(desc.default_filter_sql, Some("active = TRUE"));
+    }
 }
 
 #[cfg(test)]
@@ -1958,6 +2011,29 @@ pub struct ModelDescriptor {
     /// caller into the explicit-path form (B5 covers the trybuild
     /// fixture).
     pub tree_edge: Option<&'static str>,
+
+    // ── Proxy models (Phase 8 Cluster 8β — T3) ──────────────────────────────
+    /// `Some("Vehicle")` when this model is a proxy of `Vehicle` —
+    /// shares its parent's table, has its own Rust type. Phase 8β.
+    ///
+    /// Migration differ treats proxies as schema-passthrough: no
+    /// `CREATE TABLE` emitted; the parent owns the table. Proxies
+    /// can override the `Model` trait surface (`default_filter`,
+    /// `default_order_by`, type-specific hooks) without breaking the
+    /// parent's storage layout.
+    ///
+    /// `None` for ordinary (non-proxy) models — the common case.
+    pub proxy_for: Option<&'static str>,
+
+    /// SQL fragment for the proxy's default filter, if any. Macro-
+    /// emitted as a constant string at expand time. Composed into
+    /// every `QuerySet<ProxyModel>` via the `Model::default_filter_condition`
+    /// override (T3.4). The fragment is the lowered form of the
+    /// `default_filter = |f| ...` closure on `#[model(...)]`.
+    ///
+    /// `None` for non-proxy models and for proxies without a
+    /// `default_filter` clause.
+    pub default_filter_sql: Option<&'static str>,
 }
 
 impl ModelDescriptor {
@@ -2163,6 +2239,11 @@ pub const fn model_descriptor(
         renamed_from: None,
         exclusion_constraints: &[],
         tree_edge: None,
+        // Phase 8β T3 — proxy models (schema-passthrough). Defaults to `None`;
+        // populated by the macro when `#[model(proxy_for = ParentType)]` is
+        // present.
+        proxy_for: None,
+        default_filter_sql: None,
     }
 }
 

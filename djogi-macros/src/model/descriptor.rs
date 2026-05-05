@@ -803,6 +803,12 @@ fn try_expand(
                 // the self-FK detector (T8); reaches here only when the named
                 // column resolves to a self-FK on this model.
                 tree_edge: #tree_edge_tokens,
+                // Phase 8β T3 — proxy-model schema-passthrough surface. T3.1
+                // ships these fields as always-`None`; T3.3 will populate
+                // them when `#[model(proxy_for = ParentType, default_filter
+                // = |f| ...)]` is parsed.
+                proxy_for: ::core::option::Option::None,
+                default_filter_sql: ::core::option::Option::None,
             }
         }
         #(#deferrability_submits)*
