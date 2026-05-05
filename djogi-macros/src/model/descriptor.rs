@@ -83,8 +83,9 @@ pub fn expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
+    computed_attrs: &[(syn::Ident, crate::model::computed::ComputedAttr)],
 ) -> TokenStream {
-    match try_expand(struct_item, model_attrs, field_attrs) {
+    match try_expand(struct_item, model_attrs, field_attrs, computed_attrs) {
         Ok(tokens) => tokens,
         Err(err) => err.to_compile_error(),
     }
@@ -105,6 +106,12 @@ fn try_expand(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
+    // Phase 8β T4.5 — `#[computed(sql = "...")]` field metadata.
+    // T4.1 added the descriptor field; T4.5 populates it from the
+    // captured attributes by emitting one ComputedFieldDescriptor
+    // literal per entry into the inventory::submit! body. Empty
+    // slice when no computed fields are declared.
+    computed_attrs: &[(syn::Ident, crate::model::computed::ComputedAttr)],
 ) -> syn::Result<TokenStream> {
     let source_ident = &struct_item.ident;
     let source_name_string = source_ident.to_string();
@@ -757,6 +764,82 @@ fn try_expand(
         None => quote! { ::core::option::Option::None },
     };
 
+    // Phase 8β T3.3 — `#[model(proxy_for = ParentType)]` lowers the bare
+    // identifier to a `&'static str` carrying the parent's Rust type
+    // name. The migration differ uses this discriminator to skip DDL
+    // emission for proxies; the runtime composer (T3.4) uses it to
+    // identify proxy querysets that need default-filter / default-order
+    // composition.
+    let proxy_for_tokens = match &model_attrs.proxy_for {
+        Some(ident) => {
+            let value = ident.to_string();
+            quote! { ::core::option::Option::Some(#value) }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
+
+    // Phase 8β T3.3 — `#[model(default_filter = |f| ...)]` is lowered to
+    // a SQL fragment string at expand time. The closure body is walked
+    // through the closed grammar in `crate::model::proxy::lower_default_filter_to_sql`;
+    // anything outside that grammar surfaces a span-precise compile
+    // error here, before any descriptor emission runs.
+    //
+    // Empty / `None` for non-proxy models and for proxies without a
+    // `default_filter` clause. T3.4 reads this at QuerySet construction
+    // time and AND-composes it into the seeded `Condition` tree.
+    let default_filter_sql_tokens = match &model_attrs.proxy_default_filter {
+        Some(closure) => {
+            let sql = crate::model::proxy::lower_default_filter_to_sql(closure)?;
+            quote! { ::core::option::Option::Some(#sql) }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
+
+    // Phase 8β T4.5 — populate `ModelDescriptor.computed_fields` from
+    // the captured `#[computed(sql = "...")]` attributes. Emits one
+    // `ComputedFieldDescriptor { ... }` literal per entry; empty slice
+    // when no computed fields are declared. The descriptor's
+    // `value_type` is set to `FieldSqlType::Custom` keyed off the
+    // declared Rust return-type token stream — the migration differ
+    // does not consult this field in v0.1.0 (computed fields are non-
+    // stored), so a permissive `Custom` mapping is sufficient. Future
+    // phases that want stricter typing can map the Rust type more
+    // precisely.
+    let computed_fields_tokens = if computed_attrs.is_empty() {
+        quote! { &[] }
+    } else {
+        let entries: Vec<proc_macro2::TokenStream> = computed_attrs
+            .iter()
+            .map(|(field_ident, attr)| {
+                let name = field_ident.to_string();
+                let sql = &attr.sql;
+                let return_ty = &attr.return_type;
+                // Map the Rust return type to a `FieldSqlType` variant
+                // via the existing `rust_type_to_sql` helper +
+                // `sql_str_to_tokens` lookup. Fall back to
+                // `Custom("<rendered>")` for shapes the helper does not
+                // recognise — the migration differ does not consult
+                // this field in v0.1.0 (computed fields are non-stored)
+                // so the Custom mapping is documentation-only.
+                let value_type_ts = match rust_type_to_sql(return_ty) {
+                    Some(s) => sql_str_to_tokens(s),
+                    None => {
+                        let rendered = quote::quote!(#return_ty).to_string().replace(' ', "");
+                        quote! { ::djogi::FieldSqlType::Custom(#rendered) }
+                    }
+                };
+                quote! {
+                    ::djogi::descriptor::ComputedFieldDescriptor {
+                        name: #name,
+                        sql: #sql,
+                        value_type: #value_type_ts,
+                    }
+                }
+            })
+            .collect();
+        quote! { &[ #(#entries,)* ] }
+    };
+
     Ok(quote! {
         #tombstone_guard_tokens
 
@@ -803,6 +886,19 @@ fn try_expand(
                 // the self-FK detector (T8); reaches here only when the named
                 // column resolves to a self-FK on this model.
                 tree_edge: #tree_edge_tokens,
+                // Phase 8β T3 — proxy-model schema-passthrough surface.
+                // T3.3 populates these from `#[model(proxy_for = ParentType,
+                // default_filter = |f| ...)]`. The migration differ keys
+                // off `proxy_for.is_some()` to skip DDL emission for proxy
+                // descriptors; the runtime composer keys off
+                // `default_filter_sql` to AND-compose the lowered fragment
+                // into every `QuerySet<Self>::new()` (T3.4).
+                proxy_for: #proxy_for_tokens,
+                default_filter_sql: #default_filter_sql_tokens,
+                // Phase 8β T4 — computed-field descriptors. T4.5
+                // populates this from parsed `#[computed(sql = "...")]`
+                // field attributes; empty slice for non-computed models.
+                computed_fields: #computed_fields_tokens,
             }
         }
         #(#deferrability_submits)*

@@ -1,0 +1,7 @@
+error: `#[djogi::trait_impl]` requires a trait impl — inherent impl blocks (`impl Type { ... }`) cannot be registered for cross-type queries; rewrite as `impl SomeTrait for Type { ... }`
+  --> tests/compile_fail/phase8_trait_impl_inherent.rs:17:1
+   |
+17 | / impl Vehicle {
+18 | |     fn helper(&self) {}
+19 | | }
+   | |_^

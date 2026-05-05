@@ -66,6 +66,103 @@ pub enum Condition {
     /// Produced by [`crate::jsonb::path::JsonbPathRef`] comparison methods.
     /// The expression SQL is pre-rendered from validated identifiers.
     JsonbPath(crate::jsonb::path::JsonbPathLeaf),
+
+    /// Raw SQL fragment — Phase 8β T3.4 carve-out for proxy
+    /// `default_filter` lowering.
+    ///
+    /// The fragment is a `&'static str` baked at macro-expand time by
+    /// [`crate::__private::lower_default_filter_fragment`] (which forwards
+    /// to `djogi-macros`'s `model::proxy::lower_default_filter_to_sql`).
+    /// The lowering pass enforces a closed grammar (eq/neq/range/null/
+    /// between over inline literals; `and_with`/`or_with` combinators)
+    /// and rejects every other shape with a span-precise compile error,
+    /// so the fragment that reaches this variant cannot smuggle SQL
+    /// from runtime input — the only construction path is the macro.
+    ///
+    /// # Why an escape-hatch variant rather than a full IR lowering
+    ///
+    /// Per the lens (`feedback_decision_priorities.md`, plan §7 #5
+    /// resolved 2026-05-03): macro-only constructor + a sealed inner
+    /// payload for 8β. T6 Stage 2 will migrate this to the typed
+    /// `Q<T>` IR; migrating callers is a semver-minor change at the
+    /// enum-variant level. Constructing one outside the crate goes
+    /// through
+    /// [`Condition::__from_raw_sql_fragment`], which is
+    /// `#[doc(hidden)]` and not part of the supported surface.
+    ///
+    /// # Injection-safety seal: [`RawSqlFragment`] newtype
+    ///
+    /// The variant carries a [`RawSqlFragment`] whose inner field is
+    /// `pub(crate)` — adopter code in safe Rust cannot construct one
+    /// (the field is unnameable and there is no `pub` constructor
+    /// returning the newtype outside `djogi`). Even with this `pub` enum
+    /// in scope, `Condition::RawSql(RawSqlFragment(s))` is a compile
+    /// error in adopter crates because the inner field is private.
+    /// Earlier shapes carrying a bare `&'static str` allowed
+    /// `Condition::RawSql(Box::leak(...))` to inject arbitrary SQL into
+    /// WHERE clauses — the newtype closes that hole.
+    ///
+    /// # Why no bind parameters
+    ///
+    /// The closed grammar rejects every non-literal RHS, so the
+    /// fragment is fully self-contained at expand time. No `$n` binds
+    /// are threaded through the accumulator — the emitter pushes the
+    /// fragment as raw SQL with outer parens for operator-precedence
+    /// safety under further AND-composition with user `.filter(...)`
+    /// calls.
+    RawSql(RawSqlFragment),
+}
+
+/// Sealed wrapper around the `&'static str` carried by
+/// [`Condition::RawSql`] — Phase 8β T3.4 injection-safety newtype.
+///
+/// Construction is restricted to the `djogi` crate via the `pub(crate)`
+/// inner field. `djogi-macros` and adopter crates reach this through
+/// [`Condition::__from_raw_sql_fragment`] (the `#[doc(hidden)]`
+/// macro-only constructor). The newtype closes the safe-Rust injection
+/// surface that a bare `&'static str` payload exposed: even though
+/// [`Condition`] is `pub` so its variants are pattern-matchable from
+/// outside, the inner field's `pub(crate)` visibility prevents
+/// constructing a `Condition::RawSql(RawSqlFragment(arbitrary_str))`
+/// literal in adopter code.
+///
+/// This mirrors the same defensive boundary
+/// [`crate::query::condition::Leaf`] / [`crate::jsonb::path::JsonbPathLeaf`]
+/// apply for their own constructor paths — Djogi's standard pattern for
+/// "public type, sealed interior" surfaces.
+#[derive(Debug, Clone)]
+pub struct RawSqlFragment(pub(crate) &'static str);
+
+impl RawSqlFragment {
+    /// Read-only access to the wrapped fragment — for emitter consumers
+    /// inside `djogi` that need to push the verbatim SQL onto the
+    /// accumulator. Crate-private; adopter code matches on
+    /// [`Condition::RawSql`] but cannot extract or rebuild the inner
+    /// string.
+    pub(crate) fn as_str(&self) -> &'static str {
+        self.0
+    }
+}
+
+impl Condition {
+    /// Macro-only constructor for the raw-SQL escape hatch — Phase 8β
+    /// T3.4. Routes through a `#[doc(hidden)]` public surface so
+    /// `djogi-macros`'s emitted code (in adopter crates) can construct
+    /// one without naming the sealed [`RawSqlFragment`] newtype's
+    /// `pub(crate)` field. Not part of the user-facing API; the
+    /// `__`-prefix + `#[doc(hidden)]` pair signals that downstream code
+    /// must not call this directly.
+    ///
+    /// The `&'static str` argument is the lowered SQL fragment from
+    /// `model::proxy::lower_default_filter_to_sql`. The lowering pass
+    /// enforces the closed grammar at expand time, so the fragment
+    /// reaching this constructor cannot carry runtime-bound values or
+    /// out-of-grammar tokens.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __from_raw_sql_fragment(sql: &'static str) -> Condition {
+        Condition::RawSql(RawSqlFragment(sql))
+    }
 }
 
 // Written out explicitly instead of `#[derive(Default)]` + `#[default]` on the

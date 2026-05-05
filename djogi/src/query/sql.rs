@@ -418,6 +418,27 @@ pub(crate) fn emit_condition(
         Condition::JsonbPath(leaf) => {
             emit_jsonb_path_leaf(acc, leaf, parent_table);
         }
+        // ── Raw SQL escape hatch (Phase 8β T3.4) ─────────────────────────
+        //
+        // Macro-emitted-only path for proxy `default_filter` lowering.
+        // The fragment is a `&'static str` baked at expand time from a
+        // closed-grammar walker that rejects every runtime-bound value;
+        // the only adopter-facing construction route is the
+        // `#[model(default_filter = |f| ...)]` attribute, which goes
+        // through `lower_default_filter_to_sql` → descriptor → trait
+        // override → here.
+        //
+        // The fragment is wrapped in outer parens so further AND-
+        // composition with user `.filter(...)` calls preserves operator
+        // precedence ( `(default_filter) AND (user_filter)` ). The
+        // proxy-side lowering already wraps `and_with` / `or_with`
+        // composites in their own parens; the leaf shape (`col = TRUE`)
+        // does not, so the wrapper here is the universal safety net.
+        Condition::RawSql(s) => {
+            acc.push_sql("(");
+            acc.push_sql(s.as_str());
+            acc.push_sql(")");
+        }
     }
 }
 
@@ -2171,6 +2192,54 @@ mod tests {
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "SELECT id FROM fakes");
+    }
+
+    /// Phase 8β T3.4 — `Condition::RawSql` emits the carried fragment
+    /// wrapped in outer parens so further AND-composition with user
+    /// `.filter(...)` calls preserves operator precedence. Lock the
+    /// shape against accidental drift in the emitter.
+    #[test]
+    fn raw_sql_condition_wraps_in_parens() {
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        // Cluster 8γ Stage 2 (T6.9): wrap the legacy `Condition` through
+        // `Q::Condition(_)` so `qs.condition`'s `Q<T>` substrate stays
+        // honest. The bridge round-trips this as the identity, so the
+        // emitter sees the same `Condition::RawSql` it did pre-flip.
+        qs.condition =
+            crate::query::Q::Condition(Condition::__from_raw_sql_fragment("active = TRUE"));
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("WHERE (active = TRUE)"),
+            "expected outer parens around proxy fragment, got: {sql}",
+        );
+    }
+
+    /// Proxy raw-SQL filter AND-composes with a user leaf filter: the
+    /// emitted WHERE clause has both terms separated by AND inside the
+    /// flattened `Condition::And` tree. End-to-end coverage that the
+    /// runtime wiring from T3.4 (`QuerySet::new()` seeding + `filter()`
+    /// AND-composition + `RawSql` emission) lines up.
+    #[test]
+    fn raw_sql_condition_ands_with_user_filter() {
+        // Construct an And node mirroring what `QuerySet::filter()`
+        // produces against a queryset whose seed is RawSql.
+        let raw = Condition::__from_raw_sql_fragment("active = TRUE");
+        let user = Condition::Leaf(Leaf::eq_raw("price", FilterValue::I64(100)));
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        // Cluster 8γ Stage 2 (T6.9): wrap the composed legacy tree
+        // through `Q::Condition(_)` for the substrate flip. The bridge
+        // unwraps this as the identity at SQL-emit time, so the
+        // assertion on the emitted `WHERE ((active = TRUE) AND price = $1)`
+        // shape still holds character-for-character.
+        qs.condition = crate::query::Q::Condition(Condition::and(raw, user));
+        let acc = build_select(&qs);
+        let sql = acc.sql();
+        // Composite of the RawSql wrapper + the leaf comparison.
+        assert!(
+            sql.contains("WHERE ((active = TRUE) AND price = $1)"),
+            "expected AND-composed WHERE clause, got: {sql}",
+        );
     }
 
     #[test]

@@ -310,6 +310,17 @@ pub(crate) fn emit_expr(acc: &mut SqlAccumulator, node: &ExprNode) {
             // Bare column reference — validated at FieldRef construction.
             acc.push_sql(column);
         }
+        // Phase 8β T4.2 — raw SQL fragment escape hatch for
+        // `#[computed(sql = "...")]`. Wrapped in outer parens for
+        // operator-precedence stability under further composition with
+        // arithmetic / comparison / aggregate nodes. The fragment is a
+        // `&'static str` baked at macro expansion time; no bind values
+        // are threaded through the accumulator.
+        ExprNode::RawSql(s) => {
+            acc.push_sql("(");
+            acc.push_sql(s);
+            acc.push_sql(")");
+        }
         ExprNode::Literal(v) => {
             // `push_filter_value` consumes the value, so clone it — the
             // expression tree may be emitted more than once if, e.g., a
@@ -1569,6 +1580,38 @@ mod tests {
         emit_expr(&mut acc, &expr.node);
         let sql = acc.sql();
         assert_eq!(sql.trim(), "(a + b) * c", "got: {sql}");
+    }
+
+    // ── Phase 8β T4.2 — __raw_sql_fragment escape hatch ────────────────────
+
+    /// `Expr::<f64>::__raw_sql_fragment("base_price * (1.0 + tax_rate)")`
+    /// emits the fragment verbatim, wrapped in outer parens so any
+    /// further composition (`.eq(...)`, arithmetic, aggregate) preserves
+    /// operator precedence.
+    #[test]
+    fn raw_sql_fragment_emits_verbatim_with_outer_parens() {
+        let expr: Expr<f64> = Expr::__raw_sql_fragment("base_price * (1.0 + tax_rate)");
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
+        assert_eq!(sql.trim(), "(base_price * (1.0 + tax_rate))");
+    }
+
+    /// `__raw_sql_fragment(...).gte(literal(100))` composes through the
+    /// Cmp emitter — the fragment side keeps its outer parens, the
+    /// literal side binds as `$1`, and the comparison operator
+    /// renders between them.
+    #[test]
+    fn raw_sql_fragment_composes_with_compare() {
+        let expr = Expr::<f64>::__raw_sql_fragment("base_price * (1.0 + tax_rate)")
+            .gte(Expr::literal(100.0_f64));
+        let mut acc = SqlAccumulator::new("");
+        emit_expr(&mut acc, &expr.node);
+        let sql = acc.sql();
+        assert!(
+            sql.contains("(base_price * (1.0 + tax_rate)) >= $1"),
+            "got: {sql}",
+        );
     }
 
     #[test]

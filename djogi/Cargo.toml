@@ -390,3 +390,8 @@ harness = true
 name = "phase8_zero_db_reset_replays_phase_zero"
 path = "../tests/integration/phase8_zero_db_reset_replays_phase_zero.rs"
 harness = true
+
+[[test]]
+name = "phase8_trait_impl_registry"
+path = "../tests/integration/phase8_trait_impl_registry.rs"
+harness = true

@@ -76,6 +76,7 @@ pub mod query;
 pub mod relation;
 pub mod testing;
 pub mod tracked;
+pub mod trait_registry;
 pub mod transaction;
 pub mod types;
 pub mod visage;
@@ -248,17 +249,17 @@ pub use apps::AppDiagnostic;
 pub use compose::{Auditable, SoftDeletable};
 pub use context::DjogiContext;
 pub use descriptor::{
-    DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor, FieldSqlType,
-    GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget, IndexNullsOrder,
-    IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec, PkType,
-    ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
+    ComputedFieldDescriptor, DefaultVolatility, DeferrabilitySpec, EnumDescriptor, FieldDescriptor,
+    FieldSqlType, GeographySubtype, IndexColumnSpec, IndexKind, IndexNameKind, IndexNameTarget,
+    IndexNullsOrder, IndexOrder, IndexSpec, IndexTarget, IndexType, ModelDescriptor, PartitionSpec,
+    PkType, ProtectedFieldMetadata, RedactionPolicy, RetentionLabel, Sensitivity, index_name,
 };
 // Top-level `djogi::GeoPoint` re-export for spatial models. Feature-gated so
 // the symbol does not appear in default-feature builds or `cargo doc` output
 // when PostGIS support is not requested.
 pub use djogi_macros::{
     DjogiEnum, JsonbSchema, apps, many_to_many, primary_key, reverse_one_to_many,
-    reverse_one_to_one,
+    reverse_one_to_one, trait_impl,
 };
 #[cfg(feature = "spatial")]
 pub use geo::GeoPoint;

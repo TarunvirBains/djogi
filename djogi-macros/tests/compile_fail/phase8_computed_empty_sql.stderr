@@ -1,0 +1,5 @@
+error: `sql = ""` is empty — either provide a non-empty SQL expression or remove the `#[computed(...)]` attribute
+  --> tests/compile_fail/phase8_computed_empty_sql.rs:14:22
+   |
+14 |     #[computed(sql = "")]
+   |                      ^^

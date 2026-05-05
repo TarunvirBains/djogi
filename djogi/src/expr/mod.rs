@@ -305,4 +305,69 @@ impl<T> Expr<T> {
             _phantom: PhantomData,
         }
     }
+
+    /// Construct an `Expr<T>` from a raw SQL fragment — Phase 8β T4.2.
+    ///
+    /// Macro-only constructor, emitted by `#[computed(sql = "...")]`
+    /// and the `{Model}Computed` ZST accessors (T4.5). The `T`
+    /// parameter must match the SQL fragment's return type; the macro
+    /// wires this from the computed getter's signature so the typed
+    /// seal stays intact at the public boundary.
+    ///
+    /// **Macro-only.** Calling this directly from adopter code is
+    /// unsupported behaviour at the framework level — `#[doc(hidden)]`
+    /// and the `__`-prefix are a convention, not a visibility gate. The
+    /// only supported path is the macro-emitted `{Model}Computed`
+    /// accessor; direct calls bypass token-level validation and can
+    /// inject arbitrary SQL into `filter_expr`. This is accepted
+    /// pre-alpha risk (parallel to
+    /// [`crate::query::condition::Condition::__from_raw_sql_fragment`]),
+    /// documented here so adopters cannot claim ignorance.
+    ///
+    /// Not part of the user-facing `Expr` API — the `__`-prefix +
+    /// `#[doc(hidden)]` pair signals that downstream code must not
+    /// call this directly, mirroring
+    /// [`crate::query::condition::Condition::__from_raw_sql_fragment`]
+    /// from the same task. Earlier shapes named this
+    /// `raw_sql_fragment` (no underscores), which read as a regular
+    /// API method name and surfaced as a SQL-injection foothold:
+    /// `Expr::<bool>::raw_sql_fragment("'; DROP TABLE users; --")`
+    /// in safe adopter code routed straight into `filter_expr`. The
+    /// rename to the established `__`-prefix convention puts the
+    /// constructor on the same explicit "macro-only" footing as the
+    /// `Condition` sibling.
+    ///
+    /// `djogi-macros` cannot have `pub(crate)` access to `djogi`'s
+    /// internals (separate crate), and routing this through
+    /// `Condition::__from_raw_sql_fragment` is shape-incompatible —
+    /// that returns `Condition`, but the `{Model}Computed` accessors
+    /// must return a typed `Expr<T>` so they compose with the rest of
+    /// the typed `Expr` surface. The macro-only `pub` constructor with
+    /// a sentinel name is the working pattern.
+    ///
+    /// The `&'static str` argument is the user-authored SQL expression,
+    /// baked at macro expansion time after the token-level validation
+    /// pass in `model::computed`. Adopters who need a runtime-bound
+    /// SQL fragment must drop down to `DjogiContext::raw_query` /
+    /// `raw_execute` — the typed `Expr<T>` surface stays free of
+    /// runtime SQL composition.
+    ///
+    /// # Why parens-wrapped at every emission site (not in the
+    /// constructor)
+    ///
+    /// Wrapping happens inside `expr::sql::emit_expr` rather than at
+    /// fragment-construction time so the `Expr<T>` IR stays a clean
+    /// tree of well-typed nodes — adding parens here would make the
+    /// fragment opaque to any future tree-walking optimisation pass.
+    /// The emitter's universal wrapping is the operator-precedence
+    /// safety net.
+    #[doc(hidden)]
+    pub fn __raw_sql_fragment(s: &'static str) -> Self {
+        // `Expr<T>` carries its own `#[must_use]` via the type-level
+        // attribute — no method-level must_use needed.
+        Expr {
+            node: ExprNode::RawSql(s),
+            _phantom: PhantomData,
+        }
+    }
 }

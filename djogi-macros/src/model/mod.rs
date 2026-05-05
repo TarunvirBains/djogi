@@ -6,6 +6,7 @@
 //! stub in isolation without touching this file.
 
 pub mod attrs;
+pub mod computed;
 pub mod crud;
 pub mod descriptor;
 pub mod exclusion;
@@ -17,6 +18,7 @@ pub mod indexes;
 pub mod inject;
 pub mod outer_ref;
 pub mod protected;
+pub mod proxy;
 pub mod relations;
 pub mod stubs;
 pub mod visage_ctx;
@@ -48,6 +50,88 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .map(attrs::FieldAttrs::parse)
         .collect::<syn::Result<_>>()?;
 
+    // Phase 8β T4.3 — parse `#[computed(sql = "...")]` annotations.
+    // Surfaces span-precise errors for the deferred `stored` keyword,
+    // empty-SQL strings, unknown keys, and `#[field(...)]`-with-
+    // `#[computed(...)]` collisions.
+    let computed_attrs = computed::parse_computed_attrs(&struct_item)?;
+
+    // Phase 8β BLOCK-4 fix — remove computed fields from the struct
+    // before any downstream pass walks `struct_item.fields`. Computed
+    // fields are virtual: no storage column, no INSERT/UPDATE binding,
+    // no row decode. Leaving them on the struct produces three silent
+    // failures:
+    //
+    //   1. `from_row::expand` would put them in `COLUMN_LIST` /
+    //      `COLUMNS`, so every `SELECT {COLUMN_LIST} FROM t` would
+    //      include `total_price` (a column that never existed) and
+    //      every row decode would error or panic.
+    //   2. `descriptor::expand` would emit them as regular
+    //      `FieldDescriptor` entries, and the migration differ would
+    //      generate `ADD COLUMN total_price FLOAT8` DDL — drift the
+    //      adopter never authored.
+    //   3. The `Default` / `FromPgRow` impl bodies would reference
+    //      `total_price: ...` as a real field assignment.
+    //
+    // `field_attrs` was collected upstream by zip-walking the same
+    // field iterator, so its index alignment with `struct_item.fields`
+    // is positional. After removal the indices shift; downstream
+    // consumers (`from_row`, `descriptor`, `stubs`, `filter`,
+    // `relations`, `outer_ref`, `visages`, `from_joined_row`,
+    // `emit_rationale_advisories`) all walk `struct_item.fields`
+    // and `field_attrs` together, so we filter both in lockstep here
+    // to keep them aligned.
+    let computed_field_names: std::collections::BTreeSet<String> = computed_attrs
+        .iter()
+        .map(|(ident, _)| ident.to_string())
+        .collect();
+    // Guard: a non-computed field must not share a name with a computed field.
+    // In practice this is unreachable — Rust forbids duplicate field names and
+    // `parse_computed_attrs` only collects fields that carry `#[computed(...)]`
+    // — but the check prevents a future refactor that populates `computed_attrs`
+    // from an external source from silently stripping the wrong field and
+    // corrupting `FromPgRow` ordinal decoding.
+    if !computed_field_names.is_empty()
+        && let Fields::Named(named) = &struct_item.fields
+    {
+        for field in &named.named {
+            let has_computed_attr = field.attrs.iter().any(|a| a.path().is_ident("computed"));
+            if let Some(id) = &field.ident
+                && !has_computed_attr
+                && computed_field_names.contains(&id.to_string())
+            {
+                return Err(syn::Error::new_spanned(
+                    field,
+                    format!(
+                        "field `{id}` appears as both a computed field and a \
+                         non-computed field — this should never happen under \
+                         normal Rust syntax; this is a djogi internal error"
+                    ),
+                ));
+            }
+        }
+    }
+    if !computed_field_names.is_empty()
+        && let Fields::Named(named) = &mut struct_item.fields
+    {
+        named.named = std::mem::take(&mut named.named)
+            .into_iter()
+            .filter(|f| {
+                f.ident
+                    .as_ref()
+                    .is_none_or(|id| !computed_field_names.contains(&id.to_string()))
+            })
+            .collect();
+    }
+    let field_attrs: Vec<attrs::FieldAttrs> = field_attrs
+        .into_iter()
+        .filter(|fa| {
+            fa.ident
+                .as_ref()
+                .is_none_or(|id| !computed_field_names.contains(&id.to_string()))
+        })
+        .collect();
+
     validate_through_model_shape(&struct_item, &model_attrs)?;
     validate_version_fields(&struct_item, &field_attrs)?;
 
@@ -71,7 +155,15 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // `#[derive(Model)]` solely to legalise the `#[field(...)]` parsing.
     if let syn::Fields::Named(named) = &mut struct_item.fields {
         for field in &mut named.named {
-            field.attrs.retain(|a| !a.path().is_ident("field"));
+            // Phase 8β T4.3 — strip `#[computed(...)]` for the same
+            // reason `#[field(...)]` is stripped: rustc does not
+            // recognise it as a helper attribute on the `#[model]`
+            // attribute macro. The semantics were captured into
+            // `_computed_attrs` above; T4.5's emitter consumes the
+            // captured state.
+            field
+                .attrs
+                .retain(|a| !a.path().is_ident("field") && !a.path().is_ident("computed"));
         }
     }
 
@@ -133,7 +225,10 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     let model_impl = crud::expand(&struct_item, &model_attrs, &field_attrs);
 
     // 4. ModelDescriptor + inventory::submit! for migration-differ consumption.
-    let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs);
+    //    T4.5 — `computed_attrs` is threaded through so the emitter can
+    //    populate `ModelDescriptor.computed_fields` with one
+    //    `ComputedFieldDescriptor` literal per parsed `#[computed]` field.
+    let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs, &computed_attrs);
 
     // 5. {Model}Fields — ZST with one `FieldRef<Self, V>` accessor per
     //    column. Reads field types off the post-injection `struct_item`;
@@ -176,6 +271,33 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         &field_attrs,
     );
 
+    // Phase 8β BLOCK-5 — `emit_rust_getters` is now a no-op (returns
+    // an empty token stream regardless of input). The earlier shape
+    // emitted one inherent `pub fn <field>(&self) -> <T> {
+    // unimplemented!() }` stub per `#[computed(sql = ...)]` field on
+    // the premise that Rust would prefer a hand-written impl over the
+    // stub — but Rust does not allow two inherent methods with the
+    // same name on the same type (E0201). The wiring point is kept so
+    // a future task that adds a non-conflicting Rust-side surface
+    // does not have to re-thread the orchestrator. Adopters who need
+    // a Rust-side computation today write a plain inherent method
+    // with any name they choose; the SQL-side path through
+    // `Vehicle::computed()` covers the server-side cases.
+    let computed_getters = computed::emit_rust_getters(&struct_item.ident, &computed_attrs);
+
+    // Phase 8β T4.5 — `{Model}Computed` ZST + accessor methods +
+    // `Vehicle::computed()` inherent constructor.
+    //
+    // Adopters access computed fields via `Vehicle::computed()
+    // .total_price()` returning `Expr<f64>`, suitable for use in
+    // `.annotate()`, `.filter_expr()`, `.order_by()`. The ZST is
+    // independent of `{Model}Fields` for v0.1.0 simplicity (see the
+    // module-level comment in `model::computed` for the bundling
+    // tradeoff with plan §7 #10).
+    //
+    // Empty token stream when no computed fields are declared.
+    let computed_zst = computed::emit_computed_zst(&struct_item.ident, &computed_attrs);
+
     Ok(quote::quote! {
         #expanded
         #hooks_impl
@@ -191,6 +313,8 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #outer
         #projections_ts
         #rationale_advisories
+        #computed_getters
+        #computed_zst
     })
 }
 

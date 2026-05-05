@@ -179,6 +179,36 @@ pub enum ProjectionError {
         /// `(deferrable, initially_deferred)` from the second spec.
         second: (bool, bool),
     },
+    /// Phase 8β BLOCK-2 fix: a `ForeignKey<T>` / `OneToOneField<T>`
+    /// resolves to a proxy descriptor whose `proxy_for` parent is not
+    /// registered in the inventory. Proxies never project DDL — the
+    /// parent owns the table — so the FK's actual SQL target is the
+    /// parent's table. Without the parent registered, the cross-bucket
+    /// FK validation pass cannot determine the true target bucket and
+    /// the differ would emit a `REFERENCES <parent_table>(id)` clause
+    /// against a table no projection step has added.
+    ProxyParentNotRegistered {
+        /// The bucket containing the FK source column.
+        source_bucket: BucketKey,
+        /// The source model's table.
+        source_table: String,
+        /// The source FK column.
+        source_column: String,
+        /// The proxy type name the FK directly targets.
+        proxy_type: String,
+        /// The unregistered parent type the proxy points to.
+        parent_type: String,
+    },
+    /// Phase 8β BLOCK-2 fix: a chain of `proxy_for` references forms a
+    /// cycle (e.g. `A.proxy_for = B`, `B.proxy_for = A`). The FK
+    /// resolution walker would loop forever; reject up front so the
+    /// projection bails with an actionable diagnostic. Per the proxy
+    /// design (Phase 8β T3), proxies should always terminate at a
+    /// concrete (non-proxy) parent — a cycle is a misconfiguration.
+    ProxyCycle {
+        /// The type at which the cycle was first detected.
+        type_name: String,
+    },
 }
 
 impl std::fmt::Display for ProjectionError {
@@ -253,6 +283,30 @@ impl std::fmt::Display for ProjectionError {
                  order is not deterministic — the macro must emit at most one spec \
                  per `(model_type_name, field_name)`.",
                 first.0, first.1, second.0, second.1
+            ),
+            ProjectionError::ProxyParentNotRegistered {
+                source_bucket,
+                source_table,
+                source_column,
+                proxy_type,
+                parent_type,
+            } => write!(
+                f,
+                "foreign key `{}.{source_table}.{source_column}` (database `{}`) \
+                 targets proxy `{proxy_type}` whose `proxy_for = {parent_type}` parent \
+                 is not registered in the inventory. Proxies never project DDL — \
+                 the parent owns the table — so the FK target table cannot be \
+                 resolved without the parent's descriptor. Register `{parent_type}` \
+                 via `#[model(...)]` in a crate that participates in the migration \
+                 inventory.",
+                source_bucket.app, source_bucket.database
+            ),
+            ProjectionError::ProxyCycle { type_name } => write!(
+                f,
+                "proxy chain forms a cycle starting at `{type_name}` — \
+                 `proxy_for` references must terminate at a concrete (non-proxy) \
+                 parent. Break the cycle by removing one of the `proxy_for` \
+                 declarations in the loop."
             ),
         }
     }
@@ -396,11 +450,28 @@ where
         )?;
     }
 
-    // Second pass — group models by bucket. Validate the model's
-    // declared app exists, and build a parallel `type_name → bucket`
-    // map for the cross-database FK validation pass below.
+    // Second pass — group models by bucket and build the
+    // `type_name → proxy_for_target` map in the same walk. Both maps
+    // iterate the full model inventory unconditionally, so a single
+    // pass keeps the projection setup linear.
+    //
+    // The `type_to_bucket` half validates that each model's declared
+    // app exists and gives the cross-database FK pass below a fast
+    // lookup from a model's `type_name` to its `(database, app)`
+    // bucket.
+    //
+    // The `type_to_proxy_for` half lets the FK pass traverse proxy
+    // chains to the concrete parent. Phase 8β BLOCK-2 fix: when an FK
+    // targets a proxy, the actual SQL table the FK references is the
+    // parent's (proxies are schema-passthrough — never projected).
+    // Validating the proxy's bucket would silently accept FKs that
+    // point at a non-existent target table when the proxy and parent
+    // live in different buckets, and would falsely flag cross-database
+    // FKs when the proxy and parent sit in different databases but the
+    // source and parent share one.
     let mut bucket_models: BTreeMap<BucketKey, Vec<&ModelDescriptor>> = BTreeMap::new();
     let mut type_to_bucket: BTreeMap<&str, BucketKey> = BTreeMap::new();
+    let mut type_to_proxy_for: BTreeMap<&str, &str> = BTreeMap::new();
     for m in &models {
         let label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
         let app = label_to_app
@@ -415,6 +486,9 @@ where
         };
         type_to_bucket.insert(m.type_name, bucket.clone());
         bucket_models.entry(bucket).or_default().push(m);
+        if let Some(parent) = m.proxy_for {
+            type_to_proxy_for.insert(m.type_name, parent);
+        }
     }
 
     // Cross-database FK validation (Codex T2 review B-3). Postgres
@@ -423,7 +497,16 @@ where
     // `(crud_log, audit)` is structurally invalid. Reject at
     // projection time so the differ never has to reason about
     // cross-database FK transitions.
+    //
+    // Proxies are skipped on the SOURCE side (the parent's projection
+    // already registered the inherited FK columns) and resolved
+    // through `type_to_proxy_for` on the TARGET side so we validate
+    // against the concrete parent's bucket — see the
+    // `type_to_proxy_for` rationale at the second-pass loop above.
     for m in &models {
+        if m.proxy_for.is_some() {
+            continue;
+        }
         let source_label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
         let source_app = label_to_app[source_label];
         let source_bucket = BucketKey {
@@ -437,15 +520,42 @@ where
             let Some(target_type) = f.target_type_name else {
                 continue;
             };
-            let Some(target_bucket) = type_to_bucket.get(target_type) else {
+            // Walk proxy_for chain to the concrete parent. Bounded by
+            // a cycle guard at `models.len()` steps — a chain longer
+            // than the inventory size must contain a cycle.
+            let mut resolved_target: &str = target_type;
+            let mut steps = 0usize;
+            while let Some(parent) = type_to_proxy_for.get(resolved_target).copied() {
+                // The proxy's parent must itself be a registered
+                // descriptor — otherwise the FK has no real target
+                // table at DDL time. Fail loud rather than silently
+                // accept.
+                if !type_to_bucket.contains_key(parent) {
+                    return Err(ProjectionError::ProxyParentNotRegistered {
+                        source_bucket,
+                        source_table: m.table_name.to_string(),
+                        source_column: f.name.to_string(),
+                        proxy_type: resolved_target.to_string(),
+                        parent_type: parent.to_string(),
+                    });
+                }
+                resolved_target = parent;
+                steps += 1;
+                if steps > models.len() {
+                    return Err(ProjectionError::ProxyCycle {
+                        type_name: target_type.to_string(),
+                    });
+                }
+            }
+            let Some(target_bucket) = type_to_bucket.get(resolved_target) else {
                 continue; // Unresolved target — falls through to the
                 // verbatim ref_table value handled by `project_column`.
             };
             if target_bucket.database != source_bucket.database {
                 let target_table = type_to_table
-                    .get(target_type)
+                    .get(resolved_target)
                     .copied()
-                    .unwrap_or(target_type)
+                    .unwrap_or(resolved_target)
                     .to_string();
                 return Err(ProjectionError::CrossDatabaseForeignKey {
                     source_bucket,
@@ -532,6 +642,18 @@ where
         let mut tables: BTreeMap<String, TableSchema> = BTreeMap::new();
         let mut indexes: Vec<IndexSchema> = Vec::new();
         for m in &ms {
+            // Phase 8β T3.5 — proxy schema-passthrough. Proxies share
+            // their parent's table (`#[model(proxy_for = Parent)]`),
+            // so emitting DDL here would duplicate the parent's
+            // `CREATE TABLE`. Skip projection entirely (table + indexes)
+            // so the differ never sees the proxy descriptor as a schema
+            // source; index ownership belongs to the parent in v0.1.0.
+            // A proxy/parent `table = ...` mismatch is caught at
+            // descriptor-lookup time (`T::table_name()`), not here —
+            // see `docs/guide/proxy.md` (T5.7).
+            if m.proxy_for.is_some() {
+                continue;
+            }
             let projected =
                 project_model(m, &type_to_table, &type_to_pk_sql, &deferrability_by_field);
             insert_unique(
@@ -1082,6 +1204,72 @@ mod tests {
         assert!(global.models.is_empty());
     }
 
+    /// Phase 8β T3.5 — proxy descriptors are skipped from DDL emission
+    /// (schema-passthrough). Two proxies of the same parent register
+    /// alongside the parent without surfacing a duplicate-table-in-bucket
+    /// collision; the parent's projection is the only one that reaches
+    /// the bucket's `models` map.
+    #[test]
+    fn proxy_descriptors_skipped_from_projection() {
+        // Parent + two proxies of it — all share `vehicles` as the table
+        // name. Without the proxy_for skip, the second `synth_model`
+        // call in the same bucket would trigger DuplicateTableInBucket.
+        let parent = synth_model("vehicles", "Vehicle");
+        let active = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            default_filter_sql: Some("active = TRUE"),
+            ..synth_model("vehicles", "ActiveVehicle")
+        };
+        let archived = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            default_filter_sql: Some("archived = TRUE"),
+            ..synth_model("vehicles", "ArchivedVehicle")
+        };
+        let buckets = project_from_iters(
+            [&parent, &active, &archived],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("proxies coexist with parent without DDL collisions");
+        let global = buckets.get(&empty_global()).expect("global");
+        // Exactly one table — the parent's. Both proxies are skipped.
+        assert_eq!(
+            global.models.len(),
+            1,
+            "expected parent-only projection, got {} entries",
+            global.models.len(),
+        );
+        assert!(global.models.contains_key("vehicles"));
+    }
+
+    /// Phase 8β T3.5 — proxy descriptors registering before the parent
+    /// in inventory iteration order (which is non-deterministic per
+    /// `inventory` semantics) still resolve cleanly: the parent's
+    /// projection wins regardless of the order proxies appear in the
+    /// input slice.
+    #[test]
+    fn proxy_skip_independent_of_iteration_order() {
+        let parent = synth_model("vehicles", "Vehicle");
+        let proxy = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            default_filter_sql: Some("active = TRUE"),
+            ..synth_model("vehicles", "ActiveVehicle")
+        };
+        // Proxy first, parent second — opposite of the previous test's
+        // ordering. Result must be identical.
+        let buckets = project_from_iters(
+            [&proxy, &parent],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let global = buckets.get(&empty_global()).expect("global");
+        assert_eq!(global.models.len(), 1);
+        assert!(global.models.contains_key("vehicles"));
+    }
+
     #[test]
     fn separate_databases_yield_separate_buckets() {
         let crud = synth_app("crud_log_app", "crud_log");
@@ -1629,6 +1817,167 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
+    }
+
+    /// Phase 8β BLOCK-2 — FK targeting a proxy in another database
+    /// must resolve THROUGH the proxy to its parent and trip
+    /// CrossDatabaseForeignKey when the *parent* (not the proxy) lives
+    /// in a different database from the source. Today's pre-fix code
+    /// would compare the proxy's bucket against the source's bucket;
+    /// with the fix, the parent's bucket is the canonical target.
+    #[test]
+    fn fk_to_proxy_resolves_through_to_parent_for_cross_db_check() {
+        // Parent is in `crud_log/audit`. Proxy of the parent is also
+        // declared with `app=audit` so proxy and parent share a bucket.
+        // FK source (in `main/billing`) targets the proxy. The
+        // resolution walker should land on the parent's bucket
+        // (crud_log/audit), and the cross-DB check should fire.
+        let main_app = AppDescriptor {
+            label: "billing",
+            database: "main",
+            renamed_from: None,
+            tombstone: false,
+        };
+        let crud_app = AppDescriptor {
+            label: "audit",
+            database: "crud_log",
+            renamed_from: None,
+            tombstone: false,
+        };
+        let parent = ModelDescriptor {
+            app: Some("audit"),
+            ..synth_model("audit_rows", "AuditRow")
+        };
+        let proxy = ModelDescriptor {
+            app: Some("audit"),
+            proxy_for: Some("AuditRow"),
+            ..synth_model("audit_rows", "ActiveAuditRow")
+        };
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            // Target the PROXY, not the parent.
+            target_type_name: Some("ActiveAuditRow"),
+            ..field_descriptor("audit_id", FieldSqlType::BigInt, false)
+        }];
+        let source = ModelDescriptor {
+            app: Some("billing"),
+            fields: FIELDS,
+            ..synth_model("invoices", "Invoice")
+        };
+        let err = project_from_iters(
+            [&parent, &proxy, &source],
+            std::iter::empty::<&EnumDescriptor>(),
+            [&main_app, &crud_app],
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect_err("must reject cross-DB FK even when the FK targets a proxy");
+        match err {
+            ProjectionError::CrossDatabaseForeignKey {
+                source_table,
+                target_table,
+                source_bucket,
+                target_bucket,
+                ..
+            } => {
+                assert_eq!(source_table, "invoices");
+                // Target table is the parent's table — proxies share it.
+                assert_eq!(target_table, "audit_rows");
+                assert_eq!(source_bucket.database, "main");
+                assert_eq!(target_bucket.database, "crud_log");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// Phase 8β BLOCK-2 — FK to a proxy whose `proxy_for` parent is
+    /// not registered in the inventory must surface
+    /// `ProxyParentNotRegistered`. Without this gate, the FK would
+    /// silently emit `REFERENCES <parent_table>(id)` against a table
+    /// no projection step has added.
+    #[test]
+    fn fk_to_proxy_with_unregistered_parent_rejected() {
+        let proxy = ModelDescriptor {
+            proxy_for: Some("MissingParent"),
+            ..synth_model("vehicles", "ActiveVehicle")
+        };
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            target_type_name: Some("ActiveVehicle"),
+            ..field_descriptor("vehicle_id", FieldSqlType::BigInt, false)
+        }];
+        let source = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("invoices", "Invoice")
+        };
+        let err = project_from_iters(
+            [&proxy, &source],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect_err("must reject FK whose proxy parent is unregistered");
+        match err {
+            ProjectionError::ProxyParentNotRegistered {
+                source_table,
+                proxy_type,
+                parent_type,
+                ..
+            } => {
+                assert_eq!(source_table, "invoices");
+                assert_eq!(proxy_type, "ActiveVehicle");
+                assert_eq!(parent_type, "MissingParent");
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    /// Phase 8β BLOCK-2 — same-database FK to a proxy whose parent
+    /// also sits in the same database resolves cleanly. The walker
+    /// crosses the proxy and lands on the parent; the cross-DB check
+    /// short-circuits because both sides share the database.
+    #[test]
+    fn fk_to_proxy_same_database_passes() {
+        let parent = synth_model("vehicles", "Vehicle");
+        let proxy = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            ..synth_model("vehicles", "ActiveVehicle")
+        };
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            indexed: true,
+            relation_kind: Some(RelationKind::ForeignKey),
+            on_delete: Some(OnDelete::Restrict),
+            target_type_name: Some("ActiveVehicle"),
+            ..field_descriptor("vehicle_id", FieldSqlType::BigInt, false)
+        }];
+        let source = ModelDescriptor {
+            fields: FIELDS,
+            ..synth_model("invoices", "Invoice")
+        };
+        let buckets = project_from_iters(
+            [&parent, &proxy, &source],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("same-DB proxy FK passes validation");
+        // Source landed in the global bucket; FK target resolved to
+        // the parent's table.
+        let global = buckets.get(&empty_global()).expect("global");
+        let invoice = global
+            .models
+            .get("invoices")
+            .expect("invoices model present");
+        let fk_col = invoice
+            .columns
+            .iter()
+            .find(|c| c.name == "vehicle_id")
+            .expect("FK column emitted");
+        let fk = fk_col.foreign_key.as_ref().expect("FK metadata present");
+        assert_eq!(fk.ref_table, "vehicles");
     }
 
     // ── Codex T10 round-1 regression tests ──────────────────────────
