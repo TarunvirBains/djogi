@@ -159,11 +159,15 @@ fn compile_pass_phase8() {
     // sweep up `phase8_zero_*.rs`. List each phase8-only fixture
     // explicitly. Phase 8α T1.3 lands two (attribute opt-in + zero-
     // overhead absent path); T1.7 adds one more — the canonical
-    // adopter shape with a real `impl ModelHooks` body.
+    // adopter shape with a real `impl ModelHooks` body. Phase 8γ
+    // T6.11 adds two `Q<T>` algebra fixtures (operator precedence
+    // and 8-term composition).
     let t = TestCases::new();
     t.pass("tests/compile_pass/phase8_hooks_attribute.rs");
     t.pass("tests/compile_pass/phase8_hooks_basic.rs");
     t.pass("tests/compile_pass/phase8_no_hooks_attribute.rs");
+    t.pass("tests/compile_pass/phase8_q_algebra_xor_precedence.rs");
+    t.pass("tests/compile_pass/phase8_q_algebra_eight_term_composition.rs");
 }
 
 #[test]
@@ -232,6 +236,8 @@ fn compile_fail_phase8() {
     t.compile_fail("tests/compile_fail/phase8_hooks_attr_without_impl.rs");
     t.compile_fail("tests/compile_fail/phase8_hooks_invalid_signature.rs");
     t.compile_fail("tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs");
+    t.compile_fail("tests/compile_fail/phase8_q_xor_with_mismatched_types.rs");
+    t.compile_fail("tests/compile_fail/phase8_q_and_with_mismatched_types.rs");
 }
 
 #[test]

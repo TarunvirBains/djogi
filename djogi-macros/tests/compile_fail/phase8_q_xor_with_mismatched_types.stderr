@@ -1,0 +1,8 @@
+error[E0308]: mismatched types
+  --> tests/compile_fail/phase8_q_xor_with_mismatched_types.rs:33:19
+   |
+33 |     let _q = qa ^ qb;
+   |                   ^^ expected `Q<A>`, found `Q<B>`
+   |
+   = note: expected enum `djogi::Q<A>`
+              found enum `djogi::Q<B>`
