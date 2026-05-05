@@ -35,9 +35,19 @@
 //! This module is the adopter-facing surface; `crate::types` is the
 //! macro-emission target. Both paths resolve to the same sassi types.
 
+// `Cacheable` (the TRAIT) is imported from `sassi::cacheable::Cacheable`,
+// not `sassi::Cacheable` — the latter glob-resolves to BOTH the trait
+// and `sassi_macros::Cacheable` (the derive macro), because sassi
+// re-exports both under the same identifier (`sassi/src/lib.rs:78` for
+// the trait, `sassi/src/lib.rs:97` for the derive). Routing through
+// the module path `sassi::cacheable` yields just the trait — the
+// derive lives in `sassi_macros` and never enters this re-export tree.
+// This honours the "do not re-export the derive" pledge in the module
+// doc above.
+pub use sassi::cacheable::Cacheable;
 pub use sassi::{
     BackendInvalidation, BackendInvalidationStream, BackendKeyspace, BasicPredicate, CacheBackend,
-    Cacheable, DeltaApplyStats, DeltaPunnuFetcher, DeltaQuery, DeltaRefreshHandle, DeltaResult,
+    DeltaApplyStats, DeltaPunnuFetcher, DeltaQuery, DeltaRefreshHandle, DeltaResult,
     DeltaSyncCacheable, EventReason, FetchError, InsertError, InvalidationReason, MemQ,
     MonotonicWatermark, OnConflict, Punnu, PunnuBuilder, PunnuConfig, PunnuEvent, PunnuMetrics,
     PunnuScope, RefreshHandle, Sassi, TenantKey, UpdateResult,

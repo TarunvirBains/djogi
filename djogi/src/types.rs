@@ -42,4 +42,10 @@ pub type Date = time::Date;
 //
 // The adopter-facing surface lives at `djogi::cache::*` (see
 // `crate::cache`) — this re-export is purely a macro-routing target.
-pub use sassi::{BasicPredicate, Cacheable, DeltaSyncCacheable, MonotonicWatermark};
+// `Cacheable` is imported via the module path `sassi::cacheable` so the
+// re-export carries the TRAIT only — `sassi::Cacheable` glob-resolves to
+// both the trait and `sassi_macros::Cacheable` (the derive). T7.2 emits
+// `impl ::djogi::types::Cacheable for ...`; that path must point at the
+// trait, not the derive. (See the matching note in `crate::cache`.)
+pub use sassi::cacheable::Cacheable;
+pub use sassi::{BasicPredicate, DeltaSyncCacheable, MonotonicWatermark};
