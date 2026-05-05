@@ -45,15 +45,26 @@
 //! sassi-codegen would force adopters who chose a different PK
 //! column name to rename it. Skip emission and defer to a hand-
 //! rolled `impl Cacheable` if the adopter genuinely needs cache
-//! support on a `pk = None` model. Mirrors `filter::expand`'s
-//! IntoQ-bridge gate behaviour.
+//! support on a `pk = None` model. Same shape as `crud::expand`'s
+//! `Model` impl gate; cluster 8ε's `filter::expand` IntoQ bridge
+//! (PR #116) extends the precedent.
 //!
 //! # Companion `{Model}Fields` shape — `type Fields = ()`
 //!
-//! Sassi's [`Cacheable`](::djogi::types::Cacheable) trait imposes no
-//! bound on the `Fields` associated type — the caller of
-//! `T::fields()` can do anything with the returned value. Sassi's
-//! own `#[derive(Cacheable)]` (via
+//! Sassi's [`Cacheable`](::djogi::types::Cacheable) trait declares
+//! `type Fields: Default + Send + Sync + 'static`
+//! (`sassi-reference/sassi/src/cacheable.rs:66`). The unit type `()`
+//! satisfies all four bounds trivially, which is what makes the
+//! hand-roll legal. The DSL the bounds enable — sassi's
+//! field-predicate builder threading `T::Fields` through
+//! `scope.rs:52-72`'s `filter` / `filter_basic` and
+//! `predicate/field_predicate.rs:169-172`'s lowering — is
+//! intentionally unavailable on djogi-derived types. Adopters who
+//! want sassi's field-predicate DSL hand-roll the entire
+//! `Cacheable` impl with their own companion struct; the closure-
+//! API on djogi's `QuerySet` is the canonical front door.
+//!
+//! Sassi's own `#[derive(Cacheable)]` (via
 //! `sassi_codegen::generate_fields_struct` +
 //! `generate_cacheable_impl`) emits a companion `{Model}Fields`
 //! struct with one `sassi::Field<Self, V>` accessor per column,
@@ -111,8 +122,14 @@ pub fn expand(
 
 fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<TokenStream> {
     // `pk = None` skip — adopter-managed PK lifecycle, no auto-emitted
-    // Cacheable. Mirrors the `filter::expand` IntoQ-bridge gate and
-    // `crud::expand`'s `Model` impl gate.
+    // Cacheable. Same shape as `crud::expand`'s `Model` impl gate
+    // (the early return for `PkStrategy::None`); the IntoQ bridge in
+    // cluster 8ε's `filter::expand` (PR #116, branch
+    // `phase8-cluster-epsilon-security-simplify`) adopts the same
+    // pattern when it lands. Until that PR merges into `main`, this
+    // comment cannot cite `filter.rs` line numbers — the precedent
+    // lives on a sibling branch. Once 8ε is on `main`, follow up by
+    // pointing this comment at the canonical `filter::expand` block.
     if matches!(model_attrs.pk, PkStrategy::None) {
         return Ok(TokenStream::new());
     }
@@ -264,9 +281,14 @@ fn generate_cacheable_impl_djogi(
     };
 
     // The `Self::Fields = ()` companion is intentional — see the
-    // module docs. The unit type satisfies the trait surface
-    // (`Cacheable::Fields` has no bounds in sassi v0.1.0); the
-    // `fields()` body returns `()` directly.
+    // module docs. Sassi's `Cacheable::Fields` carries
+    // `Default + Send + Sync + 'static` bounds
+    // (`sassi-reference/sassi/src/cacheable.rs:66`); `()` satisfies
+    // all four trivially, so the hand-roll type-checks. The DSL
+    // those bounds enable is intentionally unavailable on djogi-
+    // derived types — see the T7.2 phase amendment in
+    // `cluster-8delta-granular.md` for the trade-off rationale.
+    // The `fields()` body returns `()` directly.
     //
     // `cache_type_name()` defaults to `std::any::type_name::<Self>()`.
     // Adopters wanting a stable L2 keyspace identifier override via

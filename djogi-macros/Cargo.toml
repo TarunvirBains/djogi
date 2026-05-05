@@ -32,17 +32,26 @@ quote.workspace = true
 proc-macro2.workspace = true
 darling.workspace = true
 # sassi-codegen — Cluster 8δ T7.2. Shared codegen primitives for
-# `Cacheable` / `DeltaSyncCacheable` impl emission. `model::cacheable::expand`
-# delegates to `sassi_codegen::generate_{cacheable,delta_sync_cacheable}_impl`
-# with `sassi_path = ::djogi::types` so the emitted impls route through
-# djogi's macro-routing surface (per `feedback_macro_path_routing.md`)
-# rather than `::sassi::*` directly. `sassi-codegen` is `proc-macro = false`,
-# so a proc-macro crate is permitted to depend on it as a regular library
-# (the directionality cargo restricts is the reverse: a non-proc-macro
-# crate cannot depend on a proc-macro crate as a runtime dep). Path-dep
-# mirrors the existing `sassi-reference/` symlink layout already used by
-# the `sassi` dev-dep below; the workspace `exclude = ["sassi-reference"]`
-# clause keeps cargo from absorbing the symlink tree into djogi's workspace.
+# `DeltaSyncCacheable` impl emission. `model::cacheable::expand` delegates
+# to `sassi_codegen::generate_delta_sync_cacheable_impl` with
+# `sassi_path = ::djogi::types` so the emitted impl routes through djogi's
+# macro-routing surface (per `feedback_macro_path_routing.md`) rather than
+# `::sassi::*` directly. The `Cacheable` arm is hand-rolled in
+# `model/cacheable.rs` (see `generate_cacheable_impl_djogi`) to avoid
+# `{Model}Fields` collision with `model/stubs.rs` — sassi-codegen's
+# `generate_cacheable_impl` always pairs with `generate_fields_struct`,
+# and djogi already owns a same-named companion struct with a different
+# shape. The T7.2 phase amendment in
+# `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+# documents the trade-off and anchors the deferred sassi-codegen
+# skip-Fields option / `{Model}SassiFields` rename. `sassi-codegen` is
+# `proc-macro = false`, so a proc-macro crate is permitted to depend on
+# it as a regular library (the directionality cargo restricts is the
+# reverse: a non-proc-macro crate cannot depend on a proc-macro crate as
+# a runtime dep). Path-dep mirrors the existing `sassi-reference/`
+# symlink layout already used by the `sassi` dev-dep below; the
+# workspace `exclude = ["sassi-reference"]` clause keeps cargo from
+# absorbing the symlink tree into djogi's workspace.
 sassi-codegen = { path = "../sassi-reference/sassi-codegen" }
 
 [dev-dependencies]
