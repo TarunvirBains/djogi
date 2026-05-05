@@ -178,7 +178,11 @@ pub fn recommend(
 ) -> Recommendation {
     // 1. VacuumNeeded — highest priority. Skipped on empty tables to
     //    avoid 0/0; an empty table cannot be bloated by definition.
-    let total_tup = health.n_live_tup + health.n_dead_tup;
+    //    `saturating_add` caps at `i64::MAX` rather than panicking
+    //    (debug) or wrapping (release) when both counters approach
+    //    `i64::MAX` — pathological stats values still produce a valid
+    //    ratio in `[0.0, 1.0]`.
+    let total_tup = health.n_live_tup.saturating_add(health.n_dead_tup);
     if total_tup > 0 {
         let ratio = health.n_dead_tup as f64 / total_tup as f64;
         if ratio > threshold_vacuum {
@@ -418,5 +422,33 @@ mod tests {
             recommend(&h, 0.2, 10_000_000),
             Recommendation::PartitionRecommended { .. }
         ));
+    }
+
+    #[test]
+    fn recommend_handles_n_tup_addition_overflow() {
+        // Both counters at `i64::MAX` would panic in debug or silently
+        // wrap in release under unchecked addition. `saturating_add`
+        // caps at `i64::MAX`, so the ratio is `i64::MAX / i64::MAX = 1.0`
+        // — well above the default 0.2 threshold, so VacuumNeeded fires.
+        // The test pins the contract: pathological stats values must NOT
+        // panic and must still produce a deterministic recommendation.
+        let h = TableHealth {
+            table_name: "boom".to_string(),
+            n_live_tup: i64::MAX,
+            n_dead_tup: i64::MAX,
+            last_analyze: None,
+            partition_count: 0,
+        };
+        let result = recommend(&h, 0.2, 10_000_000);
+        match result {
+            Recommendation::VacuumNeeded { dead_tup_ratio } => {
+                // i64::MAX / i64::MAX (saturated) = 1.0
+                assert!(
+                    (dead_tup_ratio - 1.0).abs() < 1e-9,
+                    "expected ratio 1.0, got {dead_tup_ratio}"
+                );
+            }
+            other => panic!("expected VacuumNeeded, got {other:?}"),
+        }
     }
 }

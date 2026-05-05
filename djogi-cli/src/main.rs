@@ -102,8 +102,11 @@ enum TopCommand {
         format: AnalyzeFormat,
         /// Dead-tuple ratio strictly above which `VacuumNeeded` fires.
         /// Default `0.2` (20% bloat) — typical OLTP workloads tighten
-        /// this; warehouse workloads tend to leave it as-is.
-        #[arg(long, default_value_t = 0.2)]
+        /// this; warehouse workloads tend to leave it as-is. Validated
+        /// at parse time via [`parse_threshold_vacuum`]: rejects NaN /
+        /// infinity / values outside `[0.0, 1.0]` so silent
+        /// "never-fires" misconfigurations are impossible.
+        #[arg(long, default_value_t = 0.2, value_parser = parse_threshold_vacuum)]
         threshold_vacuum: f64,
         /// Live row count strictly above which an unpartitioned table
         /// triggers `PartitionRecommended`. Default `10_000_000`. The
@@ -122,6 +125,39 @@ enum TopCommand {
 pub enum AnalyzeFormat {
     Human,
     Json,
+}
+
+/// Parse + validate `--threshold-vacuum` at the CLI boundary.
+///
+/// Rejects three classes of nonsense input that plain `f64::parse`
+/// otherwise lets through:
+///
+/// 1. **Non-finite values** (`NaN`, `inf`, `-inf`). Without this guard,
+///    `ratio > NaN` evaluates to `false` for every ratio, so
+///    `VacuumNeeded` would silently never fire — the worst kind of
+///    silent failure for a recommendation engine.
+/// 2. **Negative values.** A dead-tuple ratio is bounded in `[0.0, 1.0]`
+///    by definition (it's `dead / (live + dead)`), so a negative
+///    threshold is operator error, not a tuning choice.
+/// 3. **Values above `1.0`.** Same reasoning — no real
+///    `pg_stat_user_tables` row can produce a ratio above `1.0`, so a
+///    threshold above `1.0` would mean "VacuumNeeded never fires," which
+///    is again silent failure rather than legitimate configuration.
+///
+/// Wired via clap's `value_parser` attribute so the rejection happens at
+/// argument-parsing time — operators see a clear error message and a
+/// non-zero exit, never a silently-misbehaving analyze run.
+fn parse_threshold_vacuum(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|e: std::num::ParseFloatError| e.to_string())?;
+    if !v.is_finite() {
+        return Err(format!("threshold_vacuum must be finite (got {s})"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("threshold_vacuum must be in [0.0, 1.0] (got {v})"));
+    }
+    Ok(v)
 }
 
 #[derive(Subcommand)]
@@ -435,5 +471,52 @@ fn main() -> ExitCode {
                 workspace,
             ),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! CLI-level argument-parsing tests. These exercise the `value_parser`
+    //! attached to `--threshold-vacuum` directly; the goal is to pin the
+    //! contract that nonsense input fails at parse time rather than
+    //! silently producing a recommendation engine that "never fires."
+
+    use super::parse_threshold_vacuum;
+
+    #[test]
+    fn parse_threshold_vacuum_accepts_valid_values() {
+        assert_eq!(parse_threshold_vacuum("0.0").unwrap(), 0.0);
+        assert_eq!(parse_threshold_vacuum("0.2").unwrap(), 0.2);
+        assert_eq!(parse_threshold_vacuum("1.0").unwrap(), 1.0);
+        // Boundary check: strictly inside the closed interval.
+        assert_eq!(parse_threshold_vacuum("0.5").unwrap(), 0.5);
+    }
+
+    #[test]
+    fn parse_threshold_vacuum_rejects_nan_inf_and_out_of_range() {
+        // NaN — the entire reason this validator exists. `ratio > NaN`
+        // is always false, so silent acceptance would mean VacuumNeeded
+        // never fires, ever.
+        let err = parse_threshold_vacuum("NaN").unwrap_err();
+        assert!(err.contains("finite"), "err: {err}");
+
+        // Positive infinity — same silent-failure mode.
+        let err = parse_threshold_vacuum("inf").unwrap_err();
+        assert!(err.contains("finite"), "err: {err}");
+
+        // Negative infinity.
+        let err = parse_threshold_vacuum("-inf").unwrap_err();
+        assert!(err.contains("finite"), "err: {err}");
+
+        // Negative finite — outside `[0.0, 1.0]`.
+        let err = parse_threshold_vacuum("-0.1").unwrap_err();
+        assert!(err.contains("[0.0, 1.0]"), "err: {err}");
+
+        // Above 1.0 — outside `[0.0, 1.0]`.
+        let err = parse_threshold_vacuum("1.5").unwrap_err();
+        assert!(err.contains("[0.0, 1.0]"), "err: {err}");
+
+        // Garbage — propagates the underlying ParseFloatError message.
+        assert!(parse_threshold_vacuum("not-a-number").is_err());
     }
 }
