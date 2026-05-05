@@ -423,7 +423,17 @@ where
     // `(crud_log, audit)` is structurally invalid. Reject at
     // projection time so the differ never has to reason about
     // cross-database FK transitions.
+    //
+    // Phase 8β T3.5 — proxies share the parent's storage and never
+    // declare independent FKs (the parent's FK columns flow through
+    // the proxy's struct via injection, but the schema-passthrough
+    // means the parent's projection already registered them). Skip
+    // proxies here so the FK pass does not double-validate already-
+    // checked relations.
     for m in &models {
+        if m.proxy_for.is_some() {
+            continue;
+        }
         let source_label = m.app.unwrap_or(AppDescriptor::GLOBAL_LABEL);
         let source_app = label_to_app[source_label];
         let source_bucket = BucketKey {
@@ -532,6 +542,30 @@ where
         let mut tables: BTreeMap<String, TableSchema> = BTreeMap::new();
         let mut indexes: Vec<IndexSchema> = Vec::new();
         for m in &ms {
+            // Phase 8β T3.5 — proxy schema-passthrough.
+            //
+            // Proxy models share their parent's table by construction
+            // (`#[model(proxy_for = Parent)]`). Emitting DDL for the
+            // proxy would produce a duplicate `CREATE TABLE` against
+            // the parent's table; skip the projection step entirely so
+            // the migration differ never sees the proxy descriptor as
+            // a schema source. Indexes declared on a proxy are
+            // similarly skipped — index ownership belongs to the parent
+            // model in v0.1.0.
+            //
+            // The cross-type "tables match" invariant — i.e. the
+            // proxy's `table` value equals its parent's — is enforced
+            // by the duplicate-table check below: if a proxy declares
+            // `table = "other"` while its parent declares
+            // `table = "vehicles"`, the proxy's lone non-proxy sibling
+            // cannot be detected at this layer (the proxy is skipped
+            // before the table map sees it). The mismatch surfaces at
+            // descriptor-lookup time when adopter code calls
+            // `T::table_name()` and gets the wrong value. Flag in
+            // `docs/guide/proxy.md` (T5.7).
+            if m.proxy_for.is_some() {
+                continue;
+            }
             let projected =
                 project_model(m, &type_to_table, &type_to_pk_sql, &deferrability_by_field);
             insert_unique(
@@ -1080,6 +1114,72 @@ mod tests {
         assert_eq!(bb.models.len(), 1);
         let global = buckets.get(&empty_global()).expect("global still present");
         assert!(global.models.is_empty());
+    }
+
+    /// Phase 8β T3.5 — proxy descriptors are skipped from DDL emission
+    /// (schema-passthrough). Two proxies of the same parent register
+    /// alongside the parent without surfacing a duplicate-table-in-bucket
+    /// collision; the parent's projection is the only one that reaches
+    /// the bucket's `models` map.
+    #[test]
+    fn proxy_descriptors_skipped_from_projection() {
+        // Parent + two proxies of it — all share `vehicles` as the table
+        // name. Without the proxy_for skip, the second `synth_model`
+        // call in the same bucket would trigger DuplicateTableInBucket.
+        let parent = synth_model("vehicles", "Vehicle");
+        let active = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            default_filter_sql: Some("active = TRUE"),
+            ..synth_model("vehicles", "ActiveVehicle")
+        };
+        let archived = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            default_filter_sql: Some("archived = TRUE"),
+            ..synth_model("vehicles", "ArchivedVehicle")
+        };
+        let buckets = project_from_iters(
+            [&parent, &active, &archived],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("proxies coexist with parent without DDL collisions");
+        let global = buckets.get(&empty_global()).expect("global");
+        // Exactly one table — the parent's. Both proxies are skipped.
+        assert_eq!(
+            global.models.len(),
+            1,
+            "expected parent-only projection, got {} entries",
+            global.models.len(),
+        );
+        assert!(global.models.contains_key("vehicles"));
+    }
+
+    /// Phase 8β T3.5 — proxy descriptors registering before the parent
+    /// in inventory iteration order (which is non-deterministic per
+    /// `inventory` semantics) still resolve cleanly: the parent's
+    /// projection wins regardless of the order proxies appear in the
+    /// input slice.
+    #[test]
+    fn proxy_skip_independent_of_iteration_order() {
+        let parent = synth_model("vehicles", "Vehicle");
+        let proxy = ModelDescriptor {
+            proxy_for: Some("Vehicle"),
+            default_filter_sql: Some("active = TRUE"),
+            ..synth_model("vehicles", "ActiveVehicle")
+        };
+        // Proxy first, parent second — opposite of the previous test's
+        // ordering. Result must be identical.
+        let buckets = project_from_iters(
+            [&proxy, &parent],
+            std::iter::empty::<&EnumDescriptor>(),
+            std::iter::empty::<&AppDescriptor>(),
+            "2026-04-25T00:00:00Z".to_string(),
+        )
+        .expect("ok");
+        let global = buckets.get(&empty_global()).expect("global");
+        assert_eq!(global.models.len(), 1);
+        assert!(global.models.contains_key("vehicles"));
     }
 
     #[test]

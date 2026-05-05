@@ -159,13 +159,17 @@ fn compile_pass_phase8() {
     // sweep up `phase8_zero_*.rs`. List each phase8-only fixture
     // explicitly. Phase 8α T1.3 lands two (attribute opt-in + zero-
     // overhead absent path); T1.7 adds one more — the canonical
-    // adopter shape with a real `impl ModelHooks` body. Phase 8γ
-    // T6.11 adds two `Q<T>` algebra fixtures (operator precedence
-    // and 8-term composition).
+    // adopter shape with a real `impl ModelHooks` body. Phase 8β
+    // T3.5 adds two more — the basic proxy declaration and two-
+    // proxies-of-the-same-parent coexistence. Phase 8γ T6.11 adds
+    // two `Q<T>` algebra fixtures (operator precedence and 8-term
+    // composition).
     let t = TestCases::new();
     t.pass("tests/compile_pass/phase8_hooks_attribute.rs");
     t.pass("tests/compile_pass/phase8_hooks_basic.rs");
     t.pass("tests/compile_pass/phase8_no_hooks_attribute.rs");
+    t.pass("tests/compile_pass/phase8_proxy_basic.rs");
+    t.pass("tests/compile_pass/phase8_proxy_two_proxies_same_parent.rs");
     t.pass("tests/compile_pass/phase8_q_algebra_xor_precedence.rs");
     t.pass("tests/compile_pass/phase8_q_algebra_eight_term_composition.rs");
 }
@@ -229,13 +233,22 @@ fn compile_fail_phase8() {
     // sweep up `phase8_zero_*.rs`. List each phase8-only fixture
     // explicitly. Phase 8α T1.7 lands two: a wrong-receiver-mutability
     // override on `before_create` and a `#[model(hooks)]` model that
-    // forgot the sibling `impl ModelHooks for M`. Phase 8γ T6.10 adds
-    // the no-regex-lift fixture that locks `sassi::LookupOp` against
-    // a `Regex` / `IRegex` variant.
+    // forgot the sibling `impl ModelHooks for M`. Phase 8β T3.5 adds
+    // three more: a runtime-bound RHS in a `default_filter` closure
+    // (rejected by the T3.3 SQL lowering pass) and two orphan-
+    // attribute guards (`default_order` / `default_filter` without
+    // `proxy_for`) — the diagnostic span points at the offending
+    // key per the T3.3 VERIFY-1 fixup. Phase 8γ T6.10 adds the
+    // no-regex-lift fixture that locks `sassi::LookupOp` against
+    // a `Regex` / `IRegex` variant, plus two `Q<T>` mismatched-type
+    // fixtures.
     let t = TestCases::new();
     t.compile_fail("tests/compile_fail/phase8_hooks_attr_without_impl.rs");
     t.compile_fail("tests/compile_fail/phase8_hooks_invalid_signature.rs");
     t.compile_fail("tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs");
+    t.compile_fail("tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs");
+    t.compile_fail("tests/compile_fail/phase8_proxy_orphan_default_filter.rs");
+    t.compile_fail("tests/compile_fail/phase8_proxy_orphan_default_order.rs");
     t.compile_fail("tests/compile_fail/phase8_q_xor_with_mismatched_types.rs");
     t.compile_fail("tests/compile_fail/phase8_q_and_with_mismatched_types.rs");
 }
