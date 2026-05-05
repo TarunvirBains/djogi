@@ -109,7 +109,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
                     /// [`Condition`] leaf.
                     ///
                     /// [`FieldRef`]: ::djogi::query::FieldRef
-                    /// [`Condition`]: ::djogi::query::Condition
+                    /// [`Condition`]: ::djogi::query::internal::Condition
                     #[inline]
                     pub fn #ident(&self) -> ::djogi::query::FieldRef<#name, #ty> {
                         ::djogi::query::field::__macro_support::__make_field_ref::<#name, #ty>(

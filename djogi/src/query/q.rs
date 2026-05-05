@@ -763,30 +763,34 @@ fn basic_predicate_to_condition<T: Model>(bp: BasicPredicate<T>) -> Condition {
         }
         BasicPredicate::Xor(a, b) => xor_to_condition_basic(*a, *b),
         BasicPredicate::Field(_fp) => {
-            // Not reachable from any djogi FieldRef path as of Cluster
-            // 8γ Stage 2 — see function-level docs for why. Debug
-            // warning keeps the gap loud during development; production
-            // degrades to vacuous-truth rather than panic.
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "djogi::query::q::basic_predicate_to_condition: \
-                 BasicPredicate::Field(_) lowering not yet implemented. \
-                 No djogi FieldRef API constructs this variant today; if \
-                 you reached this arm, extend the bridge with a \
-                 (field_name, op, value_as<V>()) reconstruction."
-            );
-            Condition::True
+            // `FieldPredicate::new` is `pub(crate)` in sassi so djogi
+            // cannot read the field name / op / value to reconstruct a
+            // `Condition::Leaf`. No djogi `FieldRef` method produces
+            // `BasicPredicate::Field` today — they produce `Condition::Leaf`
+            // via the closure filter path. Panicking is correct here:
+            // `Condition::True` silently passes every row, which is far
+            // more dangerous than a loud panic that surfaces the gap
+            // immediately. Remove this panic when sassi exposes the
+            // `FieldPredicate` fields so the arm can do a real
+            // `Condition::Leaf` reconstruction.
+            panic!(
+                "djogi internal: cannot lower BasicPredicate::Field to \
+                 Condition — FieldPredicate is pub(crate) in sassi. No djogi \
+                 FieldRef API constructs this variant; reaching this panic \
+                 means a future cluster must expose the sassi constructor. \
+                 Use the closure-based filter API (QuerySet::filter) or \
+                 Q<T> directly."
+            )
         }
-        // `#[non_exhaustive]` catch-all on sassi's enum.
+        // `#[non_exhaustive]` catch-all for future sassi BasicPredicate variants.
+        // Panicking is correct — `Condition::True` would silently pass every
+        // row. Update this arm when sassi adds a new variant.
         #[allow(unreachable_patterns)]
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "djogi::query::q::basic_predicate_to_condition: \
-                 unhandled BasicPredicate variant — lowering to Condition::True."
-            );
-            Condition::True
-        }
+        _ => panic!(
+            "djogi internal: unhandled BasicPredicate variant in \
+             basic_predicate_to_condition — update the bridge when sassi \
+             adds a new variant."
+        ),
     }
 }
 
@@ -883,19 +887,15 @@ pub(crate) fn q_to_condition_ref<T: Model>(q: &Q<T>) -> Condition {
         }
         Q::Xor(a, b) => xor_to_condition_ref(a, b),
         Q::Negated(inner) => Condition::Not(Box::new(q_to_condition_ref(inner))),
-        // `#[non_exhaustive]` catch-all. Mirror `q_to_condition`'s
-        // defensive arm — see that function's documentation for the
-        // rationale.
+        // `#[non_exhaustive]` catch-all for future Q<T> variants.
+        // Panicking is correct — `Condition::True` would silently pass
+        // every row. Update both `q_to_condition` and `q_to_condition_ref`
+        // together when a new variant is added.
         #[allow(unreachable_patterns)]
-        _ => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "djogi::query::q::q_to_condition_ref: unhandled Q<T> variant — \
-                 lowering to Condition::True. Extend the match arm to include \
-                 the new variant before merging."
-            );
-            Condition::True
-        }
+        _ => panic!(
+            "djogi internal: unhandled Q<T> variant in q_to_condition_ref — \
+             update the bridge when a new variant is added."
+        ),
     }
 }
 
