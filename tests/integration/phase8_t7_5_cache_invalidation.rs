@@ -384,9 +384,14 @@ async fn nested_savepoint_save_invalidates_only_on_outer_commit(mut ctx: djogi::
                     Box::pin(async move {
                         if let Some(punnu) = inner.punnu::<InvalRow>() {
                             *captured_punnu.lock().unwrap() = Some(punnu.clone());
-                            // Pre-insert stale entry.
+                            // Pre-insert under the SAME id the save will target,
+                            // so the mid-flight assertion below can pin "the
+                            // matching entry is still present" — without id parity
+                            // the assertion would be a tautology (any other entry
+                            // in the Punnu would satisfy `!is_empty()`).
                             punnu
                                 .insert(InvalRow {
+                                    id: row_id,
                                     note: "stale-in-savepoint".into(),
                                     ..Default::default()
                                 })
@@ -403,15 +408,18 @@ async fn nested_savepoint_save_invalidates_only_on_outer_commit(mut ctx: djogi::
                 })
                 .await?;
                 // After nested commit (RELEASE SAVEPOINT): on_commit queue is
-                // promoted to the outer context but NOT yet drained.
-                // Verify that the Punnu still has the stale entry.
+                // promoted to the outer context but NOT yet drained — so the
+                // pre-inserted entry under `row_id` must still be present.
+                // The post-outer-commit assertion below pins that the drain
+                // happens exactly once at outer commit.
                 if let Some(ref punnu) = *captured_punnu.lock().unwrap() {
                     assert!(
-                        punnu.get(&row_id).is_none() || !punnu.is_empty(),
-                        "invariant: Punnu was populated before save; we can only assert \
-                         the invalidation has NOT fired yet (outer not committed), but \
-                         the entry may already be absent if the pre-inserted id differs \
-                         from row_id — this is an existence-only check",
+                        punnu.get(&row_id).is_some(),
+                        "Punnu entry under row_id must still be present after the \
+                         inner RELEASE SAVEPOINT — the nested save enqueued an \
+                         on_commit callback that promotes to the outer queue but \
+                         is NOT drained until the outer COMMIT. If None here, the \
+                         drain fired prematurely on the savepoint release.",
                     );
                 }
 
