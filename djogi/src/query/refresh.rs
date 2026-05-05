@@ -63,10 +63,9 @@
 
 use crate::auth::AuthContext;
 use crate::cache::DjogiDeltaSyncMeta;
-use crate::context::DjogiContext;
 use crate::pg::decode::FromPgRow;
 use crate::pg::pool::DjogiPool;
-use sassi::{BackendError, BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError};
+use sassi::{BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError};
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use tokio_postgres::types::ToSql;
@@ -121,107 +120,90 @@ where
             );
         }
 
-        // ── 1. Acquire a connection from the pool ────────────────────────────
-        // Pool failures are infrastructure/transport-class — surface them via
-        // sassi's structured `BackendError` taxonomy so observability tooling
-        // (PunnuMetrics::record_backend_error etc.) can distinguish them from
-        // application-level errors. `BackendError::Other` is correct for
-        // pool-acquisition failures (deadpool's `PoolError` doesn't cleanly
-        // map to NotFound / Serialization / WireFormat / Network).
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| FetchError::Backend(BackendError::Other(Box::new(e))))?;
-
-        // ── 2. Build a fresh DjogiContext with captured auth ─────────────────
-        // Per spec §677: auth is locked to the subscription — the context uses
-        // the AuthContext snapshot captured at refresh_into call time, not
-        // whatever the caller's context holds at tick time.
+        // ── Capture per-tick state ───────────────────────────────────────────
+        // Auth is locked to the subscription per spec §677: the snapshot
+        // captured at refresh_into time is applied to a fresh ctx below.
         //
-        // Note: AuthContext::clone() is cheap in practice (Vec<String> scopes
-        // and HashMap<String, String> ext are typically small or empty). If
-        // future profiling shows clone-per-tick is a bottleneck, switching to
-        // `Arc<AuthContext>` in the fetcher field is a drop-in optimization.
-        let mut ctx = DjogiContext::from_connection(conn).with_auth(self.auth.clone());
-
-        // ── 3. Build SQL ─────────────────────────────────────────────────────
+        // AuthContext::clone() is cheap in practice (small Vec<String>/HashMap).
+        // If future profiling shows clone-per-tick is a bottleneck, switching
+        // to `Arc<AuthContext>` in the fetcher field is a drop-in optimization.
+        let auth = self.auth.clone();
+        let since = query.since.clone();
+        let recover_ids = query.recover_ids.clone();
         let watermark_col = <T as DjogiDeltaSyncMeta>::WATERMARK_COLUMN;
         let table_name = <T as crate::model::Model>::table_name();
         let column_list = <T as FromPgRow>::COLUMN_LIST;
 
-        // Collect runtime-typed bind values. We box each value into a
-        // `Box<dyn ToSql + Sync + Send>` so we can collect heterogeneous types
-        // (T::Watermark and T::Id may differ) into one Vec. The references for
-        // raw_query are derived from the boxes after the Vec is complete.
-        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
+        // ── Run the SQL inside a transaction so SET LOCAL has effect ─────────
+        // `crate::transaction::atomic` issues BEGIN / COMMIT (or ROLLBACK on
+        // error) and exposes a `&mut DjogiContext` to the closure. This is
+        // load-bearing for spec §677: tenant scope (`SET LOCAL app.tenant_id`)
+        // only persists inside an open transaction, and `auto_set_tenant::<T>`
+        // is what wires the captured auth's `tenant_id` into Postgres for the
+        // subsequent SELECT. Without the transaction wrap + auto_set_tenant,
+        // RLS-backed tenant isolation would silently fail (Codex caught this
+        // gap in T8.5 round-1 review — orchestrator-fixed in this commit).
+        let items: Vec<T> = crate::transaction::atomic(&self.pool, move |ctx| {
+            Box::pin(async move {
+                // Apply the captured auth snapshot to the inner ctx.
+                ctx.set_auth(auth);
 
-        // Build the WHERE clause as four explicit cases on (since, recover_ids).
-        // The structure of the resulting clause directly reflects the pair —
-        // we deliberately avoid a `Vec<String>::join(" AND ")` because the
-        // recovery clause is OR-combined with the watermark clause, not
-        // AND-combined, and a future addition of a new AND-clause would have
-        // bound incorrectly to the OR group.
-        //
-        // Watermark is `>=` (inclusive) per the DeltaPunnuFetcher contract:
-        // boundary rows may have changed without their watermark advancing;
-        // Sassi deduplicates by id at apply_delta time.
-        //
-        // Recovery ids are OR'd with the watermark clause — we want those
-        // rows regardless of whether their watermark advanced (e.g. the
-        // caller is recovering from an LRU eviction).
-        let push_watermark = |params: &mut Vec<Box<dyn ToSql + Sync + Send>>, since: &T::Watermark| -> String {
-            params.push(Box::new(since.clone()));
-            format!("{watermark_col} >= ${}", params.len())
-        };
-        let push_recover = |params: &mut Vec<Box<dyn ToSql + Sync + Send>>| -> String {
-            let mut placeholders: Vec<String> = Vec::new();
-            for id in &query.recover_ids {
-                params.push(Box::new(id.clone()));
-                placeholders.push(format!("${}", params.len()));
-            }
-            format!("id IN ({})", placeholders.join(", "))
-        };
+                // Apply tenant scope (`SET LOCAL app.tenant_id = '...'`) for
+                // tenant-keyed models. No-op for models without `tenant_key`
+                // in their descriptor.
+                crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
 
-        let where_sql: String = match (query.since.as_ref(), query.recover_ids.is_empty()) {
-            (None, true) => String::new(),
-            (Some(since), true) => format!("WHERE {}", push_watermark(&mut params, since)),
-            (None, false) => format!("WHERE {}", push_recover(&mut params)),
-            (Some(since), false) => {
-                let watermark_clause = push_watermark(&mut params, since);
-                let recover_clause = push_recover(&mut params);
-                format!("WHERE ({watermark_clause}) OR ({recover_clause})")
-            }
-        };
+                // Build SQL — 4 explicit cases on (since, recover_ids).
+                // Watermark uses `>=` (inclusive boundary per the
+                // DeltaPunnuFetcher contract — boundary rows may have changed
+                // without their watermark advancing; sassi deduplicates by id).
+                // Recovery ids are OR-combined with the watermark clause:
+                // we want those rows regardless of watermark progression.
+                let mut params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
 
-        let sql =
-            format!("SELECT {column_list} FROM {table_name} {where_sql} ORDER BY {watermark_col}");
+                let push_watermark =
+                    |params: &mut Vec<Box<dyn ToSql + Sync + Send>>, s: &T::Watermark| -> String {
+                        params.push(Box::new(s.clone()));
+                        format!("{watermark_col} >= ${}", params.len())
+                    };
+                let push_recover =
+                    |params: &mut Vec<Box<dyn ToSql + Sync + Send>>| -> String {
+                        let mut placeholders: Vec<String> = Vec::new();
+                        for id in &recover_ids {
+                            params.push(Box::new(id.clone()));
+                            placeholders.push(format!("${}", params.len()));
+                        }
+                        format!("id IN ({})", placeholders.join(", "))
+                    };
 
-        // ── 4. Execute ───────────────────────────────────────────────────────
-        // Build the `&[&(dyn ToSql + Sync)]` slice raw_query expects.
-        // The Vec<Box<...>> owns the values; the slice borrows them.
-        let params_refs: Vec<&(dyn ToSql + Sync)> = params
-            .iter()
-            .map(|b| b.as_ref() as &(dyn ToSql + Sync))
-            .collect();
+                let where_sql: String = match (since.as_ref(), recover_ids.is_empty()) {
+                    (None, true) => String::new(),
+                    (Some(s), true) => format!("WHERE {}", push_watermark(&mut params, s)),
+                    (None, false) => format!("WHERE {}", push_recover(&mut params)),
+                    (Some(s), false) => {
+                        let watermark_clause = push_watermark(&mut params, s);
+                        let recover_clause = push_recover(&mut params);
+                        format!("WHERE ({watermark_clause}) OR ({recover_clause})")
+                    }
+                };
 
-        // raw_query errors can be Postgres wire (infrastructure) or type-decode
-        // (application logic). Without the discriminating context, `Custom` is
-        // the safest mapping — it preserves the inner Display + Source chain
-        // for diagnostics. A future helper that classifies tokio_postgres
-        // errors into BackendError vs Custom could refine this; for now the
-        // taxonomy degradation is acceptable (the inner DjogiError's Display
-        // output names the underlying cause).
-        let items: Vec<T> = ctx
-            .raw_query::<T>(&sql, &params_refs)
-            .await
-            .map_err(|e| FetchError::Custom(Box::new(e)))?;
+                let sql = format!(
+                    "SELECT {column_list} FROM {table_name} {where_sql} ORDER BY {watermark_col}"
+                );
 
-        // ── 5. Empty tombstones (T8.6+ wires tombstone collection) ───────────
+                let params_refs: Vec<&(dyn ToSql + Sync)> = params
+                    .iter()
+                    .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+                    .collect();
+
+                ctx.raw_query::<T>(&sql, &params_refs).await
+            })
+        })
+        .await
+        .map_err(|e| FetchError::Custom(Box::new(e)))?;
+
+        // ── Empty tombstones (T8.6+ wires Pattern 1/2/3) ────────────────────
         let tombstones: HashSet<T::Id> = HashSet::new();
-
-        // ── 6. ctx drops here — returns conn back to pool ────────────────────
-        drop(ctx);
 
         // `DeltaResult::new` sets `high_watermark = None` — Sassi's
         // `observed_watermark()` will infer the high watermark from
