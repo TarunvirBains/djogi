@@ -1140,15 +1140,17 @@ impl DjogiContext {
             ContextInner::Pool(_) => return Err(DjogiError::SetRoleOutsideTransaction),
             ContextInner::Transaction(_) => {}
         }
-        // Step 2 — byte-level identifier validation. `check_plain_ident`
-        // enforces non-empty, ≤ 63 bytes, ASCII letter or underscore
-        // first, ASCII alphanumerics or underscores after. Reserved
-        // keywords are *not* rejected (Postgres permits reserved words
-        // as role names when double-quoted, which is exactly how the
-        // SQL below emits them).
-        if crate::ident::check_plain_ident(role, false).is_err() {
-            return Err(DjogiError::InvalidRoleName(role.to_owned()));
-        }
+        // Step 2 — byte-level identifier validation. Delegates to the
+        // shared `validate_role_name` free function (defined below),
+        // which routes through `check_plain_ident` to enforce
+        // non-empty, ≤ 63 bytes, ASCII letter or underscore first,
+        // ASCII alphanumerics or underscores after. Reserved keywords
+        // are *not* rejected (Postgres permits reserved words as role
+        // names when double-quoted, which is exactly how the SQL
+        // below emits them). The free-function form lets tests
+        // exercise the same gate the production path uses — no
+        // mirrored helper, no drift risk.
+        validate_role_name(role)?;
         // Step 3 — emit `SET LOCAL ROLE "<role>"`. Postgres rejects
         // parameter binding on `SET LOCAL ROLE`, so the validated
         // identifier is interpolated directly. Every byte that could
@@ -1159,6 +1161,23 @@ impl DjogiContext {
         self.execute(&sql, &[]).await?;
         Ok(())
     }
+}
+
+/// Validate a Postgres role name for `SET LOCAL ROLE`.
+///
+/// Rules — ASCII letter or underscore as the first byte; ASCII
+/// alphanumerics or underscores thereafter; total length 1..=63 bytes;
+/// no embedded quotes or control characters. Validation runs via
+/// byte-level primitives only — no regex engine.
+///
+/// Used by `DjogiContext::set_role` (production) AND by tests.
+/// Sharing one function prevents drift between the production
+/// security gate and the test fixtures that verify it.
+pub(crate) fn validate_role_name(role: &str) -> Result<(), DjogiError> {
+    if crate::ident::check_plain_ident(role, false).is_err() {
+        return Err(DjogiError::InvalidRoleName(role.to_string()));
+    }
+    Ok(())
 }
 
 /// Runtime plain-identifier validator for user-facing helpers like
@@ -1306,17 +1325,10 @@ mod tests {
     // double-quoted SQL form must be rejected here.
     // -------------------------------------------------------------------------
 
-    /// Helper: route a role string through the same validation chain
-    /// `set_role` uses, returning the typed `DjogiError::InvalidRoleName`
-    /// (or `Ok(())`) without needing a real `DjogiContext`. Mirrors the
-    /// `set_role` body's step 2 exactly so test coverage of this helper
-    /// is coverage of the gate the production code emits SQL behind.
-    fn check_role_for_set_role(role: &str) -> Result<(), DjogiError> {
-        if crate::ident::check_plain_ident(role, false).is_err() {
-            return Err(DjogiError::InvalidRoleName(role.to_owned()));
-        }
-        Ok(())
-    }
+    // Validation tests below call `super::validate_role_name` directly —
+    // the same free function `set_role` uses in production. No mirrored
+    // helper, no drift risk: every byte the production gate accepts or
+    // rejects is exactly what these tests assert against.
 
     #[tokio::test]
     #[ignore = "requires a live Postgres pool; covered by T9.7 integration tests"]
@@ -1345,7 +1357,7 @@ mod tests {
         // (the embedded `"`), and the typed error must carry the
         // offending input verbatim so logs identify what was blocked.
         let attack = "readonly\"; DROP TABLE users--";
-        match check_role_for_set_role(attack) {
+        match super::validate_role_name(attack) {
             Err(DjogiError::InvalidRoleName(s)) => assert_eq!(s, attack),
             other => panic!("expected InvalidRoleName({attack:?}), got {other:?}"),
         }
@@ -1359,7 +1371,7 @@ mod tests {
         // boundary defect: `SET LOCAL ROLE ""` is malformed SQL, but
         // a sloppy validator that only checked "first byte is alpha"
         // would index out of bounds before reaching the alpha check.
-        match check_role_for_set_role("") {
+        match super::validate_role_name("") {
             Err(DjogiError::InvalidRoleName(s)) => assert_eq!(s, ""),
             other => panic!("expected InvalidRoleName(\"\"), got {other:?}"),
         }
@@ -1374,10 +1386,24 @@ mod tests {
         // so Rust- and SQL-level identity contracts stay aligned.
         let overlong = "a".repeat(64);
         assert_eq!(overlong.len(), 64);
-        match check_role_for_set_role(&overlong) {
+        match super::validate_role_name(&overlong) {
             Err(DjogiError::InvalidRoleName(s)) => assert_eq!(s, overlong),
             other => panic!("expected InvalidRoleName(<64-byte>), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn set_role_accepts_exactly_63_byte_name() {
+        // Boundary case — 63 bytes is exactly Postgres's
+        // `NAMEDATALEN - 1` ceiling for unquoted identifiers. The
+        // overlong test above pins the reject side at 64; this pins
+        // the accept side at 63 so an off-by-one regression in
+        // `check_plain_ident` (e.g. `>` flipped to `>=`) trips a
+        // unit test rather than escaping to a live-DB integration
+        // run. Closes the boundary gap Codex INFO-3 flagged.
+        let exact = "a".repeat(63);
+        assert_eq!(exact.len(), 63);
+        assert!(super::validate_role_name(&exact).is_ok());
     }
 
     #[test]
@@ -1387,9 +1413,9 @@ mod tests {
         // underscore-led prefix segment). The validation gate must
         // pass; the DB-touch step is exercised separately under
         // `#[ignore]` (see `set_role_executes_set_local_role_sql`).
-        assert!(check_role_for_set_role("app_readonly_role").is_ok());
-        assert!(check_role_for_set_role("_internal").is_ok());
-        assert!(check_role_for_set_role("role1").is_ok());
+        assert!(super::validate_role_name("app_readonly_role").is_ok());
+        assert!(super::validate_role_name("_internal").is_ok());
+        assert!(super::validate_role_name("role1").is_ok());
     }
 
     #[tokio::test]
