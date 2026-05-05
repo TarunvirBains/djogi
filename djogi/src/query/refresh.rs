@@ -72,3 +72,18 @@ impl<T: sassi::DeltaSyncCacheable + Send + Sync + 'static> DeltaPunnuFetcher<T>
         unimplemented!("T8.5 implements the SQL path — T8.3 lands the skeleton only")
     }
 }
+
+// Compile-time assertion that `DjogiDeltaFetcher<T>: Send + Sync + 'static`
+// for any `T: DeltaSyncCacheable + Send + Sync + 'static`. Sassi's
+// `start_delta_refresh` requires this bound on the fetcher; auto-derivation
+// is mechanically correct today, but a future refactor that adds a
+// non-Send/Sync field (e.g. an `Rc<...>` or a borrowed reference) would
+// silently break the contract. This const-fn-pointer captures the proof at
+// compile time so any such regression fails the build instead of surfacing
+// later as an opaque trait-bound error at the `start_delta_refresh` call site.
+const _: fn() = || {
+    fn _assert_send_sync_static<T: Send + Sync + 'static>() {}
+    fn _check_fetcher<T: sassi::DeltaSyncCacheable + Send + Sync + 'static>() {
+        _assert_send_sync_static::<DjogiDeltaFetcher<T>>();
+    }
+};
