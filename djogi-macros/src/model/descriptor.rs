@@ -757,6 +757,37 @@ fn try_expand(
         None => quote! { ::core::option::Option::None },
     };
 
+    // Phase 8β T3.3 — `#[model(proxy_for = ParentType)]` lowers the bare
+    // identifier to a `&'static str` carrying the parent's Rust type
+    // name. The migration differ uses this discriminator to skip DDL
+    // emission for proxies; the runtime composer (T3.4) uses it to
+    // identify proxy querysets that need default-filter / default-order
+    // composition.
+    let proxy_for_tokens = match &model_attrs.proxy_for {
+        Some(ident) => {
+            let value = ident.to_string();
+            quote! { ::core::option::Option::Some(#value) }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
+
+    // Phase 8β T3.3 — `#[model(default_filter = |f| ...)]` is lowered to
+    // a SQL fragment string at expand time. The closure body is walked
+    // through the closed grammar in `crate::model::proxy::lower_default_filter_to_sql`;
+    // anything outside that grammar surfaces a span-precise compile
+    // error here, before any descriptor emission runs.
+    //
+    // Empty / `None` for non-proxy models and for proxies without a
+    // `default_filter` clause. T3.4 reads this at QuerySet construction
+    // time and AND-composes it into the seeded `Condition` tree.
+    let default_filter_sql_tokens = match &model_attrs.proxy_default_filter {
+        Some(closure) => {
+            let sql = crate::model::proxy::lower_default_filter_to_sql(closure)?;
+            quote! { ::core::option::Option::Some(#sql) }
+        }
+        None => quote! { ::core::option::Option::None },
+    };
+
     Ok(quote! {
         #tombstone_guard_tokens
 
@@ -803,12 +834,15 @@ fn try_expand(
                 // the self-FK detector (T8); reaches here only when the named
                 // column resolves to a self-FK on this model.
                 tree_edge: #tree_edge_tokens,
-                // Phase 8β T3 — proxy-model schema-passthrough surface. T3.1
-                // ships these fields as always-`None`; T3.3 will populate
-                // them when `#[model(proxy_for = ParentType, default_filter
-                // = |f| ...)]` is parsed.
-                proxy_for: ::core::option::Option::None,
-                default_filter_sql: ::core::option::Option::None,
+                // Phase 8β T3 — proxy-model schema-passthrough surface.
+                // T3.3 populates these from `#[model(proxy_for = ParentType,
+                // default_filter = |f| ...)]`. The migration differ keys
+                // off `proxy_for.is_some()` to skip DDL emission for proxy
+                // descriptors; the runtime composer keys off
+                // `default_filter_sql` to AND-compose the lowered fragment
+                // into every `QuerySet<Self>::new()` (T3.4).
+                proxy_for: #proxy_for_tokens,
+                default_filter_sql: #default_filter_sql_tokens,
             }
         }
         #(#deferrability_submits)*

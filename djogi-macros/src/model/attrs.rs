@@ -447,6 +447,13 @@ impl ModelAttrs {
         let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
         let mut seen_proxy_default_order = false;
         let mut proxy_default_filter: Option<syn::ExprClosure> = Option::None;
+        // T3.3 (VERIFY-1 fixup) — capture the span of the `default_order`
+        // / `default_filter` key idents at parse time so the post-loop
+        // orphan-attribute guards can surface span-precise diagnostics
+        // pointing at the offending key rather than at the model's
+        // `#[model(...)]` blob via `Span::call_site()`.
+        let mut proxy_default_order_span: Option<proc_macro2::Span> = Option::None;
+        let mut proxy_default_filter_span: Option<proc_macro2::Span> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -859,6 +866,10 @@ impl ModelAttrs {
                         ));
                     }
                     seen_proxy_default_order = true;
+                    // T3.3 (VERIFY-1 fixup) — record the key span so the
+                    // post-loop orphan-attribute guard surfaces a precise
+                    // diagnostic location.
+                    proxy_default_order_span = Some(path.span());
                     proxy_default_order =
                         crate::model::proxy::parse_default_order_list(array_expr)?;
                 }
@@ -884,6 +895,10 @@ impl ModelAttrs {
                             "duplicate `default_filter = …` key in #[model(...)]",
                         ));
                     }
+                    // T3.3 (VERIFY-1 fixup) — record the key span so the
+                    // post-loop orphan-attribute guard surfaces a precise
+                    // diagnostic location.
+                    proxy_default_filter_span = Some(path.span());
                     proxy_default_filter = Some(crate::model::proxy::parse_default_filter_closure(
                         closure_expr,
                     )?);
@@ -919,9 +934,18 @@ impl ModelAttrs {
         // `proxy_for` is also set; standalone use surfaces as a
         // span-precise diagnostic so the adopter knows to add
         // `proxy_for = …` (or remove the orphan key).
+        //
+        // T3.3 (VERIFY-1 fixup) — point the span at the offending key
+        // ident (`default_order` / `default_filter`) rather than at
+        // `Span::call_site()`. The orphan-key span needs to be re-derived
+        // here because the dispatch loop above consumed the original
+        // `path` reference; we capture the orphan span by keeping a
+        // parallel `Option<proc_macro2::Span>` alongside the value
+        // collectors so the post-loop validation surfaces the right
+        // diagnostic location.
         if proxy_for.is_none() && !proxy_default_order.is_empty() {
             return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
+                proxy_default_order_span.unwrap_or_else(proc_macro2::Span::call_site),
                 "`default_order = […]` requires `proxy_for = ParentType` on \
                  the same model — proxy models inherit storage from the \
                  parent and can override ordering / filtering, but a non-\
@@ -931,7 +955,7 @@ impl ModelAttrs {
         }
         if proxy_for.is_none() && proxy_default_filter.is_some() {
             return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
+                proxy_default_filter_span.unwrap_or_else(proc_macro2::Span::call_site),
                 "`default_filter = |f| …` requires `proxy_for = ParentType` \
                  on the same model — proxy models inherit storage from the \
                  parent and can override filtering, but a non-proxy model \
