@@ -170,6 +170,8 @@ fn compile_pass_phase8() {
     t.pass("tests/compile_pass/phase8_no_hooks_attribute.rs");
     t.pass("tests/compile_pass/phase8_proxy_basic.rs");
     t.pass("tests/compile_pass/phase8_proxy_two_proxies_same_parent.rs");
+    // Phase 8β T4.6 — computed-field surface fixtures.
+    t.pass("tests/compile_pass/phase8_computed_basic.rs");
     t.pass("tests/compile_pass/phase8_q_algebra_xor_precedence.rs");
     t.pass("tests/compile_pass/phase8_q_algebra_eight_term_composition.rs");
 }
@@ -249,6 +251,9 @@ fn compile_fail_phase8() {
     t.compile_fail("tests/compile_fail/phase8_proxy_default_filter_runtime_value.rs");
     t.compile_fail("tests/compile_fail/phase8_proxy_orphan_default_filter.rs");
     t.compile_fail("tests/compile_fail/phase8_proxy_orphan_default_order.rs");
+    // Phase 8β T4.6 — computed-field rejection paths.
+    t.compile_fail("tests/compile_fail/phase8_computed_stored_deferred.rs");
+    t.compile_fail("tests/compile_fail/phase8_computed_empty_sql.rs");
     t.compile_fail("tests/compile_fail/phase8_q_xor_with_mismatched_types.rs");
     t.compile_fail("tests/compile_fail/phase8_q_and_with_mismatched_types.rs");
 }
