@@ -1989,7 +1989,8 @@ fn reduce_q_to_basic<T: crate::model::Model>(q: Q<T>) -> ReduceOutcome<T> {
         // and_condition_into_q which wraps everything as Q::Condition. Any
         // queryset built with the public filter surface lands here. The
         // long-term fix (a future cluster redesigning filter_struct to
-        // preserve Q-algebra structure) is tracked separately.
+        // preserve Q-algebra structure) is tracked at GH #126
+        // (filter-api-q-preservation).
         Q::Condition(_) => ReduceOutcome::Unreducible(
             "Q::Condition (legacy Condition escape hatch; public filter APIs always produce this)",
         ),
@@ -2028,10 +2029,10 @@ impl<T: crate::model::Model> QuerySet<T> {
     ///
     /// | Q variant | Reduces to |
     /// |---|---|
-    /// | `Q::Basic(p)` | `p` (cloned) |
+    /// | `Q::Basic(p)` | `p` (moved — `reduce_q_to_basic` takes `Q<T>` by value to avoid `T: Clone`) |
     /// | `Q::Compound { And, all_basic_parts }` | `BasicPredicate::And(parts)` |
     /// | `Q::Compound { Or, all_basic_parts }` | `BasicPredicate::Or(parts)` |
-    /// | `Q::Negated(Q::Basic(p))` | `BasicPredicate::Not(Box::new(p))` |
+    /// | `Q::Negated(reducible_inner)` | `BasicPredicate::Not(Box::new(reduced_inner))` — inner walked recursively, so `Q::Negated(Q::Compound{And, basics})` reduces too |
     ///
     /// # Unreducible variants (always → `None`)
     ///
