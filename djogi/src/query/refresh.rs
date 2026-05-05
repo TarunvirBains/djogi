@@ -166,15 +166,14 @@ where
                         params.push(Box::new(s.clone()));
                         format!("{watermark_col} >= ${}", params.len())
                     };
-                let push_recover =
-                    |params: &mut Vec<Box<dyn ToSql + Sync + Send>>| -> String {
-                        let mut placeholders: Vec<String> = Vec::new();
-                        for id in &recover_ids {
-                            params.push(Box::new(id.clone()));
-                            placeholders.push(format!("${}", params.len()));
-                        }
-                        format!("id IN ({})", placeholders.join(", "))
-                    };
+                let push_recover = |params: &mut Vec<Box<dyn ToSql + Sync + Send>>| -> String {
+                    let mut placeholders: Vec<String> = Vec::new();
+                    for id in &recover_ids {
+                        params.push(Box::new(id.clone()));
+                        placeholders.push(format!("${}", params.len()));
+                    }
+                    format!("id IN ({})", placeholders.join(", "))
+                };
 
                 let where_sql: String = match (since.as_ref(), recover_ids.is_empty()) {
                     (None, true) => String::new(),
@@ -202,8 +201,33 @@ where
         .await
         .map_err(|e| FetchError::Custom(Box::new(e)))?;
 
-        // ── Empty tombstones (T8.6+ wires Pattern 1/2/3) ────────────────────
-        let tombstones: HashSet<T::Id> = HashSet::new();
+        // ── Derive tombstones from soft-deleted items (T8.6 Pattern 1) ─────
+        //
+        // The fetcher pulls rows including soft-deleted ones — `auto_set_tenant`
+        // + watermark filter advance includes deletion timestamps because
+        // `updated_at` advances on save (which the soft-delete path uses).
+        //
+        // Anti-regression (spec §415): we MUST NOT add `deleted_at IS NULL` to
+        // the WHERE clause above; the deletion signal MUST flow through the
+        // watermark and be derived here. A `deleted_at IS NULL` filter would
+        // silently drop the deletion signal at the SQL boundary, preventing
+        // tombstone derivation and leaving stale entries in the Punnu
+        // indefinitely. The test `fetcher_does_not_add_deleted_at_is_null_filter`
+        // in `phase8_t8_6_softdelete_tombstones` pins this invariant.
+        //
+        // For non-soft-deletable models `__delta_should_tombstone()` always
+        // returns `false` (the `Model` trait default), so the loop is a
+        // no-op classification pass — tombstones stays empty, backward-compat
+        // with T8.5 behavior.
+        let mut live_items = Vec::with_capacity(items.len());
+        let mut tombstones: HashSet<T::Id> = HashSet::new();
+        for item in items {
+            if item.__delta_should_tombstone() {
+                tombstones.insert(<T as sassi::Cacheable>::id(&item));
+            } else {
+                live_items.push(item);
+            }
+        }
 
         // `DeltaResult::new` sets `high_watermark = None` — Sassi's
         // `observed_watermark()` will infer the high watermark from
@@ -211,7 +235,14 @@ where
         // synthetic high_watermark past what the query returned, so omitting
         // it is correct (and preserves the invariant that the watermark only
         // advances based on observed rows).
-        Ok(DeltaResult::new(items, tombstones))
+        //
+        // Note: watermark inference runs over `live_items` only — tombstoned
+        // rows are excluded from the max-watermark scan inside sassi's
+        // `DeltaResult::observed_watermark`. This is correct: a tombstoned row
+        // signals deletion to the subscriber, not a new high-water point.
+        // Sassi's `apply_delta` evicts tombstoned ids from the Punnu and emits
+        // `PunnuEvent::Invalidate { reason: EventReason::OnDelete }`.
+        Ok(DeltaResult::new(live_items, tombstones))
     }
 }
 

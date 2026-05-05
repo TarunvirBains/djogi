@@ -464,3 +464,10 @@ harness = true
 name = "phase8_t8_5_fetcher_tick"
 path = "../tests/integration/phase8_t8_5_fetcher_tick.rs"
 harness = true
+
+# ── Phase 8δ T8.6 — SoftDeletable-derived tombstones in delta fetcher ─────────
+
+[[test]]
+name = "phase8_t8_6_softdelete_tombstones"
+path = "../tests/integration/phase8_t8_6_softdelete_tombstones.rs"
+harness = true
