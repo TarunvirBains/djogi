@@ -2059,9 +2059,17 @@ impl<T: crate::model::Model> QuerySet<T> {
     ///
     /// # Visibility note
     ///
-    /// This is `pub` so advanced cache-integration callers can inspect
-    /// reducibility before calling `refresh_into`. It is not part of the
-    /// everyday filter / query builder API.
+    /// This is `pub` for testability and to give framework-internal cache-
+    /// integration code a named entry point. It is **not** an inspection
+    /// API: the method consumes `self`, so callers cannot "inspect first,
+    /// then refresh_into" — the QuerySet is moved by either call.
+    /// `QuerySet::clone()` does NOT preserve the reducible shape (it
+    /// rewrites the condition to `Q::Condition` at clone time, per the
+    /// 8γ Stage 2 SQL-parity contract), so a clone would always inspect
+    /// as unreducible. If you genuinely need to know whether a tree
+    /// reduces, the answer until GH #126 lands is "no" for any tree
+    /// built via the public `.filter` / `.filter_struct` / `.exclude`
+    /// surface.
     pub fn into_basic_predicate(self) -> Option<sassi::BasicPredicate<T>> {
         let outcome = reduce_q_to_basic(self.condition);
         match outcome {
