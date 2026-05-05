@@ -1008,6 +1008,14 @@ async fn apply_plan_inner(
             path: path.clone(),
             source: e,
         })?;
+
+        // T9.5 — DDL audit. Best-effort: if any audit-side step fails
+        // we log via `tracing::warn!` and SKIP. The app DB DDL has
+        // already succeeded and the snapshot has been persisted; an
+        // audit-DB outage MUST NOT roll back work that already
+        // committed. See `record_ddl_audit_for_plan` for the full
+        // failure-mode rationale.
+        record_ddl_audit_for_plan(plan, runner_ctx, snapshot).await;
     }
 
     Ok(RunReport {
@@ -1018,6 +1026,190 @@ async fn apply_plan_inner(
         metadata_segments,
         execution_time_ms: elapsed_ms,
     })
+}
+
+/// Write one `djogi_ddl_audit` row per executed (non-metadata-only)
+/// segment in the plan. T9.5.
+///
+/// # Why this lives on the success-only path
+///
+/// The caller invokes this AFTER:
+///
+/// 1. Every segment has committed (transactional or non-transactional).
+/// 2. `mark_applied` flipped the ledger row to `applied`.
+/// 3. `save_snapshot` persisted the new schema-of-record to disk.
+///
+/// Calling it earlier would risk an audit row whose
+/// `snapshot_signature_hex` does not correspond to any persisted
+/// snapshot — the signature would be of an in-memory `AppliedSchema`
+/// that never reached disk. Per v3 plan §453 the audit row's purpose
+/// is to ground the migration trail to the schema-of-record file
+/// `djogi verify` (T9.6) inspects, so we sign the bytes that were
+/// just written.
+///
+/// # Three-database awareness
+///
+/// The audit DB is operationally separate from the app DB
+/// (`crud_log_url` vs. `url`). We construct a fresh
+/// [`DjogiContext`] from `runner_ctx.audit_pool` — NEVER from the
+/// app-side context — so a query routed here cannot accidentally
+/// run against the app DB. See CLAUDE.md "Three-Database
+/// Architecture".
+///
+/// # Failure-mode rationale
+///
+/// Three steps can fail: the audit-DDL bootstrap, individual
+/// `INSERT` calls, and the implicit pool checkout each `DjogiContext`
+/// helper performs. ALL THREE log via `tracing::warn!` and SKIP —
+/// none propagate. Reasons:
+///
+/// - The app DB DDL has already committed.
+/// - The on-disk snapshot has already been persisted.
+/// - The ledger row has already reached `applied`.
+///
+/// Rolling any of those back because the audit DB is unreachable
+/// would be a worse outcome than a missing audit row. Operators
+/// rebuilding the audit trail can replay from the ledger + snapshot;
+/// they cannot recover from a runner that refused to record an
+/// otherwise-clean migration apply because a sibling DB happened to
+/// be down.
+///
+/// # Per-segment rows
+///
+/// One row per executed segment so the audit trail captures the same
+/// granularity the runner reports (the `Transactional /
+/// NonTransactional` split). MetadataOnly segments produce no SQL so
+/// they are skipped — there is no `ddl_sql` to record. The same
+/// `snapshot_signature_hex` lands on every segment row from a single
+/// apply: rows from one apply share the post-apply
+/// schema-of-record, and the audit reader reconstructs the
+/// per-segment timeline from `applied_at` ordering on the ledger
+/// side.
+///
+/// # Signing key
+///
+/// `DJOGI_SNAPSHOT_SIGNING_KEY` malformed → log + use the no-op key
+/// `[0u8; 32]`. The runner does not double-surface the error; the
+/// CLI entry point (which sets up signing in the first place) owns
+/// the operator-facing surface for malformed keys. Signing under
+/// the no-op key produces `[0u8; 32]` → 64 zero hex chars → a
+/// non-NULL string in the audit column. NULL is reserved for code
+/// paths where no signature was attempted (today: never on this
+/// path).
+async fn record_ddl_audit_for_plan(
+    plan: &MigrationPlan,
+    runner_ctx: &RunnerCtx,
+    snapshot: &super::schema::AppliedSchema,
+) {
+    let Some(audit_pool) = runner_ctx.audit_pool.as_ref() else {
+        // Audit pool not configured — this is the supported "no
+        // audit DB" deployment shape. Silent skip is correct.
+        return;
+    };
+
+    // Re-serialize the snapshot to the same byte form `save_snapshot`
+    // wrote. The cost is one `serde_json::to_vec_pretty` per apply,
+    // amortised over however many segments the plan carries. Sharing
+    // the buffer with `save_snapshot` would require returning bytes
+    // up the stack and is left as a future micro-opt; for now,
+    // correctness > a couple-hundred-microsecond serialise.
+    let snapshot_bytes = match super::snapshot::serialize_snapshot(snapshot) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(
+                target: "djogi::migrate::audit",
+                error = ?e,
+                "snapshot re-serialisation for audit signature failed; skipping audit",
+            );
+            return;
+        }
+    };
+
+    // Resolve the signing key. Per the no-op-key sentinel contract in
+    // `snapshot::sign`, an unset env var → `Ok(None)` → use `[0u8; 32]`.
+    // A malformed value (`Err`) also degrades to the no-op key here;
+    // the surfacing of the error itself is the CLI entry point's job
+    // (which is the operator-facing layer that owns DJOGI_SNAPSHOT_SIGNING_KEY).
+    // The runner is the audit-side consumer, not the configuration owner —
+    // we should not double-warn.
+    let key = crate::snapshot::sign::load_signing_key_from_env()
+        .ok()
+        .flatten()
+        .unwrap_or([0u8; 32]);
+    let sig = crate::snapshot::sign::sign_snapshot(&snapshot_bytes, &key);
+    let sig_hex = super::audit::signature_to_hex(&sig);
+
+    // Construct an audit-side DjogiContext. `DjogiPool` wraps the
+    // raw deadpool pool; `inner` is `pub(crate)`, so this lives in
+    // the same crate as `pg::pool`. We clone the pool handle (an
+    // `Arc` bump under the hood — zero cost) so the runner does not
+    // disturb the caller's ownership of `runner_ctx.audit_pool`.
+    let audit_djogi_pool = crate::pg::pool::DjogiPool {
+        inner: audit_pool.clone(),
+    };
+    let mut audit_ctx = DjogiContext::from_pool(audit_djogi_pool);
+
+    // Bootstrap the audit table — `CREATE TABLE IF NOT EXISTS` is
+    // idempotent so calling on every apply is cheap. Doing it here
+    // (rather than once at process start) keeps the runner
+    // self-contained: no separate "init audit DB" CLI step is
+    // required.
+    if let Err(e) = super::audit::bootstrap_ddl_audit(&mut audit_ctx).await {
+        tracing::warn!(
+            target: "djogi::migrate::audit",
+            bucket_database = %plan.bucket.database,
+            bucket_app = %plan.bucket.app,
+            error = ?e,
+            "djogi_ddl_audit bootstrap failed; skipping audit rows for this apply",
+        );
+        return;
+    }
+
+    // One row per executed segment. MetadataOnly segments carry no
+    // SQL — the apply path skips them and the audit trail follows.
+    for (seg_idx, segment) in plan.segments.iter().enumerate() {
+        if segment.kind == SegmentKind::MetadataOnly {
+            continue;
+        }
+        // Concatenate the `up` SQL for this segment in execution
+        // order, separated by `;\n`. Storing the concatenated text
+        // (rather than one row per statement) matches the segment
+        // granularity the runner already reports and keeps the
+        // audit table at one row per atomic-commit unit.
+        let ddl_sql: String = segment
+            .statements
+            .iter()
+            .map(|s| s.up.as_str())
+            .collect::<Vec<_>>()
+            .join(";\n");
+        // Routes through the public re-export `record_ddl_audit`
+        // (the in-module fn is `audit::record_ddl`; the re-export
+        // adds the `_audit` suffix to disambiguate from sibling
+        // ledger / seed CRUD helpers — see T9.4 INFO finding on
+        // naming drift). Calling the re-export keeps the runner
+        // aligned with the public-surface name even though the
+        // private path would also resolve.
+        if let Err(e) = super::record_ddl_audit(
+            &mut audit_ctx,
+            &plan.bucket.database,
+            &plan.bucket.app,
+            &ddl_sql,
+            Some(&sig_hex),
+        )
+        .await
+        {
+            tracing::warn!(
+                target: "djogi::migrate::audit",
+                bucket_database = %plan.bucket.database,
+                bucket_app = %plan.bucket.app,
+                segment_index = seg_idx,
+                error = ?e,
+                "djogi_ddl_audit insert failed; continuing with remaining segments",
+            );
+            // Continue — best-effort. A transient error on one
+            // segment row should not suppress the next.
+        }
+    }
 }
 
 // ── Rollback / fake-apply / baseline (Phase 7 v3 §8 — T5) ─────────────────
@@ -3458,5 +3650,103 @@ mod tests {
         let msg = format!("{e}");
         assert!(msg.contains("baseline_plan rejects caller-supplied snapshots"));
         assert!(msg.contains("snapshot = None"));
+    }
+
+    // ── apply_plan DDL audit wiring (T9.5) ────────────────────────────────
+    //
+    // These tests document the contract `record_ddl_audit_for_plan`
+    // must satisfy. They are `#[ignore]`d in this commit because the
+    // in-crate `#[cfg(test)]` harness has no DB fixture today — the
+    // existing `runner.rs` tests are pure-unit (advisory-lock-key
+    // determinism, checksum determinism, etc.). T9.7 owns the
+    // integration harness that provisions both an app pool and an
+    // audit pool; once that lands these tests can flip from `#[ignore]`
+    // to a real `#[djogi_test(audit_db = true)]` (or equivalent) and
+    // run end-to-end.
+    //
+    // The four scenarios pinned here cover the full failure matrix
+    // called out in the v3 plan §T9.5:
+    //
+    // 1. happy path — `audit_pool = Some(pool)` writes one row per
+    //    executed (non-metadata) segment.
+    // 2. opt-out — `audit_pool = None` skips audit silently.
+    // 3. audit-DB outage — broken audit pool MUST NOT roll back the
+    //    app DB DDL; warn is emitted; apply still succeeds.
+    // 4. unset signing key — `DJOGI_SNAPSHOT_SIGNING_KEY` unset →
+    //    column carries 64 zero hex chars (the no-op-key signature
+    //    of any input is `[0u8; 32]` per `snapshot::sign`'s no-op
+    //    sentinel contract). NOT NULL — NULL is reserved for the
+    //    "no signature attempted" code path which this commit does
+    //    not produce.
+
+    #[tokio::test]
+    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
+    async fn apply_plan_writes_audit_row_when_pool_set() {
+        // Fixture: build a `RunnerCtx` whose `audit_pool` is set to
+        // a real pool against the audit DB. After `apply_plan`
+        // succeeds, the audit DB must carry one `djogi_ddl_audit`
+        // row per executed segment, with `snapshot_signature_hex`
+        // matching `signature_to_hex(&sign_snapshot(&snapshot_bytes,
+        // &key))` round-trip.
+        //
+        // Key assertions T9.7 must wire up:
+        //
+        // - `SELECT count(*) FROM djogi_ddl_audit WHERE
+        //   target_database = $1 AND app_label = $2` returns the
+        //   count of non-metadata segments in the plan.
+        // - For each row, `snapshot_signature_hex` is a 64-char
+        //   uppercase hex string (matches `signature_to_hex`'s
+        //   contract).
+        // - `applied_at` is monotonic across rows from the same
+        //   apply invocation.
+    }
+
+    #[tokio::test]
+    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
+    async fn apply_plan_skips_audit_when_pool_none() {
+        // Fixture: `RunnerCtx { audit_pool: None, .. }`. `apply_plan`
+        // must succeed AND the audit DB must remain untouched —
+        // specifically, the `djogi_ddl_audit` table need not even
+        // exist after the run. The contract is: `audit_pool: None`
+        // is the supported "no audit DB" deployment shape, not a
+        // partial / degraded mode.
+    }
+
+    #[tokio::test]
+    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
+    async fn apply_plan_audit_failure_does_not_roll_back_app_db() {
+        // Fixture: `audit_pool` set to a pool that cannot connect
+        // (closed pool, bad URL, connect timeout). `apply_plan` must
+        // still return `Ok(_)` — the app DB DDL has already
+        // committed and the runner MUST NOT propagate audit-side
+        // failures. T9.7 captures the `tracing::warn!` output and
+        // asserts the `target = "djogi::migrate::audit"` log line
+        // is emitted.
+        //
+        // Why this invariant matters: a transient outage on the
+        // sibling audit DB (`crud_log_url`) would otherwise
+        // double-fault every concurrent migration apply across the
+        // fleet, turning a single-DB incident into a global apply
+        // freeze. The audit row is "belt-and-braces" — the on-disk
+        // snapshot + ledger are the authoritative artefacts.
+    }
+
+    #[tokio::test]
+    #[ignore = "needs audit-DB harness; covered by T9.7 integration tests"]
+    async fn apply_plan_no_audit_signature_when_key_unset() {
+        // Fixture: `DJOGI_SNAPSHOT_SIGNING_KEY` env var unset. The
+        // audit row's `snapshot_signature_hex` must be
+        // `"0000…0000"` (64 ASCII '0' characters) — the
+        // `signature_to_hex` of `[0u8; 32]`, which is what
+        // `sign_snapshot` returns under the no-op key sentinel.
+        //
+        // NOT NULL: the column carries a hex string in this commit's
+        // code path; NULL is reserved for code paths that explicitly
+        // pass `snapshot_sig_hex: None` to `record_ddl_audit`, which
+        // `record_ddl_audit_for_plan` never does.
+        //
+        // T9.7 must guard this test with proper env-var hygiene
+        // (`temp_env::with_var_unset` or equivalent — the in-process
+        // env is global state).
     }
 }
