@@ -40,6 +40,36 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # `sassi-reference` is a path-dep symlink in local dev (points at the
+      # sister `~/projects/sassi` workspace so cargo picks up uncommitted
+      # sassi changes immediately). On GHA the symlink target does not
+      # exist — clone the public TarunvirBains/sassi repo into the
+      # `sassi-reference/` slot so `path = "../sassi-reference/sassi"` in
+      # `djogi/Cargo.toml` and `djogi-macros/Cargo.toml` resolves.
+      #
+      # Pinned to commit SHA `49190ad` ("chore(release): prepare
+      # v0.1.0-alpha.3") rather than a tag because sassi has not yet
+      # tagged v0.1.0-alpha.3 on GitHub (only `v0.1.0-alpha.1` and
+      # `v0.1.0-alpha.2` are published). djogi's `Cargo.lock` was
+      # generated against the local path-dep at the alpha.3 prep
+      # commit, so CI must check out the matching SHA. Bump to
+      # `ref: v0.1.0-alpha.3` once sassi publishes that tag.
+      - name: Checkout sassi sister repo
+        uses: actions/checkout@v6
+        with:
+          repository: TarunvirBains/sassi
+          # Full 40-character SHA — actions/checkout@v6 rejects
+          # short SHAs with "branch or tag … could not be found".
+          # Pin to v0.1.0-alpha.3 prep commit; bump to `ref:
+          # v0.1.0-alpha.3` (and drop `fetch-depth`) once sassi
+          # tags it.
+          ref: 49190adc43174dae6dcc6dea35911bc62c385794
+          path: sassi-reference
+          # SHA pinning requires a full fetch — actions/checkout@v6
+          # defaults to `fetch-depth: 1`, which only fetches named
+          # refs. Drop to a full clone so the SHA resolves.
+          fetch-depth: 0
+
       # Ubuntu-latest GHA runners ship with ~14GB of free disk. Phase 7-Zero
       # pushed the workspace test footprint past that ceiling — 22
       # `#[djogi_test]`s (each provisioning a per-test Postgres DB) + 50+
@@ -161,6 +191,23 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # See `check` job for rationale.
+      - name: Checkout sassi sister repo
+        uses: actions/checkout@v6
+        with:
+          repository: TarunvirBains/sassi
+          # Full 40-character SHA — actions/checkout@v6 rejects
+          # short SHAs with "branch or tag … could not be found".
+          # Pin to v0.1.0-alpha.3 prep commit; bump to `ref:
+          # v0.1.0-alpha.3` (and drop `fetch-depth`) once sassi
+          # tags it.
+          ref: 49190adc43174dae6dcc6dea35911bc62c385794
+          path: sassi-reference
+          # SHA pinning requires a full fetch — actions/checkout@v6
+          # defaults to `fetch-depth: 1`, which only fetches named
+          # refs. Drop to a full clone so the SHA resolves.
+          fetch-depth: 0
+
       - name: Install MSRV toolchain (matches workspace.package.rust-version)
         uses: dtolnay/rust-toolchain@1.95.0
 
@@ -231,6 +278,23 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      # See `check` job for rationale.
+      - name: Checkout sassi sister repo
+        uses: actions/checkout@v6
+        with:
+          repository: TarunvirBains/sassi
+          # Full 40-character SHA — actions/checkout@v6 rejects
+          # short SHAs with "branch or tag … could not be found".
+          # Pin to v0.1.0-alpha.3 prep commit; bump to `ref:
+          # v0.1.0-alpha.3` (and drop `fetch-depth`) once sassi
+          # tags it.
+          ref: 49190adc43174dae6dcc6dea35911bc62c385794
+          path: sassi-reference
+          # SHA pinning requires a full fetch — actions/checkout@v6
+          # defaults to `fetch-depth: 1`, which only fetches named
+          # refs. Drop to a full clone so the SHA resolves.
+          fetch-depth: 0
 
       - name: Free disk space on GHA runner
         run: |
