@@ -386,9 +386,10 @@ pub enum AnalyzeFormat {
 pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, AnalyzeError> {
     let mut ctx = DjogiContext::from_pool(pool.clone());
 
-    // Probe `partman` schema existence ONCE up-front rather than
-    // letting every per-table `partman.show_partitions(...)` call
-    // discover the absence at prepare time.
+    // Probe `partman` schema AND `show_partitions` function existence
+    // ONCE up-front rather than letting every per-table
+    // `partman.show_partitions(...)` call discover the absence at
+    // prepare time.
     //
     // # Why probe up-front
     //
@@ -402,21 +403,50 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
     // analyze run on such a cluster fails with `AnalyzeError::Db`
     // even though the partman call should be a soft fallback.
     //
-    // Probing `pg_namespace` for `partman` is always-prepareable
-    // (the schema is a system catalogue), returns a clean
-    // `Result<bool, _>`, and lets us skip the partman path entirely
-    // when the extension is absent. As a side benefit it costs ONE
-    // query per analyze instead of N (one per user table) when
-    // partman IS installed — the per-table call is still made when
-    // it makes semantic sense to make it.
+    // # Why probe BOTH schema and function
+    //
+    // A schema-only check (`pg_namespace.nspname = 'partman'`) is
+    // insufficient: a partial install (e.g. the extension was
+    // dropped but the schema was preserved by a CASCADE-less
+    // `DROP EXTENSION pg_partman`, or a mid-upgrade where the
+    // schema exists but the new function shape has not been
+    // installed yet) leaves the schema present without
+    // `show_partitions`. The per-table call would then `prepare`
+    // the function reference, fail with `UNDEFINED_FUNCTION`, and
+    // hit the same SQLSTATE-dropping path described above — so the
+    // soft fallback would never engage and analyze would fail.
+    //
+    // Joining `pg_proc` against `pg_namespace.oid = pg_proc.pronamespace`
+    // confirms the function we're about to call actually exists in
+    // the partman schema. The probe returns true only when BOTH the
+    // schema and `show_partitions` are present; any partial-install
+    // shape returns false and we skip the per-table partman calls
+    // entirely (`partition_count = 0` for every row — the same
+    // outcome the SQLSTATE-fallback path would have produced for an
+    // entirely-absent extension).
+    //
+    // Both `pg_namespace` and `pg_proc` are core system catalogues —
+    // the probe is always-prepareable, returns a clean
+    // `Result<bool, _>`, and costs ONE query per analyze invocation
+    // instead of N (one per user table).
     //
     // The retained `query_partition_count` SQLSTATE classifier is a
-    // belt-and-braces guard: if the extension is partially installed
-    // (schema present but `show_partitions` missing — e.g. mid-
-    // upgrade), we still soft-degrade to `partition_count = 0`
-    // rather than failing the analyze run.
+    // belt-and-braces guard for execution-time partman failures: if
+    // `show_partitions` exists at probe time but errors at runtime
+    // (e.g. permission revoked between probe and call, or the
+    // function body itself raises `UNDEFINED_TABLE` because no
+    // partitioned parents are registered), we still soft-degrade
+    // to `partition_count = 0`. That path goes through `query` not
+    // `prepare`, so the SQLSTATE survives and the classifier still
+    // catches it.
     let partman_present = !ctx
-        .raw_rows("SELECT 1 FROM pg_namespace WHERE nspname = 'partman'", &[])
+        .raw_rows(
+            "SELECT 1 \
+             FROM pg_namespace n \
+             JOIN pg_proc p ON p.pronamespace = n.oid \
+             WHERE n.nspname = 'partman' AND p.proname = 'show_partitions'",
+            &[],
+        )
         .await
         .map_err(djogi_err_to_analyze)?
         .is_empty();

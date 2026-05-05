@@ -160,6 +160,50 @@ async fn wait_for_dead_tuples(ctx: &mut djogi::DjogiContext, table: &str) {
     }
 }
 
+/// Poll `pg_stat_user_tables.n_live_tup` for `table` until it
+/// reports `>= min_count`, retrying with a short sleep between
+/// checks.
+///
+/// Sibling of [`wait_for_dead_tuples`] that targets the live-tuple
+/// counter instead. The same cumulative-stats visibility window
+/// applies: `ANALYZE` updates `n_live_tup` from a fresh sample, but
+/// the new value becomes visible to other backends only after the
+/// writing backend's transaction commits and the stats subsystem
+/// flushes its in-memory snapshot. A subprocess that connects
+/// microseconds after `ANALYZE` returned to the harness can race
+/// the visibility window — observed empirically as
+/// `n_live_tup = 0` (and therefore the partition-rule threshold
+/// gate failing to fire) in the analyze CLI for the large-table
+/// fixture, even though seeding completed and `ANALYZE` ran.
+///
+/// The threshold-comparison rule in [`recommend`] is strict
+/// greater-than (`n_live_tup > threshold_partition_rows`), so
+/// callers should pass `threshold + 1` for `min_count` to
+/// guarantee the rule fires once the wait returns.
+async fn wait_for_live_tuples(ctx: &mut djogi::DjogiContext, table: &str, min_count: i64) {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let sql = "SELECT n_live_tup FROM pg_stat_user_tables WHERE relname = $1";
+    loop {
+        let rows = ctx
+            .raw_rows(sql, &[&table])
+            .await
+            .expect("read pg_stat_user_tables.n_live_tup");
+        let live: i64 = rows.first().map(|row| row.get::<_, i64>(0)).unwrap_or(0);
+        if live >= min_count {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "n_live_tup stayed below {min_count} for `{table}` after 5s \
+                 (last observed: {live}); the cumulative stats system should \
+                 have flushed by now"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// Build a unique temporary workspace directory and return its path.
 fn temp_workspace(tag: &str) -> PathBuf {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -434,6 +478,14 @@ async fn analyze_large_unpartitioned_returns_partition_recommended(mut ctx: djog
     ctx.raw_execute(&format!("ANALYZE {table}"), &[])
         .await
         .expect("analyze partition table");
+    // ANALYZE writes `n_live_tup` to the cumulative stats system,
+    // but a fresh subprocess that connects microseconds later can
+    // race the visibility window — observed as `n_live_tup = 0` in
+    // the analyze CLI even after `ANALYZE` returned. The
+    // partition-rule gate is `n_live_tup > 100` (strict
+    // greater-than), so we wait until at least 101 is observable
+    // through a fresh pool connection before spawning the binary.
+    wait_for_live_tuples(&mut ctx, &table, 101).await;
 
     let database = current_database(&mut ctx).await;
     let test_url = format!("postgres://djogi:djogi@localhost/{database}");
