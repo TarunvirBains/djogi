@@ -56,22 +56,17 @@ The macro:
 ### Using in queries
 
 The `{Model}Computed` ZST returns `Expr<V>` values that compose with the
-existing `Expr<T>` API. Three terminal call shapes:
+existing `Expr<T>` API.
+
+The supported v0.1.0 terminal is `QuerySet::filter_expr` — it accepts a
+closure returning `Expr<bool>`, and the comparison methods on `Expr<T>`
+(`.gte` / `.lt` / `.eq` / etc.) produce that boolean expression by pairing
+the computed accessor with a literal:
 
 ```rust
 // Filter by a computed expression:
 Vehicle::objects()
     .filter_expr(|_| Vehicle::computed().total_price().gte(Expr::literal(100.0_f64)))
-    .fetch_all(&mut ctx).await?;
-
-// Order by a computed expression:
-Vehicle::objects()
-    .order_by_expr(Vehicle::computed().total_price())
-    .fetch_all(&mut ctx).await?;
-
-// Annotate a computed expression:
-Vehicle::objects()
-    .annotate_expr("total", Vehicle::computed().total_price())
     .fetch_all(&mut ctx).await?;
 ```
 
@@ -81,6 +76,21 @@ emission site for operator-precedence stability:
 ```sql
 SELECT * FROM vehicles WHERE (base_price * (1.0 + tax_rate)) >= $1
 ```
+
+**Ordering and annotation by a computed expression are deferred to a
+later task.** `QuerySet::order_by` accepts a closure returning
+`OrderExpr` (built from `FieldRef::asc` / `FieldRef::desc`), and
+`QuerySet::annotate` accepts a closure returning an `AggregateExpr`
+tuple. Neither surface accepts a bare `Expr<T>` today — there is no
+`From<Expr<T>>` impl for `OrderExpr`, and `AnnotationSlot` is sealed on
+`AggregateExpr<V>` and the window-function families. Adopters who need
+to sort or project by a computed expression in v0.1.0 reach for
+`DjogiContext::raw_query` with the SQL fragment inlined.
+
+A future cluster (T6's `Q<T>` algebra refactor in 8γ, or the
+follow-up surface task tracked alongside the `{Model}Computed` ZST)
+will widen `OrderExpr` and `AnnotationSlot` to admit arbitrary
+`Expr<T>` so the two terminals close the loop without an escape hatch.
 
 ### Rust-side evaluation path
 
