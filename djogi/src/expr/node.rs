@@ -81,8 +81,12 @@ pub(crate) enum ExprNode {
     /// [`crate::query::condition::Condition::RawSql`] from T3.4).
     ///
     /// Construction goes through
-    /// [`crate::expr::Expr::raw_sql_fragment`], which is
-    /// `#[doc(hidden)]` and not part of the user-facing API.
+    /// [`crate::expr::Expr::__raw_sql_fragment`], which is
+    /// `#[doc(hidden)]` and not part of the user-facing API. The
+    /// `__`-prefix matches
+    /// [`crate::query::condition::Condition::__from_raw_sql_fragment`]'s
+    /// convention so adopters reading the rustdoc cannot mistake it
+    /// for a supported surface.
     RawSql(&'static str),
 
     /// Scalar literal. Every SQL-bindable type Djogi ships with already

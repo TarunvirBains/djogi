@@ -52,7 +52,7 @@ use syn::{Expr, Lit, Meta, MetaNameValue, Token, punctuated::Punctuated};
 /// parser. The field's Rust type (`return_type`) is captured from the
 /// declared `syn::Field::ty` so T4.4 wires the auto-emitted Rust-side
 /// getter stub signature to match and T4.5 threads the type through
-/// the typed `Expr<T>::raw_sql_fragment(...)` constructor.
+/// the typed `Expr<T>::__raw_sql_fragment(...)` constructor.
 #[derive(Debug, Clone)]
 pub struct ComputedAttr {
     /// SQL expression source as written in the attribute.
@@ -60,7 +60,7 @@ pub struct ComputedAttr {
     /// Rust return type of the computed getter — sourced from the
     /// `syn::Field::ty` of the field carrying the annotation. T4.4
     /// uses this for the getter stub signature; T4.5 threads it into
-    /// the typed `Expr<T>::raw_sql_fragment(...)` carrier in the
+    /// the typed `Expr<T>::__raw_sql_fragment(...)` carrier in the
     /// `{Model}Computed` accessor emission.
     pub return_type: syn::Type,
 }
@@ -377,7 +377,7 @@ pub fn emit_computed_zst(
                 #[doc = #doc_comment]
                 #[allow(clippy::wrong_self_convention)]
                 pub fn #field_ident(self) -> ::djogi::expr::Expr<#return_type> {
-                    ::djogi::expr::Expr::<#return_type>::raw_sql_fragment(#sql)
+                    ::djogi::expr::Expr::<#return_type>::__raw_sql_fragment(#sql)
                 }
             }
         })
@@ -564,7 +564,7 @@ mod tests {
     /// T4.5 — `emit_computed_zst` emits the `{Model}Computed` ZST
     /// plus accessor methods plus `Vehicle::computed()` constructor.
     /// Each accessor returns `Expr<V>` typed for the field's declared
-    /// return type and routes through `Expr::raw_sql_fragment`.
+    /// return type and routes through `Expr::__raw_sql_fragment`.
     #[test]
     fn emits_computed_zst_with_accessors() {
         let s = parse_struct(quote! {
@@ -580,8 +580,8 @@ mod tests {
         assert!(ts.contains("struct VehicleComputed"));
         // Accessor method.
         assert!(ts.contains("pub fn double_price"));
-        // Routes through `Expr::raw_sql_fragment` with the SQL.
-        assert!(ts.contains("raw_sql_fragment"));
+        // Routes through `Expr::__raw_sql_fragment` with the SQL.
+        assert!(ts.contains("__raw_sql_fragment"));
         assert!(ts.contains("base_price * 2"));
         // Inherent constructor on the parent model.
         assert!(ts.contains("pub fn computed"));
