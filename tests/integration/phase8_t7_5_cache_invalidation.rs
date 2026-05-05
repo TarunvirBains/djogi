@@ -210,9 +210,13 @@ async fn save_does_not_invalidate_on_rollback(mut ctx: djogi::DjogiContext) {
             Box::pin(async move {
                 if let Some(punnu) = tx.punnu::<InvalRow>() {
                     *captured_punnu.lock().unwrap() = Some(punnu.clone());
-                    // Insert the stale entry.
+                    // Insert under the SAME id the save will target so the
+                    // post-rollback assertion can pin "the matching entry
+                    // survived" via `get(&row_id).is_some()` instead of a
+                    // weaker `!is_empty()` check (mirrors Test 4's pattern).
                     punnu
                         .insert(InvalRow {
+                            id: row_id,
                             note: "stale".into(),
                             ..Default::default()
                         })
@@ -234,22 +238,18 @@ async fn save_does_not_invalidate_on_rollback(mut ctx: djogi::DjogiContext) {
     }
 
     // After rollback: the on_commit queue was discarded, so the callback never
-    // fired. The stale Punnu entry must still be present.
+    // fired. The stale Punnu entry under `row_id` must still be present.
     let punnu = captured_punnu
         .lock()
         .unwrap()
         .take()
         .expect("Punnu Arc must have been captured inside the closure");
 
-    // The stale entry we inserted is still present — invalidation was NOT fired.
-    // We can only check `len()` since we don't know the exact id used for insert
-    // (we inserted with Default::default() id, not row_id). The invariant is
-    // that the pool is non-empty: the stale entry survived the rollback.
     assert!(
-        !punnu.is_empty(),
-        "Punnu must still contain the stale entry after rollback — \
+        punnu.get(&row_id).is_some(),
+        "Punnu must still contain the stale entry under row_id after rollback — \
          on_commit callbacks queued inside a rolled-back atomic are discarded; \
-         an empty Punnu here would mean the invalidation fired despite rollback",
+         a None here would mean the invalidation fired despite rollback",
     );
 }
 
