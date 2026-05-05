@@ -1,0 +1,5 @@
+error[E0599]: no method named `set_role` found for reference `&Client` in the current scope
+  --> tests/compile_fail/phase8e_set_role_outside_atomic.rs:27:20
+   |
+27 |     let _ = client.set_role("readonly");
+   |                    ^^^^^^^^ method not found in `&Client`

@@ -264,6 +264,27 @@ fn compile_fail_phase8() {
 }
 
 #[test]
+fn compile_fail_phase8e() {
+    // Phase 8ε T9.7 — `set_role` type-system gate. The fixture
+    // takes a `&tokio_postgres::Client` and calls `.set_role(...)`
+    // on it; rustc rejects the call because `set_role` lives on
+    // `DjogiContext`, NOT on the underlying client. This pins the
+    // type-system gate that complements the runtime
+    // `DjogiError::SetRoleOutsideTransaction` gate (the runtime
+    // gate fires on pool-vs-transaction; the type gate fires on
+    // wrong-receiver-type).
+    //
+    // Per `feedback_trybuild_phase_split.md`, this is its own
+    // `#[test]` rather than collapsed into `compile_fail_phase8`
+    // — phase8e fixtures share no `.rs` content with the 8α / 8β
+    // / 8γ fixtures, and a per-prefix split keeps the targeted
+    // verification command (`cargo test -p djogi-macros --test
+    // trybuild_tests compile_fail_phase8e`) under a second.
+    let t = TestCases::new();
+    t.compile_fail("tests/compile_fail/phase8e_*.rs");
+}
+
+#[test]
 fn compile_fail_unphased() {
     let t = TestCases::new();
     // Macro-foundational error cases (model attrs, jsonb-schema validation,

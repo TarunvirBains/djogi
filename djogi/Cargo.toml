@@ -397,3 +397,28 @@ harness = true
 name = "phase8_trait_impl_registry"
 path = "../tests/integration/phase8_trait_impl_registry.rs"
 harness = true
+
+# ── Phase 8ε T9.7 — set_role + snapshot signing + djogi verify ──────────────
+# Each test file is registered as its own integration target so the
+# verification command (`cargo test -p djogi --test <name>`) targets a
+# single file at a time, mirroring the pattern Phase 7 / Phase 8α use.
+
+[[test]]
+name = "phase8_set_role_transaction_scoped"
+path = "../tests/integration/phase8_set_role_transaction_scoped.rs"
+harness = true
+
+[[test]]
+name = "phase8_set_role_set_tenant_ordering"
+path = "../tests/integration/phase8_set_role_set_tenant_ordering.rs"
+harness = true
+
+[[test]]
+name = "phase8_snapshot_signing_roundtrip"
+path = "../tests/integration/phase8_snapshot_signing_roundtrip.rs"
+harness = true
+
+[[test]]
+name = "phase8_djogi_verify_cli"
+path = "../tests/integration/phase8_djogi_verify_cli.rs"
+harness = true
