@@ -560,12 +560,20 @@ fn push_where_qualified<T: Model>(
     qs: &QuerySet<T>,
     parent_table: Option<&'static str>,
 ) {
-    if !qs.condition.is_vacuously_true() {
+    // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` post-flip.
+    // The SQL emitter still walks `Condition`, so we lower through
+    // the bridge before reaching `emit_condition`. Character-for-
+    // character SQL parity with the pre-flip path is the contract:
+    // `q_to_condition_ref` walks `&Q<T>` and reproduces the legacy
+    // `Condition::And/Or/Not/Leaf/Expr` tree shape every variant
+    // produced before the flip — and does so without invoking
+    // `Clone` on `Q<T>` (which would propagate `T: Clone` virally
+    // through every terminal method via sassi's `BasicPredicate<T>:
+    // Clone` derive bound).
+    let lowered = crate::query::q::q_to_condition_ref(&qs.condition);
+    if !lowered.is_vacuously_true() {
         acc.push_sql(" WHERE ");
-        // `emit_condition` consumes the tree — clone the borrowed reference
-        // so the original QuerySet remains usable (matters for `fetch_one`'s
-        // LIMIT-override path, which reuses the same queryset).
-        emit_condition(acc, qs.condition.clone(), parent_table);
+        emit_condition(acc, lowered, parent_table);
     }
 }
 
@@ -2159,7 +2167,7 @@ mod tests {
         // an externally-constructed empty `And` leaked `WHERE TRUE` into
         // the SQL.
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        qs.condition = Condition::And(Vec::new());
+        qs.condition = crate::query::Q::Condition(Condition::And(Vec::new()));
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "SELECT id FROM fakes");
@@ -2171,7 +2179,10 @@ mod tests {
         // `is_vacuously_true` walks the `And` subtree recursively. Same
         // cleanup as the flat empty-And case.
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        qs.condition = Condition::And(vec![Condition::True, Condition::And(Vec::new())]);
+        qs.condition = crate::query::Q::Condition(Condition::And(vec![
+            Condition::True,
+            Condition::And(Vec::new()),
+        ]));
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "SELECT id FROM fakes");
@@ -2182,7 +2193,8 @@ mod tests {
         // `Not(Or(vec![]))` emits as `NOT FALSE` → `TRUE`, which is
         // vacuously true. Handled by the same skip path.
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        qs.condition = Condition::Not(Box::new(Condition::Or(Vec::new())));
+        qs.condition =
+            crate::query::Q::Condition(Condition::Not(Box::new(Condition::Or(Vec::new()))));
         let acc = build_select(&qs);
         let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "SELECT id FROM fakes");
@@ -2278,7 +2290,7 @@ mod tests {
         // Vacuously-true condition trees collapse the same way they do
         // for SELECT — `DELETE FROM table` without `WHERE TRUE` noise.
         let mut qs: QuerySet<Fake> = QuerySet::new();
-        qs.condition = Condition::And(Vec::new());
+        qs.condition = crate::query::Q::Condition(Condition::And(Vec::new()));
         let acc = build_delete(&qs);
         let sql = acc.sql().trim().to_string();
         assert_eq!(sql, "DELETE FROM fakes");

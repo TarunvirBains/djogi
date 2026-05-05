@@ -165,7 +165,13 @@ impl<T: Model, V> Subquery<T, V> {
             node: SubqueryNode {
                 table: T::table_name(),
                 select_column: Some(column.column()),
-                where_clause: condition_to_opt(qs.condition),
+                // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>`
+                // post-flip. The subquery WHERE clause still consumes
+                // `Condition`, so lower through the bridge before
+                // handing off. SQL parity: identity round-trip on
+                // `Q::Condition(_)`, byte-identical Condition tree
+                // shape on every other variant.
+                where_clause: condition_to_opt(crate::query::q::q_to_condition(qs.condition)),
             },
             _phantom: PhantomData,
         }
@@ -248,7 +254,13 @@ impl Exists {
             node: SubqueryNode {
                 table: T::table_name(),
                 select_column: None,
-                where_clause: condition_to_opt(qs.condition),
+                // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>`
+                // post-flip. The subquery WHERE clause still consumes
+                // `Condition`, so lower through the bridge before
+                // handing off. SQL parity: identity round-trip on
+                // `Q::Condition(_)`, byte-identical Condition tree
+                // shape on every other variant.
+                where_clause: condition_to_opt(crate::query::q::q_to_condition(qs.condition)),
             },
         }
     }

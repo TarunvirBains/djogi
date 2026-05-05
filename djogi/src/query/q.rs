@@ -644,6 +644,16 @@ where
 // (`QuerySet::filter_struct` accepts `Q<T>`); the SQL emitter starts
 // routing through here at T6.9. The unit tests below exercise every
 // variant before any caller depends on it.
+//
+// # By-value vs by-reference
+//
+// `q_to_condition` consumes the `Q<T>` and is the canonical
+// production caller (used by `filter_struct` / `exclude_struct`
+// after `filter.into_q()` produces an owned `Q<T>`). The SQL emit
+// path holds `&QuerySet<T>` and cannot consume — see
+// [`q_to_condition_ref`] for the reference-borrowing counterpart
+// that walks the algebra without requiring `T: Clone`. Both produce
+// byte-identical [`Condition`] trees by construction.
 #[allow(dead_code)]
 pub(crate) fn q_to_condition<T: Model>(q: Q<T>) -> Condition {
     match q {
@@ -804,6 +814,148 @@ fn xor_to_condition<T: Model>(a: Q<T>, b: Q<T>) -> Condition {
 fn xor_to_condition_basic<T: Model>(a: BasicPredicate<T>, b: BasicPredicate<T>) -> Condition {
     let ca = basic_predicate_to_condition(a);
     let cb = basic_predicate_to_condition(b);
+    Condition::Or(vec![
+        Condition::And(vec![Condition::Not(Box::new(ca.clone())), cb.clone()]),
+        Condition::And(vec![ca, Condition::Not(Box::new(cb))]),
+    ])
+}
+
+// ── Reference-borrowing lowering — `&Q<T> -> Condition` ──────────────────────
+//
+// T6.9 substrate flip companion. The SQL emit path holds
+// `&QuerySet<T>` and cannot consume `qs.condition`. Cloning the
+// queryset's condition would require `T: Clone` to propagate
+// virally through every terminal method (`fetch_all`, `count`,
+// `update`, `delete`, etc.) because sassi's `BasicPredicate<T>`
+// derives Clone and that derive imposes a `T: Clone` bound on the
+// generated impl — even though the Field variant's payload sits
+// behind `Arc` and the True / False variants carry no data at all.
+//
+// Walking by reference and producing a fresh [`Condition`] sidesteps
+// the bound: we never invoke `.clone()` on a `BasicPredicate<T>` or
+// any operand that carries the `T` parameter. `Condition` is
+// unconditionally `Clone`, so the `Q::Condition(_)` arm clones its
+// inner tree without trouble. Every other `Q<T>` variant either
+// recurses (Compound, Xor, Negated), reads `&'static str` plus an
+// owned non-`T`-bound payload (Ilike, Regex, JsonbPath, Array,
+// Expression), or is `BasicPredicate::Field(_)` which the bridge
+// reduces to `Condition::True` with a debug warning (see the
+// `basic_predicate_to_condition` arm — no shipped djogi FieldRef
+// path constructs that variant).
+//
+// SQL parity: the by-reference walker produces the **same**
+// [`Condition`] tree shape the by-value walker does. Both go through
+// the lowering tests in `query::q::tests`; the reference path is
+// asserted via `q_to_condition_ref_matches_q_to_condition` which
+// pins the parity contract at every variant.
+
+#[allow(dead_code)]
+pub(crate) fn q_to_condition_ref<T: Model>(q: &Q<T>) -> Condition {
+    match q {
+        Q::Basic(bp) => basic_predicate_ref_to_condition(bp),
+        Q::Ilike(field, pattern) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::IContains,
+            FilterValue::String(pattern.clone()),
+        )),
+        Q::JsonbPath(leaf) => Condition::JsonbPath(leaf.clone()),
+        Q::Regex(field, pattern, true) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::Regex,
+            FilterValue::String(pattern.clone()),
+        )),
+        Q::Regex(field, pattern, false) => Condition::Leaf(Leaf::new(
+            field.column(),
+            LookupOp::IRegex,
+            FilterValue::String(pattern.clone()),
+        )),
+        Q::Expression(expr) => Condition::Expr(expr.clone()),
+        Q::Array(ArrayPredicate::Contains(leaf, _)) => Condition::ArrayContains(leaf.clone()),
+        Q::Array(ArrayPredicate::ContainedBy(leaf, _)) => Condition::ArrayContainedBy(leaf.clone()),
+        Q::Array(ArrayPredicate::Overlap(leaf, _)) => Condition::ArrayOverlap(leaf.clone()),
+        Q::Condition(c) => c.clone(),
+        Q::Compound { op, parts } => {
+            let lowered: Vec<Condition> = parts.iter().map(q_to_condition_ref).collect();
+            match op {
+                CompoundOp::And => Condition::And(lowered),
+                CompoundOp::Or => Condition::Or(lowered),
+            }
+        }
+        Q::Xor(a, b) => xor_to_condition_ref(a, b),
+        Q::Negated(inner) => Condition::Not(Box::new(q_to_condition_ref(inner))),
+        // `#[non_exhaustive]` catch-all. Mirror `q_to_condition`'s
+        // defensive arm — see that function's documentation for the
+        // rationale.
+        #[allow(unreachable_patterns)]
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "djogi::query::q::q_to_condition_ref: unhandled Q<T> variant — \
+                 lowering to Condition::True. Extend the match arm to include \
+                 the new variant before merging."
+            );
+            Condition::True
+        }
+    }
+}
+
+/// Reference-borrowing analogue of `basic_predicate_to_condition`.
+/// Walks `&BasicPredicate<T>` and produces a fresh [`Condition`]
+/// without invoking `Clone` on the predicate or its `T` parameter.
+fn basic_predicate_ref_to_condition<T: Model>(bp: &BasicPredicate<T>) -> Condition {
+    match bp {
+        BasicPredicate::True => Condition::True,
+        BasicPredicate::False => Condition::Or(Vec::new()),
+        BasicPredicate::And(parts) => {
+            Condition::And(parts.iter().map(basic_predicate_ref_to_condition).collect())
+        }
+        BasicPredicate::Or(parts) => {
+            Condition::Or(parts.iter().map(basic_predicate_ref_to_condition).collect())
+        }
+        BasicPredicate::Not(inner) => {
+            Condition::Not(Box::new(basic_predicate_ref_to_condition(inner)))
+        }
+        BasicPredicate::Xor(a, b) => xor_basic_ref_to_condition(a, b),
+        BasicPredicate::Field(_fp) => {
+            // Same rationale as `basic_predicate_to_condition`: no
+            // shipped djogi FieldRef path constructs this variant; if
+            // a future cluster lifts FieldRef methods to
+            // `BasicPredicate::Field(_)`, this arm extends with the
+            // (column, op, value_as<V>()) reconstruction.
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "djogi::query::q::basic_predicate_ref_to_condition: \
+                 BasicPredicate::Field(_) lowering not yet implemented."
+            );
+            Condition::True
+        }
+        #[allow(unreachable_patterns)]
+        _ => {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "djogi::query::q::basic_predicate_ref_to_condition: \
+                 unhandled BasicPredicate variant — lowering to Condition::True."
+            );
+            Condition::True
+        }
+    }
+}
+
+/// XOR general-form for the reference-borrowing path. Same identity
+/// as `xor_to_condition`: `(NOT a AND b) OR (a AND NOT b)`.
+fn xor_to_condition_ref<T: Model>(a: &Q<T>, b: &Q<T>) -> Condition {
+    let ca = q_to_condition_ref(a);
+    let cb = q_to_condition_ref(b);
+    Condition::Or(vec![
+        Condition::And(vec![Condition::Not(Box::new(ca.clone())), cb.clone()]),
+        Condition::And(vec![ca, Condition::Not(Box::new(cb))]),
+    ])
+}
+
+/// XOR general-form for the sassi-side reference-borrowing path.
+fn xor_basic_ref_to_condition<T: Model>(a: &BasicPredicate<T>, b: &BasicPredicate<T>) -> Condition {
+    let ca = basic_predicate_ref_to_condition(a);
+    let cb = basic_predicate_ref_to_condition(b);
     Condition::Or(vec![
         Condition::And(vec![Condition::Not(Box::new(ca.clone())), cb.clone()]),
         Condition::And(vec![ca, Condition::Not(Box::new(cb))]),

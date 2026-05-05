@@ -59,6 +59,7 @@ use crate::pg::decode::FromJoinedPgRow;
 use crate::query::condition::Condition;
 use crate::query::field::FieldRef;
 use crate::query::order::OrderExpr;
+use crate::query::q::{Q, q_to_condition};
 use crate::relation::path::RelationPath;
 use crate::relation::prefetch::{ErasedPrefetch, prefetch_loader};
 use crate::relation::select_related::{ErasedSelectRelated, child_descriptor, join_decoder};
@@ -90,9 +91,26 @@ pub enum DistinctMode {
 /// See the module-level documentation for design rationale, variance, and
 /// short-circuit semantics.
 pub struct QuerySet<T: Model> {
-    /// Accumulated filter tree. Starts as [`Condition::True`] — the vacuous
-    /// identity — and grows via AND as `filter`/`exclude` are chained.
-    pub(crate) condition: Condition,
+    /// Accumulated filter tree. Starts as
+    /// [`Q::always_true()`](crate::query::Q) — the vacuous identity
+    /// — and grows via AND as `filter` / `exclude` / `filter_struct` /
+    /// `exclude_struct` are chained.
+    ///
+    /// # Substrate
+    ///
+    /// As of Cluster 8γ Stage 2 (T6.9), the queryset's filter
+    /// substrate is the [`Q<T>`](crate::query::Q) algebra rather than
+    /// the legacy [`Condition`] tree. The SQL emitter still consumes
+    /// `Condition` — every site that emits SQL lowers
+    /// `self.condition` through
+    /// [`q_to_condition`](crate::query::q::q_to_condition) before
+    /// reaching `emit_condition`. Character-for-character SQL parity
+    /// with the pre-flip queryset is the load-bearing contract: every
+    /// existing `tests/integration/phase{1..7_5}_*` query produces
+    /// byte-identical SQL post-flip because the legacy [`Condition`]
+    /// trees lift through `Q::Condition(_)` (round-trips as the
+    /// identity in the lowering bridge).
+    pub(crate) condition: Q<T>,
     /// Ordering expressions in emission order. `order_by` appends; it does
     /// not replace.
     pub(crate) ordering: Vec<OrderExpr>,
@@ -151,10 +169,23 @@ pub struct QuerySet<T: Model> {
     _model: PhantomData<fn() -> T>,
 }
 
+// Cluster 8γ Stage 2 (T6.9): the manual Clone impl uses the
+// reference-borrowing lowering (`q_to_condition_ref`) and re-wraps
+// the result through `Q::Condition(_)`. This sidesteps the
+// `T: Clone` bound that sassi's `BasicPredicate<T>: Clone` derive
+// would otherwise propagate — the SQL emitter is the only caller
+// that cared about cloning the substrate, and it now uses the same
+// reference-borrowing helper. Cloning a queryset preserves the
+// substrate semantics (the lowered Condition round-trips as the
+// identity through the bridge), so SQL parity holds across clones.
 impl<T: Model> Clone for QuerySet<T> {
     fn clone(&self) -> Self {
         QuerySet {
-            condition: self.condition.clone(),
+            // Lower the substrate by reference and re-wrap as
+            // `Q::Condition(_)`. The bridge guarantees byte-identical
+            // SQL emission post-clone — `q_to_condition_ref` produces
+            // the same `Condition` tree the pre-flip path produced.
+            condition: Q::Condition(crate::query::q::q_to_condition_ref(&self.condition)),
             ordering: self.ordering.clone(),
             distinct: self.distinct.clone(),
             limit: self.limit,
@@ -176,11 +207,18 @@ impl<T: Model> Clone for QuerySet<T> {
     }
 }
 
+// Cluster 8γ Stage 2 (T6.9): the Debug impl lowers `self.condition`
+// to a [`Condition`] for printing rather than relying on
+// `Q<T>: Debug` (which would require `T: Debug` via sassi's
+// `BasicPredicate<T>: Debug` derive). The lowering preserves
+// SQL-relevant structure, so the debug output remains useful for
+// tracing.
 impl<T: Model> std::fmt::Debug for QuerySet<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let lowered = crate::query::q::q_to_condition_ref(&self.condition);
         f.debug_struct("QuerySet")
             .field("table", &T::table_name())
-            .field("condition", &self.condition)
+            .field("condition", &lowered)
             .field("ordering", &self.ordering)
             .field("distinct", &self.distinct)
             .field("limit", &self.limit)
@@ -199,6 +237,27 @@ impl<T: Model> Default for QuerySet<T> {
     }
 }
 
+/// AND-combine a [`Condition`] onto an existing [`Q<T>`] substrate.
+///
+/// Cluster 8γ Stage 2 (T6.9) helper. The legacy `filter` / `exclude`
+/// closure API and other internal sites still produce `Condition`
+/// values directly; this helper lowers `self.condition` through
+/// [`q_to_condition`], applies [`Condition::and`] (which has the
+/// shipped flattening + `Condition::True`-identity behaviour every
+/// emitter test depends on), and re-lifts the result via
+/// [`Q::Condition`] so the queryset's substrate stays `Q<T>`.
+///
+/// Character-for-character SQL parity with the pre-flip path is the
+/// contract: round-tripping through the bridge preserves the exact
+/// `Condition::And(_)` tree shape the SQL emitter saw before the flip,
+/// and `Condition::and`'s flattening + identity logic is the only
+/// merge-time logic any emitter test relies on.
+fn and_condition_into_q<T: Model>(current: Q<T>, addition: Condition) -> Q<T> {
+    let lowered = q_to_condition(current);
+    let combined = Condition::and(lowered, addition);
+    Q::Condition(combined)
+}
+
 impl<T: Model> QuerySet<T> {
     /// Construct an empty QuerySet. Prefer `T::objects()` at call sites —
     /// it is the idiomatic spelling and reads as "all objects of this
@@ -206,7 +265,14 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn new() -> Self {
         QuerySet {
-            condition: Condition::True,
+            // Cluster 8γ Stage 2 (T6.9): substrate flip from
+            // `Condition::True` to `Q::always_true()`. The two are
+            // semantically identical — `Q::always_true()` is
+            // `Q::Basic(BasicPredicate::True)` and lowers back to
+            // `Condition::True` through the bridge — so the SQL
+            // emitter sees the same vacuous-truth shape it did
+            // pre-flip.
+            condition: Q::always_true(),
             ordering: Vec::new(),
             distinct: DistinctMode::None,
             limit: None,
@@ -257,13 +323,23 @@ impl<T: Model> QuerySet<T> {
     /// ```ignore
     /// Post::objects().filter(|f| f.published.eq(true))
     /// ```
+    ///
+    /// # Substrate
+    ///
+    /// As of Cluster 8γ Stage 2 (T6.9), the queryset's filter substrate
+    /// is the [`Q<T>`](crate::query::Q) algebra. `filter` keeps its
+    /// `FnOnce(T::Fields) -> Condition` signature for back-compat (every
+    /// shipped `FieldRef` lookup method returns `Condition`), and the
+    /// returned `Condition` lifts through the bridge into the algebra
+    /// substrate at storage time. SQL parity is exact because the
+    /// lowering bridge round-trips `Q::Condition(_)` as the identity.
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter<F>(mut self, f: F) -> Self
     where
         F: FnOnce(T::Fields) -> Condition,
     {
         let cond = f(T::Fields::default());
-        self.condition = Condition::and(self.condition, cond);
+        self.condition = and_condition_into_q(self.condition, cond);
         self
     }
 
@@ -308,7 +384,7 @@ impl<T: Model> QuerySet<T> {
         F: FnOnce(T::Fields) -> crate::expr::Expr<bool>,
     {
         let expr = f(T::Fields::default());
-        self.condition = Condition::and(self.condition, Condition::Expr(expr));
+        self.condition = and_condition_into_q(self.condition, Condition::Expr(expr));
         self
     }
 
@@ -324,7 +400,7 @@ impl<T: Model> QuerySet<T> {
         F: FnOnce(T::Fields) -> Condition,
     {
         let cond = f(T::Fields::default());
-        self.condition = Condition::and(self.condition, Condition::not(cond));
+        self.condition = and_condition_into_q(self.condition, Condition::not(cond));
         self
     }
 
@@ -370,7 +446,7 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn filter_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
         let q = filter.into_q();
-        let cond = crate::query::q::q_to_condition(q);
+        let cond = q_to_condition(q);
         // Vacuous-truth short-circuit — same shape `filter_struct`
         // historically used for `ModelFilter` empty-clauses. Keeps the
         // pre-flip emission identical: an empty `Q<T>` does not AND a
@@ -378,7 +454,7 @@ impl<T: Model> QuerySet<T> {
         if cond.is_vacuously_true() {
             return self;
         }
-        self.condition = Condition::and(self.condition, cond);
+        self.condition = and_condition_into_q(self.condition, cond);
         self
     }
 
@@ -406,8 +482,8 @@ impl<T: Model> QuerySet<T> {
     #[must_use = "querysets are lazy — dropping one silently omits the query"]
     pub fn exclude_struct<F: crate::query::IntoQ<T>>(mut self, filter: F) -> Self {
         let q = filter.into_q();
-        let cond = crate::query::q::q_to_condition(q);
-        self.condition = Condition::and(self.condition, Condition::not(cond));
+        let cond = q_to_condition(q);
+        self.condition = and_condition_into_q(self.condition, Condition::not(cond));
         self
     }
 
@@ -1391,7 +1467,7 @@ impl<M: crate::SoftDeletable + 'static> QuerySet<M> {
             crate::query::condition::LookupOp::IsNull,
             crate::query::condition::FilterValue::Null,
         );
-        self.condition = Condition::and(self.condition, Condition::Leaf(leaf));
+        self.condition = and_condition_into_q(self.condition, Condition::Leaf(leaf));
         self
     }
 }
@@ -1518,10 +1594,19 @@ mod tests {
         }
     }
 
+    // Cluster 8γ Stage 2 (T6.9): `qs.condition` is `Q<T>` post-flip.
+    // Tests that pattern-match on the legacy `Condition` shape lower
+    // through the bridge first; the bridge is the SQL-parity contract,
+    // so asserting the lowered shape is equivalent to asserting the
+    // SQL emitter's input.
+
     #[test]
     fn new_queryset_has_no_filters() {
         let qs: QuerySet<Fake> = QuerySet::new();
-        assert!(matches!(qs.condition, Condition::True));
+        assert!(matches!(
+            crate::query::q::q_to_condition_ref(&qs.condition),
+            Condition::True
+        ));
         assert!(qs.ordering.is_empty());
         assert!(matches!(qs.distinct, DistinctMode::None));
         assert_eq!(qs.limit, None);
@@ -1547,7 +1632,10 @@ mod tests {
             .filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))))
             .none();
         assert!(qs.is_empty());
-        assert!(matches!(qs.condition, Condition::True));
+        assert!(matches!(
+            crate::query::q::q_to_condition_ref(&qs.condition),
+            Condition::True
+        ));
     }
 
     #[test]
@@ -1555,10 +1643,13 @@ mod tests {
         use crate::query::condition::{FilterValue, Leaf};
         let qs: QuerySet<Fake> =
             QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
-        assert!(matches!(qs.condition, Condition::Leaf(_)));
+        assert!(matches!(
+            crate::query::q::q_to_condition_ref(&qs.condition),
+            Condition::Leaf(_)
+        ));
         // Second filter should AND with the first.
         let qs2 = qs.filter(|_| Condition::Leaf(Leaf::eq_raw("b", FilterValue::Bool(false))));
-        match qs2.condition {
+        match crate::query::q::q_to_condition(qs2.condition) {
             Condition::And(parts) => assert_eq!(parts.len(), 2),
             other => panic!("expected And, got {other:?}"),
         }
@@ -1570,7 +1661,10 @@ mod tests {
         let qs: QuerySet<Fake> = QuerySet::new()
             .exclude(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
         // True AND NOT(leaf) → NOT(leaf) thanks to Condition::and's identity folding.
-        assert!(matches!(qs.condition, Condition::Not(_)));
+        assert!(matches!(
+            crate::query::q::q_to_condition(qs.condition),
+            Condition::Not(_)
+        ));
     }
 
     // ── T6.7 — `IntoQ<T>` + `filter_struct(Q<T>)` + `exclude_struct(Q<T>)` ────
@@ -1593,7 +1687,10 @@ mod tests {
         let q: Q<Fake> = Q::Basic(BasicPredicate::True);
         let qs: QuerySet<Fake> = QuerySet::new().filter_struct(q);
         // True is vacuously-true → short-circuit returns self unchanged.
-        assert!(matches!(qs.condition, Condition::True));
+        assert!(matches!(
+            crate::query::q::q_to_condition(qs.condition),
+            Condition::True
+        ));
     }
 
     /// `filter_struct` over a non-vacuous Q lifts through
@@ -1607,9 +1704,9 @@ mod tests {
         // structurally non-vacuous, so it AND-s through.
         let q: Q<Fake> = Q::Basic(BasicPredicate::False);
         let qs: QuerySet<Fake> = QuerySet::new().filter_struct(q);
-        match qs.condition {
-            Condition::Or(ref v) => assert!(v.is_empty(), "expected Or(empty)"),
-            ref other => panic!("expected Condition::Or(empty), got {other:?}"),
+        match crate::query::q::q_to_condition(qs.condition) {
+            Condition::Or(v) => assert!(v.is_empty(), "expected Or(empty)"),
+            other => panic!("expected Condition::Or(empty), got {other:?}"),
         }
     }
 
@@ -1624,9 +1721,9 @@ mod tests {
 
         let q: Q<Fake> = Q::Basic(BasicPredicate::False);
         let qs: QuerySet<Fake> = QuerySet::new().exclude_struct(q);
-        match qs.condition {
+        match crate::query::q::q_to_condition(qs.condition) {
             Condition::Not(_) => {}
-            ref other => panic!("expected Condition::Not, got {other:?}"),
+            other => panic!("expected Condition::Not, got {other:?}"),
         }
     }
 
@@ -1642,9 +1739,9 @@ mod tests {
         let qs: QuerySet<Fake> = QuerySet::new().exclude_struct(q);
         // True AND NOT(True) → NOT(True). Condition::and folds away
         // the `Condition::True` side, so we expect a bare `Not(True)`.
-        match qs.condition {
+        match crate::query::q::q_to_condition(qs.condition) {
             Condition::Not(inner) => assert!(matches!(*inner, Condition::True)),
-            ref other => panic!("expected Condition::Not(True), got {other:?}"),
+            other => panic!("expected Condition::Not(True), got {other:?}"),
         }
     }
 
@@ -1656,10 +1753,25 @@ mod tests {
         use sassi::BasicPredicate;
         let bp: BasicPredicate<Fake> = BasicPredicate::False;
         let qs: QuerySet<Fake> = QuerySet::new().filter_struct(bp);
-        match qs.condition {
-            Condition::Or(ref v) => assert!(v.is_empty()),
-            ref other => panic!("expected Condition::Or(empty), got {other:?}"),
+        match crate::query::q::q_to_condition(qs.condition) {
+            Condition::Or(v) => assert!(v.is_empty()),
+            other => panic!("expected Condition::Or(empty), got {other:?}"),
         }
+    }
+
+    /// **T6.9 substrate-flip lock.** `QuerySet<T>::condition` is `Q<T>`
+    /// post-flip, not `Condition`. Type-level assertion: a fresh
+    /// queryset's condition must be a `Q<T>` shape and lower to
+    /// `Condition::True` through the bridge.
+    #[test]
+    fn queryset_condition_field_is_q_t() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        // Type-level: `qs.condition` is `Q<Fake>`, not `Condition`.
+        let _: &crate::query::Q<Fake> = &qs.condition;
+        // Lowering round-trip: `Q::always_true()` lowers to `Condition::True`,
+        // preserving SQL parity with the pre-flip queryset.
+        let lowered = crate::query::q::q_to_condition(qs.condition);
+        assert!(matches!(lowered, Condition::True));
     }
 
     #[test]
