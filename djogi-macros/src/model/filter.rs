@@ -119,12 +119,17 @@
 //!
 //! `crud::expand` does not emit `impl Model` for `pk = None` models
 //! (`Model::Pk: Encode` cannot be satisfied without a real PK — see
-//! `crud.rs` for the rationale). `{Model}Filter` does not depend on the
-//! `Model` trait — the clauses are erased `FilterClause` records, not
-//! `FieldRef<M, V>` handles — so it compiles for every pk strategy.
-//! There is no gate here; the user-field setter emission works the same
-//! for `pk = None` structs as for the others. Skipping framework
-//! fields is parametric on `model_attrs.pk`, matching `descriptor::expand`.
+//! `crud.rs` for the rationale). The `{Model}Filter` struct itself, its
+//! setters, and the `ModelFilter` impl have no `Model` dependency — the
+//! clauses are erased `FilterClause` records, not `FieldRef<M, V>`
+//! handles — so they compile for every pk strategy.
+//!
+//! The Cluster 8γ Stage 2 `IntoQ<#name>` bridge is the one piece that
+//! does require `#name: Model` (because `Q<T: Model>` carries that
+//! bound). Skip the bridge emission for `pk = None` models — the
+//! `QuerySet::filter_struct` / `exclude_struct` entry points are
+//! unreachable on a model with no `Model` impl anyway, so the missing
+//! `IntoQ` impl is not observable.
 //!
 //! # Path routing
 //!
@@ -265,6 +270,37 @@ pub fn expand(
          both paths produce structurally equivalent condition trees."
     );
 
+    // ── `IntoQ<#name>` bridge (Cluster 8γ Stage 2 — T6.7) ───────────────
+    //
+    // Lifts `{Model}Filter` into the `Q<T>` algebra so it composes with
+    // the `QuerySet::filter_struct` / `exclude_struct` signature
+    // `<F: IntoQ<T>>`. The impl folds the accumulated clauses through
+    // `clauses_into_condition` and wraps the result as
+    // `Q::Condition(_)`. Character-for-character SQL parity is
+    // preserved by construction.
+    //
+    // Gated on `pk != PkStrategy::None`: `Q<T: Model>` carries a
+    // `Model` bound, but `crud::expand` does not emit `impl Model` for
+    // `pk = None` models. Skipping the bridge there keeps the rest of
+    // `{Model}Filter` (struct, setters, `ModelFilter` impl) usable for
+    // pk-less models even though the closure-free filter path is not
+    // reachable on them.
+    let into_q_bridge = if matches!(model_attrs.pk, PkStrategy::None) {
+        quote! {}
+    } else {
+        quote! {
+            impl ::djogi::__private::__SealedIntoQ for #filter_name {}
+            impl ::djogi::__private::query::IntoQ<#name> for #filter_name {
+                #[inline]
+                fn into_q(self) -> ::djogi::__private::query::Q<#name> {
+                    let clauses = <Self as ::djogi::ModelFilter>::into_clauses(self);
+                    let cond = ::djogi::__private::query::clauses_into_condition(clauses);
+                    ::djogi::__private::query::Q::Condition(cond)
+                }
+            }
+        }
+    };
+
     quote! {
         #[doc = #struct_doc]
         #[derive(Debug, Clone, Default)]
@@ -294,30 +330,6 @@ pub fn expand(
             }
         }
 
-        // ── `IntoQ<#name>` bridge (Cluster 8γ Stage 2 — T6.7) ───────────────
-        //
-        // Lifts `{Model}Filter` into the `Q<T>` algebra so it composes
-        // with the new `QuerySet::filter_struct` / `exclude_struct`
-        // signature `<F: IntoQ<T>>`. The impl folds the accumulated
-        // clauses through the existing `clauses_into_condition` helper
-        // and wraps the result as `Q::Condition(_)`. Character-for-
-        // character SQL parity is preserved by construction:
-        // `q_to_condition` round-trips `Q::Condition(_)` as the
-        // identity, so the SQL emitter sees exactly the `Condition`
-        // tree the pre-T6.9 path produced.
-        //
-        // The seal is satisfied via the `__SealedIntoQ` macro-routing
-        // helper exposed in `__private`. Adopter code cannot impl
-        // `IntoQ<T>` for arbitrary downstream types because the
-        // underlying seal trait is crate-private to djogi.
-        impl ::djogi::__private::__SealedIntoQ for #filter_name {}
-        impl ::djogi::__private::query::IntoQ<#name> for #filter_name {
-            #[inline]
-            fn into_q(self) -> ::djogi::__private::query::Q<#name> {
-                let clauses = <Self as ::djogi::ModelFilter>::into_clauses(self);
-                let cond = ::djogi::__private::query::clauses_into_condition(clauses);
-                ::djogi::__private::query::Q::Condition(cond)
-            }
-        }
+        #into_q_bridge
     }
 }
