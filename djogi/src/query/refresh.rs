@@ -19,11 +19,14 @@
 //! # Send + Sync auto-derivation
 //!
 //! No manual `unsafe impl Send` or `unsafe impl Sync` was required.
-//! All fields (`DjogiPool`, `AuthContext`, `Option<BasicPredicate<T>>`) are
-//! `Send + Sync` when `T: Send + Sync`. `PhantomData<T>` is `Send + Sync`
-//! regardless of `T`'s variance — it carries no actual data — so rustc
-//! auto-derives both bounds for `DjogiDeltaFetcher<T>` without any unsafe
-//! code. Verified: compilation succeeds without manual impls.
+//! `DjogiPool` and `AuthContext` are `Send + Sync + 'static` outright;
+//! `Option<BasicPredicate<T>>` is `Send + Sync` when `T: Send + Sync` (sassi
+//! upholds this). `PhantomData<T>` participates in auto-trait inference and
+//! is `Send + Sync` exactly when `T: Send + Sync` — that bound is already
+//! required by the `DeltaPunnuFetcher` trait impl below, so the inference
+//! holds for every well-formed `DjogiDeltaFetcher<T>`. Verified: compilation
+//! succeeds without manual impls. The const-fn-pointer assertion at the
+//! bottom of this file pins the contract at the type-system level.
 //!
 //! # Skeleton scope (T8.3)
 //!

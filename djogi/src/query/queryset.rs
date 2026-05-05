@@ -1899,8 +1899,10 @@ where
     /// # Status
     ///
     /// **T8.3 skeleton only.** The fetcher's `fetch_delta` body is
-    /// `unimplemented!()`; calling `handle.update().await` panics until
-    /// T8.5 lands the SQL path.
+    /// `unimplemented!()`. Sassi catches fetcher panics into
+    /// `FetchError::FetcherPanic`, so `handle.update().await` returns
+    /// `Err(FetchError::FetcherPanic)` rather than unwinding. T8.5 lands
+    /// the real SQL path.
     ///
     /// # Compile-time gate (T8.4)
     ///
