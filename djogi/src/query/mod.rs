@@ -2,25 +2,39 @@
 //!
 //! The public surface is re-exported at crate root and in `prelude`:
 //! users write `use djogi::prelude::*;` and get `QuerySet`, `FieldRef`,
-//! `Lookup`, etc. without a second import.
+//! `Lookup`, `Q`, etc. without a second import.
 //!
 //! Internally: `queryset` holds the builder state, `condition` the filter
-//! tree, `field` the typed column handles, `order` ordering expressions,
-//! `filter` the programmatic-builder types, `update` bulk-update assignments,
-//! `sql` the `ConditionBuilder` + SQL emitters, and `terminal` the `fetch_*`
-//! methods. Splitting by responsibility keeps each file auditable.
+//! tree (the legacy substrate, retired by Cluster 8γ T6.9), `q` the
+//! public Q-algebra (the post-8γ substrate), `field` the typed column
+//! handles, `order` ordering expressions, `filter` the programmatic-builder
+//! types, `update` bulk-update assignments, `sql` the `ConditionBuilder` +
+//! SQL emitters, and `terminal` the `fetch_*` methods. Splitting by
+//! responsibility keeps each file auditable.
 //!
 //! # Public vs internal surface
 //!
-//! User code composes filters through `Condition` + `FieldRef` lookup
-//! methods — **never** by constructing `Leaf`/`FilterValue`/`LookupOp`
-//! variants directly. The raw AST types remain reachable under
-//! [`internal`] for in-tree consumers (the Task 6 SQL emitter, migration
-//! differ, shell bindings) and for integration tests that assert on the
-//! tree shape, but they are not peer public API with `Condition` /
-//! `FieldRef`. Treat paths inside `internal` as unstable — variant names,
-//! payload shapes, and the module layout can shift across phases without
-//! a semver bump.
+//! User code composes filters through `Q<T>` (the public algebra
+//! introduced by Cluster 8γ) and `FieldRef` lookup methods — **never** by
+//! constructing `Leaf`/`FilterValue`/`LookupOp` variants directly. The
+//! raw AST types remain reachable under [`internal`] for in-tree
+//! consumers (the SQL emitter, migration differ, shell bindings) and
+//! for integration tests that assert on the tree shape, but they are
+//! not peer public API with `Q` / `FieldRef`. Treat paths inside
+//! `internal` as unstable — variant names, payload shapes, and the
+//! module layout can shift across phases without a semver bump.
+//!
+//! # Substrate — Q<T> alongside Condition during the 8γ transition
+//!
+//! `Condition` is the pre-8γ filter tree; `Q<T>` is the post-8γ
+//! public algebra. The Cluster 8γ refactor introduces `Q<T>` as an
+//! additive surface first (T6.1–T6.5 + T6.10–T6.13) so adopters and
+//! sister clusters (8β / 8δ / 8ε) can compose against the new shape
+//! without waiting for the substrate swap. T6.6–T6.9 then retire the
+//! internal `Condition` enum and route every `QuerySet<T>::filter`
+//! through `Q<T>`. Both types remain reachable through this stage of
+//! the work; `pub use condition::Condition` stays in place so existing
+//! `FieldRef::eq` / `gt` / `ilike` etc. callers continue compiling.
 
 pub mod aggregate;
 pub mod annotate;

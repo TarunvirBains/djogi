@@ -1,14 +1,12 @@
 //! `Q<T>` — the public predicate algebra over model `T`.
 //!
-//! `Q<T>` is the substrate every `QuerySet<T>` accumulates after the
-//! Cluster 8γ refactor. It composes through Rust's standard bitwise
-//! operators (`&` / `|` / `^` / `!`, desugaring to AND / OR / XOR /
-//! NOT) and lifts directly from `sassi::BasicPredicate<T>` for
-//! Rust-evaluable predicates.
+//! `Q<T>` is the substrate adopters compose to filter `QuerySet<T>`.
+//! It composes through Rust's standard bitwise operators (`&` / `|`
+//! / `^` / `!`, desugaring to AND / OR / XOR / NOT) and lifts
+//! directly from `sassi::BasicPredicate<T>` for Rust-evaluable
+//! predicates.
 //!
-//! # Design — variant set
-//!
-//! At skeleton stage (T6.2) `Q<T>` carries:
+//! # Variant grammar
 //!
 //! | Variant            | Surface                            | Where it evaluates |
 //! |--------------------|------------------------------------|--------------------|
@@ -18,9 +16,47 @@
 //! | `Q::Regex(...)`    | `col ~ $1` / `col ~* $1` (POSIX)   | SQL only           |
 //! | `Q::Expression(e)` | `Expr<bool>` escape hatch          | SQL only           |
 //! | `Q::Array(p)`      | `@>`, `<@`, `&&`                   | SQL only           |
+//! | `Q::Compound`      | `AND` / `OR` over mixed siblings   | both               |
+//! | `Q::Xor(a, b)`     | XOR (general form `(¬a∧b)∨(a∧¬b)`) | both               |
+//! | `Q::Negated(q)`    | `NOT (...)`                        | both               |
 //!
-//! Operator overloads (`Q::Compound`, `Q::Xor`, `Q::Negated`) land at
-//! T6.3 / T6.5; the lowering bridge to `Condition` lands at T6.6.
+//! `Q<T>` is `#[non_exhaustive]` — adding new SQL-only variants is
+//! non-breaking; downstream pattern matches must include `_ => …`.
+//!
+//! # Operator precedence
+//!
+//! Rust's precedence table: `&` > `^` > `|` (AND tighter than XOR
+//! tighter than OR). So
+//!
+//! ```ignore
+//! Q::Basic(...) ^ Q::Ilike(...) | Q::Negated(...)
+//! ```
+//!
+//! parses as `(Basic ^ Ilike) | Negated`. The trybuild compile-pass
+//! `phase8_q_algebra_xor_precedence.rs` (T6.11) locks the parse at
+//! the type level; runtime tests
+//! `q_operator_precedence_*` in `query::q::tests` lock the resulting
+//! `Q::Compound` / `Q::Xor` shape.
+//!
+//! # Internal compound nodes — when the substrate uses what
+//!
+//! Pure-Basic compositions short-circuit through sassi's flattening
+//! reducer. `Q::from(a) & Q::from(b)` produces a single
+//! `Q::Basic(BasicPredicate::And(vec![a, b]))` rather than wrapping
+//! in `Q::Compound`. Mixed-operand compositions (at least one side
+//! is not `Q::Basic`) lift to:
+//!
+//! - `Q::Compound { op: And | Or, parts: Vec<Q<T>> }` for the
+//!   associative operators (And/Or). Flattens on construction:
+//!   `(a & b) & c` produces a 3-element `parts` Vec rather than a
+//!   nested binary tree.
+//! - `Q::Xor(Box<Q<T>>, Box<Q<T>>)` for XOR — non-associative, so
+//!   flattening would silently re-associate. Mirrors sassi's
+//!   `BasicPredicate::Xor(Box, Box)` shape.
+//! - `Q::Negated(Box<Q<T>>)` for NOT over non-Basic operands.
+//!   Pure-Basic negation rides sassi's `Not` (which collapses
+//!   double-negation in place); mixed wraps. `!Q::Negated(inner)`
+//!   collapses to `*inner` to avoid stacked `NOT NOT` SQL.
 //!
 //! ## FTS and spatial route through `Q::Expression`
 //!
