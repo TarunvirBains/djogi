@@ -286,6 +286,33 @@ mod tests {
         assert!(validate_proxy_for_ident(&id).is_ok());
     }
 
+    /// Exactly 63-byte identifier is accepted — boundary of the Postgres
+    /// unquoted-identifier cap (≤ 63 bytes). Locks the `<=` not `<` check.
+    #[test]
+    fn validates_63_byte_ident() {
+        // 63 ASCII letter 'a's — exactly at the cap.
+        let name = "a".repeat(63);
+        let id: syn::Ident = syn::parse_str(&name).unwrap();
+        assert!(
+            validate_proxy_for_ident(&id).is_ok(),
+            "63-byte ident must be accepted"
+        );
+    }
+
+    /// 64-byte identifier is rejected — one byte over the Postgres cap.
+    /// Locks the off-by-one boundary at the enforcement site.
+    #[test]
+    fn rejects_64_byte_ident() {
+        // 64 ASCII letter 'a's — one over the cap.
+        let name = "a".repeat(64);
+        let id: syn::Ident = syn::parse_str(&name).unwrap();
+        let err = validate_proxy_for_ident(&id).expect_err("64-byte ident rejected");
+        assert!(
+            err.to_string().contains("exceeds 63 bytes"),
+            "error must mention the 63-byte cap"
+        );
+    }
+
     /// Empty array `default_order = []` is rejected with a span-precise
     /// error — silently emitting no override would be a phantom-bug
     /// surface.
