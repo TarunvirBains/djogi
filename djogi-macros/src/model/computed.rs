@@ -50,25 +50,18 @@ use syn::{Expr, Lit, Meta, MetaNameValue, Token, punctuated::Punctuated};
 ///
 /// Captured at field-walk time alongside the regular `FieldAttrs`
 /// parser. The field's Rust type (`return_type`) is captured from the
-/// declared `syn::Field::ty` so T4.4 can wire the auto-emitted Rust-
-/// side getter signature to match without re-parsing the struct.
-///
-/// `#[allow(dead_code)]` on the fields silences "field never read"
-/// warnings during the T4.3-only intermediate state — T4.4 and T4.5
-/// land in subsequent commits and consume both fields. Keeping the
-/// allow narrow (per-field, not blanket) means an actually-unused
-/// future addition still trips the lint.
+/// declared `syn::Field::ty` so T4.4 wires the auto-emitted Rust-side
+/// getter stub signature to match and T4.5 threads the type through
+/// the typed `Expr<T>::raw_sql_fragment(...)` constructor.
 #[derive(Debug, Clone)]
 pub struct ComputedAttr {
     /// SQL expression source as written in the attribute.
-    #[allow(dead_code)]
     pub sql: String,
     /// Rust return type of the computed getter — sourced from the
     /// `syn::Field::ty` of the field carrying the annotation. T4.4
-    /// uses this to auto-emit the getter's signature; T4.5 uses it
-    /// for the typed `Expr<T>::raw_sql_fragment(...)` thread-through
-    /// in the `{Model}Computed` accessor.
-    #[allow(dead_code)]
+    /// uses this for the getter stub signature; T4.5 threads it into
+    /// the typed `Expr<T>::raw_sql_fragment(...)` carrier in the
+    /// `{Model}Computed` accessor emission.
     pub return_type: syn::Type,
 }
 
@@ -234,6 +227,100 @@ fn parse_computed_args(
     Ok(sql)
 }
 
+// ── T4.4 — Rust-side getter emission ─────────────────────────────────────
+//
+// Emits one inherent method per `#[computed(sql = "...")]` field:
+//
+// ```rust
+// impl Vehicle {
+//     pub fn total_price(&self) -> f64 {
+//         unimplemented!(
+//             "Rust-side getter for the `total_price` computed field is \
+//              not auto-emitted in v0.1.0. Implement this method by hand \
+//              if you need to call it after `fetch_one()` without a \
+//              re-query — see docs/guide/computed.md for the manual \
+//              evaluation pattern."
+//         )
+//     }
+// }
+// ```
+//
+// # Why `unimplemented!()` instead of auto-deriving an arithmetic
+// expression
+//
+// Per the lens (`feedback_decision_priorities.md`, plan §7 #8 resolved
+// 2026-05-03): production stability and simple-to-use both apply; on
+// this decision the deciding consideration is that a home-grown
+// arithmetic SQL parser would ship bug-for-bug copies of Postgres
+// semantics (rounding divergence between Rust `f64` and Postgres
+// `numeric`, NULL-coalescing edge cases, integer overflow semantics).
+// A failing-loud `unimplemented!()` at runtime forces adopters who
+// need the Rust-side path to hand-implement the getter — bounded
+// escape hatch instead of silent miscompile. Common case (compute the
+// expression server-side via `.annotate()` / `.filter()`) is fully
+// supported by T4.5's `{Model}Computed` ZST.
+//
+// # Why we still emit a method (not skip the getter entirely)
+//
+// Adopter ergonomics: `vehicle.total_price()` is the natural call
+// site, mirroring `vehicle.base_price`. Skipping the auto-emitted
+// stub would force every adopter to choose between a hand-written
+// inherent impl block (boilerplate) and an awkward `Vehicle::computed()
+// .total_price().eval(&vehicle)` style. The stub keeps the call site
+// uniform; the `unimplemented!()` body fails loud the first time it
+// runs so adopters who actually need the path know to hand-implement.
+
+/// Emit one inherent method per computed field. The body is
+/// `unimplemented!(...)` with an actionable diagnostic — every site
+/// reaching the call-site method without a hand-written override
+/// fails loud at runtime per the lens resolution above.
+///
+/// Returns the full inherent-impl token stream wrapping every emitted
+/// getter for `#name`. Empty token stream when no computed fields are
+/// declared.
+pub fn emit_rust_getters(
+    struct_name: &syn::Ident,
+    computed_attrs: &[(syn::Ident, ComputedAttr)],
+) -> proc_macro2::TokenStream {
+    if computed_attrs.is_empty() {
+        return proc_macro2::TokenStream::new();
+    }
+    let getters: Vec<proc_macro2::TokenStream> = computed_attrs
+        .iter()
+        .map(|(field_ident, attr)| {
+            let return_type = &attr.return_type;
+            let sql = &attr.sql;
+            let panic_msg = format!(
+                "Rust-side getter for the `{field_ident}` computed field is \
+                 not auto-emitted in v0.1.0. Implement this method by hand \
+                 if you need to call it after `fetch_one()` without a \
+                 re-query — see docs/guide/computed.md for the manual \
+                 evaluation pattern. SQL expression: {sql}",
+            );
+            let doc_comment = format!(
+                " Auto-emitted Rust-side getter stub for the\n\
+                 `#[computed(sql = \"{sql}\")]` field. Emits\n\
+                 `unimplemented!()` at v0.1.0 — implement by hand when the\n\
+                 Rust-side evaluation path is exercised. The SQL-side path\n\
+                 (`.annotate()` / `.filter()` / `.order_by()` via\n\
+                 `{}::Computed`) works without a hand-written getter.",
+                struct_name,
+            );
+            quote::quote! {
+                #[doc = #doc_comment]
+                pub fn #field_ident(&self) -> #return_type {
+                    ::std::unimplemented!(#panic_msg)
+                }
+            }
+        })
+        .collect();
+    quote::quote! {
+        impl #struct_name {
+            #(#getters)*
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +437,38 @@ mod tests {
         });
         let err = parse_computed_attrs(&s).expect_err("mix rejected");
         assert!(err.to_string().contains("computed"));
+    }
+
+    /// T4.4 — `emit_rust_getters` produces an `impl Vehicle { ... }`
+    /// block with one `pub fn` per computed field, return type sourced
+    /// from the field's declared Rust type, body `unimplemented!()`.
+    #[test]
+    fn emits_unimplemented_getter_stubs() {
+        let s = parse_struct(quote! {
+            struct Vehicle {
+                #[computed(sql = "base_price * 2")]
+                pub double_price: f64,
+            }
+        });
+        let parsed = parse_computed_attrs(&s).expect("ok");
+        let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
+        let ts = emit_rust_getters(&struct_name, &parsed).to_string();
+        assert!(ts.contains("impl Vehicle"));
+        assert!(ts.contains("pub fn double_price"));
+        assert!(ts.contains("unimplemented"));
+        // The doc comment carries the SQL fragment for adopter
+        // discoverability — surface as a string contains check.
+        assert!(ts.contains("base_price * 2"));
+    }
+
+    /// T4.4 — `emit_rust_getters` returns an empty token stream when
+    /// no computed fields are declared. Non-computed models pay zero
+    /// emission cost.
+    #[test]
+    fn empty_input_emits_empty_token_stream() {
+        let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
+        let ts = emit_rust_getters(&struct_name, &[]).to_string();
+        assert!(ts.is_empty());
     }
 
     /// Multiple computed fields on one struct parse cleanly in declared

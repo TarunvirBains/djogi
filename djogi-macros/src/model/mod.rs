@@ -55,8 +55,8 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // empty-SQL strings, unknown keys, and `#[field(...)]`-with-
     // `#[computed(...)]` collisions. T4.5 will lower the captured
     // metadata into descriptor entries + `{Model}Computed` ZST
-    // accessors; T4.3 captures syntactic state only.
-    let _computed_attrs = computed::parse_computed_attrs(&struct_item)?;
+    // accessors. T4.4 emits the Rust-side getter stub.
+    let computed_attrs = computed::parse_computed_attrs(&struct_item)?;
 
     validate_through_model_shape(&struct_item, &model_attrs)?;
     validate_version_fields(&struct_item, &field_attrs)?;
@@ -194,6 +194,23 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         &field_attrs,
     );
 
+    // Phase 8β T4.4 — Rust-side computed-field getter stubs.
+    //
+    // One inherent method per `#[computed(sql = "...")]` field with an
+    // `unimplemented!()` body that fails loud at runtime. Per the lens
+    // (`feedback_decision_priorities.md`, plan §7 #8 resolved
+    // 2026-05-03): production stability + simple-to-use both apply on
+    // the narrow CASE/WHEN tail; production stability wins because a
+    // failing-loud panic is far less hazardous than a home-grown
+    // arithmetic SQL parser shipping bug-for-bug copies of Postgres
+    // semantics. Adopters who exercise the Rust-side path hand-
+    // implement the getter; the SQL-side path (`.annotate()` /
+    // `.filter()` / `.order_by()`) works without a hand-written body.
+    //
+    // Empty token stream when no computed fields are declared (the
+    // common case). Non-computed models pay zero cost.
+    let computed_getters = computed::emit_rust_getters(&struct_item.ident, &computed_attrs);
+
     Ok(quote::quote! {
         #expanded
         #hooks_impl
@@ -209,6 +226,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #outer
         #projections_ts
         #rationale_advisories
+        #computed_getters
     })
 }
 
