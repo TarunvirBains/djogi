@@ -1868,6 +1868,80 @@ impl_into_distinct_columns_tuple!(A, B, C, D);
 impl_into_distinct_columns_tuple!(A, B, C, D, E);
 impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
 
+// ── Cluster 8δ T8.3 — delta-sync refresh subscription ────────────────────────
+//
+// `refresh_into` lives in its own impl block (separate from the base
+// `impl<T: Model>` block and the `impl<T: Model + Cacheable + Clone>` cache
+// block) because it requires the stricter combined bound
+// `T: Model + DeltaSyncCacheable + Send + Sync + 'static`. Widening any
+// existing block's bound would cascade to methods that have no need of
+// `DeltaSyncCacheable`, breaking the clean opt-in layering.
+//
+// `into_basic_predicate` is also here: it is `pub(crate)` and exists solely
+// as the extraction point for T8.4. Placing it in this block co-locates the
+// two methods that work together at the delta-sync boundary.
+//
+// Path-routing note (non-emitted code):
+//   Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
+//   code only. This impl block is non-emitted framework code; it may spell
+//   `sassi::Punnu`, `sassi::DeltaRefreshHandle`, `crate::auth::AuthContext`,
+//   `crate::pg::pool::DjogiPool`, and `sassi::BasicPredicate` directly.
+impl<T> QuerySet<T>
+where
+    T: crate::model::Model + sassi::DeltaSyncCacheable + Send + Sync + 'static,
+{
+    /// Bind this QuerySet to a Punnu and start a delta-sync refresh subscription.
+    ///
+    /// The fetcher owns a clone of the pool, the AuthContext by value, and
+    /// the QuerySet's BasicPredicate filter (extracted via
+    /// `into_basic_predicate`). NEVER captures `&mut DjogiContext`.
+    ///
+    /// # Status
+    ///
+    /// **T8.3 skeleton only.** The fetcher's `fetch_delta` body is
+    /// `unimplemented!()`; calling `handle.update().await` panics until
+    /// T8.5 lands the SQL path.
+    ///
+    /// # Compile-time gate (T8.4)
+    ///
+    /// Closure-flavored filters (anything that introduces `MemQ::Closure`
+    /// in the QuerySet's filter tree) are refused at this call site —
+    /// the bound `T: DeltaSyncCacheable` plus the `BasicPredicate`-only
+    /// extraction enforces this. T8.4 lands the real `into_basic_predicate`
+    /// implementation; today's stub returns `None`.
+    ///
+    /// # Interval placeholder
+    ///
+    /// The 30 s interval is a placeholder. T8.6 may add a builder for
+    /// caller-supplied interval; see spec §672 review.
+    pub fn refresh_into(
+        self,
+        punnu: &sassi::Punnu<T>,
+        pool: crate::pg::pool::DjogiPool,
+        auth: crate::auth::AuthContext,
+    ) -> sassi::DeltaRefreshHandle<T> {
+        let filter = self.into_basic_predicate();
+        let fetcher = crate::query::refresh::DjogiDeltaFetcher::<T> {
+            pool,
+            auth,
+            filter,
+            _model: std::marker::PhantomData,
+        };
+        // [CHECK] Default 30s interval is a placeholder; T8.6 may add a
+        // builder for caller-supplied interval. Pin via spec §672 review.
+        let interval = std::time::Duration::from_secs(30);
+        punnu.start_delta_refresh(interval, fetcher)
+    }
+
+    /// Stub for T8.4 — extract a `BasicPredicate<T>` from this QuerySet's
+    /// filter tree. Returns `None` for now; T8.4 walks the actual filter
+    /// tree and rejects closure-flavored predicates at compile time.
+    pub(crate) fn into_basic_predicate(self) -> Option<sassi::BasicPredicate<T>> {
+        let _ = self;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -211,6 +211,20 @@ fn compile_pass_phase8_t7_6() {
 }
 
 #[test]
+fn compile_pass_phase8_t8() {
+    // Targeted bucket for Cluster 8δ T8.3 — `QuerySet::refresh_into` skeleton.
+    // Witnesses that `refresh_into` resolves to the expected signature:
+    //   fn(QuerySet<T>, &Punnu<T>, DjogiPool, AuthContext) -> DeltaRefreshHandle<T>
+    // T8.3 is non-emitted code (method on `QuerySet<T>`, not a macro
+    // expansion). The fetcher owns all substrate by value; no borrowed
+    // lifetimes appear in the call site.
+    //
+    // Run this bucket in isolation to check just the T8.3 signature:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t8 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t8_*.rs");
+}
+
+#[test]
 fn compile_pass_phase8() {
     // Globs cannot exclude sub-prefixes (no brace expansion), so this
     // can't be expressed as `phase8_*.rs` — that pattern would also
