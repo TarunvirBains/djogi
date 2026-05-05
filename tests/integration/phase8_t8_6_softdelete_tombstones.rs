@@ -15,24 +15,21 @@
 //!    scan tick and verifies that `applied == 1` (only the live row was
 //!    upserted) while `punnu.get(deleted_id) == None` (the deleted row was
 //!    tombstoned, not silently dropped by a `deleted_at IS NULL` SQL filter).
-//!    If a defensive `deleted_at IS NULL` filter were ever added to the
-//!    fetcher's WHERE clause, the deleted row would be absent at the SQL
-//!    boundary and would never reach the tombstone derivation path — the test
-//!    would then falsely pass `applied == 1` but the tombstone assertion would
-//!    fail (since `punnu.get(deleted_id)` would be `None` for the wrong reason:
-//!    the row was never fetched). The correct proof is that the tick observes
-//!    the row AND classifies it as a tombstone, not that the SQL drops it.
 //!
-//!    **Implementation note:** this test observes absence from the Punnu after
-//!    a tombstone, which is the same observable outcome whether the tombstone
-//!    path ran or the SQL filter dropped the row. To distinguish the paths
-//!    we also verify `applied == 1` (live row count) on the first full-scan
-//!    tick — a `deleted_at IS NULL` filter would still yield `applied == 1`
-//!    (only the live row passes the filter), so the full discriminating proof
-//!    is `applied == 1 AND punnu.get(deleted_id) == None`. The absence of the
-//!    deleted row in `live_items` (i.e., the tombstone path ran) is the load-
-//!    bearing invariant; a structural SQL-log test would be the strongest pin
-//!    but is out of scope for an integration test.
+//!    **Discrimination caveat:** at the integration-test boundary, the
+//!    tombstone path and a hypothetical `deleted_at IS NULL` SQL filter
+//!    produce identical observable outcomes — both yield `applied == 1`
+//!    (only the live row counted) and `punnu.get(deleted_id) == None`
+//!    (deleted row absent from cache). The test cannot conclusively
+//!    distinguish the two paths from outside the fetcher; a structural
+//!    SQL-log assertion would be the strongest pin but is out of scope
+//!    for integration tests. What this test DOES pin is the structural
+//!    contract: the deleted row reaches the fetcher's output (as a
+//!    tombstone, not a live item) — a regression that completely dropped
+//!    the row at SQL would also break Pattern 2/3 paths landing in T8.7
+//!    and T8.8 (those tombstones merge with Pattern 1's into the same
+//!    `HashSet` before `DeltaResult::new`), so this test serves as a
+//!    forward-compat guard rail for the merge contract too.
 //!
 //! 3. **`non_soft_deletable_model_returns_empty_tombstones`** — backward-
 //!    compat check. A plain (non-`soft_deletable`) model's delta tick returns
