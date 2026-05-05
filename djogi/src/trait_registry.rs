@@ -5,34 +5,50 @@
 //! [`TraitRegistration`] is the runtime entry that the
 //! `#[djogi::trait_impl]` attribute macro emits via
 //! `inventory::submit!` per `impl Trait for Model` block. The
-//! registry lets cross-cutting consumers (notably `sassi` for
-//! Punnu-scoped trait queries — see Plan §T5.4) walk every model
-//! that implements a given trait at runtime, without forcing every
+//! registry lets cross-cutting consumers walk every model that
+//! implements a given trait at runtime, without forcing every
 //! adopter to enumerate the implementations by hand.
 //!
 //! # Why
 //!
-//! Sassi consumes the registry via `Sassi::all_impl::<dyn T>() ->
-//! Vec<Arc<dyn T>>` (T5.4 + 8δ T7) — adopters writing
-//! `#[djogi::trait_impl] impl Searchable for Vehicle { ... }` get
-//! Vehicle visible to every cross-cutting query against
+//! Adopters writing `#[djogi::trait_impl] impl Searchable for Vehicle
+//! { ... }` get Vehicle visible to every cross-cutting query against
 //! `dyn Searchable` without naming Vehicle in the consumer's path.
 //!
 //! Mirrors the established `inventory`-based registry pattern from
 //! `djogi::apps::AppRegistry` — compile-time submission, one-shot
 //! at first read, downstream consumers iterate.
 //!
+//! # Relationship to sassi's `Sassi::all_impl::<dyn T>()`
+//!
+//! Sassi ships its own `#[sassi::trait_impl]` attribute macro and
+//! `inventory` registry (`sassi::trait_registry`). Sassi's registry
+//! is keyed off `Punnu<T>`-scoped models — Sassi knows about
+//! per-model pools and uses the registry to construct `Vec<Arc<dyn T>>`
+//! across every Punnu-registered model implementing the trait.
+//!
+//! Djogi's registry here is a sibling surface for cross-type queries
+//! that do **not** require the Punnu pool boundary. Adopters with
+//! sassi enabled and Punnu-pooled models use `#[sassi::trait_impl]`
+//! and `Sassi::all_impl::<dyn T>()` for the full sassi-integrated
+//! cross-type query path; adopters who only need the descriptor-
+//! level enumeration use `#[djogi::trait_impl]` and
+//! [`iter_for_trait::<dyn T>()`] directly.
+//!
+//! Plan §7 #12 (resolved 2026-05-03): T5 owns `djogi::trait_registry::*`
+//! surface only; the sassi-bridging consumer surface is sassi's own
+//! responsibility. T7 (cluster 8δ) extends `djogi::cache::*` for the
+//! Punnu cache surface; this module stays narrowly focused on the
+//! registration plumbing.
+//!
 //! # Type erasure
 //!
 //! Trait-object pointer manipulation is the soundness-critical
-//! surface. T5.1 ships only the registration struct + the iterator;
-//! the type-erased caster path lands in T5.3 with explicit Codex
-//! review at `effort = xhigh` per the lens (`feedback_decision_priorities.md`,
-//! plan §7 #11). T5.1's struct surface is the foundation; the caster
-//! field is left as a `fn` pointer whose signature is fixed at this
-//! commit — T5.3 implements the body using the canonical
-//! `CastedTraitObj` (or equivalent safe carrier) pattern, never
-//! `transmute`.
+//! surface. The registry's wire type is `Arc<dyn Any + Send + Sync>`;
+//! the per-impl caster (T5.3) routes through a per-(Model, Trait)
+//! carrier struct that satisfies `Any + Send + Sync + 'static`,
+//! using only Rust's built-in coercions — `Arc::downcast`, unsized
+//! `Arc<T>` → `Arc<dyn Trait>` coercion, never `transmute`.
 
 /// Erased Arc carrier — `Arc<dyn Any + Send + Sync>`. Type alias
 /// improves readability of the `caster` field signature and silences
