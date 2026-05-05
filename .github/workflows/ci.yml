@@ -58,14 +58,16 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: TarunvirBains/sassi
-          ref: 49190ad
+          # Full 40-character SHA — actions/checkout@v6 rejects
+          # short SHAs with "branch or tag … could not be found".
+          # Pin to v0.1.0-alpha.3 prep commit; bump to `ref:
+          # v0.1.0-alpha.3` (and drop `fetch-depth`) once sassi
+          # tags it.
+          ref: 49190adc43174dae6dcc6dea35911bc62c385794
           path: sassi-reference
-          # SHA pinning requires a full clone — actions/checkout@v6
-          # defaults to `fetch-depth: 1`, which limits the fetch to
-          # named refs (branches / tags) and rejects an arbitrary SHA.
-          # Drop to a full fetch so the SHA resolves. Bump back to the
-          # default `1` (or omit) when sassi tags v0.1.0-alpha.3 and we
-          # switch `ref:` to that tag name.
+          # SHA pinning requires a full fetch — actions/checkout@v6
+          # defaults to `fetch-depth: 1`, which only fetches named
+          # refs. Drop to a full clone so the SHA resolves.
           fetch-depth: 0
 
       # Ubuntu-latest GHA runners ship with ~14GB of free disk. Phase 7-Zero
@@ -194,14 +196,16 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: TarunvirBains/sassi
-          ref: 49190ad
+          # Full 40-character SHA — actions/checkout@v6 rejects
+          # short SHAs with "branch or tag … could not be found".
+          # Pin to v0.1.0-alpha.3 prep commit; bump to `ref:
+          # v0.1.0-alpha.3` (and drop `fetch-depth`) once sassi
+          # tags it.
+          ref: 49190adc43174dae6dcc6dea35911bc62c385794
           path: sassi-reference
-          # SHA pinning requires a full clone — actions/checkout@v6
-          # defaults to `fetch-depth: 1`, which limits the fetch to
-          # named refs (branches / tags) and rejects an arbitrary SHA.
-          # Drop to a full fetch so the SHA resolves. Bump back to the
-          # default `1` (or omit) when sassi tags v0.1.0-alpha.3 and we
-          # switch `ref:` to that tag name.
+          # SHA pinning requires a full fetch — actions/checkout@v6
+          # defaults to `fetch-depth: 1`, which only fetches named
+          # refs. Drop to a full clone so the SHA resolves.
           fetch-depth: 0
 
       - name: Install MSRV toolchain (matches workspace.package.rust-version)
@@ -280,14 +284,16 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: TarunvirBains/sassi
-          ref: 49190ad
+          # Full 40-character SHA — actions/checkout@v6 rejects
+          # short SHAs with "branch or tag … could not be found".
+          # Pin to v0.1.0-alpha.3 prep commit; bump to `ref:
+          # v0.1.0-alpha.3` (and drop `fetch-depth`) once sassi
+          # tags it.
+          ref: 49190adc43174dae6dcc6dea35911bc62c385794
           path: sassi-reference
-          # SHA pinning requires a full clone — actions/checkout@v6
-          # defaults to `fetch-depth: 1`, which limits the fetch to
-          # named refs (branches / tags) and rejects an arbitrary SHA.
-          # Drop to a full fetch so the SHA resolves. Bump back to the
-          # default `1` (or omit) when sassi tags v0.1.0-alpha.3 and we
-          # switch `ref:` to that tag name.
+          # SHA pinning requires a full fetch — actions/checkout@v6
+          # defaults to `fetch-depth: 1`, which only fetches named
+          # refs. Drop to a full clone so the SHA resolves.
           fetch-depth: 0
 
       - name: Free disk space on GHA runner
