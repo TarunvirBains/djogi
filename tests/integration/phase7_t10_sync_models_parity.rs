@@ -296,6 +296,7 @@ async fn sync_models_and_apply_plan_produce_identical_pg_class() {
             out_of_order_policy: djogi::migrate::OutOfOrderPolicy::default_for_config(
                 &djogi::config::DjogiConfig::default(),
             ),
+            audit_pool: None,
         };
         apply_plan(&mut ctx_b, plan, &runner_ctx, &guard)
             .await

@@ -621,6 +621,31 @@ pub struct RunnerCtx {
     /// runner consults this BEFORE inserting the pending ledger row,
     /// so a `Reject` outcome leaves no database trace.
     pub out_of_order_policy: super::policy::OutOfOrderPolicy,
+    /// Optional pool pointing at the **audit DB** (`crud_log_url` in
+    /// `Djogi.toml`).
+    ///
+    /// When `Some`, the runner writes one row to `djogi_ddl_audit`
+    /// per successful migration via [`super::audit::record_ddl`],
+    /// so `djogi db reset` (which drops the app DB) cannot erase
+    /// the migration history. When `None` the audit write is
+    /// silently skipped — appropriate for tests and for adopters
+    /// who have not yet provisioned the second DB.
+    ///
+    /// **Wiring status (Cluster 8ε):** populated only at the CLI
+    /// entry point (`apply` / `db reset` orchestrator) starting in
+    /// T9.5. Tests that build `RunnerCtx` literals leave this
+    /// `None`. The field exists today so adding the wire-up in T9.5
+    /// is a non-breaking change to `RunnerCtx`'s shape.
+    ///
+    /// **Why `deadpool_postgres::Pool` and not `DjogiPool`:** the
+    /// audit pool is not user-facing — adopters never see it, and
+    /// the runner constructs the audit-side `DjogiContext` itself
+    /// via `DjogiPool { inner: pool.clone() }` at the call site.
+    /// Holding the raw pool here keeps the dependency on
+    /// `DjogiPool`'s wider invariants (post-connect callbacks,
+    /// status reporting) out of `RunnerCtx`'s shape — those are
+    /// app-side concerns that do not apply to the audit DB.
+    pub audit_pool: Option<deadpool_postgres::Pool>,
 }
 
 /// Successful-apply report. The runner returns this on a clean

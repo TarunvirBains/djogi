@@ -56,6 +56,7 @@
 //! group of statements.
 
 pub mod attune;
+pub mod audit;
 pub mod bootstrap;
 pub mod build_match;
 pub mod compose;
@@ -83,6 +84,9 @@ pub mod verify;
 pub use attune::{
     AttuneDiagnostic, AttuneEntry, AttuneEntryKind, AttuneError, AttuneMode, AttuneRefusal,
     AttuneReport, AttuneRequest, attune,
+};
+pub use audit::{
+    DDL_AUDIT_TABLE_DDL, bootstrap_ddl_audit, record_ddl as record_ddl_audit, signature_to_hex,
 };
 pub use bootstrap::{
     AutoEmitError, BootstrapError, DEFAULT_NODE_ID, EmittedPhaseZero, PHASE_ZERO_VERSION,
