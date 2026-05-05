@@ -449,9 +449,9 @@ impl DjogiContext {
     /// boundary" contract: two top-level contexts observe and mutate
     /// independent pools.
     ///
-    /// Cluster 8δ T7.6 will add a guard that enforces single-context use
-    /// for tenant-scoped models. For now the boundary is documented but
-    /// not enforced.
+    /// To enforce that a received `Arc<Punnu<T>>` belongs to this context
+    /// before passing it into a framework method, use
+    /// [`DjogiContext::use_punnu`] (cluster 8δ T7.6).
     pub fn punnu<T>(&self) -> Option<std::sync::Arc<sassi::Punnu<T>>>
     where
         T: crate::types::Cacheable + 'static,
@@ -545,17 +545,18 @@ impl DjogiContext {
                      Acquire the Punnu via ctx.punnu::<T>() on this same context.",
                     std::any::type_name::<T>(),
                 );
+            } else {
+                tracing::error!(
+                    target: "djogi::cache",
+                    model = std::any::type_name::<T>(),
+                    "cross-context Punnu access — returning empty Punnu fallback. \
+                     A Punnu<T> from another DjogiContext was passed to use_punnu; \
+                     reads will return None and writes will not be observable on \
+                     the original context. This is a release-build fail-closed; \
+                     the caller should be using ctx.punnu::<T>() on this context.",
+                );
+                return std::sync::Arc::new(sassi::Punnu::<T>::builder().build());
             }
-            tracing::error!(
-                target: "djogi::cache",
-                model = std::any::type_name::<T>(),
-                "cross-context Punnu access — returning empty Punnu fallback. \
-                 A Punnu<T> from another DjogiContext was passed to use_punnu; \
-                 reads will return None and writes will not be observable on \
-                 the original context. This is a release-build fail-closed; \
-                 the caller should be using ctx.punnu::<T>() on this context.",
-            );
-            return std::sync::Arc::new(sassi::Punnu::<T>::builder().build());
         }
 
         std::sync::Arc::clone(p)
