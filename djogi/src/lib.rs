@@ -91,6 +91,11 @@ pub mod visage_boundary;
 // API; only the module it lives in is implementation-detail.
 pub use visage_boundary::DjogiVisageOf;
 
+// Cluster 8δ T7.4 — `SassiBootHook` re-export so `#[derive(Model)]`-emitted
+// `inventory::submit!` blocks can spell `::djogi::SassiBootHook` per
+// `feedback_macro_path_routing.md` (macro paths route through djogi only).
+pub use crate::cache::SassiBootHook;
+
 /// Private re-exports used only by macro-generated code.
 ///
 /// These are `#[doc(hidden)]` because they are an implementation detail of the

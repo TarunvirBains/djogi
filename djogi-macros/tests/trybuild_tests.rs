@@ -165,7 +165,24 @@ fn compile_pass_phase8_t7() {
     // usable in `Punnu<T>`, and `#[model(watermark_field = "...")]`
     // overrides the default `updated_at` watermark for the
     // emitted `DeltaSyncCacheable` impl.
+    //
+    // T7.4 adds `phase8_t7_4_punnu_boot_hook_emitted.rs` under a
+    // separate targeted bucket (below) — that fixture is also swept
+    // by this glob for the full T7 pass.
     TestCases::new().pass("tests/compile_pass/phase8_t7_*.rs");
+}
+
+#[test]
+fn compile_pass_phase8_t7_4() {
+    // Targeted bucket for Cluster 8δ T7.4 — boot-time Sassi registry.
+    // Pins that the macro-emitted `inventory::submit!` block routes
+    // every path through `::djogi::*` (per `feedback_macro_path_routing.md`)
+    // so the fixture compiles against a crate that only depends on `djogi`,
+    // with no direct `sassi` or `inventory` dep.
+    //
+    // Run this bucket in isolation to check just the T7.4 emission:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t7_4 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t7_4_*.rs");
 }
 
 #[test]

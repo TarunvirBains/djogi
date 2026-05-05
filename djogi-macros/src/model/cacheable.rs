@@ -232,9 +232,30 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
     let delta_sync_impl =
         sassi_codegen::generate_delta_sync_cacheable_impl(&derive_input, &options, &sassi_path)?;
 
+    // Cluster 8δ T7.4 — emit a `SassiBootHook` inventory submission so
+    // `DjogiContext::from_pool` (and `from_connection`) can walk the inventory
+    // at boot time and register a `Punnu<{Model}>` without adopter glue.
+    //
+    // Path-routing: every path in this emission goes through `::djogi::*` per
+    // `feedback_macro_path_routing.md`. `::djogi::SassiBootHook` is re-exported
+    // at the djogi crate root (T7.4). `::djogi::cache::Sassi` and
+    // `::djogi::cache::Punnu` are both re-exported through `djogi::cache`
+    // (T7.1). `::djogi::__private::inventory::submit!` is already available
+    // for macro-emitted code.
+    let struct_name = &struct_item.ident;
+    let boot_hook = quote! {
+        ::djogi::__private::inventory::submit! {
+            ::djogi::SassiBootHook(|sassi: &mut ::djogi::cache::Sassi| {
+                let punnu = ::djogi::cache::Punnu::<#struct_name>::builder().build();
+                sassi.register::<#struct_name>(::std::sync::Arc::new(punnu));
+            })
+        }
+    };
+
     Ok(quote! {
         #cacheable_impl
         #delta_sync_impl
+        #boot_hook
     })
 }
 

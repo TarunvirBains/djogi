@@ -52,3 +52,16 @@ pub use sassi::{
     MonotonicWatermark, OnConflict, Punnu, PunnuBuilder, PunnuConfig, PunnuEvent, PunnuMetrics,
     PunnuScope, RefreshHandle, Sassi, TenantKey, UpdateResult,
 };
+
+// Cluster 8δ T7.4 — boot-time `Sassi` registration via inventory.
+//
+// `SassiBootHook` is the newtype `#[derive(Model)]`-emitted
+// `inventory::submit!` blocks deposit. `DjogiContext::from_pool` (and
+// `from_connection`) walk `inventory::iter::<SassiBootHook>()` once and
+// freeze the result into `Arc<Sassi>`.
+//
+// Re-exported at the crate root (`djogi::SassiBootHook`) so macro-emitted
+// code can spell `::djogi::SassiBootHook` per
+// `feedback_macro_path_routing.md`.
+pub mod boot;
+pub use boot::SassiBootHook;

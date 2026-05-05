@@ -429,3 +429,10 @@ harness = true
 name = "phase8_t7_3_cache_modifier"
 path = "../tests/integration/phase8_t7_3_cache_modifier.rs"
 harness = true
+
+# ── Phase 8δ T7.4 — punnu boot registration ─────────────────────────────────
+
+[[test]]
+name = "phase8_t7_4_punnu_boot_registration"
+path = "../tests/integration/phase8_t7_4_punnu_boot_registration.rs"
+harness = true
