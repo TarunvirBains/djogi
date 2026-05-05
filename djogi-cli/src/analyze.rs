@@ -358,6 +358,41 @@ pub enum AnalyzeFormat {
 pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, AnalyzeError> {
     let mut ctx = DjogiContext::from_pool(pool.clone());
 
+    // Probe `partman` schema existence ONCE up-front rather than
+    // letting every per-table `partman.show_partitions(...)` call
+    // discover the absence at prepare time.
+    //
+    // # Why probe up-front
+    //
+    // `prepare_cached` (the path `raw_rows` routes through) maps
+    // tokio-postgres errors via `DbError::other(e.to_string())` —
+    // which DROPS the SQLSTATE because the prepare-error path
+    // collapses the `tokio_postgres::Error` into a message-only
+    // `DbError` whose `code()` returns `None`. The original
+    // `is_partman_absent_code` SQLSTATE classifier therefore never
+    // matches against a cluster without pg_partman, and every
+    // analyze run on such a cluster fails with `AnalyzeError::Db`
+    // even though the partman call should be a soft fallback.
+    //
+    // Probing `pg_namespace` for `partman` is always-prepareable
+    // (the schema is a system catalogue), returns a clean
+    // `Result<bool, _>`, and lets us skip the partman path entirely
+    // when the extension is absent. As a side benefit it costs ONE
+    // query per analyze instead of N (one per user table) when
+    // partman IS installed — the per-table call is still made when
+    // it makes semantic sense to make it.
+    //
+    // The retained `query_partition_count` SQLSTATE classifier is a
+    // belt-and-braces guard: if the extension is partially installed
+    // (schema present but `show_partitions` missing — e.g. mid-
+    // upgrade), we still soft-degrade to `partition_count = 0`
+    // rather than failing the analyze run.
+    let partman_present = !ctx
+        .raw_rows("SELECT 1 FROM pg_namespace WHERE nspname = 'partman'", &[])
+        .await
+        .map_err(djogi_err_to_analyze)?
+        .is_empty();
+
     // Primary query — `pg_stat_user_tables` is always available on
     // every Postgres cluster djogi targets (>= 18). The schema name is
     // joined into `table_name` so partitioned tables in non-public
@@ -376,7 +411,10 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
 
     // Per-row partition lookup. Errors of the "extension absent" class
     // are swallowed into `partition_count = 0`; everything else
-    // propagates as `AnalyzeError::Db`.
+    // propagates as `AnalyzeError::Db`. When the up-front probe says
+    // partman is absent, we skip the per-table query entirely and
+    // assign `partition_count = 0` directly — same outcome, no
+    // per-table round-trip.
     let mut out = Vec::with_capacity(stats_rows.len());
     for row in stats_rows {
         let table_name: String = row.get(0);
@@ -384,10 +422,14 @@ pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, An
         let n_dead_tup: i64 = row.get(2);
         let last_analyze: Option<time::OffsetDateTime> = row.get(3);
 
-        let partition_count = match query_partition_count(&mut ctx, &table_name).await {
-            Ok(count) => count,
-            Err(PartmanError::Absent) => 0,
-            Err(PartmanError::Other(message)) => return Err(AnalyzeError::Db(message)),
+        let partition_count = if partman_present {
+            match query_partition_count(&mut ctx, &table_name).await {
+                Ok(count) => count,
+                Err(PartmanError::Absent) => 0,
+                Err(PartmanError::Other(message)) => return Err(AnalyzeError::Db(message)),
+            }
+        } else {
+            0
         };
 
         out.push(TableHealth {
