@@ -217,6 +217,57 @@ pub enum ArrayPredicate<T: Model> {
     Overlap(crate::array::ArrayOverlapLeaf, std::marker::PhantomData<T>),
 }
 
+// ── `From` impls — array leaves lift into `ArrayPredicate<T>` then `Q<T>` ────
+//
+// Three explicit impls per leaf rather than a generic blanket. A blanket
+// `impl<T: Model, L> From<L> for Q<T> where ArrayPredicate<T>: From<L>` would
+// be the smallest amount of code, but it surfaces type-inference surprises
+// at adopter callsites — particularly anywhere a numeric literal or string
+// could otherwise satisfy `From<L>`. Three explicit impls lock the lift
+// path one leaf type at a time and keep `cargo expand` output legible.
+
+impl<T: Model> From<crate::array::ArrayContainsLeaf> for ArrayPredicate<T> {
+    fn from(leaf: crate::array::ArrayContainsLeaf) -> Self {
+        ArrayPredicate::Contains(leaf, std::marker::PhantomData)
+    }
+}
+
+impl<T: Model> From<crate::array::ArrayContainedByLeaf> for ArrayPredicate<T> {
+    fn from(leaf: crate::array::ArrayContainedByLeaf) -> Self {
+        ArrayPredicate::ContainedBy(leaf, std::marker::PhantomData)
+    }
+}
+
+impl<T: Model> From<crate::array::ArrayOverlapLeaf> for ArrayPredicate<T> {
+    fn from(leaf: crate::array::ArrayOverlapLeaf) -> Self {
+        ArrayPredicate::Overlap(leaf, std::marker::PhantomData)
+    }
+}
+
+impl<T: Model> From<ArrayPredicate<T>> for Q<T> {
+    fn from(p: ArrayPredicate<T>) -> Self {
+        Q::Array(p)
+    }
+}
+
+impl<T: Model> From<crate::array::ArrayContainsLeaf> for Q<T> {
+    fn from(leaf: crate::array::ArrayContainsLeaf) -> Self {
+        Q::Array(leaf.into())
+    }
+}
+
+impl<T: Model> From<crate::array::ArrayContainedByLeaf> for Q<T> {
+    fn from(leaf: crate::array::ArrayContainedByLeaf) -> Self {
+        Q::Array(leaf.into())
+    }
+}
+
+impl<T: Model> From<crate::array::ArrayOverlapLeaf> for Q<T> {
+    fn from(leaf: crate::array::ArrayOverlapLeaf) -> Self {
+        Q::Array(leaf.into())
+    }
+}
+
 // ── `Q<T>` constructors + operator overloads ─────────────────────────────────
 
 impl<T: Model> Q<T> {
@@ -646,6 +697,91 @@ mod tests {
                 assert!(matches!(parts[1], Q::Negated(_)));
             }
             other => panic!("expected outer Q::Compound{{op: Or}}, got {other:?}"),
+        }
+    }
+
+    /// `ArrayContainsLeaf` lifts to `ArrayPredicate::Contains` via
+    /// `From`, then to `Q::Array(...)` via the secondary lift. Locks
+    /// the chain so adopters can write `Q::from(field.contains(&[1, 2]))`
+    /// without naming the intermediate type.
+    #[test]
+    fn q_array_contains_lifts_via_into() {
+        use crate::array::ArrayContainsLeaf;
+        use crate::query::condition::FilterValue;
+        let leaf = ArrayContainsLeaf {
+            column: "tags",
+            values: FilterValue::ArrayString(vec!["a".to_string()]),
+        };
+        let q: Q<TestModel> = leaf.into();
+        match q {
+            Q::Array(ArrayPredicate::Contains(inner, _)) => {
+                assert_eq!(inner.column, "tags");
+            }
+            other => panic!("expected Q::Array(ArrayPredicate::Contains), got {other:?}"),
+        }
+    }
+
+    /// `ArrayContainedByLeaf` lifts identically.
+    #[test]
+    fn q_array_contained_by_lifts_via_into() {
+        use crate::array::ArrayContainedByLeaf;
+        use crate::query::condition::FilterValue;
+        let leaf = ArrayContainedByLeaf {
+            column: "tags",
+            values: FilterValue::ArrayI32(vec![1, 2, 3]),
+        };
+        let q: Q<TestModel> = leaf.into();
+        assert!(matches!(q, Q::Array(ArrayPredicate::ContainedBy(_, _))));
+    }
+
+    /// `ArrayOverlapLeaf` lifts identically.
+    #[test]
+    fn q_array_overlap_lifts_via_into() {
+        use crate::array::ArrayOverlapLeaf;
+        use crate::query::condition::FilterValue;
+        let leaf = ArrayOverlapLeaf {
+            column: "tags",
+            values: FilterValue::ArrayBool(vec![true]),
+        };
+        let q: Q<TestModel> = leaf.into();
+        assert!(matches!(q, Q::Array(ArrayPredicate::Overlap(_, _))));
+    }
+
+    /// Exhaustive match over `ArrayPredicate<TestModel>` covers all
+    /// three variants today. Locks the variant set against accidental
+    /// drift; new variants added under `#[non_exhaustive]` will need
+    /// to extend this match (and the SQL emitter at T6.6/T6.9).
+    #[test]
+    fn q_array_three_variants_exhaust() {
+        use crate::array::{ArrayContainedByLeaf, ArrayContainsLeaf, ArrayOverlapLeaf};
+        use crate::query::condition::FilterValue;
+
+        // `#[non_exhaustive]` doesn't apply to in-crate matches, so
+        // this exhaustive match compiles. Cross-crate code must still
+        // include a `_ => …` arm.
+        let leaves: [ArrayPredicate<TestModel>; 3] = [
+            ArrayContainsLeaf {
+                column: "tags",
+                values: FilterValue::ArrayI32(vec![1]),
+            }
+            .into(),
+            ArrayContainedByLeaf {
+                column: "tags",
+                values: FilterValue::ArrayI32(vec![1]),
+            }
+            .into(),
+            ArrayOverlapLeaf {
+                column: "tags",
+                values: FilterValue::ArrayI32(vec![1]),
+            }
+            .into(),
+        ];
+        for p in leaves {
+            match p {
+                ArrayPredicate::Contains(_, _) => {}
+                ArrayPredicate::ContainedBy(_, _) => {}
+                ArrayPredicate::Overlap(_, _) => {}
+            }
         }
     }
 
