@@ -1212,11 +1212,11 @@ mod tests {
     }
 
     /// Both proxy fields can be populated together — sanity check that the
-    /// struct layout accepts the proxy shape T3.3 will emit.
+    /// struct layout accepts the proxy shape the macro emits.
     ///
     /// Hand-constructs the descriptor with non-default values for both new
     /// fields and asserts they round-trip. Locks the field surface so
-    /// renaming or retyping either field surfaces here before T3.3 lands.
+    /// renaming or retyping either field surfaces here.
     #[test]
     fn proxy_fields_round_trip_populated_values() {
         static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {

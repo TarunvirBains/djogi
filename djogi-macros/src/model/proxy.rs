@@ -1,7 +1,7 @@
-//! Proxy-model attribute parsing — Phase 8β T3.2.
+//! Proxy-model attribute parsing and SQL lowering — Phase 8β T3.
 //!
-//! Holds the syntactic-only parsers for the three `#[model(...)]` keys
-//! that opt a model into proxy semantics:
+//! Holds parsers and the SQL-lowering pass for the three `#[model(...)]`
+//! keys that opt a model into proxy semantics:
 //!
 //! - `proxy_for = ParentType` — bare-identifier path naming the parent
 //!   model (whose table this proxy shares).
@@ -9,15 +9,21 @@
 //!   pairs declaring the default ordering applied to every
 //!   `QuerySet<ProxyModel>` on construction.
 //! - `default_filter = |f| ...` — closure expression lowered to a SQL
-//!   fragment by T3.3 and AND-composed into every `QuerySet<ProxyModel>`
-//!   via the `Model::default_filter_condition` override (T3.4).
+//!   fragment and AND-composed into every `QuerySet<ProxyModel>` via the
+//!   `Model::default_filter_condition` override.
 //!
-//! T3.2 captures syntactic state only — no SQL lowering, no runtime
-//! wiring. The closure body parses as a `syn::ExprClosure`; its single
-//! input parameter (`f`) is the user's binding for `{Model}Fields`. T3.3
-//! walks the closure body via recursive descent and lowers recognised
-//! patterns to a SQL fragment string. T3.4 wires the fragment into
-//! `QuerySet<T>::new()` so the filter is AND-composed transparently.
+//! Parsing: `proxy_for`, `default_order`, `default_filter` attribute keys
+//! parsed from `#[model(...)]`. Cross-attribute validation rejects orphan
+//! `default_order`/`default_filter` without `proxy_for`.
+//!
+//! SQL lowering: `lower_default_filter_to_sql` walks the closure body via
+//! recursive descent over `syn::Expr` and lowers recognised patterns
+//! (eq/neq/null/range/literal and/or chains) to a SQL fragment string.
+//! Unrecognised patterns surface a span-precise compile error.
+//!
+//! QuerySet wiring: the lowered SQL fragment feeds into
+//! `Model::default_filter_condition` which `QuerySet::new()` AND-composes
+//! with any user-supplied filter at queryset construction time.
 //!
 //! # Identifier validation
 //!
