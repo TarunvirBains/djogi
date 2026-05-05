@@ -128,29 +128,97 @@ fn try_expand(item: TokenStream) -> syn::Result<TokenStream> {
         trait_last_seg,
     );
 
-    // T5.2 emission — the impl block unchanged + the registration
-    // block. The `caster` field is currently a placeholder that
-    // returns `None` for every input; T5.3 fills in the real body.
+    // T5.3 — the safe type-erased caster body. We avoid `transmute`
+    // entirely: the path is
+    //
+    //   1. `Arc<dyn Any + Send + Sync>` → `Arc<Self>`     via `Arc::downcast`
+    //   2. `Arc<Self>`                  → `Arc<dyn Trait>` via unsizing coercion
+    //   3. Box the `Arc<dyn Trait>` in a per-(Model, Trait) carrier
+    //      struct that itself is `Send + Sync + 'static` (so it
+    //      satisfies `Any + Send + Sync`).
+    //   4. Erase the carrier back to `Arc<dyn Any + Send + Sync>` for
+    //      the registry's wire type.
+    //
+    // The consuming side (`Sassi::all_impl::<dyn T>` — T5.4 + 8δ T7)
+    // performs the symmetric downcast: `Arc<dyn Any>` →
+    // `Arc<TraitImplCarrier<dyn T>>` via `Arc::downcast`, then
+    // unwraps the inner `Arc<dyn T>` from the carrier's `into_arc`
+    // method. No `transmute` at any point in the chain.
+    //
+    // The carrier struct is emitted per impl site so multiple
+    // `#[djogi::trait_impl]` blocks in the same module do not
+    // collide on a shared type name. The `__djogi_trait_obj_*`
+    // prefix mirrors the caster fn's naming convention.
+    let carrier_struct_ident = format_ident!(
+        "__djogi_trait_obj_{}_{}",
+        model_type_name.replace("::", "_"),
+        trait_last_seg,
+    );
+
     Ok(quote! {
         #item_impl
 
-        // Type-erased caster placeholder — T5.2 ships an always-
-        // `None` body; T5.3 fills in the safe carrier pattern.
-        // The function is `pub` because `inventory::submit!` needs
-        // an addressable function pointer; we route the visibility
-        // through a documented `__djogi_*` prefix per the macro-
-        // routing convention.
+        // Per-impl carrier struct — wraps the unsized `Arc<dyn Trait>`
+        // in a sized `Send + Sync + 'static` shell so it satisfies
+        // the `Any` bound the registry's wire type requires. The
+        // inner field is `pub` so the consuming side can extract
+        // the Arc through the `into_arc` accessor.
+        #[doc(hidden)]
+        pub struct #carrier_struct_ident(
+            pub ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync>,
+        );
+
+        impl #carrier_struct_ident {
+            /// Extract the underlying `Arc<dyn Trait>` from the
+            /// carrier. The consuming side calls this after the
+            /// `Arc<dyn Any>` → `Arc<#carrier>` downcast succeeds.
+            #[doc(hidden)]
+            pub fn into_arc(
+                self,
+            ) -> ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync>
+            {
+                self.0
+            }
+        }
+
+        // Type-erased caster — T5.3 final body. Safe carrier pattern;
+        // no `transmute`. Returns `Some(arc_to_carrier)` when the
+        // input downcasts to the registered model type; `None`
+        // otherwise.
         #[doc(hidden)]
         pub fn #caster_fn_ident(
-            _any: &::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,
+            any: &::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,
         ) -> ::core::option::Option<
             ::std::sync::Arc<dyn ::std::any::Any + ::core::marker::Send + ::core::marker::Sync>,
         > {
-            // T5.3 fills this body. T5.2 ships a placeholder that
-            // unconditionally returns `None` so the registration is
-            // reachable via `iter_for_trait::<dyn T>` but the
-            // consumer-side downcast is a no-op until T5.3 lands.
-            ::core::option::Option::None
+            // Step 1 — downcast the erased Arc to `Arc<Self>`.
+            // `Arc::downcast` on `Arc<dyn Any + Send + Sync>` returns
+            // `Result<Arc<T>, Arc<dyn Any + Send + Sync>>` when `T:
+            // Any + Send + Sync` — we discard the `Err` arm via `.ok()`.
+            let arc_model: ::std::sync::Arc<#self_ty> =
+                match ::std::sync::Arc::clone(any).downcast::<#self_ty>() {
+                    ::core::result::Result::Ok(arc) => arc,
+                    ::core::result::Result::Err(_) => return ::core::option::Option::None,
+                };
+
+            // Step 2 — unsizing coercion: `Arc<Self>` → `Arc<dyn Trait + Send + Sync>`.
+            // The coercion is sound because `Self: Trait` (the
+            // surrounding `impl Trait for Self` block proves it) and
+            // `Self: Send + Sync + 'static` (every model's struct
+            // injection guarantees these bounds).
+            let arc_trait: ::std::sync::Arc<dyn #trait_path + ::core::marker::Send + ::core::marker::Sync> =
+                arc_model;
+
+            // Step 3 — wrap in the per-impl carrier so the result is
+            // `Sized + Any + Send + Sync`.
+            let carrier = #carrier_struct_ident(arc_trait);
+            let arc_carrier: ::std::sync::Arc<#carrier_struct_ident> =
+                ::std::sync::Arc::new(carrier);
+
+            // Step 4 — erase the carrier to `Arc<dyn Any + Send + Sync>`
+            // for the registry wire type. This is a coercion (`Arc<T>`
+            // → `Arc<dyn Any>` for `T: Any`), not a transmute.
+            ::core::option::Option::Some(arc_carrier)
         }
 
         ::djogi::__private::inventory::submit! {
