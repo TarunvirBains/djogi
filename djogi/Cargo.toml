@@ -471,3 +471,10 @@ harness = true
 name = "phase8_t8_6_softdelete_tombstones"
 path = "../tests/integration/phase8_t8_6_softdelete_tombstones.rs"
 harness = true
+
+# ── Phase 8δ T8.8 — DeltaRefreshHandle knobs: LRU warn + recovery + periodic ──
+
+[[test]]
+name = "phase8_t8_8_refresh_knobs"
+path = "../tests/integration/phase8_t8_8_refresh_knobs.rs"
+harness = true

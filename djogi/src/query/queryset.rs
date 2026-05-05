@@ -2136,6 +2136,35 @@ where
     /// `SELECT <columns> FROM <table> WHERE <watermark_col> >= $1
     ///  [OR id IN ($2, …)] ORDER BY <watermark_col>`.
     ///
+    /// # T8.8 — refresh knobs (spec §674)
+    ///
+    /// The returned `DeltaRefreshHandle<T>` exposes two adopter-facing knobs
+    /// from sassi's native API — no djogi-side wrappers required:
+    ///
+    /// - **`with_eviction_recovery(bool)`** — when enabled, LRU evictions of
+    ///   IDs this subscription has observed are passed to the fetcher as
+    ///   `DeltaQuery::recover_ids` on a later delta tick. Opt in via
+    ///   `handle.with_eviction_recovery(true)`.
+    ///
+    /// - **`with_periodic_full_refresh(Option<NonZeroUsize>)`** — schedule
+    ///   full (non-delta) refreshes every N ticks. `Some(n)` makes every nth
+    ///   scheduled tick use `since = None`. Opt in via
+    ///   `handle.with_periodic_full_refresh(NonZeroUsize::new(10))`.
+    ///
+    /// Both methods return `Self` for chaining:
+    ///
+    /// ```text
+    /// let handle = MyModel::objects()
+    ///     .refresh_into(&punnu, pool, auth)
+    ///     .with_eviction_recovery(true)
+    ///     .with_periodic_full_refresh(NonZeroUsize::new(10));
+    /// ```
+    ///
+    /// Additionally, the fetcher always monitors the Punnu event stream for
+    /// LRU eviction events and emits a one-shot `tracing::warn!` on
+    /// `djogi::cache` the first time an eviction is observed (spec §674
+    /// Knob 1 — always-on, no adopter opt-in required).
+    ///
     /// # Filter pushdown via into_basic_predicate (T8.4)
     ///
     /// `into_basic_predicate` now performs a real recursive walk over the
@@ -2158,10 +2187,21 @@ where
         auth: crate::auth::AuthContext,
     ) -> sassi::DeltaRefreshHandle<T> {
         let filter = self.into_basic_predicate();
+        // Capture the Punnu's event broadcast receiver before starting the
+        // delta refresh. Each `refresh_into` call gets its own independent
+        // receiver — per the `(Punnu, Subscription)` scope in spec §674 Knob 1.
+        // Events emitted BEFORE this line (e.g., earlier `punnu.insert()` calls)
+        // are not visible to this subscription's receiver; only events fired
+        // from this point forward are observed. That is the correct contract:
+        // the warn is meant to surface LRU pressure that occurs WHILE the
+        // subscription is running.
+        let events_rx = std::sync::Mutex::new(punnu.events());
         let fetcher = crate::query::refresh::DjogiDeltaFetcher::<T> {
             pool,
             auth,
             filter,
+            lru_warn_issued: std::sync::atomic::AtomicBool::new(false),
+            events_rx,
             _model: std::marker::PhantomData,
         };
         // [CHECK] Default 30s interval is a placeholder; T8.6 may add a

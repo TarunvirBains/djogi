@@ -1,5 +1,5 @@
 //! Delta-sync fetcher for `QuerySet::refresh_into` — Cluster 8δ T8.3 skeleton,
-//! T8.5 SQL implementation.
+//! T8.5 SQL implementation, T8.8 always-on LRU eviction warn.
 //!
 //! # What
 //!
@@ -51,13 +51,65 @@
 //!   tombstones set. Anti-regression: NO `deleted_at IS NULL` filter
 //!   in the WHERE clause (deletion signal must flow through the
 //!   watermark per spec §415).
-//! - **T8.7 — Pattern 2 (outbox-derived):** future. The fetcher will
-//!   merge tombstones from a captured outbox/event-table subscription
+//! - **T8.7 — Pattern 2 (outbox-derived):** deferred (GH #128). The fetcher
+//!   will merge tombstones from a captured outbox/event-table subscription
 //!   alongside Pattern 1's per-row derivation.
-//! - **T8.8 — Pattern 3 (explicit delete-log-derived):** future. The
-//!   fetcher will read a `_djogi_deletes` log table for ids removed
-//!   since `since` and merge them into tombstones. Required for hard-
-//!   delete models where Pattern 1 is unavailable.
+//! - **T8.8 (this commit) — LRU eviction warn (spec §674 Knob 1):** always-on
+//!   one-shot warn per `(Punnu, Subscription)` on the first observed
+//!   `LruEvict` event. Implemented via `try_recv` per tick + `AtomicBool`
+//!   one-shot flag (Option B). See "LRU eviction warn" section below.
+//!
+//! # T8.8 — LRU eviction warn (spec §674 Knob 1)
+//!
+//! The fetcher holds two additional fields to support the always-on LRU
+//! eviction warn:
+//!
+//! - `events_rx`: a `tokio::sync::broadcast::Receiver<PunnuEvent<T>>` captured
+//!   from `punnu.events()` at `refresh_into` time. Each fetcher instance has
+//!   its own independent receiver — per the `(Punnu, Subscription)` scope in
+//!   spec §674.
+//!
+//! - `lru_warn_issued`: an `AtomicBool` one-shot flag. Set on the first
+//!   observed `EventReason::LruEvict` event; never cleared across the
+//!   fetcher's lifetime.
+//!
+//! At the top of every `fetch_delta` call, the fetcher drains its events
+//! receiver non-blockingly via `try_recv`. If it observes an `LruEvict`
+//! event and the flag is not yet set, it emits a single `tracing::warn!` on
+//! the `djogi::cache` target and sets the flag. Subsequent ticks skip the
+//! warn even if more LRU evictions occur.
+//!
+//! The `try_recv` call is wrapped in a `Mutex::try_lock` (non-blocking) so
+//! concurrent ticks (if sassi ever dispatches overlapping ticks) cannot block
+//! on each other — the losing tick simply skips the warn check and yields to
+//! the next tick.
+//!
+//! **Why Option B (try_recv in tick body) over Option A (spawn task)?**
+//! Option B avoids a separate spawned task and the lifetime management that
+//! comes with it (cancellation signalling, zombie prevention). The overhead is
+//! dominated by the SQL round-trip; the `try_recv` loop adds negligible cost.
+//! Option A would be cleaner if the warn needed sub-tick latency (e.g.,
+//! alerting within milliseconds of eviction), but the production-stability
+//! contract (spec §674) only requires "the warn fires before the next tick
+//! completes" — Option B satisfies that.
+//!
+//! # T8.8 — Knobs 2 + 3 (recovery + periodic full refresh)
+//!
+//! Both `with_eviction_recovery(bool)` and
+//! `with_periodic_full_refresh(Option<NonZeroUsize>)` are sassi-native builder
+//! knobs on `DeltaRefreshHandle<T>`. Djogi's `refresh_into` returns
+//! `sassi::DeltaRefreshHandle<T>` directly, so adopters can chain them:
+//!
+//! ```text
+//! let handle = MyModel::objects()
+//!     .refresh_into(&punnu, pool, auth)
+//!     .with_eviction_recovery(true)
+//!     .with_periodic_full_refresh(NonZeroUsize::new(10));
+//! ```
+//!
+//! No djogi-side wrappers are needed. The methods live on sassi's
+//! `DeltaRefreshHandle<T>` and are stable with the exact signatures
+//! verified in T8.8 (see `djogi/tests/integration/phase8_t8_8_refresh_knobs.rs`).
 //!
 //! # Filter pushdown deferral (GH #127)
 //!
@@ -81,25 +133,46 @@ use crate::auth::AuthContext;
 use crate::cache::DjogiDeltaSyncMeta;
 use crate::pg::decode::FromPgRow;
 use crate::pg::pool::DjogiPool;
-use sassi::{BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError};
+use sassi::{BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError, PunnuEvent};
 use std::collections::HashSet;
 use std::marker::PhantomData;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::broadcast;
 use tokio_postgres::types::ToSql;
 
 /// Owned-substrate fetcher for the `QuerySet::refresh_into` path.
 ///
-/// Holds a clone of the connection pool, an `AuthContext` by value, and an
-/// optional `BasicPredicate<T>` filter. NEVER references `&mut DjogiContext`.
+/// Holds a clone of the connection pool, an `AuthContext` by value, an
+/// optional `BasicPredicate<T>` filter, and the two fields added in T8.8
+/// for the always-on LRU eviction warn (spec §674 Knob 1).
 ///
 /// # Send + Sync
 ///
-/// Auto-derived: every field is `Send + Sync` when `T: Send + Sync`, and
-/// `PhantomData<T>` contributes no additional bounds. No manual `unsafe impl`
-/// was required.
+/// Auto-derived: every field is `Send + Sync` when `T: Send + Sync`.
+/// `DjogiPool`, `AuthContext`, `AtomicBool`, and `std::sync::Mutex<_>` are
+/// all `Send + Sync`. `broadcast::Receiver<PunnuEvent<T>>` is `Send + Sync`
+/// when `PunnuEvent<T>: Send + Sync`, which holds when `T: Send + Sync`
+/// (sassi upholds this). `PhantomData<T>` participates in auto-trait
+/// inference and is `Send + Sync` exactly when `T: Send + Sync` — that bound
+/// is already required by the `DeltaPunnuFetcher` trait impl below. Verified:
+/// compilation succeeds without manual impls. The const-fn-pointer assertion
+/// at the bottom of this file pins the contract at the type-system level.
 pub(crate) struct DjogiDeltaFetcher<T: sassi::DeltaSyncCacheable> {
     pub(crate) pool: DjogiPool,
     pub(crate) auth: AuthContext,
     pub(crate) filter: Option<BasicPredicate<T>>,
+    /// One-shot flag — per-(Punnu, Subscription) — for the always-on
+    /// LRU eviction warn (spec §674 Knob 1). Set on first `LruEvict`
+    /// observation; never cleared across the fetcher's lifetime.
+    pub(crate) lru_warn_issued: AtomicBool,
+    /// Broadcast receiver from `Punnu::events()` for monitoring LRU
+    /// eviction events. Wrapped in `std::sync::Mutex` because
+    /// `broadcast::Receiver::try_recv` takes `&mut self` while
+    /// `fetch_delta` receives `&self` on the fetcher. `std::sync::Mutex`
+    /// (not `tokio::sync::Mutex`) is correct here because `try_recv` is
+    /// synchronous — no `.await` is needed to drain the channel.
+    pub(crate) events_rx: Mutex<broadcast::Receiver<PunnuEvent<T>>>,
     pub(crate) _model: PhantomData<T>,
 }
 
@@ -120,6 +193,73 @@ where
         &self,
         query: DeltaQuery<T>,
     ) -> Result<DeltaResult<T, T::Watermark>, FetchError> {
+        // ── Always-on LRU eviction warn (spec §674 Knob 1) ──────────────────
+        // Per-(Punnu, Subscription) one-shot warn. Fires once per fetcher
+        // lifetime on the first observed `EventReason::LruEvict` event.
+        //
+        // Implementation choice: Option B (try_recv in tick body + AtomicBool
+        // one-shot flag). This avoids a separate spawned task and the lifetime
+        // management (cancellation signalling, zombie prevention) that Option A
+        // would require. The per-tick overhead is dominated by the SQL
+        // round-trip; the try_recv loop adds negligible cost.
+        //
+        // `try_lock` ensures we don't block if a concurrent tick (if sassi
+        // ever dispatches overlapping ticks) holds the lock — the losing tick
+        // skips the warn check this round and yields to the next tick.
+        //
+        // The double-checked load before and after swap prevents redundant
+        // lock acquisitions once the warn has already been issued.
+        // `lru_warn_issued` guard avoids a Mutex lock acquisition on every
+        // subsequent tick once the warn has already fired. The inner swap is
+        // the actual one-shot gate; the outer load is a cheap pre-check.
+        if let (false, Ok(mut rx)) = (
+            self.lru_warn_issued.load(Ordering::Acquire),
+            self.events_rx.try_lock(),
+        ) {
+            'drain: loop {
+                match rx.try_recv() {
+                    Ok(PunnuEvent::Invalidate {
+                        reason: sassi::EventReason::LruEvict { .. },
+                        ..
+                    }) => {
+                        if !self.lru_warn_issued.swap(true, Ordering::AcqRel) {
+                            tracing::warn!(
+                                target: "djogi::cache",
+                                model = std::any::type_name::<T>(),
+                                "Punnu LRU eviction detected — `lru_size` may be \
+                                 undersized for this subscription's working set. \
+                                 Tune via `PunnuConfig::lru_size` if eviction \
+                                 collisions become frequent.",
+                            );
+                        }
+                        break 'drain; // one-shot — no need to drain further
+                    }
+                    Ok(_) => continue 'drain, // other events — keep draining
+                    Err(broadcast::error::TryRecvError::Empty) => break 'drain,
+                    Err(broadcast::error::TryRecvError::Closed) => break 'drain,
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => {
+                        // Receiver fell behind — an LruEvict event may have
+                        // been dropped. Fire the warn defensively: if the
+                        // channel lagged, the Punnu was under heavy eviction
+                        // pressure, which is exactly what the warn is meant
+                        // to surface.
+                        if !self.lru_warn_issued.swap(true, Ordering::AcqRel) {
+                            tracing::warn!(
+                                target: "djogi::cache",
+                                model = std::any::type_name::<T>(),
+                                "Punnu event stream lagged — LRU eviction events \
+                                 may have been dropped. `lru_size` may be \
+                                 undersized for this subscription's working set. \
+                                 Tune via `PunnuConfig::lru_size` if eviction \
+                                 collisions become frequent.",
+                            );
+                        }
+                        break 'drain;
+                    }
+                }
+            }
+        }
+
         // ── Filter-pushdown gap warning ──────────────────────────────────────
         // Fires per-tick if filter is Some. In practice this never fires today
         // because GH #126 (filter-api-q-preservation) means every real-world
