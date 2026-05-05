@@ -72,6 +72,7 @@
 use crate::model::Model;
 use crate::query::field::FieldRef;
 use sassi::BasicPredicate;
+use std::ops::{BitAnd, BitOr, BitXor, Not};
 
 /// Public Q-algebra over model `T`. Wraps `sassi::BasicPredicate<T>`
 /// for Rust-evaluable predicates plus djogi-only SQL extensions
@@ -92,13 +93,21 @@ use sassi::BasicPredicate;
 /// because the model carries the column-name registry the SQL
 /// emitter needs at lowering time.
 ///
-/// At T6.2 the enum is skeleton-only — no `BitAnd` / `BitOr` /
-/// `BitXor` / `Not` impls and no internal `Compound` / `Xor` /
-/// `Negated` nodes. Those land at T6.3 (operators on pure-Basic
-/// operands) and T6.5 (mixed-operand internal nodes).
+/// # Internal compound nodes
+///
+/// Pure-Basic compositions short-circuit through sassi's flattening
+/// reducer, so `Q::from(a) & Q::from(b)` produces a single
+/// `Q::Basic(BasicPredicate::And(vec![a, b]))` rather than an outer
+/// `Q::Compound`. Mixed-operand compositions (at least one side is
+/// not `Q::Basic`) lift to `Q::Compound { op, parts }` for And / Or
+/// (which are associative and flatten cleanly), to `Q::Xor(a, b)`
+/// for XOR (non-associative — must stay binary), and to
+/// `Q::Negated(inner)` for Not over non-Basic operands. Pure-Basic
+/// negation rides sassi's `Not` (which collapses double-negation in
+/// place); only the mixed side needs the new variant.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-#[allow(dead_code)] // T6.2 ships the skeleton; consumers wire up at T6.3+.
+#[allow(dead_code)] // Variants populated as T6.6/T6.7 wire consumers; constructors land at T6.4.
 pub enum Q<T: Model> {
     /// Rust-evaluable predicates lifted from sassi.
     /// `BasicPredicate::True` / `False` cover the vacuous identities
@@ -134,9 +143,50 @@ pub enum Q<T: Model> {
     Expression(crate::expr::Expr<bool>),
 
     /// Array operators — `@>`, `<@`, `&&` over Postgres array
-    /// columns. The leaf shape lands at T6.4; this commit ships the
-    /// stub.
+    /// columns.
     Array(ArrayPredicate<T>),
+
+    /// Mixed-operand And/Or — at least one side is not pure
+    /// `Q::Basic`. Pure-Basic And/Or short-circuits through
+    /// `Q::Basic(BasicPredicate::And(_))` to keep flattening +
+    /// evaluation centralised in sassi. Flattens on construction:
+    /// `(a & b) & c` produces `Q::Compound { op: And, parts: [a, b, c] }`
+    /// rather than a nested binary tree. An empty `Vec` is the vacuous
+    /// identity (And empty = TRUE, Or empty = FALSE) but combinator
+    /// construction never produces one.
+    Compound { op: CompoundOp, parts: Vec<Q<T>> },
+
+    /// SQL XOR over two Q-algebra terms. Non-associative — `(a ^ b)
+    /// ^ c ≠ a ^ (b ^ c)` in general, so XOR cannot ride a
+    /// flattened `parts: Vec<_>` like And/Or do. Mirrors sassi's
+    /// `BasicPredicate::Xor(Box, Box)` shape. The general-form SQL
+    /// emit is `(NOT a AND b) OR (a AND NOT b)`; a boolean fast-path
+    /// (`a <> b` when both operands are pre-evaluated booleans) is
+    /// deferred to T11 per v3 §T6 deliverables bullet 3.
+    Xor(Box<Q<T>>, Box<Q<T>>),
+
+    /// SQL `NOT (...)` over a non-Basic Q. Pure-Basic negation rides
+    /// sassi's `Not` (which collapses double-negation in place); this
+    /// variant only exists for the SQL-only side. `!Q::Negated(inner)`
+    /// collapses to `*inner` to avoid stacked `NOT NOT` nodes.
+    Negated(Box<Q<T>>),
+}
+
+/// Operator marker for `Q::Compound`. Restricted to the associative
+/// operators (And / Or) — XOR is non-associative and lives in the
+/// dedicated `Q::Xor(Box, Box)` variant. Adding a new associative
+/// operator (e.g. a sassi-side n-ary reducer) is non-breaking via
+/// `#[non_exhaustive]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CompoundOp {
+    /// SQL `(a AND b AND c)`. Empty parts vector is the vacuous-truth
+    /// identity (matches `Condition::And(empty) == TRUE` from
+    /// `condition.rs:24`).
+    And,
+    /// SQL `(a OR b OR c)`. Empty parts vector is the vacuous-falsehood
+    /// identity (matches `Condition::Or(empty) == FALSE`).
+    Or,
 }
 
 /// Array-column predicates — wraps the existing array leaves
@@ -153,13 +203,8 @@ pub enum Q<T: Model> {
 /// `#[non_exhaustive]` so future array operators (`array_length`,
 /// `cardinality`, custom GIN/GiST indexable ops) can be added
 /// without breaking downstream pattern matches.
-///
-/// At T6.2 this is the skeleton shape; T6.4 adds `From` impls
-/// converting from raw leaves into `ArrayPredicate<T>`, and from
-/// `ArrayPredicate<T>` into `Q<T>` via a generic blanket.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-#[allow(dead_code)] // T6.2 ships the skeleton; T6.4 adds the From impls.
 pub enum ArrayPredicate<T: Model> {
     /// `col @> $1` — array contains.
     Contains(crate::array::ArrayContainsLeaf, std::marker::PhantomData<T>),
@@ -170,6 +215,160 @@ pub enum ArrayPredicate<T: Model> {
     ),
     /// `col && $1` — array overlap.
     Overlap(crate::array::ArrayOverlapLeaf, std::marker::PhantomData<T>),
+}
+
+// ── `Q<T>` constructors + operator overloads ─────────────────────────────────
+
+impl<T: Model> Q<T> {
+    /// Vacuous-truth identity — `Q::Basic(BasicPredicate::True)`.
+    /// Helper for reductions; matches the existing `Condition::True`
+    /// idiom and is used by `QuerySet::default()` once T6.9 swaps the
+    /// substrate.
+    #[must_use]
+    pub fn always_true() -> Self {
+        Q::Basic(BasicPredicate::True)
+    }
+
+    /// Vacuous-falsehood identity — `Q::Basic(BasicPredicate::False)`.
+    #[must_use]
+    pub fn always_false() -> Self {
+        Q::Basic(BasicPredicate::False)
+    }
+}
+
+impl<T: Model> From<BasicPredicate<T>> for Q<T> {
+    /// Lift a sassi `BasicPredicate<T>` into the djogi `Q<T>` algebra
+    /// without duplicating the reducer. `From` is the canonical
+    /// idiomatic conversion; `.into()` at adopter callsites picks
+    /// this up automatically — `let q: Q<V> = my_basic.into();`.
+    fn from(p: BasicPredicate<T>) -> Self {
+        Q::Basic(p)
+    }
+}
+
+// `BitAnd` / `BitOr` / `BitXor` / `Not` impls — std already marks the
+// trait methods `#[must_use]` (their result is the only meaningful
+// product of the call), so re-adding the attribute on the impl
+// methods is redundant and lints under rustc 1.95+. The `Q::*`
+// constructors and `IntoQ::into_q` carry the `#[must_use]` that
+// matters at adopter callsites.
+
+impl<T: Model> BitAnd for Q<T> {
+    type Output = Q<T>;
+    /// SQL AND. Pure-Basic operands flatten through sassi's
+    /// `BasicPredicate::bitand` so chained `a & b & c` produces a
+    /// single `Q::Basic(BasicPredicate::And(vec![a, b, c]))` — keeping
+    /// the flattened-And invariant centralised in sassi. Mixed
+    /// operands lift to `Q::Compound { op: And, parts }` and flatten
+    /// when either side is already a Compound-And.
+    fn bitand(self, rhs: Self) -> Q<T> {
+        compose_compound(self, rhs, CompoundOp::And, BasicPredicate::bitand)
+    }
+}
+
+impl<T: Model> BitOr for Q<T> {
+    type Output = Q<T>;
+    /// SQL OR. Dual of `BitAnd::bitand` — pure-Basic flattens through
+    /// sassi; mixed operands lift to `Q::Compound { op: Or, parts }`.
+    fn bitor(self, rhs: Self) -> Q<T> {
+        compose_compound(self, rhs, CompoundOp::Or, BasicPredicate::bitor)
+    }
+}
+
+impl<T: Model> BitXor for Q<T> {
+    type Output = Q<T>;
+    /// SQL XOR. Pure-Basic operands ride sassi's
+    /// `BasicPredicate::bitxor` (which itself produces
+    /// `BasicPredicate::Xor(Box, Box)`). Mixed operands lift to
+    /// `Q::Xor(Box, Box)` directly. **Non-associative** — XOR
+    /// chains do NOT flatten into a `Vec<_>` (unlike And/Or), so
+    /// `(a ^ b) ^ c` is a left-leaning binary tree, not a 3-element
+    /// flat node. Mirrors sassi's choice (`BasicPredicate::Xor` is
+    /// also binary).
+    ///
+    /// **Operator precedence reminder.** Rust binds `&` tighter than
+    /// `^`, and `^` tighter than `|`. So
+    /// `Q::from(a) ^ Q::Ilike(...) | Q::Expression(...)` parses as
+    /// `(Q::from(a) ^ Q::Ilike(...)) | Q::Expression(...)`. T6.11
+    /// trybuild compile-pass locks this at the type level.
+    fn bitxor(self, rhs: Self) -> Q<T> {
+        match (self, rhs) {
+            (Q::Basic(a), Q::Basic(b)) => Q::Basic(a ^ b),
+            (lhs, rhs) => Q::Xor(Box::new(lhs), Box::new(rhs)),
+        }
+    }
+}
+
+impl<T: Model> Not for Q<T> {
+    type Output = Q<T>;
+    /// SQL `NOT (...)`. Pure-Basic operands ride sassi's `Not`,
+    /// which collapses double-negation in place (`!!p == p`) and
+    /// flips `True` ↔ `False`. Mixed operands wrap in
+    /// `Q::Negated(...)`; `!Q::Negated(inner)` collapses to `*inner`
+    /// to avoid stacked `NOT NOT` nodes that would emit redundant
+    /// SQL parens. De Morgan's transformation is **not** applied
+    /// across `Q::Compound` — the SQL emitter renders
+    /// `Q::Negated(Q::Compound{...})` as `NOT (...)` directly,
+    /// matching the existing `Condition::Not(Condition::And(...))`
+    /// behavior.
+    fn not(self) -> Q<T> {
+        match self {
+            Q::Basic(p) => Q::Basic(!p),
+            Q::Negated(inner) => *inner,
+            other => Q::Negated(Box::new(other)),
+        }
+    }
+}
+
+/// And/Or composition shared between `BitAnd` and `BitOr`. Pure-Basic
+/// operands delegate to sassi's flattening reducer (passed in as
+/// `basic_op`); mixed operands lift to `Q::Compound { op, parts }`
+/// with the same flattening contract sassi uses internally:
+/// `(Compound{op, parts: l}, Compound{op, parts: r})` extends `l`
+/// with `r`, `(Compound{op, parts: l}, other)` pushes onto `l`,
+/// `(other, Compound{op, parts: r})` prepends, and the bare-binary
+/// case wraps `vec![lhs, rhs]`.
+///
+/// The `op` parameter is the Compound marker for the mixed path; the
+/// `basic_op` parameter is the sassi delegate for the pure-Basic
+/// path. Splitting the two avoids a `match (lhs, rhs, op)` tower at
+/// each callsite while keeping the shared shape DRY.
+fn compose_compound<T: Model, F>(lhs: Q<T>, rhs: Q<T>, op: CompoundOp, basic_op: F) -> Q<T>
+where
+    F: FnOnce(BasicPredicate<T>, BasicPredicate<T>) -> BasicPredicate<T>,
+{
+    match (lhs, rhs) {
+        (Q::Basic(a), Q::Basic(b)) => Q::Basic(basic_op(a, b)),
+        (
+            Q::Compound {
+                op: lop,
+                parts: mut l,
+            },
+            Q::Compound { op: rop, parts: r },
+        ) if lop == op && rop == op => {
+            l.extend(r);
+            Q::Compound { op, parts: l }
+        }
+        (
+            Q::Compound {
+                op: lop,
+                parts: mut l,
+            },
+            other,
+        ) if lop == op => {
+            l.push(other);
+            Q::Compound { op, parts: l }
+        }
+        (other, Q::Compound { op: rop, parts: r }) if rop == op => {
+            let mut v = vec![other];
+            v.extend(r);
+            Q::Compound { op, parts: v }
+        }
+        (lhs, rhs) => Q::Compound {
+            op,
+            parts: vec![lhs, rhs],
+        },
+    }
 }
 
 #[cfg(test)]
@@ -267,5 +466,214 @@ mod tests {
     fn q_skeleton_is_clone_and_debug() {
         let q: Q<TestModel> = Q::Basic(BasicPredicate::True);
         let _ = format!("{:?}", q.clone());
+    }
+
+    /// Convenience constructor — sassi's `True` lifts to `Q::Basic`.
+    #[test]
+    fn q_always_true_is_basic_true() {
+        let q: Q<TestModel> = Q::always_true();
+        assert!(matches!(q, Q::Basic(BasicPredicate::True)));
+    }
+
+    /// Dual: `always_false` is `Q::Basic(False)`.
+    #[test]
+    fn q_always_false_is_basic_false() {
+        let q: Q<TestModel> = Q::always_false();
+        assert!(matches!(q, Q::Basic(BasicPredicate::False)));
+    }
+
+    /// `From<BasicPredicate<T>>` route — the `.into()` adopter idiom.
+    #[test]
+    fn q_from_basic_predicate_via_into() {
+        let bp: BasicPredicate<TestModel> = BasicPredicate::True;
+        let q: Q<TestModel> = bp.into();
+        assert!(matches!(q, Q::Basic(BasicPredicate::True)));
+    }
+
+    /// Pure-Basic AND short-circuits through sassi — the resulting
+    /// `Q::Basic` carries a flattened `BasicPredicate::And(_)`.
+    #[test]
+    fn q_basic_and_basic_flattens_through_sassi() {
+        let a: Q<TestModel> = BasicPredicate::True.into();
+        let b: Q<TestModel> = BasicPredicate::False.into();
+        match a & b {
+            Q::Basic(BasicPredicate::And(parts)) => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0], BasicPredicate::True));
+                assert!(matches!(parts[1], BasicPredicate::False));
+            }
+            other => panic!("expected Q::Basic(BasicPredicate::And(_)), got {other:?}"),
+        }
+    }
+
+    /// Pure-Basic OR short-circuits through sassi as well.
+    #[test]
+    fn q_basic_or_basic_flattens_through_sassi() {
+        let a: Q<TestModel> = BasicPredicate::True.into();
+        let b: Q<TestModel> = BasicPredicate::False.into();
+        assert!(matches!(a | b, Q::Basic(BasicPredicate::Or(_))));
+    }
+
+    /// Pure-Basic XOR rides sassi's `BasicPredicate::Xor(Box, Box)`.
+    /// No flattening — XOR is non-associative.
+    #[test]
+    fn q_basic_xor_basic_uses_sassi_xor() {
+        let a: Q<TestModel> = BasicPredicate::True.into();
+        let b: Q<TestModel> = BasicPredicate::False.into();
+        assert!(matches!(a ^ b, Q::Basic(BasicPredicate::Xor(_, _))));
+    }
+
+    /// Pure-Basic double-negation collapses through sassi's `Not`
+    /// reducer (`!!p == p`). The outer `Q::Basic` wraps the
+    /// already-collapsed sassi result; no `Q::Negated` should appear.
+    #[test]
+    fn q_basic_double_negation_collapses_via_sassi() {
+        let p: Q<TestModel> = BasicPredicate::True.into();
+        let result = !!p;
+        assert!(matches!(result, Q::Basic(BasicPredicate::True)));
+    }
+
+    /// Mixed-operand AND lifts to `Q::Compound`.
+    #[test]
+    fn q_mixed_and_creates_compound_node() {
+        let a: Q<TestModel> = BasicPredicate::True.into();
+        let b: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
+        match a & b {
+            Q::Compound {
+                op: CompoundOp::And,
+                parts,
+            } => {
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0], Q::Basic(_)));
+                assert!(matches!(parts[1], Q::Negated(_)));
+            }
+            other => panic!("expected Q::Compound{{op: And, ..}}, got {other:?}"),
+        }
+    }
+
+    /// Chained mixed-AND flattens — `(a & b) & c` produces a
+    /// 3-element `parts: Vec<_>`, not a 2-element Vec with a nested
+    /// inner `Q::Compound`.
+    #[test]
+    fn q_chained_compound_and_flattens() {
+        // Force mixed by wrapping at least one operand in `Q::Negated`
+        // (which prevents the pure-Basic short-circuit).
+        let neg = || Q::<TestModel>::Negated(Box::new(BasicPredicate::True.into()));
+        let combined = neg() & neg() & neg();
+        match combined {
+            Q::Compound {
+                op: CompoundOp::And,
+                parts,
+            } => assert_eq!(parts.len(), 3, "expected flat 3-element parts"),
+            other => panic!("expected Q::Compound{{op: And, ..}}, got {other:?}"),
+        }
+    }
+
+    /// Chained mixed-OR flattens identically to AND.
+    #[test]
+    fn q_or_with_two_compounds_flattens() {
+        let neg = || Q::<TestModel>::Negated(Box::new(BasicPredicate::True.into()));
+        let lhs = neg() | neg();
+        let rhs = neg() | neg();
+        match lhs | rhs {
+            Q::Compound {
+                op: CompoundOp::Or,
+                parts,
+            } => assert_eq!(parts.len(), 4),
+            other => panic!("expected Q::Compound{{op: Or, ..}}, got {other:?}"),
+        }
+    }
+
+    /// Mixed-XOR lands in `Q::Xor(Box, Box)` directly. Locks the
+    /// non-associativity decision: no flattening allowed.
+    #[test]
+    fn q_xor_mixed_lands_in_q_xor_variant() {
+        let basic: Q<TestModel> = BasicPredicate::True.into();
+        let neg: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
+        match basic ^ neg {
+            Q::Xor(lhs, rhs) => {
+                assert!(matches!(*lhs, Q::Basic(_)));
+                assert!(matches!(*rhs, Q::Negated(_)));
+            }
+            other => panic!("expected Q::Xor(_, _), got {other:?}"),
+        }
+    }
+
+    /// `Q::Negated(Q::Negated(inner))` collapses to `inner` on the
+    /// `Not::not` path. Required so `!!q` doesn't pile up SQL `NOT
+    /// NOT (...)` nesting in the eventual emitter output.
+    #[test]
+    fn q_not_negated_negated_collapses() {
+        // Wrap something non-Basic so the negation lands in `Q::Negated`
+        // rather than collapsing through sassi.
+        let inner: Q<TestModel> = Q::Compound {
+            op: CompoundOp::And,
+            parts: vec![
+                Q::Negated(Box::new(BasicPredicate::True.into())),
+                Q::Negated(Box::new(BasicPredicate::False.into())),
+            ],
+        };
+        let result = !!inner.clone();
+        // After two `Not::not` calls: first wraps in `Q::Negated`, second
+        // unwraps. Result is the original non-Basic inner.
+        assert!(matches!(result, Q::Compound { .. }));
+    }
+
+    /// Operator precedence runtime check. Locks Rust's table:
+    /// `&` > `^` > `|`. So `Q::from(a) ^ Q::Negated(...) | Q::Negated(...)`
+    /// parses as `(Q::from(a) ^ Q::Negated(...)) | Q::Negated(...)`.
+    /// Trybuild compile-pass at T6.11 doubles this with a
+    /// type-level lock; this runtime test validates the resulting
+    /// `Q` shape.
+    #[test]
+    fn q_operator_precedence_xor_binds_tighter_than_or() {
+        let a: Q<TestModel> = BasicPredicate::True.into();
+        let b: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
+        let c: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::True.into()));
+
+        let composed = a ^ b | c;
+
+        // Outer should be Or (lowest-precedence binding).
+        match composed {
+            Q::Compound {
+                op: CompoundOp::Or,
+                parts,
+            } => {
+                assert_eq!(parts.len(), 2);
+                // Left half: the XOR result.
+                assert!(matches!(parts[0], Q::Xor(_, _)));
+                // Right half: Q::Negated.
+                assert!(matches!(parts[1], Q::Negated(_)));
+            }
+            other => panic!("expected outer Q::Compound{{op: Or}}, got {other:?}"),
+        }
+    }
+
+    /// AND binds tighter than XOR. `a & b ^ c` parses as
+    /// `(a & b) ^ c`, mirroring Rust's bit-operator precedence.
+    #[test]
+    fn q_operator_precedence_and_binds_tighter_than_xor() {
+        let a: Q<TestModel> = BasicPredicate::True.into();
+        let b: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::False.into()));
+        let c: Q<TestModel> = Q::Negated(Box::new(BasicPredicate::True.into()));
+
+        let composed = a & b ^ c;
+
+        // Outer Xor.
+        match composed {
+            Q::Xor(lhs, rhs) => {
+                // Left half: the AND result. With one Basic and one
+                // Negated, mixed-AND lifts to Q::Compound{op: And, ..}.
+                assert!(matches!(
+                    *lhs,
+                    Q::Compound {
+                        op: CompoundOp::And,
+                        ..
+                    }
+                ));
+                assert!(matches!(*rhs, Q::Negated(_)));
+            }
+            other => panic!("expected outer Q::Xor, got {other:?}"),
+        }
     }
 }
