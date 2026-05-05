@@ -153,6 +153,17 @@ fn compile_pass_phase8_zero() {
 }
 
 #[test]
+fn compile_pass_phase8_t7() {
+    // Cluster 8δ T7 — Punnu integration. T7.1 lands the
+    // `djogi::cache` re-export surface check (every sassi public
+    // symbol the cluster consumes must be reachable through
+    // `djogi::cache::*` without an adopter-side sassi dep). T7.2+
+    // will add `Cacheable` auto-emission fixtures under the same
+    // `phase8_t7_*` glob.
+    TestCases::new().pass("tests/compile_pass/phase8_t7_*.rs");
+}
+
+#[test]
 fn compile_pass_phase8() {
     // Globs cannot exclude sub-prefixes (no brace expansion), so this
     // can't be expressed as `phase8_*.rs` — that pattern would also

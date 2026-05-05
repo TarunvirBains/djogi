@@ -51,6 +51,7 @@ extern crate self as djogi;
 pub mod apps;
 pub mod array;
 pub mod auth;
+pub mod cache;
 pub mod compose;
 pub mod config;
 pub mod context;
