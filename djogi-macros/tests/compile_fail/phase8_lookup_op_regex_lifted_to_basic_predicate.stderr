@@ -1,0 +1,5 @@
+error[E0599]: no variant or associated item named `Regex` found for enum `LookupOp` in the current scope
+  --> tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs:29:30
+   |
+29 |     let _ = sassi::LookupOp::Regex;
+   |                              ^^^^^ variant or associated item not found in `LookupOp`

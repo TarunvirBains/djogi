@@ -225,10 +225,13 @@ fn compile_fail_phase8() {
     // sweep up `phase8_zero_*.rs`. List each phase8-only fixture
     // explicitly. Phase 8α T1.7 lands two: a wrong-receiver-mutability
     // override on `before_create` and a `#[model(hooks)]` model that
-    // forgot the sibling `impl ModelHooks for M`.
+    // forgot the sibling `impl ModelHooks for M`. Phase 8γ T6.10 adds
+    // the no-regex-lift fixture that locks `sassi::LookupOp` against
+    // a `Regex` / `IRegex` variant.
     let t = TestCases::new();
     t.compile_fail("tests/compile_fail/phase8_hooks_attr_without_impl.rs");
     t.compile_fail("tests/compile_fail/phase8_hooks_invalid_signature.rs");
+    t.compile_fail("tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs");
 }
 
 #[test]
