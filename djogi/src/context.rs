@@ -1170,10 +1170,11 @@ impl DjogiContext {
 /// no embedded quotes or control characters. Validation runs via
 /// byte-level primitives only — no regex engine.
 ///
-/// Used by `DjogiContext::set_role` (production) AND by tests.
-/// Sharing one function prevents drift between the production
-/// security gate and the test fixtures that verify it.
-pub(crate) fn validate_role_name(role: &str) -> Result<(), DjogiError> {
+/// Used by `DjogiContext::set_role` (production) AND by the
+/// in-module tests that pin the byte-level rejection table. Sharing
+/// one function prevents drift between the production security gate
+/// and the test fixtures that verify it.
+fn validate_role_name(role: &str) -> Result<(), DjogiError> {
     if crate::ident::check_plain_ident(role, false).is_err() {
         return Err(DjogiError::InvalidRoleName(role.to_string()));
     }
@@ -1316,37 +1317,15 @@ mod tests {
     // -------------------------------------------------------------------------
     // Phase 8ε T9.2 — set_role byte-level validation gate.
     //
-    // Tests 1 and 5 require a real Postgres pool / transaction to exercise
-    // the discriminant arms end-to-end and are gated behind `#[ignore]`;
-    // T9.7 integration tests cover them under the `#[djogi_test]` runtime.
-    // The validation-only tests (2, 3, 4) run as plain unit tests because
-    // the byte-level gate fires before any DB activity and is itself the
-    // primary security invariant — every byte that could escape the
-    // double-quoted SQL form must be rejected here.
+    // Pin the validator's byte-level reject/accept table directly via
+    // `super::validate_role_name` (the same free function `set_role`
+    // uses in production). No mirrored helper, no drift risk: every
+    // byte the production gate accepts or rejects is exactly what
+    // these tests assert against. The DB-touch arms (pool-vs-tx
+    // discriminant, end-to-end SET LOCAL ROLE round-trip) live in
+    // `tests/integration/phase8_set_role_transaction_scoped.rs` —
+    // exercising those here would just shadow the integration suite.
     // -------------------------------------------------------------------------
-
-    // Validation tests below call `super::validate_role_name` directly —
-    // the same free function `set_role` uses in production. No mirrored
-    // helper, no drift risk: every byte the production gate accepts or
-    // rejects is exactly what these tests assert against.
-
-    #[tokio::test]
-    #[ignore = "requires a live Postgres pool; covered by T9.7 integration tests"]
-    async fn set_role_rejects_outside_transaction() {
-        // Pool-backed context — `SET LOCAL ROLE` cannot bind to a
-        // transaction scope here, so the method must surface
-        // `SetRoleOutsideTransaction` *before* sending any SQL.
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://djogi:djogi@localhost/djogi_test".into());
-        let pool = crate::pg::pool::DjogiPool::connect(&url)
-            .await
-            .expect("pool connect");
-        let mut ctx = DjogiContext::from_pool(pool);
-        match ctx.set_role("readonly").await {
-            Err(DjogiError::SetRoleOutsideTransaction) => {}
-            other => panic!("expected SetRoleOutsideTransaction, got {other:?}"),
-        }
-    }
 
     #[test]
     fn set_role_rejects_quote_injection() {
@@ -1411,29 +1390,10 @@ mod tests {
         // Positive case — a well-formed role name with the full set of
         // allowed bytes (lowercase letters, digits, underscores, an
         // underscore-led prefix segment). The validation gate must
-        // pass; the DB-touch step is exercised separately under
-        // `#[ignore]` (see `set_role_executes_set_local_role_sql`).
+        // pass; the end-to-end SET LOCAL ROLE round-trip is covered
+        // by `tests/integration/phase8_set_role_transaction_scoped.rs`.
         assert!(super::validate_role_name("app_readonly_role").is_ok());
         assert!(super::validate_role_name("_internal").is_ok());
         assert!(super::validate_role_name("role1").is_ok());
-    }
-
-    #[tokio::test]
-    #[ignore = "requires a live Postgres pool + role; covered by T9.7 integration tests"]
-    async fn set_role_executes_set_local_role_sql() {
-        // End-to-end round-trip — open a transaction, run `set_role`
-        // against a known role name, observe that `SELECT
-        // current_role` reports the new role. Gated behind `#[ignore]`
-        // because the role must exist in the test database; T9.7
-        // sets up a fixture role for the integration suite.
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://djogi:djogi@localhost/djogi_test".into());
-        let pool = crate::pg::pool::DjogiPool::connect(&url)
-            .await
-            .expect("pool connect");
-        let outer = DjogiContext::from_pool(pool);
-        let mut ctx = outer.begin().await.expect("BEGIN");
-        ctx.set_role("djogi").await.expect("set_role on djogi role");
-        ctx.rollback().await.expect("ROLLBACK");
     }
 }

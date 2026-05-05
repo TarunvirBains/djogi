@@ -1,12 +1,12 @@
-//! Partition / vacuum analysis for adopter Postgres tables — pure
-//! substrate layer.
+//! Partition / vacuum analysis for adopter Postgres tables.
 //!
 //! `djogi analyze` (T10) inspects `pg_stat_user_tables` and (when the
 //! extension is installed) `pg_partman` metadata to surface vacuum and
-//! partitioning recommendations to operators. This module ships the
-//! **pure** recommendation logic — no DB, no I/O, no global state. The
-//! live-DB query path (`fetch_table_health`) and CLI dispatch land in
-//! T10.2; the integration test lands in T10.3.
+//! partitioning recommendations to operators. The recommendation logic
+//! ([`recommend`]) is pure — no DB, no I/O, no global state — so it
+//! can be unit-tested against synthetic [`TableHealth`] inputs without
+//! a live database. The live-DB query path lives in
+//! [`fetch_table_health`]; the CLI dispatch entry point is [`run`].
 //!
 //! # Why a pure substrate
 //!

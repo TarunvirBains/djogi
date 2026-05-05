@@ -1088,14 +1088,15 @@ async fn apply_plan_inner(
 ///
 /// # Signing key
 ///
-/// `DJOGI_SNAPSHOT_SIGNING_KEY` malformed → log + use the no-op key
-/// `[0u8; 32]`. The runner does not double-surface the error; the
-/// CLI entry point (which sets up signing in the first place) owns
-/// the operator-facing surface for malformed keys. Signing under
-/// the no-op key produces `[0u8; 32]` → 64 zero hex chars → a
-/// non-NULL string in the audit column. NULL is reserved for code
-/// paths where no signature was attempted (today: never on this
-/// path).
+/// `DJOGI_SNAPSHOT_SIGNING_KEY` unset OR malformed → silently
+/// degrades to the no-op key `[0u8; 32]`. The runner intentionally
+/// does NOT log on malformed input; the CLI entry point that sets
+/// up signing owns the operator-facing surface for key errors
+/// (`djogi verify` surfaces them as `VerifyError::KeyDecode`).
+/// Signing under the no-op key produces `[0u8; 32]` → 64 zero hex
+/// chars → a non-NULL string in the audit column. NULL is reserved
+/// for code paths where no signature was attempted (today: never on
+/// this path).
 async fn record_ddl_audit_for_plan(
     plan: &MigrationPlan,
     runner_ctx: &RunnerCtx,
@@ -1125,13 +1126,13 @@ async fn record_ddl_audit_for_plan(
         }
     };
 
-    // Resolve the signing key. Per the no-op-key sentinel contract in
-    // `snapshot::sign`, an unset env var → `Ok(None)` → use `[0u8; 32]`.
-    // A malformed value (`Err`) also degrades to the no-op key here;
-    // the surfacing of the error itself is the CLI entry point's job
-    // (which is the operator-facing layer that owns DJOGI_SNAPSHOT_SIGNING_KEY).
-    // The runner is the audit-side consumer, not the configuration owner —
-    // we should not double-warn.
+    // Resolve the signing key. Per the no-op-key sentinel contract
+    // in `snapshot::sign`, an unset env var → `Ok(None)` → no-op key.
+    // A malformed value (`Err`) collapses here to the same no-op key
+    // — the CLI entry point that sets the env var owns the
+    // operator-facing surface for malformed keys (`djogi verify`
+    // surfaces it as `VerifyError::KeyDecode`); the runner is the
+    // audit-side consumer, not the configuration owner.
     let key = crate::snapshot::sign::load_signing_key_from_env()
         .ok()
         .flatten()

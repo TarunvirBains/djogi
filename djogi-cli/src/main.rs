@@ -89,10 +89,6 @@ enum TopCommand {
     ///
     /// **Read-only.** Analyze issues only `SELECT` against system
     /// catalogues; it never writes.
-    ///
-    /// T10.1 (this commit) wires the type surface and CLI flags;
-    /// T10.2 ships the live-DB query path and replaces the placeholder
-    /// dispatch arm below.
     Analyze {
         /// Output format. `human` (default) prints one line per table;
         /// `json` emits a deterministic, sorted array of
