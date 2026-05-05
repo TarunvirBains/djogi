@@ -6,6 +6,7 @@
 //! stub in isolation without touching this file.
 
 pub mod attrs;
+pub mod computed;
 pub mod crud;
 pub mod descriptor;
 pub mod exclusion;
@@ -49,6 +50,14 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         .map(attrs::FieldAttrs::parse)
         .collect::<syn::Result<_>>()?;
 
+    // Phase 8β T4.3 — parse `#[computed(sql = "...")]` annotations.
+    // Surfaces span-precise errors for the deferred `stored` keyword,
+    // empty-SQL strings, unknown keys, and `#[field(...)]`-with-
+    // `#[computed(...)]` collisions. T4.5 will lower the captured
+    // metadata into descriptor entries + `{Model}Computed` ZST
+    // accessors; T4.3 captures syntactic state only.
+    let _computed_attrs = computed::parse_computed_attrs(&struct_item)?;
+
     validate_through_model_shape(&struct_item, &model_attrs)?;
     validate_version_fields(&struct_item, &field_attrs)?;
 
@@ -72,7 +81,15 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // `#[derive(Model)]` solely to legalise the `#[field(...)]` parsing.
     if let syn::Fields::Named(named) = &mut struct_item.fields {
         for field in &mut named.named {
-            field.attrs.retain(|a| !a.path().is_ident("field"));
+            // Phase 8β T4.3 — strip `#[computed(...)]` for the same
+            // reason `#[field(...)]` is stripped: rustc does not
+            // recognise it as a helper attribute on the `#[model]`
+            // attribute macro. The semantics were captured into
+            // `_computed_attrs` above; T4.5's emitter consumes the
+            // captured state.
+            field
+                .attrs
+                .retain(|a| !a.path().is_ident("field") && !a.path().is_ident("computed"));
         }
     }
 
