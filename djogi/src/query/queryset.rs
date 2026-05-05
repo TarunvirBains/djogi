@@ -149,18 +149,18 @@ pub(crate) trait CacheTarget<T>: Send + Sync {
 /// from `Punnu::insert` get logged-and-swallowed — see the impl below
 /// for why "do not propagate cache-side errors out of a fetch
 /// terminal" is the load-bearing contract.
-pub(crate) struct PunnuCacheTarget<T: sassi::Cacheable> {
+pub(crate) struct PunnuCacheTarget<T: crate::types::Cacheable> {
     punnu: sassi::Punnu<T>,
 }
 
-impl<T: sassi::Cacheable> PunnuCacheTarget<T> {
+impl<T: crate::types::Cacheable> PunnuCacheTarget<T> {
     /// Wrap a `sassi::Punnu<T>` for use as a [`CacheTarget`].
     pub(crate) fn new(punnu: sassi::Punnu<T>) -> Self {
         Self { punnu }
     }
 }
 
-impl<T: sassi::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> {
+impl<T: crate::types::Cacheable + Clone> CacheTarget<T> for PunnuCacheTarget<T> {
     fn insert<'a>(
         &'a self,
         value: &'a T,

@@ -318,6 +318,9 @@ where
     /// transaction via inline-match. Prefetch fan-out inside an
     /// `atomic()` scope (Phase 4 Task 1) works transparently and sees
     /// the scope's uncommitted writes.
+    // TODO(8δ T7.x): does NOT yet honour `cache_target` — see the
+    // remote anchor at the bottom of this impl block (above `stream`)
+    // for the cluster-wide deferral rationale.
     pub fn fetch_all_prefetched<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -411,6 +414,9 @@ where
     /// query and prefetch fan-out both dispatch through the context
     /// helpers, so `select_related` works inside an
     /// `atomic()` scope and sees the scope's uncommitted writes.
+    // TODO(8δ T7.x): does NOT yet honour `cache_target` — see the
+    // remote anchor at the bottom of this impl block (above `stream`)
+    // for the cluster-wide deferral rationale.
     pub fn fetch_all_joined<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,
@@ -648,6 +654,9 @@ where
     /// Honours the `is_empty` structural-none contract — a
     /// `QuerySet::none()`-derived queryset returns `Ok(HashMap::new())`
     /// without SQL emission, matching every other terminal.
+    // TODO(8δ T7.x): does NOT yet honour `cache_target` — see the
+    // remote anchor at the bottom of this impl block (above `stream`)
+    // for the cluster-wide deferral rationale.
     pub fn in_bulk<'ctx>(
         self,
         ctx: &'ctx mut DjogiContext,

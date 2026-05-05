@@ -54,7 +54,13 @@ use djogi::prelude::*;
 // bound is satisfied by construction here.
 // ---------------------------------------------------------------------------
 
-#[model(table = "phase8_t7_3_cache_rows")]
+// Pin the PK strategy explicitly. The macro's "no `pk = ...`" default
+// is `PkStrategy::HeerIdDesc` (recency-biased; `attrs.rs` line ~1058),
+// not `HeerId` — they share the same Rust `id: HeerId` field shape, so
+// the test would compile under either. But a future default flip
+// would silently change which Cacheable variant this fixture
+// exercises. Anchor on `pk = "heerid"` so the variant is named.
+#[model(table = "phase8_t7_3_cache_rows", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct CacheRow {
     pub note: String,
@@ -212,6 +218,27 @@ async fn cache_modifier_does_not_change_sql_emit(mut ctx: djogi::DjogiContext) {
     // therefore prove equal SQL emission inputs across the two
     // querysets, which is the spec-required parity contract for
     // the additive cache modifier.
+    //
+    // # Why Debug, not `build_select`
+    //
+    // T7.3 Codex review (ALLOW-WITH-CONCERNS) flagged this assertion
+    // as brittle — `Debug` projection drift could falsely flag, and a
+    // SQL-emitter change not mirrored in `Debug` could silently slip
+    // through. `djogi::query::sql::build_select` would be the
+    // robust assertion target, but it's `pub(crate)` (`sql.rs:699`),
+    // so reaching it from an external integration test requires
+    // exposing a test-only helper under the `testing` feature flag.
+    // That surface flip is broader than T7.3's scope and is anchored
+    // to a future commit (filed as the trailing TODO below). Until
+    // then: the substring-check immediately below pins the
+    // non-trivial-Debug invariant so the equality assertion cannot
+    // silently degenerate to "two empty strings match", which is the
+    // bounded-mitigation Codex implicitly accepted by ALLOW-WITH-
+    // CONCERNS rather than BLOCK.
+    //
+    // TODO(8δ T7.x): expose `__sql_for_test()` on `QuerySet` behind
+    // `#[cfg(any(test, feature = "testing"))]` and re-anchor this
+    // parity assertion on the rendered SQL string.
     let plain_dbg = format!("{:?}", plain);
     let cached_dbg = format!("{:?}", cached);
     assert_eq!(
