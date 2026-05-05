@@ -90,6 +90,20 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 # upgrade path.
 sha2 = "0.11"
 
+# HMAC-SHA256 — Cluster 8ε T9.3 snapshot signing. Pinned to `0.13` so the
+# `digest 0.11` traits line up with the workspace's `sha2 = "0.11"` baseline
+# (the older `hmac = "0.12"` line targets `digest 0.10` and will not compile
+# against `sha2 0.11`). Used by `djogi::snapshot::sign` for HMAC-SHA256
+# sign/verify of migration snapshot payloads.
+hmac = "0.13"
+
+# Constant-time byte comparison — Cluster 8ε T9.3. `subtle::ConstantTimeEq`
+# backs the snapshot-signature verify path; using a plain `==` on signature
+# bytes leaks one-byte timing information per comparison. Pulled in as a
+# direct dep so the security-critical comparison routes through a vetted
+# implementation rather than a hand-rolled loop.
+subtle = "2"
+
 # libc — file-level workspace lock primitive in `migrate::guard`.
 # Uses `flock(LOCK_EX | LOCK_NB)` directly for the 30-second bounded-retry
 # acquire path. Already in the transitive dep tree via `tokio` and
