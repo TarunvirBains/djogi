@@ -180,46 +180,6 @@ impl std::error::Error for VerifyError {
     }
 }
 
-/// Outcome of verifying a single snapshot file.
-///
-/// `Skipped` is distinct from `Ok` so the caller can report to
-/// operators that an audit-table-absent situation was tolerated rather
-/// than silently passing the verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VerifyOutcome {
-    /// Computed signature matches the audit ledger's recorded hex.
-    Ok,
-    /// Computed signature does NOT match — drives a non-zero exit.
-    Mismatch,
-    /// Audit table absent (`42P01`) on the configured audit DB. Per
-    /// v3 §824, this is graceful — the cross-check is skipped and the
-    /// exit code is unaffected.
-    Skipped,
-}
-
-/// One verified `(snapshot path, status)` pair. Returned from the pure
-/// verification loop so tests can assert on the structured outcome
-/// rather than parsing stdout/stderr.
-///
-/// `path` and `bucket` carry diagnostic context for the T9.7
-/// integration suite (and any future programmatic caller) — the
-/// binary's `main` only consumes `outcome` for the exit-code
-/// computation. The `dead_code` allow on the struct keeps clippy
-/// quiet about the un-read fields without losing them from the
-/// surface.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct VerifyEntry {
-    /// Absolute path to the snapshot file we cross-checked.
-    pub path: PathBuf,
-    /// `(target_database, app_label)` extracted from the path, where
-    /// `app_label` is the in-memory form (empty string for
-    /// `_global_/`).
-    pub bucket: FilesystemBucket,
-    /// Verification outcome.
-    pub outcome: VerifyOutcome,
-}
-
 /// `djogi verify` entry point — consumed by `main.rs::TopCommand::Verify`.
 ///
 /// `workspace`: optional workspace-root override. Defaults to
@@ -283,10 +243,11 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
         }
     };
 
-    // Step 6 — verify each snapshot. Collect entries; the print +
-    // exit-code calculation happens after the loop so the output
-    // ordering is deterministic.
-    let mut entries: Vec<VerifyEntry> = Vec::with_capacity(buckets.len());
+    // Step 6 — verify each snapshot. Track only whether any bucket
+    // mismatched; the per-bucket diagnostics print to stderr/stdout
+    // inline (deterministic order is `buckets` iteration order, set
+    // by `discover_filesystem_buckets`).
+    let mut any_mismatch = false;
     let (audit_url_for_log, audit_pool) = pool;
     let mut audit_ctx = djogi::context::DjogiContext::from_pool(audit_pool);
 
@@ -325,11 +286,6 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
                     },
                     snapshot.display()
                 );
-                entries.push(VerifyEntry {
-                    path: snapshot,
-                    bucket: bucket.clone(),
-                    outcome: VerifyOutcome::Skipped,
-                });
                 continue;
             }
             Err(FetchAuditError::Other(message)) => {
@@ -340,24 +296,23 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
             }
         };
 
-        let outcome = match stored {
+        match stored {
             Some(stored_hex) if eq_ignore_ascii_case_hex(&stored_hex, &computed_hex) => {
-                VerifyOutcome::Ok
+                println!("OK {}", snapshot.display());
             }
             Some(stored_hex) => {
                 eprintln!(
                     "MISMATCH {}: expected {stored_hex}, got {computed_hex}",
                     snapshot.display()
                 );
-                VerifyOutcome::Mismatch
+                any_mismatch = true;
             }
             None => {
-                // Audit table exists but no row for this bucket — treat
-                // as Skipped, mirroring the table-absent case. The
-                // operator either has not yet applied any migrations
-                // for this bucket (audit row is the post-apply
-                // artefact) or the audit DB was provisioned after the
-                // last apply.
+                // Audit table exists but no row for this bucket — skip,
+                // mirroring the table-absent case. The operator either
+                // has not yet applied any migrations for this bucket
+                // (audit row is the post-apply artefact) or the audit
+                // DB was provisioned after the last apply.
                 eprintln!(
                     "warn: no djogi_ddl_audit row for {}/{} — skipping",
                     bucket.database,
@@ -367,25 +322,11 @@ pub async fn run(workspace: Option<PathBuf>) -> Result<ExitCode, VerifyError> {
                         &bucket.app
                     }
                 );
-                VerifyOutcome::Skipped
             }
-        };
-
-        if matches!(outcome, VerifyOutcome::Ok) {
-            println!("OK {}", snapshot.display());
         }
-
-        entries.push(VerifyEntry {
-            path: snapshot,
-            bucket: bucket.clone(),
-            outcome,
-        });
     }
 
     // Step 7 — exit code: any Mismatch → 1; otherwise 0.
-    let any_mismatch = entries
-        .iter()
-        .any(|e| matches!(e.outcome, VerifyOutcome::Mismatch));
     Ok(if any_mismatch {
         ExitCode::from(1)
     } else {
