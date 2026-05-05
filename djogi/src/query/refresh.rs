@@ -39,9 +39,25 @@
 //! 3. Build SQL: `SELECT <COLUMN_LIST> FROM <table_name> WHERE
 //!    [<watermark_col> >= $1] [OR id IN ($2, …)] ORDER BY <watermark_col>`.
 //! 4. Execute via `ctx.raw_query::<T>(sql, &binds).await`.
-//! 5. Return `DeltaResult::new(items, HashSet::new())` — tombstones are empty
-//!    in this commit; T8.6+ wires tombstone collection.
+//! 5. Split items into `(live_items, tombstones)` via the per-row
+//!    `Model::__delta_should_tombstone()` check (T8.6 — Pattern 1,
+//!    SoftDeletable-derived); return `DeltaResult::new(live_items, tombstones)`.
 //! 6. Drop ctx (releases connection back to pool on drop).
+//!
+//! # Tombstone collection patterns (cluster 8δ T8.6 → T8.8)
+//!
+//! - **T8.6 — Pattern 1 (SoftDeletable-derived):** shipped. Per-row
+//!   `__delta_should_tombstone()` walks soft-deleted rows into the
+//!   tombstones set. Anti-regression: NO `deleted_at IS NULL` filter
+//!   in the WHERE clause (deletion signal must flow through the
+//!   watermark per spec §415).
+//! - **T8.7 — Pattern 2 (outbox-derived):** future. The fetcher will
+//!   merge tombstones from a captured outbox/event-table subscription
+//!   alongside Pattern 1's per-row derivation.
+//! - **T8.8 — Pattern 3 (explicit delete-log-derived):** future. The
+//!   fetcher will read a `_djogi_deletes` log table for ids removed
+//!   since `since` and merge them into tombstones. Required for hard-
+//!   delete models where Pattern 1 is unavailable.
 //!
 //! # Filter pushdown deferral (GH #127)
 //!
@@ -212,7 +228,7 @@ where
         // watermark and be derived here. A `deleted_at IS NULL` filter would
         // silently drop the deletion signal at the SQL boundary, preventing
         // tombstone derivation and leaving stale entries in the Punnu
-        // indefinitely. The test `fetcher_does_not_add_deleted_at_is_null_filter`
+        // indefinitely. The test `deleted_row_is_tombstoned_not_silently_dropped`
         // in `phase8_t8_6_softdelete_tombstones` pins this invariant.
         //
         // For non-soft-deletable models `__delta_should_tombstone()` always
@@ -236,12 +252,21 @@ where
         // it is correct (and preserves the invariant that the watermark only
         // advances based on observed rows).
         //
-        // Note: watermark inference runs over `live_items` only — tombstoned
-        // rows are excluded from the max-watermark scan inside sassi's
-        // `DeltaResult::observed_watermark`. This is correct: a tombstoned row
-        // signals deletion to the subscriber, not a new high-water point.
-        // Sassi's `apply_delta` evicts tombstoned ids from the Punnu and emits
+        // Note: watermark inference runs over `live_items` only because
+        // djogi never places tombstoned rows in `DeltaResult.items` to begin
+        // with — the split happens at this djogi boundary, not inside sassi.
+        // Sassi's `observed_watermark()` scans `self.items` with no
+        // tombstone awareness; the exclusion is purely a consequence of how
+        // we construct the DeltaResult. Practical effect: a tombstoned row
+        // with a higher `updated_at` than every live row will NOT advance
+        // the next tick's `since` filter — that is the intended behavior
+        // (a deletion is not itself a new high-water checkpoint). Sassi's
+        // `apply_delta` evicts tombstoned ids from the Punnu and emits
         // `PunnuEvent::Invalidate { reason: EventReason::OnDelete }`.
+        //
+        // T8.7 / T8.8 hook here: when Pattern 2 (outbox) and Pattern 3
+        // (delete-log) tombstones land, they merge into the same `tombstones`
+        // HashSet before the `DeltaResult::new(...)` call below.
         Ok(DeltaResult::new(live_items, tombstones))
     }
 }

@@ -10,7 +10,7 @@
 //!    the tombstone set via `__delta_should_tombstone()`, and the Punnu entry
 //!    is evicted (`punnu.get(id) == None`).
 //!
-//! 2. **`fetcher_does_not_add_deleted_at_is_null_filter`** — anti-regression
+//! 2. **`deleted_row_is_tombstoned_not_silently_dropped`** — anti-regression
 //!    test pinning spec §415. Inserts 1 live + 1 pre-deleted row. Runs a full-
 //!    scan tick and verifies that `applied == 1` (only the live row was
 //!    upserted) while `punnu.get(deleted_id) == None` (the deleted row was
@@ -238,7 +238,7 @@ async fn softdelete_produces_tombstone(mut ctx: djogi::DjogiContext) {
 /// `softdelete_produces_tombstone` test provides the stronger proof by
 /// verifying end-to-end Punnu eviction via the tombstone path.
 #[djogi::djogi_test]
-async fn fetcher_does_not_add_deleted_at_is_null_filter(mut ctx: djogi::DjogiContext) {
+async fn deleted_row_is_tombstoned_not_silently_dropped(mut ctx: djogi::DjogiContext) {
     setup_soft_delete_row(&mut ctx).await;
 
     // Insert a live row.
