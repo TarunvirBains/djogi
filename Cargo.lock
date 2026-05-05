@@ -541,6 +541,7 @@ dependencies = [
  "figment",
  "futures",
  "heeranjid",
+ "hmac",
  "indexmap",
  "inventory",
  "libc",
@@ -553,6 +554,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "thiserror",
  "time",
  "tokio",
@@ -569,9 +571,12 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "djogi",
+ "serde",
+ "serde_json",
  "thiserror",
  "time",
  "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

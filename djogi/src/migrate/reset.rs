@@ -828,6 +828,11 @@ async fn replay_one_migration(
         // means a bug here surfaces as a warning rather than a hard
         // failure during the time-sensitive reset window.
         out_of_order_policy: OutOfOrderPolicy::AllowWithDiagnostic,
+        // T9.4: audit-DB plumbing exists on `RunnerCtx` but the
+        // replay path inside `db reset` does not yet route the
+        // audit pool through. T9.5 wires the apply path; the
+        // reset orchestrator inherits that wiring once it lands.
+        audit_pool: None,
     };
 
     apply_plan(ctx, &plan, &runner_ctx, guard)

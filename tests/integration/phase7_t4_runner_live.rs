@@ -163,6 +163,10 @@ fn make_runner_ctx(
         // permissive default so existing assertions are unaffected.
         // The dedicated phase7_t7_*.rs tests cover the policy paths.
         out_of_order_policy: djogi::migrate::OutOfOrderPolicy::AllowWithDiagnostic,
+        // T9.4 audit-pool plumbing: tests do not provision the
+        // audit DB. T9.7 owns the integration coverage that flips
+        // this to `Some`.
+        audit_pool: None,
     }
 }
 

@@ -29,3 +29,34 @@ time.workspace = true
 # Used by the `live` subcommand to surface typed CLI errors
 # (`LiveCmdError`) without per-call boilerplate.
 thiserror.workspace = true
+# Used by `verify` to compare the audit-DB error's SQLSTATE against
+# `SqlState::UNDEFINED_TABLE` (`42P01`) — the constant lives in
+# `tokio_postgres::error`. djogi already depends on tokio-postgres
+# transitively; declaring it directly here keeps the import path
+# stable (no `djogi::__private::*` reach-through from CLI code).
+tokio-postgres.workspace = true
+# Used by `analyze` to derive `Serialize` on `TableHealth` and
+# `Recommendation` so T10.2 can emit deterministic JSON output via
+# `serde_json`. The pure recommend() layer (T10.1) only needs the
+# derive; the JSON encoder lands with the live-DB wiring.
+serde.workspace = true
+# Used by `analyze --format json` to emit a deterministic, sorted
+# array of `{table_name, recommendation, ...}` rows. We pick
+# `to_writer_pretty` so CI dashboards can diff yesterday's output
+# against today's without reformatting first; serde's struct field
+# order is preserved by `serde_json` so projection through a named
+# `Row` struct gives byte-stable output.
+serde_json.workspace = true
+
+# T10.3 spawns the compiled `djogi` binary as a subprocess, seeds a
+# per-test database via `#[djogi_test]`, and asserts the analyze
+# JSON output. The integration test lives under
+# `tests/integration/` so the file path mirrors the framework-wide
+# test convention (root `tests/integration/` for djogi-crate tests,
+# this crate-local equivalent for djogi-cli). Cargo only
+# auto-discovers tests directly under `tests/*.rs`; the explicit
+# `[[test]]` entry below registers the subdirectory layout.
+[[test]]
+name = "phase8_djogi_analyze_recommendations"
+path = "tests/integration/phase8_djogi_analyze_recommendations.rs"
+harness = true

@@ -14,9 +14,11 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod analyze;
 mod db;
 mod live;
 mod migrations;
+mod verify;
 
 #[derive(Parser)]
 #[command(name = "djogi", about = "Djogi framework CLI")]
@@ -63,6 +65,114 @@ enum TopCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Cluster 8ε T9.6 — read-only HMAC cross-check of every
+    /// `migrations/<target>/<app>/schema_snapshot.json` against the
+    /// audit DB's `djogi_ddl_audit` ledger.
+    ///
+    /// Exit codes: `0` when every snapshot reports `OK` or `Skipped`
+    /// (audit table absent or no audit row yet), `1` on any mismatch
+    /// or runtime error (config / connect / I/O / key decode).
+    ///
+    /// **Read-only.** Verify never issues `INSERT`, `UPDATE`,
+    /// `DELETE`, or DDL — the only SQL leaving the CLI is a
+    /// positional-bind `SELECT` against `djogi_ddl_audit`.
+    Verify {
+        /// Workspace root override. Defaults to the current working
+        /// directory.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Cluster 8ε T10 — partition / vacuum analysis for adopter
+    /// Postgres tables. Queries `pg_stat_user_tables` (and, when
+    /// installed, `pg_partman`) and recommends vacuum / partition
+    /// actions per the precedence laid out in [`analyze::Recommendation`].
+    ///
+    /// **Read-only.** Analyze issues only `SELECT` against system
+    /// catalogues; it never writes.
+    Analyze {
+        /// Output format. `human` (default) prints one line per table;
+        /// `json` emits a deterministic, sorted array of
+        /// `{table, recommendation}` objects suitable for CI
+        /// dashboards.
+        #[arg(long, value_enum, default_value_t = AnalyzeFormat::Human)]
+        format: AnalyzeFormat,
+        /// Dead-tuple ratio strictly above which `VacuumNeeded` fires.
+        /// Default `0.2` (20% bloat) — typical OLTP workloads tighten
+        /// this; warehouse workloads tend to leave it as-is. Validated
+        /// at parse time via [`parse_threshold_vacuum`]: rejects NaN /
+        /// infinity / values outside `[0.0, 1.0]` so silent
+        /// "never-fires" misconfigurations are impossible.
+        #[arg(long, default_value_t = 0.2, value_parser = parse_threshold_vacuum)]
+        threshold_vacuum: f64,
+        /// Live row count strictly above which an unpartitioned table
+        /// triggers `PartitionRecommended`. Default `10_000_000`. The
+        /// same threshold drives the per-partition row average that
+        /// fires `PartitionCountIncrease`.
+        #[arg(long, default_value_t = 10_000_000)]
+        threshold_partition_rows: i64,
+        /// Workspace root override. Defaults to the current working
+        /// directory. Mirrors `djogi verify --workspace`.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+}
+
+/// Output format for `djogi analyze` — clap-side mirror of
+/// [`analyze::AnalyzeFormat`].
+///
+/// This enum exists only so `clap::ValueEnum` can derive the
+/// `--format human|json` parser without dragging the clap-derive
+/// dependency into the `analyze` module's pure-substrate header.
+/// Conversion to the canonical [`analyze::AnalyzeFormat`] happens at
+/// the dispatch site via [`Self::into_analyze`].
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum AnalyzeFormat {
+    Human,
+    Json,
+}
+
+impl AnalyzeFormat {
+    /// Project the clap-side enum onto the canonical
+    /// [`analyze::AnalyzeFormat`] consumed by [`analyze::run`].
+    fn into_analyze(self) -> analyze::AnalyzeFormat {
+        match self {
+            AnalyzeFormat::Human => analyze::AnalyzeFormat::Human,
+            AnalyzeFormat::Json => analyze::AnalyzeFormat::Json,
+        }
+    }
+}
+
+/// Parse + validate `--threshold-vacuum` at the CLI boundary.
+///
+/// Rejects three classes of nonsense input that plain `f64::parse`
+/// otherwise lets through:
+///
+/// 1. **Non-finite values** (`NaN`, `inf`, `-inf`). Without this guard,
+///    `ratio > NaN` evaluates to `false` for every ratio, so
+///    `VacuumNeeded` would silently never fire — the worst kind of
+///    silent failure for a recommendation engine.
+/// 2. **Negative values.** A dead-tuple ratio is bounded in `[0.0, 1.0]`
+///    by definition (it's `dead / (live + dead)`), so a negative
+///    threshold is operator error, not a tuning choice.
+/// 3. **Values above `1.0`.** Same reasoning — no real
+///    `pg_stat_user_tables` row can produce a ratio above `1.0`, so a
+///    threshold above `1.0` would mean "VacuumNeeded never fires," which
+///    is again silent failure rather than legitimate configuration.
+///
+/// Wired via clap's `value_parser` attribute so the rejection happens at
+/// argument-parsing time — operators see a clear error message and a
+/// non-zero exit, never a silently-misbehaving analyze run.
+fn parse_threshold_vacuum(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|e: std::num::ParseFloatError| e.to_string())?;
+    if !v.is_finite() {
+        return Err(format!("threshold_vacuum must be finite (got {s})"));
+    }
+    if !(0.0..=1.0).contains(&v) {
+        return Err(format!("threshold_vacuum must be in [0.0, 1.0] (got {v})"));
+    }
+    Ok(v)
 }
 
 #[derive(Subcommand)]
@@ -312,6 +422,62 @@ fn main() -> ExitCode {
         },
         TopCommand::Docs { output, workspace } => db::docs_cmd(output, workspace),
         TopCommand::Live { command } => live::dispatch(command),
+        TopCommand::Verify { workspace } => {
+            // Build a current-thread Tokio runtime to drive the async
+            // verify body. Mirrors `db reset` / `db seed` — both pull
+            // the same shape of runtime out of `db::build_runtime`.
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("djogi verify: tokio runtime: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            match runtime.block_on(verify::run(workspace)) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("djogi verify: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        TopCommand::Analyze {
+            format,
+            threshold_vacuum,
+            threshold_partition_rows,
+            workspace,
+        } => {
+            // Build a current-thread Tokio runtime to drive the async
+            // analyze body. Mirrors `djogi verify` exactly — both are
+            // one-shot read-only CLI commands and both want a thin
+            // single-threaded runtime so the `block_on` round-trip is
+            // cheap.
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("djogi analyze: tokio runtime: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            match runtime.block_on(analyze::run(
+                workspace,
+                format.into_analyze(),
+                threshold_vacuum,
+                threshold_partition_rows,
+            )) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("djogi analyze: {e}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         TopCommand::Migrations { command } => match command {
             MigrationsCommand::Compose {
                 name,
@@ -344,5 +510,52 @@ fn main() -> ExitCode {
                 workspace,
             ),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! CLI-level argument-parsing tests. These exercise the `value_parser`
+    //! attached to `--threshold-vacuum` directly; the goal is to pin the
+    //! contract that nonsense input fails at parse time rather than
+    //! silently producing a recommendation engine that "never fires."
+
+    use super::parse_threshold_vacuum;
+
+    #[test]
+    fn parse_threshold_vacuum_accepts_valid_values() {
+        assert_eq!(parse_threshold_vacuum("0.0").unwrap(), 0.0);
+        assert_eq!(parse_threshold_vacuum("0.2").unwrap(), 0.2);
+        assert_eq!(parse_threshold_vacuum("1.0").unwrap(), 1.0);
+        // Boundary check: strictly inside the closed interval.
+        assert_eq!(parse_threshold_vacuum("0.5").unwrap(), 0.5);
+    }
+
+    #[test]
+    fn parse_threshold_vacuum_rejects_nan_inf_and_out_of_range() {
+        // NaN — the entire reason this validator exists. `ratio > NaN`
+        // is always false, so silent acceptance would mean VacuumNeeded
+        // never fires, ever.
+        let err = parse_threshold_vacuum("NaN").unwrap_err();
+        assert!(err.contains("finite"), "err: {err}");
+
+        // Positive infinity — same silent-failure mode.
+        let err = parse_threshold_vacuum("inf").unwrap_err();
+        assert!(err.contains("finite"), "err: {err}");
+
+        // Negative infinity.
+        let err = parse_threshold_vacuum("-inf").unwrap_err();
+        assert!(err.contains("finite"), "err: {err}");
+
+        // Negative finite — outside `[0.0, 1.0]`.
+        let err = parse_threshold_vacuum("-0.1").unwrap_err();
+        assert!(err.contains("[0.0, 1.0]"), "err: {err}");
+
+        // Above 1.0 — outside `[0.0, 1.0]`.
+        let err = parse_threshold_vacuum("1.5").unwrap_err();
+        assert!(err.contains("[0.0, 1.0]"), "err: {err}");
+
+        // Garbage — propagates the underlying ParseFloatError message.
+        assert!(parse_threshold_vacuum("not-a-number").is_err());
     }
 }
