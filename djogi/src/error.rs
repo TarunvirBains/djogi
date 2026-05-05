@@ -454,6 +454,50 @@ pub enum DjogiError {
         /// in tracing without depending on deadpool's enum.
         phase: &'static str,
     },
+
+    /// `DjogiContext::set_role` was invoked on a pool-backed context
+    /// rather than inside an `atomic()` transaction. Phase 8ε T9
+    /// introduces this variant for the security-overlay row-level
+    /// security helper: `SET LOCAL ROLE` is bound to the surrounding
+    /// transaction and reverts at COMMIT/ROLLBACK, so calling it
+    /// outside a transaction would either fail outright or — worse —
+    /// leak the role onto the pooled connection where the next
+    /// checkout-victim would inherit it. Surfacing this as a
+    /// dedicated variant lets callers branch on the misuse without
+    /// inspecting the underlying SQLSTATE.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// retrying the same closure cannot turn a pool-backed context
+    /// into a transactional one.
+    #[error(
+        "set_role can only be called inside an atomic() transaction; \
+         pool-backed contexts have no transaction scope to bind SET LOCAL ROLE to"
+    )]
+    SetRoleOutsideTransaction,
+
+    /// `DjogiContext::set_role` was invoked with a role name that
+    /// fails the byte-level Postgres identifier check. Phase 8ε T9
+    /// introduces this variant so role-name validation surfaces
+    /// before any SQL is sent — the framework refuses to interpolate
+    /// an untrusted string into `SET LOCAL ROLE` even when the
+    /// caller has already quoted it.
+    ///
+    /// The accepted grammar is the standard Postgres unquoted
+    /// identifier shape: an ASCII letter or underscore followed by
+    /// ASCII alphanumerics or underscores, up to 63 bytes. Embedded
+    /// quotes, control characters, and non-ASCII bytes are all
+    /// rejected. The variant carries the offending name so log
+    /// lines and error reports can identify what was rejected.
+    ///
+    /// Classified as **terminal** by [`DjogiError::is_transient`] —
+    /// a malformed role name is a programming error, not a
+    /// race-condition.
+    #[error(
+        "invalid Postgres role name {0:?}: must match Postgres identifier grammar \
+         (ASCII letter or underscore followed by ASCII alphanumerics or underscores, \
+         up to 63 bytes; no embedded quotes or control characters)"
+    )]
+    InvalidRoleName(String),
 }
 
 /// Bridge: convert `tokio_postgres::Error` into `DjogiError`.
@@ -556,6 +600,8 @@ impl DjogiError {
     /// | [`GoneAggregate`](Self::GoneAggregate) | terminal |
     /// | [`StreamOutsideTransaction`](Self::StreamOutsideTransaction) | terminal |
     /// | [`PoolTimeout`](Self::PoolTimeout) | transient |
+    /// | [`SetRoleOutsideTransaction`](Self::SetRoleOutsideTransaction) | terminal |
+    /// | [`InvalidRoleName`](Self::InvalidRoleName) | terminal |
     ///
     /// The Db row reflects the existing `is_lock_error`
     /// classifier: Postgres SQLSTATEs `40001` (serialization
@@ -747,6 +793,56 @@ mod tests {
         assert!(
             !DjogiError::PoolTimeout { phase: "wait" }.is_terminal(),
             "PoolTimeout must NOT be terminal — generic retry helpers must not dead-letter it"
+        );
+        assert!(
+            DjogiError::SetRoleOutsideTransaction.is_terminal(),
+            "SetRoleOutsideTransaction must be terminal — retry cannot promote a pool-backed context"
+        );
+        assert!(
+            DjogiError::InvalidRoleName("readonly".into()).is_terminal(),
+            "InvalidRoleName must be terminal — a malformed role name is a programming error"
+        );
+    }
+
+    /// Phase 8ε T9.1 — `SetRoleOutsideTransaction` is a misuse signal,
+    /// never retryable. Mirrors the `StreamOutsideTransaction`
+    /// classification: the caller must restructure their code to wrap
+    /// the call in `atomic()`, not back off and retry.
+    #[test]
+    fn set_role_outside_transaction_is_terminal() {
+        let err = DjogiError::SetRoleOutsideTransaction;
+        assert!(
+            err.is_terminal(),
+            "SetRoleOutsideTransaction must be terminal"
+        );
+        assert!(
+            !err.is_transient(),
+            "SetRoleOutsideTransaction must not be transient"
+        );
+    }
+
+    /// Phase 8ε T9.1 — `InvalidRoleName` is a validation error;
+    /// retrying with the same string would fail again. The variant
+    /// carries the offending name but the classification is fixed.
+    #[test]
+    fn invalid_role_name_is_terminal() {
+        let err = DjogiError::InvalidRoleName("x".to_string());
+        assert!(err.is_terminal(), "InvalidRoleName must be terminal");
+        assert!(!err.is_transient(), "InvalidRoleName must not be transient");
+    }
+
+    /// Phase 8ε T9.1 — the `Display` formatter uses `{0:?}` to debug-
+    /// quote the offending role name. This protects log lines from
+    /// confusion when the input contains embedded quotes, semicolons,
+    /// or other shell/SQL-loaded characters: the rendered form makes
+    /// the exact bytes unambiguous.
+    #[test]
+    fn invalid_role_name_display_includes_offending_value() {
+        let err = DjogiError::InvalidRoleName("readonly\"; DROP TABLE".into());
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("readonly\\\"; DROP TABLE"),
+            "expected debug-quoted role name in error message, got: {msg}"
         );
     }
 }
