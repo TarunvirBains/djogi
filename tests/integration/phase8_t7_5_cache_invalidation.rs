@@ -17,12 +17,6 @@
 //!    `Model::save` inside a nested `atomic` (savepoint) only fires the
 //!    invalidation at outermost commit, not at savepoint RELEASE.
 //!
-//! 5. `bulk_update_invalidation_deferred_to_followup` — placeholder for
-//!    the deferred bulk-update invalidation path. `QuerySet::update.execute`
-//!    does not currently capture touched row ids; the safe Option B design
-//!    (`with_cache_invalidation()` builder) is deferred to a follow-up
-//!    commit. See `djogi/src/query/update.rs` TODO(8δ T7.5 follow-up).
-//!
 //! # Fixture strategy
 //!
 //! Each test provisions its own table inline via `ctx.raw_execute`.
@@ -126,10 +120,16 @@ async fn save_invalidates_on_commit(mut ctx: djogi::DjogiContext) {
                 if let Some(punnu) = tx.punnu::<InvalRow>() {
                     // Store the Arc so the outer test can inspect it post-commit.
                     *captured_punnu.lock().unwrap() = Some(punnu.clone());
-                    // Insert the row to simulate a warm cache hit.
+                    // Insert under the SAME id the save will target so the
+                    // post-commit assertion is a real check ("entry seeded
+                    // under row_id → save fired → on_commit drained →
+                    // invalidation removed it"). Without id parity the
+                    // assertion is a tautology: get(&row_id) would be None
+                    // regardless of whether the hook fired.
                     punnu
                         .insert(InvalRow {
-                            note: "stale".into(),
+                            id: row_id,
+                            note: "stale-pre-save".into(),
                             ..Default::default()
                         })
                         .await
@@ -297,10 +297,15 @@ async fn delete_invalidates_on_commit(mut ctx: djogi::DjogiContext) {
             Box::pin(async move {
                 if let Some(punnu) = tx.punnu::<InvalRow>() {
                     *captured_punnu.lock().unwrap() = Some(punnu.clone());
-                    // Seed the Punnu with the row to simulate a cache hit.
+                    // Seed the Punnu under the SAME id the delete will
+                    // target so the post-commit assertion is a real check
+                    // ("entry seeded under row_id → delete fired →
+                    // on_commit drained → invalidation removed it").
+                    // Without id parity the assertion would be a tautology.
                     punnu
                         .insert(InvalRow {
-                            note: "cached-pre-delete".into(),
+                            id: row_id,
+                            note: "stale-pre-delete".into(),
                             ..Default::default()
                         })
                         .await
@@ -444,25 +449,4 @@ async fn nested_savepoint_save_invalidates_only_on_outer_commit(mut ctx: djogi::
          at outer COMMIT. If Some(_) is returned, the callback queue promotion \
          failed or the drain did not fire.",
     );
-}
-
-// ---------------------------------------------------------------------------
-// Test 5 — Bulk-update cache invalidation deferred to follow-up.
-//
-// `QuerySet::update.execute` does not currently capture touched row ids;
-// the safe Option B path (`with_cache_invalidation()` builder) is deferred.
-// See `djogi/src/query/update.rs` TODO(8δ T7.5 follow-up).
-//
-// This test is a named placeholder so the deferral is visible in test output.
-// ---------------------------------------------------------------------------
-
-#[djogi::djogi_test]
-async fn bulk_update_invalidation_deferred_to_followup(mut ctx: djogi::DjogiContext) {
-    // Deferred — see TODO(8δ T7.5 follow-up) in update.rs.
-    // Once Option B (with_cache_invalidation()) is implemented, this test
-    // will be replaced by the real bulk-update invalidation assertions:
-    //   1. Pre-insert N rows into Punnu.
-    //   2. `QuerySet::filter(...).update(...).with_cache_invalidation().execute(ctx).await`
-    //   3. Assert all N entries are gone from Punnu after commit.
-    let _ = &mut ctx;
 }

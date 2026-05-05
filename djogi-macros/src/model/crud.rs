@@ -974,18 +974,33 @@ pub fn expand(
                         // no-cache context). Pool-backed contexts log a
                         // warn and drop the callback — no special-case
                         // needed here.
+                        //
+                        // L2 backend errors are logged explicitly at
+                        // `warn!` level (not `error!`): L1 is still
+                        // correctly invalidated; only L2 distribution
+                        // failed. Returning Ok(()) keeps the substrate
+                        // from treating this as a transaction-level
+                        // failure.
                         if let ::std::option::Option::Some(__punnu) =
                             ctx.punnu::<Self>()
                         {
                             let __id_for_cache =
                                 ::core::clone::Clone::clone(&self.id);
                             ctx.on_commit(move || async move {
-                                let _ = __punnu
+                                if let ::std::result::Result::Err(__e) = __punnu
                                     .invalidate(
                                         &__id_for_cache,
                                         ::djogi::cache::InvalidationReason::OnSave,
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    ::djogi::__private::tracing::warn!(
+                                        target: "djogi::cache",
+                                        error = ?__e,
+                                        model = ::std::any::type_name::<Self>(),
+                                        "Punnu::invalidate L2 backend failed during on_commit drain",
+                                    );
+                                }
                                 ::std::result::Result::Ok(())
                             });
                         }
@@ -1065,15 +1080,26 @@ pub fn expand(
                 #after_save_call
                 // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
                 // Captured by value; pool-backed contexts warn + drop.
+                // L2 backend errors are logged at `warn!` level — L1 is
+                // still correctly invalidated; only L2 distribution
+                // failed.
                 if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
                     let __id_for_cache = ::core::clone::Clone::clone(&self.id);
                     ctx.on_commit(move || async move {
-                        let _ = __punnu
+                        if let ::std::result::Result::Err(__e) = __punnu
                             .invalidate(
                                 &__id_for_cache,
                                 ::djogi::cache::InvalidationReason::OnSave,
                             )
-                            .await;
+                            .await
+                        {
+                            ::djogi::__private::tracing::warn!(
+                                target: "djogi::cache",
+                                error = ?__e,
+                                model = ::std::any::type_name::<Self>(),
+                                "Punnu::invalidate L2 backend failed during on_commit drain",
+                            );
+                        }
                         ::std::result::Result::Ok(())
                     });
                 }
@@ -1163,15 +1189,26 @@ pub fn expand(
             #after_delete_call
             // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
             // Captured by value; pool-backed contexts warn + drop.
+            // L2 backend errors are logged at `warn!` level — L1 is
+            // still correctly invalidated; only L2 distribution
+            // failed.
             if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
                 let __id_for_cache = ::core::clone::Clone::clone(&self.id);
                 ctx.on_commit(move || async move {
-                    let _ = __punnu
+                    if let ::std::result::Result::Err(__e) = __punnu
                         .invalidate(
                             &__id_for_cache,
                             ::djogi::cache::InvalidationReason::OnDelete,
                         )
-                        .await;
+                        .await
+                    {
+                        ::djogi::__private::tracing::warn!(
+                            target: "djogi::cache",
+                            error = ?__e,
+                            model = ::std::any::type_name::<Self>(),
+                            "Punnu::invalidate L2 backend failed during on_commit drain",
+                        );
+                    }
                     ::std::result::Result::Ok(())
                 });
             }

@@ -342,6 +342,9 @@ impl<T: Model> UpdateStmt<T> {
             // ensure no existing call site breaks. The single-row
             // `Model::save` and `Model::delete` paths are the primary cache
             // invalidation surface; bulk-update invalidation is a follow-up.
+            // The no-op test placeholder (bulk_update_invalidation_deferred_to_followup)
+            // in phase8_t7_5_cache_invalidation.rs has been removed; bulk-update
+            // invalidation will be tested when Option B is implemented.
             Ok(rows_affected)
         }
     }
