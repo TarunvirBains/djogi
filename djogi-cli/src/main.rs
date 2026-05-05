@@ -114,17 +114,36 @@ enum TopCommand {
         /// fires `PartitionCountIncrease`.
         #[arg(long, default_value_t = 10_000_000)]
         threshold_partition_rows: i64,
+        /// Workspace root override. Defaults to the current working
+        /// directory. Mirrors `djogi verify --workspace`.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
 }
 
-/// Output format for `djogi analyze`. `Human` is for direct operator
-/// reading; `Json` is for CI dashboards and other machine consumers
-/// (T10.2 emits a sorted, byte-deterministic array per the determinism
-/// contract on [`analyze::recommend`]).
+/// Output format for `djogi analyze` — clap-side mirror of
+/// [`analyze::AnalyzeFormat`].
+///
+/// This enum exists only so `clap::ValueEnum` can derive the
+/// `--format human|json` parser without dragging the clap-derive
+/// dependency into the `analyze` module's pure-substrate header.
+/// Conversion to the canonical [`analyze::AnalyzeFormat`] happens at
+/// the dispatch site via [`Self::into_analyze`].
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum AnalyzeFormat {
     Human,
     Json,
+}
+
+impl AnalyzeFormat {
+    /// Project the clap-side enum onto the canonical
+    /// [`analyze::AnalyzeFormat`] consumed by [`analyze::run`].
+    fn into_analyze(self) -> analyze::AnalyzeFormat {
+        match self {
+            AnalyzeFormat::Human => analyze::AnalyzeFormat::Human,
+            AnalyzeFormat::Json => analyze::AnalyzeFormat::Json,
+        }
+    }
 }
 
 /// Parse + validate `--threshold-vacuum` at the CLI boundary.
@@ -429,15 +448,39 @@ fn main() -> ExitCode {
                 }
             }
         }
-        TopCommand::Analyze { .. } => {
-            // T10.1 ships the type surface + pure `recommend()` only.
-            // T10.2 replaces this placeholder with the live-DB query
-            // path (`fetch_table_health` over `pg_stat_user_tables`)
-            // and the human / JSON renderers. Exit code 2 follows the
-            // CLI convention for "not yet wired" (distinct from `1`
-            // which is reserved for runtime errors once T10.2 lands).
-            eprintln!("djogi analyze: not yet wired — T10.2 ships the live-DB path");
-            ExitCode::from(2)
+        TopCommand::Analyze {
+            format,
+            threshold_vacuum,
+            threshold_partition_rows,
+            workspace,
+        } => {
+            // Build a current-thread Tokio runtime to drive the async
+            // analyze body. Mirrors `djogi verify` exactly — both are
+            // one-shot read-only CLI commands and both want a thin
+            // single-threaded runtime so the `block_on` round-trip is
+            // cheap.
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("djogi analyze: tokio runtime: {e}");
+                    return ExitCode::from(1);
+                }
+            };
+            match runtime.block_on(analyze::run(
+                workspace,
+                format.into_analyze(),
+                threshold_vacuum,
+                threshold_partition_rows,
+            )) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("djogi analyze: {e}");
+                    ExitCode::from(1)
+                }
+            }
         }
         TopCommand::Migrations { command } => match command {
             MigrationsCommand::Compose {

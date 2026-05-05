@@ -40,3 +40,10 @@ tokio-postgres.workspace = true
 # `serde_json`. The pure recommend() layer (T10.1) only needs the
 # derive; the JSON encoder lands with the live-DB wiring.
 serde.workspace = true
+# Used by `analyze --format json` to emit a deterministic, sorted
+# array of `{table_name, recommendation, ...}` rows. We pick
+# `to_writer_pretty` so CI dashboards can diff yesterday's output
+# against today's without reformatting first; serde's struct field
+# order is preserved by `serde_json` so projection through a named
+# `Row` struct gives byte-stable output.
+serde_json.workspace = true

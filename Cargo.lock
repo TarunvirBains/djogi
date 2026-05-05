@@ -572,6 +572,7 @@ dependencies = [
  "clap",
  "djogi",
  "serde",
+ "serde_json",
  "thiserror",
  "time",
  "tokio",

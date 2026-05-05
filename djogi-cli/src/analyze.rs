@@ -39,15 +39,20 @@
 //! `docs/superpowers/plans/granular-phase8/cluster-8epsilon-granular.md`
 //! §T10.1.
 
-// T10.1 ships the substrate only — the public surface is exercised by
-// the in-module unit tests but is not yet referenced from `main.rs`'s
-// dispatch arm (the placeholder `eprintln!` lands first; T10.2 swaps
-// in the real call). Until then the items would trigger `dead_code`
-// under `-D warnings`. The allow disappears in T10.2 along with the
-// placeholder.
-#![allow(dead_code)]
+// T10.2 wires the substrate to the live-DB query path + CLI
+// dispatch. Every type and helper introduced in T10.1 is now
+// referenced from `fetch_table_health` / `run` / the renderers; the
+// file-scoped `#![allow(dead_code)]` from T10.1 is therefore gone.
+
+use std::io::Write;
 
 use serde::Serialize;
+use tokio_postgres::error::SqlState;
+
+use djogi::DjogiError;
+use djogi::config::DjogiConfig;
+use djogi::context::DjogiContext;
+use djogi::pg::pool::DjogiPool;
 
 /// Snapshot of a single table's vacuum / partition health.
 ///
@@ -221,6 +226,459 @@ pub fn recommend(
 
     // 4. Healthy — no rule fired.
     Recommendation::Healthy
+}
+
+/// Errors surfaced by [`run`] / [`fetch_table_health`].
+///
+/// Each variant carries operator-actionable context — the goal is that
+/// an `eprintln!("djogi analyze: {e}")` line is enough to diagnose
+/// without grepping source. Mirrors `verify::VerifyError`'s shape.
+#[derive(Debug)]
+pub enum AnalyzeError {
+    /// Loading `Djogi.toml` (and its env overlays) failed.
+    Config(String),
+    /// Could not connect to the application database. URL is included
+    /// for diagnostics; the underlying `DjogiError` is rendered into
+    /// `message` so `AnalyzeError` stays `Send + Sync` regardless of
+    /// the variant we received.
+    Pool {
+        /// The application DB URL we attempted to reach. Echoed in the
+        /// operator-facing message so the resolution path is visible.
+        url: String,
+        /// Underlying error message. The framework's
+        /// `DjogiError::Pool` enum carries trait-object inner values
+        /// that aren't always `Send + Sync`; rendering eagerly keeps
+        /// `AnalyzeError` cheap to clone in test assertions and
+        /// avoids leaking deadpool types to consumers.
+        message: String,
+    },
+    /// `pg_stat_user_tables` query (or the optional pg_partman join)
+    /// surfaced a Postgres error that is NOT one of the "extension
+    /// absent" SQLSTATEs we tolerate. Rendered eagerly for the same
+    /// reasons as `Pool::message`.
+    Db(String),
+    /// Writing the rendered output to stdout failed (broken pipe,
+    /// disk full on a redirected `> file.json`, etc.).
+    Io(std::io::Error),
+    /// `serde_json` encoding failed. Should be unreachable because the
+    /// `Row` projection only contains primitive / `OffsetDateTime` /
+    /// known-`Serialize` types, but we surface it as a structured
+    /// variant rather than `unwrap()` so a future schema extension
+    /// that introduces a non-serialisable field fails loudly.
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for AnalyzeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnalyzeError::Config(message) => write!(f, "config load: {message}"),
+            AnalyzeError::Pool { url, message } => write!(
+                f,
+                "application DB at `{url}` unreachable: {message} \
+                 (check Djogi.toml::database.url)",
+            ),
+            AnalyzeError::Db(message) => write!(f, "live-DB query: {message}"),
+            AnalyzeError::Io(e) => write!(f, "writing analyze output: {e}"),
+            AnalyzeError::Json(e) => write!(f, "encoding analyze output as JSON: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AnalyzeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AnalyzeError::Io(e) => Some(e),
+            AnalyzeError::Json(e) => Some(e),
+            AnalyzeError::Config(_) | AnalyzeError::Pool { .. } | AnalyzeError::Db(_) => None,
+        }
+    }
+}
+
+impl From<std::io::Error> for AnalyzeError {
+    fn from(e: std::io::Error) -> Self {
+        AnalyzeError::Io(e)
+    }
+}
+
+impl From<serde_json::Error> for AnalyzeError {
+    fn from(e: serde_json::Error) -> Self {
+        AnalyzeError::Json(e)
+    }
+}
+
+/// Output format selector — wired up to the CLI's `--format` flag.
+///
+/// `Human` is for direct operator reading; `Json` is for CI dashboards
+/// and other machine consumers. Both paths emit deterministic output
+/// (sorted by `table_name`, no `HashMap` iteration anywhere on the
+/// rendering path) so a `diff` between yesterday's and today's run
+/// shows only real schema-health changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalyzeFormat {
+    /// One sorted ASCII line per table — `table | live | dead | parts | recommendation`.
+    Human,
+    /// Pretty-printed JSON array of `{table_name, recommendation, ...}`
+    /// rows, sorted by `table_name`. Pretty rather than compact so
+    /// `git diff` between dashboard runs is reviewable.
+    Json,
+}
+
+/// Pull live-DB stats from `pg_stat_user_tables` and (optionally)
+/// `pg_partman.show_partitions(...)` for every user table.
+///
+/// # Query design
+///
+/// The primary query lists schema-qualified table names plus visibility
+/// counters and last-analyze timestamps from `pg_stat_user_tables`.
+/// That catalogue is part of every Postgres install, so this query is
+/// always available and never errors with `UNDEFINED_TABLE`.
+///
+/// The per-row partition lookup uses `partman.show_partitions($1)`
+/// which is part of the optional `pg_partman` extension. Many adopters
+/// will not have it installed; rather than refusing to run analyze on
+/// those clusters, we catch SQLSTATE `UNDEFINED_FUNCTION` (`42883`),
+/// `UNDEFINED_TABLE` (`42P01`), and `INVALID_SCHEMA_NAME` (`3F000`)
+/// from the partman call and fall back to `partition_count = 0`. The
+/// fallback collapses the partman path to "no partitions reported"
+/// rather than producing a hard error — which is the right semantic
+/// because a table that pg_partman doesn't know about is, from
+/// analyze's perspective, indistinguishable from an unpartitioned
+/// table.
+///
+/// # Determinism
+///
+/// `ORDER BY table_name` in the primary query plus a defensive
+/// `Vec::sort_by` after collection (in [`run`]) means the output
+/// ordering does not depend on Postgres planner decisions.
+///
+/// # Read-only
+///
+/// Both queries are `SELECT`-only with positional binds. No DDL, no
+/// DML — analyze never writes.
+pub async fn fetch_table_health(pool: &DjogiPool) -> Result<Vec<TableHealth>, AnalyzeError> {
+    let mut ctx = DjogiContext::from_pool(pool.clone());
+
+    // Primary query — `pg_stat_user_tables` is always available on
+    // every Postgres cluster djogi targets (>= 18). The schema name is
+    // joined into `table_name` so partitioned tables in non-public
+    // schemas show up unambiguously in the operator output.
+    let stats_sql = "SELECT \
+                     schemaname || '.' || relname AS table_name, \
+                     n_live_tup, \
+                     n_dead_tup, \
+                     last_analyze \
+                     FROM pg_stat_user_tables \
+                     ORDER BY schemaname, relname";
+    let stats_rows = ctx
+        .raw_rows(stats_sql, &[])
+        .await
+        .map_err(djogi_err_to_analyze)?;
+
+    // Per-row partition lookup. Errors of the "extension absent" class
+    // are swallowed into `partition_count = 0`; everything else
+    // propagates as `AnalyzeError::Db`.
+    let mut out = Vec::with_capacity(stats_rows.len());
+    for row in stats_rows {
+        let table_name: String = row.get(0);
+        let n_live_tup: i64 = row.get(1);
+        let n_dead_tup: i64 = row.get(2);
+        let last_analyze: Option<time::OffsetDateTime> = row.get(3);
+
+        let partition_count = match query_partition_count(&mut ctx, &table_name).await {
+            Ok(count) => count,
+            Err(PartmanError::Absent) => 0,
+            Err(PartmanError::Other(message)) => return Err(AnalyzeError::Db(message)),
+        };
+
+        out.push(TableHealth {
+            table_name,
+            n_live_tup,
+            n_dead_tup,
+            last_analyze,
+            partition_count,
+        });
+    }
+
+    Ok(out)
+}
+
+/// Internal error type for [`query_partition_count`]. Distinct from
+/// [`AnalyzeError`] so the caller can match on `Absent` (treat as
+/// `partition_count = 0`) without conflating with the broader
+/// `AnalyzeError::Db` channel.
+enum PartmanError {
+    /// `pg_partman` is not installed on this cluster — the
+    /// `partman.show_partitions` function or `partman` schema is
+    /// undefined. Treated as "no partitions" by the caller.
+    Absent,
+    /// Anything else — connection error, syntax error, permission
+    /// denied. Rendered into `AnalyzeError::Db`.
+    Other(String),
+}
+
+/// Query the partition count for `table_name` via
+/// `partman.show_partitions($1)`.
+///
+/// **Parameter binding.** `$1` carries `table_name`; we never
+/// `format!()`-interpolate. The table name comes from
+/// `pg_stat_user_tables` (a system catalogue, so trusted), but the
+/// codebase rule is "always parameterise" — there is no scenario in
+/// which the cost of a parameter bind matters, and a stray code path
+/// that builds the table name from an untrusted source later cannot
+/// regress this query into an injection vector.
+///
+/// Returns `Err(PartmanError::Absent)` for the three SQLSTATEs that
+/// indicate "pg_partman not installed":
+///
+/// - `42883` `UNDEFINED_FUNCTION` — `partman` schema present but
+///   `show_partitions` not (e.g. partial install).
+/// - `42P01` `UNDEFINED_TABLE` — `show_partitions` resolves but the
+///   underlying `part_config` lookup fails because no partitioned
+///   parents are registered.
+/// - `3F000` `INVALID_SCHEMA_NAME` — `partman` schema entirely
+///   absent.
+async fn query_partition_count(
+    ctx: &mut DjogiContext,
+    table_name: &str,
+) -> Result<i32, PartmanError> {
+    let sql = "SELECT count(*)::int FROM partman.show_partitions($1)";
+    match ctx.raw_rows(sql, &[&table_name]).await {
+        Ok(rows) => {
+            if let Some(row) = rows.first() {
+                let count: i32 = row.get(0);
+                Ok(count)
+            } else {
+                // `count(*)` always returns one row, but defend against
+                // a future Postgres upgrade that could change the
+                // contract — reporting "0 partitions" is the right
+                // fallback if the row is somehow missing.
+                Ok(0)
+            }
+        }
+        Err(DjogiError::Db(db)) => {
+            if let Some(code) = db.code()
+                && is_partman_absent_code(code)
+            {
+                Err(PartmanError::Absent)
+            } else {
+                Err(PartmanError::Other(db.to_string()))
+            }
+        }
+        Err(other) => Err(PartmanError::Other(other.to_string())),
+    }
+}
+
+/// Map the three SQLSTATE classes that signal "pg_partman not
+/// installed" onto a single boolean. Centralised so both
+/// [`query_partition_count`] and any future caller reuse the same
+/// classification.
+fn is_partman_absent_code(code: &SqlState) -> bool {
+    *code == SqlState::UNDEFINED_FUNCTION
+        || *code == SqlState::UNDEFINED_TABLE
+        || *code == SqlState::INVALID_SCHEMA_NAME
+}
+
+/// Convert a `DjogiError` from the live-DB path into an
+/// `AnalyzeError::Db`. Rendered eagerly (`to_string()`) so the
+/// `AnalyzeError` does not need to carry the heterogeneous inner type.
+fn djogi_err_to_analyze(e: DjogiError) -> AnalyzeError {
+    AnalyzeError::Db(e.to_string())
+}
+
+/// `djogi analyze` entry point — consumed by `main.rs::TopCommand::Analyze`.
+///
+/// Orchestrates the live-DB pull, the pure recommendation pass, and
+/// the rendering. Splitting fetch / recommend / render this way means
+/// every test (unit, integration, regression) targets exactly the
+/// layer that interests it without dragging in the others.
+///
+/// # Workspace + config resolution
+///
+/// `workspace` is `None` by default — we resolve to
+/// `std::env::current_dir()` and then load `Djogi.toml` via
+/// `DjogiConfig::load_from_workspace`. Mirrors `verify::run`'s pattern.
+///
+/// # Pool lifecycle
+///
+/// One pool, one context, every per-table query runs through it.
+/// Built fresh on every invocation — analyze is a one-shot CLI command,
+/// not a long-lived process, so pool reuse across invocations is not a
+/// goal.
+///
+/// # Output destination
+///
+/// Both rendering paths write to a locked `stdout`. Locking once at
+/// the top means we don't pay the `Stdout::lock()` cost per row, and
+/// the renderers themselves take a generic `&mut W: Write` so the
+/// pure render-only tests (T10.2's `render_human_*` / `render_json_*`)
+/// can target a `Vec<u8>` without going through stdout.
+pub async fn run(
+    workspace: Option<std::path::PathBuf>,
+    format: AnalyzeFormat,
+    threshold_vacuum: f64,
+    threshold_partition_rows: i64,
+) -> Result<(), AnalyzeError> {
+    // Step 1 — resolve workspace, load config.
+    let workspace = workspace.unwrap_or_else(|| {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
+    let config = DjogiConfig::load_from_workspace(&workspace)
+        .map_err(|e| AnalyzeError::Config(e.to_string()))?;
+
+    // Step 2 — connect to the application DB.
+    let url = config.database.url.clone();
+    let pool = DjogiPool::connect(&url)
+        .await
+        .map_err(|e| AnalyzeError::Pool {
+            url: url.clone(),
+            message: e.to_string(),
+        })?;
+
+    // Step 3 — fetch + recommend.
+    let mut health = fetch_table_health(&pool).await?;
+    // Defence-in-depth — the SQL `ORDER BY` already sorts the rows,
+    // but we re-sort by the materialised `table_name` so the
+    // determinism contract is independent of the planner.
+    health.sort_by(|a, b| a.table_name.cmp(&b.table_name));
+
+    let report: Vec<(TableHealth, Recommendation)> = health
+        .into_iter()
+        .map(|h| {
+            let rec = recommend(&h, threshold_vacuum, threshold_partition_rows);
+            (h, rec)
+        })
+        .collect();
+
+    // Step 4 — render. Lock stdout once so the renderers don't pay the
+    // per-row lock cost and a downstream `tee` / pipe sees one
+    // contiguous stream.
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    match format {
+        AnalyzeFormat::Human => render_human(&report, &mut handle)?,
+        AnalyzeFormat::Json => render_json(&report, &mut handle)?,
+    }
+    handle.flush()?;
+    Ok(())
+}
+
+/// Render the human-readable ASCII table.
+///
+/// One header line plus one body line per table. Columns are padded so
+/// the visual alignment is stable across runs; the recommendation
+/// column carries a short tag (`vacuum`, `partition`, `parts++`,
+/// `healthy`) plus the structural detail. Empty input prints the
+/// header only — no "no rows" placeholder, so a downstream `wc -l`
+/// sees the row count directly.
+///
+/// # Determinism
+///
+/// The input is already sorted by `table_name` (see [`run`]); this
+/// renderer iterates in the input order. No `HashMap`, no
+/// `BTreeMap` — pure `Vec` iteration.
+fn render_human<W: Write>(
+    report: &[(TableHealth, Recommendation)],
+    out: &mut W,
+) -> Result<(), AnalyzeError> {
+    // Header — clippy's `write_literal` lint flags trailing
+    // `"<lit>"` arguments paired with `{}` placeholders, so we keep
+    // the format string fully width-specified and stage the header
+    // labels through bindings rather than literal slots.
+    let h_table = "TABLE";
+    let h_live = "LIVE";
+    let h_dead = "DEAD";
+    let h_parts = "PARTITIONS";
+    let h_rec = "RECOMMENDATION";
+    writeln!(
+        out,
+        "{h_table:<48} {h_live:>14} {h_dead:>14} {h_parts:>10}  {h_rec}",
+    )?;
+    for (h, r) in report {
+        writeln!(
+            out,
+            "{:<48} {:>14} {:>14} {:>10}  {}",
+            h.table_name,
+            h.n_live_tup,
+            h.n_dead_tup,
+            h.partition_count,
+            recommendation_human(r),
+        )?;
+    }
+    Ok(())
+}
+
+/// Render a single recommendation as a one-line ASCII tag for the
+/// human renderer. Stable text format — string-substring assertions on
+/// the operator output are part of the contract.
+fn recommendation_human(r: &Recommendation) -> String {
+    match r {
+        Recommendation::VacuumNeeded { dead_tup_ratio } => {
+            format!("vacuum (dead_tup_ratio={dead_tup_ratio:.4})")
+        }
+        Recommendation::PartitionRecommended { reason } => {
+            format!("partition ({reason})")
+        }
+        Recommendation::PartitionCountIncrease { current, suggested } => {
+            format!("parts++ (current={current}, suggested={suggested})")
+        }
+        Recommendation::Healthy => "healthy".to_string(),
+    }
+}
+
+/// Render the JSON array.
+///
+/// # Determinism contract (v3 §494, T10.1 review)
+///
+/// We project through a named `Row` struct rather than a
+/// `HashMap<String, _>` — `serde`'s default behaviour preserves struct
+/// field declaration order, so the JSON output is byte-stable across
+/// runs. `serde_json::to_writer_pretty` is chosen over the compact
+/// form so dashboards can `git diff` two runs without reformatting
+/// first.
+///
+/// # Field order
+///
+/// `table_name` first (sort key), then the raw counters
+/// (`n_live_tup`, `n_dead_tup`), then `last_analyze`,
+/// `partition_count`, and finally the structured `recommendation`.
+/// Pinned by `render_json_field_order_is_stable`.
+fn render_json<W: Write>(
+    report: &[(TableHealth, Recommendation)],
+    out: &mut W,
+) -> Result<(), AnalyzeError> {
+    /// Wire-format projection of one analyzed table.
+    ///
+    /// Field declaration order IS the JSON field order — see the
+    /// renderer's determinism contract above. Borrows from the
+    /// in-memory `report` so the projection is allocation-free.
+    #[derive(Serialize)]
+    struct Row<'a> {
+        table_name: &'a str,
+        n_live_tup: i64,
+        n_dead_tup: i64,
+        last_analyze: Option<time::OffsetDateTime>,
+        partition_count: i32,
+        recommendation: &'a Recommendation,
+    }
+
+    let rows: Vec<Row<'_>> = report
+        .iter()
+        .map(|(h, r)| Row {
+            table_name: &h.table_name,
+            n_live_tup: h.n_live_tup,
+            n_dead_tup: h.n_dead_tup,
+            last_analyze: h.last_analyze,
+            partition_count: h.partition_count,
+            recommendation: r,
+        })
+        .collect();
+
+    serde_json::to_writer_pretty(&mut *out, &rows)?;
+    // serde_json::to_writer_pretty does NOT emit a trailing newline;
+    // adding one keeps the output well-behaved for shell pipelines
+    // (e.g. `djogi analyze --format json | jq .`).
+    writeln!(out)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -450,5 +908,253 @@ mod tests {
             }
             other => panic!("expected VacuumNeeded, got {other:?}"),
         }
+    }
+
+    /// Helper for the render-only tests: construct a small report with
+    /// every recommendation arm represented. Sorted by table_name so
+    /// the renderer's input mirrors what `run` would produce.
+    fn fixture_report() -> Vec<(TableHealth, Recommendation)> {
+        vec![
+            (health(1_000, 0, 0), Recommendation::Healthy),
+            (
+                TableHealth {
+                    table_name: "public.events".to_string(),
+                    n_live_tup: 100_000_000,
+                    n_dead_tup: 0,
+                    last_analyze: None,
+                    partition_count: 0,
+                },
+                Recommendation::PartitionRecommended {
+                    reason:
+                        "table has 100000000 live rows but is not partitioned (threshold: 10000000)"
+                            .to_string(),
+                },
+            ),
+            (
+                TableHealth {
+                    table_name: "public.orders".to_string(),
+                    n_live_tup: 100_000_000,
+                    n_dead_tup: 0,
+                    last_analyze: None,
+                    partition_count: 4,
+                },
+                Recommendation::PartitionCountIncrease {
+                    current: 4,
+                    suggested: 8,
+                },
+            ),
+            (
+                TableHealth {
+                    table_name: "public.users".to_string(),
+                    n_live_tup: 50,
+                    n_dead_tup: 50,
+                    last_analyze: None,
+                    partition_count: 0,
+                },
+                Recommendation::VacuumNeeded {
+                    dead_tup_ratio: 0.5,
+                },
+            ),
+        ]
+    }
+
+    /// Render-only test: human format produces a sorted ASCII table
+    /// whose body lines appear in input order. Pinning the format
+    /// stops a future "improve the visuals" refactor from breaking
+    /// downstream operator scripts that grep for substrings.
+    #[test]
+    fn render_human_lists_every_table_in_input_order() {
+        let report = fixture_report();
+        let mut buf = Vec::new();
+        render_human(&report, &mut buf).expect("render");
+        let s = String::from_utf8(buf).expect("utf8");
+
+        // Header is present.
+        assert!(s.contains("TABLE"), "missing header: {s}");
+        assert!(s.contains("RECOMMENDATION"), "missing header: {s}");
+
+        // Each fixture table appears exactly once in the body.
+        for table in [
+            "test_table",
+            "public.events",
+            "public.orders",
+            "public.users",
+        ] {
+            assert_eq!(
+                s.matches(table).count(),
+                1,
+                "table `{table}` should appear once: {s}"
+            );
+        }
+
+        // Every recommendation tag shows up with its expected substring.
+        assert!(s.contains("healthy"), "healthy tag missing: {s}");
+        assert!(
+            s.contains("vacuum (dead_tup_ratio="),
+            "vacuum tag missing: {s}"
+        );
+        assert!(
+            s.contains("partition (table has 100000000"),
+            "partition tag missing: {s}"
+        );
+        assert!(
+            s.contains("parts++ (current=4, suggested=8)"),
+            "parts++ tag missing: {s}"
+        );
+
+        // Body line order matches input order.
+        let test_idx = s.find("test_table").unwrap();
+        let events_idx = s.find("public.events").unwrap();
+        let orders_idx = s.find("public.orders").unwrap();
+        let users_idx = s.find("public.users").unwrap();
+        assert!(
+            test_idx < events_idx && events_idx < orders_idx && orders_idx < users_idx,
+            "input order not preserved: {s}"
+        );
+    }
+
+    /// Regression sentinel — same input must produce byte-identical
+    /// output across repeated invocations. Cements the determinism
+    /// contract that `run` orchestrates: sort then render.
+    #[test]
+    fn render_human_is_byte_stable() {
+        let report = fixture_report();
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        render_human(&report, &mut a).unwrap();
+        render_human(&report, &mut b).unwrap();
+        assert_eq!(a, b, "render_human is not byte-stable");
+    }
+
+    /// Render-only test: JSON format parses through `serde_json::from_slice`
+    /// as a non-empty array of well-formed objects, with every recommendation
+    /// arm represented and the field order matching the projection struct.
+    #[test]
+    fn render_json_parses_and_field_order_is_stable() {
+        let report = fixture_report();
+        let mut buf = Vec::new();
+        render_json(&report, &mut buf).expect("render");
+
+        // 1. Parses through serde_json::Value (smoke test).
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&buf).expect("output must be valid JSON");
+        let array = parsed.as_array().expect("output must be a JSON array");
+        assert_eq!(array.len(), 4, "expected 4 fixture rows: {parsed}");
+
+        // 2. Every recommendation kind shows up at least once.
+        let kinds: Vec<&str> = array
+            .iter()
+            .filter_map(|row| row.get("recommendation"))
+            .filter_map(|rec| rec.get("kind"))
+            .filter_map(|k| k.as_str())
+            .collect();
+        assert!(kinds.contains(&"healthy"), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"vacuum_needed"), "kinds: {kinds:?}");
+        assert!(kinds.contains(&"partition_recommended"), "kinds: {kinds:?}");
+        assert!(
+            kinds.contains(&"partition_count_increase"),
+            "kinds: {kinds:?}"
+        );
+
+        // 3. Field order on the first row matches the Row struct.
+        // serde_json with `preserve_order` enabled (workspace dep
+        // feature) preserves insertion order on Map deserialisation;
+        // we walk the keys and assert the declared order.
+        let first = array.first().expect("non-empty");
+        let obj = first.as_object().expect("row must be an object");
+        let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "table_name",
+                "n_live_tup",
+                "n_dead_tup",
+                "last_analyze",
+                "partition_count",
+                "recommendation",
+            ],
+            "field order must match Row struct declaration: {keys:?}"
+        );
+
+        // 4. Body is byte-stable across two renders.
+        let mut buf2 = Vec::new();
+        render_json(&report, &mut buf2).unwrap();
+        assert_eq!(buf, buf2, "render_json is not byte-stable");
+    }
+
+    /// Empty input produces an empty JSON array — no crash, no
+    /// "no rows" placeholder, just `[]\n` so downstream JSON parsers
+    /// see a valid empty list.
+    #[test]
+    fn render_json_handles_empty_input() {
+        let report: Vec<(TableHealth, Recommendation)> = Vec::new();
+        let mut buf = Vec::new();
+        render_json(&report, &mut buf).expect("render");
+        let s = String::from_utf8(buf).expect("utf8");
+        // `to_writer_pretty` emits `[]` for an empty Vec; the renderer
+        // appends a newline.
+        assert_eq!(s, "[]\n", "empty input should produce `[]\\n`, got: {s:?}");
+    }
+
+    /// Empty input produces just the header line in the human renderer.
+    /// Pins the no-rows behaviour so a downstream `wc -l` sees the row
+    /// count directly (header + 0 body lines = 1).
+    #[test]
+    fn render_human_handles_empty_input() {
+        let report: Vec<(TableHealth, Recommendation)> = Vec::new();
+        let mut buf = Vec::new();
+        render_human(&report, &mut buf).expect("render");
+        let s = String::from_utf8(buf).expect("utf8");
+        // Exactly one line — the header.
+        assert_eq!(
+            s.lines().count(),
+            1,
+            "expected just a header line, got: {s:?}"
+        );
+        assert!(s.contains("TABLE"));
+    }
+
+    /// SQLSTATE classifier covers the three "pg_partman absent"
+    /// codes and rejects anything else. Pure unit test — no DB.
+    #[test]
+    fn is_partman_absent_code_recognises_three_states() {
+        assert!(is_partman_absent_code(&SqlState::UNDEFINED_FUNCTION));
+        assert!(is_partman_absent_code(&SqlState::UNDEFINED_TABLE));
+        assert!(is_partman_absent_code(&SqlState::INVALID_SCHEMA_NAME));
+        // Non-absence codes must NOT count as partman-absent.
+        assert!(!is_partman_absent_code(&SqlState::SYNTAX_ERROR));
+        assert!(!is_partman_absent_code(&SqlState::INSUFFICIENT_PRIVILEGE));
+        assert!(!is_partman_absent_code(&SqlState::CONNECTION_FAILURE));
+    }
+
+    /// `AnalyzeError::Display` must surface operator-actionable text
+    /// for every variant — the CLI prints these straight to stderr.
+    #[test]
+    fn analyze_error_display_is_operator_actionable() {
+        let cfg = AnalyzeError::Config("bad toml".to_string());
+        let s = format!("{cfg}");
+        assert!(s.contains("config load"), "config display: {s}");
+        assert!(s.contains("bad toml"), "config display: {s}");
+
+        let pool = AnalyzeError::Pool {
+            url: "postgres://localhost/x".to_string(),
+            message: "refused".to_string(),
+        };
+        let s = format!("{pool}");
+        assert!(s.contains("postgres://localhost/x"), "pool display: {s}");
+        assert!(s.contains("refused"), "pool display: {s}");
+        assert!(
+            s.contains("Djogi.toml::database.url"),
+            "pool display must point at config: {s}"
+        );
+
+        let db = AnalyzeError::Db("relation \"foo\" does not exist".to_string());
+        let s = format!("{db}");
+        assert!(s.contains("live-DB query"), "db display: {s}");
+        assert!(s.contains("relation \"foo\""), "db display: {s}");
+
+        let io = AnalyzeError::Io(std::io::Error::other("broken pipe"));
+        let s = format!("{io}");
+        assert!(s.contains("writing analyze output"), "io display: {s}");
     }
 }
