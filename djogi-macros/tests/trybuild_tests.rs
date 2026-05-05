@@ -172,6 +172,8 @@ fn compile_pass_phase8() {
     t.pass("tests/compile_pass/phase8_proxy_two_proxies_same_parent.rs");
     // Phase 8β T4.6 — computed-field surface fixtures.
     t.pass("tests/compile_pass/phase8_computed_basic.rs");
+    // Phase 8β T5.5 — `#[djogi::trait_impl]` fixtures.
+    t.pass("tests/compile_pass/phase8_trait_impl_basic.rs");
     t.pass("tests/compile_pass/phase8_q_algebra_xor_precedence.rs");
     t.pass("tests/compile_pass/phase8_q_algebra_eight_term_composition.rs");
 }
@@ -254,6 +256,9 @@ fn compile_fail_phase8() {
     // Phase 8β T4.6 — computed-field rejection paths.
     t.compile_fail("tests/compile_fail/phase8_computed_stored_deferred.rs");
     t.compile_fail("tests/compile_fail/phase8_computed_empty_sql.rs");
+    // Phase 8β T5.5 — `#[djogi::trait_impl]` rejection paths.
+    t.compile_fail("tests/compile_fail/phase8_trait_impl_inherent.rs");
+    t.compile_fail("tests/compile_fail/phase8_trait_impl_generic.rs");
     t.compile_fail("tests/compile_fail/phase8_q_xor_with_mismatched_types.rs");
     t.compile_fail("tests/compile_fail/phase8_q_and_with_mismatched_types.rs");
 }

@@ -90,8 +90,13 @@ pub type CasterFn = fn(&ErasedArc) -> Option<ErasedArc>;
 /// future field is a breaking change at every emission site (which
 /// is exactly the discipline we want — adopters never touch this
 /// directly; the macro is the only emitter).
+// Note: NOT `#[non_exhaustive]` — the macro-emitted code in adopter
+// crates constructs this struct via a literal in `inventory::submit!`,
+// which Rust rejects on `#[non_exhaustive]` structs (E0639). The
+// add-a-field-is-breaking discipline is enforced by convention rather
+// than the attribute; every macro emission site updates in lockstep
+// when a new field lands.
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct TraitRegistration {
     /// Returns the implementing model's `TypeId`. T5.3's macro emits
     /// `|| ::std::any::TypeId::of::<Vehicle>()` here.
