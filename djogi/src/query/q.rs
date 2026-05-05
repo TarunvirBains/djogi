@@ -144,7 +144,7 @@ use std::ops::{BitAnd, BitOr, BitXor, Not};
 #[derive(Debug, Clone)]
 #[must_use = "Q<T> describes a filter predicate; use it in a QuerySet::filter_struct call or it has no effect"]
 #[non_exhaustive]
-#[allow(dead_code)] // Variants populated as T6.6/T6.7 wire consumers; constructors land at T6.4.
+#[allow(dead_code)] // Variants ship here (T6.1–T6.5); SQL-emitter consumers land at T6.6/T6.7 (Stage 2).
 pub enum Q<T: Model> {
     /// Rust-evaluable predicates lifted from sassi.
     /// `BasicPredicate::True` / `False` cover the vacuous identities
@@ -446,7 +446,8 @@ where
             Q::Compound { op, parts: l }
         }
         (other, Q::Compound { op: rop, parts: r }) if rop == op => {
-            let mut v = vec![other];
+            let mut v = Vec::with_capacity(r.len() + 1);
+            v.push(other);
             v.extend(r);
             Q::Compound { op, parts: v }
         }
