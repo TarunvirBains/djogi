@@ -443,3 +443,10 @@ harness = true
 name = "phase8_t7_5_cache_invalidation"
 path = "../tests/integration/phase8_t7_5_cache_invalidation.rs"
 harness = true
+
+# ── Phase 8δ T7.6 — cross-context guard ─────────────────────────────────────
+
+[[test]]
+name = "phase8_t7_6_cross_context_guard"
+path = "../tests/integration/phase8_t7_6_cross_context_guard.rs"
+harness = true

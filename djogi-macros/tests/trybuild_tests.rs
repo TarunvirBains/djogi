@@ -198,6 +198,19 @@ fn compile_pass_phase8_t7_5() {
 }
 
 #[test]
+fn compile_pass_phase8_t7_6() {
+    // Targeted bucket for Cluster 8δ T7.6 — cross-context guard.
+    // Witnesses that `DjogiContext::use_punnu` resolves to the expected
+    // signature: `fn(&DjogiContext, &Arc<Punnu<T>>) -> Arc<Punnu<T>>`.
+    // T7.6 is non-emitted code (method on DjogiContext, not a macro
+    // expansion). Also swept by `compile_pass_phase8_t7` (phase8_t7_* glob).
+    //
+    // Run this bucket in isolation to check just the T7.6 signature:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t7_6 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t7_6_*.rs");
+}
+
+#[test]
 fn compile_pass_phase8() {
     // Globs cannot exclude sub-prefixes (no brace expansion), so this
     // can't be expressed as `phase8_*.rs` — that pattern would also

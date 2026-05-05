@@ -459,6 +459,108 @@ impl DjogiContext {
         self.sassi.pool::<T>()
     }
 
+    /// Verify that `p` belongs to **this** context's `Sassi` registry and
+    /// return a clone of it.
+    ///
+    /// This is the defensive accessor for adopter code that receives a
+    /// `Punnu<T>` from some external source (e.g. from a different
+    /// `DjogiContext`, or stored as application state) and needs to pass it to
+    /// a framework method like [`QuerySet::cache`](crate::QuerySet::cache).
+    /// Passing a `Punnu<T>` that was registered on a *different* context's
+    /// `Sassi` is a cross-context misuse — the two contexts have independent
+    /// cache registries (per the T7.4 "DjogiContext IS the tenant boundary"
+    /// contract), so writes to one context's `Punnu` are never observable on
+    /// the other.
+    ///
+    /// The check uses `Arc::ptr_eq` to compare the passed handle against the
+    /// one registered in `self.sassi`. If they point at the same allocation,
+    /// the handle belongs to this context; otherwise it was acquired from a
+    /// different `DjogiContext`.
+    ///
+    /// # Mismatch behaviour (cfg-fork per `feedback_decision_priorities.md`)
+    ///
+    /// The decision matrix maps build target to the dominant priority axis:
+    ///
+    /// | Build | Axis | Behaviour |
+    /// |---|---|---|
+    /// | Debug | idiomatic Rust + scalability | `panic!` with a span-precise message |
+    /// | Release | production stability | `tracing::error!` + empty `Punnu<T>` fallback |
+    ///
+    /// **Debug builds panic** because surfacing the misuse loudly during
+    /// development lets the developer fix it before it reaches production.
+    /// A silent fail-closed in debug mode would let cross-context bugs ship
+    /// to prod undetected.
+    ///
+    /// **Release builds fail closed** because crashing a multi-tenant server
+    /// on a single cross-context bug in cold-path code violates production
+    /// stability. `tracing::error!` emits an observable signal for log
+    /// scrapers; the empty `Punnu<T>` fallback means reads return `None` and
+    /// writes are silently discarded — the correct degraded-mode behaviour
+    /// (no cross-context state contamination).
+    ///
+    /// # Returns
+    ///
+    /// - **Same-context path:** `Arc::clone(p)` — the same `Arc<Punnu<T>>`
+    ///   that was registered at boot time for this context.
+    /// - **Cross-context path (debug):** panics.
+    /// - **Cross-context path (release):** a fresh empty
+    ///   `Arc<Punnu<T>>` (reads return `None`; writes do not propagate).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Correct: acquire from the same context.
+    /// let p = ctx.punnu::<MyModel>().unwrap();
+    /// let verified = ctx.use_punnu(&p); // returns Arc::clone(&p)
+    ///
+    /// // Misuse: acquire from a different context — debug build panics,
+    /// // release build returns an empty Punnu.
+    /// let p_other = ctx_b.punnu::<MyModel>().unwrap();
+    /// let verified = ctx_a.use_punnu(&p_other); // BUG: cross-context
+    /// ```
+    ///
+    /// # Spec anchor
+    ///
+    /// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+    /// §3 commit T7.6 — cross-context guard.
+    pub fn use_punnu<T>(
+        &self,
+        p: &std::sync::Arc<sassi::Punnu<T>>,
+    ) -> std::sync::Arc<sassi::Punnu<T>>
+    where
+        T: crate::types::Cacheable + 'static,
+    {
+        let registered = self.sassi.pool::<T>();
+        let same_context = registered
+            .as_ref()
+            .map(|ours| std::sync::Arc::ptr_eq(p, ours))
+            .unwrap_or(false);
+
+        if !same_context {
+            if cfg!(debug_assertions) {
+                panic!(
+                    "cross-context Punnu access: this Punnu<{}> was not registered \
+                     on this DjogiContext's Sassi. Each DjogiContext has its own \
+                     cache registry per cluster 8δ T7.4 (Path X tenant boundary). \
+                     Acquire the Punnu via ctx.punnu::<T>() on this same context.",
+                    std::any::type_name::<T>(),
+                );
+            }
+            tracing::error!(
+                target: "djogi::cache",
+                model = std::any::type_name::<T>(),
+                "cross-context Punnu access — returning empty Punnu fallback. \
+                 A Punnu<T> from another DjogiContext was passed to use_punnu; \
+                 reads will return None and writes will not be observable on \
+                 the original context. This is a release-build fail-closed; \
+                 the caller should be using ctx.punnu::<T>() on this context.",
+            );
+            return std::sync::Arc::new(sassi::Punnu::<T>::builder().build());
+        }
+
+        std::sync::Arc::clone(p)
+    }
+
     // -------------------------------------------------------------------------
     // Execution helpers — the new dispatch surface for query terminals.
     // -------------------------------------------------------------------------
