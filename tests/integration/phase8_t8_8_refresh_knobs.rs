@@ -238,20 +238,31 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
 
     let logs_after_tick_3 = logs_since(since);
     assert!(
-        logs_after_tick_3.contains("undersized"),
-        "djogi LRU eviction warn must fire on tick 3 (try_recv sees LruEvict \
-         event queued by tick 2's apply_delta); djogi warn contains 'undersized'; \
-         logs so far: {logs_after_tick_3:?}"
+        logs_after_tick_3.contains("djogi::cache"),
+        "djogi LRU warn must be targeted at the djogi::cache tracing target \
+         (sassi's own LRU warn fires at sassi::punnu::delta_refresh — different \
+          target); logs so far: {logs_after_tick_3:?}"
     );
     assert!(
-        logs_after_tick_3.contains("djogi::cache"),
-        "djogi LRU warn must be targeted at the djogi::cache tracing target; \
-         logs so far: {logs_after_tick_3:?}"
+        logs_after_tick_3.contains("undersized"),
+        "djogi LRU eviction warn must contain the unique 'undersized' marker \
+         (sassi's warn message is 'consider raising lru_size'); logs so far: \
+         {logs_after_tick_3:?}"
     );
 
-    // Count occurrences of the djogi-specific warn message.
-    // Sassi's own warn contains "consider raising lru_size" (not "undersized"),
-    // so counting "undersized" gives exactly the djogi warn count.
+    // Count occurrences of the djogi LRU warn specifically. We CANNOT count
+    // by `djogi::cache` target alone — that target is shared with the
+    // filter-pushdown warn (refresh.rs:128 — fires per-tick when
+    // self.filter.is_some(), which is true for any unfiltered QuerySet
+    // because T8.4's reducer returns Some(BasicPredicate::True) for the
+    // empty-filter case). So we must combine: structural target marker
+    // (djogi::cache) is verified above; quantitative count uses the
+    // message-body marker `undersized` which is unique to the LRU warn.
+    // Sassi's LRU warn says "consider raising lru_size" — distinct token.
+    // If sassi ever changes its message to include "undersized", this
+    // count would silently mis-classify; the alternative would be a
+    // structural assertion via tracing-test's `with_target` filter, but
+    // tracing-test doesn't expose that on the test API surface today.
     let djogi_warn_count = logs_after_tick_3.matches("undersized").count();
     assert_eq!(
         djogi_warn_count, 1,

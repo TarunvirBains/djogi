@@ -2186,7 +2186,19 @@ where
         pool: crate::pg::pool::DjogiPool,
         auth: crate::auth::AuthContext,
     ) -> sassi::DeltaRefreshHandle<T> {
-        let filter = self.into_basic_predicate();
+        // Trivially-true reductions (`BasicPredicate::True`) carry no pushdown
+        // work and should not trip the fetcher's filter-pushdown warn (which
+        // signals "non-trivial filter present but not yet emitted to SQL").
+        // Strip them here so `self.filter` in the fetcher accurately means
+        // "non-trivial filter awaiting pushdown" — meaningful per GH #126/#127.
+        // Without this strip, every unfiltered queryset would emit the
+        // filter-pushdown warn per tick (T8.4's reducer returns `Some(True)`
+        // for unfiltered querysets, since `Q::Compound{And, []}` short-
+        // circuits through the empty-And identity into `BasicPredicate::True`).
+        let filter = match self.into_basic_predicate() {
+            Some(sassi::BasicPredicate::True) => None,
+            other => other,
+        };
         // Capture the Punnu's event broadcast receiver before starting the
         // delta refresh. Each `refresh_into` call gets its own independent
         // receiver — per the `(Punnu, Subscription)` scope in spec §674 Knob 1.
