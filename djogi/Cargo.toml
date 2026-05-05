@@ -485,3 +485,10 @@ harness = true
 name = "phase8_t8_9_refresh_lifetime"
 path = "../tests/integration/phase8_t8_9_refresh_lifetime.rs"
 harness = true
+
+# ── Phase 8δ T8.10 — cluster-exit integration: auth-locked + e2e happy-path ──
+
+[[test]]
+name = "phase8_t8_10_refresh_e2e"
+path = "../tests/integration/phase8_t8_10_refresh_e2e.rs"
+harness = true
