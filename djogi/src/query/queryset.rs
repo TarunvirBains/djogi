@@ -1868,6 +1868,220 @@ impl_into_distinct_columns_tuple!(A, B, C, D);
 impl_into_distinct_columns_tuple!(A, B, C, D, E);
 impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
 
+// ── Cluster 8δ T8.4 — into_basic_predicate: conservative Q<T> → BasicPredicate<T> ─────
+//
+// Placed on `impl<T: Model> QuerySet<T>` (the base block) because extraction
+// is purely structural — it walks the Q<T> condition tree without any
+// DeltaSyncCacheable behaviour. The T8.3 stub lived in the
+// DeltaSyncCacheable-bounded block because it was a placeholder co-located
+// with refresh_into. T8.4 moves the real implementation to the correct bound.
+//
+// Visibility: `pub` — adopters who want to inspect whether a QuerySet is
+// reducible before calling refresh_into need to call this. It is not part of
+// the everyday filter API (that is QuerySet::filter / filter_struct), but it
+// is the intended entry point for advanced cache-integration code that needs
+// to pass a BasicPredicate filter to sassi.
+//
+// Implementation note — Q::Condition is always Unreducible:
+//   The legacy closure-based filter API (QuerySet::filter / exclude) and the
+//   filter_struct API both route through and_condition_into_q, which converts
+//   the Q<T> to Condition and wraps it back as Q::Condition(_). A freshly
+//   constructed QuerySet<T>::new() starts with Q::Basic(BasicPredicate::True).
+//   The only way to keep the condition as Q::Basic / Q::Compound / Q::Negated
+//   (reducible forms) is to set self.condition directly via pub(crate) access
+//   from within the djogi crate — the public filter API always produces
+//   Q::Condition. This is a known architectural gap deferred to a future
+//   cluster that redesigns filter_struct to preserve Q-algebra structure.
+//   For now, into_basic_predicate is most useful for unfiltered querysets
+//   (which start as Q::Basic(True)) and for framework-internal code that
+//   sets self.condition directly.
+//
+// Path-routing note (non-emitted code):
+//   Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
+//   code only. This impl block is non-emitted framework code; it may spell
+//   `sassi::BasicPredicate` directly.
+
+/// Outcome of a `reduce_q_to_basic` walk.
+enum ReduceOutcome<T: crate::model::Model> {
+    /// The entire Q<T> tree reduced to a single BasicPredicate<T>.
+    Reduced(sassi::BasicPredicate<T>),
+    /// At least one node was not reducible. Carries a `&'static str`
+    /// describing the first unreducible variant encountered.
+    Unreducible(&'static str),
+}
+
+/// Recursively walk a `Q<T>` tree (by value) and attempt to reduce it to a
+/// single `BasicPredicate<T>`.
+///
+/// Takes `Q<T>` by value to avoid a `T: Clone` bound (sassi's
+/// `BasicPredicate<T>: Clone` derive requires `T: Clone`, but many djogi
+/// models do not implement `Clone`). Ownership is transferred from
+/// `QuerySet::condition` when called from `into_basic_predicate(self)`.
+///
+/// Only `Q::Basic`, `Q::Compound`, and `Q::Negated` are reducible. Every
+/// other variant is SQL-only or a legacy escape hatch and returns
+/// `Unreducible` with a descriptive reason string. The walk is depth-first;
+/// the first unreducible node short-circuits and bubbles up.
+///
+/// # sassi BasicPredicate API
+///
+/// The sassi `BasicPredicate<T>` enum variants (confirmed from
+/// `sassi-reference/sassi/src/predicate/basic.rs`):
+///   - `True` / `False` — vacuous sentinels
+///   - `Field(FieldPredicate<T>)` — single-field predicate
+///   - `And(Vec<BasicPredicate<T>>)` — conjunction (flattened)
+///   - `Or(Vec<BasicPredicate<T>>)` — disjunction (flattened)
+///   - `Not(Box<BasicPredicate<T>>)` — negation
+///   - `Xor(Box<BasicPredicate<T>>, Box<BasicPredicate<T>>)` — exclusive-or
+fn reduce_q_to_basic<T: crate::model::Model>(q: Q<T>) -> ReduceOutcome<T> {
+    match q {
+        // Q::Basic wraps a sassi BasicPredicate<T> directly — move it out.
+        Q::Basic(p) => ReduceOutcome::Reduced(p),
+
+        // Pure-Basic AND/OR flattened through sassi's operators land here as
+        // Q::Basic(BasicPredicate::And/Or(...)). Mixed-operand AND/OR (at
+        // least one side is not Q::Basic) land as Q::Compound. Both are
+        // reducible when every part is reducible.
+        Q::Compound { op, parts } => {
+            let mut reduced_parts = Vec::with_capacity(parts.len());
+            for part in parts {
+                match reduce_q_to_basic(part) {
+                    ReduceOutcome::Reduced(p) => reduced_parts.push(p),
+                    other @ ReduceOutcome::Unreducible(_) => return other,
+                }
+            }
+            #[allow(unreachable_patterns)]
+            let combined = match op {
+                crate::query::q::CompoundOp::And => sassi::BasicPredicate::And(reduced_parts),
+                crate::query::q::CompoundOp::Or => sassi::BasicPredicate::Or(reduced_parts),
+                // CompoundOp is #[non_exhaustive]; forward-compat catch-all for any
+                // new associative operator added in a future sassi release.
+                _ => return ReduceOutcome::Unreducible("Q::Compound with unknown CompoundOp"),
+            };
+            ReduceOutcome::Reduced(combined)
+        }
+
+        // Q::Negated wraps a non-Basic NOT. Pure-Basic negation rides
+        // BasicPredicate::Not already, so Q::Negated(Q::Basic(p)) means
+        // the inner was already not-folded by sassi. Reduce the inner and
+        // wrap in BasicPredicate::Not.
+        Q::Negated(inner) => match reduce_q_to_basic(*inner) {
+            ReduceOutcome::Reduced(p) => {
+                ReduceOutcome::Reduced(sassi::BasicPredicate::Not(Box::new(p)))
+            }
+            other => other,
+        },
+
+        // SQL-only variants — cannot be expressed as a BasicPredicate because
+        // they require server-side evaluation.
+        Q::Ilike(_, _) => ReduceOutcome::Unreducible("Q::Ilike (SQL-only, no Rust eval path)"),
+        Q::JsonbPath(_) => ReduceOutcome::Unreducible("Q::JsonbPath (SQL-only, no Rust eval path)"),
+        Q::Regex(_, _, _) => ReduceOutcome::Unreducible(
+            "Q::Regex (SQL-only Postgres POSIX; no Rust regex engine in djogi)",
+        ),
+        Q::Expression(_) => {
+            ReduceOutcome::Unreducible("Q::Expression (typed expression IR; SQL-only escape hatch)")
+        }
+        Q::Array(_) => ReduceOutcome::Unreducible("Q::Array (Postgres array operators; SQL-only)"),
+
+        // Q::Condition is the legacy escape hatch — always Unreducible. The
+        // public filter / filter_struct / exclude APIs all route through
+        // and_condition_into_q which wraps everything as Q::Condition. Any
+        // queryset built with the public filter surface lands here. The
+        // long-term fix (a future cluster redesigning filter_struct to
+        // preserve Q-algebra structure) is tracked separately.
+        Q::Condition(_) => ReduceOutcome::Unreducible(
+            "Q::Condition (legacy Condition escape hatch; public filter APIs always produce this)",
+        ),
+
+        // Q::Xor has no equivalent BasicPredicate variant with the same
+        // semantics that is both composable and directly expressible as a
+        // single BasicPredicate node. BasicPredicate::Xor exists but only
+        // for the pure-Basic case (which already flattened into
+        // Q::Basic(BasicPredicate::Xor(...)) before reaching this arm).
+        Q::Xor(_, _) => ReduceOutcome::Unreducible(
+            "Q::Xor (mixed-operand XOR; no BasicPredicate equivalent at this node)",
+        ),
+
+        // Q is #[non_exhaustive] — forward-compat catch-all for any variant
+        // added in a future cluster before this match is updated.
+        // The #[allow] suppresses the "unreachable pattern" warning that
+        // occurs within-crate because the compiler can see all variants
+        // are already matched. It is load-bearing for external callers in
+        // a downstream crate once a new variant is added.
+        #[allow(unreachable_patterns)]
+        _ => ReduceOutcome::Unreducible(
+            "Q variant not yet supported by into_basic_predicate (forward-compat catch-all)",
+        ),
+    }
+}
+
+impl<T: crate::model::Model> QuerySet<T> {
+    /// Attempt to extract a [`sassi::BasicPredicate<T>`] from this QuerySet's
+    /// filter tree.
+    ///
+    /// Returns `Some(predicate)` when the entire `Q<T>` condition tree is
+    /// reducible to a `BasicPredicate<T>`. Returns `None` and emits a
+    /// `tracing::warn!` when any node is unreducible.
+    ///
+    /// # Reducible variants
+    ///
+    /// | Q variant | Reduces to |
+    /// |---|---|
+    /// | `Q::Basic(p)` | `p` (cloned) |
+    /// | `Q::Compound { And, all_basic_parts }` | `BasicPredicate::And(parts)` |
+    /// | `Q::Compound { Or, all_basic_parts }` | `BasicPredicate::Or(parts)` |
+    /// | `Q::Negated(Q::Basic(p))` | `BasicPredicate::Not(Box::new(p))` |
+    ///
+    /// # Unreducible variants (always → `None`)
+    ///
+    /// `Q::Ilike`, `Q::JsonbPath`, `Q::Regex`, `Q::Expression`,
+    /// `Q::Array`, `Q::Condition`, `Q::Xor`.
+    ///
+    /// `Q::Condition` covers every queryset built with the public
+    /// `.filter(...)` / `.filter_struct(...)` / `.exclude(...)` APIs —
+    /// those routes always produce a `Q::Condition` wrapper around the
+    /// legacy `Condition` tree (character-for-character SQL-parity
+    /// contract from Cluster 8γ Stage 2 T6.9). A fresh
+    /// `QuerySet::new()` (no filters) starts as
+    /// `Q::Basic(BasicPredicate::True)` and IS reducible.
+    ///
+    /// # When to use this
+    ///
+    /// The primary caller is [`QuerySet::refresh_into`] — it extracts the
+    /// predicate to pass as a Rust-side filter to sassi's delta-refresh
+    /// fetcher (for in-memory `BasicPredicate::evaluate` calls on cached
+    /// items). Adopters composing `Q<T>` values directly (via `Q::Basic`
+    /// or the `&` / `|` / `!` algebra operators) and then setting
+    /// `QuerySet::condition` from framework-internal code can produce
+    /// reducible trees for both SQL and Rust-side evaluation.
+    ///
+    /// # Visibility note
+    ///
+    /// This is `pub` so advanced cache-integration callers can inspect
+    /// reducibility before calling `refresh_into`. It is not part of the
+    /// everyday filter / query builder API.
+    pub fn into_basic_predicate(self) -> Option<sassi::BasicPredicate<T>> {
+        let outcome = reduce_q_to_basic(self.condition);
+        match outcome {
+            ReduceOutcome::Reduced(p) => Some(p),
+            ReduceOutcome::Unreducible(reason) => {
+                tracing::warn!(
+                    target: "djogi::cache",
+                    model = std::any::type_name::<T>(),
+                    reason = reason,
+                    "QuerySet condition has non-Basic predicates; refresh_into \
+                     will fetch the full source-of-truth set per tick (no WHERE \
+                     filter applied at the SQL boundary). Restructure the filter \
+                     using only Q::Basic / BasicPredicate-compatible operations \
+                     to enable filter pushdown.",
+                );
+                None
+            }
+        }
+    }
+}
+
 // ── Cluster 8δ T8.3 — delta-sync refresh subscription ────────────────────────
 //
 // `refresh_into` lives in its own impl block (separate from the base
@@ -1877,9 +2091,9 @@ impl_into_distinct_columns_tuple!(A, B, C, D, E, F);
 // existing block's bound would cascade to methods that have no need of
 // `DeltaSyncCacheable`, breaking the clean opt-in layering.
 //
-// `into_basic_predicate` is also here: it is `pub(crate)` and exists solely
-// as the extraction point for T8.4. Placing it in this block co-locates the
-// two methods that work together at the delta-sync boundary.
+// `into_basic_predicate` was previously stubbed here in T8.3 but has been
+// moved to `impl<T: Model> QuerySet<T>` in T8.4 — extraction is purely
+// structural (no DeltaSyncCacheable behaviour needed).
 //
 // Path-routing note (non-emitted code):
 //   Per `feedback_macro_path_routing.md`, path-routing governs macro-EMITTED
@@ -1904,13 +2118,15 @@ where
     /// `Err(FetchError::FetcherPanic)` rather than unwinding. T8.5 lands
     /// the real SQL path.
     ///
-    /// # Compile-time gate (T8.4)
+    /// # Filter pushdown via into_basic_predicate (T8.4)
     ///
-    /// Closure-flavored filters (anything that introduces `MemQ::Closure`
-    /// in the QuerySet's filter tree) are refused at this call site —
-    /// the bound `T: DeltaSyncCacheable` plus the `BasicPredicate`-only
-    /// extraction enforces this. T8.4 lands the real `into_basic_predicate`
-    /// implementation; today's stub returns `None`.
+    /// `into_basic_predicate` now performs a real recursive walk over the
+    /// QuerySet's `Q<T>` condition tree. Querysets built with the public
+    /// filter / filter_struct / exclude APIs produce `Q::Condition` wrappers
+    /// (legacy-parity requirement) and always receive a `tracing::warn!`
+    /// noting that no WHERE filter will be applied at the SQL boundary on
+    /// the fetcher side. A fresh unfiltered queryset (`QuerySet::new()`)
+    /// starts as `Q::Basic(BasicPredicate::True)` and extracts cleanly.
     ///
     /// # Interval placeholder
     ///
@@ -1933,14 +2149,6 @@ where
         // builder for caller-supplied interval. Pin via spec §672 review.
         let interval = std::time::Duration::from_secs(30);
         punnu.start_delta_refresh(interval, fetcher)
-    }
-
-    /// Stub for T8.4 — extract a `BasicPredicate<T>` from this QuerySet's
-    /// filter tree. Returns `None` for now; T8.4 walks the actual filter
-    /// tree and rejects closure-flavored predicates at compile time.
-    pub(crate) fn into_basic_predicate(self) -> Option<sassi::BasicPredicate<T>> {
-        let _ = self;
-        None
     }
 }
 
@@ -2727,6 +2935,205 @@ mod tests {
         let _g: GroupedQuerySet<Fake, GeohashKey> = QuerySet::<Fake>::new().bucket_by_cell(
             |_| FieldRef::<Fake, GeoPoint>::new("location"),
             GeohashPrecision::P5,
+        );
+    }
+
+    // ── T8.4 — into_basic_predicate: conservative Q<T>→BasicPredicate<T> walk ──
+    //
+    // These tests set `qs.condition` directly (via `pub(crate)` access)
+    // because the public filter API always produces `Q::Condition(...)` — see
+    // the `into_basic_predicate` doc for the architectural note. The unit-test
+    // suite exercises all the reducible and unreducible code paths; the
+    // integration test (`phase8_t8_4_basic_predicate_extraction.rs`) covers
+    // the externally-observable behavior (public filter API → None + warn,
+    // unfiltered QuerySet → Some(True)).
+
+    /// A fresh `QuerySet::new()` starts as `Q::Basic(BasicPredicate::True)`.
+    /// `into_basic_predicate` must return `Some(BasicPredicate::True)`.
+    #[test]
+    fn into_basic_predicate_unfiltered_returns_true() {
+        let qs: QuerySet<Fake> = QuerySet::new();
+        // Verify the initial condition IS Q::Basic before calling.
+        assert!(
+            matches!(&qs.condition, Q::Basic(_)),
+            "unfiltered QuerySet must start as Q::Basic (was not Q::Basic — substrate regression?)",
+        );
+        let result = qs.into_basic_predicate();
+        assert!(
+            matches!(result, Some(sassi::BasicPredicate::True)),
+            "unfiltered QuerySet should reduce to Some(BasicPredicate::True)"
+        );
+    }
+
+    /// A QuerySet with `condition = Q::Basic(BasicPredicate::False)` reduces
+    /// to `Some(BasicPredicate::False)`. Verifies the `Q::Basic(p)` arm works
+    /// for non-True sentinels.
+    #[test]
+    fn into_basic_predicate_basic_false_reduces() {
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Q::Basic(sassi::BasicPredicate::False);
+        let result = qs.into_basic_predicate();
+        assert!(
+            matches!(result, Some(sassi::BasicPredicate::False)),
+            "Q::Basic(False) should reduce to Some(BasicPredicate::False)"
+        );
+    }
+
+    /// A QuerySet with `Q::Compound { And, [Basic(True), Basic(False)] }`
+    /// reduces to `Some(BasicPredicate::And(vec![True, False]))`.
+    ///
+    /// Verifies the Compound-And arm walks all parts and assembles the
+    /// `BasicPredicate::And` aggregator.
+    #[test]
+    fn into_basic_predicate_compound_and_reduces() {
+        use crate::query::q::CompoundOp;
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Q::Compound {
+            op: CompoundOp::And,
+            parts: vec![
+                Q::Basic(sassi::BasicPredicate::True),
+                Q::Basic(sassi::BasicPredicate::False),
+            ],
+        };
+        let result = qs.into_basic_predicate();
+        match result {
+            Some(sassi::BasicPredicate::And(parts)) => {
+                assert_eq!(parts.len(), 2, "And predicate should have exactly 2 parts");
+                assert!(matches!(parts[0], sassi::BasicPredicate::True));
+                assert!(matches!(parts[1], sassi::BasicPredicate::False));
+            }
+            other => panic!(
+                "expected Some(BasicPredicate::And([True, False])), got {}",
+                if other.is_some() {
+                    "Some(non-And variant)"
+                } else {
+                    "None"
+                }
+            ),
+        }
+    }
+
+    /// A QuerySet with `Q::Compound { Or, [Basic(True), Basic(False)] }`
+    /// reduces to `Some(BasicPredicate::Or(vec![True, False]))`.
+    ///
+    /// Verifies the Compound-Or arm.
+    #[test]
+    fn into_basic_predicate_compound_or_reduces() {
+        use crate::query::q::CompoundOp;
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Q::Compound {
+            op: CompoundOp::Or,
+            parts: vec![
+                Q::Basic(sassi::BasicPredicate::True),
+                Q::Basic(sassi::BasicPredicate::False),
+            ],
+        };
+        let result = qs.into_basic_predicate();
+        match result {
+            Some(sassi::BasicPredicate::Or(parts)) => {
+                assert_eq!(parts.len(), 2, "Or predicate should have exactly 2 parts");
+            }
+            _ => panic!("expected Some(BasicPredicate::Or([True, False]))"),
+        }
+    }
+
+    /// `Q::Negated(Q::Basic(p))` reduces to `Some(BasicPredicate::Not(Box::new(p)))`.
+    ///
+    /// Verifies the Negated arm: pure-Basic inner wrapped in Not.
+    #[test]
+    fn into_basic_predicate_negated_basic_reduces() {
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Q::Negated(Box::new(Q::Basic(sassi::BasicPredicate::True)));
+        let result = qs.into_basic_predicate();
+        match result {
+            Some(sassi::BasicPredicate::Not(inner)) => {
+                assert!(
+                    matches!(*inner, sassi::BasicPredicate::True),
+                    "inner of Not should be True"
+                );
+            }
+            _ => panic!("expected Some(BasicPredicate::Not(True))"),
+        }
+    }
+
+    /// `Q::Compound { And, [Basic(True), Ilike(...)] }` is Unreducible — the
+    /// Ilike part is SQL-only. Returns `None`. Verifies short-circuit on
+    /// first unreducible part.
+    #[test]
+    fn into_basic_predicate_compound_with_ilike_refuses() {
+        use crate::query::field::FieldRef;
+        use crate::query::q::CompoundOp;
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Q::Compound {
+            op: CompoundOp::And,
+            parts: vec![
+                Q::Basic(sassi::BasicPredicate::True),
+                // ILIKE is SQL-only — cannot be expressed as BasicPredicate.
+                Q::Ilike(FieldRef::<Fake, String>::new("label"), "foo%".to_string()),
+            ],
+        };
+        let result = qs.into_basic_predicate();
+        assert!(
+            result.is_none(),
+            "Q::Compound containing Q::Ilike must reduce to None"
+        );
+    }
+
+    /// `Q::Condition(...)` is always Unreducible — it is what every public
+    /// `.filter(...)` / `.filter_struct(...)` / `.exclude(...)` call produces.
+    /// Returns `None`.
+    ///
+    /// This test verifies the most common adopter-facing code path:
+    /// a queryset built with `.filter(|f| ...)` can never be reduced.
+    #[test]
+    fn into_basic_predicate_legacy_condition_refuses() {
+        use crate::query::condition::{FilterValue, Leaf};
+        let qs: QuerySet<Fake> =
+            QuerySet::new().filter(|_| Condition::Leaf(Leaf::eq_raw("a", FilterValue::Bool(true))));
+        // After .filter(), condition is Q::Condition(...).
+        assert!(
+            matches!(&qs.condition, Q::Condition(_)),
+            "queryset after .filter() must have Q::Condition (regression in and_condition_into_q?)",
+        );
+        let result = qs.into_basic_predicate();
+        assert!(
+            result.is_none(),
+            "Q::Condition (legacy filter path) must reduce to None"
+        );
+    }
+
+    /// `Q::Negated(Q::Condition(...))` is Unreducible — the inner is not Basic.
+    /// Returns `None`. Verifies that Negated propagates Unreducible from inner.
+    #[test]
+    fn into_basic_predicate_negated_non_basic_refuses() {
+        use crate::query::condition::{FilterValue, Leaf};
+        let inner_condition = Condition::Leaf(Leaf::eq_raw("x", FilterValue::Bool(false)));
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Q::Negated(Box::new(Q::Condition(inner_condition)));
+        let result = qs.into_basic_predicate();
+        assert!(
+            result.is_none(),
+            "Q::Negated(Q::Condition(...)) must reduce to None"
+        );
+    }
+
+    /// `Q::Xor(Q::Basic(True), Q::Basic(False))` is Unreducible at the
+    /// mixed-operand `Q::Xor` level. Note: pure-Basic XOR would have been
+    /// folded into `Q::Basic(BasicPredicate::Xor(...))` by the `^` operator,
+    /// so the `Q::Xor` variant only appears when at least one side is not
+    /// pure-Basic. Verifies the Xor arm returns None.
+    #[test]
+    fn into_basic_predicate_xor_refuses() {
+        // Q::Xor is the mixed-operand variant — construct it directly.
+        let mut qs: QuerySet<Fake> = QuerySet::new();
+        qs.condition = Q::Xor(
+            Box::new(Q::Basic(sassi::BasicPredicate::True)),
+            Box::new(Q::Basic(sassi::BasicPredicate::False)),
+        );
+        let result = qs.into_basic_predicate();
+        assert!(
+            result.is_none(),
+            "Q::Xor must reduce to None (no BasicPredicate equivalent at this Q-level)"
         );
     }
 }

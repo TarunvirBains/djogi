@@ -450,3 +450,10 @@ harness = true
 name = "phase8_t7_6_cross_context_guard"
 path = "../tests/integration/phase8_t7_6_cross_context_guard.rs"
 harness = true
+
+# ── Phase 8δ T8.4 — into_basic_predicate: Q<T>→BasicPredicate<T> extraction ──
+
+[[test]]
+name = "phase8_t8_4_basic_predicate_extraction"
+path = "../tests/integration/phase8_t8_4_basic_predicate_extraction.rs"
+harness = true
