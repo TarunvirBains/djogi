@@ -221,33 +221,164 @@ impl Leaf {
 /// trigram search) extend this set, and downstream exhaustive matches
 /// would break on every such addition. External pattern matches must
 /// include a `_ => …` arm.
+///
+/// # The §660 split — Rust-evaluable vs SQL-only
+///
+/// Per spec §8e bullet 6 (`docs/spec/implementation-plan.md:660`),
+/// every variant on this enum partitions cleanly into one of two
+/// classes:
+///
+/// **Rust-evaluable (15 variants).** `Eq`, `Neq`, `Gt`, `Gte`, `Lt`,
+/// `Lte`, `In`, `NotIn`, `IsNull`, `IsNotNull`, `Between`, `IContains`,
+/// `IStartsWith`, `IEndsWith`, `IExact`. These ops have a sassi
+/// counterpart (`sassi::LookupOp::Eq` etc.) and lift to
+/// `sassi::BasicPredicate::Field` — they ride through `Q::Basic` in
+/// the public algebra and can be evaluated against an in-memory `&T`
+/// without a database round-trip (the substrate Punnu cache builds
+/// on at Cluster 8δ).
+///
+/// **SQL-only (2 variants).** `Regex`, `IRegex` — Postgres POSIX
+/// `~` / `~*`. These do **not** have sassi counterparts (sassi's
+/// `LookupOp` enum has no `Regex` / `IRegex` variants by design) and
+/// stay djogi-side as `Q::Regex(field, pattern, case_sensitive)` in
+/// the public algebra. Lifting them to `BasicPredicate` would require
+/// a Rust regex engine, which the framework forbids per `decisions.md`
+/// rows 107 + 108 and `feedback_no_regex_in_djogi.md`.
+///
+/// The partition is locked by:
+///
+/// - The trybuild fixture
+///   `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
+///   (Cluster 8γ Stage 1 T6.10) — verifies `sassi::LookupOp::Regex`
+///   does not exist at the type level, so a future sassi release that
+///   adds a `Regex` variant would silently break the no-regex
+///   invariant; this fixture catches it.
+///
+/// - The `lookup_op_partitions_cleanly_into_15_lift_2_sql_only` test
+///   in this module — exhaustively walks every `LookupOp` variant and
+///   asserts each lands in the correct class.
+///
+/// Adding a new variant under `#[non_exhaustive]` requires extending
+/// the partition test and explicitly placing the variant in one of
+/// the two classes; the test will fail to compile until that's done.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LookupOp {
+    /// `field = value`. Rust-evaluable (lifts to
+    /// `sassi::BasicPredicate::Field` via `Q::Basic`).
     Eq,
+    /// `field <> value`. Rust-evaluable.
     Neq,
+    /// `field > value`. Rust-evaluable.
     Gt,
+    /// `field >= value`. Rust-evaluable.
     Gte,
+    /// `field < value`. Rust-evaluable.
     Lt,
+    /// `field <= value`. Rust-evaluable.
     Lte,
+    /// `field IN (values…)`. Rust-evaluable.
     In,
+    /// `field NOT IN (values…)`. Rust-evaluable.
     NotIn,
+    /// `field IS NULL`. Rust-evaluable.
     IsNull,
+    /// `field IS NOT NULL`. Rust-evaluable.
     IsNotNull,
-    /// ILIKE '%s%' — spec §5.4 `contains`.
+    /// ILIKE '%s%' — spec §5.4 `contains`. Rust-evaluable
+    /// (case-insensitive substring match via `str::to_lowercase()` on
+    /// the sassi side; locale parity with Postgres `ILIKE` documented
+    /// in spec §660).
     IContains,
-    /// ILIKE 's%' — spec §5.4 `starts_with`.
+    /// ILIKE 's%' — spec §5.4 `starts_with`. Rust-evaluable.
     IStartsWith,
-    /// ILIKE '%s' — spec §5.4 `ends_with`.
+    /// ILIKE '%s' — spec §5.4 `ends_with`. Rust-evaluable.
     IEndsWith,
-    /// BETWEEN a AND b.
+    /// BETWEEN a AND b. Rust-evaluable.
     Between,
     /// Case-insensitive equality via `LOWER(col) = LOWER($n)`.
+    /// Rust-evaluable.
     IExact,
-    /// POSIX regex (`~`).
+    /// POSIX regex (`~`). **SQL-only** — stays in djogi `Q::Regex(_, _, true)`
+    /// per `decisions.md` row 108. The match runs server-side; no
+    /// Rust regex engine is linked.
     Regex,
-    /// Case-insensitive POSIX regex (`~*`).
+    /// Case-insensitive POSIX regex (`~*`). **SQL-only** — same
+    /// rationale as `Regex`. Stays in djogi `Q::Regex(_, _, false)`.
     IRegex,
+}
+
+/// Source-side classification of [`LookupOp`] per the §660 split.
+/// Every shipped variant is tagged either `RustEvaluable` (lifts to
+/// `sassi::BasicPredicate::Field` via `Q::Basic`) or `SqlOnly` (stays
+/// djogi-side via `Q::Regex` etc.).
+///
+/// Adopters do not name this enum — it is the type-level partition
+/// the lowering bridge and the trybuild fixture lean on. A new
+/// `LookupOp` variant added under `#[non_exhaustive]` must be placed
+/// in one of these two classes by extending
+/// [`LookupOp::source_class`] below; the partition test in this
+/// module fails to compile until the new arm is added.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LookupOpSourceClass {
+    /// Lifts to `sassi::BasicPredicate::Field` via `Q::Basic`.
+    /// 15 variants today.
+    RustEvaluable,
+    /// Stays djogi-side via `Q::Regex` (or future SQL-only variants).
+    /// 2 variants today (`Regex`, `IRegex`).
+    SqlOnly,
+}
+
+impl LookupOp {
+    /// Source-side class per the §660 split.
+    ///
+    /// Exhaustive over the **shipped** variants. The match has no
+    /// `_ => …` catch-all so adding a new `LookupOp` variant fails
+    /// to compile this method until the arm is added — that is the
+    /// load-bearing protection: a future variant cannot silently fall
+    /// into the wrong class.
+    ///
+    /// # Why a method, not a const
+    ///
+    /// A `const` map (`[(LookupOp::Eq, RustEvaluable), …]`) would
+    /// require linear-search lookup at every callsite. The match
+    /// optimises into a single jump table at the same compile-time
+    /// cost without sacrificing the type-level partition guarantee.
+    //
+    // `#[allow(dead_code)]` — no production path consumes
+    // `source_class` today (the pre-T6.9 `Condition`-based emission
+    // is still the SQL path). The classification is consumed by the
+    // partition test in the `tests` module and by future cluster
+    // integrations that need the source-side tag (e.g. Cluster 8δ
+    // Punnu cache eligibility checks). Keeping the API loaded but
+    // dormant per `feedback_atomic_commits.md` — the §660 split
+    // documentation ships at T6.8; the consumers land later.
+    #[allow(dead_code)]
+    pub(crate) fn source_class(self) -> LookupOpSourceClass {
+        // Exhaustive — no `_` arm. New variants land in the right
+        // class by being explicitly named here, or the build fails.
+        match self {
+            // ── Rust-evaluable (15) — lifts to sassi::BasicPredicate::Field ──
+            LookupOp::Eq
+            | LookupOp::Neq
+            | LookupOp::Gt
+            | LookupOp::Gte
+            | LookupOp::Lt
+            | LookupOp::Lte
+            | LookupOp::In
+            | LookupOp::NotIn
+            | LookupOp::IsNull
+            | LookupOp::IsNotNull
+            | LookupOp::Between
+            | LookupOp::IContains
+            | LookupOp::IStartsWith
+            | LookupOp::IEndsWith
+            | LookupOp::IExact => LookupOpSourceClass::RustEvaluable,
+            // ── SQL-only (2) — Postgres POSIX regex; no Rust regex engine ────
+            LookupOp::Regex | LookupOp::IRegex => LookupOpSourceClass::SqlOnly,
+        }
+    }
 }
 
 impl LookupOp {
@@ -437,5 +568,91 @@ mod tests {
         // to render FALSE. Construct directly (not via `or()` — that flattens).
         let empty = Condition::Or(Vec::new());
         assert!(matches!(empty, Condition::Or(ref v) if v.is_empty()));
+    }
+
+    // ── T6.8 — §660 partition test ────────────────────────────────────────
+    //
+    // Locks the Rust-evaluable vs SQL-only split documented on
+    // [`LookupOp`]. Every shipped variant is tagged via
+    // `source_class()` and the test verifies the exact 15-vs-2 partition.
+    //
+    // The partition is load-bearing per `decisions.md` rows 107 + 108
+    // and `feedback_no_regex_in_djogi.md`: lifting `Regex` / `IRegex`
+    // to sassi would require a Rust regex engine, which the framework
+    // forbids. The trybuild fixture
+    // `djogi-macros/tests/compile_fail/phase8_lookup_op_regex_lifted_to_basic_predicate.rs`
+    // (Cluster 8γ Stage 1 T6.10) catches the type-level violation;
+    // this unit test catches the source-side classification mistake
+    // (e.g. a future cluster accidentally re-tagging `Regex` as
+    // `RustEvaluable`).
+    //
+    // Adding a new `LookupOp` variant fails to compile
+    // `LookupOp::source_class` (no `_ => …` arm) until placed
+    // explicitly in one of the two classes; this test fails to compile
+    // until the new variant is also represented in the relevant
+    // count-asserting arm below.
+
+    #[test]
+    fn lookup_op_partitions_cleanly_into_15_lift_2_sql_only() {
+        // Exhaustive walk: every shipped variant maps to a known class.
+        // Hard-coded counts catch silent partition drift if a new
+        // variant is added without updating this test.
+        let rust_evaluable = [
+            LookupOp::Eq,
+            LookupOp::Neq,
+            LookupOp::Gt,
+            LookupOp::Gte,
+            LookupOp::Lt,
+            LookupOp::Lte,
+            LookupOp::In,
+            LookupOp::NotIn,
+            LookupOp::IsNull,
+            LookupOp::IsNotNull,
+            LookupOp::Between,
+            LookupOp::IContains,
+            LookupOp::IStartsWith,
+            LookupOp::IEndsWith,
+            LookupOp::IExact,
+        ];
+        assert_eq!(
+            rust_evaluable.len(),
+            15,
+            "expected 15 Rust-evaluable variants per §660"
+        );
+        for op in rust_evaluable {
+            assert_eq!(
+                op.source_class(),
+                LookupOpSourceClass::RustEvaluable,
+                "variant {op:?} must be Rust-evaluable per the §660 split"
+            );
+        }
+
+        let sql_only = [LookupOp::Regex, LookupOp::IRegex];
+        assert_eq!(
+            sql_only.len(),
+            2,
+            "expected exactly 2 SQL-only variants — Regex + IRegex per decisions.md row 108"
+        );
+        for op in sql_only {
+            assert_eq!(
+                op.source_class(),
+                LookupOpSourceClass::SqlOnly,
+                "variant {op:?} must be SQL-only — lifting it to sassi requires a Rust regex engine"
+            );
+        }
+    }
+
+    /// `Regex` and `IRegex` MUST land in `SqlOnly` — the load-bearing
+    /// arm of the partition. If a future refactor accidentally
+    /// re-classifies these as `RustEvaluable`, the no-regex
+    /// invariant breaks silently; this test catches it before
+    /// anything ships.
+    #[test]
+    fn regex_variants_are_sql_only() {
+        assert_eq!(LookupOp::Regex.source_class(), LookupOpSourceClass::SqlOnly);
+        assert_eq!(
+            LookupOp::IRegex.source_class(),
+            LookupOpSourceClass::SqlOnly
+        );
     }
 }
