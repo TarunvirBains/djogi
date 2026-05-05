@@ -50,6 +50,13 @@ pub use filter::{FilterClause, Lookup, ModelFilter};
 pub use order::{Direction, NullsOrder, OrderExpr};
 pub use queryset::{DistinctMode, IntoDistinctColumns, QuerySet};
 pub use recursive::{RecursiveDirection, RecursiveQuerySet};
+// `BasicPredicate<T>` is sassi's universal Rust-evaluable predicate algebra.
+// Re-exported here so adopters reach it as `djogi::query::BasicPredicate`
+// without depending on sassi directly. The Cluster 8γ refactor (T6) lifts
+// the 15 Rust-evaluable `LookupOp` variants into `sassi::BasicPredicate`
+// while keeping the 2 SQL-only ops (`Regex`, `IRegex`) on the djogi side
+// (`Q::Regex`) — see spec §8e bullet 6 and `decisions.md` row 107 + 108.
+pub use sassi::BasicPredicate;
 #[cfg(feature = "spatial")]
 pub use spatial_grouping::{ClusterId, ClusterRadius, GeohashKey, GeohashPrecision, RegionKey};
 pub use stream::{ModelCursorStream, RawCursorStream};
@@ -71,4 +78,19 @@ pub use visage_queryset::VisageQuerySet;
 /// your own type aliases if you depend on them.
 pub mod internal {
     pub use super::condition::{FilterValue, Leaf, LookupOp};
+}
+
+#[cfg(test)]
+mod tests {
+    /// Compile-only sanity: `BasicPredicate<T>` is reachable both as
+    /// `sassi::BasicPredicate` (the originating crate path) and as
+    /// `crate::query::BasicPredicate` (the re-export adopters depend on).
+    /// This locks the re-export contract: removing the `pub use` line
+    /// would silently break adopter call-sites; this test catches it
+    /// at the compilation step.
+    #[test]
+    fn basic_predicate_reachable_from_djogi_query() {
+        let _: sassi::BasicPredicate<()> = sassi::BasicPredicate::True;
+        let _: crate::query::BasicPredicate<()> = crate::query::BasicPredicate::True;
+    }
 }
