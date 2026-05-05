@@ -18,7 +18,7 @@
 //! The T10 fixture will lift this helper into the real closure position.
 
 use djogi::prelude::*;
-use djogi::query::Condition;
+use djogi::query::internal::Condition;
 
 #[model(table = "phase7_zero2_t8_depts")]
 #[derive(Debug, Clone)]

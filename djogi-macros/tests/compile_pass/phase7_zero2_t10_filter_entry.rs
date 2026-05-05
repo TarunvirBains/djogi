@@ -10,6 +10,7 @@
 //! types must align.
 
 use djogi::prelude::*;
+use djogi::query::internal::Condition;
 
 #[model(table = "phase7_zero2_t10_xs")]
 #[derive(Debug, Clone)]

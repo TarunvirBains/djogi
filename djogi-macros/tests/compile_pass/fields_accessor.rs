@@ -25,6 +25,7 @@
 // re-test the same trait bound.
 
 use djogi::prelude::*;
+use djogi::query::internal::Condition;
 use djogi::query::FieldRef;
 
 // Phase 7-Zero-2 T2 flipped the default PK to `HeerIdRecencyBiased`; this

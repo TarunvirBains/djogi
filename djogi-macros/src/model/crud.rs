@@ -503,10 +503,10 @@ pub fn expand(
             };
             quote! {
                 fn default_filter_condition() -> ::std::option::Option<
-                    ::djogi::query::Condition,
+                    ::djogi::query::internal::Condition,
                 > {
                     ::std::option::Option::Some(
-                        ::djogi::query::Condition::__from_raw_sql_fragment(#sql),
+                        ::djogi::query::internal::Condition::__from_raw_sql_fragment(#sql),
                     )
                 }
             }

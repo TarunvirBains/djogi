@@ -211,7 +211,7 @@ pub fn expand(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> TokenStream
         ///
         /// Each inherent method returns a [`FieldRef`](::djogi::query::FieldRef)
         /// for one column; chain a lookup method to produce a
-        /// [`Condition`](::djogi::query::Condition).
+        /// [`Condition`](::djogi::query::internal::Condition).
         ///
         /// `Default` is required by the `Model::Fields` associated type
         /// (`Copy + Default + Send + Sync + 'static`) so that

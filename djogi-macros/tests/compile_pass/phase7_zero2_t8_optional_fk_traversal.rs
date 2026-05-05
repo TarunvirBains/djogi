@@ -20,7 +20,8 @@
 //! helper's body is the T8 acceptance criterion for the optional path.
 
 use djogi::prelude::*;
-use djogi::query::{Condition, OptionalRelationRef};
+use djogi::query::OptionalRelationRef;
+use djogi::query::internal::Condition;
 
 #[model(table = "phase7_zero2_t8_opt_users")]
 #[derive(Debug, Clone)]
