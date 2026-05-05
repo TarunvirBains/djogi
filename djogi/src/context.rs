@@ -627,6 +627,10 @@ impl DjogiContext {
                 // after construction and transaction scope does not change the
                 // set of registered pools. `begin()` / `atomic()` are inner
                 // contexts that share the outer's cache state.
+                //
+                // SYNC: the field list below must stay in lockstep with
+                // `from_pool` and `from_connection`. Adding a field to
+                // `DjogiContext` requires updating all three sites.
                 Ok(DjogiContext {
                     inner: ContextInner::Transaction(conn),
                     savepoint_depth: 0,
