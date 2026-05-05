@@ -227,98 +227,47 @@ fn parse_computed_args(
     Ok(sql)
 }
 
-// ── T4.4 — Rust-side getter emission ─────────────────────────────────────
+// ── T4.4 — Rust-side getter emission (intentionally a no-op) ─────────────
 //
-// Emits one inherent method per `#[computed(sql = "...")]` field:
+// Earlier shapes of this task emitted one inherent method per
+// `#[computed(sql = "...")]` field with an `unimplemented!()` body so
+// adopters could "override the stub" with a hand-written
+// `pub fn total_price(&self) -> f64 { ... }`. That design rests on a
+// false premise: Rust does not allow two inherent methods with the
+// same name on the same type. Adding a second
+// `pub fn total_price(&self) -> f64 { self.base_price * ... }`
+// would be E0201 (duplicate definition), not a silent override.
 //
-// ```rust
-// impl Vehicle {
-//     pub fn total_price(&self) -> f64 {
-//         unimplemented!(
-//             "Rust-side getter for the `total_price` computed field is \
-//              not auto-emitted in v0.1.0. Implement this method by hand \
-//              if you need to call it after `fetch_one()` without a \
-//              re-query — see docs/guide/computed.md for the manual \
-//              evaluation pattern."
-//         )
-//     }
-// }
-// ```
-//
-// # Why `unimplemented!()` instead of auto-deriving an arithmetic
-// expression
+// BLOCK-5 fix — the Rust-side getter emission is removed entirely.
+// The SQL-side path stays the canonical surface: adopters call
+// `Vehicle::computed().total_price()` for an `Expr<f64>` that composes
+// in `.annotate()` / `.filter_expr()` / `.order_by()`. For a Rust-side
+// computation, adopters write a plain inherent method with any name
+// of their choosing — no macro-emitted boilerplate to override.
 //
 // Per the lens (`feedback_decision_priorities.md`, plan §7 #8 resolved
-// 2026-05-03): production stability and simple-to-use both apply; on
+// 2026-05-03): production stability + simple-to-use both apply; on
 // this decision the deciding consideration is that a home-grown
 // arithmetic SQL parser would ship bug-for-bug copies of Postgres
 // semantics (rounding divergence between Rust `f64` and Postgres
 // `numeric`, NULL-coalescing edge cases, integer overflow semantics).
-// A failing-loud `unimplemented!()` at runtime forces adopters who
-// need the Rust-side path to hand-implement the getter — bounded
-// escape hatch instead of silent miscompile. Common case (compute the
-// expression server-side via `.annotate()` / `.filter()`) is fully
-// supported by T4.5's `{Model}Computed` ZST.
-//
-// # Why we still emit a method (not skip the getter entirely)
-//
-// Adopter ergonomics: `vehicle.total_price()` is the natural call
-// site, mirroring `vehicle.base_price`. Skipping the auto-emitted
-// stub would force every adopter to choose between a hand-written
-// inherent impl block (boilerplate) and an awkward `Vehicle::computed()
-// .total_price().eval(&vehicle)` style. The stub keeps the call site
-// uniform; the `unimplemented!()` body fails loud the first time it
-// runs so adopters who actually need the path know to hand-implement.
+// Removing the stub honors that resolution — there is no auto-derived
+// Rust-side path to be wrong about, and adopters who need one author
+// it themselves with the semantics they actually want.
 
-/// Emit one inherent method per computed field. The body is
-/// `unimplemented!(...)` with an actionable diagnostic — every site
-/// reaching the call-site method without a hand-written override
-/// fails loud at runtime per the lens resolution above.
-///
-/// Returns the full inherent-impl token stream wrapping every emitted
-/// getter for `#name`. Empty token stream when no computed fields are
-/// declared.
+/// Phase 8β BLOCK-5 — no-op (kept as a stable call point for the
+/// orchestrator in `model::mod`). Returns an empty token stream
+/// regardless of input. The previous shape emitted one
+/// `pub fn <field>(&self) -> <T> { unimplemented!() }` per computed
+/// field, but that surface conflicted with hand-written getters under
+/// E0201 — Rust does not allow two inherent methods with the same
+/// name on the same type. The accompanying guide
+/// (`docs/guide/computed.md`) explains the call-site pattern.
 pub fn emit_rust_getters(
-    struct_name: &syn::Ident,
-    computed_attrs: &[(syn::Ident, ComputedAttr)],
+    _struct_name: &syn::Ident,
+    _computed_attrs: &[(syn::Ident, ComputedAttr)],
 ) -> proc_macro2::TokenStream {
-    if computed_attrs.is_empty() {
-        return proc_macro2::TokenStream::new();
-    }
-    let getters: Vec<proc_macro2::TokenStream> = computed_attrs
-        .iter()
-        .map(|(field_ident, attr)| {
-            let return_type = &attr.return_type;
-            let sql = &attr.sql;
-            let panic_msg = format!(
-                "Rust-side getter for the `{field_ident}` computed field is \
-                 not auto-emitted in v0.1.0. Implement this method by hand \
-                 if you need to call it after `fetch_one()` without a \
-                 re-query — see docs/guide/computed.md for the manual \
-                 evaluation pattern. SQL expression: {sql}",
-            );
-            let doc_comment = format!(
-                " Auto-emitted Rust-side getter stub for the\n\
-                 `#[computed(sql = \"{sql}\")]` field. Emits\n\
-                 `unimplemented!()` at v0.1.0 — implement by hand when the\n\
-                 Rust-side evaluation path is exercised. The SQL-side path\n\
-                 (`.annotate()` / `.filter()` / `.order_by()` via\n\
-                 `{}::Computed`) works without a hand-written getter.",
-                struct_name,
-            );
-            quote::quote! {
-                #[doc = #doc_comment]
-                pub fn #field_ident(&self) -> #return_type {
-                    ::std::unimplemented!(#panic_msg)
-                }
-            }
-        })
-        .collect();
-    quote::quote! {
-        impl #struct_name {
-            #(#getters)*
-        }
-    }
+    proc_macro2::TokenStream::new()
 }
 
 // ── T4.5 — `{Model}Computed` ZST emission for SQL projection ─────────────
@@ -529,11 +478,16 @@ mod tests {
         assert!(err.to_string().contains("computed"));
     }
 
-    /// T4.4 — `emit_rust_getters` produces an `impl Vehicle { ... }`
-    /// block with one `pub fn` per computed field, return type sourced
-    /// from the field's declared Rust type, body `unimplemented!()`.
+    /// Phase 8β BLOCK-5 — `emit_rust_getters` is now a no-op. Earlier
+    /// shapes emitted `pub fn <field>(&self) -> <T> { unimplemented!() }`
+    /// stubs that conflicted with hand-written getters under E0201
+    /// (Rust forbids duplicate inherent methods). The canonical
+    /// Rust-side path is a plain inherent method written by the
+    /// adopter, with any name they choose. The orchestrator still
+    /// calls this function so the wiring point stays stable; the body
+    /// returns an empty token stream regardless of input.
     #[test]
-    fn emits_unimplemented_getter_stubs() {
+    fn rust_getters_emit_empty_token_stream() {
         let s = parse_struct(quote! {
             struct Vehicle {
                 #[computed(sql = "base_price * 2")]
@@ -543,17 +497,14 @@ mod tests {
         let parsed = parse_computed_attrs(&s).expect("ok");
         let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();
         let ts = emit_rust_getters(&struct_name, &parsed).to_string();
-        assert!(ts.contains("impl Vehicle"));
-        assert!(ts.contains("pub fn double_price"));
-        assert!(ts.contains("unimplemented"));
-        // The doc comment carries the SQL fragment for adopter
-        // discoverability — surface as a string contains check.
-        assert!(ts.contains("base_price * 2"));
+        assert!(
+            ts.is_empty(),
+            "emit_rust_getters must not emit an inherent impl block, got: {ts}"
+        );
     }
 
-    /// T4.4 — `emit_rust_getters` returns an empty token stream when
-    /// no computed fields are declared. Non-computed models pay zero
-    /// emission cost.
+    /// Phase 8β BLOCK-5 — empty input still produces an empty token
+    /// stream (regression guard for the no-op contract).
     #[test]
     fn empty_input_emits_empty_token_stream() {
         let struct_name: syn::Ident = parse2(quote! { Vehicle }).unwrap();

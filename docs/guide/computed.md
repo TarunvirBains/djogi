@@ -42,16 +42,15 @@ pub struct Vehicle {
 
 The macro:
 
-1. Removes the computed field from the canonical projection — no `total_price`
-   column is created in `vehicles`, and the `INSERT` / `UPDATE` paths skip
-   it.
-2. Emits a Rust-side getter stub: `Vehicle::total_price(&self) -> f64`. The
-   stub body is `unimplemented!()` for v0.1.0 — see "Rust-side evaluation
-   path" below.
-3. Emits a `{Model}Computed` ZST with a typed accessor returning
+1. Removes the computed field from the struct entirely — no `total_price`
+   column on the Rust struct, no slot in `Vehicle::COLUMN_LIST`, no entry
+   in the migration differ's column set, no INSERT/UPDATE binding. The
+   field name lives on only inside the macro inputs and the SQL-side ZST
+   accessor described below.
+2. Emits a `{Model}Computed` ZST with a typed accessor returning
    `Expr<f64>`: adopters call `Vehicle::computed().total_price()` to thread
    the computed expression through the typed query API.
-4. Records the field in `ModelDescriptor.computed_fields` for `djogi docs`
+3. Records the field in `ModelDescriptor.computed_fields` for `djogi docs`
    to render alongside regular columns.
 
 ### Using in queries
@@ -85,19 +84,16 @@ SELECT * FROM vehicles WHERE (base_price * (1.0 + tax_rate)) >= $1
 
 ### Rust-side evaluation path
 
-The auto-emitted `vehicle.total_price()` getter is `unimplemented!()` in
-v0.1.0. Calling it panics with an actionable message naming the SQL
-expression and pointing here.
+The macro does **not** emit a Rust-side getter for computed fields. The
+canonical surface is the SQL-projectable ZST: `Vehicle::computed()
+.total_price()` returns `Expr<f64>` and composes with the typed query
+API. For server-side evaluation that is the entire story — adopters
+who only need to filter / sort / annotate by a computed expression pay
+no Rust-side cost.
 
-**Why?** Per the project's design lens
-(`feedback_decision_priorities.md`, plan §7 #8 resolved 2026-05-03):
-production stability wins over auto-derivation for the narrow CASE/WHEN /
-function-call tail. A home-grown SQL→Rust arithmetic translator would ship
-bug-for-bug copies of Postgres semantics — rounding divergence between
-Rust `f64` and Postgres `numeric`, NULL-coalescing edge cases, integer
-overflow rules. A failing-loud `unimplemented!()` at runtime forces adopters
-who actually need the path to hand-implement the getter for their specific
-expression's semantics:
+If you need to evaluate the expression in Rust (e.g. inside a hook or a
+visage `try_from`), write a plain inherent method on your struct with
+any name that suits the call site:
 
 ```rust
 impl Vehicle {
@@ -107,12 +103,21 @@ impl Vehicle {
 }
 ```
 
-Rust's inherent-impl resolution prefers the hand-written version, so the
-auto-emitted stub silently disappears the moment you provide a real body.
+The hand-written method does not collide with anything macro-emitted —
+no auto-derived stub exists to override.
 
-The SQL-side path (filter / annotate / order_by) works without any
-hand-written Rust body — adopters who only need server-side evaluation pay
-zero cost.
+**Why no auto-derived getter?** Per the project's design lens
+(`feedback_decision_priorities.md`, plan §7 #8 resolved 2026-05-03):
+production stability wins over auto-derivation for the narrow CASE/WHEN
+/ function-call tail. A home-grown SQL→Rust arithmetic translator
+would ship bug-for-bug copies of Postgres semantics — rounding
+divergence between Rust `f64` and Postgres `numeric`, NULL-coalescing
+edge cases, integer overflow rules. The earlier shape emitted an
+`unimplemented!()` stub on the assumption that Rust's inherent-impl
+resolution would prefer a hand-written override; that premise is
+incorrect — Rust does not allow two inherent methods with the same name
+on the same type (E0201). Removing the stub honors the lens resolution
+without the duplicate-method footgun.
 
 ### Constraint: stored variant deferred to Phase 8.5
 

@@ -247,21 +247,18 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         &field_attrs,
     );
 
-    // Phase 8β T4.4 — Rust-side computed-field getter stubs.
-    //
-    // One inherent method per `#[computed(sql = "...")]` field with an
-    // `unimplemented!()` body that fails loud at runtime. Per the lens
-    // (`feedback_decision_priorities.md`, plan §7 #8 resolved
-    // 2026-05-03): production stability + simple-to-use both apply on
-    // the narrow CASE/WHEN tail; production stability wins because a
-    // failing-loud panic is far less hazardous than a home-grown
-    // arithmetic SQL parser shipping bug-for-bug copies of Postgres
-    // semantics. Adopters who exercise the Rust-side path hand-
-    // implement the getter; the SQL-side path (`.annotate()` /
-    // `.filter()` / `.order_by()`) works without a hand-written body.
-    //
-    // Empty token stream when no computed fields are declared (the
-    // common case). Non-computed models pay zero cost.
+    // Phase 8β BLOCK-5 — `emit_rust_getters` is now a no-op (returns
+    // an empty token stream regardless of input). The earlier shape
+    // emitted one inherent `pub fn <field>(&self) -> <T> {
+    // unimplemented!() }` stub per `#[computed(sql = ...)]` field on
+    // the premise that Rust would prefer a hand-written impl over the
+    // stub — but Rust does not allow two inherent methods with the
+    // same name on the same type (E0201). The wiring point is kept so
+    // a future task that adds a non-conflicting Rust-side surface
+    // does not have to re-thread the orchestrator. Adopters who need
+    // a Rust-side computation today write a plain inherent method
+    // with any name they choose; the SQL-side path through
+    // `Vehicle::computed()` covers the server-side cases.
     let computed_getters = computed::emit_rust_getters(&struct_item.ident, &computed_attrs);
 
     // Phase 8β T4.5 — `{Model}Computed` ZST + accessor methods +
