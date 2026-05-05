@@ -76,6 +76,7 @@ pub mod query;
 pub mod relation;
 pub mod testing;
 pub mod tracked;
+pub mod trait_registry;
 pub mod transaction;
 pub mod types;
 pub mod visage;
