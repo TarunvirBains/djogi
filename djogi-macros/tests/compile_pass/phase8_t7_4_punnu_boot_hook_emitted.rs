@@ -3,12 +3,19 @@
 //
 // Pins the spec contract that a bare `#[model(...)]` declaration emits
 // the boot hook needed for `DjogiContext::from_pool` to register a
-// `Punnu<T>` automatically. The fixture is compile-only: if the
-// macro-emitted `inventory::submit!` block spells any path through
-// `::sassi::*` or `::inventory::*` directly (violating
-// `feedback_macro_path_routing.md`), the fixture fails to compile
-// because the test-crate only has `djogi` in its dependency graph —
-// not `sassi` or `inventory` directly.
+// `Punnu<T>` automatically. The fixture is compile-only — `_use_boot_hook_type`
+// witnesses that `::djogi::SassiBootHook` is reachable from the crate root,
+// and `_accept_cacheable::<BootHookRow>` witnesses that the model gets a
+// `Cacheable` impl through `::djogi::types`. Macro path-routing
+// (`feedback_macro_path_routing.md`) is enforced structurally, not by
+// this fixture: djogi's `cache/mod.rs` and `lib.rs` re-export the sassi
+// types under `::djogi::*` paths, so a hypothetical `::sassi::*` typo
+// in `cacheable.rs`'s emission would fail to compile in any adopter
+// crate that has only `djogi` in its `Cargo.toml`. (It would NOT fail
+// here — `djogi-macros/Cargo.toml` carries `sassi` as a dev-dep for
+// an unrelated 8γ fixture, so trybuild has `sassi` reachable through
+// the test-binary dep graph. The structural guarantee is the actual
+// contract.)
 //
 // Per `feedback_trybuild_fixtures.md`, every trybuild fixture must
 // have `fn main` so the stored binary can link.
