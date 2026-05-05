@@ -478,3 +478,10 @@ harness = true
 name = "phase8_t8_8_refresh_knobs"
 path = "../tests/integration/phase8_t8_8_refresh_knobs.rs"
 harness = true
+
+# ── Phase 8δ T8.9 — tokio::spawn handle lifetime test ───────────────────────
+
+[[test]]
+name = "phase8_t8_9_refresh_lifetime"
+path = "../tests/integration/phase8_t8_9_refresh_lifetime.rs"
+harness = true
