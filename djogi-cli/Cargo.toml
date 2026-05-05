@@ -35,3 +35,8 @@ thiserror.workspace = true
 # transitively; declaring it directly here keeps the import path
 # stable (no `djogi::__private::*` reach-through from CLI code).
 tokio-postgres.workspace = true
+# Used by `analyze` to derive `Serialize` on `TableHealth` and
+# `Recommendation` so T10.2 can emit deterministic JSON output via
+# `serde_json`. The pure recommend() layer (T10.1) only needs the
+# derive; the JSON encoder lands with the live-DB wiring.
+serde.workspace = true

@@ -14,6 +14,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
+mod analyze;
 mod db;
 mod live;
 mod migrations;
@@ -81,6 +82,46 @@ enum TopCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Cluster 8ε T10 — partition / vacuum analysis for adopter
+    /// Postgres tables. Queries `pg_stat_user_tables` (and, when
+    /// installed, `pg_partman`) and recommends vacuum / partition
+    /// actions per the precedence laid out in [`analyze::Recommendation`].
+    ///
+    /// **Read-only.** Analyze issues only `SELECT` against system
+    /// catalogues; it never writes.
+    ///
+    /// T10.1 (this commit) wires the type surface and CLI flags;
+    /// T10.2 ships the live-DB query path and replaces the placeholder
+    /// dispatch arm below.
+    Analyze {
+        /// Output format. `human` (default) prints one line per table;
+        /// `json` emits a deterministic, sorted array of
+        /// `{table, recommendation}` objects suitable for CI
+        /// dashboards.
+        #[arg(long, value_enum, default_value_t = AnalyzeFormat::Human)]
+        format: AnalyzeFormat,
+        /// Dead-tuple ratio strictly above which `VacuumNeeded` fires.
+        /// Default `0.2` (20% bloat) — typical OLTP workloads tighten
+        /// this; warehouse workloads tend to leave it as-is.
+        #[arg(long, default_value_t = 0.2)]
+        threshold_vacuum: f64,
+        /// Live row count strictly above which an unpartitioned table
+        /// triggers `PartitionRecommended`. Default `10_000_000`. The
+        /// same threshold drives the per-partition row average that
+        /// fires `PartitionCountIncrease`.
+        #[arg(long, default_value_t = 10_000_000)]
+        threshold_partition_rows: i64,
+    },
+}
+
+/// Output format for `djogi analyze`. `Human` is for direct operator
+/// reading; `Json` is for CI dashboards and other machine consumers
+/// (T10.2 emits a sorted, byte-deterministic array per the determinism
+/// contract on [`analyze::recommend`]).
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum AnalyzeFormat {
+    Human,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -351,6 +392,16 @@ fn main() -> ExitCode {
                     ExitCode::from(1)
                 }
             }
+        }
+        TopCommand::Analyze { .. } => {
+            // T10.1 ships the type surface + pure `recommend()` only.
+            // T10.2 replaces this placeholder with the live-DB query
+            // path (`fetch_table_health` over `pg_stat_user_tables`)
+            // and the human / JSON renderers. Exit code 2 follows the
+            // CLI convention for "not yet wired" (distinct from `1`
+            // which is reserved for runtime errors once T10.2 lands).
+            eprintln!("djogi analyze: not yet wired — T10.2 ships the live-DB path");
+            ExitCode::from(2)
         }
         TopCommand::Migrations { command } => match command {
             MigrationsCommand::Compose {

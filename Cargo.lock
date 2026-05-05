@@ -571,6 +571,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "djogi",
+ "serde",
  "thiserror",
  "time",
  "tokio",
