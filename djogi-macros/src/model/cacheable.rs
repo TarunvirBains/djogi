@@ -1,0 +1,296 @@
+//! Auto-emit `impl ::djogi::types::Cacheable for {Model}` and
+//! `impl ::djogi::types::DeltaSyncCacheable for {Model}` from
+//! `#[derive(Model)]` — Cluster 8δ T7.2.
+//!
+//! # What
+//!
+//! Every `#[model]` struct (with the single exception of `pk = None`)
+//! gets an auto-emitted `Cacheable` implementation. Adopters write zero
+//! extra derive attributes — the descriptor pipeline + the `Cacheable`
+//! emission live in one place, behind one attribute (`#[model(...)]`).
+//!
+//! When the adopter sets `#[model(watermark_field = "...")]`, this
+//! pass also emits `impl DeltaSyncCacheable` pointing at the named
+//! field. The default watermark is `updated_at` (the framework-
+//! injected timestamp guaranteed by Phase 7 field injection); the
+//! adopter override is for models whose freshness signal is something
+//! else — `expires_at`, a `version: i64`, a domain-specific
+//! `recorded_at`, etc. The `DeltaSyncCacheable` impl emission is
+//! delegated to `sassi_codegen::generate_delta_sync_cacheable_impl`
+//! so the surface stays in lock-step with sassi's own
+//! `#[derive(Cacheable)]` macro on a future trait-shape change.
+//!
+//! # `sassi_path = ::djogi::types`
+//!
+//! Per `feedback_macro_path_routing.md`, proc-macro-emitted code must
+//! route through `::djogi::*` paths only — never `::sassi::*` directly.
+//! `sassi-codegen` exposes a `sassi_path: &TokenStream` parameter to
+//! every entry point so consumers can target their own re-export
+//! surface. Djogi's `types.rs` (T7.1) re-exports `Cacheable`,
+//! `DeltaSyncCacheable`, `BasicPredicate`, `MonotonicWatermark` from
+//! sassi — passing `sassi_path = ::djogi::types` makes the emitted
+//! impls write `impl ::djogi::types::Cacheable for {Model}`, which is
+//! the path adopters can resolve without an explicit `sassi` dep in
+//! their own `Cargo.toml`.
+//!
+//! # `pk = None` skip
+//!
+//! Models with `pk = None` do NOT get a `Model` trait impl (per
+//! `crud::expand`'s `Model::Pk: Encode` constraint and
+//! `feedback_pk_and_fk_cascades_are_core.md`). They likewise do NOT
+//! get a `Cacheable` impl emitted here — the cache surface cannot
+//! ride the `QuerySet`-driven cache modifier path (T7.3) when the
+//! model has no `Model` impl, so the `Cacheable` impl in isolation
+//! has no value, and the `id`-field-required contract on
+//! sassi-codegen would force adopters who chose a different PK
+//! column name to rename it. Skip emission and defer to a hand-
+//! rolled `impl Cacheable` if the adopter genuinely needs cache
+//! support on a `pk = None` model. Mirrors `filter::expand`'s
+//! IntoQ-bridge gate behaviour.
+//!
+//! # Companion `{Model}Fields` shape — `type Fields = ()`
+//!
+//! Sassi's [`Cacheable`](::djogi::types::Cacheable) trait imposes no
+//! bound on the `Fields` associated type — the caller of
+//! `T::fields()` can do anything with the returned value. Sassi's
+//! own `#[derive(Cacheable)]` (via
+//! `sassi_codegen::generate_fields_struct` +
+//! `generate_cacheable_impl`) emits a companion `{Model}Fields`
+//! struct with one `sassi::Field<Self, V>` accessor per column,
+//! used by `BasicPredicate::eq(field, value)` constructors.
+//!
+//! Djogi already emits a `{Model}Fields` struct via
+//! `model::stubs::expand` — but that struct's shape is
+//! per-field-type-handle (`FieldRef<M, V>`) for the closure-API
+//! filter path, structurally distinct from sassi's accessor shape
+//! and tied to djogi's `Q<T>` algebra. Calling
+//! `sassi_codegen::generate_fields_struct` here would emit a
+//! second struct with the same name and a different field set →
+//! name collision at expand time (rustc E0428).
+//!
+//! Resolution: bypass `generate_fields_struct` and bypass
+//! `generate_cacheable_impl`'s field-companion-construction body.
+//! Hand-roll `impl Cacheable` with `type Fields = ()` and
+//! `fn fields() -> () { () }`. Adopters who want sassi-shape field
+//! accessors hand-roll the entire `Cacheable` impl, supplying
+//! their own companion struct. The auto-emit path here covers the
+//! common case: `Cacheable::Id` resolves to the PK type (so adopter
+//! generic bounds `<T: Cacheable>` see the right type), and
+//! `Cacheable::id(&self)` clones `self.id` (so cache-key derivation
+//! works through `Punnu::insert(...)` via T7.3+).
+//!
+//! `DeltaSyncCacheable` does NOT depend on `{Model}Fields`, so
+//! `generate_delta_sync_cacheable_impl` is called as-is — the
+//! surface stays in lock-step with sassi-codegen's evolution.
+//!
+//! # `_field_attrs` parameter
+//!
+//! Threaded through for forward compatibility. A future
+//! `#[field(cache_key)]` annotation could promote a non-`id` column
+//! to the cache identity (per the v0.2 sassi-codegen `#[cacheable(id)]`
+//! comment at `cacheable_impl.rs:152`). Unused today.
+
+use proc_macro2::TokenStream;
+use quote::quote;
+use syn::{Data, DataStruct, DeriveInput, Fields, ItemStruct};
+
+use super::attrs::{FieldAttrs, ModelAttrs, PkStrategy};
+
+/// Emit `impl Cacheable for {Model}` and (when applicable)
+/// `impl DeltaSyncCacheable for {Model}`.
+///
+/// Returns an empty `TokenStream` for `pk = None` models — see the
+/// module docs for the rationale.
+pub fn expand(
+    struct_item: &ItemStruct,
+    model_attrs: &ModelAttrs,
+    _field_attrs: &[FieldAttrs],
+) -> TokenStream {
+    expand_inner(struct_item, model_attrs).unwrap_or_else(|e| e.to_compile_error())
+}
+
+fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Result<TokenStream> {
+    // `pk = None` skip — adopter-managed PK lifecycle, no auto-emitted
+    // Cacheable. Mirrors the `filter::expand` IntoQ-bridge gate and
+    // `crud::expand`'s `Model` impl gate.
+    if matches!(model_attrs.pk, PkStrategy::None) {
+        return Ok(TokenStream::new());
+    }
+
+    // Sassi-codegen routes emitted-code paths through this prefix. The
+    // emitted impl writes `impl ::djogi::types::Cacheable for ...` and
+    // `impl ::djogi::types::DeltaSyncCacheable for ...`, never
+    // `::sassi::*` directly — adopters consume djogi's re-export
+    // surface only.
+    let sassi_path: TokenStream = quote! { ::djogi::types };
+
+    // Hand-rolled `Cacheable` impl with `type Fields = ()` —
+    // bypasses sassi-codegen's `generate_cacheable_impl` and
+    // `generate_fields_struct` to avoid colliding with djogi's
+    // `model::stubs` `{Model}Fields` emission. See the module docs
+    // for the companion-struct rationale.
+    let cacheable_impl = generate_cacheable_impl_djogi(struct_item, &sassi_path)?;
+
+    // `DeltaSyncCacheable` IS routed through sassi-codegen — it does
+    // not reference `{Model}Fields`, so the routing is clean and
+    // lock-step with sassi's own emission.
+    //
+    // `WatermarkField::new(name, span)` carries both the resolved
+    // field name and the source span so a missing field on the
+    // adopter struct produces a span-precise error pointing at the
+    // attribute literal. The default-`updated_at` branch synthesises
+    // `Span::call_site()` because there is no source token to point
+    // at — and the framework-injection invariant guarantees
+    // `updated_at` always exists on every PK strategy except
+    // `pk = None` (already skipped above).
+    let (watermark_name, watermark_span) = match &model_attrs.watermark_field {
+        Some(lit) => (lit.value(), lit.span()),
+        None => ("updated_at".to_string(), proc_macro2::Span::call_site()),
+    };
+
+    // Field-existence validation. Sassi-codegen also checks this in
+    // `generate_delta_sync_cacheable_impl`, but we re-check here so
+    // the diagnostic message can name "watermark_field" specifically
+    // (sassi-codegen's message says "Cacheable: watermark_field …",
+    // which is correct in both contexts but reads less cleanly when
+    // the user wrote `#[model(watermark_field = ...)]` rather than
+    // `#[cacheable(watermark_field = ...)]`).
+    //
+    // The check inspects the post-injection struct (`struct_item` is
+    // passed into `model::expand_inner` after `inject::expand` ran),
+    // so framework-injected `id` / `created_at` / `updated_at` are
+    // valid choices — the adopter can name any of them as the
+    // watermark, though `updated_at` is the only one that monotonic-
+    // ally advances on every save and is therefore the default.
+    let field_exists = match &struct_item.fields {
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .any(|f| f.ident.as_ref().is_some_and(|id| id == &watermark_name)),
+        // `inject::expand` rejects tuple/unit structs upstream; this
+        // branch is unreachable but preserves the pattern's totality.
+        _ => false,
+    };
+
+    if !field_exists {
+        return Err(syn::Error::new(
+            watermark_span,
+            format!(
+                "`watermark_field = \"{watermark_name}\"` does not name a field on this model — \
+                 the named field must exist on the post-injection struct \
+                 (framework-injected fields `id`, `created_at`, `updated_at` \
+                 are eligible; user fields are eligible)"
+            ),
+        ));
+    }
+
+    // Convert `ItemStruct` → `DeriveInput` so we can hand
+    // `sassi_codegen::generate_delta_sync_cacheable_impl` the shape
+    // it expects. The two types differ only in the `struct_token`
+    // placement (top-level on `ItemStruct`, inside `DataStruct` on
+    // `DeriveInput::Data::Struct`) and `ItemStruct`'s `semi_token`
+    // ordering — same data, different layout. We clone all the
+    // shared parts so the original `struct_item` (still being walked
+    // by other passes in `model::expand`) is untouched.
+    let derive_input = DeriveInput {
+        attrs: struct_item.attrs.clone(),
+        vis: struct_item.vis.clone(),
+        ident: struct_item.ident.clone(),
+        generics: struct_item.generics.clone(),
+        data: Data::Struct(DataStruct {
+            struct_token: struct_item.struct_token,
+            fields: struct_item.fields.clone(),
+            semi_token: struct_item.semi_token,
+        }),
+    };
+
+    let options = sassi_codegen::CacheableDeriveOptions {
+        watermark_field: Some(sassi_codegen::WatermarkField::new(
+            &watermark_name,
+            watermark_span,
+        )),
+        type_name: None,
+    };
+
+    let delta_sync_impl =
+        sassi_codegen::generate_delta_sync_cacheable_impl(&derive_input, &options, &sassi_path)?;
+
+    Ok(quote! {
+        #cacheable_impl
+        #delta_sync_impl
+    })
+}
+
+/// Hand-roll `impl Cacheable for {Model}` with `type Fields = ()`.
+///
+/// See the module-level docs for the rationale on bypassing
+/// `sassi_codegen::generate_cacheable_impl` (companion-struct name
+/// collision with djogi's `stubs::expand` emission).
+fn generate_cacheable_impl_djogi(
+    struct_item: &ItemStruct,
+    sassi_path: &TokenStream,
+) -> syn::Result<TokenStream> {
+    let struct_name = &struct_item.ident;
+
+    // Locate the `id` field — every PK strategy except `None`
+    // injects `id: <PK>` at the front of the field list (per
+    // `inject::inject_fields`); `pk = None` is skipped upstream in
+    // `expand_inner`. Custom PK types (`pk = SomeId`) flow through
+    // as the field's declared type — the type carried verbatim into
+    // `Cacheable::Id`.
+    let id_ty = match &struct_item.fields {
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .find(|f| f.ident.as_ref().is_some_and(|id| id == "id"))
+            .map(|f| f.ty.clone())
+            .ok_or_else(|| {
+                syn::Error::new_spanned(
+                    struct_name,
+                    "Cacheable: requires a field literally named `id` — every \
+                     `#[model]` PK strategy except `pk = None` injects one \
+                     automatically; `pk = None` models are skipped from \
+                     auto-Cacheable emission upstream. This error indicates \
+                     a framework-internal inject inconsistency; please file \
+                     an issue.",
+                )
+            })?,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                struct_name,
+                "Cacheable: only named-field structs are supported",
+            ));
+        }
+    };
+
+    // The `Self::Fields = ()` companion is intentional — see the
+    // module docs. The unit type satisfies the trait surface
+    // (`Cacheable::Fields` has no bounds in sassi v0.1.0); the
+    // `fields()` body returns `()` directly.
+    //
+    // `cache_type_name()` defaults to `std::any::type_name::<Self>()`.
+    // Adopters wanting a stable L2 keyspace identifier override via
+    // a future `#[model(cache_type_name = "...")]` attribute (Phase
+    // 8 plan §674 — separate work item).
+    //
+    // `id(&self)` clones the `id` field. Every djogi PK type (HeerId,
+    // RanjId, both recency-biased variants, i32, and adopter-supplied
+    // custom PKs emitted via `djogi::primary_key!`) implements
+    // `Clone`, so the bound is satisfied by construction.
+    Ok(quote! {
+        impl #sassi_path::Cacheable for #struct_name {
+            type Id = #id_ty;
+            type Fields = ();
+
+            fn cache_type_name() -> &'static str {
+                ::std::any::type_name::<Self>()
+            }
+
+            fn id(&self) -> Self::Id {
+                ::core::clone::Clone::clone(&self.id)
+            }
+
+            fn fields() -> Self::Fields {}
+        }
+    })
+}

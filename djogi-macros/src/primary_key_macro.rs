@@ -303,6 +303,21 @@ pub fn expand(input: TokenStream) -> TokenStream {
             ::std::marker::Copy,
             ::std::cmp::PartialEq,
             ::std::cmp::Eq,
+            // Cluster 8δ T7.2 — `Cacheable::Id: Hash + Eq + Clone + Ord + Send +
+            // Sync + 'static` (`sassi-reference/sassi/src/cacheable.rs:60`). The
+            // auto-emitted `impl Cacheable for {Model}` from `#[derive(Model)]`
+            // sets `type Id = <user PK type>`, so the PK must satisfy `Ord` for
+            // the impl to type-check. `primary_key!` always wraps a primitive-
+            // integer or UUID inner type (`BIGINT` / `INTEGER` / `UUID` per
+            // `sql_type` validation at parse time) — every accepted inner type
+            // already implements `Ord`, so the derive cost is zero. Adding
+            // these here keeps `Cacheable` auto-emission compatible with
+            // adopter-defined custom PKs without forcing them to write their
+            // own derives. The built-in PK types (HeerId, HeerIdDesc, RanjId,
+            // RanjIdDesc, Serial) already implement `Ord` upstream
+            // (heeranjid + std).
+            ::std::cmp::PartialOrd,
+            ::std::cmp::Ord,
             ::std::hash::Hash,
             ::djogi::__private::serde::Serialize,
             ::djogi::__private::serde::Deserialize,

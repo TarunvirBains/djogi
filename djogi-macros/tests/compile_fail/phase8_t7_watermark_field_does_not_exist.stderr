@@ -1,0 +1,5 @@
+error: `watermark_field = "no_such_field"` does not name a field on this model — the named field must exist on the post-injection struct (framework-injected fields `id`, `created_at`, `updated_at` are eligible; user fields are eligible)
+  --> tests/compile_fail/phase8_t7_watermark_field_does_not_exist.rs:22:23
+   |
+22 |     watermark_field = "no_such_field",
+   |                       ^^^^^^^^^^^^^^^

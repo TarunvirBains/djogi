@@ -356,6 +356,33 @@ pub struct ModelAttrs {
     /// surfaces a span-precise error if `default_filter` is set on a
     /// non-proxy model.
     pub proxy_default_filter: Option<syn::ExprClosure>,
+
+    /// Watermark field for the auto-emitted [`DeltaSyncCacheable`] impl —
+    /// Cluster 8δ T7.2.
+    ///
+    /// Set via `#[model(watermark_field = "expires_at")]` to override
+    /// the default `updated_at` watermark. The named field MUST exist
+    /// on the post-injection struct; the field-existence check runs in
+    /// `model::cacheable::expand` (where the user field list is in
+    /// scope) and surfaces a span-precise compile error pointing at
+    /// the `"…"` literal when missing.
+    ///
+    /// `None` means the macro pipes `updated_at` through to
+    /// `sassi_codegen::WatermarkField` — every model emits a
+    /// `DeltaSyncCacheable` impl by default because Phase 7 framework-
+    /// field injection guarantees `updated_at: ::djogi::types::DateTime`
+    /// exists on every model that carries a PK (i.e. every variant
+    /// except `pk = None`).
+    ///
+    /// Stored as `Option<syn::LitStr>` so the cacheable-emit pass can
+    /// attach the original literal's span to its diagnostic — same
+    /// pattern as `tree_edge`.
+    ///
+    /// Byte-level grammar enforced at parse time: ASCII letter or
+    /// underscore first byte, ASCII alphanumerics or underscores
+    /// thereafter, ≤ 63 bytes (the standard Djogi identifier rule per
+    /// `feedback_no_regex_in_djogi`).
+    pub watermark_field: Option<syn::LitStr>,
 }
 
 /// Parsed `pk = X` value.
@@ -444,6 +471,7 @@ impl ModelAttrs {
         let mut moved_from_app: Option<syn::Path> = Option::None;
         let mut renamed_from: Option<String> = Option::None;
         let mut tree_edge: Option<syn::LitStr> = Option::None;
+        let mut watermark_field: Option<syn::LitStr> = Option::None;
         let mut proxy_for: Option<syn::Ident> = Option::None;
         let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
         let mut seen_proxy_default_order = false;
@@ -707,6 +735,49 @@ impl ModelAttrs {
                             ));
                         }
                         tree_edge = Some(s.clone());
+                    } else if path.is_ident("watermark_field") {
+                        // Cluster 8δ T7.2 — `#[model(watermark_field = "...")]`.
+                        // Names the field that backs the auto-emitted
+                        // `DeltaSyncCacheable` impl. Defaults to
+                        // `updated_at` (the framework-injected timestamp);
+                        // override here when the model's freshness signal
+                        // is e.g. `expires_at`, a `version: i64`, or a
+                        // domain-specific `recorded_at`.
+                        //
+                        // Field-existence validation runs in
+                        // `model::cacheable::expand` where the user field
+                        // list is in scope; here we only enforce the
+                        // standard Djogi identifier grammar so the value
+                        // can flow safely into the descriptor / sassi-
+                        // codegen surface.
+                        if watermark_field.is_some() {
+                            return Err(syn::Error::new_spanned(
+                                path,
+                                "duplicate `watermark_field` key in #[model(...)]",
+                            ));
+                        }
+                        let key_val = s.value();
+                        let bytes = key_val.as_bytes();
+                        // Standard Djogi identifier rule, byte-level
+                        // per `feedback_no_regex_in_djogi`: ASCII letter
+                        // or underscore first byte, alphanumerics or
+                        // underscores after, ≤ 63 bytes.
+                        let ident_ok = !bytes.is_empty()
+                            && bytes.len() <= 63
+                            && (bytes[0].is_ascii_alphabetic() || bytes[0] == b'_')
+                            && bytes
+                                .iter()
+                                .skip(1)
+                                .all(|b| b.is_ascii_alphanumeric() || *b == b'_');
+                        if !ident_ok {
+                            return Err(syn::Error::new_spanned(
+                                s,
+                                "`watermark_field` value must be a plain ASCII identifier \
+                                 (letter or underscore, then alphanumerics/underscores; \
+                                 max 63 bytes)",
+                            ));
+                        }
+                        watermark_field = Some(s.clone());
                     } else if path.is_ident("proxy_for") {
                         // Phase 8β T3.2 — string-literal form rejected
                         // mirroring the `pk = "..."` rejection. Bare-ident
@@ -729,9 +800,10 @@ impl ModelAttrs {
                             format!(
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
-                                 `fts`, `indexes`, `exclusion`, `no_default`, `through`, \
-                                 `events`, `hooks`, `auditable`, `soft_deletable`, \
-                                 `proxy_for`, `default_order`, or `default_filter`",
+                                 `watermark_field`, `fts`, `indexes`, `exclusion`, \
+                                 `no_default`, `through`, `events`, `hooks`, `auditable`, \
+                                 `soft_deletable`, `proxy_for`, `default_order`, or \
+                                 `default_filter`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -1012,6 +1084,7 @@ impl ModelAttrs {
             proxy_for,
             proxy_default_order,
             proxy_default_filter,
+            watermark_field,
         })
     }
 }

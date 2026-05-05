@@ -6,6 +6,7 @@
 //! stub in isolation without touching this file.
 
 pub mod attrs;
+pub mod cacheable;
 pub mod computed;
 pub mod crud;
 pub mod descriptor;
@@ -230,6 +231,17 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     //    `ComputedFieldDescriptor` literal per parsed `#[computed]` field.
     let descriptor = descriptor::expand(&struct_item, &model_attrs, &field_attrs, &computed_attrs);
 
+    // 4b. Cacheable + DeltaSyncCacheable auto-emission — Cluster 8δ T7.2.
+    //     Routes through `sassi-codegen` for the DeltaSyncCacheable arm
+    //     (so the surface stays in lock-step with sassi's own
+    //     `#[derive(Cacheable)]`); the Cacheable arm is hand-rolled with
+    //     `type Fields = ()` to avoid colliding with `stubs::expand`'s
+    //     `{Model}Fields` emission. Skipped entirely for `pk = None`
+    //     models — the cache surface cannot ride the `QuerySet`-driven
+    //     path without a `Model` impl. See `model::cacheable` for the
+    //     full rationale + the macro-path-routing contract.
+    let cacheable = cacheable::expand(&struct_item, &model_attrs, &field_attrs);
+
     // 5. {Model}Fields — ZST with one `FieldRef<Self, V>` accessor per
     //    column. Reads field types off the post-injection `struct_item`;
     //    needs `model_attrs` for pk-aware framework-field gating.
@@ -307,6 +319,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #from_joined_row
         #model_impl
         #descriptor
+        #cacheable
         #stubs
         #filter
         #related

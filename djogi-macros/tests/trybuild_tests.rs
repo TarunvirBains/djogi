@@ -157,9 +157,14 @@ fn compile_pass_phase8_t7() {
     // Cluster 8δ T7 — Punnu integration. T7.1 lands the
     // `djogi::cache` re-export surface check (every sassi public
     // symbol the cluster consumes must be reachable through
-    // `djogi::cache::*` without an adopter-side sassi dep). T7.2+
-    // will add `Cacheable` auto-emission fixtures under the same
-    // `phase8_t7_*` glob.
+    // `djogi::cache::*` without an adopter-side sassi dep). T7.2
+    // adds the `Cacheable` auto-emission surface checks
+    // (`phase8_t7_cacheable_default.rs`,
+    // `phase8_t7_cacheable_with_watermark_field.rs`) under the same
+    // glob — bare `#[derive(Model)]` produces a Cacheable type
+    // usable in `Punnu<T>`, and `#[model(watermark_field = "...")]`
+    // overrides the default `updated_at` watermark for the
+    // emitted `DeltaSyncCacheable` impl.
     TestCases::new().pass("tests/compile_pass/phase8_t7_*.rs");
 }
 
@@ -239,6 +244,16 @@ fn compile_fail_phase7_5() {
 #[test]
 fn compile_fail_phase8_zero() {
     TestCases::new().compile_fail("tests/compile_fail/phase8_zero_*.rs");
+}
+
+#[test]
+fn compile_fail_phase8_t7() {
+    // Cluster 8δ T7.2 — `#[model(watermark_field = "...")]` rejects
+    // values that do not name a field on the post-injection struct.
+    // The diagnostic span points at the offending string literal in
+    // the attribute, not at the struct body or at the emitted impl
+    // — matching the rest of the model-attr error surface.
+    TestCases::new().compile_fail("tests/compile_fail/phase8_t7_*.rs");
 }
 
 #[test]

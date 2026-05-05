@@ -31,6 +31,19 @@ syn.workspace = true
 quote.workspace = true
 proc-macro2.workspace = true
 darling.workspace = true
+# sassi-codegen — Cluster 8δ T7.2. Shared codegen primitives for
+# `Cacheable` / `DeltaSyncCacheable` impl emission. `model::cacheable::expand`
+# delegates to `sassi_codegen::generate_{cacheable,delta_sync_cacheable}_impl`
+# with `sassi_path = ::djogi::types` so the emitted impls route through
+# djogi's macro-routing surface (per `feedback_macro_path_routing.md`)
+# rather than `::sassi::*` directly. `sassi-codegen` is `proc-macro = false`,
+# so a proc-macro crate is permitted to depend on it as a regular library
+# (the directionality cargo restricts is the reverse: a non-proc-macro
+# crate cannot depend on a proc-macro crate as a runtime dep). Path-dep
+# mirrors the existing `sassi-reference/` symlink layout already used by
+# the `sassi` dev-dep below; the workspace `exclude = ["sassi-reference"]`
+# clause keeps cargo from absorbing the symlink tree into djogi's workspace.
+sassi-codegen = { path = "../sassi-reference/sassi-codegen" }
 
 [dev-dependencies]
 trybuild.workspace = true
