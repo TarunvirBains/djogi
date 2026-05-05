@@ -2192,9 +2192,11 @@ where
         // Strip them here so `self.filter` in the fetcher accurately means
         // "non-trivial filter awaiting pushdown" — meaningful per GH #126/#127.
         // Without this strip, every unfiltered queryset would emit the
-        // filter-pushdown warn per tick (T8.4's reducer returns `Some(True)`
-        // for unfiltered querysets, since `Q::Compound{And, []}` short-
-        // circuits through the empty-And identity into `BasicPredicate::True`).
+        // filter-pushdown warn per tick. T8.4's reducer returns `Some(True)`
+        // for unfiltered querysets because a fresh `QuerySet<T>` initialises
+        // `condition` as `Q::Basic(BasicPredicate::True)` (not `Q::Compound`),
+        // and the reducer's `Q::Basic(p) → Reduced(p)` arm hands the inner
+        // `BasicPredicate::True` straight through.
         let filter = match self.into_basic_predicate() {
             Some(sassi::BasicPredicate::True) => None,
             other => other,

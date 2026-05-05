@@ -250,19 +250,22 @@ async fn lru_warn_one_shot_per_subscription(mut ctx: djogi::DjogiContext) {
          {logs_after_tick_3:?}"
     );
 
-    // Count occurrences of the djogi LRU warn specifically. We CANNOT count
-    // by `djogi::cache` target alone — that target is shared with the
-    // filter-pushdown warn (refresh.rs:128 — fires per-tick when
-    // self.filter.is_some(), which is true for any unfiltered QuerySet
-    // because T8.4's reducer returns Some(BasicPredicate::True) for the
-    // empty-filter case). So we must combine: structural target marker
-    // (djogi::cache) is verified above; quantitative count uses the
-    // message-body marker `undersized` which is unique to the LRU warn.
-    // Sassi's LRU warn says "consider raising lru_size" — distinct token.
-    // If sassi ever changes its message to include "undersized", this
-    // count would silently mis-classify; the alternative would be a
-    // structural assertion via tracing-test's `with_target` filter, but
-    // tracing-test doesn't expose that on the test API surface today.
+    // Count occurrences of the djogi LRU warn specifically by the
+    // message-body marker `undersized`. We use this rather than the
+    // `djogi::cache` target alone for forward-compatibility: today the
+    // `djogi::cache` target is unique to the LRU warn (the filter-pushdown
+    // warn at refresh.rs:128 is gated on a non-trivial filter, and T8.4's
+    // reducer returns `Some(BasicPredicate::True)` for unfiltered querysets
+    // — refresh_into strips that to `None` so the filter-pushdown warn
+    // doesn't fire per-tick for the unfiltered case this test runs). But
+    // if a future change re-introduces another `djogi::cache`-targeted warn
+    // (e.g. GH #127 lands a real filter-pushdown emitter that fires on
+    // partial-pushdown failure), counting by target would silently double-
+    // count. The `undersized` token is unique to the LRU warn within djogi's
+    // codebase; sassi's LRU warn at `sassi::punnu::delta_refresh` says
+    // "consider raising lru_size" (distinct token). The structural
+    // `djogi::cache` target match above pins the structural contract; this
+    // count pins the quantitative one-shot contract.
     let djogi_warn_count = logs_after_tick_3.matches("undersized").count();
     assert_eq!(
         djogi_warn_count, 1,

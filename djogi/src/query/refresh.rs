@@ -207,15 +207,18 @@ where
         // ever dispatches overlapping ticks) holds the lock — the losing tick
         // skips the warn check this round and yields to the next tick.
         //
-        // The double-checked load before and after swap prevents redundant
-        // lock acquisitions once the warn has already been issued.
-        // `lru_warn_issued` guard avoids a Mutex lock acquisition on every
-        // subsequent tick once the warn has already fired. The inner swap is
-        // the actual one-shot gate; the outer load is a cheap pre-check.
-        if let (false, Ok(mut rx)) = (
-            self.lru_warn_issued.load(Ordering::Acquire),
-            self.events_rx.try_lock(),
-        ) {
+        // Two-tier guard. Outer `load(Acquire)` short-circuits the entire
+        // drain block once the warn has fired — no Mutex lock acquisition on
+        // any subsequent tick. The nested `if let` only attempts `try_lock`
+        // when the flag is still false, so the comment's "no lock after warn"
+        // claim is a real runtime contract, not a best-effort observation.
+        // (The inner `swap(true, AcqRel)` at line 226 is the actual one-shot
+        // gate against concurrent races between two ticks both seeing
+        // `flag == false` — `swap` returns the old value, so the second
+        // racer sees `true` and skips the warn.)
+        if !self.lru_warn_issued.load(Ordering::Acquire)
+            && let Ok(mut rx) = self.events_rx.try_lock()
+        {
             'drain: loop {
                 match rx.try_recv() {
                     Ok(PunnuEvent::Invalidate {
