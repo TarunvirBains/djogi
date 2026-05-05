@@ -309,6 +309,52 @@ pub struct ModelAttrs {
     ///
     /// [`SoftDeletable`]: ::djogi::SoftDeletable
     pub soft_deletable: bool,
+
+    /// Parent type identifier when this model is a proxy — Phase 8β T3.2.
+    ///
+    /// Set via `#[model(proxy_for = ParentType)]`. The bare identifier
+    /// names the parent model whose table this proxy shares; the
+    /// migration differ treats proxies as schema-passthrough (no
+    /// `CREATE TABLE` emitted) and uses the parent's table for SQL
+    /// emission. T3.3 lowers this into `ModelDescriptor.proxy_for` as a
+    /// `&'static str` of the parent's name; T3.4 wires the override
+    /// methods on `Model` so the proxy queryset honours its own
+    /// default filter / default ordering without leaking storage
+    /// concerns into the proxy's emission path.
+    ///
+    /// `None` for ordinary (non-proxy) models — the common case.
+    pub proxy_for: Option<syn::Ident>,
+
+    /// Default ordering applied to every `QuerySet<Self>` on
+    /// construction — Phase 8β T3.2.
+    ///
+    /// Set via `#[model(default_order = [(field, Asc|Desc), ...])]`.
+    /// Empty when no `default_order = [...]` clause is present;
+    /// otherwise the entries follow the user's source order, which
+    /// becomes the SQL `ORDER BY` prefix at queryset construction.
+    /// Explicit `.order_by(...)` calls APPEND to this default per
+    /// Django-style semantics — see `queryset.rs:25-28` for the
+    /// canonical append rule.
+    ///
+    /// Only meaningful when `proxy_for` is also set. T3.3 surfaces a
+    /// span-precise error if `default_order` is set on a non-proxy
+    /// model.
+    pub proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)>,
+
+    /// Default filter AND-composed into every `QuerySet<Self>` on
+    /// construction — Phase 8β T3.2.
+    ///
+    /// Set via `#[model(default_filter = |f| f.active.eq(true))]`.
+    /// The closure body is captured verbatim at parse time; T3.3 walks
+    /// it via `syn::visit::Visit` and lowers the recognised patterns
+    /// (eq / gte / and_with / etc.) to a SQL fragment string. T3.4
+    /// emits the lowered fragment as the body of the proxy's
+    /// `Model::default_filter_condition` override.
+    ///
+    /// Only meaningful when `proxy_for` is also set. T3.3 surfaces a
+    /// span-precise error if `default_filter` is set on a non-proxy
+    /// model.
+    pub proxy_default_filter: Option<syn::ExprClosure>,
 }
 
 /// Parsed `pk = X` value.
@@ -397,6 +443,10 @@ impl ModelAttrs {
         let mut moved_from_app: Option<syn::Path> = Option::None;
         let mut renamed_from: Option<String> = Option::None;
         let mut tree_edge: Option<syn::LitStr> = Option::None;
+        let mut proxy_for: Option<syn::Ident> = Option::None;
+        let mut proxy_default_order: Vec<(syn::Ident, crate::model::proxy::OrderDir)> = Vec::new();
+        let mut seen_proxy_default_order = false;
+        let mut proxy_default_filter: Option<syn::ExprClosure> = Option::None;
 
         for meta in &metas {
             match meta {
@@ -649,6 +699,22 @@ impl ModelAttrs {
                             ));
                         }
                         tree_edge = Some(s.clone());
+                    } else if path.is_ident("proxy_for") {
+                        // Phase 8β T3.2 — string-literal form rejected
+                        // mirroring the `pk = "..."` rejection. Bare-ident
+                        // catches typos at compile time and matches the
+                        // `pk = HeerIdRecencyBiased` convention. The
+                        // unused `s` binding is intentional — keeping the
+                        // value out of the diagnostic prevents leaking the
+                        // (likely stringified) parent name into the error
+                        // message twice.
+                        let _ = s;
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "`proxy_for = \"…\"` string-literal form is not \
+                             supported; use a bare identifier — e.g. \
+                             `proxy_for = Vehicle`",
+                        ));
                     } else {
                         return Err(syn::Error::new_spanned(
                             path,
@@ -656,7 +722,8 @@ impl ModelAttrs {
                                 "unknown #[model] attribute `{}`; expected `table`, `pk`, \
                                  `idempotency_key`, `tenant_key`, `renamed_from`, `tree_edge`, \
                                  `fts`, `indexes`, `exclusion`, `no_default`, `through`, \
-                                 `events`, `hooks`, `auditable`, or `soft_deletable`",
+                                 `events`, `hooks`, `auditable`, `soft_deletable`, \
+                                 `proxy_for`, `default_order`, or `default_filter`",
                                 path.get_ident().map(|i| i.to_string()).unwrap_or_default()
                             ),
                         ));
@@ -749,12 +816,93 @@ impl ModelAttrs {
                          by type, not by string label",
                     ));
                 }
+                // `proxy_for = ParentType` — Phase 8β T3.2 bare-identifier
+                // form. Path expression matching the `pk = HeerId`
+                // convention; the descriptor emitter (T3.3) lowers the ident
+                // to a `&'static str` for `ModelDescriptor.proxy_for`.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: Expr::Path(expr_path),
+                    ..
+                }) if path.is_ident("proxy_for") => {
+                    if proxy_for.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `proxy_for = …` key in #[model(...)]",
+                        ));
+                    }
+                    let ident = expr_path.path.get_ident().cloned().ok_or_else(|| {
+                        syn::Error::new_spanned(
+                            &expr_path.path,
+                            "`proxy_for = …` must be a single-segment type \
+                             identifier (e.g. `proxy_for = Vehicle`); \
+                             multi-segment paths are not supported",
+                        )
+                    })?;
+                    crate::model::proxy::validate_proxy_for_ident(&ident)?;
+                    proxy_for = Some(ident);
+                }
+                // `default_order = [(field, Asc|Desc), ...]` — Phase 8β T3.2.
+                // Array of `(ident, dir_ident)` tuples. See
+                // `crate::model::proxy::parse_default_order_list` for
+                // the byte-level grammar. Only meaningful for proxy
+                // models; non-proxy guard runs after the dispatch loop.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: array_expr @ Expr::Array(_),
+                    ..
+                }) if path.is_ident("default_order") => {
+                    if seen_proxy_default_order {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `default_order = …` key in #[model(...)]",
+                        ));
+                    }
+                    seen_proxy_default_order = true;
+                    proxy_default_order =
+                        crate::model::proxy::parse_default_order_list(array_expr)?;
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("default_order") => {
+                    return Err(syn::Error::new_spanned(
+                        &nv.value,
+                        "`default_order = …` value must be an array of \
+                         `(field, Asc|Desc)` tuples — e.g. \
+                         `default_order = [(name, Asc), (created_at, Desc)]`",
+                    ));
+                }
+                // `default_filter = |f| <expr>` — Phase 8β T3.2.
+                // Closure expression captured verbatim; T3.3 walks the
+                // body and lowers it to a SQL fragment string.
+                Meta::NameValue(MetaNameValue {
+                    path,
+                    value: closure_expr @ Expr::Closure(_),
+                    ..
+                }) if path.is_ident("default_filter") => {
+                    if proxy_default_filter.is_some() {
+                        return Err(syn::Error::new_spanned(
+                            path,
+                            "duplicate `default_filter = …` key in #[model(...)]",
+                        ));
+                    }
+                    proxy_default_filter = Some(crate::model::proxy::parse_default_filter_closure(
+                        closure_expr,
+                    )?);
+                }
+                Meta::NameValue(nv) if nv.path.is_ident("default_filter") => {
+                    return Err(syn::Error::new_spanned(
+                        &nv.value,
+                        "`default_filter = …` value must be a closure \
+                         expression — e.g. `default_filter = |f| f.active.eq(true)`",
+                    ));
+                }
                 other => {
                     return Err(syn::Error::new_spanned(
                         other,
                         "expected `key = \"value\"` or `key = TypePath` attribute, \
                          or bare flag (`no_default`, `through`, `events`, `hooks`, \
-                         `auditable`, `soft_deletable`)",
+                         `auditable`, `soft_deletable`); proxy keys take \
+                         `proxy_for = TypePath`, `default_order = […]`, and \
+                         `default_filter = |f| …`",
                     ));
                 }
             }
@@ -765,6 +913,44 @@ impl ModelAttrs {
         // dispatch loop so a single span-precise error covers the
         // collision rather than splitting into two diagnostics.
         crate::model::exclusion::validate_unique_names(&exclusions)?;
+
+        // Phase 8β T3.2 — cross-attribute validation for proxy keys.
+        // `default_order` / `default_filter` are only meaningful when
+        // `proxy_for` is also set; standalone use surfaces as a
+        // span-precise diagnostic so the adopter knows to add
+        // `proxy_for = …` (or remove the orphan key).
+        if proxy_for.is_none() && !proxy_default_order.is_empty() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`default_order = […]` requires `proxy_for = ParentType` on \
+                 the same model — proxy models inherit storage from the \
+                 parent and can override ordering / filtering, but a non-\
+                 proxy model owns its own storage and uses explicit \
+                 `.order_by(...)` calls instead",
+            ));
+        }
+        if proxy_for.is_none() && proxy_default_filter.is_some() {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "`default_filter = |f| …` requires `proxy_for = ParentType` \
+                 on the same model — proxy models inherit storage from the \
+                 parent and can override filtering, but a non-proxy model \
+                 owns its own storage and uses explicit `.filter(...)` calls \
+                 instead",
+            ));
+        }
+        // Phase 8β T3.2 — proxy models share the parent's table by
+        // construction. The macro requires `table = "..."` at parse time
+        // (the table name flows into many emission sites; auto-deriving
+        // from the parent would require cross-type lookup at expand time
+        // which the macro pipeline does not support). Adopters declare
+        // the SAME `table` value the parent uses; the macro accepts the
+        // declaration as-is and the cross-type "tables match" invariant
+        // is verified at descriptor-lookup time (T3.5 migration-differ
+        // collision detection). The risk of declaring a different table
+        // than the parent is documented in `docs/guide/proxy.md`; the
+        // descriptor pipeline catches the mismatch as a duplicate
+        // table-name registration with conflicting `proxy_for` values.
 
         let table = table.ok_or_else(|| {
             syn::Error::new(
@@ -798,6 +984,9 @@ impl ModelAttrs {
             hooks,
             auditable,
             soft_deletable,
+            proxy_for,
+            proxy_default_order,
+            proxy_default_filter,
         })
     }
 }
@@ -2904,5 +3093,96 @@ mod tests {
             err.to_string().contains("tree_edge"),
             "diagnostic enumerates known keys including tree_edge: {err}"
         );
+    }
+
+    // ── Phase 8β T3.2 — proxy attribute parsing ─────────────────────────────
+
+    /// `proxy_for = ParentType` populates the bare identifier on the
+    /// returned `ModelAttrs`. Locks the bare-identifier convention; a
+    /// subsequent commit that switched silently to string-literals would
+    /// trip this test.
+    #[test]
+    fn proxy_for_accepts_bare_identifier() {
+        let attrs = parse_attrs(r#"table = "vehicles", proxy_for = Vehicle"#)
+            .expect("bare identifier accepted");
+        let id = attrs.proxy_for.expect("proxy_for populated");
+        assert_eq!(id.to_string(), "Vehicle");
+    }
+
+    /// `proxy_for = "Vehicle"` (string-literal form) is rejected with a
+    /// span-precise error mirroring the `pk = "..."` rejection.
+    #[test]
+    fn proxy_for_rejects_string_literal() {
+        let err = parse_attrs(r#"table = "vehicles", proxy_for = "Vehicle""#)
+            .expect_err("string literal rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("string-literal"));
+        assert!(msg.contains("bare identifier"));
+    }
+
+    /// Duplicate `proxy_for` is rejected at parse time — silently
+    /// accepting the second occurrence would surprise adopters who
+    /// merge two `#[model(...)]` attributes.
+    #[test]
+    fn proxy_for_rejects_duplicate() {
+        let err = parse_attrs(r#"table = "vehicles", proxy_for = Vehicle, proxy_for = Truck"#)
+            .expect_err("duplicate proxy_for rejected");
+        assert!(err.to_string().contains("duplicate `proxy_for"));
+    }
+
+    /// `default_order = [...]` populates the order list on the returned
+    /// `ModelAttrs` when paired with `proxy_for`.
+    #[test]
+    fn default_order_populates_when_paired_with_proxy_for() {
+        let attrs = parse_attrs(
+            r#"table = "vehicles", proxy_for = Vehicle, default_order = [(name, Asc), (created_at, Desc)]"#,
+        )
+        .expect("default_order parsed alongside proxy_for");
+        assert_eq!(attrs.proxy_default_order.len(), 2);
+        assert_eq!(attrs.proxy_default_order[0].0.to_string(), "name");
+        assert_eq!(attrs.proxy_default_order[1].0.to_string(), "created_at");
+    }
+
+    /// `default_order` without `proxy_for` is rejected — the key is only
+    /// meaningful for proxy models. Non-proxies use explicit
+    /// `.order_by(...)` calls.
+    #[test]
+    fn default_order_rejected_without_proxy_for() {
+        let err = parse_attrs(r#"table = "vehicles", default_order = [(name, Asc)]"#)
+            .expect_err("orphan default_order rejected");
+        assert!(err.to_string().contains("requires `proxy_for"));
+    }
+
+    /// `default_filter = |f| ...` populates the closure on the returned
+    /// `ModelAttrs` when paired with `proxy_for`.
+    #[test]
+    fn default_filter_populates_when_paired_with_proxy_for() {
+        let attrs = parse_attrs(
+            r#"table = "vehicles", proxy_for = Vehicle, default_filter = |f| f.active.eq(true)"#,
+        )
+        .expect("default_filter parsed alongside proxy_for");
+        let closure = attrs.proxy_default_filter.expect("populated");
+        assert_eq!(closure.inputs.len(), 1);
+    }
+
+    /// `default_filter` without `proxy_for` is rejected — same rule as
+    /// `default_order`.
+    #[test]
+    fn default_filter_rejected_without_proxy_for() {
+        let err = parse_attrs(r#"table = "vehicles", default_filter = |f| f.active.eq(true)"#)
+            .expect_err("orphan default_filter rejected");
+        assert!(err.to_string().contains("requires `proxy_for"));
+    }
+
+    /// Unknown-attribute diagnostic enumerates the proxy keys so adopters
+    /// discover them naturally.
+    #[test]
+    fn unknown_attribute_diagnostic_lists_proxy_keys() {
+        let err =
+            parse_attrs(r#"table = "vehicles", widget = "x""#).expect_err("unknown key surfaced");
+        let msg = err.to_string();
+        assert!(msg.contains("proxy_for"));
+        assert!(msg.contains("default_order"));
+        assert!(msg.contains("default_filter"));
     }
 }
