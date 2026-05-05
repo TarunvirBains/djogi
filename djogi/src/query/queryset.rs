@@ -2111,7 +2111,15 @@ impl<T: crate::model::Model> QuerySet<T> {
 //   `crate::pg::pool::DjogiPool`, and `sassi::BasicPredicate` directly.
 impl<T> QuerySet<T>
 where
-    T: crate::model::Model + sassi::DeltaSyncCacheable + Send + Sync + 'static,
+    T: crate::model::Model
+        + sassi::DeltaSyncCacheable
+        + crate::pg::decode::FromPgRow
+        + crate::cache::DjogiDeltaSyncMeta
+        + Send
+        + Sync
+        + 'static,
+    T::Watermark: tokio_postgres::types::ToSql + Sync,
+    T::Id: tokio_postgres::types::ToSql + Sync,
 {
     /// Bind this QuerySet to a Punnu and start a delta-sync refresh subscription.
     ///
@@ -2119,13 +2127,14 @@ where
     /// the QuerySet's BasicPredicate filter (extracted via
     /// `into_basic_predicate`). NEVER captures `&mut DjogiContext`.
     ///
-    /// # Status
+    /// # T8.5 — real SQL path
     ///
-    /// **T8.3 skeleton only.** The fetcher's `fetch_delta` body is
-    /// `unimplemented!()`. Sassi catches fetcher panics into
-    /// `FetchError::FetcherPanic`, so `handle.update().await` returns
-    /// `Err(FetchError::FetcherPanic)` rather than unwinding. T8.5 lands
-    /// the real SQL path.
+    /// The fetcher's `fetch_delta` body now issues real SQL on every tick.
+    /// Each tick acquires a fresh connection from the pool, constructs a
+    /// `DjogiContext` with the captured `AuthContext` (auth-locked-to-
+    /// subscription per spec §677), and runs
+    /// `SELECT <columns> FROM <table> WHERE <watermark_col> >= $1
+    ///  [OR id IN ($2, …)] ORDER BY <watermark_col>`.
     ///
     /// # Filter pushdown via into_basic_predicate (T8.4)
     ///
@@ -2136,6 +2145,7 @@ where
     /// noting that no WHERE filter will be applied at the SQL boundary on
     /// the fetcher side. A fresh unfiltered queryset (`QuerySet::new()`)
     /// starts as `Q::Basic(BasicPredicate::True)` and extracts cleanly.
+    /// Filter pushdown to SQL is deferred — see GH #127.
     ///
     /// # Interval placeholder
     ///

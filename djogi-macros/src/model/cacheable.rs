@@ -252,9 +252,24 @@ fn expand_inner(struct_item: &ItemStruct, model_attrs: &ModelAttrs) -> syn::Resu
         }
     };
 
+    // Cluster 8δ T8.5 — emit `impl DjogiDeltaSyncMeta for {Model}` so the
+    // delta-sync fetcher can retrieve the watermark column name at compile
+    // time. `WATERMARK_COLUMN` is the same field name resolved above for the
+    // `DeltaSyncCacheable` impl — they are always consistent.
+    //
+    // Path-routing: `::djogi::cache::DjogiDeltaSyncMeta` per
+    // `feedback_macro_path_routing.md`.
+    let watermark_name_lit = watermark_name.as_str();
+    let delta_sync_meta_impl = quote! {
+        impl ::djogi::cache::DjogiDeltaSyncMeta for #struct_name {
+            const WATERMARK_COLUMN: &'static str = #watermark_name_lit;
+        }
+    };
+
     Ok(quote! {
         #cacheable_impl
         #delta_sync_impl
+        #delta_sync_meta_impl
         #boot_hook
     })
 }

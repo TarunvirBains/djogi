@@ -457,3 +457,10 @@ harness = true
 name = "phase8_t8_4_basic_predicate_extraction"
 path = "../tests/integration/phase8_t8_4_basic_predicate_extraction.rs"
 harness = true
+
+# ── Phase 8δ T8.5 — DjogiDeltaFetcher::fetch_delta real SQL path ─────────────
+
+[[test]]
+name = "phase8_t8_5_fetcher_tick"
+path = "../tests/integration/phase8_t8_5_fetcher_tick.rs"
+harness = true

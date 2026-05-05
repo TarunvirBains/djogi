@@ -65,3 +65,38 @@ pub use sassi::{
 // `feedback_macro_path_routing.md`.
 pub mod boot;
 pub use boot::SassiBootHook;
+
+/// SQL column name that carries the delta-sync watermark for a
+/// `#[model]`-annotated struct.
+///
+/// # What
+///
+/// `DjogiDeltaSyncMeta` is auto-emitted by `#[derive(Model)]` alongside
+/// `Cacheable` and `DeltaSyncCacheable`. It surfaces the column name
+/// corresponding to `DeltaSyncCacheable::watermark()` so the
+/// `DjogiDeltaFetcher` (Phase 8δ T8.5) can emit
+/// `WHERE <col> >= $since` SQL on every tick without string literals in
+/// framework internals.
+///
+/// # Relationship to `DeltaSyncCacheable`
+///
+/// `DeltaSyncCacheable::watermark()` returns the Rust value;
+/// `DjogiDeltaSyncMeta::WATERMARK_COLUMN` names the Postgres column that
+/// stores that value. The two are always consistent because the macro
+/// emits both from the same `watermark_field` attribute (or its
+/// `updated_at` default).
+///
+/// # Macro routing
+///
+/// Per `feedback_macro_path_routing.md`, macro-emitted `impl` blocks route
+/// through `::djogi::cache::DjogiDeltaSyncMeta`, never `::sassi::*`.
+pub trait DjogiDeltaSyncMeta {
+    /// The Postgres column name used as the delta-sync watermark.
+    ///
+    /// Interpolated directly into
+    /// `SELECT … FROM t WHERE {col} >= $n ORDER BY {col}` SQL text
+    /// (where `{col}` is this constant's value). The name must be a valid
+    /// Postgres identifier; the `#[model]` field-name validator enforces this
+    /// at macro time.
+    const WATERMARK_COLUMN: &'static str;
+}
