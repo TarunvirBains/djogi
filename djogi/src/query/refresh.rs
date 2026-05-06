@@ -108,7 +108,7 @@ use crate::auth::AuthContext;
 use crate::cache::DjogiDeltaSyncMeta;
 use crate::pg::decode::FromPgRow;
 use crate::pg::pool::DjogiPool;
-use heeranjid::HeerId;
+use heeranjid::{HeerId, HeerIdDesc};
 use sassi::{BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError, PunnuEvent};
 use std::any::TypeId;
 use std::collections::HashSet;
@@ -119,16 +119,32 @@ use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tokio_postgres::types::ToSql;
 
-/// Convert a `HeerId` into `T::Id` when `T::Id == HeerId`, else `None`.
-/// Used by the outbox-tombstone path to bridge the BIGINT-typed
-/// `row_id` column into the fetcher's `HashSet<T::Id>` without an
-/// untyped-Any allocation. `Box<dyn Any>::downcast`-style pattern.
-fn cast_heerid_to_t_id<TId: 'static>(h: HeerId) -> Option<TId> {
+/// True when `T::Id` is one of the BIGINT-decoded HeerId flavours that
+/// the outbox `row_id BIGINT` column can round-trip through. Both
+/// `HeerId` and `HeerIdDesc` are `#[repr(transparent)]` over `i64`, so
+/// the stored bits round-trip identically through the column.
+fn t_id_decodes_from_outbox_bigint<TId: 'static>() -> bool {
+    TypeId::of::<TId>() == TypeId::of::<HeerId>()
+        || TypeId::of::<TId>() == TypeId::of::<HeerIdDesc>()
+}
+
+/// Convert outbox `row_id` (decoded as `i64`) into `T::Id` when
+/// `T::Id` is one of the BIGINT-shaped HeerId flavours. The `i64`
+/// bits are the model's actual stored PK bits — for `HeerIdDesc` that
+/// means the XOR-flipped form, which is the canonical wire shape for
+/// that PK type. Returns `None` when `T::Id` is some other type
+/// (callers gate this via [`t_id_decodes_from_outbox_bigint`]).
+fn cast_row_id_to_t_id<TId: 'static>(raw: i64) -> Option<TId> {
+    // SAFETY: `HeerId` and `HeerIdDesc` are both `#[repr(transparent)]`
+    // over `i64` with identical layout. Each branch is gated on a
+    // TypeId equality check. The source `raw` is an owned `i64` (Copy),
+    // so transmuting its bits is sound.
     if TypeId::of::<TId>() == TypeId::of::<HeerId>() {
-        // SAFETY: TypeId equality guarantees `TId == HeerId`. Both are
-        // `#[repr(transparent)]` over `i64` with identical layout, and
-        // `HeerId: Copy`, so the bitwise copy is sound.
+        let h = HeerId::from_i64(raw).ok()?;
         Some(unsafe { std::mem::transmute_copy::<HeerId, TId>(&h) })
+    } else if TypeId::of::<TId>() == TypeId::of::<HeerIdDesc>() {
+        let h = HeerIdDesc::from_i64(raw).ok()?;
+        Some(unsafe { std::mem::transmute_copy::<HeerIdDesc, TId>(&h) })
     } else {
         None
     }
@@ -252,10 +268,11 @@ where
         let column_list = <T as FromPgRow>::COLUMN_LIST;
 
         // Pattern 2 gate: model emitted `<table>_outbox` AND `T::Id`
-        // decodes from the BIGINT `row_id` column. Non-HeerId-keyed
-        // models would already have failed at `emit_event`'s INSERT.
+        // decodes from the BIGINT `row_id` column. Default events models
+        // use `pk = HeerIdDesc`, so the gate must accept that flavour
+        // alongside ascending `HeerId`.
         let outbox_enabled =
-            T::descriptor().has_outbox && TypeId::of::<T::Id>() == TypeId::of::<HeerId>();
+            T::descriptor().has_outbox && t_id_decodes_from_outbox_bigint::<T::Id>();
         let outbox_watermark_snapshot: Option<OffsetDateTime> = if outbox_enabled {
             *self
                 .outbox_watermark
@@ -265,13 +282,30 @@ where
             None
         };
 
+        // Capture the first-tick clock BEFORE the transaction begins so
+        // a delete committed between this snapshot and the post-
+        // transaction watermark write still has `created_at >= watermark`
+        // and gets caught on the next tick. Setting the watermark to a
+        // post-transaction `now()` would lose deletes whose `created_at`
+        // landed in the gap.
+        let first_tick_clock: Option<OffsetDateTime> =
+            if outbox_enabled && outbox_watermark_snapshot.is_none() {
+                Some(OffsetDateTime::now_utc())
+            } else {
+                None
+            };
+
         // The SQL must run inside `transaction::atomic` because
         // `auto_set_tenant::<T>` issues `SET LOCAL app.tenant_id`, which
         // only persists inside an open transaction. Without that wrap,
         // RLS-backed tenant isolation would silently fail. The Pattern 2
         // outbox poll piggy-backs on the same transaction so it inherits
         // the same tenant scope.
-        let (items, outbox_tombstones): (Vec<T>, Vec<(HeerId, OffsetDateTime)>) =
+        // The closure returns the outbox tombstones as `(i64, OffsetDateTime)`
+        // — the raw `row_id` bits, not a `HeerId`. The caller decodes
+        // them into `T::Id` via `cast_row_id_to_t_id`, which knows
+        // about both `HeerId` and `HeerIdDesc` flavours.
+        let (items, outbox_tombstones): (Vec<T>, Vec<(i64, OffsetDateTime)>) =
             crate::transaction::atomic(&self.pool, move |ctx| {
             Box::pin(async move {
                 // Apply the captured auth snapshot to the inner ctx.
@@ -331,7 +365,7 @@ where
                 // a `>` boundary would drop tombstones with
                 // sub-microsecond `created_at` ties. First tick (no
                 // watermark) skips so the cache doesn't replay history.
-                let outbox_tombstones: Vec<(HeerId, OffsetDateTime)> = if outbox_enabled
+                let outbox_tombstones: Vec<(i64, OffsetDateTime)> = if outbox_enabled
                     && let Some(watermark) = outbox_watermark_snapshot
                 {
                     // Defense-in-depth ident check before SQL embedding,
@@ -351,7 +385,7 @@ where
                     let rows = ctx
                         .query_all(&outbox_sql, &[&watermark as &(dyn ToSql + Sync)])
                         .await?;
-                    let mut decoded: Vec<(HeerId, OffsetDateTime)> =
+                    let mut decoded: Vec<(i64, OffsetDateTime)> =
                         Vec::with_capacity(rows.len());
                     for row in rows {
                         let raw: i64 = row.try_get(0).map_err(|e| {
@@ -364,12 +398,7 @@ where
                                 "outbox poll: decode created_at: {e}"
                             )))
                         })?;
-                        let h = HeerId::from_i64(raw).map_err(|e| {
-                            crate::DjogiError::Db(crate::error::DbError::other(format!(
-                                "outbox poll: HeerId::from_i64({raw}): {e:?}"
-                            )))
-                        })?;
-                        decoded.push((h, ts));
+                        decoded.push((raw, ts));
                     }
                     decoded
                 } else {
@@ -403,13 +432,13 @@ where
         // watermark unprocessed.
         if !outbox_tombstones.is_empty() {
             let mut max_seen: Option<OffsetDateTime> = None;
-            for (h, ts) in &outbox_tombstones {
-                if let Some(t_id) = cast_heerid_to_t_id::<T::Id>(*h) {
+            for (raw, ts) in &outbox_tombstones {
+                if let Some(t_id) = cast_row_id_to_t_id::<T::Id>(*raw) {
                     tombstones.insert(t_id);
                 } else {
                     debug_assert!(
                         false,
-                        "outbox poll: cast_heerid_to_t_id returned None despite TypeId gate"
+                        "outbox poll: cast_row_id_to_t_id returned None despite TypeId gate"
                     );
                 }
                 max_seen = Some(match max_seen {
@@ -433,21 +462,18 @@ where
                     *guard = Some(new_watermark);
                 }
             }
-        } else if outbox_enabled
-            && self
+        } else if let Some(initial) = first_tick_clock {
+            // First-tick initialisation. Captured BEFORE the transaction
+            // ran (see `first_tick_clock` above) so a delete committed
+            // during the transaction has `created_at >= initial` on the
+            // next tick's poll.
+            let mut guard = self
                 .outbox_watermark
                 .lock()
-                .expect("outbox_watermark mutex poisoned")
-                .is_none()
-        {
-            // First tick with outbox enabled and no events to poll yet:
-            // initialise the watermark to wall-clock `now()` so future
-            // ticks start from this checkpoint rather than replaying
-            // historical deletes.
-            *self
-                .outbox_watermark
-                .lock()
-                .expect("outbox_watermark mutex poisoned") = Some(OffsetDateTime::now_utc());
+                .expect("outbox_watermark mutex poisoned");
+            if guard.is_none() {
+                *guard = Some(initial);
+            }
         }
 
         // High watermark is inferred from `max(item.watermark())` across
