@@ -174,7 +174,18 @@ where
     T::Pk: std::fmt::Display,
 {
     let payload = build_payload(row, T::descriptor())?;
-    let sql = insert_sql(T::table_name());
+    // Validate the **derived** outbox table identifier (not the source
+    // table alone). The 7-byte `_outbox` suffix can push an otherwise-
+    // valid 57-63 byte table name past Postgres's 63-byte identifier
+    // limit. Matches the defense-in-depth check in
+    // `query::refresh::fetch_delta` and `outbox::worker::validate_table_ident`.
+    let outbox_table = format!("{}_outbox", T::table_name());
+    crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
+        DjogiError::Db(crate::error::DbError::other(format!(
+            "outbox emit_event: invalid outbox table name {outbox_table:?}: {e:?}"
+        )))
+    })?;
+    let sql = insert_sql(&outbox_table);
     let action_str = action.as_sql_str();
 
     let params: &[&(dyn ToSql + Sync)] = &[row.pk_value(), &action_str, &payload];
@@ -225,20 +236,11 @@ pub(crate) fn build_notify_payload(action: OutboxAction, id_str: &str) -> String
     .to_string()
 }
 
-/// Build the outbox `INSERT` SQL for a given primary table.
-///
-/// Convention — `{table}_outbox` suffix — matches the DDL the macro
-/// emits into `target/djogi_outbox/`. Three positional binds:
-///
-/// 1. `row_id` — primary row's PK (`T::Pk: postgres_types::ToSql`)
-/// 2. `action` — `'create' | 'save' | 'delete'` text literal
-/// 3. `payload` — JSONB document produced by [`build_payload`]
-///
-/// Kept crate-private because the outbox-table name construction is
-/// an implementation detail (future consumers may choose a different
-/// name scheme such as `outbox_{table}`).
-fn insert_sql(table: &str) -> String {
-    format!("INSERT INTO {table}_outbox (row_id, action, payload) VALUES ($1, $2, $3)")
+/// Build the outbox `INSERT` SQL for a given outbox table. Caller is
+/// responsible for validating the identifier via `check_plain_ident`
+/// before passing it in (the SQL embeds the name unquoted).
+fn insert_sql(outbox_table: &str) -> String {
+    format!("INSERT INTO {outbox_table} (row_id, action, payload) VALUES ($1, $2, $3)")
 }
 
 /// Serialize `row` into a JSON object, then strip any keys the
@@ -366,8 +368,10 @@ mod tests {
     }
 
     #[test]
-    fn insert_sql_uses_outbox_suffix() {
-        let sql = insert_sql("accounts");
+    fn insert_sql_uses_caller_supplied_table() {
+        // Caller is now responsible for `_outbox` suffix construction +
+        // ident validation; `insert_sql` is a pure formatter.
+        let sql = insert_sql("accounts_outbox");
         assert!(sql.contains("accounts_outbox"));
         assert!(sql.contains("row_id"));
         assert!(sql.contains("action"));
