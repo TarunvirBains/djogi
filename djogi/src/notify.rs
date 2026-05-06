@@ -1,81 +1,34 @@
-//! In-process model-event NOTIFY subscription surface — Cluster 8ζ T11.
+//! In-process model-event NOTIFY subscription surface.
 //!
-//! # What
-//!
-//! `djogi::notify::subscribe::<M>(pool)` returns a
-//! `tokio::sync::broadcast::Receiver<ModelEvent<M>>` that fires whenever
+//! `subscribe::<M>(pool)` returns a `TypedReceiver<M>` that fires whenever
 //! a row in `M::table_name()` is created, saved, or deleted by any
 //! `DjogiContext` configured against the same Postgres database.
 //!
-//! Companion to the synchronous publisher hook in `crate::outbox::emit_event`
-//! (T11.2): every `#[model(events)]` write fires `pg_notify('djogi_<table>',
-//! '{"kind":"<action>","id":"<pk>"}')` inside the parent transaction.
-//! Subscribers attached here decode that payload and surface it as
-//! `ModelEvent<M> { kind, id }`. The receiver re-fetches the full row via
-//! `M::find(...)` if it needs the data; the slim payload exists because
-//! `pg_notify` truncates payloads larger than 8000 bytes.
-//!
-//! # Why feature-gated
-//!
-//! Behind `feature = "notify"` so adopters who don't subscribe pay nothing
-//! for the per-pool listener task or the `tokio-stream` dependency. When
-//! enabled, the publisher hook in `emit_event` and the subscriber surface
-//! here both compile in. Both halves are gated on the same flag — turning
-//! off the feature disables both ends cohesively.
-//!
-//! # How
-//!
-//! - First call to `subscribe::<M>(pool)` for a given pool spawns a
-//!   per-pool [`PgListener`] background task that owns a dedicated
-//!   `tokio_postgres::Client` (a standalone connection outside the
-//!   pool, so `tokio_postgres::AsyncMessage` polling is available)
-//!   running `LISTEN djogi_<table>` for every channel a subscriber
-//!   asks for. Subsequent `subscribe` calls reuse the listener.
-//! - The listener forwards `tokio_postgres::AsyncMessage::Notification`
-//!   events to a per-channel `tokio::sync::broadcast::Sender`. Each
-//!   subscriber gets a fresh `Receiver` cloned from that Sender.
-//! - The pool registry is keyed by [`DjogiPool::pool_id`], a
-//!   per-process unique id allocated at pool construction and copied
-//!   verbatim on `Clone`. Cloned `DjogiPool` instances therefore share
-//!   one listener; freshly-built pools get fresh listeners. The slot
-//!   holds a `Weak<PgListener>` so the registry never prolongs the
-//!   listener's life — see the "Lifecycle" section.
+//! Behind `feature = "notify"`. Companion to the publisher hook in
+//! `crate::outbox::emit_event`: every `#[model(events)]` write fires
+//! `pg_notify('djogi_<table>', '{"kind":"<action>","id":"<pk>"}')` inside
+//! the parent transaction. Subscribers decode that payload and surface
+//! `ModelEvent<M> { kind, id }`. Adopters re-fetch the full row via
+//! `M::find(...)` when they need the columns; the slim id-only payload
+//! sidesteps the 8000-byte `pg_notify` cap.
 //!
 //! # Lifecycle
 //!
-//! Three drop / restart paths are handled cohesively:
+//! The strong-reference contract: subscribers hold the listener alive,
+//! the registry watches without prolonging life. Three drop paths fall
+//! out of that:
 //!
-//! 1. **Subscriber drop.** `TypedReceiver<M>` is just a thin wrapper
-//!    around `tokio::sync::broadcast::Receiver<RawEvent>`; dropping
-//!    it returns the receiver slot to the broadcast channel. The
-//!    listener task and the per-channel `Sender` live on so other
-//!    subscribers (or future ones) keep receiving.
-//! 2. **Pool drop.** The registry stores `Weak<PgListener>` keyed by
-//!    `DjogiPool::pool_id`. Each `TypedReceiver<M>` returned by
-//!    `subscribe` holds an `Arc<PgListener>` keepalive — so the
-//!    listener stays up exactly as long as at least one subscriber
-//!    is still listening. When the last subscriber drops, the
-//!    listener's strong count hits zero and `Drop` on `PgListener`
-//!    fires: dropping the dedicated `tokio_postgres::Client` closes
-//!    its channel to the spawned connection-watcher task, which
-//!    observes the `poll_message` stream end and exits cleanly. The
-//!    registry's `Weak` entry becomes dangling and is reclaimed
-//!    lazily on the next `subscribe` call against the same `pool_id`
-//!    (see `upgrade_existing`).
-//! 3. **Hot reload.** A freshly-built `DjogiPool` gets a fresh
-//!    `pool_id` (allocated by `crate::pg::pool::next_pool_id`), so
-//!    `subscribe` against the new pool always misses the registry
-//!    and spawns a new listener — independent of any stale entry the
-//!    old pool may have left behind. If the same pool is re-used
-//!    (clone) after the last subscriber drops, the next `subscribe`
-//!    finds the dangling `Weak`, removes it, and spawns fresh: the
-//!    "stop listening, then resume later" path is automatic.
-//!
-//! The strong-reference contract is therefore: subscribers hold the
-//! listener alive; the registry watches without prolonging life.
-//! This is the inverse of T11.3's interim arrangement (registry held
-//! strong refs, leaking listener tasks across reconstructed pools);
-//! T11.4 puts the lifecycle on the subscribers, where it belongs.
+//! 1. **Subscriber drop.** The receiver slot is returned to the broadcast
+//!    channel. The listener and per-channel `Sender` stay up for other
+//!    subscribers.
+//! 2. **Last-subscriber drop.** The listener's strong count hits zero,
+//!    its dedicated `tokio_postgres::Client` drops, the spawned
+//!    connection-watcher observes `poll_message` ending and exits. The
+//!    registry's `Weak` entry becomes dangling and is reaped lazily on
+//!    the next `subscribe` against the same `pool_id`.
+//! 3. **Hot reload.** A freshly-built `DjogiPool` gets a fresh `pool_id`,
+//!    so `subscribe` against the new pool always misses the registry
+//!    and spawns a fresh listener.
 //!
 //! # Wire schema
 //!
@@ -100,13 +53,10 @@ use tokio_postgres::AsyncMessage;
 
 /// Event kinds carried by `ModelEvent<M>`.
 ///
-/// Matches the `OutboxAction` set published by `emit_event`'s notify hook
-/// (T11.2), with one rename for the subscriber-facing audience:
-/// `OutboxAction::Save` surfaces here as `EventKind::Updated`. The wire
-/// payload still says `"save"` (matching the outbox `action` column);
-/// the rename is purely a Rust-side ergonomic — adopters reading
-/// `ModelEvent::kind == EventKind::Updated` see code that reads
-/// naturally without prior knowledge of the outbox ledger semantics.
+/// `OutboxAction::Save` surfaces as `EventKind::Updated`; the wire payload
+/// still says `"save"` (matching the outbox `action` column). The rename
+/// is a Rust-side ergonomic — `event.kind == EventKind::Updated` reads
+/// naturally without outbox-ledger context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventKind {
     /// Source row was newly inserted. Wire `"create"`.
@@ -173,47 +123,24 @@ struct RawEvent {
     id_str: String,
 }
 
-/// One per-pool listener task. Owns a dedicated long-lived
-/// `tokio_postgres::Client` (a standalone client connected outside the
-/// pool, kept alive for the listener's lifetime) plus a per-channel
-/// `broadcast::Sender` registry shared with the spawned connection
-/// watcher.
-///
-/// `senders` is an `Arc<Mutex<...>>` (not just `Mutex<...>`) because
-/// the spawned watcher task needs to read from the same map that
-/// `subscribe::<M>` writes to when registering channels. Sharing via
-/// Arc is cleaner than reaching back into the listener struct from
-/// inside a `'static` spawn body.
-///
-/// `client` is held to keep the LISTEN connection alive — dropping
-/// the client tears down the connection task and notifications stop.
+/// One per-pool listener task. Owns a dedicated standalone
+/// `tokio_postgres::Client` for `LISTEN`/`AsyncMessage` polling; the
+/// `senders` map is shared via `Arc` with the spawned connection
+/// watcher so subscribe-side writes and watcher-side reads land on the
+/// same allocation.
 struct PgListener {
     senders: Arc<Mutex<HashMap<String, broadcast::Sender<RawEvent>>>>,
-    /// Held to keep the dedicated LISTEN connection alive. The
-    /// underlying connection task runs on a separate `tokio::spawn`
-    /// and references the same client; both must be live for
-    /// notifications to flow.
+    /// Keepalive for the LISTEN connection — dropping `client` tears
+    /// down the connection task and notifications stop.
     #[allow(dead_code)] // kept-alive guard, not directly accessed after spawn
     client: tokio_postgres::Client,
 }
 
 impl Drop for PgListener {
     fn drop(&mut self) {
-        // Dropping `client` (the `tokio_postgres::Client` half of the
-        // dedicated standalone connection) closes its request channel.
-        // The spawned connection-watcher task then observes
-        // `poll_message` returning `Ready(None)` (or an error if the
-        // connection was already torn down) and exits its loop on the
-        // next poll, releasing its `Arc<Mutex<senders>>` clone.
-        //
-        // This Drop impl exists for observability — the actual
-        // teardown is driven by `client`'s own `Drop`. We log at
-        // debug because in production this is benign housekeeping;
-        // in tests it's a useful signal that the lifecycle path is
-        // exercising correctly.
         tracing::debug!(
             target: "djogi::notify",
-            "PgListener dropped — connection watcher will exit, broadcast::Receivers will see Closed"
+            "PgListener dropped — watcher will exit, receivers will see Closed"
         );
     }
 }
@@ -222,18 +149,9 @@ impl Drop for PgListener {
 
 /// Pool-keyed registry of running `PgListener` instances.
 ///
-/// Keyed by [`DjogiPool::pool_id`], a per-process unique id allocated
-/// at pool construction and copied verbatim on `Clone`. So two
-/// `DjogiPool` clones share an entry; freshly-built pools get a
-/// fresh entry.
-///
-/// Stores `Weak<PgListener>` rather than strong refs so the registry
-/// observes listeners without prolonging their life. The strong
-/// refs live on the [`TypedReceiver<M>`] handles returned by
-/// `subscribe`: when the last subscriber drops, the listener winds
-/// down and its `Weak` here becomes dangling. Lookups upgrade the
-/// `Weak`; misses (because the listener is gone) trigger cleanup of
-/// the dangling entry and a fresh spawn.
+/// Keyed by [`DjogiPool::pool_id`] (per-process unique, copied verbatim
+/// on `Clone`). Stores `Weak<PgListener>` so the registry never prolongs
+/// the listener's life — strong refs live on `TypedReceiver<M>`.
 fn registry() -> &'static Mutex<HashMap<u64, Weak<PgListener>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<u64, Weak<PgListener>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
@@ -243,41 +161,23 @@ fn pool_key(pool: &DjogiPool) -> u64 {
     pool.pool_id
 }
 
-/// Try to reuse an existing live listener for `key`. If the entry
-/// exists and the `Weak` upgrades, return the strong `Arc`. If the
-/// entry exists but the `Weak` is dangling (listener already
-/// dropped), remove the dangling entry as a side-effect so the next
-/// caller doesn't keep paying for a stale lookup.
-///
-/// Pure registry operation — no async, no DB, no listener spawn.
-/// The actual fallback (spawning a fresh listener) belongs to the
-/// caller; lifting the registry lookup out makes the lifecycle
-/// state-machine unit-testable.
+/// Look up `key` in the registry, upgrading the `Weak` if alive.
+/// Reaps a dangling slot on a failed upgrade so dead entries don't
+/// accumulate across the process lifetime.
 fn upgrade_existing<T>(map: &Mutex<HashMap<u64, Weak<T>>>, key: u64) -> Option<Arc<T>> {
     let mut guard = map.lock().expect("notify registry mutex poisoned");
     if let Some(weak) = guard.get(&key) {
         if let Some(strong) = weak.upgrade() {
             return Some(strong);
         }
-        // Stale entry — listener was dropped after the last subscriber
-        // released its keepalive. Remove the dangling slot so we don't
-        // accumulate dead weak-refs across the lifetime of the process.
         guard.remove(&key);
     }
     None
 }
 
-/// Insert a `Weak<T>` into the registry under `key`. If the slot is
-/// already occupied (e.g., a concurrent first-caller raced and won),
-/// the existing entry wins — we treat the prior insertion as
-/// canonical and let our freshly-spawned listener drop on its own.
-///
-/// Returns the `Arc<T>` that callers should hand to the subscriber
-/// — the canonical one (theirs if they won the race; the racer's
-/// strong ref upgraded back from the existing `Weak` if they lost).
-/// `None` is impossible from the happy path; it can only surface if
-/// the prior entry had already been dropped between the racer's
-/// insert and our lookup, which is benign and we recurse.
+/// Insert `candidate`'s `Weak` under `key`, or return the existing
+/// canonical `Arc` if a concurrent first-caller already won. The loser's
+/// candidate drops at the call site; only the winner stays up.
 fn install_or_lose<T>(map: &Mutex<HashMap<u64, Weak<T>>>, key: u64, candidate: Arc<T>) -> Arc<T> {
     let mut guard = map.lock().expect("notify registry mutex poisoned");
     match guard.get(&key).and_then(|w| w.upgrade()) {
@@ -291,96 +191,69 @@ fn install_or_lose<T>(map: &Mutex<HashMap<u64, Weak<T>>>, key: u64, candidate: A
 
 // ── Wire payload decode ──────────────────────────────────────────────────────
 
-/// Decode a raw NOTIFY payload of shape `{"kind":"...","id":"..."}`
-/// into a typed `(EventKind, M::Pk)` pair.
-///
-/// Pure function — no DB, no listener, no async. Lifted out so the
-/// decode contract is unit-testable on its own.
-fn decode_payload<M: crate::model::Model>(raw: &str) -> Result<ModelEvent<M>, NotifyError>
+/// Decode a `RawEvent` (already split into `kind_str`/`id_str`) into a
+/// typed `ModelEvent<M>`. Used by both the unit-test JSON path
+/// (`decode_payload`) and the hot-path `recv()` so receivers don't
+/// re-encode through JSON just to re-parse.
+fn decode_event<M: crate::model::Model>(raw: &RawEvent) -> Result<ModelEvent<M>, NotifyError>
 where
     M::Pk: FromStr,
     <M::Pk as FromStr>::Err: std::fmt::Display,
 {
-    let value: serde_json::Value =
-        serde_json::from_str(raw).map_err(|source| NotifyError::PayloadDecode {
-            raw: raw.to_string(),
-            source,
-        })?;
-
-    let kind_str = value["kind"]
-        .as_str()
-        .ok_or_else(|| NotifyError::PayloadDecode {
-            raw: raw.to_string(),
-            source: serde::de::Error::missing_field("kind"),
-        })?;
-    let kind = match kind_str {
+    let kind = match raw.kind_str.as_str() {
         "create" => EventKind::Created,
         "save" => EventKind::Updated,
         "delete" => EventKind::Deleted,
         other => {
             return Err(NotifyError::PayloadDecode {
-                raw: raw.to_string(),
+                raw: format!(r#"{{"kind":"{}","id":"{}"}}"#, other, raw.id_str),
                 source: serde::de::Error::unknown_variant(other, &["create", "save", "delete"]),
             });
         }
     };
-
-    let id_str = value["id"]
-        .as_str()
-        .ok_or_else(|| NotifyError::PayloadDecode {
-            raw: raw.to_string(),
-            source: serde::de::Error::missing_field("id"),
-        })?;
-    let id = M::Pk::from_str(id_str).map_err(|e| NotifyError::InvalidId {
-        id: id_str.to_string(),
+    let id = M::Pk::from_str(&raw.id_str).map_err(|e| NotifyError::InvalidId {
+        id: raw.id_str.clone(),
         reason: e.to_string(),
     })?;
-
     Ok(ModelEvent { kind, id })
+}
+
+/// Decode a raw NOTIFY payload of shape `{"kind":"...","id":"..."}`
+/// into a typed `ModelEvent<M>`. Test-side helper — runtime hot paths
+/// already hold the parsed `RawEvent` and use `decode_event` directly.
+#[cfg(test)]
+fn decode_payload<M: crate::model::Model>(payload: &str) -> Result<ModelEvent<M>, NotifyError>
+where
+    M::Pk: FromStr,
+    <M::Pk as FromStr>::Err: std::fmt::Display,
+{
+    let raw = parse_raw(payload).map_err(|source| NotifyError::PayloadDecode {
+        raw: payload.to_string(),
+        source,
+    })?;
+    decode_event::<M>(&raw)
 }
 
 // ── Listener startup + LISTEN management ─────────────────────────────────────
 
-/// Acquire-or-create the `PgListener` instance for `pool`. Lazy: first
-/// call spawns the background task; subsequent calls upgrade the
-/// existing `Weak` in the registry.
-///
-/// Hot-reload is automatic: if the registry holds a dangling `Weak`
-/// (listener was torn down after the last subscriber dropped), the
-/// upgrade fails, the dangling entry is reaped, and a fresh listener
-/// is spawned.
+/// Acquire-or-create the `PgListener` for `pool`. Lazy: first call spawns
+/// the background task, later calls upgrade the existing `Weak`. A
+/// dangling `Weak` (listener torn down after the last subscriber
+/// dropped) is reaped on lookup and a fresh listener is spawned.
 async fn get_or_start_listener(pool: &DjogiPool) -> Result<Arc<PgListener>, NotifyError> {
     let key = pool_key(pool);
     if let Some(listener) = upgrade_existing(registry(), key) {
         return Ok(listener);
     }
-
-    // Race-tolerant: two concurrent first-callers may both spawn
-    // listeners. `install_or_lose` keeps whichever entry won the
-    // registry insertion race; the loser's listener drops out of
-    // scope here, its `Drop` impl winds down its connection task,
-    // and only the canonical listener stays up. Cost of the lost
-    // race: one transient `tokio_postgres::connect` round-trip.
     let candidate = Arc::new(spawn_listener(pool).await?);
     Ok(install_or_lose(registry(), key, candidate))
 }
 
-/// Spawn the per-pool listener task. Connects a dedicated standalone
-/// client outside the pool (the deadpool-managed `Object` doesn't
-/// expose the `Connection` half needed for `AsyncMessage` polling),
-/// spawns the connection watcher, and returns a `PgListener` wired
-/// to the same `senders` map the watcher writes to.
+/// Spawn the per-pool listener task. Uses a standalone
+/// `tokio_postgres::connect` rather than the pool because deadpool's
+/// `Object` doesn't expose the `Connection` half needed for
+/// `AsyncMessage` polling.
 async fn spawn_listener(pool: &DjogiPool) -> Result<PgListener, NotifyError> {
-    // Standalone connect using the pool's stored URL — sidesteps
-    // deadpool's Object/Connection separation, which doesn't expose
-    // the `Connection` half needed for `tokio_postgres::AsyncMessage`
-    // polling. The pool reference is retained for pool-keyed
-    // registry identity (and for T11.4's hot-reload symmetry).
-    //
-    // Pools without a URL (internal audit-side construction, see
-    // `DjogiPool::url` doc) cannot drive the NOTIFY listener — fail
-    // explicitly so the caller knows this isn't a recoverable runtime
-    // hiccup but a structural pool-construction mismatch.
     let url = pool.url.as_deref().ok_or_else(|| {
         NotifyError::ListenerStartFailed(
             "DjogiPool::url is None — pool was constructed via internal substrate \
@@ -394,28 +267,19 @@ async fn spawn_listener(pool: &DjogiPool) -> Result<PgListener, NotifyError> {
         .await
         .map_err(|e| NotifyError::ListenerStartFailed(e.to_string()))?;
 
-    // Single shared senders map — both `subscribe::<M>` (via the
-    // returned PgListener) and the spawned watcher task hold an
-    // Arc<Mutex<_>> pointing at the same allocation. Writes from
-    // subscribe and reads from the watcher synchronize on the Mutex.
     let senders: Arc<Mutex<HashMap<String, broadcast::Sender<RawEvent>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let senders_for_task = Arc::clone(&senders);
 
-    // Connection watcher: polls the AsyncMessage stream, routes
-    // Notification events to the per-channel broadcast::Sender, drives
-    // the connection's I/O loop. Without this task running, queries
-    // on `client` (e.g. the `LISTEN` issued by subscribe::<M>) never
-    // make progress.
     tokio::spawn(async move {
         use futures::StreamExt;
         let mut stream = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
         while let Some(msg) = stream.next().await {
             match msg {
                 Ok(AsyncMessage::Notification(n)) => {
-                    let channel = n.channel().to_string();
-                    let payload = n.payload().to_string();
-                    let raw = match parse_raw(&payload) {
+                    let channel = n.channel();
+                    let payload = n.payload();
+                    let raw = match parse_raw(payload) {
                         Ok(r) => r,
                         Err(_) => {
                             tracing::warn!(
@@ -430,10 +294,7 @@ async fn spawn_listener(pool: &DjogiPool) -> Result<PgListener, NotifyError> {
                     let senders_guard = senders_for_task
                         .lock()
                         .expect("notify senders mutex poisoned");
-                    if let Some(tx) = senders_guard.get(&channel) {
-                        // SendError is only returned when there are
-                        // no live receivers — that's fine, the
-                        // notification has nowhere to go.
+                    if let Some(tx) = senders_guard.get(channel) {
                         let _ = tx.send(raw);
                     }
                 }
@@ -474,38 +335,22 @@ fn parse_raw(payload: &str) -> Result<RawEvent, serde_json::Error> {
 // ── Public subscribe API ─────────────────────────────────────────────────────
 
 /// Subscribe to `ModelEvent<M>` notifications fired by `emit_event`'s
-/// publisher hook (T11.2) for `M::table_name()`.
-///
-/// First call against a given pool spawns a background listener task;
-/// subsequent calls reuse the running listener. Returns a
-/// `TypedReceiver<M>` wrapping a `broadcast::Receiver` — multiple
-/// subscribers against the same model + pool share one underlying
-/// broadcast channel (the listener task fans out to all receivers).
-///
-/// **Lifecycle:** every returned `TypedReceiver<M>` holds an
-/// `Arc<PgListener>` keepalive. The listener stays up while at
-/// least one subscriber for any model on this pool is alive; when
-/// the last subscriber drops, the listener's spawned connection
-/// task exits cleanly and a future `subscribe` call against a
-/// reusable pool spawns a fresh listener. See the module-level
-/// "Lifecycle" section for the full state machine.
+/// publisher hook for `M::table_name()`. First call against a pool
+/// spawns the listener task; later calls reuse it. Subscribers against
+/// the same model + pool share one broadcast channel.
 ///
 /// # Channel naming
 ///
-/// `format!("djogi_{}", M::table_name())`. Every model gets a
-/// distinct Postgres NOTIFY channel — the publisher (T11.2) and the
-/// subscriber here both compute the channel name the same way, so
-/// the two ends are guaranteed to align without runtime coordination.
+/// `format!("djogi_{}", M::table_name())` — publisher and subscriber
+/// derive the same name, no runtime coordination needed.
 ///
 /// # Errors
 ///
-/// - `NotifyError::ListenerStartFailed` — pool acquisition or
-///   standalone `tokio_postgres::connect` failed during initial
-///   listener spawn, or the `LISTEN` SQL failed.
-/// - `NotifyError::PayloadDecode` (delivered via `recv().await` on
-///   the returned receiver) — a malformed wire payload was received.
-/// - `NotifyError::InvalidId` (also via `recv().await`) —
-///   `M::Pk::from_str` rejected the wire id string.
+/// - `NotifyError::ListenerStartFailed` — listener spawn or `LISTEN`
+///   SQL failed.
+/// - `NotifyError::PayloadDecode` / `NotifyError::InvalidId` (delivered
+///   via `recv().await`) — malformed wire payload or `M::Pk::from_str`
+///   rejected the id string.
 pub async fn subscribe<M>(pool: &DjogiPool) -> Result<TypedReceiver<M>, NotifyError>
 where
     M: crate::model::Model + 'static,
@@ -515,11 +360,6 @@ where
     let listener = get_or_start_listener(pool).await?;
     let channel = format!("djogi_{}", M::table_name());
 
-    // Register (or reuse) the per-channel broadcast::Sender, take a
-    // receiver off it. The watcher task already holds an Arc clone of
-    // the same senders map (set up in spawn_listener), so a
-    // notification arriving for `channel` will be routed through
-    // this Sender to the new Receiver.
     let raw_rx = {
         let mut senders = listener
             .senders
@@ -531,13 +371,8 @@ where
         tx.subscribe()
     };
 
-    // Issue `LISTEN djogi_<table>` on the dedicated client so
-    // Postgres starts routing notifications for this channel. Idempotent
-    // at the Postgres side: re-LISTEN on an already-listened channel
-    // is a no-op. We use `simple_query` (no params) because LISTEN
-    // doesn't accept bind parameters — the channel name was validated
-    // at publisher-side (T11.2) via `crate::ident::check_plain_ident`,
-    // and we re-validate here defense-in-depth before SQL embedding.
+    // Re-validate the channel name before SQL embedding — LISTEN doesn't
+    // accept bind parameters, so the channel name interpolates directly.
     crate::ident::check_plain_ident(&channel, false).map_err(|e| {
         NotifyError::ListenerStartFailed(format!("subscribe: invalid channel {channel:?}: {e:?}"))
     })?;
@@ -555,22 +390,13 @@ where
     })
 }
 
-/// Typed wrapper around the underlying raw broadcast receiver.
+/// Typed wrapper around the underlying raw broadcast receiver. Each
+/// `recv().await` decodes the next raw event into a `ModelEvent<M>`.
 ///
-/// Each `recv().await` call decodes the next raw event into a
-/// `ModelEvent<M>` via `decode_payload`, surfacing decode errors as
-/// `NotifyError::PayloadDecode` / `NotifyError::InvalidId`.
-///
-/// The `_listener` field is the lifecycle anchor: it's an
-/// `Arc<PgListener>` keepalive so the listener task keeps running
-/// for at least as long as this receiver is alive. When the last
-/// `TypedReceiver` for a pool drops, the listener's strong count
-/// hits zero, `PgListener::drop` fires, and the spawned watcher
-/// task exits cleanly. The registry's `Weak` becomes dangling and
-/// is reaped on the next `subscribe` against the same `pool_id`.
+/// Holds an `Arc<PgListener>` keepalive — the listener task stays up
+/// for at least as long as this receiver is alive.
 pub struct TypedReceiver<M: crate::model::Model> {
     raw: broadcast::Receiver<RawEvent>,
-    /// Keepalive — see `TypedReceiver` doc.
     #[allow(dead_code)] // lifecycle anchor, never read
     _listener: Arc<PgListener>,
     _model: PhantomData<M>,
@@ -592,12 +418,7 @@ where
                 "broadcast channel closed (listener task terminated)".to_string(),
             ),
         })?;
-        let payload = serde_json::json!({
-            "kind": raw.kind_str,
-            "id": raw.id_str,
-        })
-        .to_string();
-        decode_payload::<M>(&payload)
+        decode_event::<M>(&raw)
     }
 }
 
@@ -608,9 +429,8 @@ mod tests {
     use crate::model::Model;
     use heeranjid::HeerId;
 
-    // Minimal Model impl for decode tests. Avoids the proc-macro
-    // harness — we only need the M::Pk associated type to drive
-    // FromStr-based id decoding.
+    /// Minimal Model impl that avoids the proc-macro harness — only
+    /// `M::Pk` is exercised by the decode tests.
     struct FakeModel;
     impl crate::model::__sealed::Sealed for FakeModel {}
     #[allow(clippy::manual_async_fn)]
@@ -711,15 +531,6 @@ mod tests {
         let result = decode_payload::<FakeModel>(payload);
         assert!(matches!(result, Err(NotifyError::PayloadDecode { .. })));
     }
-
-    // ── T11.4 — registry lifecycle helpers ─────────────────────────────────
-    //
-    // These tests pin the `Weak<T>` upgrade / cleanup state machine in
-    // isolation, using `Arc<u32>` as a stand-in for `Arc<PgListener>`.
-    // The real listener lifecycle (LISTEN/NOTIFY round-trip across a
-    // pool drop, hot-reload via `subscribe` after teardown) requires a
-    // reachable Postgres and lives in the integration test added by
-    // T11.5.
 
     #[test]
     fn upgrade_existing_returns_strong_when_alive() {
