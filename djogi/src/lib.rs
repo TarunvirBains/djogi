@@ -68,6 +68,7 @@ pub mod fts_query;
 pub mod geo;
 pub mod hooks;
 pub(crate) mod ident;
+pub mod intent;
 pub mod jsonb;
 pub mod live_migrate;
 pub mod migrate;
