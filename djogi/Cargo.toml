@@ -36,23 +36,18 @@ outbox-kafka = ["outbox"]
 # outbox-nats — NATS publisher stub (via async-nats). Same deferral.
 outbox-nats = ["outbox"]
 
-# notify — gates the in-process model-event NOTIFY surface (Cluster 8ζ T11):
-# the synchronous publisher hook in `emit_event` (fires
-# `pg_notify('djogi_<table>', '{kind,id}')` alongside the outbox INSERT) and
-# the `djogi::notify::subscribe::<M>()` consumer surface backed by a per-pool
+# notify — gates the in-process model-event NOTIFY surface: the synchronous
+# publisher hook in `emit_event` (fires `pg_notify('djogi_<table>',
+# '{kind,id}')` alongside the outbox INSERT) and the
+# `djogi::notify::subscribe::<M>()` consumer surface backed by a per-pool
 # `PgListener` background task.
-#
-# When OFF: `emit_event` writes only to the outbox (Phase 4 path); no
-# `djogi::notify` module is compiled. When ON: the publisher fires
-# transactionally with the source-row write; subscribers receive
-# `ModelEvent { kind, id }` via a `tokio::sync::broadcast::Receiver`.
 #
 # Distinct from the `outbox` feature flag: `outbox` gates worker-side
 # primitives + downstream relay publishers (full-payload, user-named
 # channels). `notify` is the in-process subscription path with a slim
 # `{kind, id}` payload on `djogi_<table>` channels — designed for cache
 # invalidation use cases where the receiver re-fetches the full row by id.
-notify = ["dep:tokio-stream"]
+notify = []
 
 # spatial — gates the GeoPoint primitive and the spatial query surface
 # (SpatialExpr, within_km, order_by_distance). Requires PostGIS installed
@@ -104,10 +99,6 @@ subtle.workspace = true
 libc.workspace = true
 phf.workspace = true
 trait-variant.workspace = true
-# tokio-stream — only loaded under `notify` feature. Used by the per-pool
-# PgListener background task to surface tokio_postgres::AsyncMessage stream
-# events as broadcast::Sender fan-outs to per-channel subscribers.
-tokio-stream = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

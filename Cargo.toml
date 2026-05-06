@@ -23,11 +23,6 @@ rust-version = "1.95"
 [workspace.dependencies]
 # Core
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "signal"] }
-# tokio-stream — Stream-trait adapters for tokio primitives. Used by the
-# Cluster 8ζ T11 NOTIFY subscriber path (`djogi::notify`) to bridge
-# `tokio_postgres::AsyncMessage` events into a Stream the listener task
-# can poll.
-tokio-stream = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
