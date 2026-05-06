@@ -18,6 +18,7 @@ mod analyze;
 mod db;
 mod live;
 mod migrations;
+mod schema;
 mod verify;
 
 #[derive(Parser)]
@@ -82,6 +83,24 @@ enum TopCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Cluster 8ζ T12.2 — JSON descriptor dump.
+    ///
+    /// Emits a deterministic JSON document covering every model
+    /// registered via `inventory::submit!`. Use for agent
+    /// integration, CI assertions on schema drift, and
+    /// machine-readable handoffs to downstream codegen.
+    ///
+    /// **Read-only.** Schema never opens a Postgres connection;
+    /// the inventory walk is fully in-process.
+    Schema {
+        /// Output format. `json` is the only value in v0.1.0;
+        /// `openapi` and `markdown` are reserved for Phase 9.
+        #[arg(long, value_enum, default_value_t = SchemaFormat::Json)]
+        format: SchemaFormat,
+        /// Optional output file. Absent means stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Cluster 8ε T10 — partition / vacuum analysis for adopter
     /// Postgres tables. Queries `pg_stat_user_tables` (and, when
     /// installed, `pg_partman`) and recommends vacuum / partition
@@ -115,6 +134,22 @@ enum TopCommand {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+}
+
+/// Output format for `djogi schema`. Mirrors
+/// [`schema::SchemaFormat`] so `clap::ValueEnum` lives at the CLI
+/// boundary and the `schema` module stays clap-free.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum SchemaFormat {
+    Json,
+}
+
+impl SchemaFormat {
+    fn into_schema(self) -> schema::SchemaFormat {
+        match self {
+            SchemaFormat::Json => schema::SchemaFormat::Json,
+        }
+    }
 }
 
 /// Output format for `djogi analyze` — clap-side mirror of
@@ -444,6 +479,13 @@ fn main() -> ExitCode {
                 }
             }
         }
+        TopCommand::Schema { format, output } => match schema::run(format.into_schema(), output) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("djogi schema: {e}");
+                ExitCode::from(1)
+            }
+        },
         TopCommand::Analyze {
             format,
             threshold_vacuum,

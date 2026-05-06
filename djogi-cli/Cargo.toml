@@ -47,6 +47,12 @@ serde.workspace = true
 # order is preserved by `serde_json` so projection through a named
 # `Row` struct gives byte-stable output.
 serde_json.workspace = true
+# Used by `djogi schema` (T12.2) to walk
+# `inventory::iter::<&'static ModelDescriptor>` and emit a
+# deterministic JSON dump of every registered model. The descriptor
+# crate (`djogi`) registers models via the same `inventory` crate;
+# the CLI binary must link the same version so the iter resolves.
+inventory.workspace = true
 
 # T10.3 spawns the compiled `djogi` binary as a subprocess, seeds a
 # per-test database via `#[djogi_test]`, and asserts the analyze
