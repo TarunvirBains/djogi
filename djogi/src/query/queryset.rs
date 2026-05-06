@@ -2216,6 +2216,11 @@ where
             filter,
             lru_warn_issued: std::sync::atomic::AtomicBool::new(false),
             events_rx,
+            // T8.7 Pattern 2 outbox-tombstone watermark. Starts as `None`;
+            // first tick with `T::descriptor().has_outbox && T::Id == HeerId`
+            // initialises it to the current wall-clock so subsequent ticks
+            // only see new delete events.
+            outbox_watermark: std::sync::Mutex::new(None),
             _model: std::marker::PhantomData,
         };
         // [CHECK] Default 30s interval is a placeholder; T8.6 may add a

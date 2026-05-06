@@ -548,6 +548,13 @@ name = "phase8_t8_6_softdelete_tombstones"
 path = "../tests/integration/phase8_t8_6_softdelete_tombstones.rs"
 harness = true
 
+# ── Phase 8δ T8.7 — outbox-derived tombstones (Pattern 2) in delta fetcher ────
+
+[[test]]
+name = "phase8_t8_7_outbox_tombstones"
+path = "../tests/integration/phase8_t8_7_outbox_tombstones.rs"
+harness = true
+
 # ── Phase 8δ T8.8 — DeltaRefreshHandle knobs: LRU warn + recovery + periodic ──
 
 [[test]]

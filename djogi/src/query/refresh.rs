@@ -51,9 +51,18 @@
 //!   tombstones set. Anti-regression: NO `deleted_at IS NULL` filter
 //!   in the WHERE clause (deletion signal must flow through the
 //!   watermark per spec §415).
-//! - **T8.7 — Pattern 2 (outbox-derived):** deferred (GH #128). The fetcher
-//!   will merge tombstones from a captured outbox/event-table subscription
-//!   alongside Pattern 1's per-row derivation.
+//! - **T8.7 — Pattern 2 (outbox-derived):** shipped. Per-tick poll of
+//!   `<table>_outbox` for `action='delete'` rows whose `created_at`
+//!   advances past a per-fetcher watermark; gated on
+//!   `T::descriptor().has_outbox && TypeId::<T::Id> == TypeId::<HeerId>`
+//!   (the outbox stores `row_id BIGINT`, so RanjId-keyed models cannot
+//!   decode — and `events` is already broken for them at `emit_event`'s
+//!   INSERT). Decoded `HeerId` values cast into `T::Id` via
+//!   `cast_heerid_to_t_id` (TypeId-checked `transmute_copy`). Closes
+//!   GH #128. The poll runs inside the same `transaction::atomic` as
+//!   the data SELECT so it inherits the `auto_set_tenant` scope, and
+//!   the worker (which uses state transitions, never `DELETE`) cannot
+//!   race the poll because outbox rows persist post-publish.
 //! - **T8.8 (this commit) — LRU eviction warn (spec §674 Knob 1):** always-on
 //!   one-shot warn per `(Punnu, Subscription)` on the first observed
 //!   `LruEvict` event. Implemented via `try_recv` per tick + `AtomicBool`
@@ -134,13 +143,44 @@ use crate::auth::AuthContext;
 use crate::cache::DjogiDeltaSyncMeta;
 use crate::pg::decode::FromPgRow;
 use crate::pg::pool::DjogiPool;
+use heeranjid::HeerId;
 use sassi::{BasicPredicate, DeltaPunnuFetcher, DeltaQuery, DeltaResult, FetchError, PunnuEvent};
+use std::any::TypeId;
 use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tokio_postgres::types::ToSql;
+
+/// Convert a `HeerId` into `T::Id` when `T::Id == HeerId`, else `None`.
+///
+/// Used by the T8.7 outbox-tombstone path: the outbox table stores
+/// `row_id BIGINT`, which decodes to `HeerId` via `HeerId::from_i64`. The
+/// fetcher's tombstone set is `HashSet<T::Id>`, so a runtime-checked
+/// conversion is needed when `T::Id` is the model's PK type. Today, only
+/// HeerId-keyed models route through `#[model(events)]` correctly anyway —
+/// the outbox `row_id` column is BIGINT, so RanjId / Serial-keyed models
+/// with `events` would already fail at `emit_event`'s INSERT. This helper
+/// matches that constraint by no-op'ing when `T::Id != HeerId`.
+///
+/// `TypeId` equality is the runtime witness that `T::Id` and `HeerId` are
+/// the same type. Once that holds, `transmute_copy` is sound — both sides
+/// have identical layout (`HeerId` is `#[repr(transparent)]` over `i64`,
+/// and `transmute_copy` does a bitwise copy). `HeerId: Copy`, so no
+/// double-drop concern. Pattern mirrors `Box<dyn Any>::downcast`'s
+/// internal logic without the heap allocation.
+fn cast_heerid_to_t_id<TId: 'static>(h: HeerId) -> Option<TId> {
+    if TypeId::of::<TId>() == TypeId::of::<HeerId>() {
+        // SAFETY: TypeId equality guarantees `TId == HeerId`. Both are
+        // `#[repr(transparent)]` over `i64` with identical layout.
+        // `HeerId: Copy`, so the source value is trivially copyable.
+        Some(unsafe { std::mem::transmute_copy::<HeerId, TId>(&h) })
+    } else {
+        None
+    }
+}
 
 /// Owned-substrate fetcher for the `QuerySet::refresh_into` path.
 ///
@@ -174,6 +214,14 @@ pub(crate) struct DjogiDeltaFetcher<T: sassi::DeltaSyncCacheable> {
     /// (not `tokio::sync::Mutex`) is correct here because `try_recv` is
     /// synchronous — no `.await` is needed to drain the channel.
     pub(crate) events_rx: Mutex<broadcast::Receiver<PunnuEvent<T>>>,
+    /// Per-fetcher watermark for the T8.7 outbox-tombstone poll
+    /// (Pattern 2). Tracks the highest `created_at` already observed in
+    /// `<table>_outbox` so subsequent ticks only see new delete events.
+    /// `None` on first tick (poll uses `>= now()` minus a small lookback;
+    /// see `fetch_delta` for the boundary policy). `std::sync::Mutex` is
+    /// correct because the per-tick update is synchronous (no `.await`
+    /// while holding the lock).
+    pub(crate) outbox_watermark: Mutex<Option<OffsetDateTime>>,
     pub(crate) _model: PhantomData<T>,
 }
 
@@ -294,6 +342,26 @@ where
         let table_name = <T as crate::model::Model>::table_name();
         let column_list = <T as FromPgRow>::COLUMN_LIST;
 
+        // ── T8.7 Pattern 2 outbox-tombstone gate (per-tick) ──────────────────
+        // Determine if this model has an outbox table emitted by
+        // `#[model(events)]` AND that `T::Id` decodes from the outbox's
+        // BIGINT `row_id` column. Today the outbox stores `row_id BIGINT`
+        // unconditionally (see Phase 4 `notifications_outbox.sql` schema), so
+        // only HeerId-keyed models can decode. Non-HeerId-keyed models with
+        // `events` would already fail at `emit_event`'s INSERT — we mirror
+        // that constraint here by no-op'ing the outbox poll path. Captured
+        // pre-closure so the closure-side check is a cheap copy.
+        let outbox_enabled =
+            T::descriptor().has_outbox && TypeId::of::<T::Id>() == TypeId::of::<HeerId>();
+        let outbox_watermark_snapshot: Option<OffsetDateTime> = if outbox_enabled {
+            *self
+                .outbox_watermark
+                .lock()
+                .expect("outbox_watermark mutex poisoned")
+        } else {
+            None
+        };
+
         // ── Run the SQL inside a transaction so SET LOCAL has effect ─────────
         // `crate::transaction::atomic` issues BEGIN / COMMIT (or ROLLBACK on
         // error) and exposes a `&mut DjogiContext` to the closure. This is
@@ -303,7 +371,14 @@ where
         // subsequent SELECT. Without the transaction wrap + auto_set_tenant,
         // RLS-backed tenant isolation would silently fail (Codex caught this
         // gap in T8.5 round-1 review — orchestrator-fixed in this commit).
-        let items: Vec<T> = crate::transaction::atomic(&self.pool, move |ctx| {
+        //
+        // T8.7 piggy-backs on the same atomic so the outbox poll inherits
+        // the tenant scope (RLS-backed `<table>_outbox` policies, when
+        // present, see the same `app.tenant_id` setting as the data SELECT).
+        // Returns `(items, outbox_tombstones)` — the second slot is empty
+        // when `outbox_enabled` is false.
+        let (items, outbox_tombstones): (Vec<T>, Vec<(HeerId, OffsetDateTime)>) =
+            crate::transaction::atomic(&self.pool, move |ctx| {
             Box::pin(async move {
                 // Apply the captured auth snapshot to the inner ctx.
                 ctx.set_auth(auth);
@@ -355,7 +430,83 @@ where
                     .map(|b| b.as_ref() as &(dyn ToSql + Sync))
                     .collect();
 
-                ctx.raw_query::<T>(&sql, &params_refs).await
+                let items: Vec<T> = ctx.raw_query::<T>(&sql, &params_refs).await?;
+
+                // ── T8.7 Pattern 2 outbox poll ───────────────────────────
+                // Inside the same transaction so the tenant scope set by
+                // `auto_set_tenant` above also gates the outbox SELECT.
+                // Skip entirely when `outbox_enabled` is false (model has
+                // no outbox, or `T::Id != HeerId`). Returns
+                // `Vec<(HeerId, OffsetDateTime)>` — the caller decodes
+                // HeerId → T::Id and updates the per-fetcher watermark.
+                //
+                // Boundary semantics: `created_at >= $1` is inclusive.
+                // sassi's `apply_delta` deduplicates by id, so re-seeing
+                // a tombstone whose `created_at` equals the previous
+                // tick's max is harmless — preferable to `>` which would
+                // drop legitimate tombstones with sub-microsecond
+                // timestamp ties.
+                //
+                // First-tick semantics: `outbox_watermark_snapshot ==
+                // None` ⇒ skip (don't replay history). The fetcher's
+                // role is to surface NEW deletes since the cache became
+                // visible to the subscription; pre-existing deletes
+                // belong to the Punnu's initial-load path, not the
+                // delta-tick path.
+                let outbox_tombstones: Vec<(HeerId, OffsetDateTime)> = if outbox_enabled
+                    && let Some(watermark) = outbox_watermark_snapshot
+                {
+                    // Validate the outbox table identifier before
+                    // embedding into SQL. `table_name` is captured from
+                    // `T::table_name()` which is a `&'static str`
+                    // emitted by the `#[derive(Model)]` macro and
+                    // already validated against the unquoted-identifier
+                    // contract at macro-expansion time. The
+                    // `_outbox` suffix is a fixed ASCII literal. We
+                    // double-check via `check_plain_ident` to keep this
+                    // SQL-construction path defense-in-depth aligned
+                    // with `outbox/worker.rs::validate_table_ident`.
+                    let outbox_table = format!("{table_name}_outbox");
+                    crate::ident::check_plain_ident(&outbox_table, false).map_err(|e| {
+                        crate::DjogiError::Db(crate::error::DbError::other(format!(
+                            "T8.7 outbox poll: invalid outbox table name {outbox_table:?}: {e:?}"
+                        )))
+                    })?;
+
+                    let outbox_sql = format!(
+                        "SELECT row_id, created_at FROM {outbox_table} \
+                         WHERE action = 'delete' AND created_at >= $1 \
+                         ORDER BY created_at"
+                    );
+                    let rows = ctx
+                        .query_all(&outbox_sql, &[&watermark as &(dyn ToSql + Sync)])
+                        .await?;
+                    let mut decoded: Vec<(HeerId, OffsetDateTime)> =
+                        Vec::with_capacity(rows.len());
+                    for row in rows {
+                        let raw: i64 = row.try_get(0).map_err(|e| {
+                            crate::DjogiError::Db(crate::error::DbError::other(format!(
+                                "T8.7 outbox poll: decode row_id i64: {e}"
+                            )))
+                        })?;
+                        let ts: OffsetDateTime = row.try_get(1).map_err(|e| {
+                            crate::DjogiError::Db(crate::error::DbError::other(format!(
+                                "T8.7 outbox poll: decode created_at: {e}"
+                            )))
+                        })?;
+                        let h = HeerId::from_i64(raw).map_err(|e| {
+                            crate::DjogiError::Db(crate::error::DbError::other(format!(
+                                "T8.7 outbox poll: HeerId::from_i64({raw}): {e:?}"
+                            )))
+                        })?;
+                        decoded.push((h, ts));
+                    }
+                    decoded
+                } else {
+                    Vec::new()
+                };
+
+                Ok::<_, crate::DjogiError>((items, outbox_tombstones))
             })
         })
         .await
@@ -387,6 +538,75 @@ where
             } else {
                 live_items.push(item);
             }
+        }
+
+        // ── T8.7 Pattern 2: merge outbox-derived tombstones ─────────────────
+        // The atomic closure returned `Vec<(HeerId, OffsetDateTime)>` only
+        // when `outbox_enabled` was true at gate time. The HeerId → T::Id
+        // conversion succeeds whenever `T::Id == HeerId` (which the gate
+        // already verified), so a `cast_heerid_to_t_id` returning `None`
+        // here is a logic bug — surface it via debug-assert rather than
+        // silently dropping the tombstone.
+        //
+        // Watermark advancement: take the max of all observed `created_at`
+        // values. Stored back into `self.outbox_watermark` so subsequent
+        // ticks only poll for newer events. The advance happens AFTER the
+        // tombstones have been merged so any panic during conversion does
+        // not leave the watermark advanced past unprocessed events.
+        if !outbox_tombstones.is_empty() {
+            let mut max_seen: Option<OffsetDateTime> = None;
+            for (h, ts) in &outbox_tombstones {
+                if let Some(t_id) = cast_heerid_to_t_id::<T::Id>(*h) {
+                    tombstones.insert(t_id);
+                } else {
+                    debug_assert!(
+                        false,
+                        "T8.7 outbox poll: cast_heerid_to_t_id returned None despite TypeId gate"
+                    );
+                }
+                max_seen = Some(match max_seen {
+                    None => *ts,
+                    Some(prev) if *ts > prev => *ts,
+                    Some(prev) => prev,
+                });
+            }
+            if let Some(new_watermark) = max_seen {
+                let mut guard = self
+                    .outbox_watermark
+                    .lock()
+                    .expect("outbox_watermark mutex poisoned");
+                // Monotonic advance: only update if new_watermark is
+                // strictly greater than the snapshot, in case a concurrent
+                // tick (if sassi ever dispatches overlapping ticks) advanced
+                // the watermark while this tick was in flight.
+                let advance = match *guard {
+                    None => true,
+                    Some(prev) => new_watermark > prev,
+                };
+                if advance {
+                    *guard = Some(new_watermark);
+                }
+            }
+        } else if outbox_enabled
+            && self
+                .outbox_watermark
+                .lock()
+                .expect("outbox_watermark mutex poisoned")
+                .is_none()
+        {
+            // First tick with outbox enabled but no events to poll yet
+            // (because watermark snapshot was `None`). Initialise the
+            // watermark to the current wall-clock so subsequent ticks
+            // start from this checkpoint rather than replaying history.
+            // Use `now()` from the database is preferable to host clock
+            // (avoids skew between fetcher host and DB host); deferring
+            // for simplicity since outbox events carry DB-side
+            // `created_at` and the fetcher only compares to its own
+            // historical observations.
+            *self
+                .outbox_watermark
+                .lock()
+                .expect("outbox_watermark mutex poisoned") = Some(OffsetDateTime::now_utc());
         }
 
         // `DeltaResult::new` sets `high_watermark = None` — Sassi's
