@@ -1,0 +1,51 @@
+error: `watermark_field = "no_such_field"` does not name a field on this model — the named field must exist on the post-injection struct (framework-injected fields `id`, `created_at`, `updated_at` are eligible; user fields are eligible)
+  --> tests/compile_fail/phase8_t7_watermark_field_does_not_exist.rs:35:23
+   |
+35 |     watermark_field = "no_such_field",
+   |                       ^^^^^^^^^^^^^^^
+
+error[E0277]: the trait bound `WatermarkMissingRow: Cacheable` is not satisfied
+  --> tests/compile_fail/phase8_t7_watermark_field_does_not_exist.rs:33:1
+   |
+33 | / #[model(
+34 | |     table = "phase8_t7_watermark_missing_rows",
+35 | |     watermark_field = "no_such_field",
+36 | | )]
+   | |__^ unsatisfied trait bound
+   |
+help: the trait `Cacheable` is not implemented for `WatermarkMissingRow`
+  --> tests/compile_fail/phase8_t7_watermark_field_does_not_exist.rs:38:1
+   |
+38 | pub struct WatermarkMissingRow {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `DjogiContext::punnu`
+  --> $WORKSPACE/djogi/src/context.rs
+   |
+   |     pub fn punnu<T>(&self) -> Option<std::sync::Arc<sassi::Punnu<T>>>
+   |            ----- required by a bound in this associated function
+   |     where
+   |         T: crate::types::Cacheable + 'static,
+   |            ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `DjogiContext::punnu`
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `invalidate` exists for struct `Arc<Punnu<WatermarkMissingRow>>`, but its trait bounds were not satisfied
+  --> tests/compile_fail/phase8_t7_watermark_field_does_not_exist.rs:33:1
+   |
+33 |   #[model(
+   |  _^
+34 | |     table = "phase8_t7_watermark_missing_rows",
+35 | |     watermark_field = "no_such_field",
+36 | | )]
+   | |__^ method cannot be called on `Arc<Punnu<WatermarkMissingRow>>` due to unsatisfied trait bounds
+37 |   #[derive(Debug, Clone)]
+38 |   pub struct WatermarkMissingRow {
+   |   ------------------------------ doesn't satisfy `WatermarkMissingRow: Cacheable`
+   |
+   = note: the following trait bounds were not satisfied:
+           `WatermarkMissingRow: Cacheable`
+note: the trait `Cacheable` must be implemented
+  --> $WORKSPACE/sassi-reference/sassi/src/cacheable.rs
+   |
+   | pub trait Cacheable: Send + Sync + 'static {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the attribute macro `model` (in Nightly builds, run with -Z macro-backtrace for more info)

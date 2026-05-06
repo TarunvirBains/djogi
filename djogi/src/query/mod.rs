@@ -48,6 +48,7 @@ pub mod order;
 pub mod q;
 pub mod queryset;
 pub mod recursive;
+pub(crate) mod refresh;
 #[cfg(feature = "spatial")]
 pub mod spatial_grouping;
 pub(crate) mod sql;

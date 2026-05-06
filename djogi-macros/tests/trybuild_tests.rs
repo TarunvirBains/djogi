@@ -153,6 +153,78 @@ fn compile_pass_phase8_zero() {
 }
 
 #[test]
+fn compile_pass_phase8_t7() {
+    // Cluster 8δ T7 — Punnu integration. T7.1 lands the
+    // `djogi::cache` re-export surface check (every sassi public
+    // symbol the cluster consumes must be reachable through
+    // `djogi::cache::*` without an adopter-side sassi dep). T7.2
+    // adds the `Cacheable` auto-emission surface checks
+    // (`phase8_t7_cacheable_default.rs`,
+    // `phase8_t7_cacheable_with_watermark_field.rs`) under the same
+    // glob — bare `#[derive(Model)]` produces a Cacheable type
+    // usable in `Punnu<T>`, and `#[model(watermark_field = "...")]`
+    // overrides the default `updated_at` watermark for the
+    // emitted `DeltaSyncCacheable` impl.
+    //
+    // T7.4 adds `phase8_t7_4_punnu_boot_hook_emitted.rs` under a
+    // separate targeted bucket (below) — that fixture is also swept
+    // by this glob for the full T7 pass.
+    TestCases::new().pass("tests/compile_pass/phase8_t7_*.rs");
+}
+
+#[test]
+fn compile_pass_phase8_t7_4() {
+    // Targeted bucket for Cluster 8δ T7.4 — boot-time Sassi registry.
+    // Pins that the macro-emitted `inventory::submit!` block routes
+    // every path through `::djogi::*` (per `feedback_macro_path_routing.md`)
+    // so the fixture compiles against a crate that only depends on `djogi`,
+    // with no direct `sassi` or `inventory` dep.
+    //
+    // Run this bucket in isolation to check just the T7.4 emission:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t7_4 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t7_4_*.rs");
+}
+
+#[test]
+fn compile_pass_phase8_t7_5() {
+    // Targeted bucket for Cluster 8δ T7.5 — on_commit cache invalidation.
+    // Pins that the macro-emitted `save` / `delete` bodies reference
+    // `::djogi::cache::InvalidationReason` only — no `::sassi::*` leakage.
+    // Also swept by `compile_pass_phase8_t7` (the `phase8_t7_*` glob).
+    //
+    // Run this bucket in isolation to check just the T7.5 emission:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t7_5 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t7_5_*.rs");
+}
+
+#[test]
+fn compile_pass_phase8_t7_6() {
+    // Targeted bucket for Cluster 8δ T7.6 — cross-context guard.
+    // Witnesses that `DjogiContext::use_punnu` resolves to the expected
+    // signature: `fn(&DjogiContext, &Arc<Punnu<T>>) -> Arc<Punnu<T>>`.
+    // T7.6 is non-emitted code (method on DjogiContext, not a macro
+    // expansion). Also swept by `compile_pass_phase8_t7` (phase8_t7_* glob).
+    //
+    // Run this bucket in isolation to check just the T7.6 signature:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t7_6 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t7_6_*.rs");
+}
+
+#[test]
+fn compile_pass_phase8_t8() {
+    // Targeted bucket for Cluster 8δ T8.3 — `QuerySet::refresh_into` skeleton.
+    // Witnesses that `refresh_into` resolves to the expected signature:
+    //   fn(QuerySet<T>, &Punnu<T>, DjogiPool, AuthContext) -> DeltaRefreshHandle<T>
+    // T8.3 is non-emitted code (method on `QuerySet<T>`, not a macro
+    // expansion). The fetcher owns all substrate by value; no borrowed
+    // lifetimes appear in the call site.
+    //
+    // Run this bucket in isolation to check just the T8.3 signature:
+    //     cargo test --test trybuild_tests compile_pass_phase8_t8 --test-threads=1
+    TestCases::new().pass("tests/compile_pass/phase8_t8_*.rs");
+}
+
+#[test]
 fn compile_pass_phase8() {
     // Globs cannot exclude sub-prefixes (no brace expansion), so this
     // can't be expressed as `phase8_*.rs` — that pattern would also
@@ -228,6 +300,16 @@ fn compile_fail_phase7_5() {
 #[test]
 fn compile_fail_phase8_zero() {
     TestCases::new().compile_fail("tests/compile_fail/phase8_zero_*.rs");
+}
+
+#[test]
+fn compile_fail_phase8_t7() {
+    // Cluster 8δ T7.2 — `#[model(watermark_field = "...")]` rejects
+    // values that do not name a field on the post-injection struct.
+    // The diagnostic span points at the offending string literal in
+    // the attribute, not at the struct body or at the emitted impl
+    // — matching the rest of the model-attr error surface.
+    TestCases::new().compile_fail("tests/compile_fail/phase8_t7_*.rs");
 }
 
 #[test]

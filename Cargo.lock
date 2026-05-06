@@ -588,6 +588,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "sassi",
+ "sassi-codegen",
  "serde",
  "serde_json",
  "syn 2.0.117",

@@ -553,6 +553,44 @@ pub fn expand(
     };
 
     // -------------------------------------------------------------------------
+    // Cluster 8δ T8.6 — `__delta_should_tombstone` override for soft-deletable
+    // models.
+    //
+    // The delta-sync fetcher in `djogi::query::refresh` calls
+    // `item.__delta_should_tombstone()` to decide whether to route a fetched
+    // row to the tombstones set (evict from Punnu) or to the live-items list
+    // (upsert into Punnu). The `Model` trait carries a default impl that
+    // always returns `false`, so non-soft-deletable models pay zero overhead
+    // (the vtable slot folds to a constant in practice).
+    //
+    // For `#[model(soft_deletable)]` models we emit an override that forwards
+    // to `<Self as ::djogi::SoftDeletable>::deleted_at(self).is_some()`. The
+    // override lives in the same `impl Model for Self` block emitted here (in
+    // `crud.rs`) because:
+    //
+    // 1. This is the only place the full `impl Model for T` block is assembled
+    //    — adding it in `soft_deletable.rs` would require a second `impl Model`
+    //    block on the same type, which Rust rejects.
+    // 2. `model_attrs.soft_deletable` is already read by T2.6 path-routing (see
+    //    `soft_deletable::expand`) so reading it here adds zero new state.
+    //
+    // Path routing: `::djogi::SoftDeletable` follows the macro-path-routing
+    // convention (`feedback_macro_path_routing.md`) — public re-export path,
+    // no `__private` indirection needed because the trait is not sealed via a
+    // private token.
+    // -------------------------------------------------------------------------
+    let delta_should_tombstone_override = if model_attrs.soft_deletable {
+        quote! {
+            #[doc(hidden)]
+            fn __delta_should_tombstone(&self) -> bool {
+                <Self as ::djogi::SoftDeletable>::deleted_at(self).is_some()
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // -------------------------------------------------------------------------
     // Auto-tenant wiring (Phase 5.5 Task 10 + Task 11).
     //
     // Emitted only for tenant-keyed models. When `ctx.auth()` carries a
@@ -966,6 +1004,44 @@ pub fn expand(
                         // value"). MUST stay inside the success arm — the
                         // None branch (LockConflict) skips after_save.
                         #after_save_call
+                        // Cluster 8δ T7.5 — enqueue on_commit cache
+                        // invalidation. The callback is captured by value
+                        // so it does not need to borrow ctx after the SQL
+                        // completes. The `if let Some(...)` gate skips
+                        // models without a registered Punnu (pk=None or
+                        // no-cache context). Pool-backed contexts log a
+                        // warn and drop the callback — no special-case
+                        // needed here.
+                        //
+                        // L2 backend errors are logged explicitly at
+                        // `warn!` level (not `error!`): L1 is still
+                        // correctly invalidated; only L2 distribution
+                        // failed. Returning Ok(()) keeps the substrate
+                        // from treating this as a transaction-level
+                        // failure.
+                        if let ::std::option::Option::Some(__punnu) =
+                            ctx.punnu::<Self>()
+                        {
+                            let __id_for_cache =
+                                ::core::clone::Clone::clone(&self.id);
+                            ctx.on_commit(move || async move {
+                                if let ::std::result::Result::Err(__e) = __punnu
+                                    .invalidate(
+                                        &__id_for_cache,
+                                        ::djogi::cache::InvalidationReason::OnSave,
+                                    )
+                                    .await
+                                {
+                                    ::djogi::__private::tracing::warn!(
+                                        target: "djogi::cache",
+                                        error = ?__e,
+                                        model = ::std::any::type_name::<Self>(),
+                                        "Punnu::invalidate L2 backend failed during on_commit drain",
+                                    );
+                                }
+                                ::std::result::Result::Ok(())
+                            });
+                        }
                         ::std::result::Result::Ok(())
                     }
                     ::std::option::Option::None => {
@@ -1040,6 +1116,31 @@ pub fn expand(
                 // server-side defaults, triggers, and any DB-bumped column
                 // values (Phase 8 §D3 sequence).
                 #after_save_call
+                // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
+                // Captured by value; pool-backed contexts warn + drop.
+                // L2 backend errors are logged at `warn!` level — L1 is
+                // still correctly invalidated; only L2 distribution
+                // failed.
+                if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                    let __id_for_cache = ::core::clone::Clone::clone(&self.id);
+                    ctx.on_commit(move || async move {
+                        if let ::std::result::Result::Err(__e) = __punnu
+                            .invalidate(
+                                &__id_for_cache,
+                                ::djogi::cache::InvalidationReason::OnSave,
+                            )
+                            .await
+                        {
+                            ::djogi::__private::tracing::warn!(
+                                target: "djogi::cache",
+                                error = ?__e,
+                                model = ::std::any::type_name::<Self>(),
+                                "Punnu::invalidate L2 backend failed during on_commit drain",
+                            );
+                        }
+                        ::std::result::Result::Ok(())
+                    });
+                }
                 ::std::result::Result::Ok(())
             }
         }
@@ -1124,6 +1225,31 @@ pub fn expand(
             // fires). Order is load-bearing: an audit sink consuming
             // outbox sees the row before after_delete's body runs.
             #after_delete_call
+            // Cluster 8δ T7.5 — enqueue on_commit cache invalidation.
+            // Captured by value; pool-backed contexts warn + drop.
+            // L2 backend errors are logged at `warn!` level — L1 is
+            // still correctly invalidated; only L2 distribution
+            // failed.
+            if let ::std::option::Option::Some(__punnu) = ctx.punnu::<Self>() {
+                let __id_for_cache = ::core::clone::Clone::clone(&self.id);
+                ctx.on_commit(move || async move {
+                    if let ::std::result::Result::Err(__e) = __punnu
+                        .invalidate(
+                            &__id_for_cache,
+                            ::djogi::cache::InvalidationReason::OnDelete,
+                        )
+                        .await
+                    {
+                        ::djogi::__private::tracing::warn!(
+                            target: "djogi::cache",
+                            error = ?__e,
+                            model = ::std::any::type_name::<Self>(),
+                            "Punnu::invalidate L2 backend failed during on_commit drain",
+                        );
+                    }
+                    ::std::result::Result::Ok(())
+                });
+            }
             ::std::result::Result::Ok(())
         }
     };
@@ -2570,6 +2696,11 @@ pub fn expand(
             > + ::std::marker::Send + 'ctx {
                 #refresh_body
             }
+
+            // Cluster 8δ T8.6 — soft-deletable tombstone signal.
+            // Emitted only for `#[model(soft_deletable)]` models; non-soft-deletable
+            // models inherit the `Model` trait's default `false` impl.
+            #delta_should_tombstone_override
         }
     }
 }

@@ -331,6 +331,20 @@ impl<T: Model> UpdateStmt<T> {
             let (sql, binds) = acc.into_parts();
             let params = as_params(&binds);
             let rows_affected = ctx.execute(&sql, &params).await?;
+            // TODO(8δ T7.5 follow-up): bulk-update cache invalidation.
+            // The safe path (Option B — opt-in `with_cache_invalidation()`
+            // builder) requires adding an `invalidate: bool` flag to
+            // `UpdateStmt`, switching the SQL to `UPDATE ... RETURNING id`
+            // when set, and enqueuing one `on_commit` callback per touched
+            // row id. Deferred because the current `execute` path uses
+            // `ctx.execute` (row-count only), and changing to `RETURNING id`
+            // changes the SQL shape in a way that needs design review to
+            // ensure no existing call site breaks. The single-row
+            // `Model::save` and `Model::delete` paths are the primary cache
+            // invalidation surface; bulk-update invalidation is a follow-up.
+            // The no-op test placeholder (bulk_update_invalidation_deferred_to_followup)
+            // in phase8_t7_5_cache_invalidation.rs has been removed; bulk-update
+            // invalidation will be tested when Option B is implemented.
             Ok(rows_affected)
         }
     }

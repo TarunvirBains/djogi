@@ -1,0 +1,257 @@
+//! Cluster 8δ T7.2 — runtime checks for the auto-emitted
+//! `impl Cacheable for {Model}` and `impl DeltaSyncCacheable for {Model}`.
+//!
+//! Ships in `djogi-macros/tests/` rather than `djogi/tests/` because
+//! the surface under test is what the macro emits — `#[derive(Model)]`
+//! is `djogi-macros`-owned, the trait re-exports are `djogi`-owned,
+//! and putting the integration test alongside the macro keeps the
+//! provenance clear. The trybuild compile-pass fixtures
+//! (`tests/compile_pass/phase8_t7_cacheable_*.rs`) cover the
+//! macro-emission side from a standalone-fixture angle; this file is
+//! the in-crate side — uses `#[derive(Model)]` directly through the
+//! `djogi` dev-dep prelude and asserts on the resulting trait
+//! contract.
+//!
+//! The PK-strategy fan-out (one model per built-in `pk = X` value)
+//! pins `Cacheable::Id` to the type `inject::expand` actually injects.
+//! A future change that flips the lowering for one of these
+//! identifiers without updating the macro emit fails on the
+//! `assert_id_type::<Model, ExpectedId>()` call at monomorphisation.
+//!
+//! Spec anchor:
+//!   docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md
+//!   §3 commit T7.2 — "Test names + assertions" bullet, plus the
+//!   T7.2 phase amendment block (Codex Finding 6 PK-variant fan-out).
+
+use djogi::prelude::*;
+
+// Bring the re-exported `Cacheable` / `DeltaSyncCacheable` traits into
+// scope for method dispatch. `djogi::types::Cacheable` is the macro-
+// routing path the auto-emit targets; `djogi::cache::Cacheable`
+// (re-exported from the same sassi trait via `djogi/src/cache.rs`)
+// resolves to the same trait, so importing either is equivalent.
+// We import via `djogi::types` to mirror the macro-emission target
+// path exactly.
+use djogi::types::{Cacheable, DeltaSyncCacheable};
+
+// ---------------------------------------------------------------------------
+// PK-variant fixtures — one model per built-in `pk = X` strategy plus the
+// `primary_key!`-declared custom variant. Each fixture exists solely so the
+// per-PK `assert_id_type` test can pin `Cacheable::Id` to the expected
+// concrete type.
+// ---------------------------------------------------------------------------
+
+/// Default `#[model]` declaration. Per Phase 7-Zero-2 T2 the implicit
+/// PK strategy is `HeerIdDesc` (recency-biased), so the auto-emitted
+/// `Cacheable::Id` resolves to `HeerIdDesc`.
+#[model(table = "phase8_t7_cacheable_emit_default")]
+#[derive(Debug, Clone)]
+pub struct DefaultModel {
+    pub label: String,
+}
+
+/// Explicit `pk = HeerId` (ascending HeerId — the pre-Phase-7-Zero-2
+/// historical default).
+#[model(table = "phase8_t7_cacheable_emit_heerid", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct HeerIdModel {
+    pub label: String,
+}
+
+/// Explicit `pk = RanjId` (UUIDv8, ascending).
+#[model(table = "phase8_t7_cacheable_emit_ranjid", pk = RanjId)]
+#[derive(Debug, Clone)]
+pub struct RanjIdModel {
+    pub label: String,
+}
+
+/// Explicit `pk = HeerIdDesc` (the canonical recency-biased ID).
+#[model(table = "phase8_t7_cacheable_emit_heerid_desc", pk = HeerIdDesc)]
+#[derive(Debug, Clone)]
+pub struct HeerIdDescModel {
+    pub label: String,
+}
+
+/// Explicit `pk = RanjIdDesc` (recency-biased UUIDv8).
+#[model(table = "phase8_t7_cacheable_emit_ranjid_desc", pk = RanjIdDesc)]
+#[derive(Debug, Clone)]
+pub struct RanjIdDescModel {
+    pub label: String,
+}
+
+/// `pk = Serial` lookup table. The injected `id` is `i32`, so
+/// `Cacheable::Id` must resolve to `i32`. Custom-PK Cacheable bounds
+/// (`Hash + Eq + Clone + Ord + Send + Sync + 'static`) are satisfied
+/// by `i32` upstream.
+#[model(table = "phase8_t7_cacheable_emit_serial", pk = Serial)]
+#[derive(Debug, Clone)]
+pub struct SerialModel {
+    pub label: String,
+}
+
+// `primary_key!`-declared custom PK type. The newtype wraps `i64` and
+// the auto-derive set added in Cluster 8δ T7.2 (Ord / PartialOrd /
+// serde::Serialize / Deserialize on top of the previous Debug / Clone /
+// Copy / PartialEq / Eq / Hash) ensures the inner value passes the
+// `Cacheable::Id: Hash + Eq + Clone + Ord + Send + Sync + 'static`
+// bound when the auto-emitted `impl Cacheable for CustomPkModel`
+// binds `type Id = MyAppId`.
+djogi::primary_key! {
+    pub struct MyAppId(i64);
+    sql_type = "BIGINT";
+    default_sql = "0";
+    bulk_sql = "SELECT 0::bigint AS id FROM generate_series(1, $1)";
+}
+
+/// Adopter-declared custom PK. `Cacheable::Id` resolves to `MyAppId`.
+#[model(table = "phase8_t7_cacheable_emit_custom", pk = MyAppId)]
+#[derive(Debug, Clone)]
+pub struct CustomPkModel {
+    pub label: String,
+}
+
+/// Watermark-override fixture — `expires_at` (a user field) replaces
+/// the default `updated_at`. `time::OffsetDateTime` does not implement
+/// `Default`, so the model carries `no_default` to skip the
+/// `inject::generate_default_impl` pass.
+#[model(
+    table = "phase8_t7_cacheable_emit_watermark",
+    watermark_field = "expires_at",
+    no_default
+)]
+#[derive(Debug, Clone)]
+pub struct WatermarkModel {
+    pub label: String,
+    pub expires_at: ::djogi::types::DateTime,
+}
+
+// ---------------------------------------------------------------------------
+// Per-PK Cacheable::Id assertions. Each test threads the model and the
+// expected `Cacheable::Id` type through a generic helper; if the macro
+// emitted the wrong associated type the call site fails to monomorphise
+// with a "type mismatch" error pointing at the `assert_id_type` line.
+// ---------------------------------------------------------------------------
+
+fn assert_id_type<T: Cacheable<Id = ExpectedId>, ExpectedId>()
+where
+    ExpectedId: ::std::hash::Hash + Eq + Clone + Ord + Send + Sync + 'static,
+{
+}
+
+#[test]
+fn cacheable_emitted_for_heerid_pk() {
+    assert_id_type::<HeerIdModel, ::djogi::types::HeerId>();
+}
+
+#[test]
+fn cacheable_emitted_for_ranjid_pk() {
+    assert_id_type::<RanjIdModel, ::djogi::types::RanjId>();
+}
+
+#[test]
+fn cacheable_emitted_for_heerid_desc_pk() {
+    // The default `#[model]` declaration also lowers to `HeerIdDesc`
+    // (per `attrs.rs:1064` — `pk.unwrap_or(PkStrategy::HeerIdDesc)`),
+    // so both spellings resolve to the same `Cacheable::Id` type.
+    assert_id_type::<HeerIdDescModel, ::djogi::types::HeerIdDesc>();
+    assert_id_type::<DefaultModel, ::djogi::types::HeerIdDesc>();
+}
+
+#[test]
+fn cacheable_emitted_for_ranjid_desc_pk() {
+    assert_id_type::<RanjIdDescModel, ::djogi::types::RanjIdDesc>();
+}
+
+#[test]
+fn cacheable_emitted_for_serial_pk() {
+    // `pk = Serial` → injected `id: i32`. `Cacheable::Id` must follow.
+    assert_id_type::<SerialModel, i32>();
+}
+
+#[test]
+fn cacheable_emitted_for_custom_pk() {
+    // `primary_key!`-declared types satisfy `Cacheable::Id`'s
+    // `Hash + Eq + Clone + Ord + Send + Sync + 'static` bound only
+    // because the macro now auto-derives `PartialOrd` + `Ord` (T7.2;
+    // `primary_key_macro.rs:299-324`). If those derives are dropped,
+    // this test fails at the `assert_id_type` call site with a clean
+    // bound error, not at a downstream Cacheable use site.
+    assert_id_type::<CustomPkModel, MyAppId>();
+}
+
+/// `pk = None` skips Cacheable emission entirely. Asserting absence
+/// requires a separate trybuild compile_fail fixture
+/// (`tests/compile_fail/phase8_t7_cacheable_skipped_for_pk_none.rs`)
+/// because absence-of-impl is not directly probable at runtime.
+/// This stub names the asserted invariant for grep-discoverability.
+#[test]
+fn cacheable_skipped_for_pk_none() {
+    // Intentionally empty — see the compile_fail fixture noted above.
+    // Keeping the test name in this file pins the grep-discoverable
+    // contract alongside the positive-emission tests.
+}
+
+// ---------------------------------------------------------------------------
+// Behaviour assertions — `Cacheable::id(&self)` clones the `id` field;
+// `DeltaSyncCacheable::watermark(&self)` clones the watermark field.
+// These are general-shape tests that don't change per PK strategy
+// (every emitted impl goes through the same hand-roll body).
+// ---------------------------------------------------------------------------
+
+/// `Cacheable::id(&self)` clones the `id` field. The runtime check
+/// confirms the emitted body is `self.id.clone()` — a model with
+/// `id` zero-valued (the default-impl sentinel) round-trips through
+/// `Cacheable::id` to exactly the same value.
+#[test]
+fn cacheable_id_returns_self_id_field() {
+    let m = DefaultModel::default();
+    let cached_id = <DefaultModel as Cacheable>::id(&m);
+    // `HeerIdDesc::sentinel()` is the default-impl zero value per
+    // `inject::generate_default_impl`; the auto-emitted `id()` must
+    // return the same value through the trait dispatch.
+    assert_eq!(cached_id, m.id);
+}
+
+/// `DeltaSyncCacheable::Watermark` resolves to the type of the field
+/// named by `#[model(watermark_field = "expires_at")]` — `DateTime`
+/// in this fixture. Without the override, the watermark defaults to
+/// `updated_at: DateTime` (always present per Phase 7 framework-field
+/// injection).
+#[test]
+fn delta_sync_cacheable_watermark_uses_named_field() {
+    fn assert_watermark_type<T: DeltaSyncCacheable<Watermark = ::djogi::types::DateTime>>() {}
+    assert_watermark_type::<WatermarkModel>();
+
+    // The default-watermark branch — `DefaultModel` has no
+    // `watermark_field` override, so the macro falls back to
+    // `updated_at`, which is also `DateTime`. Same `Watermark` type
+    // resolves through both paths.
+    assert_watermark_type::<DefaultModel>();
+}
+
+/// `DeltaSyncCacheable::watermark(&self)` clones the named field.
+/// For `WatermarkModel`, that's `expires_at`; for `DefaultModel`,
+/// it's `updated_at`. Both flow through the same trait dispatch.
+///
+/// `WatermarkModel` carries `#[model(no_default)]` because
+/// `time::OffsetDateTime` does not implement `Default` — every
+/// field must be initialised explicitly. We use `OffsetDateTime::UNIX_EPOCH`
+/// for both timestamp slots since the test only exercises trait
+/// dispatch, not real-DB roundtrip.
+#[test]
+fn delta_sync_cacheable_watermark_returns_field_value() {
+    let epoch = ::djogi::types::DateTime::UNIX_EPOCH;
+    let m = WatermarkModel {
+        id: <::djogi::types::HeerIdDesc as ::djogi::primary_key::PrimaryKey>::sentinel(),
+        created_at: epoch,
+        updated_at: epoch,
+        label: "test".to_string(),
+        expires_at: epoch,
+    };
+    let watermark = <WatermarkModel as DeltaSyncCacheable>::watermark(&m);
+    assert_eq!(watermark, m.expires_at);
+
+    let d = DefaultModel::default();
+    let default_watermark = <DefaultModel as DeltaSyncCacheable>::watermark(&d);
+    assert_eq!(default_watermark, d.updated_at);
+}

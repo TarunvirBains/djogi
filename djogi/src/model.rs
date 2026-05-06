@@ -280,6 +280,29 @@ pub trait Model: Sized + Send + Sync + 'static + __sealed::Sealed {
         })
     }
 
+    /// Framework-internal: returns `true` when this row should be tombstoned
+    /// (rather than upserted) by the delta-sync fetcher. Default: `false`.
+    ///
+    /// Models opting into `#[model(soft_deletable)]` get a macro-emitted
+    /// override that forwards to
+    /// `<Self as SoftDeletable>::deleted_at(self).is_some()`.
+    /// Adopters do NOT override this method directly — the soft-delete
+    /// surface is `#[model(soft_deletable)]` + the `SoftDeletable` trait.
+    ///
+    /// # Why on `Model` rather than gated on `SoftDeletable`
+    ///
+    /// The delta-sync fetcher in `djogi::query::refresh` walks items
+    /// generically over `T: Model + Cacheable + ...`. Rust's coherence rules
+    /// don't allow specializing the walk based on whether `T: SoftDeletable`,
+    /// so the soft-delete signal lives on `Model` with a default `false`.
+    /// Non-soft-delete models pay zero (the default is a constant), and the
+    /// runtime check is a single virtual call per row — negligible vs the
+    /// SQL round-trip.
+    #[doc(hidden)]
+    fn __delta_should_tombstone(&self) -> bool {
+        false
+    }
+
     /// Walk **every** self-FK edge declared on this model upward —
     /// the multi-edge sibling of [`Model::tree_ancestors`]. Phase
     /// 8-Zero Cluster B3 (T13a).

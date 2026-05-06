@@ -139,6 +139,17 @@ pub struct DjogiContext {
     /// silently across tenant boundaries inside one transaction (Phase 5.5
     /// Task 10 fixup — Codex stop-gate review of `f393a87`).
     pub(crate) applied_tenant_id: Option<String>,
+
+    /// Cluster 8δ T7.4 — typed `Punnu<T>` pool registry for this context.
+    ///
+    /// Built once at construction time by walking `inventory::iter::<SassiBootHook>()`.
+    /// Top-level contexts (`from_pool`, `from_connection`) each own a fresh `Arc<Sassi>`.
+    /// `begin()` and `atomic()` SHARE the parent's `Arc<Sassi>` (cache state is
+    /// transaction-scope-agnostic — the registry does not track in-flight mutations,
+    /// only provides access to the pools).
+    ///
+    /// Access via [`Self::punnu::<T>()`]; the raw `Arc<Sassi>` is crate-private.
+    pub(crate) sassi: std::sync::Arc<sassi::Sassi>,
 }
 
 /// Snapshot of the auth-related mutable state on a [`DjogiContext`],
@@ -209,6 +220,7 @@ impl DjogiContext {
             auth: None,
             tenant_scope_suppressed: false,
             applied_tenant_id: None,
+            sassi: Self::build_sassi(),
         }
     }
 
@@ -228,6 +240,7 @@ impl DjogiContext {
             auth: None,
             tenant_scope_suppressed: false,
             applied_tenant_id: None,
+            sassi: Self::build_sassi(),
         }
     }
 
@@ -389,6 +402,170 @@ impl DjogiContext {
         self.applied_tenant_id = snapshot.applied_tenant_id;
         self.tenant_set = snapshot.tenant_set;
         self.tenant_scope_suppressed = snapshot.tenant_scope_suppressed;
+    }
+
+    // -------------------------------------------------------------------------
+    // Cluster 8δ T7.4 — Sassi registry helpers.
+    // -------------------------------------------------------------------------
+
+    /// Build a fresh `Arc<Sassi>` by walking the inventory of
+    /// [`SassiBootHook`](crate::cache::SassiBootHook)s registered at link
+    /// time via `inventory::submit!`.
+    ///
+    /// Every `#[model]` struct (except `pk = None`) emits one
+    /// `inventory::submit!` in the macro-expansion phase. At runtime, this
+    /// function iterates that inventory, calls each hook's `fn(&mut Sassi)`,
+    /// and freezes the result into a shared `Arc`. Top-level `DjogiContext`
+    /// constructors (`from_pool`, `from_connection`) call this once; inner
+    /// contexts (`begin()`, `atomic()`) clone the parent's `Arc` instead of
+    /// rebuilding.
+    pub(crate) fn build_sassi() -> std::sync::Arc<sassi::Sassi> {
+        let mut s = sassi::Sassi::new();
+        for hook in inventory::iter::<crate::cache::SassiBootHook>() {
+            (hook.0)(&mut s);
+        }
+        std::sync::Arc::new(s)
+    }
+
+    /// Return the registered [`Punnu<T>`](sassi::Punnu) for `T`.
+    ///
+    /// Returns `None` if:
+    /// - `T` is a `pk = None` model (no `Cacheable` impl is auto-emitted,
+    ///   so no boot hook ran for it), or
+    /// - no `#[model]`-derived boot hook registered a pool for `T` (hand-
+    ///   rolled `Cacheable` impls without an accompanying boot hook do not
+    ///   appear in the registry).
+    ///
+    /// The same `Arc<Punnu<T>>` is returned on every call for the same `T`
+    /// within one top-level `DjogiContext`. Contexts opened via `begin()` or
+    /// `atomic()` share the parent's `Arc<Sassi>`, so they return the same
+    /// `Arc<Punnu<T>>` as well.
+    ///
+    /// # Cross-context contract (Cluster 8δ T7.4)
+    ///
+    /// Different top-level `DjogiContext` instances each build their own
+    /// `Sassi`, so their `Punnu<T>` handles are DISTINCT — `Arc::ptr_eq`
+    /// will return `false`. This is the "DjogiContext IS the tenant
+    /// boundary" contract: two top-level contexts observe and mutate
+    /// independent pools.
+    ///
+    /// To enforce that a received `Arc<Punnu<T>>` belongs to this context
+    /// before passing it into a framework method, use
+    /// [`DjogiContext::use_punnu`] (cluster 8δ T7.6).
+    pub fn punnu<T>(&self) -> Option<std::sync::Arc<sassi::Punnu<T>>>
+    where
+        T: crate::types::Cacheable + 'static,
+    {
+        self.sassi.pool::<T>()
+    }
+
+    /// Verify that `p` belongs to **this** context's `Sassi` registry and
+    /// return a clone of it.
+    ///
+    /// This is the defensive accessor for adopter code that receives a
+    /// `Punnu<T>` from some external source (e.g. from a different
+    /// `DjogiContext`, or stored as application state) and needs to pass it to
+    /// a framework method like [`QuerySet::cache`](crate::QuerySet::cache).
+    /// Passing a `Punnu<T>` that was registered on a *different* context's
+    /// `Sassi` is a cross-context misuse — the two contexts have independent
+    /// cache registries (per the T7.4 "DjogiContext IS the tenant boundary"
+    /// contract), so writes to one context's `Punnu` are never observable on
+    /// the other.
+    ///
+    /// The check uses `Arc::ptr_eq` to compare the passed handle against the
+    /// one registered in `self.sassi`. If they point at the same allocation,
+    /// the handle belongs to this context; otherwise it was acquired from a
+    /// different `DjogiContext`.
+    ///
+    /// # Mismatch behaviour (cfg-fork per `feedback_decision_priorities.md`)
+    ///
+    /// The decision matrix maps build target to the dominant priority axis:
+    ///
+    /// | Build | Axis | Behaviour |
+    /// |---|---|---|
+    /// | Debug | idiomatic Rust + scalability | `panic!` with a span-precise message |
+    /// | Release | production stability | `tracing::error!` + empty `Punnu<T>` fallback |
+    ///
+    /// **Debug builds panic** because surfacing the misuse loudly during
+    /// development lets the developer fix it before it reaches production.
+    /// A silent fail-closed in debug mode would let cross-context bugs ship
+    /// to prod undetected.
+    ///
+    /// **Release builds fail closed** because crashing a multi-tenant server
+    /// on a single cross-context bug in cold-path code violates production
+    /// stability. `tracing::error!` emits an observable signal for log
+    /// scrapers; the empty `Punnu<T>` fallback is a live but isolated pool —
+    /// reads return `None` (it is fresh-empty), and writes go into the
+    /// fallback's own L1 cache only. They do NOT propagate to either the
+    /// calling context's registered `Punnu<T>` or to the source `Arc` the
+    /// caller passed in. The caller observes a normal `Arc<Punnu<T>>`
+    /// surface but no cross-context state contamination is possible.
+    ///
+    /// # Returns
+    ///
+    /// - **Same-context path:** `Arc::clone(p)` — the same `Arc<Punnu<T>>`
+    ///   that was registered at boot time for this context.
+    /// - **Cross-context path (debug):** panics.
+    /// - **Cross-context path (release):** a fresh empty
+    ///   `Arc<Punnu<T>>` (reads return `None`; writes do not propagate).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Correct: acquire from the same context.
+    /// let p = ctx.punnu::<MyModel>().unwrap();
+    /// let verified = ctx.use_punnu(&p); // returns Arc::clone(&p)
+    ///
+    /// // Misuse: acquire from a different context — debug build panics,
+    /// // release build returns an empty Punnu.
+    /// let p_other = ctx_b.punnu::<MyModel>().unwrap();
+    /// let verified = ctx_a.use_punnu(&p_other); // BUG: cross-context
+    /// ```
+    ///
+    /// # Spec anchor
+    ///
+    /// `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
+    /// §3 commit T7.6 — cross-context guard.
+    pub fn use_punnu<T>(
+        &self,
+        p: &std::sync::Arc<sassi::Punnu<T>>,
+    ) -> std::sync::Arc<sassi::Punnu<T>>
+    where
+        T: crate::types::Cacheable + 'static,
+    {
+        let registered = self.sassi.pool::<T>();
+        let same_context = registered
+            .as_ref()
+            .map(|ours| std::sync::Arc::ptr_eq(p, ours))
+            .unwrap_or(false);
+
+        if !same_context {
+            if cfg!(debug_assertions) {
+                panic!(
+                    "cross-context Punnu access: this Punnu<{}> was not registered \
+                     on this DjogiContext's Sassi. Each DjogiContext has its own \
+                     cache registry per cluster 8δ T7.4 (Path X tenant boundary). \
+                     Acquire the Punnu via ctx.punnu::<T>() on this same context.",
+                    std::any::type_name::<T>(),
+                );
+            } else {
+                tracing::error!(
+                    target: "djogi::cache",
+                    model = std::any::type_name::<T>(),
+                    "cross-context Punnu access — returning empty Punnu fallback. \
+                     The passed Punnu<T> is not bound to this DjogiContext: \
+                     either it was acquired from a different context, or T \
+                     was never registered on this context's boot inventory \
+                     (e.g. pk = None or no #[derive(Model)]). Reads return \
+                     None; writes go into the fallback's own L1 only. This \
+                     is a release-build fail-closed; the caller should use \
+                     ctx.punnu::<T>() on this context.",
+                );
+                return std::sync::Arc::new(sassi::Punnu::<T>::builder().build());
+            }
+        }
+
+        std::sync::Arc::clone(p)
     }
 
     // -------------------------------------------------------------------------
@@ -555,7 +732,24 @@ impl DjogiContext {
             ContextInner::Pool(pool) => {
                 let mut conn = pool.get().await?;
                 conn.batch_execute("BEGIN").await?;
-                Ok(DjogiContext::from_connection(conn))
+                // Share the parent's Sassi handle — the registry is read-only
+                // after construction and transaction scope does not change the
+                // set of registered pools. `begin()` / `atomic()` are inner
+                // contexts that share the outer's cache state.
+                //
+                // SYNC: the field list below must stay in lockstep with
+                // `from_pool` and `from_connection`. Adding a field to
+                // `DjogiContext` requires updating all three sites.
+                Ok(DjogiContext {
+                    inner: ContextInner::Transaction(conn),
+                    savepoint_depth: 0,
+                    on_commit: Vec::new(),
+                    tenant_set: false,
+                    auth: None,
+                    tenant_scope_suppressed: false,
+                    applied_tenant_id: None,
+                    sassi: std::sync::Arc::clone(&self.sassi),
+                })
             }
             ContextInner::Transaction(_) => Err(DjogiError::Db(DbError::other(
                 "DjogiContext::begin called on a transaction-backed context; \

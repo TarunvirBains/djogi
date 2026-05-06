@@ -28,3 +28,24 @@ pub type DateTime = time::OffsetDateTime;
 
 /// `DATE` — alias for `time::Date`.
 pub type Date = time::Date;
+
+// Sassi cache-surface re-exports for macro-emitted code (Cluster 8δ T7.1).
+//
+// Per `feedback_macro_path_routing.md`, proc-macro-emitted impls must
+// route through `::djogi::*` paths only — never `::sassi::*` directly.
+// T7.2 emits `impl ::djogi::types::Cacheable for {Model}` and the
+// matching `DeltaSyncCacheable` impl through `sassi-codegen` with
+// `sassi_path = ::djogi::types`. `MonotonicWatermark` is the watermark
+// trait the emitted `DeltaSyncCacheable` impl bounds against;
+// `BasicPredicate` is the lifted predicate algebra surface the
+// `Q::Basic(...)` lowering reaches in macro-emission contexts.
+//
+// The adopter-facing surface lives at `djogi::cache::*` (see
+// `crate::cache`) — this re-export is purely a macro-routing target.
+// `Cacheable` is imported via the module path `sassi::cacheable` so the
+// re-export carries the TRAIT only — `sassi::Cacheable` glob-resolves to
+// both the trait and `sassi_macros::Cacheable` (the derive). T7.2 emits
+// `impl ::djogi::types::Cacheable for ...`; that path must point at the
+// trait, not the derive. (See the matching note in `crate::cache`.)
+pub use sassi::cacheable::Cacheable;
+pub use sassi::{BasicPredicate, DeltaSyncCacheable, MonotonicWatermark};

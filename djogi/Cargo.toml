@@ -422,3 +422,73 @@ harness = true
 name = "phase8_djogi_verify_cli"
 path = "../tests/integration/phase8_djogi_verify_cli.rs"
 harness = true
+
+# ── Phase 8δ T7.3 — cache modifier integration ───────────────────────────────
+
+[[test]]
+name = "phase8_t7_3_cache_modifier"
+path = "../tests/integration/phase8_t7_3_cache_modifier.rs"
+harness = true
+
+# ── Phase 8δ T7.4 — punnu boot registration ─────────────────────────────────
+
+[[test]]
+name = "phase8_t7_4_punnu_boot_registration"
+path = "../tests/integration/phase8_t7_4_punnu_boot_registration.rs"
+harness = true
+
+# ── Phase 8δ T7.5 — on_commit cache invalidation hooks ──────────────────────
+
+[[test]]
+name = "phase8_t7_5_cache_invalidation"
+path = "../tests/integration/phase8_t7_5_cache_invalidation.rs"
+harness = true
+
+# ── Phase 8δ T7.6 — cross-context guard ─────────────────────────────────────
+
+[[test]]
+name = "phase8_t7_6_cross_context_guard"
+path = "../tests/integration/phase8_t7_6_cross_context_guard.rs"
+harness = true
+
+# ── Phase 8δ T8.4 — into_basic_predicate: Q<T>→BasicPredicate<T> extraction ──
+
+[[test]]
+name = "phase8_t8_4_basic_predicate_extraction"
+path = "../tests/integration/phase8_t8_4_basic_predicate_extraction.rs"
+harness = true
+
+# ── Phase 8δ T8.5 — DjogiDeltaFetcher::fetch_delta real SQL path ─────────────
+
+[[test]]
+name = "phase8_t8_5_fetcher_tick"
+path = "../tests/integration/phase8_t8_5_fetcher_tick.rs"
+harness = true
+
+# ── Phase 8δ T8.6 — SoftDeletable-derived tombstones in delta fetcher ─────────
+
+[[test]]
+name = "phase8_t8_6_softdelete_tombstones"
+path = "../tests/integration/phase8_t8_6_softdelete_tombstones.rs"
+harness = true
+
+# ── Phase 8δ T8.8 — DeltaRefreshHandle knobs: LRU warn + recovery + periodic ──
+
+[[test]]
+name = "phase8_t8_8_refresh_knobs"
+path = "../tests/integration/phase8_t8_8_refresh_knobs.rs"
+harness = true
+
+# ── Phase 8δ T8.9 — tokio::spawn handle lifetime test ───────────────────────
+
+[[test]]
+name = "phase8_t8_9_refresh_lifetime"
+path = "../tests/integration/phase8_t8_9_refresh_lifetime.rs"
+harness = true
+
+# ── Phase 8δ T8.10 — cluster-exit integration: auth-locked + e2e happy-path ──
+
+[[test]]
+name = "phase8_t8_10_refresh_e2e"
+path = "../tests/integration/phase8_t8_10_refresh_e2e.rs"
+harness = true

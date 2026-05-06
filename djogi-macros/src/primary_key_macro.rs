@@ -3,7 +3,14 @@
 //! Adopters declare a custom PK type in ~4 lines. The macro emits:
 //!
 //! - the `pub struct <Name>(<Inner>);` newtype with a standard derive set
-//!   (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`);
+//!   (`Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `PartialOrd`, `Ord`,
+//!   `Hash`, `serde::Serialize`, `serde::Deserialize`). `PartialOrd` /
+//!   `Ord` are required by Cluster 8δ T7.2's auto-emitted
+//!   `Cacheable::Id` bound (`Hash + Eq + Clone + Ord + Send + Sync +
+//!   'static` — `sassi-reference/sassi/src/cacheable.rs:60`); serde
+//!   derives keep the newtype usable as a transparent envelope wrapper
+//!   in adopter-side JSON I/O without reaching for an explicit
+//!   `serde` dep;
 //! - `impl ::djogi::primary_key::PrimaryKey for <Name>` with
 //!   `KIND = PkType::Custom(CustomPrimaryKeyKind { .. })`, `SQL_TYPE`, and
 //!   `DEFAULT_SQL` populated from the declaration attributes;
@@ -303,6 +310,27 @@ pub fn expand(input: TokenStream) -> TokenStream {
             ::std::marker::Copy,
             ::std::cmp::PartialEq,
             ::std::cmp::Eq,
+            // Cluster 8δ T7.2 — `Cacheable::Id: Hash + Eq + Clone + Ord + Send +
+            // Sync + 'static` (`sassi-reference/sassi/src/cacheable.rs:60`). The
+            // auto-emitted `impl Cacheable for {Model}` from `#[derive(Model)]`
+            // sets `type Id = <user PK type>`, so the PK must satisfy `Ord` for
+            // the impl to type-check. The macro accepts whatever inner type the
+            // adopter declared (no parse-time validation of `sql_type` against
+            // the inner Rust type — see the `Parse` impl above), so the auto-
+            // derive only succeeds when the inner type already implements
+            // `Ord` + `PartialOrd`. The expected inner types — `i64` / `i32` /
+            // `uuid::Uuid` for the BIGINT / INTEGER / UUID `sql_type`s the
+            // ecosystem uses — all implement `Ord` upstream (std + uuid), so
+            // the derive cost is zero in practice. Adopter responsibility:
+            // don't declare a `primary_key!` whose inner Rust type lacks `Ord`,
+            // or the resulting Cacheable auto-emit will fail with a bound
+            // error at the `#[derive(Model)]` site that uses the PK. The
+            // built-in PK types (HeerId, HeerIdDesc, RanjId, RanjIdDesc,
+            // Serial) already implement `Ord` upstream (heeranjid + std), so
+            // the existing per-PK Cacheable variants in
+            // `djogi-macros/tests/cacheable_emit.rs` cover the happy path.
+            ::std::cmp::PartialOrd,
+            ::std::cmp::Ord,
             ::std::hash::Hash,
             ::djogi::__private::serde::Serialize,
             ::djogi::__private::serde::Deserialize,

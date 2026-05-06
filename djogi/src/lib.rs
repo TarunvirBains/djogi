@@ -51,6 +51,7 @@ extern crate self as djogi;
 pub mod apps;
 pub mod array;
 pub mod auth;
+pub mod cache;
 pub mod compose;
 pub mod config;
 pub mod context;
@@ -89,6 +90,11 @@ pub mod visage_boundary;
 // internal `visage_boundary` module. The trait itself is stable public
 // API; only the module it lives in is implementation-detail.
 pub use visage_boundary::DjogiVisageOf;
+
+// Cluster 8δ T7.4 — `SassiBootHook` re-export so `#[derive(Model)]`-emitted
+// `inventory::submit!` blocks can spell `::djogi::SassiBootHook` per
+// `feedback_macro_path_routing.md` (macro paths route through djogi only).
+pub use crate::cache::SassiBootHook;
 
 /// Private re-exports used only by macro-generated code.
 ///
