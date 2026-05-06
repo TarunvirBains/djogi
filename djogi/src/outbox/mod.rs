@@ -190,12 +190,16 @@ where
     #[cfg(feature = "notify")]
     {
         let table = T::table_name();
-        crate::ident::check_plain_ident(table, false).map_err(|e| {
+        let channel = format!("djogi_{table}");
+        // Validate the **derived channel** (not just the table). The
+        // 6-byte `djogi_` prefix can push an otherwise-valid 58-63 byte
+        // table name past Postgres's 63-byte identifier limit, which
+        // matches the subscriber-side validation in `crate::notify`.
+        crate::ident::check_plain_ident(&channel, false).map_err(|e| {
             DjogiError::Db(crate::error::DbError::other(format!(
-                "notify hook: invalid table name {table:?}: {e:?}"
+                "notify hook: invalid channel name {channel:?}: {e:?}"
             )))
         })?;
-        let channel = format!("djogi_{table}");
         let id_str = format!("{}", row.pk_value());
         let notify_payload = build_notify_payload(action, &id_str);
         ctx.execute(

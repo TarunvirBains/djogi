@@ -206,7 +206,10 @@ where
         "delete" => EventKind::Deleted,
         other => {
             return Err(NotifyError::PayloadDecode {
-                raw: format!(r#"{{"kind":"{}","id":"{}"}}"#, other, raw.id_str),
+                // Reconstruct via `serde_json::json!` (not raw `format!`)
+                // so a kind/id containing a quote or backslash still
+                // round-trips into valid JSON for diagnostics.
+                raw: serde_json::json!({ "kind": other, "id": &raw.id_str }).to_string(),
                 source: serde::de::Error::unknown_variant(other, &["create", "save", "delete"]),
             });
         }
@@ -348,9 +351,17 @@ fn parse_raw(payload: &str) -> Result<RawEvent, serde_json::Error> {
 ///
 /// - `NotifyError::ListenerStartFailed` — listener spawn or `LISTEN`
 ///   SQL failed.
-/// - `NotifyError::PayloadDecode` / `NotifyError::InvalidId` (delivered
-///   via `recv().await`) — malformed wire payload or `M::Pk::from_str`
-///   rejected the id string.
+/// - `NotifyError::PayloadDecode` (delivered via `recv().await`) —
+///   the wire payload's `kind` was not one of `"create" | "save" |
+///   "delete"`.
+/// - `NotifyError::InvalidId` (also via `recv().await`) —
+///   `M::Pk::from_str` rejected the wire id string.
+///
+/// **Note on parse failures.** A wire payload that does not parse as
+/// JSON at all is logged via `tracing::warn!` (target `djogi::notify`)
+/// and dropped at the listener boundary — subscribers do not see
+/// these as `recv()` errors. Only payloads that parse but fail
+/// downstream decoding surface as `PayloadDecode` / `InvalidId`.
 pub async fn subscribe<M>(pool: &DjogiPool) -> Result<TypedReceiver<M>, NotifyError>
 where
     M: crate::model::Model + 'static,
