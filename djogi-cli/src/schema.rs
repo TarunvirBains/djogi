@@ -1,23 +1,9 @@
-//! Cluster 8ζ T12.2 — `djogi schema --format json` subcommand.
+//! `djogi schema --format json` — emit a deterministic JSON document
+//! covering every registered model's shape.
 //!
-//! # What
-//!
-//! Iterates `inventory::iter::<&'static ModelDescriptor>` and emits a
-//! deterministic JSON document covering every registered model's
-//! shape. Adopters and tooling consume the document for agent
-//! integration (LLMs, schema browsers), CI assertions on schema
-//! drift, and machine-readable handoffs to downstream codegen.
-//!
-//! # Why a CLI subcommand
-//!
-//! The per-model `{MODEL}_SCHEMA` const (T12.1) is great for a single
-//! adopter-side type, but cross-model views require enumeration.
-//! `inventory::iter` is the right tool for the job, but linker quirks
-//! around `--gc-sections` make calling it from arbitrary contexts
-//! brittle. Surfacing the JSON behind a CLI subcommand puts the
-//! enumeration in a known-good binary (`djogi`) so adopters can
-//! consume it via `cargo run -p djogi-cli -- schema --format json`
-//! or by invoking the installed `djogi` binary.
+//! Adopters and tooling consume the document for agent integration
+//! (LLMs, schema browsers), CI assertions on schema drift, and
+//! machine-readable handoffs to downstream codegen.
 //!
 //! # JSON shape (schema_version = 1)
 //!
@@ -34,7 +20,6 @@
 //!         { "name": "id", "sql_type": "BIGINT", "nullable": false, "unique": false, "indexed": false },
 //!         ...
 //!       ],
-//!       "indexes": [...],
 //!       "relations": [...]
 //!     }
 //!   ]
@@ -44,21 +29,20 @@
 //! # Determinism
 //!
 //! - `models` is sorted by `(app, type_name)`, both ascending.
-//! - Within each model, `fields` follows declaration order (the
-//!   descriptor preserves it via Phase 1's macro emission contract).
+//! - Within each model, `fields` follows declaration order.
 //! - `relations` is sorted alphabetically by source-column name.
-//! - `indexes` follows source declaration order.
 //!
 //! Two consecutive runs against the same compiled binary produce
 //! byte-equal output, suitable for `diff` in CI.
 
 use djogi::descriptor::{FieldDescriptor, ModelDescriptor, PkType};
+use djogi::relation::OnDelete;
 use serde::Serialize;
 use std::path::PathBuf;
 
 /// `--format` value for `djogi schema`. v0.1.0 ships JSON only;
-/// `openapi` and `markdown` are reserved for Phase 9 (per spec
-/// §538) and will slot in without reshaping the existing flag.
+/// `openapi` and `markdown` slots are reserved for a future phase
+/// and will land without reshaping the existing flag.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum SchemaFormat {
     Json,
@@ -81,10 +65,9 @@ pub enum SchemaError {
 
 /// Top-level JSON document emitted by `djogi schema`.
 ///
-/// Carries `schema_version: 1` so adopters can match on this
-/// constant when parsing future evolution. Bumping the major version
-/// (e.g. `2`) is a coordinated break; minor additive fields land
-/// without touching the version.
+/// `schema_version: 1` lets adopters match on the version when
+/// parsing future evolution. Major bumps are coordinated breaks;
+/// minor additive fields land without touching the version.
 #[derive(Debug, Serialize)]
 struct SchemaDocument {
     schema_version: u32,
@@ -95,9 +78,6 @@ struct SchemaDocument {
 struct ModelEntry {
     type_name: String,
     table_name: String,
-    /// Descriptor's `app` field — `None` becomes a JSON `null`. CLI
-    /// adopters that filter by app can match `null` for the
-    /// synthetic global bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
     app: Option<String>,
     pk_type: String,
@@ -131,35 +111,28 @@ struct RelationEntry {
 
 /// Run `djogi schema` against the registered descriptor inventory.
 ///
-/// Writes to `output` if `Some`; otherwise to stdout. Returns
+/// Writes to `output` if `Some`, otherwise to stdout. Returns
 /// [`SchemaError::NoModelsRegistered`] if the inventory is empty —
-/// this almost always means the CLI binary was linked without a
-/// crate that uses `#[derive(Model)]`, which is operator error
-/// rather than a runtime bug.
+/// almost always operator error (the binary was linked without a
+/// crate that uses `#[derive(Model)]`).
 pub fn run(format: SchemaFormat, output: Option<PathBuf>) -> Result<(), SchemaError> {
     let document = collect_document();
     if document.models.is_empty() {
         return Err(SchemaError::NoModelsRegistered);
     }
-    let bytes = match format {
+    let mut bytes = match format {
         SchemaFormat::Json => serde_json::to_vec_pretty(&document)?,
     };
+    bytes.push(b'\n');
 
     match output {
         Some(path) => {
-            // Trailing newline is conventional for Unix files; build
-            // the buffer once and write atomically rather than
-            // truncating-then-rewriting.
-            let mut payload = bytes.clone();
-            payload.push(b'\n');
-            std::fs::write(&path, &payload).map_err(|source| SchemaError::WriteFailed {
+            std::fs::write(&path, &bytes).map_err(|source| SchemaError::WriteFailed {
                 path: path.clone(),
                 source,
             })?;
         }
         None => {
-            // stdout: write the bytes followed by a trailing newline
-            // so terminal-paste users don't get a `%` prompt-eater.
             use std::io::Write;
             let stdout = std::io::stdout();
             let mut handle = stdout.lock();
@@ -169,21 +142,11 @@ pub fn run(format: SchemaFormat, output: Option<PathBuf>) -> Result<(), SchemaEr
                     path: PathBuf::from("<stdout>"),
                     source,
                 })?;
-            handle
-                .write_all(b"\n")
-                .map_err(|source| SchemaError::WriteFailed {
-                    path: PathBuf::from("<stdout>"),
-                    source,
-                })?;
         }
     }
     Ok(())
 }
 
-/// Walk the descriptor inventory and project each entry into a
-/// JSON-serialisable [`ModelEntry`]. Sort by `(app, type_name)` so
-/// the output is deterministic regardless of macro registration
-/// order.
 fn collect_document() -> SchemaDocument {
     let mut models: Vec<ModelEntry> = inventory::iter::<ModelDescriptor>
         .into_iter()
@@ -243,29 +206,38 @@ fn project_relation(f: &FieldDescriptor) -> Option<RelationEntry> {
         kind: relation_kind_label(kind),
         on_delete: f
             .on_delete
-            .map(|od| format!("{od:?}").to_uppercase())
-            .unwrap_or_else(|| "RESTRICT".to_string()),
+            .map(|od| od.as_sql().to_string())
+            .unwrap_or_else(|| OnDelete::default().as_sql().to_string()),
         nullable: f.nullable,
     })
 }
 
+/// Stable per-variant label for `PkType`. Avoids `Debug` formatting so
+/// `Composite([...])` and `Custom(CustomPrimaryKeyKind { ... })` don't
+/// leak Rust-internal shapes to JSON consumers.
 fn pk_type_label(pk: PkType) -> String {
-    // Use `Debug` to render the variant name. Stable across
-    // additions because every variant maps to a distinct ident;
-    // adopters reading "HeerId" / "RanjId" / "Serial" / "None" /
-    // "Custom(...)" cover the v0.1.0 surface.
-    format!("{pk:?}")
+    match pk {
+        PkType::HeerId => "HeerId".to_string(),
+        PkType::RanjId => "RanjId".to_string(),
+        PkType::HeerIdDesc => "HeerIdDesc".to_string(),
+        PkType::RanjIdDesc => "RanjIdDesc".to_string(),
+        PkType::Serial => "Serial".to_string(),
+        PkType::None => "None".to_string(),
+        PkType::Composite(cols) => format!("Composite({})", cols.join(", ")),
+        PkType::Custom(c) => format!("Custom({})", c.type_name),
+        // PkType is #[non_exhaustive]; future variants surface their
+        // Debug name so adopters see something more useful than a
+        // generic sentinel.
+        other => format!("{other:?}"),
+    }
 }
 
 fn relation_kind_label(kind: djogi::relation::RelationKind) -> &'static str {
-    // RelationKind is `#[non_exhaustive]`. Cover the v0.1.0 known
-    // variants explicitly and route any future addition through a
-    // descriptive sentinel string so `djogi schema` keeps emitting
-    // useful output instead of failing to compile when a new
-    // variant lands.
     match kind {
         djogi::relation::RelationKind::ForeignKey => "ForeignKey",
         djogi::relation::RelationKind::OneToOne => "OneToOne",
+        // RelationKind is #[non_exhaustive]; the next variant (Phase 3
+        // T7's ManyToMany) will surface as "Unknown" until added here.
         _ => "Unknown",
     }
 }
@@ -276,9 +248,6 @@ mod tests {
 
     #[test]
     fn schema_document_serialises_known_shape() {
-        // Build a SchemaDocument by hand (no inventory) and check the
-        // top-level field names and ordering. This pins the JSON wire
-        // shape without depending on any specific model being linked.
         let doc = SchemaDocument {
             schema_version: 1,
             models: vec![ModelEntry {
@@ -310,8 +279,6 @@ mod tests {
 
     #[test]
     fn empty_inventory_yields_no_models() {
-        // Synthesise an empty SchemaDocument and verify the
-        // `models` slot is an empty array (not omitted, not null).
         let doc = SchemaDocument {
             schema_version: 1,
             models: vec![],
@@ -322,8 +289,6 @@ mod tests {
 
     #[test]
     fn omitted_fields_skip_when_none() {
-        // `app` is `skip_serializing_if = "Option::is_none"`, so a
-        // model in the synthetic global bucket emits no `"app":` key.
         let doc = SchemaDocument {
             schema_version: 1,
             models: vec![ModelEntry {
@@ -347,5 +312,38 @@ mod tests {
             !json.contains(r#""rationale""#),
             "rationale:None must be omitted: {json}"
         );
+    }
+
+    #[test]
+    fn pk_type_label_renders_machine_friendly_strings() {
+        use djogi::descriptor::CustomPrimaryKeyKind;
+        assert_eq!(pk_type_label(PkType::HeerId), "HeerId");
+        assert_eq!(pk_type_label(PkType::RanjId), "RanjId");
+        assert_eq!(pk_type_label(PkType::HeerIdDesc), "HeerIdDesc");
+        assert_eq!(pk_type_label(PkType::RanjIdDesc), "RanjIdDesc");
+        assert_eq!(pk_type_label(PkType::Serial), "Serial");
+        assert_eq!(pk_type_label(PkType::None), "None");
+        assert_eq!(
+            pk_type_label(PkType::Composite(&["a", "b"])),
+            "Composite(a, b)"
+        );
+        assert_eq!(
+            pk_type_label(PkType::Custom(CustomPrimaryKeyKind {
+                type_name: "crate::ids::UserId",
+                sql_type: "UUID",
+                default_sql: "gen_random_uuid()",
+            })),
+            "Custom(crate::ids::UserId)"
+        );
+    }
+
+    #[test]
+    fn on_delete_set_null_renders_with_space() {
+        // Regression: format!("{:?}", OnDelete::SetNull).to_uppercase()
+        // would have emitted "SETNULL". Routing through OnDelete::as_sql
+        // surfaces the proper DDL spelling.
+        assert_eq!(OnDelete::SetNull.as_sql(), "SET NULL");
+        assert_eq!(OnDelete::SetDefault.as_sql(), "SET DEFAULT");
+        assert_eq!(OnDelete::DoNothing.as_sql(), "NO ACTION");
     }
 }
