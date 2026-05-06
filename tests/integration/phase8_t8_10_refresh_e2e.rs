@@ -464,7 +464,8 @@ async fn refresh_into_auth_locked_to_subscription(mut ctx: djogi::DjogiContext) 
     // exactly 8.
     let tick_b = handle_b.update().await.expect("handle_b tick must succeed");
     assert_eq!(
-        tick_b.applied, 8,
+        tick_b.applied,
+        8,
         "handle_b's first tick must apply exactly 8 rows — handle_b starts \
          from `since = None` (independent watermark) and the AuthRow model \
          has no tenant_key, so a full scan is deterministic; got {applied}",
