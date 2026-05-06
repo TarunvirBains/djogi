@@ -234,11 +234,16 @@ fn on_delete_attr_to_label(attr: &str) -> &'static str {
         "set_default" => "SET DEFAULT",
         "protect" => "RESTRICT",
         "do_nothing" => "NO ACTION",
-        // Fallback for attribute strings the validator hasn't seen —
-        // an unknown spelling surfaces as the literal value so the
-        // mismatch is obvious in the const, rather than silently
-        // upper-cased into SQL nonsense.
-        _ => "UNKNOWN",
+        // `FieldAttrs::parse` rejects every other spelling at attribute-
+        // parse time, so this arm is unreachable on the normal macro
+        // path. Panic loudly if a future validator drift admits a new
+        // spelling — silently emitting "UNKNOWN" would hide the
+        // regression in `MODEL_SCHEMA` output.
+        _ => unreachable!(
+            "schema_const: unknown on_delete attr {attr:?} reached the renderer; \
+             FieldAttrs::parse should have rejected it. Add a label arm above \
+             when introducing a new on_delete spelling."
+        ),
     }
 }
 

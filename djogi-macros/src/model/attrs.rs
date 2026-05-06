@@ -1066,6 +1066,30 @@ impl ModelAttrs {
                 "#[model] requires `table = \"...\"`",
             )
         })?;
+
+        // `events`-bearing models need the derived `{table}_outbox`
+        // identifier to fit Postgres's 63-byte limit. The base table
+        // already passed `check_table_name` (≤ 63), but a 60-byte name
+        // would compile fine and then crash at runtime when
+        // `outbox::emit_event` builds the INSERT or `query::refresh`
+        // builds the poll. Reject at macro time so the error surfaces
+        // at the call site instead of a deferred runtime failure.
+        // The 7-byte `_outbox` suffix is tighter than the 6-byte
+        // `djogi_` notify prefix, so satisfying this bound also keeps
+        // the notify channel within range.
+        if events && table.len() + 7 > 63 {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!(
+                    "#[model(table = \"{table}\", events)] — derived outbox table \
+                     `{table}_outbox` would be {} bytes, exceeding Postgres's \
+                     63-byte identifier limit. Shorten the source table name to \
+                     ≤ 56 bytes to leave room for the `_outbox` suffix.",
+                    table.len() + 7
+                ),
+            ));
+        }
+
         // Phase 7-Zero-2 T2 flipped the default: omitted `pk` now resolves
         // to `HeerIdDesc` (recency-biased), not `HeerId`. Models that still
         // want ascending PK ordering must declare `pk = HeerId` explicitly.
