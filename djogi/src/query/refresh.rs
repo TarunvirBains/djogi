@@ -54,11 +54,12 @@
 //! - **Pattern 2 (outbox-derived):** per-tick poll of
 //!   `<table>_outbox` for `action='delete'` rows whose `created_at`
 //!   advances past a per-fetcher watermark; gated on
-//!   `T::descriptor().has_outbox && TypeId::<T::Id> == TypeId::<HeerId>`
-//!   (the outbox stores `row_id BIGINT`, so non-HeerId-keyed models
-//!   would already have failed at `emit_event`'s INSERT). The poll
-//!   runs inside the same `transaction::atomic` as the data SELECT so
-//!   it inherits the `auto_set_tenant` scope. Closes GH #128.
+//!   `T::descriptor().has_outbox && t_id_decodes_from_outbox_bigint::<T::Id>()`
+//!   (`HeerId` and `HeerIdDesc` both round-trip through the outbox's
+//!   BIGINT `row_id` column; other PK types would already have failed
+//!   at `emit_event`'s INSERT). The poll runs inside the same
+//!   `transaction::atomic` as the data SELECT so it inherits the
+//!   `auto_set_tenant` scope. Closes GH #128.
 //!
 //! # LRU eviction warn (spec §674 Knob 1)
 //!
@@ -118,6 +119,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tokio_postgres::types::ToSql;
+
+/// Safety window subtracted from the server-side first-tick wall clock
+/// so the resulting watermark is guaranteed to be `<=` any concurrent
+/// delete transaction's `created_at` for that window's duration.
+///
+/// The race the window closes: a delete transaction `T_d` may start at
+/// time `A`, insert into `<table>_outbox` (Postgres `now()` returns
+/// `A`, the transaction-start time), and commit at time `B > A`. If
+/// the fetcher's first tick samples its watermark at `C` where
+/// `A < C < B`, then `created_at = A < C = watermark`, and on every
+/// later tick the `created_at >= watermark` poll skips this delete,
+/// leaving a stale cache entry forever.
+///
+/// Setting `watermark = server_now() - WINDOW` widens the poll boundary
+/// far enough to catch any `T_d` whose `transaction_start` was within
+/// `WINDOW` of our snapshot. 60 seconds covers OLTP-shaped workloads;
+/// adopters with longer transactions will eventually need a builder
+/// knob, but that is a follow-up. (The cost is a one-time replay of
+/// the trailing-`WINDOW` slice of the outbox on the second tick;
+/// sassi's `apply_delta` deduplicates by id so re-seeing already-
+/// applied tombstones is a no-op.)
+const FIRST_TICK_WATERMARK_SAFETY_WINDOW: time::Duration = time::Duration::seconds(60);
 
 /// True when `T::Id` is one of the BIGINT-decoded HeerId flavours that
 /// the outbox `row_id BIGINT` column can round-trip through. Both
@@ -282,31 +305,31 @@ where
             None
         };
 
-        // Capture the first-tick clock BEFORE the transaction begins so
-        // a delete committed between this snapshot and the post-
-        // transaction watermark write still has `created_at >= watermark`
-        // and gets caught on the next tick. Setting the watermark to a
-        // post-transaction `now()` would lose deletes whose `created_at`
-        // landed in the gap.
-        let first_tick_clock: Option<OffsetDateTime> =
-            if outbox_enabled && outbox_watermark_snapshot.is_none() {
-                Some(OffsetDateTime::now_utc())
-            } else {
-                None
-            };
-
         // The SQL must run inside `transaction::atomic` because
         // `auto_set_tenant::<T>` issues `SET LOCAL app.tenant_id`, which
         // only persists inside an open transaction. Without that wrap,
         // RLS-backed tenant isolation would silently fail. The Pattern 2
         // outbox poll piggy-backs on the same transaction so it inherits
         // the same tenant scope.
-        // The closure returns the outbox tombstones as `(i64, OffsetDateTime)`
-        // — the raw `row_id` bits, not a `HeerId`. The caller decodes
-        // them into `T::Id` via `cast_row_id_to_t_id`, which knows
-        // about both `HeerId` and `HeerIdDesc` flavours.
-        let (items, outbox_tombstones): (Vec<T>, Vec<(i64, OffsetDateTime)>) =
-            crate::transaction::atomic(&self.pool, move |ctx| {
+        //
+        // The closure returns:
+        // - `items` — live rows for the cache.
+        // - `outbox_tombstones` — `(i64, OffsetDateTime)` pairs (raw
+        //   `row_id` bits + `created_at`). The caller decodes the raw
+        //   bits into `T::Id` via `cast_row_id_to_t_id`.
+        // - `first_tick_server_now` — `Some(t)` when this is the first
+        //   tick and the watermark needs initialisation. Sampled
+        //   server-side via `SELECT NOW()` inside the same transaction
+        //   so any delete committed against this database from now on
+        //   has `created_at >= t`. The post-transaction merge subtracts
+        //   `FIRST_TICK_WATERMARK_SAFETY_WINDOW` to also cover concurrent
+        //   delete transactions whose `transaction_start` was before our
+        //   sample.
+        let (items, outbox_tombstones, first_tick_server_now): (
+            Vec<T>,
+            Vec<(i64, OffsetDateTime)>,
+            Option<OffsetDateTime>,
+        ) = crate::transaction::atomic(&self.pool, move |ctx| {
             Box::pin(async move {
                 // Apply the captured auth snapshot to the inner ctx.
                 ctx.set_auth(auth);
@@ -315,6 +338,23 @@ where
                 // tenant-keyed models. No-op for models without `tenant_key`
                 // in their descriptor.
                 crate::query::terminal::auto_set_tenant::<T>(ctx).await?;
+
+                // Sample the server clock at transaction-start time, but
+                // only when first-tick init is required. `SELECT NOW()`
+                // inside the same transaction returns
+                // `transaction_timestamp()` — server-authoritative, so
+                // host/DB clock skew is impossible.
+                let first_tick_server_now: Option<OffsetDateTime> =
+                    if outbox_enabled && outbox_watermark_snapshot.is_none() {
+                        let row = ctx.query_one("SELECT NOW()", &[]).await?;
+                        Some(row.try_get::<_, OffsetDateTime>(0).map_err(|e| {
+                            crate::DjogiError::Db(crate::error::DbError::other(format!(
+                                "first-tick watermark: SELECT NOW() decode: {e}"
+                            )))
+                        })?)
+                    } else {
+                        None
+                    };
 
                 // Build SQL — 4 explicit cases on (since, recover_ids).
                 // Watermark uses `>=` (inclusive boundary per the
@@ -385,8 +425,7 @@ where
                     let rows = ctx
                         .query_all(&outbox_sql, &[&watermark as &(dyn ToSql + Sync)])
                         .await?;
-                    let mut decoded: Vec<(i64, OffsetDateTime)> =
-                        Vec::with_capacity(rows.len());
+                    let mut decoded: Vec<(i64, OffsetDateTime)> = Vec::with_capacity(rows.len());
                     for row in rows {
                         let raw: i64 = row.try_get(0).map_err(|e| {
                             crate::DjogiError::Db(crate::error::DbError::other(format!(
@@ -405,7 +444,7 @@ where
                     Vec::new()
                 };
 
-                Ok::<_, crate::DjogiError>((items, outbox_tombstones))
+                Ok::<_, crate::DjogiError>((items, outbox_tombstones, first_tick_server_now))
             })
         })
         .await
@@ -462,11 +501,15 @@ where
                     *guard = Some(new_watermark);
                 }
             }
-        } else if let Some(initial) = first_tick_clock {
-            // First-tick initialisation. Captured BEFORE the transaction
-            // ran (see `first_tick_clock` above) so a delete committed
-            // during the transaction has `created_at >= initial` on the
-            // next tick's poll.
+        } else if let Some(server_now) = first_tick_server_now {
+            // First-tick initialisation. The watermark is the server's
+            // `transaction_timestamp()` minus the safety window, so a
+            // concurrent delete transaction that started up to that
+            // window before our snapshot but commits after it still has
+            // `created_at >= watermark` on the next tick's poll. See
+            // `FIRST_TICK_WATERMARK_SAFETY_WINDOW` above for the race
+            // it closes.
+            let initial = server_now.saturating_sub(FIRST_TICK_WATERMARK_SAFETY_WINDOW);
             let mut guard = self
                 .outbox_watermark
                 .lock()
