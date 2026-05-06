@@ -215,19 +215,17 @@ The shell holds a dedicated single-threaded Tokio runtime. Every terminal method
 - **Specialized features (spatial, outbox publisher backends, vector, etc.) ship as feature flags within `djogi`, never as separate `djogi-*` crates.** The 5-crate workspace (djogi, djogi-macros, djogi-cli, djogi-shell, djogi-maahi) exists for hard Rust requirements (proc macro must be its own crate, CLI is a binary, shell is its own runtime) plus one carve-out: **djogi-maahi** owns the admin console (Maahi), separated because Dioxus full-stack is categorically heavier than other specialized features — full UI framework with WASM-target builds, pre-1.0 churn isolated from djogi core. The "one `cargo add djogi`" experience is preserved: `features = ["admin"]` pulls in `djogi-maahi` as an optional dep, and `djogi::maahi::*` re-exports the API. The carve-out applies to Maahi only; spatial / vector / outbox / etc. remain feature flags within `djogi`. The phrase "companion crate" in `docs/spec/` refers to user-side / app-side crates, not Djogi-maintained ones.
 - `Djogi.toml` holds app config; secrets (DATABASE_URL, NODE_ID) live in env vars only
 
-## CRITICAL — Tests must use djogi structs, not raw escape hatches
+## Tests must use djogi structs, not raw escape hatches
 
-**This is a trust-broken rule.** Cluster 8ζ uncovered that djogi's projection layer had emitted SQL referencing **non-existent functions** (`generate_id_desc()`, `generate_ranj_id()`, `generate_ranj_id_desc()`) for *years* — every model whose PK was the framework default would have failed to migrate against a stock HeerRanjId install. The bug stayed invisible because every integration fixture had used `raw_execute("CREATE TABLE ...")` to dodge the projection pipeline. **Future Claude sessions: if you find yourself reaching for `raw_*` in a test, STOP.** Use `#[djogi::djogi_test(sync_models = [...])]` or call `djogi::testing::sync_models` directly.
+**Integration tests (under `tests/integration/`) MUST NOT call `DjogiContext::raw_execute`, `raw_query`, `raw_scalar`, or `raw_ddl`.** The lone exception per API is one dedicated pin test that exercises that API's own behaviour.
 
-**No integration test (under `tests/integration/`) may call `DjogiContext::raw_execute`, `raw_query`, `raw_scalar`, or `raw_ddl`.** The lone exception per API is the dedicated test that pins that API's own behaviour (e.g. `phase5_zero_raw_in_atomic.rs` for `raw_execute`).
+Every fixture constructs database state through djogi's typed surface:
 
-Every fixture must construct its database state through djogi's typed surface:
-
+- `#[djogi::djogi_test(sync_models = [Model, ...])]` for table creation (the macro calls `djogi::testing::sync_models` for you, which projects the descriptor through `pk_default_sql` and dispatches DDL — the projection layer stays in the call chain)
 - `Model::create` / `Model::save` / `Model::delete` for row writes
 - `Model::objects()` and the queryset for reads
-- `djogi::testing::sync_models(ctx, &[Model::descriptor()])` for table creation — this is the typed migration-pipeline path that internally projects the descriptor through `pk_default_sql` and dispatches the resulting DDL via `raw_ddl`. Tests calling `sync_models` are compliant; tests calling `raw_ddl` directly are not.
 
-Why: any of the four `raw_*` methods accepts a SQL string the test composed by hand. That string never traverses the projection layer, so projection bugs (a wrong SQL function name, a missing `_outbox` length check, a default expression that doesn't exist on the target Postgres) never surface. `raw_ddl` is no exception — it's `batch_execute(sql)` under a friendlier name; the layering benefit only accrues when `sync_models` is in the call chain, not when the test calls `raw_ddl` itself. Cluster 8ζ caught a multi-year-old projection bug (`generate_id_desc()` / `generate_ranj_id()` references functions that do not ship with HeerRanjId) precisely because every test had used `raw_execute` to dodge the migration pipeline. Tracking issue: GH #133.
+Why: every `raw_*` method accepts a SQL string the test composed by hand. That string never traverses the projection layer, so projection bugs — wrong function names, missing identifier-length checks, defaults that don't exist on the target Postgres — never surface from the test surface. `raw_ddl` carries the same blast radius as `raw_execute` (it is `batch_execute(sql)` under a friendlier name); the layering benefit only accrues when `sync_models` is in the call chain. Tracking issue: GH #133.
 
 ## Dependencies
 
