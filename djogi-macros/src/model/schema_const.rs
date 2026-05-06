@@ -1,10 +1,7 @@
-//! Cluster 8ζ T12.1 — emit a `pub const {MODEL}_SCHEMA: &str` per model.
+//! Emit a `pub const {MODEL}_SCHEMA: &str` per model.
 //!
-//! # What
-//!
-//! For every `#[derive(Model)]` (equivalently `#[model(...)]`) input,
-//! emit one compile-time string constant that pretty-prints the model's
-//! shape:
+//! For every `#[derive(Model)]` input, emit one compile-time string
+//! constant that pretty-prints the model's shape:
 //!
 //! ```text
 //! pub const VEHICLE_SCHEMA: &str = "table: vehicles
@@ -21,52 +18,26 @@
 //! ";
 //! ```
 //!
-//! Adopters and tooling can lift the const without going through any
-//! runtime path — useful for agent ergonomics (LLMs, schema browsers,
-//! `djogi schema` CLI fallback) and for `cargo expand` introspection.
+//! Adopters and tooling lift the const without going through the
+//! `inventory` runtime path — useful for agent ergonomics and
+//! `cargo expand` introspection.
 //!
-//! # Why a const, not a runtime descriptor lookup
+//! # Determinism
 //!
-//! The `ModelDescriptor` lives behind `inventory::iter::<&'static
-//! ModelDescriptor>()` and requires the `inventory` linker dance to
-//! enumerate. Tools that want a model's shape *at compile time*
-//! (proc-macro pretty-printers, doc-generators, agents) need a stable
-//! const reference. Emitting one removes the runtime requirement and
-//! sidesteps the `inventory` linker quirks that occur when adopter
-//! crates use `#[link]`-stripping `--gc-sections`.
-//!
-//! # Determinism contract
-//!
-//! The emitted string is **byte-deterministic** against `ParsedModel`:
-//!
-//! - User fields render in declaration order (the order Phase 1's
-//!   inject pass preserves through `struct_item.fields`).
-//! - Framework fields (`id`, `created_at`, `updated_at`) render at the
-//!   top in fixed order.
-//! - Indexes render in the order they appear on user fields (declaration
-//!   order again).
-//! - Relations render alphabetically by source-field column name (the
-//!   spec calls for an explicit sort to keep the output stable across
-//!   refactors that shuffle field order).
-//!
-//! Two macro invocations on the same input produce byte-equal const
-//! values. `schema_const_is_byte_deterministic` pins this in
-//! `djogi-macros/tests/`.
+//! Byte-deterministic against `ParsedModel`: framework fields render
+//! first in fixed order, user fields in declaration order, indexes in
+//! declaration order, relations alphabetically by source-field column.
 //!
 //! # Naming
 //!
-//! `{MODEL_NAME_UPPER_SNAKE}_SCHEMA`. Conversion is
-//! `pascal_to_snake(name).to_uppercase()`. Examples:
+//! `{pascal_to_snake(name).to_uppercase()}_SCHEMA`:
 //!
 //! - `Vehicle` → `VEHICLE_SCHEMA`
 //! - `OrgUser` → `ORG_USER_SCHEMA`
 //! - `HTTPSProxy` → `HTTPS_PROXY_SCHEMA`
 //!
-//! The `{MODEL}_SCHEMA` suffix is a reserved prefix, like `{MODEL}Fields`
-//! and `{MODEL}Filter` from Phase 1 — adopters who declare their own
-//! `VEHICLE_SCHEMA` const at the same scope will see a "duplicate
-//! definition" error from the Rust compiler, which is a feature, not
-//! a bug.
+//! Adopters declaring their own `VEHICLE_SCHEMA` at the same scope
+//! see a Rust "duplicate definition" error — a feature, not a bug.
 
 use crate::case::pascal_to_snake;
 use crate::model::attrs::{FieldAttrs, ModelAttrs, PkStrategy, detect_relation};
@@ -76,14 +47,9 @@ use syn::ItemStruct;
 
 /// Emit the per-model `{MODEL}_SCHEMA: &str` const.
 ///
-/// # Arguments
-///
-/// - `struct_item` — the **post-injection** struct (framework fields
-///   already prepended by `inject::expand`).
-/// - `model_attrs` — parsed `#[model(...)]` attributes; supplies
-///   `table` and `pk`.
-/// - `field_attrs` — per-user-field attribute metadata, aligned by
-///   index with `struct_item.fields.iter().skip(n_framework)`.
+/// `struct_item` is the **post-injection** struct (framework fields
+/// already prepended by `inject::expand`). `field_attrs` aligns with
+/// `struct_item.fields.iter().skip(model_attrs.framework_field_count())`.
 pub fn emit(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -96,18 +62,11 @@ pub fn emit(
     let body = render_schema(struct_item, model_attrs, field_attrs);
     quote! {
         #[doc = "Compile-time, byte-deterministic schema summary for this model."]
-        #[doc = ""]
-        #[doc = "Cluster 8ζ T12.1 — agent ergonomics. The string is derived"]
-        #[doc = "from the model's `ModelDescriptor` and is stable across"]
-        #[doc = "macro invocations on the same input."]
         #[doc(hidden)]
         pub const #const_ident: &str = #body;
     }
 }
 
-/// Render the schema body. Pure string assembly — no token tricks, so
-/// the output is straightforward to unit-test inside the proc macro
-/// crate without expanding tokens.
 fn render_schema(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -168,7 +127,7 @@ fn render_user_fields(
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
 ) {
-    let n_framework = framework_field_count(model_attrs);
+    let n_framework = model_attrs.framework_field_count();
     let user_fields = struct_item.fields.iter().skip(n_framework);
     for (field, fa) in user_fields.zip(field_attrs.iter()) {
         let Some(name) = field.ident.as_ref() else {
@@ -199,31 +158,19 @@ fn render_user_fields(
 }
 
 fn render_type(ty: &syn::Type) -> String {
-    // Token-stream → compact string. Strip whitespace produced by
-    // `proc_macro2::TokenStream::to_string` between every adjacent
-    // token so `Option < String >` becomes `Option<String>` and
-    // `Jsonb < MetaSchema >` becomes `Jsonb<MetaSchema>`.
-    let raw = ty.to_token_stream().to_string();
-    compact_type_string(&raw)
+    compact_type_string(&ty.to_token_stream().to_string())
 }
 
+/// Strip whitespace from `proc_macro2::TokenStream::to_string()` output
+/// so `Option < String >` becomes `Option<String>`. Rust type spellings
+/// never contain word-on-word adjacency, so dropping every space is safe.
 fn compact_type_string(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut prev_was_word_char = false;
     for c in raw.chars() {
-        if c == ' ' {
-            // Drop the space if either neighbour is non-word
-            // (punctuation like `<`, `>`, `,`). Keep it only between
-            // two word-like tokens, which doesn't happen in any Rust
-            // type spelling we'd see here, so this collapses every
-            // space.
-            continue;
+        if c != ' ' {
+            out.push(c);
         }
-        let is_word = c.is_ascii_alphanumeric() || c == '_';
-        out.push(c);
-        prev_was_word_char = is_word;
     }
-    let _ = prev_was_word_char; // keep variable for future expansion
     out
 }
 
@@ -235,19 +182,12 @@ fn last_segment_is_option(p: &syn::TypePath) -> bool {
         .unwrap_or(false)
 }
 
-fn framework_field_count(model_attrs: &ModelAttrs) -> usize {
-    match model_attrs.pk {
-        PkStrategy::None => 2,
-        _ => 3,
-    }
-}
-
 fn collect_indexes(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
 ) -> Vec<String> {
-    let n_framework = framework_field_count(model_attrs);
+    let n_framework = model_attrs.framework_field_count();
     let mut lines: Vec<String> = Vec::new();
     for (field, fa) in struct_item
         .fields
@@ -281,7 +221,7 @@ fn collect_relations(
     model_attrs: &ModelAttrs,
     field_attrs: &[FieldAttrs],
 ) -> Vec<String> {
-    let n_framework = framework_field_count(model_attrs);
+    let n_framework = model_attrs.framework_field_count();
     let mut lines: Vec<(String, String)> = Vec::new();
     for (field, fa) in struct_item
         .fields

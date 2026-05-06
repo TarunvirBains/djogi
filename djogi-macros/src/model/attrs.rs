@@ -439,6 +439,17 @@ pub enum PkStrategy {
 }
 
 impl ModelAttrs {
+    /// Number of framework-injected fields prepended by `inject::expand`:
+    /// `created_at` + `updated_at`, plus `id` when the PK strategy
+    /// requires one. Use this to skip past framework fields when iterating
+    /// `struct_item.fields` aligned with user-side `field_attrs`.
+    pub fn framework_field_count(&self) -> usize {
+        match self.pk {
+            PkStrategy::None => 2,
+            _ => 3,
+        }
+    }
+
     /// Parse `#[model(table = "posts", pk = HeerId)]` from the attribute token stream.
     ///
     /// Duplicate keys are rejected with a span-carrying error pointing at the
