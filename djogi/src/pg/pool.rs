@@ -147,44 +147,27 @@ pub struct DjogiPool {
     /// methods on `DjogiPool` and through `DjogiContext`, never through
     /// `inner`.
     pub(crate) inner: deadpool_postgres::Pool,
-    /// The Postgres connection URL the pool was built with. Retained
-    /// (rather than only living inside the deadpool `Manager`'s private
-    /// `pg_config`) so internal substrate that needs to spawn dedicated
-    /// connections outside the pool — notably the Cluster 8ζ T11 NOTIFY
-    /// listener, which can't subscribe to `tokio_postgres::AsyncMessage`
-    /// on a pooled connection — can issue a fresh `tokio_postgres::connect`
-    /// against the same URL.
+    /// The Postgres connection URL the pool was built with. Retained so
+    /// internal substrate that needs a dedicated connection outside the
+    /// pool — notably the NOTIFY listener, which can't subscribe to
+    /// `tokio_postgres::AsyncMessage` on a pooled connection — can issue
+    /// a fresh `tokio_postgres::connect` against the same URL.
     ///
-    /// `None` for internal-substrate pools that adopt a pre-built
-    /// `deadpool_postgres::Pool` without exposing its URL — e.g. the
-    /// audit-side pool in `migrate/runner.rs`. NOTIFY listener spawn
-    /// against a URL-less pool returns
-    /// `NotifyError::ListenerStartFailed`.
-    ///
-    /// The `dead_code` allow is necessary because this field is only
-    /// read under `cfg(feature = "notify")` (the NOTIFY listener
-    /// spawn path); default-feature builds don't reach the read site
-    /// but still construct the field.
-    #[allow(dead_code)]
+    /// `None` for pools that adopt a pre-built `deadpool_postgres::Pool`
+    /// without exposing a URL (e.g. the audit-side pool in
+    /// `migrate/runner.rs`). NOTIFY listener spawn against a URL-less
+    /// pool returns `NotifyError::ListenerStartFailed`.
+    #[allow(dead_code)] // only read under `feature = "notify"`
     pub(crate) url: Option<String>,
-    /// Per-process unique identity for this `DjogiPool`. Allocated by
-    /// [`next_pool_id`] at construction time and copied verbatim on
-    /// `Clone`, so cloned handles share an id (and therefore share
-    /// listener registry entries, statement caches, and any other
-    /// per-pool keyed state) while freshly-built pools get fresh ids.
-    ///
-    /// This exists because `&pool.inner as *const _` is NOT a stable
-    /// per-pool identity — `deadpool_postgres::Pool` is itself
-    /// `Arc`-shaped, so cloning a `DjogiPool` produces a new outer
-    /// struct on the stack/heap with a new field address while the
-    /// underlying pool allocation is shared. The Cluster 8ζ T11 NOTIFY
-    /// registry needs the share-on-clone semantic, hence an explicit
-    /// id.
-    ///
-    /// `dead_code`-allowed because, like [`Self::url`], the id is only
-    /// read on the `feature = "notify"` codepath; default builds
-    /// allocate it but never look at it.
-    #[allow(dead_code)]
+    /// Per-process unique identity, copied verbatim on `Clone`, so cloned
+    /// handles share an id (and any per-pool keyed state — listener
+    /// registry, future statement caches) while freshly-built pools get
+    /// fresh ids. `&pool.inner as *const _` is NOT a stable identity —
+    /// `deadpool_postgres::Pool` is Arc-shaped, so cloning a `DjogiPool`
+    /// produces a new outer struct address while the inner allocation is
+    /// shared. The notify registry needs share-on-clone semantics, hence
+    /// the explicit id.
+    #[allow(dead_code)] // only read under `feature = "notify"`
     pub(crate) pool_id: u64,
 }
 

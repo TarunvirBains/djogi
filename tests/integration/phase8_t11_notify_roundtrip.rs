@@ -1,51 +1,15 @@
-//! Phase 8ζ T11.5 integration test — publisher → subscriber round-trip.
+//! Publisher → subscriber `LISTEN/NOTIFY` round-trip.
 //!
-//! # What this file pins
-//!
-//! End-to-end proof that the synchronous publisher hook in
-//! `djogi::outbox::emit_event` (T11.2) and the subscriber surface in
-//! `djogi::notify::subscribe` (T11.3 + T11.4) compose correctly across
-//! a real Postgres `LISTEN`/`NOTIFY` round-trip:
-//!
-//! 1. `create` on a `#[model(events)]` model emits a `pg_notify`
-//!    payload `{"kind":"create","id":"<pk>"}` inside the parent
-//!    transaction. The subscriber decodes it as
-//!    `ModelEvent { kind: EventKind::Created, id: <pk> }`.
-//! 2. `save` emits `{"kind":"save","id":"<pk>"}` which decodes to
-//!    `EventKind::Updated` (the publisher's `OutboxAction::Save`
-//!    surfaces to subscribers as `Updated` for ergonomic naming).
-//! 3. `delete` emits `{"kind":"delete","id":"<pk>"}` which decodes to
-//!    `EventKind::Deleted`.
-//! 4. After all subscribers drop, the listener winds down and a fresh
-//!    `subscribe` against the same pool spawns a new listener (the
-//!    "hot reload after teardown" path from T11.4's lifecycle work).
-//!
-//! # Why feature-gated
-//!
-//! `required-features = ["notify"]` on the `[[test]]` entry — the
-//! test imports `djogi::notify::*`, which only compiles with the
-//! flag enabled.
-//!
-//! # Why the `publishes_inside_transaction` test
-//!
-//! `pg_notify` payloads emitted inside a transaction are buffered by
-//! Postgres and only delivered on `COMMIT`. The publisher hook in
-//! `emit_event` runs inside the same transaction as the model write,
-//! so subscribers will only see the event after the transaction
-//! commits — never on `ROLLBACK`. The dedicated test isolates that
-//! behaviour from the round-trip happy path.
+//! The `rollback_suppresses_notify` test isolates a behaviour worth
+//! pinning explicitly: `pg_notify` payloads are buffered by Postgres
+//! until `COMMIT` and discarded on `ROLLBACK`, so subscribers must
+//! never see an event for a rolled-back transaction.
 
 use djogi::notify::{EventKind, subscribe};
 use djogi::prelude::*;
 use std::time::Duration;
 use tokio::time::timeout;
 
-// ── Fixture model ───────────────────────────────────────────────────────────
-//
-// `#[model(events)]` is the trigger for the publisher hook. The model's
-// outbox table has to exist for `emit_event` to land its rows; once the
-// outbox INSERT commits, the publisher fires `pg_notify` against
-// `djogi_<table>` with the slim `{kind, id}` payload.
 #[model(table = "phase8_t11_evt", pk = HeerId, events)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EvtRow {
@@ -197,9 +161,6 @@ async fn rollback_suppresses_notify(mut ctx: djogi::DjogiContext) {
         .await
         .expect("subscribe must succeed");
 
-    // Roll back deliberately by returning Err from the atomic body.
-    // `transaction::atomic` propagates the Err and rolls back; the
-    // outbox INSERT and the publisher's pg_notify both vanish.
     let result: Result<(), djogi::DjogiError> = djogi::transaction::atomic(&pool, |inner| {
         Box::pin(async move {
             let _ = EvtRow::create(
@@ -213,7 +174,7 @@ async fn rollback_suppresses_notify(mut ctx: djogi::DjogiContext) {
             )
             .await?;
             Err(djogi::DjogiError::Validation(
-                "deliberate rollback for T11.5 test".to_string(),
+                "deliberate rollback for round-trip test".to_string(),
             ))
         })
     })
@@ -223,11 +184,8 @@ async fn rollback_suppresses_notify(mut ctx: djogi::DjogiContext) {
         "atomic body returned Err — transaction must have rolled back"
     );
 
-    // Wait long enough that any leaked notification would have
-    // arrived. A short window keeps the test fast; the round-trip
-    // test above proves NOTIFY arrives well within ~1 s on
-    // localhost, so 500 ms is comfortably in the "would have shown
-    // up by now" zone if rollback didn't suppress it.
+    // 500 ms — comfortably past the localhost NOTIFY round-trip if
+    // rollback failed to suppress it.
     let outcome = timeout(Duration::from_millis(500), rx.recv()).await;
     assert!(
         outcome.is_err(),
@@ -237,13 +195,6 @@ async fn rollback_suppresses_notify(mut ctx: djogi::DjogiContext) {
     );
 }
 
-// ── Test 3 — fan-out: multiple subscribers each get every event ─────────────
-//
-// Pins the `tokio::sync::broadcast` fan-out semantics: every
-// subscriber registered on the same channel before a NOTIFY arrives
-// gets its own copy. Without this, an adopter that fans out by
-// running multiple background workers on the same channel would
-// only see events on a single worker.
 #[djogi::djogi_test]
 async fn multiple_subscribers_fan_out(mut ctx: djogi::DjogiContext) {
     setup(&mut ctx).await;
@@ -287,13 +238,9 @@ async fn multiple_subscribers_fan_out(mut ctx: djogi::DjogiContext) {
     assert_eq!(event_b.id, row.id);
 }
 
-// ── Test 4 — listener teardown + hot-reload after last subscriber drops ─────
-//
-// Pins T11.4's lifecycle contract: when the last `TypedReceiver`
-// drops, the listener winds down (the registry's `Weak<PgListener>`
-// becomes dangling). A subsequent `subscribe` against the same pool
-// reaps the dangling slot and spawns a fresh listener — with no
-// adopter-visible difference in behaviour.
+/// When the last `TypedReceiver` drops, the listener winds down (registry's
+/// `Weak<PgListener>` becomes dangling). A subsequent `subscribe` reaps
+/// the dangling slot and spawns a fresh listener — adopter-invisible.
 #[djogi::djogi_test]
 async fn listener_hot_reload_after_last_subscriber_drops(mut ctx: djogi::DjogiContext) {
     setup(&mut ctx).await;
@@ -302,9 +249,6 @@ async fn listener_hot_reload_after_last_subscriber_drops(mut ctx: djogi::DjogiCo
         .expect("djogi_test context must have a pool")
         .clone();
 
-    // Round 1: subscribe, observe a CREATE, drop the receiver. The
-    // listener's strong count goes to zero; its connection task
-    // exits via the natural `Client::drop` path.
     {
         let mut rx = subscribe::<EvtRow>(&pool).await.expect("subscribe round 1");
 
@@ -331,14 +275,9 @@ async fn listener_hot_reload_after_last_subscriber_drops(mut ctx: djogi::DjogiCo
             .expect("round-1 decode");
         assert_eq!(event.kind, EventKind::Created);
         assert_eq!(event.id, row.id);
-        // `rx` drops at end of this block → listener strong count
-        // hits zero → spawned watcher task exits.
+        // `rx` drops at end of this block → listener strong count → 0.
     }
 
-    // Round 2: subscribe again. The registry's old `Weak` is
-    // dangling; `get_or_start_listener` reaps it and spawns a fresh
-    // listener. From the adopter's view, this is just another
-    // `subscribe` call — no error, no special path.
     let mut rx = subscribe::<EvtRow>(&pool)
         .await
         .expect("subscribe round 2 must succeed (hot-reload)");

@@ -1,47 +1,18 @@
-//! Phase 8δ T8.7 integration tests: outbox-derived tombstones (Pattern 2)
-//! in the delta-sync fetcher.
+//! Outbox-derived tombstones (Pattern 2) in the delta-sync fetcher.
 //!
-//! # What this file pins
+//! `hard_delete_propagates_via_outbox_to_tombstone` walks the round-trip:
+//! a `#[model(events)]` model emits `action='delete'` into
+//! `<table>_outbox` on hard delete, the fetcher's per-tick poll picks
+//! it up, decodes `row_id BIGINT → HeerId → T::Id`, and Punnu's
+//! `apply_delta` evicts the entry.
 //!
-//! 1. **`hard_delete_propagates_via_outbox_to_tombstone`** — creates a
-//!    model with `#[model(events)]` but NOT `soft_deletable`. Inserts a
-//!    row, runs a first tick (which initialises the per-fetcher outbox
-//!    watermark to "now"). Hard-deletes the row in a transaction —
-//!    `emit_event` writes `action='delete'` into the
-//!    `<table>_outbox` table inside the same transaction. A second
-//!    tick observes the outbox row, decodes
-//!    `row_id BIGINT → HeerId → T::Id`, and routes it into
-//!    `DeltaResult.tombstones`. Punnu's `apply_delta` evicts the entry;
-//!    `punnu.get(id) == None`.
+//! `non_events_model_no_outbox_poll` checks the gate — a model without
+//! `events` has no outbox table, so a regression that ran the poll
+//! unconditionally would fail on the missing relation.
 //!
-//! 2. **`non_events_model_no_outbox_poll`** — backward-compat. A model
-//!    without `events` does not emit outbox rows; the fetcher's
-//!    outbox-poll path is gated off via
-//!    `T::descriptor().has_outbox == false`. A regression that ran the
-//!    poll anyway would error on the missing
-//!    `phase8_t8_7_plain_row_outbox` table — this test passing is the
-//!    structural proof the gate works.
-//!
-//! # Spec anchor
-//!
-//! `docs/superpowers/plans/granular-phase8/cluster-8delta-granular.md`
-//! §3 T8.7. Original plan sketched a `broadcast::Receiver<...>`
-//! subscription; investigation in GH #128 revealed djogi's outbox is
-//! table-based (`{table}_outbox`), not channel-based. T8.7 implementation
-//! adopts Option B (per-tick poll of the outbox table). The worker uses
-//! state transitions (`pending → processing → published / failed`), never
-//! `DELETE`, so the fetcher's poll never races the worker.
-//!
-//! # Fixture strategy
-//!
-//! Each test provisions its own table inline via `ctx.raw_execute`. The
-//! `#[djogi_test]` macro installs HeeRanjID schema, seeds node 1, and sets
-//! `heer.node_id = '1'` before the test body runs.
-//!
-//! Outbox table follows the Phase 4 schema:
+//! Outbox table schema mirrors Phase 4:
 //! `(id BIGINT PK DEFAULT generate_id(), row_id BIGINT, action TEXT,
-//! payload JSONB, created_at TIMESTAMPTZ DEFAULT now())` — matches what
-//! `djogi/src/outbox/mod.rs::insert_sql` writes into.
+//! payload JSONB, created_at TIMESTAMPTZ DEFAULT now())`.
 
 use djogi::prelude::*;
 
@@ -120,9 +91,9 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
         .expect("djogi_test context must have a pool")
         .clone();
 
-    // Insert a row inside a transaction so emit_event's outbox-create
-    // INSERT lands in the same atomic boundary. We don't assert on the
-    // outbox-create row — only the outbox-delete row matters for T8.7.
+    // Inside a transaction so the outbox-create INSERT lands atomically
+    // with the row insert. Only the outbox-delete row matters for the
+    // tombstone path.
     let row = djogi::transaction::atomic(&pool, |inner| {
         Box::pin(async move {
             EventRow::create(
@@ -149,10 +120,8 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
 
     let handle = EventRow::objects().refresh_into(&punnu, pool.clone(), auth.clone());
 
-    // First tick: full scan, watermark None, outbox watermark None.
-    // The live row is applied; the outbox poll branch initialises the
-    // per-fetcher watermark to `OffsetDateTime::now_utc()` so subsequent
-    // ticks see only events after this checkpoint.
+    // First tick initialises the outbox watermark to `now()`; later
+    // ticks only see events past that checkpoint.
     let tick_1 = handle.update().await.expect("first tick must succeed");
     assert_eq!(
         tick_1.applied,
@@ -165,11 +134,7 @@ async fn hard_delete_propagates_via_outbox_to_tombstone(mut ctx: djogi::DjogiCon
         "Punnu must hold the live row after first tick"
     );
 
-    // Hard-delete in a transaction so the parent commits the DELETE +
-    // emit_event's outbox INSERT atomically. After this commits, the
-    // outbox table holds (at minimum) one row with action='create' from
-    // the create call above and one with action='delete' from this
-    // delete.
+    // Atomic delete + outbox INSERT.
     djogi::transaction::atomic(&pool, |inner| {
         Box::pin(async move { row.delete(inner).await })
     })

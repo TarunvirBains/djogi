@@ -177,38 +177,22 @@ where
     let sql = insert_sql(T::table_name());
     let action_str = action.as_sql_str();
 
-    // Build the parameter slice. `T::Pk: ToSql` is guaranteed by the
-    // `Model` trait bound added in T2. `serde_json::Value` is `ToSql`
-    // via tokio-postgres' `with-serde_json-1` feature.
     let params: &[&(dyn ToSql + Sync)] = &[row.pk_value(), &action_str, &payload];
     ctx.execute(&sql, params).await?;
 
-    // Cluster 8ζ T11.2 — synchronous in-process publisher hook.
-    //
-    // Gated on the `notify` feature. When enabled, every `emit_event`
-    // call also fires `SELECT pg_notify('djogi_<table>',
-    // '{"kind":"<action>","id":"<pk>"}')` inside the same transaction
-    // as the outbox INSERT and the source-row write. Subscribers
-    // attached via `djogi::notify::subscribe::<T>(...)` (T11.3) receive
-    // a `ModelEvent { kind, id }` and re-fetch the full row via
-    // `T::find(...)` if they need it.
-    //
-    // Distinct from Phase 5's `NotifyPublisher` (which writes the full
-    // JSONB row payload to user-named channels for downstream relay):
-    // this hook is the in-process subscription path, designed for
-    // cache invalidation use cases where the slim payload + re-fetch
-    // is the right shape for the 8000-byte `pg_notify` cap.
-    //
-    // Channel name validated via `crate::ident::check_plain_ident`
-    // defense-in-depth, even though `T::table_name()` is already a
-    // macro-validated `&'static str` — guards against a malicious
-    // macro fork smuggling an invalid identifier.
+    // Synchronous in-process publisher hook for `crate::notify`
+    // subscribers — fires `pg_notify('djogi_<table>', '{kind,id}')`
+    // in the same transaction. Distinct from Phase 5's
+    // `NotifyPublisher`, which carries full JSONB payloads on
+    // user-named channels for downstream relay. The `check_plain_ident`
+    // pass guards against a malicious macro fork smuggling an invalid
+    // table name through the SQL embedding.
     #[cfg(feature = "notify")]
     {
         let table = T::table_name();
         crate::ident::check_plain_ident(table, false).map_err(|e| {
             DjogiError::Db(crate::error::DbError::other(format!(
-                "T11.2 notify hook: invalid table name {table:?}: {e:?}"
+                "notify hook: invalid table name {table:?}: {e:?}"
             )))
         })?;
         let channel = format!("djogi_{table}");
@@ -224,18 +208,10 @@ where
     Ok(())
 }
 
-/// Build the slim `{kind, id}` JSON payload for the T11.2 notify hook.
-///
-/// Lifted out of `emit_event` so the payload shape is unit-testable
-/// without a database. The shape is a stable wire contract:
-/// subscribers depend on `kind` matching `OutboxAction::as_sql_str()`
-/// values (`"create" | "save" | "delete"`) and `id` being the model
-/// PK formatted via its `Display` impl (HeerId → decimal, RanjId →
-/// UUID hyphenated form, Serial(i64) → decimal).
-///
-/// `serde_json::json!` macro is used (not raw `format!`) to guarantee
-/// JSON-correct escaping if a future PK type's Display contains
-/// double-quotes or backslashes — paranoid but cheap.
+/// Build the slim `{kind, id}` JSON payload for the notify hook.
+/// `serde_json::json!` (not `format!`) so a future PK type whose
+/// `Display` produces double-quotes or backslashes still emits valid
+/// JSON.
 #[cfg(feature = "notify")]
 pub(crate) fn build_notify_payload(action: OutboxAction, id_str: &str) -> String {
     serde_json::json!({
@@ -397,19 +373,10 @@ mod tests {
         assert!(sql.contains("$3"));
     }
 
-    // ── T11.2 notify-hook payload shape ─────────────────────────────────
-    //
-    // `build_notify_payload` is the pure helper that constructs the slim
-    // `{kind, id}` JSON pg_notify payload. The shape is a stable wire
-    // contract consumed by `djogi::notify` subscribers (T11.3); these
-    // tests pin the byte-for-byte JSON shape so a regression that
-    // accidentally widened the payload (or reordered keys, since
-    // `serde_json::json!` honours insertion order) would fail loudly.
-    //
-    // Round-trip via `serde_json::from_str` confirms the output is
-    // valid JSON with the documented keys — the receiver's decoder
-    // can rely on `kind` being a known enum variant and `id` being a
-    // string.
+    // build_notify_payload byte-shape tests. The receiver's decoder
+    // depends on `kind` being a known enum variant and `id` being a
+    // string, so a regression that widened the payload or reordered
+    // keys would fail here.
     #[cfg(feature = "notify")]
     #[test]
     fn notify_payload_shape_create_byte_exact() {

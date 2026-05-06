@@ -100,23 +100,13 @@ pub struct DocsReport {
 // ── Public entry point ────────────────────────────────────────────────────
 
 /// Render the descriptor inventory to per-model markdown pages under
-/// `output_root`.
+/// `output_root`. Walks [`inventory::iter::<ModelDescriptor>`] directly;
+/// adopters rendering a fixture subset call [`render_inventory`].
 ///
-/// **Inventory source.** Walks
-/// [`inventory::iter::<ModelDescriptor>`](::inventory::iter)
-/// directly. Adopters that want to render a fixture set instead of
-/// the global inventory should call [`render_inventory`] with their
-/// own slice.
-///
-/// **Intent merge (Cluster 8ζ T12.4).** When `intent` is `Some(file)`,
-/// per-model and per-field rationale strings from
-/// `<workspace>/.djogi/intent.json` merge into the rendered Markdown
-/// under the precedence "macro attr wins, intent.json fallback"
-/// (see [`crate::intent::resolve_model_rationale`] /
-/// [`crate::intent::resolve_field_rationale`]).
-/// `None` skips the merge — adopters who never create the file
-/// pass `None` and get clean docs with rationale sourced exclusively
-/// from `#[model(rationale = "...")]` / `#[field(rationale = "...")]`.
+/// When `intent` is `Some`, per-model/field rationale from
+/// `<workspace>/.djogi/intent.json` merges into the Markdown with
+/// "macro attr wins, intent.json fallback" precedence (see
+/// [`crate::intent::resolve_model_rationale`]). `None` skips the merge.
 pub fn generate_docs(
     output_root: &Path,
     intent: Option<&crate::intent::IntentFile>,
@@ -276,18 +266,11 @@ pub fn render_model_page(
         let _ = writeln!(s, "\n> {rationale}");
     }
 
-    // Field table.
-    //
-    // Codex round-1 A-3 — the T8 docs contract requires a `Default`
-    // column. `FieldDescriptor` itself does not carry a default-SQL
-    // string; the projection layer (`migrate::projection`) injects
-    // the PK column's `heerid_next()` / `heerid_next_desc()` /
-    // `ranjid_next()` / `ranjid_next_desc()` /
-    // `<custom>` default at the snapshot boundary. The renderer
-    // mirrors that policy so the generated reference page reflects
-    // what the operator will actually see on the live table — for
-    // every other column we render an em-dash (no descriptor-side
-    // default).
+    // Field table — the `Default` column reflects projection-side
+    // policy: only the PK row carries a default expression (the
+    // `heerid_next()` / `heerid_next_desc()` / etc. supplied by
+    // `migrate::projection`); every other column renders an em-dash
+    // because `FieldDescriptor` doesn't carry adopter-declared defaults.
     s.push_str("\n## Fields\n\n");
     s.push_str("| Name | SQL type | Nullable | Default | Notes |\n");
     s.push_str("|------|----------|----------|---------|-------|\n");
@@ -470,18 +453,10 @@ fn display_index_target(target: &IndexTarget) -> String {
 /// [`super::projection::pk_default_sql`], and every other field
 /// renders as an em-dash (`—`) for "no descriptor-side default".
 ///
-/// **Known limitation (round-2 A-3):** today's `FieldDescriptor`
-/// only carries the PK column's default expression (derived from
-/// `parent.pk_type`). Non-PK fields with declared defaults render
-/// as `—` because the descriptor doesn't carry their `default_sql`
-/// — that information lives in the snapshot's `ColumnSchema` but is
-/// not threaded through the descriptor inventory the macro emits.
-/// TODO(post-Phase-7): extend `FieldDescriptor` with a
-/// `default_sql: Option<&'static str>` field populated by the macro
-/// from `#[field(default = "...")]` attributes, and update this
-/// renderer's else-branch to surface it.
-///
-/// Codex round-1 A-3 / round-2 A-3.
+/// Limitation: only the PK column's default surfaces today.
+/// Non-PK adopter-declared defaults need a `default_sql` slot on
+/// `FieldDescriptor` that the macro doesn't currently populate, so
+/// they render as `—`.
 fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String {
     if f.name == "id" {
         match super::projection::pk_default_sql(&parent.pk_type) {
@@ -489,8 +464,6 @@ fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String
             None => "—".to_string(),
         }
     } else {
-        // TODO(post-Phase-7): when FieldDescriptor.default_sql exists,
-        // render it here. See module-level note above.
         "—".to_string()
     }
 }
@@ -576,13 +549,9 @@ fn join_quoted(items: &[&str]) -> String {
 }
 
 /// Map a model type name to a filesystem-safe markdown filename.
-///
-/// Any byte that is not an ASCII letter, ASCII digit, or underscore
-/// is replaced with `_`. The Rust grammar already restricts type
-/// names to ASCII identifiers, so this is a belt-and-braces
-/// normaliser; in practice the mapping is the identity for every
-/// realistic input. Codex round-1 N-1 — phrased in plain English
-/// per `docs/spec/decisions.md` (no regex notation in comments).
+/// Any byte that is not an ASCII letter, digit, or underscore is
+/// replaced with `_` — belt-and-braces; Rust grammar already restricts
+/// type names to ASCII identifiers.
 fn model_filename(type_name: &str) -> String {
     let mut out = String::with_capacity(type_name.len() + 3);
     for byte in type_name.bytes() {
@@ -684,9 +653,6 @@ mod tests {
         assert!(body.contains("**Table:** `users`"));
         assert!(body.contains("**PK kind:** HeerId (recency-biased)"));
         assert!(body.contains("**Tenant key:** `org_id`"));
-        // Field table headers + at least one row.
-        // Codex round-1 A-3: the field table now carries a `Default`
-        // column.
         assert!(body.contains("| Name | SQL type | Nullable | Default | Notes |"));
         assert!(body.contains("`email`"));
         assert!(body.contains("UNIQUE"));
@@ -844,12 +810,6 @@ mod tests {
             "Composite(a, b)"
         );
     }
-
-    // ── Cluster 8ζ T12.4 — intent.json merge precedence tests ─────────────
-    //
-    // Pin the "macro attr wins, intent.json fallback" rule in the
-    // rendered Markdown — both for the per-model `## Rationale` line
-    // and the per-field `_rationale_` notes column.
 
     fn fixture_post_no_rationale() -> ModelDescriptor {
         // Distinct from `fixture_global_post` so this test owns its
