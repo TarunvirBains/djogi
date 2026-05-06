@@ -105,9 +105,14 @@ fn render_schema(
 }
 
 fn render_framework_fields(out: &mut String, model_attrs: &ModelAttrs) {
+    // Label per-variant — `HeerIdDesc`/`RanjIdDesc` round-trip into the
+    // const distinct from their ascending siblings so adopters reading
+    // the schema can tell which ordering their PK column gives them.
     let pk_label = match &model_attrs.pk {
-        PkStrategy::HeerId | PkStrategy::HeerIdDesc => Some("HeerId"),
-        PkStrategy::RanjId | PkStrategy::RanjIdDesc => Some("RanjId"),
+        PkStrategy::HeerId => Some("HeerId"),
+        PkStrategy::HeerIdDesc => Some("HeerIdDesc"),
+        PkStrategy::RanjId => Some("RanjId"),
+        PkStrategy::RanjIdDesc => Some("RanjIdDesc"),
         PkStrategy::Serial => Some("Serial"),
         PkStrategy::Custom(_) => Some("Custom"),
         PkStrategy::None => None,
@@ -216,6 +221,27 @@ fn collect_indexes(
     lines
 }
 
+/// Map a raw `#[field(on_delete = "...")]` attribute string to the SQL
+/// label `MODEL_SCHEMA` displays. `s.to_uppercase()` would have rendered
+/// `set_null` as `SET_NULL` (with underscore) instead of the proper SQL
+/// `SET NULL`, so adopters reading the schema would see a string that
+/// doesn't match the DDL Postgres applies.
+fn on_delete_attr_to_label(attr: &str) -> &'static str {
+    match attr {
+        "cascade" => "CASCADE",
+        "restrict" => "RESTRICT",
+        "set_null" => "SET NULL",
+        "set_default" => "SET DEFAULT",
+        "protect" => "RESTRICT",
+        "do_nothing" => "NO ACTION",
+        // Fallback for attribute strings the validator hasn't seen —
+        // an unknown spelling surfaces as the literal value so the
+        // mismatch is obvious in the const, rather than silently
+        // upper-cased into SQL nonsense.
+        _ => "UNKNOWN",
+    }
+}
+
 fn collect_relations(
     struct_item: &ItemStruct,
     model_attrs: &ModelAttrs,
@@ -240,8 +266,9 @@ fn collect_relations(
         let on_delete = fa
             .on_delete
             .as_deref()
-            .map(|s| s.to_uppercase())
-            .unwrap_or_else(|| "RESTRICT".to_string());
+            .map(on_delete_attr_to_label)
+            .unwrap_or("RESTRICT")
+            .to_string();
         let nullable = if info.nullable { ", NULLABLE" } else { "" };
         let line = format!(
             "{col} -> {target} ({kind}, ON DELETE {on_delete}{nullable})",

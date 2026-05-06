@@ -584,15 +584,11 @@ name = "phase8_t8_10_refresh_e2e"
 path = "../tests/integration/phase8_t8_10_refresh_e2e.rs"
 harness = true
 
-# ── Phase 8ζ T11.5 — publisher → subscriber NOTIFY round-trip ──────────────
-
 [[test]]
 name = "phase8_t11_notify_roundtrip"
 path = "../tests/integration/phase8_t11_notify_roundtrip.rs"
 harness = true
-# `subscribe::<M>` and the publisher hook in `emit_event` are both
-# only compiled with `feature = "notify"`. Without the gate, the
-# test would fail to compile when `default-features = ["..."]` is
-# used without notify, which is the typical workspace test
-# invocation.
+# `subscribe::<M>` and the publisher hook in `emit_event` only compile
+# under `feature = "notify"`; without this gate the test fails to
+# compile under the default workspace test invocation.
 required-features = ["notify"]

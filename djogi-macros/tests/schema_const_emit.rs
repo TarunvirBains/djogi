@@ -1,24 +1,13 @@
-//! Cluster 8ζ T12.1 — runtime checks for the auto-emitted
-//! `pub const {MODEL}_SCHEMA: &str` per `#[derive(Model)]`.
-//!
-//! The const is `#[doc(hidden)]` but `pub`, so test code in this crate
-//! can name it directly. A compile-pass fixture would give us a
-//! syntactic pin; this file gives us the *content* pin: every assertion
-//! below would fail if the schema renderer dropped a row, swapped sort
-//! order, or emitted unexpected whitespace.
+//! Runtime checks for the auto-emitted `pub const {MODEL}_SCHEMA: &str`
+//! per `#[derive(Model)]`. The const is `#[doc(hidden)]` but `pub`, so
+//! test code in this crate names it directly. Every assertion would
+//! fail if the renderer dropped a row, swapped sort order, or emitted
+//! unexpected whitespace.
 
 use djogi::prelude::*;
 
-// ── Fixture 1 — wide model with relations + indexes + nullable cols ──
-//
-// Covers the full range of T12.1's schema renderer:
-// - PK label = HeerId
-// - Framework rows (id / created_at / updated_at)
-// - Plain user fields with NOT NULL inference
-// - Nullable user field (`Option<…>`)
-// - Unique index modifier
-// - Explicit index method via `#[field(index = "btree")]`
-// - FK relation with on_delete
+// Fixture 1 — wide model with indexes + nullable columns under the
+// explicit `pk = HeerId` ascending strategy.
 #[model(table = "schema_const_vehicles", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Vehicle {
@@ -71,7 +60,7 @@ fn vehicle_schema_const_is_byte_deterministic() {
     );
 }
 
-// ── Fixture 2 — minimal model, no indexes, no relations ─────────────
+// Fixture 2 — minimal model with no indexes or relations.
 #[model(table = "schema_const_minimal", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct Minimal {
@@ -96,7 +85,7 @@ fn minimal_schema_const_omits_empty_sections() {
     );
 }
 
-// ── Fixture 3 — multi-word model name → UPPER_SNAKE const ─────────────
+// Fixture 3 — multi-word model name → UPPER_SNAKE const.
 #[model(table = "schema_const_org_users", pk = HeerId)]
 #[derive(Debug, Clone)]
 pub struct OrgUser {
@@ -105,8 +94,82 @@ pub struct OrgUser {
 
 #[test]
 fn multi_word_model_name_uppersnakes_const() {
-    // `OrgUser` → `ORG_USER_SCHEMA`. If this name is wrong the test
-    // fails at link time with "cannot find value `ORG_USER_SCHEMA`".
+    // `OrgUser` → `ORG_USER_SCHEMA`. A wrong name fails at link time
+    // with "cannot find value `ORG_USER_SCHEMA`".
     let s = ORG_USER_SCHEMA;
     assert!(s.starts_with("table: schema_const_org_users\n"));
+}
+
+// Fixture 4 — default PK (no `pk = ...` attr) resolves to `HeerIdDesc`.
+// Pinned because an earlier renderer flattened ascending and descending
+// HeerId variants into the same `HeerId` label, hiding the recency-
+// biased ordering from adopters reading the const.
+#[model(table = "schema_const_default_pk")]
+#[derive(Debug, Clone)]
+pub struct DefaultPk {
+    pub label: String,
+}
+
+#[test]
+fn default_pk_renders_as_heerid_desc() {
+    let s = DEFAULT_PK_SCHEMA;
+    assert!(
+        s.contains("  id: HeerIdDesc (PK)\n"),
+        "default PK must surface as HeerIdDesc (recency-biased), not HeerId; got: {s}"
+    );
+    assert!(
+        !s.contains("  id: HeerId (PK)\n"),
+        "default PK must not be mislabelled as ascending HeerId; got: {s}"
+    );
+}
+
+// Fixture 5 — explicit ascending PK still renders as `HeerId`.
+#[model(table = "schema_const_ascending_pk", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct AscendingPk {
+    pub label: String,
+}
+
+#[test]
+fn ascending_pk_renders_as_heerid() {
+    let s = ASCENDING_PK_SCHEMA;
+    assert!(
+        s.contains("  id: HeerId (PK)\n"),
+        "explicit `pk = HeerId` must surface as ascending HeerId; got: {s}"
+    );
+}
+
+// Fixture 6 — relation field with `on_delete` attribute. Pinned because
+// the renderer used to call `s.to_uppercase()` on the raw attribute
+// string, turning `set_null` into `SET_NULL` (with underscore) instead
+// of the proper SQL spelling `SET NULL`.
+#[model(table = "schema_const_owners", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct Owner {
+    pub name: String,
+}
+
+#[model(table = "schema_const_cars", pk = HeerId)]
+#[derive(Debug, Clone)]
+pub struct Car {
+    pub plate: String,
+    #[field(on_delete = "set_null")]
+    pub owner: Option<ForeignKey<Owner>>,
+}
+
+#[test]
+fn on_delete_set_null_renders_with_space_not_underscore() {
+    let s = CAR_SCHEMA;
+    assert!(
+        s.contains("\nrelations:\n"),
+        "Car has an FK; relations section must be present; got: {s}"
+    );
+    assert!(
+        s.contains("ON DELETE SET NULL"),
+        "set_null must render as `ON DELETE SET NULL`, not `ON DELETE SET_NULL`; got: {s}"
+    );
+    assert!(
+        !s.contains("ON DELETE SET_NULL"),
+        "renderer must not surface raw attribute uppercase form; got: {s}"
+    );
 }
