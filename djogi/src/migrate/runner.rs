@@ -1148,6 +1148,10 @@ async fn record_ddl_audit_for_plan(
     // disturb the caller's ownership of `runner_ctx.audit_pool`.
     let audit_djogi_pool = crate::pg::pool::DjogiPool {
         inner: audit_pool.clone(),
+        // Audit pools don't surface a URL — internal substrate only,
+        // never reaches the NOTIFY subscriber path. See `DjogiPool::url`
+        // doc for the contract.
+        url: None,
     };
     let mut audit_ctx = DjogiContext::from_pool(audit_djogi_pool);
 

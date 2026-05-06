@@ -72,6 +72,8 @@ pub mod jsonb;
 pub mod live_migrate;
 pub mod migrate;
 pub mod model;
+#[cfg(feature = "notify")]
+pub mod notify;
 pub mod outbox;
 pub mod pg;
 pub mod primary_key;

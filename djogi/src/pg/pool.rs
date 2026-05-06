@@ -130,6 +130,26 @@ pub struct DjogiPool {
     /// methods on `DjogiPool` and through `DjogiContext`, never through
     /// `inner`.
     pub(crate) inner: deadpool_postgres::Pool,
+    /// The Postgres connection URL the pool was built with. Retained
+    /// (rather than only living inside the deadpool `Manager`'s private
+    /// `pg_config`) so internal substrate that needs to spawn dedicated
+    /// connections outside the pool — notably the Cluster 8ζ T11 NOTIFY
+    /// listener, which can't subscribe to `tokio_postgres::AsyncMessage`
+    /// on a pooled connection — can issue a fresh `tokio_postgres::connect`
+    /// against the same URL.
+    ///
+    /// `None` for internal-substrate pools that adopt a pre-built
+    /// `deadpool_postgres::Pool` without exposing its URL — e.g. the
+    /// audit-side pool in `migrate/runner.rs`. NOTIFY listener spawn
+    /// against a URL-less pool returns
+    /// `NotifyError::ListenerStartFailed`.
+    ///
+    /// The `dead_code` allow is necessary because this field is only
+    /// read under `cfg(feature = "notify")` (the NOTIFY listener
+    /// spawn path); default-feature builds don't reach the read site
+    /// but still construct the field.
+    #[allow(dead_code)]
+    pub(crate) url: Option<String>,
 }
 
 impl std::fmt::Debug for DjogiPool {
@@ -624,8 +644,9 @@ impl DjogiPoolBuilder {
             ));
         }
 
+        let url = self.url;
         let mut cfg = Config::new();
-        cfg.url = Some(self.url);
+        cfg.url = Some(url.clone());
         cfg.manager = Some(ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
         });
@@ -678,7 +699,10 @@ impl DjogiPoolBuilder {
             )))
         })?;
 
-        Ok(DjogiPool { inner: pool })
+        Ok(DjogiPool {
+            inner: pool,
+            url: Some(url),
+        })
     }
 }
 
