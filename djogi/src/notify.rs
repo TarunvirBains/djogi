@@ -1,4 +1,4 @@
-//! In-process model-event NOTIFY subscription surface — Cluster 8ζ T11.3.
+//! In-process model-event NOTIFY subscription surface — Cluster 8ζ T11.
 //!
 //! # What
 //!
@@ -27,26 +27,55 @@
 //!
 //! - First call to `subscribe::<M>(pool)` for a given pool spawns a
 //!   per-pool [`PgListener`] background task that owns a dedicated
-//!   `tokio_postgres::Client` (acquired from the pool and never returned)
-//!   running `LISTEN djogi_<table>` for every channel a subscriber asks
-//!   for. Subsequent `subscribe` calls reuse the listener.
+//!   `tokio_postgres::Client` (a standalone connection outside the
+//!   pool, so `tokio_postgres::AsyncMessage` polling is available)
+//!   running `LISTEN djogi_<table>` for every channel a subscriber
+//!   asks for. Subsequent `subscribe` calls reuse the listener.
 //! - The listener forwards `tokio_postgres::AsyncMessage::Notification`
 //!   events to a per-channel `tokio::sync::broadcast::Sender`. Each
 //!   subscriber gets a fresh `Receiver` cloned from that Sender.
-//! - The pool registry is keyed by `Arc::as_ptr` on the underlying
-//!   deadpool `Pool` — cloned `DjogiPool` instances share one listener;
-//!   reconstructed pools get fresh listeners.
+//! - The pool registry is keyed by [`DjogiPool::pool_id`], a
+//!   per-process unique id allocated at pool construction and copied
+//!   verbatim on `Clone`. Cloned `DjogiPool` instances therefore share
+//!   one listener; freshly-built pools get fresh listeners. The slot
+//!   holds a `Weak<PgListener>` so the registry never prolongs the
+//!   listener's life — see the "Lifecycle" section.
 //!
-//! # Lifecycle (T11.4 will tighten)
+//! # Lifecycle
 //!
-//! T11.3 ships the basic subscribe surface. T11.4 follows up with
-//! per-pool registry weak-ref cleanup, graceful shutdown on listener
-//! drop, and the hot-reload path. For now the registry holds strong
-//! `Arc<PgListener>` references; pools created during a test that
-//! drop without explicit shutdown leak the listener task. Acceptable
-//! for the v0.1.0 alpha surface — the leak is per-pool, not per-call,
-//! and adopter-visible only in long-running test suites that
-//! reconstruct pools.
+//! Three drop / restart paths are handled cohesively:
+//!
+//! 1. **Subscriber drop.** `TypedReceiver<M>` is just a thin wrapper
+//!    around `tokio::sync::broadcast::Receiver<RawEvent>`; dropping
+//!    it returns the receiver slot to the broadcast channel. The
+//!    listener task and the per-channel `Sender` live on so other
+//!    subscribers (or future ones) keep receiving.
+//! 2. **Pool drop.** The registry stores `Weak<PgListener>` keyed by
+//!    `DjogiPool::pool_id`. Each `TypedReceiver<M>` returned by
+//!    `subscribe` holds an `Arc<PgListener>` keepalive — so the
+//!    listener stays up exactly as long as at least one subscriber
+//!    is still listening. When the last subscriber drops, the
+//!    listener's strong count hits zero and `Drop` on `PgListener`
+//!    fires: dropping the dedicated `tokio_postgres::Client` closes
+//!    its channel to the spawned connection-watcher task, which
+//!    observes the `poll_message` stream end and exits cleanly. The
+//!    registry's `Weak` entry becomes dangling and is reclaimed
+//!    lazily on the next `subscribe` call against the same `pool_id`
+//!    (see `upgrade_existing`).
+//! 3. **Hot reload.** A freshly-built `DjogiPool` gets a fresh
+//!    `pool_id` (allocated by `crate::pg::pool::next_pool_id`), so
+//!    `subscribe` against the new pool always misses the registry
+//!    and spawns a new listener — independent of any stale entry the
+//!    old pool may have left behind. If the same pool is re-used
+//!    (clone) after the last subscriber drops, the next `subscribe`
+//!    finds the dangling `Weak`, removes it, and spawns fresh: the
+//!    "stop listening, then resume later" path is automatic.
+//!
+//! The strong-reference contract is therefore: subscribers hold the
+//! listener alive; the registry watches without prolonging life.
+//! This is the inverse of T11.3's interim arrangement (registry held
+//! strong refs, leaking listener tasks across reconstructed pools);
+//! T11.4 puts the lifecycle on the subscribers, where it belongs.
 //!
 //! # Wire schema
 //!
@@ -63,7 +92,7 @@ use crate::pg::pool::DjogiPool;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::broadcast;
 use tokio_postgres::AsyncMessage;
 
@@ -168,28 +197,96 @@ struct PgListener {
     client: tokio_postgres::Client,
 }
 
+impl Drop for PgListener {
+    fn drop(&mut self) {
+        // Dropping `client` (the `tokio_postgres::Client` half of the
+        // dedicated standalone connection) closes its request channel.
+        // The spawned connection-watcher task then observes
+        // `poll_message` returning `Ready(None)` (or an error if the
+        // connection was already torn down) and exits its loop on the
+        // next poll, releasing its `Arc<Mutex<senders>>` clone.
+        //
+        // This Drop impl exists for observability — the actual
+        // teardown is driven by `client`'s own `Drop`. We log at
+        // debug because in production this is benign housekeeping;
+        // in tests it's a useful signal that the lifecycle path is
+        // exercising correctly.
+        tracing::debug!(
+            target: "djogi::notify",
+            "PgListener dropped — connection watcher will exit, broadcast::Receivers will see Closed"
+        );
+    }
+}
+
 // ── Internal: per-process pool registry ──────────────────────────────────────
 
 /// Pool-keyed registry of running `PgListener` instances.
 ///
-/// Keyed by the deadpool `Pool`'s pointer identity (cloning a
-/// `DjogiPool` is just `Arc::clone` on the inner `deadpool_postgres::Pool`,
-/// so two `DjogiPool` instances pointing at the same backing pool share
-/// one entry). Reconstructing a pool produces a fresh entry.
+/// Keyed by [`DjogiPool::pool_id`], a per-process unique id allocated
+/// at pool construction and copied verbatim on `Clone`. So two
+/// `DjogiPool` clones share an entry; freshly-built pools get a
+/// fresh entry.
 ///
-/// T11.4 will replace the strong `Arc<PgListener>` with `Weak<PgListener>`
-/// plus cleanup-on-miss; T11.3 ships strong refs to keep the cluster
-/// commit shape focused.
-fn registry() -> &'static Mutex<HashMap<usize, Arc<PgListener>>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<PgListener>>>> = OnceLock::new();
+/// Stores `Weak<PgListener>` rather than strong refs so the registry
+/// observes listeners without prolonging their life. The strong
+/// refs live on the [`TypedReceiver<M>`] handles returned by
+/// `subscribe`: when the last subscriber drops, the listener winds
+/// down and its `Weak` here becomes dangling. Lookups upgrade the
+/// `Weak`; misses (because the listener is gone) trigger cleanup of
+/// the dangling entry and a fresh spawn.
+fn registry() -> &'static Mutex<HashMap<u64, Weak<PgListener>>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<u64, Weak<PgListener>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn pool_key(pool: &DjogiPool) -> usize {
-    // deadpool_postgres::Pool is Arc-shaped internally; using its
-    // address as the identity is a stable per-pool key for the
-    // lifetime of the underlying allocation.
-    std::ptr::addr_of!(pool.inner) as usize
+fn pool_key(pool: &DjogiPool) -> u64 {
+    pool.pool_id
+}
+
+/// Try to reuse an existing live listener for `key`. If the entry
+/// exists and the `Weak` upgrades, return the strong `Arc`. If the
+/// entry exists but the `Weak` is dangling (listener already
+/// dropped), remove the dangling entry as a side-effect so the next
+/// caller doesn't keep paying for a stale lookup.
+///
+/// Pure registry operation — no async, no DB, no listener spawn.
+/// The actual fallback (spawning a fresh listener) belongs to the
+/// caller; lifting the registry lookup out makes the lifecycle
+/// state-machine unit-testable.
+fn upgrade_existing<T>(map: &Mutex<HashMap<u64, Weak<T>>>, key: u64) -> Option<Arc<T>> {
+    let mut guard = map.lock().expect("notify registry mutex poisoned");
+    if let Some(weak) = guard.get(&key) {
+        if let Some(strong) = weak.upgrade() {
+            return Some(strong);
+        }
+        // Stale entry — listener was dropped after the last subscriber
+        // released its keepalive. Remove the dangling slot so we don't
+        // accumulate dead weak-refs across the lifetime of the process.
+        guard.remove(&key);
+    }
+    None
+}
+
+/// Insert a `Weak<T>` into the registry under `key`. If the slot is
+/// already occupied (e.g., a concurrent first-caller raced and won),
+/// the existing entry wins — we treat the prior insertion as
+/// canonical and let our freshly-spawned listener drop on its own.
+///
+/// Returns the `Arc<T>` that callers should hand to the subscriber
+/// — the canonical one (theirs if they won the race; the racer's
+/// strong ref upgraded back from the existing `Weak` if they lost).
+/// `None` is impossible from the happy path; it can only surface if
+/// the prior entry had already been dropped between the racer's
+/// insert and our lookup, which is benign and we recurse.
+fn install_or_lose<T>(map: &Mutex<HashMap<u64, Weak<T>>>, key: u64, candidate: Arc<T>) -> Arc<T> {
+    let mut guard = map.lock().expect("notify registry mutex poisoned");
+    match guard.get(&key).and_then(|w| w.upgrade()) {
+        Some(existing) => existing,
+        None => {
+            guard.insert(key, Arc::downgrade(&candidate));
+            candidate
+        }
+    }
 }
 
 // ── Wire payload decode ──────────────────────────────────────────────────────
@@ -245,26 +342,27 @@ where
 // ── Listener startup + LISTEN management ─────────────────────────────────────
 
 /// Acquire-or-create the `PgListener` instance for `pool`. Lazy: first
-/// call spawns the background task; subsequent calls return the
-/// already-running listener.
+/// call spawns the background task; subsequent calls upgrade the
+/// existing `Weak` in the registry.
+///
+/// Hot-reload is automatic: if the registry holds a dangling `Weak`
+/// (listener was torn down after the last subscriber dropped), the
+/// upgrade fails, the dangling entry is reaped, and a fresh listener
+/// is spawned.
 async fn get_or_start_listener(pool: &DjogiPool) -> Result<Arc<PgListener>, NotifyError> {
     let key = pool_key(pool);
-    {
-        let registry = registry().lock().expect("notify registry mutex poisoned");
-        if let Some(listener) = registry.get(&key) {
-            return Ok(Arc::clone(listener));
-        }
+    if let Some(listener) = upgrade_existing(registry(), key) {
+        return Ok(listener);
     }
 
-    // Race-tolerant: two concurrent first-callers may both reach this
-    // point; the second one's `insert` returns the previously-inserted
-    // entry which we accept as the canonical listener. The cost of the
-    // duplicate spawn-attempt is one extra connection acquisition that
-    // gets dropped immediately.
-    let listener = Arc::new(spawn_listener(pool).await?);
-    let mut registry = registry().lock().expect("notify registry mutex poisoned");
-    let entry = registry.entry(key).or_insert_with(|| Arc::clone(&listener));
-    Ok(Arc::clone(entry))
+    // Race-tolerant: two concurrent first-callers may both spawn
+    // listeners. `install_or_lose` keeps whichever entry won the
+    // registry insertion race; the loser's listener drops out of
+    // scope here, its `Drop` impl winds down its connection task,
+    // and only the canonical listener stays up. Cost of the lost
+    // race: one transient `tokio_postgres::connect` round-trip.
+    let candidate = Arc::new(spawn_listener(pool).await?);
+    Ok(install_or_lose(registry(), key, candidate))
 }
 
 /// Spawn the per-pool listener task. Connects a dedicated standalone
@@ -384,10 +482,13 @@ fn parse_raw(payload: &str) -> Result<RawEvent, serde_json::Error> {
 /// subscribers against the same model + pool share one underlying
 /// broadcast channel (the listener task fans out to all receivers).
 ///
-/// **Lifecycle (T11.3 baseline):** the listener spawns a dedicated
-/// connection task that lives for the listener's registry lifetime.
-/// T11.4 follows up with weak-ref registry cleanup, listener
-/// shutdown on pool drop, and the hot-reload path.
+/// **Lifecycle:** every returned `TypedReceiver<M>` holds an
+/// `Arc<PgListener>` keepalive. The listener stays up while at
+/// least one subscriber for any model on this pool is alive; when
+/// the last subscriber drops, the listener's spawned connection
+/// task exits cleanly and a future `subscribe` call against a
+/// reusable pool spawns a fresh listener. See the module-level
+/// "Lifecycle" section for the full state machine.
 ///
 /// # Channel naming
 ///
@@ -449,6 +550,7 @@ where
 
     Ok(TypedReceiver {
         raw: raw_rx,
+        _listener: listener,
         _model: PhantomData,
     })
 }
@@ -458,8 +560,19 @@ where
 /// Each `recv().await` call decodes the next raw event into a
 /// `ModelEvent<M>` via `decode_payload`, surfacing decode errors as
 /// `NotifyError::PayloadDecode` / `NotifyError::InvalidId`.
+///
+/// The `_listener` field is the lifecycle anchor: it's an
+/// `Arc<PgListener>` keepalive so the listener task keeps running
+/// for at least as long as this receiver is alive. When the last
+/// `TypedReceiver` for a pool drops, the listener's strong count
+/// hits zero, `PgListener::drop` fires, and the spawned watcher
+/// task exits cleanly. The registry's `Weak` becomes dangling and
+/// is reaped on the next `subscribe` against the same `pool_id`.
 pub struct TypedReceiver<M: crate::model::Model> {
     raw: broadcast::Receiver<RawEvent>,
+    /// Keepalive — see `TypedReceiver` doc.
+    #[allow(dead_code)] // lifecycle anchor, never read
+    _listener: Arc<PgListener>,
     _model: PhantomData<M>,
 }
 
@@ -597,5 +710,122 @@ mod tests {
         let payload = "not json at all";
         let result = decode_payload::<FakeModel>(payload);
         assert!(matches!(result, Err(NotifyError::PayloadDecode { .. })));
+    }
+
+    // ── T11.4 — registry lifecycle helpers ─────────────────────────────────
+    //
+    // These tests pin the `Weak<T>` upgrade / cleanup state machine in
+    // isolation, using `Arc<u32>` as a stand-in for `Arc<PgListener>`.
+    // The real listener lifecycle (LISTEN/NOTIFY round-trip across a
+    // pool drop, hot-reload via `subscribe` after teardown) requires a
+    // reachable Postgres and lives in the integration test added by
+    // T11.5.
+
+    #[test]
+    fn upgrade_existing_returns_strong_when_alive() {
+        let map: Mutex<HashMap<u64, Weak<u32>>> = Mutex::new(HashMap::new());
+        let live = Arc::new(123u32);
+        map.lock().unwrap().insert(1, Arc::downgrade(&live));
+
+        let upgraded = upgrade_existing(&map, 1).expect("upgrade should succeed while live");
+        assert_eq!(*upgraded, 123);
+        // Live entry stays in the map after a successful upgrade.
+        assert!(map.lock().unwrap().contains_key(&1));
+    }
+
+    #[test]
+    fn upgrade_existing_returns_none_and_reaps_after_drop() {
+        let map: Mutex<HashMap<u64, Weak<u32>>> = Mutex::new(HashMap::new());
+        {
+            let dying = Arc::new(456u32);
+            map.lock().unwrap().insert(2, Arc::downgrade(&dying));
+            // `dying` drops here, leaving the Weak dangling.
+        }
+        // Slot is still present (just dangling) until lookup runs.
+        assert!(map.lock().unwrap().contains_key(&2));
+
+        let result = upgrade_existing(&map, 2);
+        assert!(result.is_none(), "dangling Weak should fail to upgrade");
+        assert!(
+            !map.lock().unwrap().contains_key(&2),
+            "stale entry should be reaped on the failed-upgrade lookup"
+        );
+    }
+
+    #[test]
+    fn upgrade_existing_returns_none_for_missing_key() {
+        let map: Mutex<HashMap<u64, Weak<u32>>> = Mutex::new(HashMap::new());
+        assert!(upgrade_existing(&map, 99).is_none());
+    }
+
+    #[test]
+    fn install_or_lose_first_caller_wins_slot() {
+        let map: Mutex<HashMap<u64, Weak<u32>>> = Mutex::new(HashMap::new());
+        let candidate = Arc::new(7u32);
+
+        let installed = install_or_lose(&map, 10, Arc::clone(&candidate));
+        // First caller's Arc is the canonical one — same allocation.
+        assert!(Arc::ptr_eq(&candidate, &installed));
+        // Slot now holds a Weak pointing at the same allocation.
+        let weak = map.lock().unwrap().get(&10).cloned().unwrap();
+        let upgraded = weak.upgrade().expect("Weak should upgrade");
+        assert!(Arc::ptr_eq(&candidate, &upgraded));
+    }
+
+    #[test]
+    fn install_or_lose_second_caller_loses_to_existing() {
+        let map: Mutex<HashMap<u64, Weak<u32>>> = Mutex::new(HashMap::new());
+        let winner = Arc::new(11u32);
+        let loser = Arc::new(22u32);
+
+        // First insertion seeds the slot.
+        let _winner_kept = install_or_lose(&map, 5, Arc::clone(&winner));
+
+        // Second caller arrives with a different candidate; it must
+        // be discarded in favour of the existing winner.
+        let resolved = install_or_lose(&map, 5, Arc::clone(&loser));
+        assert!(
+            Arc::ptr_eq(&winner, &resolved),
+            "racer should resolve to the canonical winner, not its own candidate"
+        );
+        // Loser still alive locally (it's a separate Arc), but the
+        // map's Weak still points at the winner.
+        assert_eq!(*loser, 22);
+        let weak = map.lock().unwrap().get(&5).cloned().unwrap();
+        let upgraded = weak.upgrade().expect("winner Weak should upgrade");
+        assert!(Arc::ptr_eq(&winner, &upgraded));
+    }
+
+    #[test]
+    fn install_or_lose_revives_dangling_slot() {
+        let map: Mutex<HashMap<u64, Weak<u32>>> = Mutex::new(HashMap::new());
+        // Seed a dangling Weak.
+        {
+            let transient = Arc::new(33u32);
+            map.lock().unwrap().insert(8, Arc::downgrade(&transient));
+        }
+        assert!(map.lock().unwrap().contains_key(&8));
+
+        // A fresh candidate should overwrite the dangling slot.
+        let fresh = Arc::new(44u32);
+        let resolved = install_or_lose(&map, 8, Arc::clone(&fresh));
+        assert!(
+            Arc::ptr_eq(&fresh, &resolved),
+            "fresh candidate should replace the dangling Weak"
+        );
+        let weak = map.lock().unwrap().get(&8).cloned().unwrap();
+        let upgraded = weak.upgrade().expect("fresh Weak should upgrade");
+        assert!(Arc::ptr_eq(&fresh, &upgraded));
+    }
+
+    #[test]
+    fn pool_id_is_unique_per_build() {
+        // Two consecutive builder.build calls allocate distinct ids.
+        let a = crate::pg::pool::next_pool_id();
+        let b = crate::pg::pool::next_pool_id();
+        assert_ne!(
+            a, b,
+            "next_pool_id must allocate distinct ids on consecutive calls"
+        );
     }
 }

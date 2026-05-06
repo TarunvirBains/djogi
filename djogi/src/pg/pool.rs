@@ -54,8 +54,25 @@ use deadpool_postgres::{Config, ManagerConfig, PoolConfig, RecyclingMethod, Runt
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio_postgres::NoTls;
+
+/// Per-process monotonic counter for [`DjogiPool::pool_id`].
+///
+/// Allocated lazily by [`next_pool_id`]; starts at 1 so a freshly-zeroed
+/// `pool_id` is recognisably "uninitialised" if it ever surfaces in a
+/// debug print.
+static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate the next per-process pool id. Crate-private so internal
+/// substrate that constructs `DjogiPool` by struct literal (e.g. the
+/// audit-side pool in `migrate/runner.rs`) can preserve the
+/// "every freshly-built pool gets a unique id" invariant without
+/// reaching into the atomic directly.
+pub(crate) fn next_pool_id() -> u64 {
+    NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Default `max_size` when the caller does not override it.
 ///
@@ -150,6 +167,25 @@ pub struct DjogiPool {
     /// but still construct the field.
     #[allow(dead_code)]
     pub(crate) url: Option<String>,
+    /// Per-process unique identity for this `DjogiPool`. Allocated by
+    /// [`next_pool_id`] at construction time and copied verbatim on
+    /// `Clone`, so cloned handles share an id (and therefore share
+    /// listener registry entries, statement caches, and any other
+    /// per-pool keyed state) while freshly-built pools get fresh ids.
+    ///
+    /// This exists because `&pool.inner as *const _` is NOT a stable
+    /// per-pool identity — `deadpool_postgres::Pool` is itself
+    /// `Arc`-shaped, so cloning a `DjogiPool` produces a new outer
+    /// struct on the stack/heap with a new field address while the
+    /// underlying pool allocation is shared. The Cluster 8ζ T11 NOTIFY
+    /// registry needs the share-on-clone semantic, hence an explicit
+    /// id.
+    ///
+    /// `dead_code`-allowed because, like [`Self::url`], the id is only
+    /// read on the `feature = "notify"` codepath; default builds
+    /// allocate it but never look at it.
+    #[allow(dead_code)]
+    pub(crate) pool_id: u64,
 }
 
 impl std::fmt::Debug for DjogiPool {
@@ -702,6 +738,7 @@ impl DjogiPoolBuilder {
         Ok(DjogiPool {
             inner: pool,
             url: Some(url),
+            pool_id: next_pool_id(),
         })
     }
 }

@@ -1152,6 +1152,10 @@ async fn record_ddl_audit_for_plan(
         // never reaches the NOTIFY subscriber path. See `DjogiPool::url`
         // doc for the contract.
         url: None,
+        // Fresh per-process id every time the runner constructs an
+        // audit-side `DjogiPool`, so this transient handle never
+        // collides with any other pool's NOTIFY-registry slot.
+        pool_id: crate::pg::pool::next_pool_id(),
     };
     let mut audit_ctx = DjogiContext::from_pool(audit_djogi_pool);
 
