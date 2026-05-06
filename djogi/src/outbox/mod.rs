@@ -169,7 +169,10 @@ pub async fn emit_event<T: Model + Serialize>(
     ctx: &mut DjogiContext,
     row: &T,
     action: OutboxAction,
-) -> Result<(), DjogiError> {
+) -> Result<(), DjogiError>
+where
+    T::Pk: std::fmt::Display,
+{
     let payload = build_payload(row, T::descriptor())?;
     let sql = insert_sql(T::table_name());
     let action_str = action.as_sql_str();
@@ -179,7 +182,67 @@ pub async fn emit_event<T: Model + Serialize>(
     // via tokio-postgres' `with-serde_json-1` feature.
     let params: &[&(dyn ToSql + Sync)] = &[row.pk_value(), &action_str, &payload];
     ctx.execute(&sql, params).await?;
+
+    // Cluster 8ζ T11.2 — synchronous in-process publisher hook.
+    //
+    // Gated on the `notify` feature. When enabled, every `emit_event`
+    // call also fires `SELECT pg_notify('djogi_<table>',
+    // '{"kind":"<action>","id":"<pk>"}')` inside the same transaction
+    // as the outbox INSERT and the source-row write. Subscribers
+    // attached via `djogi::notify::subscribe::<T>(...)` (T11.3) receive
+    // a `ModelEvent { kind, id }` and re-fetch the full row via
+    // `T::find(...)` if they need it.
+    //
+    // Distinct from Phase 5's `NotifyPublisher` (which writes the full
+    // JSONB row payload to user-named channels for downstream relay):
+    // this hook is the in-process subscription path, designed for
+    // cache invalidation use cases where the slim payload + re-fetch
+    // is the right shape for the 8000-byte `pg_notify` cap.
+    //
+    // Channel name validated via `crate::ident::check_plain_ident`
+    // defense-in-depth, even though `T::table_name()` is already a
+    // macro-validated `&'static str` — guards against a malicious
+    // macro fork smuggling an invalid identifier.
+    #[cfg(feature = "notify")]
+    {
+        let table = T::table_name();
+        crate::ident::check_plain_ident(table, false).map_err(|e| {
+            DjogiError::Db(crate::error::DbError::other(format!(
+                "T11.2 notify hook: invalid table name {table:?}: {e:?}"
+            )))
+        })?;
+        let channel = format!("djogi_{table}");
+        let id_str = format!("{}", row.pk_value());
+        let notify_payload = build_notify_payload(action, &id_str);
+        ctx.execute(
+            "SELECT pg_notify($1, $2)",
+            &[&channel.as_str(), &notify_payload.as_str()],
+        )
+        .await?;
+    }
+
     Ok(())
+}
+
+/// Build the slim `{kind, id}` JSON payload for the T11.2 notify hook.
+///
+/// Lifted out of `emit_event` so the payload shape is unit-testable
+/// without a database. The shape is a stable wire contract:
+/// subscribers depend on `kind` matching `OutboxAction::as_sql_str()`
+/// values (`"create" | "save" | "delete"`) and `id` being the model
+/// PK formatted via its `Display` impl (HeerId → decimal, RanjId →
+/// UUID hyphenated form, Serial(i64) → decimal).
+///
+/// `serde_json::json!` macro is used (not raw `format!`) to guarantee
+/// JSON-correct escaping if a future PK type's Display contains
+/// double-quotes or backslashes — paranoid but cheap.
+#[cfg(feature = "notify")]
+pub(crate) fn build_notify_payload(action: OutboxAction, id_str: &str) -> String {
+    serde_json::json!({
+        "kind": action.as_sql_str(),
+        "id": id_str,
+    })
+    .to_string()
 }
 
 /// Build the outbox `INSERT` SQL for a given primary table.
@@ -332,5 +395,61 @@ mod tests {
         assert!(sql.contains("$1"));
         assert!(sql.contains("$2"));
         assert!(sql.contains("$3"));
+    }
+
+    // ── T11.2 notify-hook payload shape ─────────────────────────────────
+    //
+    // `build_notify_payload` is the pure helper that constructs the slim
+    // `{kind, id}` JSON pg_notify payload. The shape is a stable wire
+    // contract consumed by `djogi::notify` subscribers (T11.3); these
+    // tests pin the byte-for-byte JSON shape so a regression that
+    // accidentally widened the payload (or reordered keys, since
+    // `serde_json::json!` honours insertion order) would fail loudly.
+    //
+    // Round-trip via `serde_json::from_str` confirms the output is
+    // valid JSON with the documented keys — the receiver's decoder
+    // can rely on `kind` being a known enum variant and `id` being a
+    // string.
+    #[cfg(feature = "notify")]
+    #[test]
+    fn notify_payload_shape_create_byte_exact() {
+        let payload = build_notify_payload(OutboxAction::Create, "12345");
+        assert_eq!(payload, r#"{"kind":"create","id":"12345"}"#);
+    }
+
+    #[cfg(feature = "notify")]
+    #[test]
+    fn notify_payload_shape_save_byte_exact() {
+        let payload = build_notify_payload(OutboxAction::Save, "67890");
+        assert_eq!(payload, r#"{"kind":"save","id":"67890"}"#);
+    }
+
+    #[cfg(feature = "notify")]
+    #[test]
+    fn notify_payload_shape_delete_byte_exact() {
+        let payload = build_notify_payload(OutboxAction::Delete, "abcdef-ghi");
+        assert_eq!(payload, r#"{"kind":"delete","id":"abcdef-ghi"}"#);
+    }
+
+    #[cfg(feature = "notify")]
+    #[test]
+    fn notify_payload_round_trips_via_serde() {
+        let payload = build_notify_payload(OutboxAction::Save, "99");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("payload must be valid JSON");
+        assert_eq!(parsed["kind"], "save");
+        assert_eq!(parsed["id"], "99");
+    }
+
+    #[cfg(feature = "notify")]
+    #[test]
+    fn notify_payload_escapes_special_chars_in_id() {
+        // Defensive: PK types whose Display output contains double
+        // quotes or backslashes must still produce valid JSON.
+        // serde_json::json! handles this; raw format! would not.
+        let payload = build_notify_payload(OutboxAction::Save, r#"id"with\quotes"#);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("escaped payload must round-trip");
+        assert_eq!(parsed["id"], r#"id"with\quotes"#);
     }
 }
