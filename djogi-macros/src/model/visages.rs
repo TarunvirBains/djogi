@@ -62,13 +62,7 @@ pub fn expand(
 ) -> TokenStream {
     let source_name = &struct_item.ident;
 
-    // Framework columns are prepended by `inject::expand`; n_framework
-    // equals the count injected there (id gated on `pk != none`, plus the
-    // two timestamp columns).
-    let n_framework = match &model_attrs.pk {
-        PkStrategy::None => 2,
-        _ => 3,
-    };
+    let n_framework = model_attrs.framework_field_count();
 
     let visages: Vec<TokenStream> = SCOPES
         .iter()

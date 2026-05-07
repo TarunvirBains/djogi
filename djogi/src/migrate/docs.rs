@@ -100,19 +100,22 @@ pub struct DocsReport {
 // ── Public entry point ────────────────────────────────────────────────────
 
 /// Render the descriptor inventory to per-model markdown pages under
-/// `output_root`.
+/// `output_root`. Walks [`inventory::iter::<ModelDescriptor>`] directly;
+/// adopters rendering a fixture subset call [`render_inventory`].
 ///
-/// **Inventory source.** Walks
-/// [`inventory::iter::<ModelDescriptor>`](::inventory::iter)
-/// directly. Adopters that want to render a fixture set instead of
-/// the global inventory should call [`render_inventory`] with their
-/// own slice.
-pub fn generate_docs(output_root: &Path) -> Result<DocsReport, DocsError> {
+/// When `intent` is `Some`, per-model/field rationale from
+/// `<workspace>/.djogi/intent.json` merges into the Markdown with
+/// "macro attr wins, intent.json fallback" precedence (see
+/// [`crate::intent::resolve_model_rationale`]). `None` skips the merge.
+pub fn generate_docs(
+    output_root: &Path,
+    intent: Option<&crate::intent::IntentFile>,
+) -> Result<DocsReport, DocsError> {
     // Snapshot the inventory into an owned slice so the two callers
     // (production + tests) share a single render path.
     let descriptors: Vec<&'static ModelDescriptor> =
         ::inventory::iter::<ModelDescriptor>.into_iter().collect();
-    render_inventory(&descriptors, output_root)
+    render_inventory(&descriptors, output_root, intent)
 }
 
 /// Render an explicit `&[&ModelDescriptor]` slice — used by tests and
@@ -121,9 +124,12 @@ pub fn generate_docs(output_root: &Path) -> Result<DocsReport, DocsError> {
 /// **Determinism.** The slice is internally sorted by
 /// `(app_directory, type_name)` before rendering so the output is
 /// byte-stable regardless of the input ordering.
+///
+/// `intent` follows the same merge rule as [`generate_docs`].
 pub fn render_inventory(
     descriptors: &[&ModelDescriptor],
     output_root: &Path,
+    intent: Option<&crate::intent::IntentFile>,
 ) -> Result<DocsReport, DocsError> {
     fs::create_dir_all(output_root).map_err(|e| DocsError::Io {
         path: output_root.to_path_buf(),
@@ -149,7 +155,7 @@ pub fn render_inventory(
             source: e,
         })?;
         for desc in models.values() {
-            let body = render_model_page(desc);
+            let body = render_model_page(desc, intent);
             let file_path = app_path.join(model_filename(desc.type_name));
             fs::write(&file_path, body.as_bytes()).map_err(|e| DocsError::Io {
                 path: file_path.clone(),
@@ -215,7 +221,15 @@ pub fn render_inventory(
 // ── Rendering ─────────────────────────────────────────────────────────────
 
 /// Render a single model's reference page as Markdown.
-pub fn render_model_page(desc: &ModelDescriptor) -> String {
+///
+/// `intent` follows the merge rule documented on [`generate_docs`]:
+/// when `Some(file)`, per-model and per-field rationale flow from
+/// `<workspace>/.djogi/intent.json` with "macro attr wins" precedence.
+/// `None` keeps rationale sourced from the descriptor only.
+pub fn render_model_page(
+    desc: &ModelDescriptor,
+    intent: Option<&crate::intent::IntentFile>,
+) -> String {
     let mut s = String::with_capacity(2048);
     let _ = writeln!(s, "# {}\n", desc.type_name);
 
@@ -247,26 +261,21 @@ pub fn render_model_page(desc: &ModelDescriptor) -> String {
     if let Some(moved) = desc.moved_from_app {
         let _ = writeln!(s, "- **Moved from app:** `{moved}`");
     }
-    if let Some(rationale) = desc.rationale {
+    let model_intent = intent.and_then(|i| i.models.get(desc.type_name));
+    if let Some(rationale) = crate::intent::resolve_model_rationale(desc.rationale, model_intent) {
         let _ = writeln!(s, "\n> {rationale}");
     }
 
-    // Field table.
-    //
-    // Codex round-1 A-3 — the T8 docs contract requires a `Default`
-    // column. `FieldDescriptor` itself does not carry a default-SQL
-    // string; the projection layer (`migrate::projection`) injects
-    // the PK column's `heerid_next()` / `heerid_next_desc()` /
-    // `ranjid_next()` / `ranjid_next_desc()` /
-    // `<custom>` default at the snapshot boundary. The renderer
-    // mirrors that policy so the generated reference page reflects
-    // what the operator will actually see on the live table — for
-    // every other column we render an em-dash (no descriptor-side
-    // default).
+    // Field table — the `Default` column reflects projection-side
+    // policy: only the PK row carries a default expression (the
+    // `heerid_next()` / `heerid_next_desc()` / etc. supplied by
+    // `migrate::projection`); every other column renders an em-dash
+    // because `FieldDescriptor` doesn't carry adopter-declared defaults.
     s.push_str("\n## Fields\n\n");
     s.push_str("| Name | SQL type | Nullable | Default | Notes |\n");
     s.push_str("|------|----------|----------|---------|-------|\n");
     for f in desc.fields {
+        let field_intent = model_intent.and_then(|m| m.fields.get(f.name));
         let _ = writeln!(
             s,
             "| `{name}` | `{ty}` | {nullable} | {default} | {notes} |",
@@ -274,7 +283,7 @@ pub fn render_model_page(desc: &ModelDescriptor) -> String {
             ty = f.sql_type,
             nullable = if f.nullable { "yes" } else { "no" },
             default = render_field_default(f, desc),
-            notes = render_field_notes(f),
+            notes = render_field_notes(f, field_intent),
         );
     }
 
@@ -444,18 +453,10 @@ fn display_index_target(target: &IndexTarget) -> String {
 /// [`super::projection::pk_default_sql`], and every other field
 /// renders as an em-dash (`—`) for "no descriptor-side default".
 ///
-/// **Known limitation (round-2 A-3):** today's `FieldDescriptor`
-/// only carries the PK column's default expression (derived from
-/// `parent.pk_type`). Non-PK fields with declared defaults render
-/// as `—` because the descriptor doesn't carry their `default_sql`
-/// — that information lives in the snapshot's `ColumnSchema` but is
-/// not threaded through the descriptor inventory the macro emits.
-/// TODO(post-Phase-7): extend `FieldDescriptor` with a
-/// `default_sql: Option<&'static str>` field populated by the macro
-/// from `#[field(default = "...")]` attributes, and update this
-/// renderer's else-branch to surface it.
-///
-/// Codex round-1 A-3 / round-2 A-3.
+/// Limitation: only the PK column's default surfaces today.
+/// Non-PK adopter-declared defaults need a `default_sql` slot on
+/// `FieldDescriptor` that the macro doesn't currently populate, so
+/// they render as `—`.
 fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String {
     if f.name == "id" {
         match super::projection::pk_default_sql(&parent.pk_type) {
@@ -463,8 +464,6 @@ fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String
             None => "—".to_string(),
         }
     } else {
-        // TODO(post-Phase-7): when FieldDescriptor.default_sql exists,
-        // render it here. See module-level note above.
         "—".to_string()
     }
 }
@@ -472,7 +471,15 @@ fn render_field_default(f: &FieldDescriptor, parent: &ModelDescriptor) -> String
 /// Compose the per-field "notes" cell — primary surface for the
 /// flags that don't get their own column. Empty cells render as a
 /// single space so the markdown table stays aligned.
-fn render_field_notes(f: &FieldDescriptor) -> String {
+///
+/// `field_intent` is the per-field entry from `intent.json`, when
+/// present. Resolution runs through [`crate::intent::resolve_field_rationale`]
+/// so the macro attr wins over intent.json — same precedence rule
+/// that applies to the per-model `## Rationale` line.
+fn render_field_notes(
+    f: &FieldDescriptor,
+    field_intent: Option<&crate::intent::FieldIntent>,
+) -> String {
     let mut bits: Vec<String> = Vec::new();
     if f.unique {
         bits.push("UNIQUE".to_string());
@@ -492,7 +499,7 @@ fn render_field_notes(f: &FieldDescriptor) -> String {
     if let Some(seq) = f.sequence_within {
         bits.push(format!("sequence within `{seq}`"));
     }
-    if let Some(rationale) = f.rationale {
+    if let Some(rationale) = crate::intent::resolve_field_rationale(f.rationale, field_intent) {
         bits.push(format!("_{rationale}_"));
     }
     if bits.is_empty() {
@@ -542,13 +549,9 @@ fn join_quoted(items: &[&str]) -> String {
 }
 
 /// Map a model type name to a filesystem-safe markdown filename.
-///
-/// Any byte that is not an ASCII letter, ASCII digit, or underscore
-/// is replaced with `_`. The Rust grammar already restricts type
-/// names to ASCII identifiers, so this is a belt-and-braces
-/// normaliser; in practice the mapping is the identity for every
-/// realistic input. Codex round-1 N-1 — phrased in plain English
-/// per `docs/spec/decisions.md` (no regex notation in comments).
+/// Any byte that is not an ASCII letter, digit, or underscore is
+/// replaced with `_` — belt-and-braces; Rust grammar already restricts
+/// type names to ASCII identifiers.
 fn model_filename(type_name: &str) -> String {
     let mut out = String::with_capacity(type_name.len() + 3);
     for byte in type_name.bytes() {
@@ -644,15 +647,12 @@ mod tests {
     #[test]
     fn render_model_page_includes_table_pk_and_field_table() {
         let user = fixture_users();
-        let body = render_model_page(&user);
+        let body = render_model_page(&user, None);
         assert!(body.starts_with("# User\n"));
         assert!(body.contains("**App:** accounts"));
         assert!(body.contains("**Table:** `users`"));
         assert!(body.contains("**PK kind:** HeerId (recency-biased)"));
         assert!(body.contains("**Tenant key:** `org_id`"));
-        // Field table headers + at least one row.
-        // Codex round-1 A-3: the field table now carries a `Default`
-        // column.
         assert!(body.contains("| Name | SQL type | Nullable | Default | Notes |"));
         assert!(body.contains("`email`"));
         assert!(body.contains("UNIQUE"));
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn render_model_page_default_column_renders_pk_default_and_em_dash() {
         let user = fixture_users(); // PkType::HeerIdDesc → heerid_next_desc()
-        let body = render_model_page(&user);
+        let body = render_model_page(&user, None);
         // The PK row carries the matching DEFAULT expression.
         assert!(
             body.contains("`heerid_next_desc()`"),
@@ -689,7 +689,7 @@ mod tests {
         // A `PkType::HeerId` model emits `heerid_next()` (ascending
         // variant — projection-side parity).
         let post = fixture_global_post();
-        let body = render_model_page(&post);
+        let body = render_model_page(&post, None);
         assert!(
             body.contains("`heerid_next()`"),
             "PK default must render as `heerid_next()` for HeerId; \
@@ -703,7 +703,7 @@ mod tests {
         let post = fixture_global_post();
         let descriptors: Vec<&ModelDescriptor> = vec![&user, &post];
         let root = temp_root("layout");
-        let report = render_inventory(&descriptors, &root).expect("render");
+        let report = render_inventory(&descriptors, &root, None).expect("render");
         assert_eq!(report.models_rendered, 2);
 
         // README at the root.
@@ -742,8 +742,8 @@ mod tests {
 
         let root_a = temp_root("det_a");
         let root_b = temp_root("det_b");
-        render_inventory(&descriptors, &root_a).unwrap();
-        render_inventory(&descriptors, &root_b).unwrap();
+        render_inventory(&descriptors, &root_a, None).unwrap();
+        render_inventory(&descriptors, &root_b, None).unwrap();
 
         let user_a = fs::read(root_a.join("accounts/User.md")).unwrap();
         let user_b = fs::read(root_b.join("accounts/User.md")).unwrap();
@@ -765,8 +765,8 @@ mod tests {
 
         let root_a = temp_root("order_a");
         let root_b = temp_root("order_b");
-        render_inventory(&order_a, &root_a).unwrap();
-        render_inventory(&order_b, &root_b).unwrap();
+        render_inventory(&order_a, &root_a, None).unwrap();
+        render_inventory(&order_b, &root_b, None).unwrap();
 
         let readme_a = fs::read(root_a.join("README.md")).unwrap();
         let readme_b = fs::read(root_b.join("README.md")).unwrap();
@@ -776,7 +776,7 @@ mod tests {
     #[test]
     fn render_inventory_against_empty_input_writes_sentinel_readme() {
         let root = temp_root("empty");
-        let report = render_inventory(&[], &root).expect("render");
+        let report = render_inventory(&[], &root, None).expect("render");
         assert_eq!(report.models_rendered, 0);
         // README still gets written, with the sentinel message.
         let readme = fs::read_to_string(root.join("README.md")).unwrap();
@@ -808,6 +808,102 @@ mod tests {
         assert_eq!(
             display_pk_type(&PkType::Composite(&["a", "b"])),
             "Composite(a, b)"
+        );
+    }
+
+    fn fixture_post_no_rationale() -> ModelDescriptor {
+        // Distinct from `fixture_global_post` so this test owns its
+        // fixture and can't drift if the global-post fixture grows
+        // a `rationale` field for a different test.
+        static FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
+            // No `rationale` on the field — let the intent fallback
+            // path own this test.
+            ..field_descriptor("title", FieldSqlType::Text, false)
+        }];
+        ModelDescriptor {
+            // No `rationale` on the model, either.
+            ..model_descriptor("Article", "articles", PkType::HeerId, FIELDS)
+        }
+    }
+
+    fn intent_with_article_rationale() -> crate::intent::IntentFile {
+        let mut field_intents = std::collections::BTreeMap::new();
+        field_intents.insert(
+            "title".to_string(),
+            crate::intent::FieldIntent {
+                rationale: "Display title for SEO and the article header.".to_string(),
+                added_by: String::new(),
+                added_at: String::new(),
+            },
+        );
+        let mut models = std::collections::BTreeMap::new();
+        models.insert(
+            "Article".to_string(),
+            crate::intent::ModelIntent {
+                rationale: "Long-form posts surfaced on the public site.".to_string(),
+                fields: field_intents,
+            },
+        );
+        crate::intent::IntentFile {
+            schema_url: None,
+            models,
+        }
+    }
+
+    #[test]
+    fn render_model_page_picks_up_intent_rationale_when_macro_attr_absent() {
+        let article = fixture_post_no_rationale();
+        let intent = intent_with_article_rationale();
+        let body = render_model_page(&article, Some(&intent));
+        assert!(
+            body.contains("Long-form posts surfaced on the public site."),
+            "intent.json model rationale must surface in Markdown when macro attr absent; got: {body}"
+        );
+        assert!(
+            body.contains("_Display title for SEO and the article header._"),
+            "intent.json field rationale must surface when macro attr absent; got: {body}"
+        );
+    }
+
+    #[test]
+    fn render_model_page_macro_attr_wins_over_intent_json() {
+        let user = fixture_users();
+        // user has `rationale: Some("Application user accounts.")` from
+        // the macro-attr side; the intent file uses different text.
+        let mut models = std::collections::BTreeMap::new();
+        models.insert(
+            "User".to_string(),
+            crate::intent::ModelIntent {
+                rationale: "INTENT-JSON-TEXT-SHOULD-NOT-APPEAR".to_string(),
+                fields: std::collections::BTreeMap::new(),
+            },
+        );
+        let intent = crate::intent::IntentFile {
+            schema_url: None,
+            models,
+        };
+        let body = render_model_page(&user, Some(&intent));
+        assert!(
+            body.contains("Application user accounts."),
+            "macro-attr rationale must win over intent.json; got: {body}"
+        );
+        assert!(
+            !body.contains("INTENT-JSON-TEXT-SHOULD-NOT-APPEAR"),
+            "intent.json must not surface when macro attr is present; got: {body}"
+        );
+    }
+
+    #[test]
+    fn render_model_page_no_rationale_section_when_neither_set() {
+        let article = fixture_post_no_rationale();
+        let body = render_model_page(&article, None);
+        // The rationale line is `\n> ...`. When neither source sets
+        // rationale, no blockquote line should appear in the body
+        // (every other use of `>` in the doc body is in column
+        // table cells, never as a leading `\n> `).
+        assert!(
+            !body.contains("\n> "),
+            "no `## Rationale` blockquote when neither macro attr nor intent.json sets it; got: {body}"
         );
     }
 }

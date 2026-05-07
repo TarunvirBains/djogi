@@ -572,6 +572,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "djogi",
+ "inventory",
  "serde",
  "serde_json",
  "thiserror",

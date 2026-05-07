@@ -54,8 +54,25 @@ use deadpool_postgres::{Config, ManagerConfig, PoolConfig, RecyclingMethod, Runt
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio_postgres::NoTls;
+
+/// Per-process monotonic counter for [`DjogiPool::pool_id`].
+///
+/// Allocated lazily by [`next_pool_id`]; starts at 1 so a freshly-zeroed
+/// `pool_id` is recognisably "uninitialised" if it ever surfaces in a
+/// debug print.
+static NEXT_POOL_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Allocate the next per-process pool id. Crate-private so internal
+/// substrate that constructs `DjogiPool` by struct literal (e.g. the
+/// audit-side pool in `migrate/runner.rs`) can preserve the
+/// "every freshly-built pool gets a unique id" invariant without
+/// reaching into the atomic directly.
+pub(crate) fn next_pool_id() -> u64 {
+    NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Default `max_size` when the caller does not override it.
 ///
@@ -130,6 +147,28 @@ pub struct DjogiPool {
     /// methods on `DjogiPool` and through `DjogiContext`, never through
     /// `inner`.
     pub(crate) inner: deadpool_postgres::Pool,
+    /// The Postgres connection URL the pool was built with. Retained so
+    /// internal substrate that needs a dedicated connection outside the
+    /// pool — notably the NOTIFY listener, which can't subscribe to
+    /// `tokio_postgres::AsyncMessage` on a pooled connection — can issue
+    /// a fresh `tokio_postgres::connect` against the same URL.
+    ///
+    /// `None` for pools that adopt a pre-built `deadpool_postgres::Pool`
+    /// without exposing a URL (e.g. the audit-side pool in
+    /// `migrate/runner.rs`). NOTIFY listener spawn against a URL-less
+    /// pool returns `NotifyError::ListenerStartFailed`.
+    #[allow(dead_code)] // only read under `feature = "notify"`
+    pub(crate) url: Option<String>,
+    /// Per-process unique identity, copied verbatim on `Clone`, so cloned
+    /// handles share an id (and any per-pool keyed state — listener
+    /// registry, future statement caches) while freshly-built pools get
+    /// fresh ids. `&pool.inner as *const _` is NOT a stable identity —
+    /// `deadpool_postgres::Pool` is Arc-shaped, so cloning a `DjogiPool`
+    /// produces a new outer struct address while the inner allocation is
+    /// shared. The notify registry needs share-on-clone semantics, hence
+    /// the explicit id.
+    #[allow(dead_code)] // only read under `feature = "notify"`
+    pub(crate) pool_id: u64,
 }
 
 impl std::fmt::Debug for DjogiPool {
@@ -624,8 +663,9 @@ impl DjogiPoolBuilder {
             ));
         }
 
+        let url = self.url;
         let mut cfg = Config::new();
-        cfg.url = Some(self.url);
+        cfg.url = Some(url.clone());
         cfg.manager = Some(ManagerConfig {
             recycling_method: RecyclingMethod::Fast,
         });
@@ -678,7 +718,11 @@ impl DjogiPoolBuilder {
             )))
         })?;
 
-        Ok(DjogiPool { inner: pool })
+        Ok(DjogiPool {
+            inner: pool,
+            url: Some(url),
+            pool_id: next_pool_id(),
+        })
     }
 }
 

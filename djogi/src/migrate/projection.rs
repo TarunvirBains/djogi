@@ -1156,6 +1156,14 @@ fn project_primary_key(pk: &PkType) -> PrimaryKeySchema {
 }
 
 pub(crate) fn pk_default_sql(pk: &PkType) -> Option<String> {
+    // Function names match HeerRanjId 0.3.x's installed schema:
+    // `heerid_next()` (asc HeerId) and `ranjid_next()` (asc RanjId)
+    // ship from `generate_heerid.sql` / `generate_ranjid.sql`;
+    // `heerid_next_desc()` and `ranjid_next_desc()` ship from
+    // `desc_generators.sql`. The earlier `generate_id*` /
+    // `generate_ranj_id*` names do not exist in the installed schema,
+    // so any migration touching these PK kinds would have failed at
+    // apply time.
     match pk {
         PkType::HeerId => Some("heerid_next()".to_string()),
         PkType::HeerIdDesc => Some("heerid_next_desc()".to_string()),

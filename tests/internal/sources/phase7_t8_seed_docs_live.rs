@@ -309,7 +309,7 @@ async fn docs_generate_produces_readme_under_arbitrary_root(mut _ctx: djogi::Djo
     // every other live test does (the harness owns ctx lifetime).
     let work = temp_workspace("docs_run");
     let out = work.join("target/djogi-docs");
-    let report = djogi::migrate::generate_docs(&out).expect("generate docs");
+    let report = djogi::migrate::generate_docs(&out, None).expect("generate docs");
     // Either the inventory is empty (no `#[model]`-generated
     // descriptors in the integration binary) or it is not — both
     // shapes must produce a README.

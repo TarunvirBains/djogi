@@ -36,9 +36,17 @@ outbox-kafka = ["outbox"]
 # outbox-nats — NATS publisher stub (via async-nats). Same deferral.
 outbox-nats = ["outbox"]
 
-# notify — reserved feature flag for the operational notify/listen path.
-# Defined here before CI or sibling branches reference it so feature lists stay
-# stable during the raw-SQL harness stack.
+# notify — gates the in-process model-event NOTIFY surface: the synchronous
+# publisher hook in `emit_event` (fires `pg_notify('djogi_<table>',
+# '{kind,id}')` alongside the outbox INSERT) and the
+# `djogi::notify::subscribe::<M>()` consumer surface backed by a per-pool
+# `PgListener` background task.
+#
+# Distinct from the `outbox` feature flag: `outbox` gates worker-side
+# primitives + downstream relay publishers (full-payload, user-named
+# channels). `notify` is the in-process subscription path with a slim
+# `{kind, id}` payload on `djogi_<table>` channels — designed for cache
+# invalidation use cases where the receiver re-fetches the full row by id.
 notify = []
 
 # spatial — gates the GeoPoint primitive and the spatial query surface
@@ -548,6 +556,13 @@ name = "phase8_t8_6_softdelete_tombstones"
 path = "../tests/integration/phase8_t8_6_softdelete_tombstones.rs"
 harness = true
 
+# ── Phase 8δ T8.7 — outbox-derived tombstones (Pattern 2) in delta fetcher ────
+
+[[test]]
+name = "phase8_t8_7_outbox_tombstones"
+path = "../tests/integration/phase8_t8_7_outbox_tombstones.rs"
+harness = true
+
 # ── Phase 8δ T8.8 — DeltaRefreshHandle knobs: LRU warn + recovery + periodic ──
 
 [[test]]
@@ -568,3 +583,12 @@ harness = true
 name = "phase8_t8_10_refresh_e2e"
 path = "../tests/integration/phase8_t8_10_refresh_e2e.rs"
 harness = true
+
+[[test]]
+name = "phase8_t11_notify_roundtrip"
+path = "../tests/integration/phase8_t11_notify_roundtrip.rs"
+harness = true
+# `subscribe::<M>` and the publisher hook in `emit_event` only compile
+# under `feature = "notify"`; without this gate the test fails to
+# compile under the default workspace test invocation.
+required-features = ["notify"]

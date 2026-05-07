@@ -21,6 +21,7 @@ pub mod outer_ref;
 pub mod protected;
 pub mod proxy;
 pub mod relations;
+pub mod schema_const;
 pub mod stubs;
 pub mod visage_ctx;
 pub mod visage_fields;
@@ -310,6 +311,12 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
     // Empty token stream when no computed fields are declared.
     let computed_zst = computed::emit_computed_zst(&struct_item.ident, &computed_attrs);
 
+    // 11. Cluster 8ζ T12.1 — `{MODEL}_SCHEMA: &str` agent-ergonomic
+    //     pretty-printed schema constant. Compile-time, byte-deterministic
+    //     against the post-injection struct + parsed attrs. See
+    //     `model::schema_const` for the rendering contract.
+    let schema_const = schema_const::emit(&struct_item, &model_attrs, &field_attrs);
+
     Ok(quote::quote! {
         #expanded
         #hooks_impl
@@ -328,6 +335,7 @@ fn expand_inner(attr: TokenStream, item: TokenStream) -> syn::Result<TokenStream
         #rationale_advisories
         #computed_getters
         #computed_zst
+        #schema_const
     })
 }
 

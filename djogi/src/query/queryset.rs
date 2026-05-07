@@ -2216,6 +2216,9 @@ where
             filter,
             lru_warn_issued: std::sync::atomic::AtomicBool::new(false),
             events_rx,
+            // Pattern 2 outbox-tombstone watermark — first tick on an
+            // events-bearing model initialises it to wall-clock `now()`.
+            outbox_watermark: std::sync::Mutex::new(None),
             _model: std::marker::PhantomData,
         };
         // [CHECK] Default 30s interval is a placeholder; T8.6 may add a

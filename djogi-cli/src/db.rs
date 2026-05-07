@@ -541,7 +541,20 @@ fn is_valid_pg_identifier(name: &str) -> bool {
 pub fn docs_cmd(output: Option<PathBuf>, workspace: Option<PathBuf>) -> ExitCode {
     let workspace = resolve_workspace(workspace);
     let output = output.unwrap_or_else(|| workspace.join("target").join("djogi-docs"));
-    match generate_docs(&output) {
+    // Cluster 8ζ T12.4 — load `<workspace>/.djogi/intent.json` if
+    // present. Absent file → `Ok(None)`, which `generate_docs`
+    // treats as "no intent merge"; a malformed file fails the
+    // command with a clear error before any docs files are
+    // written, so adopters notice typos instead of silently
+    // losing their rationale.
+    let intent = match djogi::intent::load(&workspace) {
+        Ok(maybe) => maybe,
+        Err(e) => {
+            eprintln!("djogi docs: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    match generate_docs(&output, intent.as_ref()) {
         Ok(report) => {
             println!(
                 "docs: rendered {n} model page(s) into {path}",
